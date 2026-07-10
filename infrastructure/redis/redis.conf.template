@@ -1,0 +1,4 @@
+# Redis configuration template — placeholder only.
+# Real values (persistence policy, maxmemory, eviction policy, ACLs) to be set once the hot-state
+# usage profile (device sessions, latest positions, pub/sub, caches, rate limits) is finalized.
+# See docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md §10.1.
