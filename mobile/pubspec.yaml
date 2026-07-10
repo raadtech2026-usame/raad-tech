@@ -1,0 +1,6 @@
+# RAAD Platform — Flutter mobile app (Parent + Driver).
+# Structural placeholder only. SDK constraints and dependencies are not yet decided.
+name: raad_mobile
+description: RAAD Platform mobile app (Parent + Driver roles).
+publish_to: "none"
+version: 0.0.0
