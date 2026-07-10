@@ -1,19 +1,33 @@
-# RAAD Business API — package configuration template.
+# RAAD Business API — package configuration.
 #
-# Placeholder only. Dependency management tool (Poetry / PDM / pip-tools), exact dependency
-# versions, and tool configuration (pytest, ruff/black/mypy if adopted) are not yet decided by
-# approved documentation. Do not fill this in without confirming tooling choices first.
+# Dependencies below are limited to what Phase 4.2 (Backend Foundation) actually imports:
+# FastAPI + its ASGI server, and pydantic-settings for typed configuration. SQLAlchemy,
+# Alembic, an async MySQL driver, a broker client, and a worker runtime (Celery/arq — open
+# item, Backend LLD §20.1) are added when the persistence/broker/worker layers are wired in
+# a later phase — not included yet since this phase creates no database tables and no
+# broker/worker code.
 #
-# Known from docs/business/RAAD_Phase3.1_Backend_LLD_v1_2.md:
-#   - FastAPI (async)
-#   - SQLAlchemy (async ORM)
-#   - Alembic (migrations)
-#   - pydantic-settings (typed configuration)
-#   - Argon2 or bcrypt (password hashing)
-#   - arq or Celery on Redis (worker runtime — open item, unconfirmed)
+# Dependency management tool (Poetry / PDM / plain pip) and dev tooling (pytest, ruff/black/
+# mypy) are not yet decided by approved documentation — this file uses the PEP 621 format,
+# installable with plain `pip install -e .` regardless of that later choice.
 
 [project]
 name = "raad-business-api"
-version = "0.0.0"
+version = "0.1.0"
 description = "RAAD Platform — Business API (FastAPI modular monolith)"
 requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# Flat layout with `raad/` (the package) and `migrations/`/`tests/` (not packages) both at
+# the repo root — restrict discovery to the actual application package.
+include = ["raad*"]

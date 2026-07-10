@@ -20,6 +20,15 @@ detail.
   §15 (ADR-1 through ADR-9) should be backfilled here as individual records if/when this directory is
   adopted as the ADR home.
 
+## Recorded so far
+
+- `adr/0001-business-entity-module-mapping.md` — confirms which bounded-context module owns each
+  Ch. 6 business entity (Organization, Vehicle, Device, Driver, Student, Parent, Route, Stop, Trip,
+  Subscription). Backfilled from Phase 2 §2 / Phase 3.1 §1 / Phase 3.2, not a new decision.
+
+Phase 2 §15's ADR-1 through ADR-9 remain unbackfilled as individual files — still living only inside
+the Phase 2 document.
+
 ## Status
 
-Structural placeholder only.
+Seeded with one backfilled ADR; otherwise a structural placeholder.
