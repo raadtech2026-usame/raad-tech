@@ -1,4 +1,6 @@
-"""ID generation port (Backend LLD §17; open item §20.2 — not yet decided/bound)."""
-from raad.core.ids.generator import IdGenerator
+"""ID generation (Backend LLD §17 `ids`). `UlidGenerator` resolves the §20.2 open item per
+the approved Database Design (Phase 3.2 §1: ULID, CHAR(26))."""
 
-__all__ = ["IdGenerator"]
+from raad.core.ids.generator import IdGenerator, UlidGenerator, generate_ulid
+
+__all__ = ["IdGenerator", "UlidGenerator", "generate_ulid"]

@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from raad.core.config.settings import get_settings
 from raad.core.di.bootstrap import build_container
@@ -29,8 +30,8 @@ logger = get_logger("raad.main")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup: validate settings (fail fast), configure logging, build the DI composition
-    root. Shutdown: log only — there are no live connections (DB engine, broker, Redis) to
-    close yet in this phase."""
+    root. Shutdown: dispose the DB engine's connection pool if one was bound (`db.url`
+    configured) — there are no other live connections (broker, Redis) to close yet."""
     settings = get_settings()
     settings.validate_on_startup()
     configure_logging(settings.observability)
@@ -42,6 +43,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         "raad_business_api_startup", extra={"environment": settings.environment.value}
     )
     yield
+
+    engine = app.state.container.try_resolve(AsyncEngine)
+    if engine is not None:
+        await engine.dispose()
     logger.info("raad_business_api_shutdown")
 
 

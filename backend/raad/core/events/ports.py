@@ -5,6 +5,7 @@ Redis Streams/RabbitMQ broker client) are added when the persistence and broker 
 wired in a later phase. Defining the ports now lets application services depend on
 abstractions from day one (§4.2 `EventRecorder`/outbox pattern).
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

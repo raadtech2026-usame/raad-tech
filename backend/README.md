@@ -138,8 +138,51 @@ Deliberately **not** implemented: login/registration/refresh endpoints, the conc
 permission matrix, refresh-token persistence, session management, external identity providers,
 and OAuth — all pending `modules/iam`'s application/domain layers in a later phase.
 
+## Database Foundation (Phase 4.4)
+
+Framework-only, no business entities/tables/repositories. Adds three dependencies:
+SQLAlchemy (async engine/ORM), Alembic (migrations), `asyncmy` (async MySQL 8.x driver).
+Implemented:
+
+- **Async engine + session factory** (`core/db/engine.py`) — `build_engine`/
+  `build_session_factory`; `pool_pre_ping=True`, `expire_on_commit=False`.
+- **Declarative base + naming convention** (`core/db/base.py`) — one shared `Base`/`MetaData`
+  for every module's future ORM models, with `ix_`/`ux_`/`fk_`/`pk_` constraint naming
+  (`.claude/rules/naming.md`).
+- **Audit-column mixins** (`core/db/mixins.py`) — `UlidPrimaryKeyMixin`, `TimestampMixin`,
+  `AuditActorMixin` (incl. `row_version` optimistic locking via `__mapper_args__`),
+  `SoftDeleteMixin`, and the `AuditedTableMixin` bundle — the standard audit columns
+  (Database Design §1) as composable mixins, not any concrete table.
+- **ULID generator** (`core/ids/generator.py`) — `UlidGenerator` (stdlib-only, monotonic
+  within a millisecond), resolving the Backend LLD §20.2 open item per Database Design §1's
+  ULID/`CHAR(26)` decision.
+- **SQLAlchemy Unit of Work** (`core/db/unit_of_work.py`) — `SqlAlchemyUnitOfWork`: opens a
+  session per instance, buffers `DomainEvent`s, and writes them to the outbox in the same
+  transaction as `commit()` — no module-specific repositories yet (added by each module's own
+  UoW subclass later).
+- **Outbox infrastructure** (`core/events/outbox.py`) — `OutboxRecord` ORM model (Database
+  Design §8.8) and `OutboxWriter`, used by the UoW above. Reading/publishing pending rows
+  (`OutboxPublisher`) remains a later-phase worker concern.
+- **Repository infrastructure** (`core/db/repository.py`) — `SqlAlchemyRepositoryBase`: a
+  generic, model-agnostic helper (session-bound CRUD, tenant/region-scope filtering,
+  soft-delete-aware reads) that a module's concrete repository composes and adds its own
+  aggregate mapping on top of.
+- **DI wiring** (`core/di/bootstrap.py`) — `IdGenerator`/`OutboxWriter` always bound; `Engine`/
+  `UnitOfWork` bound only when `DbSettings.url` is configured (same "fail loudly, don't fake
+  it" policy as `TokenService`); the engine is disposed on app shutdown (`main.py`).
+- **Database dependency wiring** (`interfaces/http/deps.py`) — `get_uow`: a request-scoped
+  `UnitOfWork` FastAPI dependency, opened/closed per request.
+- **Alembic integration** (`migrations/env.py`, `alembic.ini`) — `target_metadata =
+  Base.metadata`; the connection URL is read from `raad.core.config.settings` (not
+  `alembic.ini`) so there's one source of DB config; async-engine-to-sync-migration bridging
+  via `AsyncConnection.run_sync`. Verified end-to-end against a real MySQL server (reached the
+  authentication stage through the full engine/driver/Alembic chain).
+
+Deliberately **not** implemented: any module ORM model, business table, or migration revision;
+any module-specific repository; `application/`/`domain/` code for any module.
+
 ## Status
 
-Application foundation only — runnable, with a JWT/password-hashing security foundation wired
-in, but no business logic, CRUD, database tables, or API endpoints beyond health checks exist
-yet.
+Application foundation only — runnable, with JWT/password-hashing security and a SQLAlchemy/
+MySQL persistence foundation wired in, but no business logic, CRUD, business database tables,
+or API endpoints beyond health checks exist yet.

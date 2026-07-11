@@ -13,11 +13,13 @@ RBAC permission matrix (Phase 2 §12.2) is authorization business data that isn'
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import AsyncIterator, Callable
 
 from fastapi import Depends, Request
 
 from raad.core.config.settings import Settings, get_settings
+from raad.core.db.unit_of_work import UnitOfWork
+from raad.core.di.container import Container
 from raad.core.errors.exceptions import AuthenticationError
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
@@ -54,6 +56,23 @@ def get_scope(principal: Principal = Depends(get_principal)) -> TenantRegionScop
     raise NotImplementedError(
         "Tenant/region scope resolution is pending the organization module."
     )
+
+
+def get_container(request: Request) -> Container:
+    return request.app.state.container
+
+
+async def get_uow(
+    container: Container = Depends(get_container),
+) -> AsyncIterator[UnitOfWork]:
+    """Request-scoped `UnitOfWork` (§9.1/§9.2): resolves a fresh instance per request via the
+    DI container's factory binding, opens it (`async with`, which opens the session), and lets
+    the caller's command handler commit/let-it-rollback before the session is closed here.
+    Raises `LookupError` if `core/di` left `UnitOfWork` unbound (no `db.url` configured) —
+    the same "fail loudly, don't fake it" policy as `get_scope`."""
+    uow = container.resolve(UnitOfWork)
+    async with uow:
+        yield uow
 
 
 def require_permission(permission: Permission) -> Callable[[Principal], Principal]:
