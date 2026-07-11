@@ -181,8 +181,61 @@ Implemented:
 Deliberately **not** implemented: any module ORM model, business table, or migration revision;
 any module-specific repository; `application/`/`domain/` code for any module.
 
+## Event Processing & Background Services Foundation (Phase 4.5)
+
+Framework-only, no business events/workers. No new dependencies — the worker *runtime*
+(Celery vs arq) and the *broker* (Redis Streams/RabbitMQ vs Kafka) are both still open items
+(Backend LLD §20.1, Phase 2 §4.3), so everything here is a stdlib-`asyncio` abstraction, not
+a commitment to either. Implemented:
+
+- **Worker framework foundation** (`core/workers/base.py`) — `Worker`: a runtime-agnostic
+  poll-loop lifecycle (`start`/`stop`, health tracking, a bad tick never kills the loop).
+  Concrete workers only implement `run_once()`.
+- **Worker lifecycle** (`core/workers/lifecycle.py`) — `WorkerLifecycle`: starts/stops a set
+  of `(Worker, interval)` pairs together.
+- **Worker health checks** (`core/workers/health.py`) — `WorkerHealth`, `WorkerHealthRegistry`.
+- **Retry strategy** (`core/workers/retry.py`) — `RetryPolicy` interface,
+  `ExponentialBackoffRetryPolicy` concrete (pure arithmetic, no I/O).
+- **Dead Letter Queue foundation** (`core/workers/dlq.py`) — `DeadLetterQueue` interface only
+  (needs a chosen broker).
+- **Idempotency foundation** (`core/workers/idempotency.py`) — `IdempotencyStore` interface;
+  `InMemoryIdempotencyStore` concrete but explicitly process-local/non-durable (dev/test only;
+  replace before running >1 worker process).
+- **Scheduler interfaces** (`core/workers/scheduler.py`) — `ScheduledJob`, `Scheduler`
+  interface, `IntervalScheduler` concrete (simple polling, no cron parser); `LockPort`
+  interface for the overlap guard (needs Redis — not wired).
+- **Background logging** (`core/workers/logging.py`) — `bind_worker_context`, reusing the same
+  `contextvars` mechanism as HTTP middleware (`core/logging/context.py`, extended with
+  `worker_name`/`job_id`).
+- **Event processor interfaces** (`core/events/processor.py`) — `EventProcessor`,
+  `EventProcessorRegistry` (empty; modules register their own processors later).
+- **Broker consumer interface** (`core/events/ports.py`) — `BrokerConsumer` (producer side,
+  `BrokerPort`, already existed).
+- **Outbox relay foundation** (`core/events/outbox.py`) — `SqlOutboxPublisher`: concrete
+  `OutboxPublisher` querying unpublished rows and publishing via `BrokerPort` — broker-agnostic,
+  verified with a fake broker/session; only bound in DI once a `BrokerPort` exists (never in
+  this phase).
+- **Worker configuration** (`core/config/settings.py`) — `WorkerSettings` (relay/scheduler
+  intervals, retry tuning).
+- **DI wiring** (`core/di/bootstrap.py`) — `RetryPolicy`/`IdempotencyStore`/
+  `EventProcessorRegistry` always bound; `OutboxPublisher` bound only if a `BrokerPort` is
+  ever bound (never in this phase).
+- **Worker bootstrap** (`interfaces/workers/bootstrap.py`) — `python -m
+  raad.interfaces.workers.bootstrap`: shares the HTTP app's `core.di` composition root,
+  registers the two foundation workers (Outbox Relay, Scheduler — zero business jobs), and
+  manages graceful shutdown on SIGINT/SIGTERM.
+- **Foundation workers** (`interfaces/workers/outbox_relay.py`,
+  `interfaces/workers/scheduler.py`) — `OutboxRelayWorker` (no-ops until an `OutboxPublisher`
+  is bound), `SchedulerWorker` (ticks an empty `IntervalScheduler`).
+
+Deliberately **not** implemented: any concrete broker/worker-runtime adapter, business
+event processors, the notification/report workers (`notification_worker.py`/`report_worker.py`
+remain empty), any scheduled business job (trip generation, subscription sweeps, retention,
+reconciliation), and a durable idempotency/DLQ/lock store.
+
 ## Status
 
-Application foundation only — runnable, with JWT/password-hashing security and a SQLAlchemy/
-MySQL persistence foundation wired in, but no business logic, CRUD, business database tables,
-or API endpoints beyond health checks exist yet.
+Application foundation only — runnable, with JWT/password-hashing security, a SQLAlchemy/
+MySQL persistence foundation, and a runtime-agnostic worker/event-processing foundation wired
+in, but no business logic, CRUD, business database tables, or API endpoints beyond health
+checks exist yet.

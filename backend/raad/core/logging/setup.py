@@ -4,6 +4,7 @@ Application logs (operational) are configured here. This is distinct from the au
 (platform_audit module, Phase 2 §12.8) — audit is a transactional domain concern, not a
 logging side-effect, and is not implemented by this package.
 """
+
 from __future__ import annotations
 
 import logging

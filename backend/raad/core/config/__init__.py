@@ -14,6 +14,7 @@ from raad.core.config.settings import (
     PaymentSettings,
     RedisSettings,
     Settings,
+    WorkerSettings,
     get_settings,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "PaymentSettings",
     "RedisSettings",
     "Settings",
+    "WorkerSettings",
     "get_settings",
 ]

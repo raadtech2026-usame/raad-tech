@@ -91,6 +91,20 @@ class FeatureFlags(BaseModel):
     additional_notification_channels_enabled: bool = False
 
 
+class WorkerSettings(BaseModel):
+    """Background worker tuning (Backend LLD §11). The worker *runtime* (Celery vs arq) is
+    still an open item (§20.1) — these intervals drive the runtime-agnostic polling loop in
+    `core.workers.base.Worker` regardless of which runtime eventually hosts it, so nothing
+    here commits to that choice."""
+
+    outbox_relay_interval_seconds: float = 5.0
+    outbox_relay_batch_size: int = 100
+    scheduler_tick_interval_seconds: float = 60.0
+    retry_max_attempts: int = 5
+    retry_base_delay_seconds: float = 1.0
+    retry_max_delay_seconds: float = 300.0
+
+
 class Settings(BaseSettings):
     """Root settings object. Environment variables use the `RAAD_` prefix and `__` as the
     nested-field delimiter, e.g. `RAAD_DB__URL`, `RAAD_AUTH__JWT_SECRET_KEY`."""
@@ -112,6 +126,7 @@ class Settings(BaseSettings):
     device_plane: DevicePlaneSettings = DevicePlaneSettings()
     observability: ObservabilitySettings = ObservabilitySettings()
     feature_flags: FeatureFlags = FeatureFlags()
+    workers: WorkerSettings = WorkerSettings()
 
     def validate_on_startup(self) -> None:
         """Fail-fast checks that must hold before the app is allowed to serve traffic

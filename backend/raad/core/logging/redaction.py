@@ -4,6 +4,7 @@ Given minors' data and payment flows, structured log payloads are scrubbed of kn
 fields before emission. This is a generic, key-driven filter — it holds no business logic, only
 the redaction policy for logging.
 """
+
 from __future__ import annotations
 
 from typing import Any

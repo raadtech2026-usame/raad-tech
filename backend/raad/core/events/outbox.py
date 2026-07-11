@@ -6,22 +6,25 @@ itself, so the insert lands in the same transaction as the business change that 
 event (`SqlAlchemyUnitOfWork.commit`, `core/db/unit_of_work.py` — the "no event without a
 committed state change" guarantee, LLD §8.3).
 
-Reading/publishing pending rows (`OutboxPublisher`, `core/events/ports.py`) is a separate
-concern for the Outbox Relay worker, not implemented in this phase.
+`SqlOutboxPublisher` is the read/relay side (§10.2, §11.2 "Outbox Relay"): it queries
+unpublished rows and hands each to a `BrokerPort` — broker-agnostic, since no broker
+implementation is chosen yet (Phase 2 §4.3 is still an open item). The Outbox Relay *worker*
+that runs this on an interval is `interfaces/workers/outbox_relay.py`.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import CHAR, JSON, Integer, String
+from sqlalchemy import CHAR, JSON, Integer, String, select
 from sqlalchemy.dialects.mysql import DATETIME as MySqlDateTime
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 
 from raad.core.db.base import Base
 from raad.core.db.mixins import UlidPrimaryKeyMixin, utcnow
 from raad.core.events.base import DomainEvent
+from raad.core.events.ports import BrokerPort, OutboxPublisher
 
 
 class OutboxRecord(UlidPrimaryKeyMixin, Base):
@@ -69,3 +72,44 @@ class OutboxWriter:
     async def write_all(self, session: AsyncSession, events: list[DomainEvent]) -> None:
         for event in events:
             await self.write(session, event)
+
+
+class SqlOutboxPublisher(OutboxPublisher):
+    """Concrete `OutboxPublisher`: queries the oldest `batch_size` unpublished rows, publishes
+    each via the given `BrokerPort`, and marks `published_at` — all in one session/commit per
+    call, so a crash mid-batch leaves already-published rows correctly marked and the rest
+    still pending (safe to re-run, §11.2's "Marks published_at; safe re-run")."""
+
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession], broker: BrokerPort
+    ) -> None:
+        self._session_factory = session_factory
+        self._broker = broker
+
+    async def publish_pending(self, batch_size: int) -> int:
+        async with self._session_factory() as session:
+            statement = (
+                select(OutboxRecord)
+                .where(OutboxRecord.published_at.is_(None))
+                .order_by(OutboxRecord.created_at)
+                .limit(batch_size)
+            )
+            rows = (await session.execute(statement)).scalars().all()
+
+            for row in rows:
+                event = DomainEvent(
+                    event_id=row.event_id,
+                    event_type=row.event_type,
+                    version=row.event_version,
+                    occurred_at=row.created_at,
+                    org_id=row.organization_id,
+                    correlation_id=row.correlation_id,
+                    payload=row.payload_json,
+                    aggregate_type=row.aggregate_type,
+                    aggregate_id=row.aggregate_id,
+                )
+                await self._broker.publish(event)
+                row.published_at = utcnow()
+
+            await session.commit()
+            return len(rows)

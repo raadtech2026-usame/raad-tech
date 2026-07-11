@@ -1,15 +1,14 @@
-"""Event infrastructure ports — interfaces only (Backend LLD §10).
-
-Concrete implementations (a MySQL-backed outbox writer/relay, an in-process dispatcher, a
-Redis Streams/RabbitMQ broker client) are added when the persistence and broker layers are
-wired in a later phase. Defining the ports now lets application services depend on
-abstractions from day one (§4.2 `EventRecorder`/outbox pattern).
+"""Event infrastructure ports (Backend LLD §10). `OutboxPublisher` has a concrete
+implementation (`core.events.outbox.SqlOutboxPublisher`, Phase 4.4/4.5); `EventDispatcher`,
+`BrokerPort` (producer), and `BrokerConsumer` remain interfaces only — a broker (Redis
+Streams/RabbitMQ at MVP, Kafka as the scale path, Phase 2 §4.3) is still an open item, not
+decided in this phase.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Callable, Sequence
+from typing import Awaitable, Callable, Sequence
 
 from raad.core.events.base import DomainEvent
 
@@ -39,10 +38,21 @@ class EventDispatcher(ABC):
 
 
 class BrokerPort(ABC):
-    """Outbound publish to the event bus (Redis Streams/RabbitMQ at MVP, Kafka as the scale
-    path — Phase 2 §4.3). Event contracts are broker-agnostic by design; only this port's
-    concrete adapter changes when the broker is swapped."""
+    """Outbound (producer) publish to the event bus (Redis Streams/RabbitMQ at MVP, Kafka as
+    the scale path — Phase 2 §4.3). Event contracts are broker-agnostic by design; only this
+    port's concrete adapter changes when the broker is swapped."""
 
     @abstractmethod
     async def publish(self, event: DomainEvent) -> None:
+        raise NotImplementedError
+
+
+class BrokerConsumer(ABC):
+    """Inbound (consumer) side of the broker port — subscribes to event topics/streams and
+    invokes a handler per message (§10.3: "anything crossing a module or service boundary
+    goes through the outbox+broker"). Consumers must be idempotent (dedupe by `event_id` —
+    see `core.workers.idempotency.IdempotencyStore`), since delivery is at-least-once."""
+
+    @abstractmethod
+    async def consume(self, handler: Callable[[DomainEvent], Awaitable[None]]) -> None:
         raise NotImplementedError

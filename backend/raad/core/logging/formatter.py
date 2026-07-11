@@ -1,4 +1,5 @@
 """Structured JSON log formatter (Backend LLD §13.1 — one event per line, machine-readable)."""
+
 from __future__ import annotations
 
 import json
@@ -19,7 +20,9 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, object] = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(
+                record.created, tz=timezone.utc
+            ).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
