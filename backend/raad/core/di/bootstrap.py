@@ -27,6 +27,8 @@ from raad.core.security.tokens import JwtTokenService, TokenService
 from raad.core.time.clock import Clock, SystemClock
 from raad.core.workers.idempotency import IdempotencyStore, InMemoryIdempotencyStore
 from raad.core.workers.retry import ExponentialBackoffRetryPolicy, RetryPolicy
+from raad.modules.iam.application.ports import IamUnitOfWork
+from raad.modules.iam.infra.repositories import SqlAlchemyIamUnitOfWork
 
 
 def build_container(settings: Settings) -> Container:
@@ -75,6 +77,12 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             UnitOfWork,
             lambda: SqlAlchemyUnitOfWork(session_factory, container.resolve(OutboxWriter)),
+        )
+        container.bind_factory(
+            IamUnitOfWork,
+            lambda: SqlAlchemyIamUnitOfWork(
+                session_factory, container.resolve(OutboxWriter)
+            ),
         )
 
         # OutboxPublisher (the Outbox Relay's read/publish side) additionally needs a

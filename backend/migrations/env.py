@@ -21,9 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from raad.core.config.settings import get_settings
 from raad.core.db.base import Base
 
-# Import every module package here once `infra/models.py` files exist, so their ORM classes
-# register onto `Base.metadata` before autogenerate runs — none do yet (no business tables in
-# this phase).
+# Import every module's `infra/models.py` here so their ORM classes register onto
+# `Base.metadata` before autogenerate runs.
+import raad.modules.iam.infra.models  # noqa: F401 — registers UserModel/RefreshTokenModel
 
 config = context.config
 

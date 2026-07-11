@@ -293,14 +293,52 @@ so nothing here is reachable yet — it's exercised directly with fake in-memory
 - **Package exports** (`__init__.py`) — the module's public application-layer surface.
 
 Constructor-injected dependencies (`Clock`, `IdGenerator`, `TokenService`, `PasswordHasher`,
-`PasswordPolicy`) are all existing `core` ports, reused as-is — none are wired via DI yet
-(`core/di` wiring is a later phase). Refresh tokens are stored hashed (SHA-256, a fast lookup
-hash — not `PasswordHasher`'s slow KDF, since a signed JWT is already high-entropy) and
-rotated on every successful refresh (old token revoked, new one issued).
+`PasswordPolicy`) are all existing `core` ports, reused as-is. Refresh tokens are stored hashed
+(SHA-256, a fast lookup hash — not `PasswordHasher`'s slow KDF, since a signed JWT is already
+high-entropy) and rotated on every successful refresh (old token revoked, new one issued).
+
+## IAM Infrastructure Layer (Phase 5.3)
+
+`modules/iam/infra/` — the first business tables in the schema (`users`, `refresh_tokens`).
+`api/` for `iam` still doesn't exist, so nothing here is reachable over HTTP yet; it's wired
+into `core/di` and exercised directly.
+
+- **ORM models** (`models.py`) — `UserModel`/`RefreshTokenModel`, matching Database Design
+  §4.3/§4.5 column-for-column: both CHECK constraints ("email or phone present",
+  "org-scoped role requires organization_id"), the exact indexes
+  (`ix_users__organization_id`/`__role`/`__status`, `ix_refresh_tokens__user_id`/
+  `__expires_at`), unique constraints, and the `users.role`/`.status` `ENUM`s — verified by
+  rendering the actual `CREATE TABLE` DDL against the MySQL dialect.
+- **Mappers** (`mappers.py`) — `user_to_model`/`model_to_user`,
+  `refresh_token_to_model`/`model_to_refresh_token`. The single translation point for a
+  pre-existing casing mismatch: `core.tenancy.principal.Role` (Phase 4.3, already shipped)
+  uses upper-case values, the approved `role` column uses lower-case — rather than changing
+  either the shipped enum or the approved schema, the mapper translates.
+  Round-tripped and verified.
+- **Repositories** (`repositories.py`) — `SqlAlchemyUserRepository`,
+  `SqlAlchemyRefreshTokenRepository`, composing `core.db.repository.SqlAlchemyRepositoryBase`.
+  Return domain aggregates only, never ORM rows. Each keeps a small identity map of every
+  aggregate it has returned or added and exposes `flush_tracked_changes()` — the bridge that
+  makes in-place aggregate mutations (`user.activate()`, done directly by the unchanged Phase
+  5.2 application code, which never re-calls `add()` for an update) actually reach the
+  SQLAlchemy session before commit.
+- **`SqlAlchemyIamUnitOfWork`** — extends the existing `SqlAlchemyUnitOfWork` (constructs the
+  two repositories in `__aenter__`, calls `flush_tracked_changes()` on both before delegating
+  to `super().commit()`, which still owns the actual outbox-write + session-commit behavior,
+  unchanged).
+- **Persistence wiring** (`core/di/bootstrap.py`) — binds `IamUnitOfWork ->
+  SqlAlchemyIamUnitOfWork` alongside the existing generic `UnitOfWork` binding, only when
+  `db.url` is configured. `migrations/env.py` now imports `iam.infra.models` so
+  `UserModel`/`RefreshTokenModel` register onto `Base.metadata` for autogenerate.
+- **Package exports** (`infra/__init__.py`).
+
+Domain (`modules/iam/domain/`) and application (`modules/iam/application/`) are byte-for-byte
+unchanged (verified via `git diff`) — this phase only added the layer that implements their
+interfaces. No direct SQLAlchemy import outside `infra/` (verified by grep).
 
 ## Status
 
 Application foundation only — runnable, with JWT/password-hashing security, a SQLAlchemy/
 MySQL persistence foundation, a runtime-agnostic worker/event-processing foundation, and now a
-framework-free IAM domain + application layer — but no infra, business API endpoints beyond
-health checks, or business database tables exist yet.
+complete IAM domain + application + infrastructure stack (the first real business tables) —
+but no HTTP endpoints beyond health checks exist for `iam` (or any module) yet.
