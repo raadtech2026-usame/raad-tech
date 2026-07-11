@@ -275,5 +275,10 @@ async def update_user(
                 DisableMfaCommand(user_id=user_id, actor=principal), uow=uow
             )
 
-    assert user is not None  # guaranteed by the "at least one field" guard above
+    if user is None:
+        # Guaranteed not to happen by the "at least one field" guard above — an explicit
+        # raise rather than `assert`, since `assert` is stripped under `python -O`/
+        # `PYTHONOPTIMIZE` and this invariant must hold regardless of how the interpreter is
+        # invoked.
+        raise RuntimeError("update_user: no field was processed despite the guard above.")
     return _user_dto_to_response(user)
