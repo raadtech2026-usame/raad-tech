@@ -237,7 +237,6 @@ reconciliation), and a durable idempotency/DLQ/lock store.
 
 The first module with real domain content — `modules/iam/domain/` — framework-free (no
 SQLAlchemy/Pydantic/FastAPI, no I/O; verified by grep and by direct import in isolation).
-`application/`, `infra/`, and `api/` for `iam` remain unimplemented.
 
 - **Aggregate roots** (`entities.py`) — `User` (Database Design §4.3: single identity table
   for every principal — RAAD staff, org admins, drivers, parents — discriminated by `role`;
@@ -267,9 +266,41 @@ Password/token *hashing* is deliberately not this layer's concern — `User`/`Re
 only store an opaque hash string produced by `core.security` (Phase 4.3); the domain never
 sees a plaintext password/token or a hashing algorithm.
 
+## IAM Application Layer (Phase 5.2)
+
+`modules/iam/application/` — orchestration only, no FastAPI/SQLAlchemy in its own code, no
+business rules (those stay in the domain). `infra/` and `api/` for `iam` remain unimplemented,
+so nothing here is reachable yet — it's exercised directly with fake in-memory repositories.
+
+- **Commands** (`commands.py`) — `InviteUserCommand`, `ActivateUserCommand`,
+  `DisableUserCommand`, `ChangePasswordCommand`, `EnableMfaCommand`/`DisableMfaCommand`,
+  `LoginCommand`, `RefreshAccessTokenCommand`, `LogoutCommand`. Admin/self-service commands
+  carry the calling `Principal` as `actor`, matching the LLD §4.2 contract-skeleton shape
+  exactly; login/refresh/logout are credential/token-based instead.
+- **Queries & DTOs** (`queries.py`) — `GetUserByIdQuery`; `UserDTO`, `AuthResultDTO` (the
+  domain/API boundary — neither layer depends on the other's internal shape).
+- **Validators** (`validators.py`) — `ensure_email_available`/`ensure_phone_available`:
+  I/O-requiring pre-condition checks (global uniqueness), which is exactly why they're an
+  application concern and not a domain one (see `domain/services.py`'s docstring).
+- **Ports** (`ports.py`) — `IamUnitOfWork`, extending the existing
+  `core.db.unit_of_work.UnitOfWork` with `users`/`refresh_tokens` repository properties, per
+  that module's own documented extension pattern.
+- **Application services** (`services.py`) — `UserApplicationService` (invite/activate/
+  disable/change-password/enable-mfa/disable-mfa/get-by-id) and `AuthApplicationService`
+  (login/refresh-with-rotation/logout). Every handler follows the same shape: open
+  `IamUnitOfWork`, validate pre-conditions, load/invoke the aggregate, record its
+  `pull_domain_events()`, commit, return a DTO.
+- **Package exports** (`__init__.py`) — the module's public application-layer surface.
+
+Constructor-injected dependencies (`Clock`, `IdGenerator`, `TokenService`, `PasswordHasher`,
+`PasswordPolicy`) are all existing `core` ports, reused as-is — none are wired via DI yet
+(`core/di` wiring is a later phase). Refresh tokens are stored hashed (SHA-256, a fast lookup
+hash — not `PasswordHasher`'s slow KDF, since a signed JWT is already high-entropy) and
+rotated on every successful refresh (old token revoked, new one issued).
+
 ## Status
 
 Application foundation only — runnable, with JWT/password-hashing security, a SQLAlchemy/
 MySQL persistence foundation, a runtime-agnostic worker/event-processing foundation, and now a
-framework-free IAM domain model — but no application services, infra, business API endpoints
-beyond health checks, or business database tables exist yet.
+framework-free IAM domain + application layer — but no infra, business API endpoints beyond
+health checks, or business database tables exist yet.
