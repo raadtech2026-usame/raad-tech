@@ -233,9 +233,43 @@ event processors, the notification/report workers (`notification_worker.py`/`rep
 remain empty), any scheduled business job (trip generation, subscription sweeps, retention,
 reconciliation), and a durable idempotency/DLQ/lock store.
 
+## IAM Domain Foundation (Phase 5.1)
+
+The first module with real domain content — `modules/iam/domain/` — framework-free (no
+SQLAlchemy/Pydantic/FastAPI, no I/O; verified by grep and by direct import in isolation).
+`application/`, `infra/`, and `api/` for `iam` remain unimplemented.
+
+- **Aggregate roots** (`entities.py`) — `User` (Database Design §4.3: single identity table
+  for every principal — RAAD staff, org admins, drivers, parents — discriminated by `role`;
+  enforces "at least one of email/phone" and the org-scoped-role-vs-staff-role invariant) and
+  `RefreshToken` (§4.5). Behavior methods follow the LLD §5.2 shape
+  (`activate(clock, actor_id) -> [UserActivated]`): a `core.time.Clock` is passed in rather
+  than the aggregate calling `datetime.now()` itself, so behavior is deterministic/testable.
+  Events are buffered (`pull_domain_events()`) for a future Unit of Work to commit — not
+  implemented in this phase.
+- **Value objects** (`value_objects.py`) — `UserId`/`RefreshTokenId`/`OrganizationId`
+  (strongly-typed, non-empty ids; `OrganizationId` is a cross-module *reference* only, per
+  "cross-context references are by ID only"), `Email`/`PhoneNumber` (self-validating, E.164
+  for phone), `UserStatus`.
+- **Domain events** (`events.py`) — factory functions returning the existing `DomainEvent`
+  envelope (`core.events.base`, not a parallel type): `UserInvited`, `UserActivated`,
+  `UserDisabled`, `UserLoggedIn`, `UserPasswordChanged`, `UserMfaEnabled`/`UserMfaDisabled`,
+  `RefreshTokenIssued`, `RefreshTokenRevoked`.
+- **Repository interfaces** (`repositories.py`) — `UserRepository`, `RefreshTokenRepository`.
+  Declared fresh (plain `abc.ABC`) rather than extending `core.db.repository`'s interfaces,
+  since that module co-locates a SQLAlchemy-dependent class in the same file — importing from
+  it would make this domain layer require SQLAlchemy to load at all.
+- **Domain services / policies** — none defined; both files carry a docstring explaining why
+  (email/phone uniqueness needs a repository query, i.e. it's an application-layer concern;
+  the RBAC matrix and `SubscriptionAccessPolicy`/`VideoAccessPolicy` live elsewhere).
+
+Password/token *hashing* is deliberately not this layer's concern — `User`/`RefreshToken`
+only store an opaque hash string produced by `core.security` (Phase 4.3); the domain never
+sees a plaintext password/token or a hashing algorithm.
+
 ## Status
 
 Application foundation only — runnable, with JWT/password-hashing security, a SQLAlchemy/
-MySQL persistence foundation, and a runtime-agnostic worker/event-processing foundation wired
-in, but no business logic, CRUD, business database tables, or API endpoints beyond health
-checks exist yet.
+MySQL persistence foundation, a runtime-agnostic worker/event-processing foundation, and now a
+framework-free IAM domain model — but no application services, infra, business API endpoints
+beyond health checks, or business database tables exist yet.
