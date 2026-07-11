@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from raad.core.errors.exceptions import DomainError
 from raad.core.events.base import DomainEvent
 from raad.core.tenancy.principal import Role
 from raad.core.time.clock import Clock
@@ -104,11 +105,11 @@ class User(_AggregateRoot):
         phone: PhoneNumber | None,
     ) -> None:
         if email is None and phone is None:
-            raise ValueError("A user must have at least one of email or phone.")
+            raise DomainError("A user must have at least one of email or phone.")
         if role in _ORG_SCOPED_ROLES and organization_id is None:
-            raise ValueError(f"role={role.value} requires an organization_id.")
+            raise DomainError(f"role={role.value} requires an organization_id.")
         if role in _STAFF_ROLES and organization_id is not None:
-            raise ValueError(
+            raise DomainError(
                 f"role={role.value} is a RAAD-staff role and must not have an organization_id."
             )
 
@@ -196,7 +197,7 @@ class User(_AggregateRoot):
         (Phase 4.3) — the domain never imports it, and never handles a plaintext password.
         """
         if not new_password_hash:
-            raise ValueError("password hash must not be empty")
+            raise DomainError("password hash must not be empty")
         self.password_hash = new_password_hash
         self._record(
             iam_events.user_password_changed(
@@ -252,7 +253,7 @@ class RefreshToken(_AggregateRoot):
         super().__init__()
         validate_token_hash(token_hash)
         if expires_at <= issued_at:
-            raise ValueError("expires_at must be after issued_at")
+            raise DomainError("expires_at must be after issued_at")
         self.id = id
         self.user_id = user_id
         self.token_hash = token_hash
