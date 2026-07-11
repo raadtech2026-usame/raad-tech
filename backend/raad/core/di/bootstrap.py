@@ -23,11 +23,16 @@ from raad.core.events.ports import BrokerPort, OutboxPublisher
 from raad.core.events.processor import EventProcessorRegistry
 from raad.core.ids.generator import IdGenerator, UlidGenerator
 from raad.core.security.password_hashing import PasswordHasher, Pbkdf2PasswordHasher
+from raad.core.security.password_policy import PasswordPolicy
 from raad.core.security.tokens import JwtTokenService, TokenService
 from raad.core.time.clock import Clock, SystemClock
 from raad.core.workers.idempotency import IdempotencyStore, InMemoryIdempotencyStore
 from raad.core.workers.retry import ExponentialBackoffRetryPolicy, RetryPolicy
 from raad.modules.iam.application.ports import IamUnitOfWork
+from raad.modules.iam.application.services import (
+    AuthApplicationService,
+    UserApplicationService,
+)
 from raad.modules.iam.infra.repositories import SqlAlchemyIamUnitOfWork
 
 
@@ -36,6 +41,7 @@ def build_container(settings: Settings) -> Container:
     container.bind_singleton(Settings, settings)
     container.bind_singleton(Clock, SystemClock())
     container.bind_singleton(PasswordHasher, Pbkdf2PasswordHasher())
+    container.bind_singleton(PasswordPolicy, PasswordPolicy(settings.auth.password_policy))
     container.bind_singleton(IdGenerator, UlidGenerator())
     container.bind_singleton(OutboxWriter, OutboxWriter())
     container.bind_singleton(EventProcessorRegistry, EventProcessorRegistry())
@@ -51,6 +57,18 @@ def build_container(settings: Settings) -> Container:
     # store before running more than one worker process.
     container.bind_singleton(IdempotencyStore, InMemoryIdempotencyStore())
 
+    # UserApplicationService needs no TokenService, so it's always constructible (unlike
+    # AuthApplicationService, below, which is bound only alongside TokenService).
+    container.bind_singleton(
+        UserApplicationService,
+        UserApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+            password_hasher=container.resolve(PasswordHasher),
+            password_policy=container.resolve(PasswordPolicy),
+        ),
+    )
+
     # TokenService needs a non-empty signing secret. In `dev`/`staging` without one configured
     # (e.g. no .env populated yet) it is left unbound — same "fail loudly, don't fake it"
     # policy as the ports above — rather than signing tokens with an empty key.
@@ -63,6 +81,15 @@ def build_container(settings: Settings) -> Container:
                 access_token_ttl_seconds=settings.auth.access_token_ttl_seconds,
                 refresh_token_ttl_seconds=settings.auth.refresh_token_ttl_seconds,
                 clock=container.resolve(Clock),
+            ),
+        )
+        container.bind_singleton(
+            AuthApplicationService,
+            AuthApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
+                token_service=container.resolve(TokenService),
+                password_hasher=container.resolve(PasswordHasher),
             ),
         )
 

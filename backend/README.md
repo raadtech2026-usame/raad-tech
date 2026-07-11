@@ -336,9 +336,43 @@ Domain (`modules/iam/domain/`) and application (`modules/iam/application/`) are 
 unchanged (verified via `git diff`) — this phase only added the layer that implements their
 interfaces. No direct SQLAlchemy import outside `infra/` (verified by grep).
 
+## IAM HTTP API (Phase 5.4)
+
+`modules/iam/api/` — the first real business endpoints. Thin controllers only (Backend LLD
+§16.2): parse request DTO → call one application-service method → return response DTO. No
+business logic, no repository/SQLAlchemy access, no aggregate manipulation.
+
+- **Auth** (`/api/v1/auth`): `POST /login`, `POST /refresh`, `POST /logout`, `GET /me` — all
+  implemented and verified end-to-end (login, wrong-password rejection, refresh rotation,
+  logout, `/me`) against a fake in-process `IamUnitOfWork`.
+- **Users** (`/api/v1/users`): `POST /` (invite), `GET /{id}`, `PATCH /{id}`. Authorization
+  uses the existing `require_permission`/`PermissionEvaluator` abstraction (Phase 4.3) — since
+  no RBAC permission matrix is approved yet, these three routes currently return `500`
+  (`NotImplementedError`) once authenticated, the same honest-incompleteness pattern every
+  prior phase has used for RBAC-pending code paths.
+- **Deliberately not implemented, confirmed with the user rather than silently resolved:**
+  - `GET /users` (list) — no listing use-case exists in `UserApplicationService`, and
+    `UserRepository`/`RefreshTokenRepository` (Phase 5.1) have no `list()` method; adding one
+    means touching Domain and Application, both frozen this phase.
+  - `DELETE /users/{id}` — Database Design §9 keeps "soft delete" (`deleted_at`) and
+    "business status" (`user.disable()`) explicitly separate; the `User` aggregate has no
+    soft-delete behavior, so a correct implementation needs a Domain addition out of scope.
+- **`PATCH /users/{id}`** is limited to the transitions `UserApplicationService` actually
+  exposes — `status` (`active`/`disabled`) and `mfa_enabled` — not a generic field-level
+  update (`full_name`/`email`/`phone`), since no such Application-layer use-case exists yet.
+- **Dependency wiring** (`api/deps.py`) — `get_iam_uow` resolves (but deliberately does
+  **not** enter) a fresh `IamUnitOfWork` per call, since every application-service method
+  already manages its own `async with uow:` (Phase 5.2); wrapping it again would double-enter
+  the same instance and break session lifecycle. `core/di/bootstrap.py` now also binds
+  `PasswordPolicy`, `UserApplicationService` (always), and `AuthApplicationService` (only
+  alongside `TokenService`).
+- Verified: OpenAPI generation (`/openapi.json` lists all 7 routes), Swagger UI (`/docs`
+  returns 200), and the standard `ErrorEnvelope` on every error path (401/500 confirmed).
+
 ## Status
 
 Application foundation only — runnable, with JWT/password-hashing security, a SQLAlchemy/
-MySQL persistence foundation, a runtime-agnostic worker/event-processing foundation, and now a
-complete IAM domain + application + infrastructure stack (the first real business tables) —
-but no HTTP endpoints beyond health checks exist for `iam` (or any module) yet.
+MySQL persistence foundation, a runtime-agnostic worker/event-processing foundation, a
+complete IAM domain + application + infrastructure stack, and now `iam`'s first real HTTP
+endpoints — but every other module still has no business logic or API surface beyond health
+checks.
