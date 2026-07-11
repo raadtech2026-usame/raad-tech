@@ -5,6 +5,7 @@ are bound to interfaces. Domain and application code never reference concrete cl
 receive interfaces resolved through this container (or, at the HTTP edge, through FastAPI
 `Depends`, which reads from `app.state.container`).
 """
+
 from __future__ import annotations
 
 from typing import Callable, TypeVar
@@ -31,3 +32,12 @@ class Container:
         if interface in self._factories:
             return self._factories[interface]()  # type: ignore[return-value]
         raise LookupError(f"No binding registered for {interface!r}")
+
+    def try_resolve(self, interface: type[T]) -> T | None:
+        """Same as `resolve`, but returns `None` instead of raising when nothing is bound —
+        for call sites where an unbound optional port is a valid, expected state (e.g.
+        `SecurityContextMiddleware` before `TokenService` has a signing secret configured)
+        rather than a programming error."""
+        if interface in self._singletons or interface in self._factories:
+            return self.resolve(interface)
+        return None

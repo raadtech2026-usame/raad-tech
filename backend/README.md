@@ -102,7 +102,44 @@ Deliberately **not** implemented yet (out of scope for this phase): `core/securi
 `domain/`, or `infra/` code, database tables/migrations, repositories, business endpoints, and
 worker processes.
 
+## Authentication & Security Foundation (Phase 4.3)
+
+Framework-only, no login/business flows. Implemented:
+
+- **JWT token service** (`core/security/tokens.py`) — `TokenService` interface, `JwtTokenService`
+  concrete HS256 implementation (stdlib-only, no new dependency). Issues/verifies stateless
+  access + refresh tokens; no refresh-token persistence or session management.
+- **Password hashing** (`core/security/password_hashing.py`) — `PasswordHasher` interface,
+  `Pbkdf2PasswordHasher` concrete implementation (PBKDF2-HMAC-SHA256, stdlib `hashlib`).
+- **Password policy** (`core/security/password_policy.py`) — configurable strength rules
+  (`AuthSettings.password_policy`).
+- **Role & Permission foundation** (`core/security/permissions.py`) — `Permission` type,
+  `PermissionEvaluator` interface. No concrete RBAC matrix yet — that's authorization business
+  data pending formal approval, owned by `modules/iam` when implemented.
+- **Token/claims models** (`core/security/claims.py`, `tokens.py`) — `TokenClaims`, `TokenPair`.
+- **Security exceptions** (`core/security/exceptions.py`) — `InvalidTokenError`,
+  `TokenExpiredError`, `InvalidCredentialsError`, all `AuthenticationError` subclasses.
+- **Security utilities** (`core/security/utils.py`) — constant-time compare, secure token gen.
+- **Policy interfaces** (`core/policies/__init__.py`) — generic `Policy`/`PolicyDecision` shape;
+  no concrete `SubscriptionAccessPolicy`/`VideoAccessPolicy` yet (pending `billing`/`video`).
+- **Security middleware** (`interfaces/http/middleware.py`) — `SecurityContextMiddleware`
+  verifies an inbound bearer JWT and attaches the resulting `Principal` to
+  `request.state.principal` (no enforcement); `SecurityHeadersMiddleware` adds standard
+  defensive response headers.
+- **Authentication dependencies** (`interfaces/http/deps.py`) — `get_principal` /
+  `get_current_user` enforce that a `Principal` was resolved (401 if not); `require_permission`
+  is a dependency factory that raises `NotImplementedError` pending a bound `PermissionEvaluator`
+  and approved RBAC matrix — same "fail loudly, don't fake it" policy as `get_scope`.
+- **DI wiring** (`core/di/bootstrap.py`) — `PasswordHasher` always bound; `TokenService` bound
+  only when `AuthSettings.jwt_secret_key` is configured (left unbound otherwise, rather than
+  signing with an empty key).
+
+Deliberately **not** implemented: login/registration/refresh endpoints, the concrete RBAC
+permission matrix, refresh-token persistence, session management, external identity providers,
+and OAuth — all pending `modules/iam`'s application/domain layers in a later phase.
+
 ## Status
 
-Application foundation only — runnable, but no business logic, CRUD, database tables, or API
-endpoints beyond health checks exist yet.
+Application foundation only — runnable, with a JWT/password-hashing security foundation wired
+in, but no business logic, CRUD, database tables, or API endpoints beyond health checks exist
+yet.

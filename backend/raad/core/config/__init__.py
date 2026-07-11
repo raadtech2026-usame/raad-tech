@@ -1,4 +1,5 @@
 """Typed configuration (Backend LLD §12). Public surface of this package."""
+
 from raad.core.config.settings import (
     AuthSettings,
     BrokerSettings,
@@ -9,6 +10,7 @@ from raad.core.config.settings import (
     FeatureFlags,
     MapSettings,
     ObservabilitySettings,
+    PasswordPolicySettings,
     PaymentSettings,
     RedisSettings,
     Settings,
@@ -25,6 +27,7 @@ __all__ = [
     "FeatureFlags",
     "MapSettings",
     "ObservabilitySettings",
+    "PasswordPolicySettings",
     "PaymentSettings",
     "RedisSettings",
     "Settings",

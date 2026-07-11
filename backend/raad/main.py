@@ -2,6 +2,7 @@
 file only assembles cross-cutting concerns (settings, logging, DI, middleware, error
 handling) and mounts the health and `/api/v1` routers.
 """
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -15,7 +16,12 @@ from raad.core.errors.handlers import register_exception_handlers
 from raad.core.logging.setup import configure_logging, get_logger
 from raad.interfaces.http.api_v1 import api_router
 from raad.interfaces.http.health import router as health_router
-from raad.interfaces.http.middleware import CorrelationIdMiddleware, RequestLoggingMiddleware
+from raad.interfaces.http.middleware import (
+    CorrelationIdMiddleware,
+    RequestLoggingMiddleware,
+    SecurityContextMiddleware,
+    SecurityHeadersMiddleware,
+)
 
 logger = get_logger("raad.main")
 
@@ -32,7 +38,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.container = build_container(settings)
 
-    logger.info("raad_business_api_startup", extra={"environment": settings.environment.value})
+    logger.info(
+        "raad_business_api_startup", extra={"environment": settings.environment.value}
+    )
     yield
     logger.info("raad_business_api_shutdown")
 
@@ -45,11 +53,15 @@ def create_app() -> FastAPI:
     )
 
     # Middleware order matters: Starlette runs the *last-added* middleware outermost, i.e.
-    # first on the way in. CorrelationIdMiddleware must run before RequestLoggingMiddleware
-    # so the request/correlation IDs are already bound when the request-completed log line
-    # is written — so it is added last.
+    # first on the way in. Added innermost-first: RequestLoggingMiddleware must run innermost
+    # so CorrelationIdMiddleware's and SecurityContextMiddleware's bound context (request/
+    # correlation IDs, principal) is already set when the request-completed log line is
+    # written; SecurityHeadersMiddleware is outermost so it stamps every response, including
+    # ones produced by the global exception handlers.
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(SecurityContextMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
 
     register_exception_handlers(app)
 

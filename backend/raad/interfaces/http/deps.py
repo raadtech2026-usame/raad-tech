@@ -1,19 +1,25 @@
 """Shared FastAPI dependencies (Backend LLD §9.2, §16.2): auth, tenant/region scope, UoW,
 pagination.
 
-Only the dependency *shape* (the resolution chain: request -> principal -> scope -> ...) is
-established in this phase. `get_principal` and `get_scope` intentionally raise rather than
-fake an authenticated caller — JWT verification lives in `core/security` and scope
-resolution needs the `organization`/`iam` modules' data, neither of which exists yet. Wiring
-them now would mean either faking authentication (a security regression) or duplicating
-business logic outside its owning module — both forbidden for this phase.
+`get_principal` reads the `Principal` that `SecurityContextMiddleware`
+(`interfaces/http/middleware.py`) already verified and attached to `request.state.principal`
+— it only *enforces* that one was found, keeping JWT verification itself out of the dependency
+layer. `get_scope` still intentionally raises: `effective_org_scope` resolution needs the
+`organization` module's region/assignment data, which doesn't exist yet. Wiring it now would
+mean either faking scope (a tenant-isolation regression) or duplicating business logic outside
+its owning module — both forbidden for this phase. Likewise `require_permission` raises: the
+RBAC permission matrix (Phase 2 §12.2) is authorization business data that isn't approved yet.
 """
+
 from __future__ import annotations
+
+from typing import Callable
 
 from fastapi import Depends, Request
 
 from raad.core.config.settings import Settings, get_settings
 from raad.core.errors.exceptions import AuthenticationError
+from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
 from raad.core.tenancy.scope import TenantRegionScope
 
@@ -27,9 +33,18 @@ def get_correlation_id(request: Request) -> str | None:
 
 
 def get_principal(request: Request) -> Principal:
-    """Resolves the authenticated Principal from the request's bearer JWT (§9.2, §18.2).
-    Pending `core/security` (JWT verification) and the `iam` module (token issuance)."""
-    raise AuthenticationError("Authentication is not yet wired (core/security is pending).")
+    """Enforces that `SecurityContextMiddleware` resolved a `Principal` from the request's
+    bearer JWT (§9.2, §18.2). Raises `AuthenticationError` (-> 401) if the header was absent,
+    invalid, or expired."""
+    principal: Principal | None = getattr(request.state, "principal", None)
+    if principal is None:
+        raise AuthenticationError("Authentication is required.")
+    return principal
+
+
+# Alias matching the LLD's "current-user dependency" naming (§16.2) — same resolution chain,
+# read at whichever call site the wording is clearer.
+get_current_user = get_principal
 
 
 def get_scope(principal: Principal = Depends(get_principal)) -> TenantRegionScope:
@@ -39,3 +54,19 @@ def get_scope(principal: Principal = Depends(get_principal)) -> TenantRegionScop
     raise NotImplementedError(
         "Tenant/region scope resolution is pending the organization module."
     )
+
+
+def require_permission(permission: Permission) -> Callable[[Principal], Principal]:
+    """Dependency factory: `Depends(require_permission(Permission("students.read")))`.
+    Pending a concrete `PermissionEvaluator` bound in `core/di` — the RBAC permission matrix
+    (Phase 2 §12.2) is authorization business data that isn't approved yet, so this raises
+    rather than granting/denying on a guessed matrix (§16.2: authZ is a router-level
+    dependency, never bypassable, but it also must never be a fake pass-through)."""
+
+    def _dependency(principal: Principal = Depends(get_principal)) -> Principal:
+        raise NotImplementedError(
+            f"Permission evaluation for {permission!r} is pending the RBAC permission matrix "
+            "and a bound PermissionEvaluator."
+        )
+
+    return _dependency

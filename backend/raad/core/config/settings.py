@@ -4,6 +4,7 @@ A single `Settings` object, validated at startup (fail fast on misconfiguration)
 sourced from environment variables (highest precedence) over the in-code defaults below; no
 secrets are hardcoded here. Sub-config groups match the LLD §12.3 contract skeleton exactly.
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -32,11 +33,24 @@ class BrokerSettings(BaseModel):
     url: str = ""
 
 
+class PasswordPolicySettings(BaseModel):
+    """Minimum password strength rules (Backend LLD §17 `security`). Enforced by
+    `core.security.password_policy.PasswordPolicy` — kept configurable rather than hardcoded
+    so it can be tightened without a code change."""
+
+    min_length: int = 10
+    require_uppercase: bool = True
+    require_lowercase: bool = True
+    require_digit: bool = True
+    require_special: bool = True
+
+
 class AuthSettings(BaseModel):
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     access_token_ttl_seconds: int = 900
     refresh_token_ttl_seconds: int = 1_209_600
+    password_policy: PasswordPolicySettings = PasswordPolicySettings()
 
 
 class FcmSettings(BaseModel):
