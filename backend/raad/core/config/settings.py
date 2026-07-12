@@ -1,17 +1,21 @@
 """Typed application settings (Backend LLD §12).
 
-A single `Settings` object, validated at startup (fail fast on misconfiguration). Values are
-sourced from environment variables (highest precedence) over the in-code defaults below; no
-secrets are hardcoded here. Sub-config groups match the LLD §12.3 contract skeleton exactly.
+A single `Settings` object, validated at startup (fail fast on misconfiguration). Layering
+(LLD §12.1): in-code defaults -> `.env` file (local/dev convenience, never committed) ->
+environment variables / mounted secret store (highest precedence). No secrets are hardcoded
+here. Sub-config groups match the LLD §12.3 contract skeleton exactly.
 """
 
 from __future__ import annotations
 
 from enum import Enum
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Environment(str, Enum):
@@ -113,6 +117,8 @@ class Settings(BaseSettings):
         env_prefix="RAAD_",
         env_nested_delimiter="__",
         extra="ignore",
+        env_file=_ENV_FILE,
+        env_file_encoding="utf-8",
     )
 
     environment: Environment = Environment.DEV
