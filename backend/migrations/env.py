@@ -24,6 +24,7 @@ from raad.core.db.base import Base
 # Import every module's `infra/models.py` here so their ORM classes register onto
 # `Base.metadata` before autogenerate runs.
 import raad.modules.iam.infra.models  # noqa: F401 — registers UserModel/RefreshTokenModel
+import raad.modules.organization.infra.models  # noqa: F401 — registers OrganizationModel/RegionModel
 
 config = context.config
 
