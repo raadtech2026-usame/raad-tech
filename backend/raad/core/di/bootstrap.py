@@ -34,6 +34,14 @@ from raad.modules.iam.application.services import (
     UserApplicationService,
 )
 from raad.modules.iam.infra.repositories import SqlAlchemyIamUnitOfWork
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.fleet_device.application.services import (
+    DeviceApplicationService,
+    VehicleApplicationService,
+)
+from raad.modules.fleet_device.infra.repositories import (
+    SqlAlchemyFleetDeviceUnitOfWork,
+)
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.application.services import (
     OrganizationApplicationService,
@@ -49,7 +57,9 @@ def build_container(settings: Settings) -> Container:
     container.bind_singleton(Settings, settings)
     container.bind_singleton(Clock, SystemClock())
     container.bind_singleton(PasswordHasher, Pbkdf2PasswordHasher())
-    container.bind_singleton(PasswordPolicy, PasswordPolicy(settings.auth.password_policy))
+    container.bind_singleton(
+        PasswordPolicy, PasswordPolicy(settings.auth.password_policy)
+    )
     container.bind_singleton(IdGenerator, UlidGenerator())
     container.bind_singleton(OutboxWriter, OutboxWriter())
     container.bind_singleton(EventProcessorRegistry, EventProcessorRegistry())
@@ -93,6 +103,20 @@ def build_container(settings: Settings) -> Container:
             id_generator=container.resolve(IdGenerator),
         ),
     )
+    container.bind_singleton(
+        VehicleApplicationService,
+        VehicleApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+        ),
+    )
+    container.bind_singleton(
+        DeviceApplicationService,
+        DeviceApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+        ),
+    )
 
     # TokenService needs a non-empty signing secret. In `dev`/`staging` without one configured
     # (e.g. no .env populated yet) it is left unbound — same "fail loudly, don't fake it"
@@ -123,12 +147,16 @@ def build_container(settings: Settings) -> Container:
     # constructing an AsyncEngine against an empty connection string.
     if settings.db.url:
         engine: AsyncEngine = build_engine(settings.db)
-        session_factory: async_sessionmaker[AsyncSession] = build_session_factory(engine)
+        session_factory: async_sessionmaker[AsyncSession] = build_session_factory(
+            engine
+        )
         container.bind_singleton(AsyncEngine, engine)
         container.bind_singleton(async_sessionmaker, session_factory)
         container.bind_factory(
             UnitOfWork,
-            lambda: SqlAlchemyUnitOfWork(session_factory, container.resolve(OutboxWriter)),
+            lambda: SqlAlchemyUnitOfWork(
+                session_factory, container.resolve(OutboxWriter)
+            ),
         )
         container.bind_factory(
             IamUnitOfWork,
@@ -139,6 +167,12 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             OrganizationUnitOfWork,
             lambda: SqlAlchemyOrganizationUnitOfWork(
+                session_factory, container.resolve(OutboxWriter)
+            ),
+        )
+        container.bind_factory(
+            FleetDeviceUnitOfWork,
+            lambda: SqlAlchemyFleetDeviceUnitOfWork(
                 session_factory, container.resolve(OutboxWriter)
             ),
         )
