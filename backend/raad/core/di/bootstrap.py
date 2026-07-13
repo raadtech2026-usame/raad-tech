@@ -34,6 +34,14 @@ from raad.modules.iam.application.services import (
     UserApplicationService,
 )
 from raad.modules.iam.infra.repositories import SqlAlchemyIamUnitOfWork
+from raad.modules.organization.application.ports import OrganizationUnitOfWork
+from raad.modules.organization.application.services import (
+    OrganizationApplicationService,
+    RegionApplicationService,
+)
+from raad.modules.organization.infra.repositories import (
+    SqlAlchemyOrganizationUnitOfWork,
+)
 
 
 def build_container(settings: Settings) -> Container:
@@ -66,6 +74,23 @@ def build_container(settings: Settings) -> Container:
             id_generator=container.resolve(IdGenerator),
             password_hasher=container.resolve(PasswordHasher),
             password_policy=container.resolve(PasswordPolicy),
+        ),
+    )
+
+    # OrganizationApplicationService/RegionApplicationService need no TokenService either —
+    # always constructible, same reasoning as UserApplicationService above.
+    container.bind_singleton(
+        OrganizationApplicationService,
+        OrganizationApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+        ),
+    )
+    container.bind_singleton(
+        RegionApplicationService,
+        RegionApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
         ),
     )
 
@@ -108,6 +133,12 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             IamUnitOfWork,
             lambda: SqlAlchemyIamUnitOfWork(
+                session_factory, container.resolve(OutboxWriter)
+            ),
+        )
+        container.bind_factory(
+            OrganizationUnitOfWork,
+            lambda: SqlAlchemyOrganizationUnitOfWork(
                 session_factory, container.resolve(OutboxWriter)
             ),
         )
