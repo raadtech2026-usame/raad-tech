@@ -73,6 +73,15 @@ class GeofenceCrossingRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_for_trip(self, trip_id: TripId) -> list[GeofenceCrossing]:
+        """Full crossing history for one trip, ordered by `occurred_at` ascending — the read
+        side backing `tracking.application.queries.GetGeofenceCrossingsQuery` (Phase 8.2), the
+        same "read model over an owned, long-term-retained table" reasoning
+        `VehiclePositionRepository.list_for_trip` documents above (Database Design §11.1:
+        geofence events are retained long-term)."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def latest_for_trip(
         self, trip_id: TripId, *, stop_id: StopId | None, event_type: GeofenceEventType
     ) -> GeofenceCrossing | None:
