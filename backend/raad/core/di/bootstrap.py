@@ -50,6 +50,12 @@ from raad.modules.organization.application.services import (
 from raad.modules.organization.infra.repositories import (
     SqlAlchemyOrganizationUnitOfWork,
 )
+from raad.modules.tracking.application.ports import (
+    LatestPositionPort,
+    TrackingUnitOfWork,
+)
+from raad.modules.tracking.application.services import TrackingApplicationService
+from raad.modules.tracking.infra.repositories import SqlAlchemyTrackingUnitOfWork
 
 
 def build_container(settings: Settings) -> Container:
@@ -118,6 +124,22 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
+    # TrackingApplicationService additionally needs a LatestPositionPort (Database Design
+    # §7.1: latest position is Redis-backed, not read from the MySQL history table) — no
+    # concrete implementation exists yet (Phase 8.3 deliberately deferred it), so this stays
+    # unbound until one is, the same "fail loudly, don't fake it" policy OutboxPublisher/
+    # BrokerPort already follow below. Written so binding it later is a one-line change.
+    latest_position_port = container.try_resolve(LatestPositionPort)
+    if latest_position_port is not None:
+        container.bind_singleton(
+            TrackingApplicationService,
+            TrackingApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
+                latest_position_port=latest_position_port,
+            ),
+        )
+
     # TokenService needs a non-empty signing secret. In `dev`/`staging` without one configured
     # (e.g. no .env populated yet) it is left unbound — same "fail loudly, don't fake it"
     # policy as the ports above — rather than signing tokens with an empty key.
@@ -173,6 +195,12 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             FleetDeviceUnitOfWork,
             lambda: SqlAlchemyFleetDeviceUnitOfWork(
+                session_factory, container.resolve(OutboxWriter)
+            ),
+        )
+        container.bind_factory(
+            TrackingUnitOfWork,
+            lambda: SqlAlchemyTrackingUnitOfWork(
                 session_factory, container.resolve(OutboxWriter)
             ),
         )
