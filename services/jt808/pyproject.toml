@@ -1,0 +1,28 @@
+# JT808 TCP Transport Service — package configuration.
+#
+# Independent deployable (`.claude/rules/architecture.md` #2) — no dependency on
+# `backend/raad` and vice versa. Phase 9.1 (Transport Layer) uses only the Python standard
+# library (`asyncio` for the TCP server/event loop, `dataclasses`/`logging`/`enum` for
+# everything else) — zero third-party dependencies, so no new-dependency approval is needed
+# this phase (`.claude/rules/workflow.md` #1/#2). Add a dependencies list here only when a
+# later phase genuinely needs one (e.g. a Redis client for session state,
+# `.claude/rules/jt808.md` #4).
+#
+# Dependency management tool (Poetry/PDM/plain pip) is not yet decided by approved
+# documentation — this file uses the PEP 621 format, installable with plain
+# `pip install -e .` regardless of that later choice, the same stance `backend/pyproject.toml`
+# takes.
+
+[project]
+name = "raad-jt808-service"
+version = "0.1.0"
+description = "RAAD Platform — JT808 device-plane TCP transport service"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
