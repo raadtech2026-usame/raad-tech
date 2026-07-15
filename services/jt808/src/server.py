@@ -1,12 +1,12 @@
 """JT808 TCP transport service entrypoint (Phase 9.1 Transport Layer + Phase 9.2 Session
 Management + Phase 9.3 Packet Parser + Phase 9.4 Message Dispatcher + Phase 9.5 Authentication
-& Registration; Phase 2 §5.1, Phase 3.4 §2/§4/§5/§6/§7/§8). Wires config, logging, the
-transport-level `SessionRegistry`/`ConnectionManager`, the device-level `DeviceSessionRegistry`/
-`DeviceSessionManager`, the `PacketParser`, and the `MessageDispatcher` (with its
-`HandlerRegistry` of registration/auth handlers plus placeholders for everything else) into a
-running `asyncio.start_server`; handles SIGINT/SIGTERM for graceful shutdown (close every
-connection, close every device session, stop both sweep tasks, stop the server) rather than
-letting the process die with sockets mid-flight.
+& Registration + Phase 9.6 Position Pipeline; Phase 2 §5.1, Phase 3.4 §2/§4/§5/§6/§7/§8/§10).
+Wires config, logging, the transport-level `SessionRegistry`/`ConnectionManager`, the
+device-level `DeviceSessionRegistry`/`DeviceSessionManager`, the `PacketParser`, and the
+`MessageDispatcher` (with its `HandlerRegistry` of registration/auth/position handlers plus
+placeholders for everything else) into a running `asyncio.start_server`; handles SIGINT/SIGTERM
+for graceful shutdown (close every connection, close every device session, stop both sweep
+tasks, stop the server) rather than letting the process die with sockets mid-flight.
 
 `DeviceSessionManager` is constructed *before* `ConnectionManager` so its
 `handle_connection_closed` can be wired as `ConnectionManager`'s `on_connection_closed` hook —
@@ -32,11 +32,24 @@ the same "fail loudly, don't fake it" policy the Business API's own DI container
 unconfigured port, never silently accepting every device. A real implementation is injected
 here once one is built (a later phase, with real device-provisioning-workflow access).
 
-**Handlers registered this phase:** `TerminalRegistrationHandler` (`0x0100`),
-`TerminalAuthenticationHandler` (`0x0102`) — real protocol behavior, Phase 9.5. Every other
-named `message_id` still resolves to a no-op `PlaceholderMessageHandler` (`dispatcher/
-placeholder_handler.py`'s module docstring) — Heartbeat/Location/BulkLocation/Alarm/CommandAck/
-Logout business logic remains a later phase's job.
+**Handlers registered through Phase 9.5:** `TerminalRegistrationHandler` (`0x0100`),
+`TerminalAuthenticationHandler` (`0x0102`) — real protocol behavior.
+
+**Handlers registered this phase (9.6):** `LocationHandler` (`0x0200`), `BulkLocationHandler`
+(`0x0704`) — parse the position body, resolve device/vehicle/org identity from the terminal's
+`DeviceSession`, and publish `DevicePositionReported` via `event_publisher` (below). Neither
+calls `TrackingApplicationService` or imports `tracking` — see `handlers/location_handler.py`'s
+module docstring for the conflict this resolved and why. Every other named `message_id` still
+resolves to a no-op `PlaceholderMessageHandler` (`dispatcher/placeholder_handler.py`'s module
+docstring) — Heartbeat/Alarm/CommandAck/Logout business logic remains a later phase's job.
+
+**`event_publisher` (Phase 9.6, constructor parameter):** the port `LocationHandler`/
+`BulkLocationHandler` use to publish `DevicePositionReported` (`events/publisher_port.py` — no
+real broker/outbox implementation exists in this codebase yet, since no broker technology is
+approved anywhere in this repo). Defaults to `LoggingEventPublisher` — publishing degrades to a
+structured log line, never a crash. A real outbox+broker implementation is injected here once
+one is built (a later phase, once a broker dependency is proposed and approved per `.claude/
+rules/workflow.md` #1/#2).
 
 Framework-agnostic composition root — no FastAPI, no HTTP, no SQLAlchemy
 (`.claude/rules/architecture.md` #2: "FastAPI never terminates a device socket").
@@ -56,7 +69,10 @@ from src.dispatcher.dispatcher import MessageDispatcher
 from src.dispatcher.placeholder_handler import PlaceholderMessageHandler
 from src.dispatcher.registry import HandlerRegistry
 from src.dispatcher.unknown_handler import UnknownMessageHandler
+from src.events.publisher_port import EventPublisher, LoggingEventPublisher
 from src.handlers.authentication_handler import TerminalAuthenticationHandler
+from src.handlers.bulk_location_handler import BulkLocationHandler
+from src.handlers.location_handler import LocationHandler
 from src.handlers.provisioning_port import (
     DeviceProvisioningPort,
     NullDeviceProvisioningPort,
@@ -73,13 +89,12 @@ logger = get_logger("jt808.server")
 
 # JT808 Technical Design §7/§8's named handler set that stays a placeholder this phase — see
 # dispatcher/message_ids.py's module docstring for the per-message-ID primary-spec citation.
-# REGISTRATION and AUTHENTICATION are deliberately absent: they get real handlers below.
+# REGISTRATION, AUTHENTICATION, LOCATION_REPORT, and BULK_LOCATION_REPORT are deliberately
+# absent: they get real handlers below.
 _PLACEHOLDER_HANDLER_NAMES = {
     message_ids.TERMINAL_GENERAL_RESPONSE: "CommandAck",
     message_ids.HEARTBEAT: "Heartbeat",
     message_ids.LOGOUT: "Logout",
-    message_ids.LOCATION_REPORT: "Location",
-    message_ids.BULK_LOCATION_REPORT: "BulkLocation",
     message_ids.MULTIMEDIA_EVENT_UPLOAD: "Alarm",
 }
 
@@ -90,9 +105,11 @@ class Jt808Server:
         config: ServerConfig | None = None,
         *,
         device_provisioning: DeviceProvisioningPort | None = None,
+        event_publisher: EventPublisher | None = None,
     ) -> None:
         self._config = config or ServerConfig.from_env()
         self._device_provisioning = device_provisioning or NullDeviceProvisioningPort()
+        self._event_publisher = event_publisher or LoggingEventPublisher()
         self._sessions = SessionRegistry()
         self._device_session_registry = DeviceSessionRegistry()
         self._device_sessions = DeviceSessionManager(
@@ -113,6 +130,14 @@ class Jt808Server:
         self._handler_registry.register(
             message_ids.AUTHENTICATION,
             TerminalAuthenticationHandler(self._device_provisioning),
+        )
+        self._handler_registry.register(
+            message_ids.LOCATION_REPORT,
+            LocationHandler(self._event_publisher),
+        )
+        self._handler_registry.register(
+            message_ids.BULK_LOCATION_REPORT,
+            BulkLocationHandler(self._event_publisher),
         )
         self._dispatcher = MessageDispatcher(
             registry=self._handler_registry,
@@ -195,6 +220,10 @@ class Jt808Server:
     @property
     def device_provisioning(self) -> DeviceProvisioningPort:
         return self._device_provisioning
+
+    @property
+    def event_publisher(self) -> EventPublisher:
+        return self._event_publisher
 
     @property
     def session_count(self) -> int:

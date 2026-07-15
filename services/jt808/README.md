@@ -22,7 +22,8 @@ src/
 ├── protocol/     # Packet Parser / Framer + vendor Anti-Corruption Layer
 │                 #   - frame boundary detection (0x7e)              [Phase 9.1: implemented]
 │                 #   - unescape/checksum/header parsing/reassembly  [Phase 9.3: implemented]
-│                 #   - message-specific body field decoding          [not yet implemented]
+│                 #   - message-specific body field decoding (0x0100/0x0102/0x0200/0x0704 only,
+│                 #     in src/handlers/ — see below)                [partial, Phases 9.5-9.6]
 │                 #   - vendor ACL (dialect normalization)             [not yet implemented]
 ├── dispatcher/   # Packet Dispatcher — routes by message_id to handlers  [Phase 9.4: implemented]
 ├── handlers/     # Message Handlers: register, auth, heartbeat, location,
@@ -30,9 +31,12 @@ src/
 │                 #   - registration (0x0100 -> 0x8100) and authentication (0x0102 -> 0x8001):
 │                 #     real protocol behavior, session binding, reject/fail + close
 │                 #     [Phase 9.5: implemented, in src/handlers/]
-│                 #   - placeholder (no-op, logs only) for the remaining 6 named message IDs
+│                 #   - location (0x0200) and bulk/backfill location (0x0704): body parsing,
+│                 #     device/vehicle/org resolution, DevicePositionReported publishing
+│                 #     [Phase 9.6: implemented, in src/handlers/]
+│                 #   - placeholder (no-op, logs only) for the remaining 4 named message IDs
 │                 #     [Phase 9.4: implemented, in src/dispatcher/placeholder_handler.py]
-│                 #   - real business logic for heartbeat/location/alarm/etc.
+│                 #   - real business logic for heartbeat/alarm/command-ack/logout
 │                 #                                                  [not yet implemented]
 ├── session/      # Session Manager
 │                 #   - transport-level ConnectionSession, keyed by connection_id
@@ -42,11 +46,15 @@ src/
 │                 #     lifecycle (AUTHENTICATED/ONLINE/OFFLINE only - no IDLE/BACKFILLING/
 │                 #     REGISTERED, which need packet parsing this phase doesn't have)
 │                 #     [Phase 9.2: implemented, in-memory only]
-│                 #   - node_id / cross-shard command routing / Redis backing store
-│                 #     [not yet implemented]
+│                 #   - node_id / cross-shard command routing / Redis backing store /
+│                 #     AUTHENTICATED -> ONLINE `touch()` trigger (still nothing calls it —
+│                 #     Phase 9.6's Location handler deliberately does not, see Status below)
+│                 #                                                  [not yet implemented]
 ├── commands/     # Command Executor — downlink (real-time A/V request, playback, config, text)
 │                 #                                                  [not yet implemented]
-└── events/       # Event Publisher — local outbox -> event bus      [not yet implemented]
+└── events/       # Event Publisher: DevicePositionReported shape + EventPublisher port +
+│                 # LoggingEventPublisher default (no real outbox/broker — none approved yet)
+│                 #                                                  [Phase 9.6: implemented]
 store/            # Local persistent store: outbox, device_session, raw_frame_audit, command_log
 │                 #                                                  [not yet implemented]
 ```
@@ -140,11 +148,64 @@ provisioning port, real TCP clients against a live `Jt808Server`) plus a manual 
 script covering Register -> Authenticate -> Heartbeat-ready state, ADR-808-8 supersede, and
 clean shutdown with zero leaked tasks.
 
+**Phase 9.6 (Position Pipeline): implemented.** `src/handlers/location_handler.py`
+(`LocationHandler`, `0x0200`) and `bulk_location_handler.py` (`BulkLocationHandler`, `0x0704`) —
+the integration point between this service and the completed Tracking bounded context. Parse
+the position body (`handlers/position_body.py`: JT/T 808-2013 §8.18 Table 23's fixed 28-byte
+layout — alarm flags, status bits, hemisphere-signed lat/lng, altitude, speed unit conversion
+1/10 km/h → whole km/h, heading, BCD GMT+8 time → UTC; `handlers/bulk_position_body.py`: §8.49
+Table 76/77's item-count-driven batch format, each item sharing `0x0200`'s body format),
+resolve the reporting terminal's `device_id`/`vehicle_id`/`organization_id` from its already-
+bound `DeviceSession` (Phase 9.2/9.5), and publish one `DevicePositionReported` event per
+position via the injected `EventPublisher` port (`events/publisher_port.py`) — `is_backfill=
+False` for `0x0200`, `True` for every item in a `0x0704` batch (Technical Design §10's uniform
+backfill classification for the whole message, not a per-item split on the primary spec's
+`position_data_type` byte — see `bulk_position_body.py`'s module docstring). Batch items publish
+sequentially (`await`ed in turn, never `asyncio.gather`) to preserve wire order.
+
+**Flagged and resolved before implementing:** the task's own literal wording ("Position handlers
+must communicate only through `TrackingApplicationService`") directly conflicted with every
+approved architecture document (`.claude/rules/architecture.md` #3, `.claude/rules/jt808.md` #1,
+JT808 Technical Design, Backend LLD §10.3, `docs/architecture/adr/0001-*`), which unanimously
+require the device plane to reach the business plane only via published domain events over a
+broker, never a synchronous in-process call. Confirmed with the user in favor of the approved
+architecture: **neither handler imports `tracking` or calls `TrackingApplicationService`** —
+they publish `DevicePositionReported` (`events/device_position_reported.py`, field-shape-
+identical to `RecordVehiclePositionCommand`/`RecordBackfillPositionCommand` by design) and stop.
+Geofence evaluation is consequently **not** triggered by this phase either — Tracking's own
+`evaluate_geofence` isn't even auto-invoked by its own `record_vehicle_position`; JT808 Technical
+Design §21.2 places persist-then-evaluate inside a not-yet-built Business API-side consumer of
+this event, not inside JT808. `trip_id` is always `None` (§10: no Redis-backed active-trip
+read-model exists yet — documented as the correct fallback, not a bug). No real broker/outbox
+exists either (none approved anywhere in this repo yet); `event_publisher` defaults to
+`LoggingEventPublisher`, a structured-log-only stand-in, mirroring `NullDeviceProvisioningPort`'s
+"framework only, no crash" stance from Phase 9.5. **Authenticated session required**: a `0x0200`/
+`0x0704` from a terminal with no bound `DeviceSession` (or one missing any of the three resolved
+identity fields) is logged at WARNING (audited) and dropped, without closing the connection. No
+wire response is sent for either message — JT808 Technical Design §8's Handler table documents
+no `0x8001` ack for either, and the primary spec's only response mention (per-alarm-bit,
+optional) is notification/business-response territory this phase's scope excludes. Verified with
+64 new unit and full-stack integration tests (position/batch body parsing incl. hemisphere signs,
+unit conversion, malformed/truncated rejection; handler-level tests against a recording publisher
+fake covering the task's full verification list; real-TCP integration tests) plus a manual
+verification script covering authenticate → single position → batch backfill → malformed packet
+→ unauthenticated drop → clean shutdown with zero leaked tasks.
+
+**Open item flagged, not resolved this phase (kept in scope discipline):** Phase 9.5's own
+docstring anticipated "a future Heartbeat/Location handler" triggering the `AUTHENTICATED ->
+ONLINE` transition (`DeviceSessionManager.touch()`), but this phase's task instructions list
+neither "device online transition" nor a `touch()` call among what to implement — `LocationHandler`
+therefore does not call `touch()`, and nothing in this codebase yet does. A future phase should
+decide explicitly whether `LocationHandler` (live only, never `BulkLocationHandler` — backfilled
+data must never drive live/online state, `.claude/rules/jt808.md` #3) is the right trigger, or
+whether that stays exclusively a Heartbeat handler's job.
+
 **Not yet implemented** (see `src/handlers/`, `src/commands/`, `src/events/`, `store/` above):
-message-specific body field decoding and the vendor Anti-Corruption Layer for the remaining 6
-message IDs, real business logic for heartbeat/location/alarm/command-ack/logout/bulk-location,
-a concrete `DeviceProvisioningPort` implementation (real credential/device-lookup logic — this
-phase only defines the seam), the `AUTHENTICATED -> ONLINE` transition itself (needs a
-Heartbeat/Location handler), GPS position processing, alarm processing, Redis-backed session
-state, cross-shard command routing, domain event publishing, and business-initiated command
-downlink (§12 — distinct from this phase's protocol-level automatic acks).
+message-specific body field decoding and the vendor Anti-Corruption Layer for the remaining 4
+message IDs, real business logic for heartbeat/alarm/command-ack/logout, a concrete
+`DeviceProvisioningPort` implementation (real credential/device-lookup logic), a real outbox +
+broker `EventPublisher` implementation, the `AUTHENTICATED -> ONLINE` transition trigger (open
+item above), the Redis-backed active-trip read-model `trip_id` resolution depends on, alarm
+processing beyond raw `alarm_flags` passthrough, Redis-backed session state, cross-shard command
+routing, and business-initiated command downlink (§12 — distinct from this phase's protocol-level
+automatic acks).
