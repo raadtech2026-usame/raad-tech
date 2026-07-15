@@ -78,6 +78,24 @@ class MessageHeader:
     package_sequence: int | None
 
 
+def encode_bcd_phone(terminal_phone: str) -> bytes:
+    """12 decimal digits -> BCD[6] (Phase 9.4 addition — the encode-side mirror of
+    `_decode_bcd_phone`, needed to address outbound response frames back to the same
+    terminal, §4.4.3 Table 2). Not private (`encode_`, not `_encode_`): `protocol/encoder.py`
+    is this function's only caller, mirroring `_decode_bcd_phone`'s privacy within this
+    module — but since it is used cross-module, it is named without the leading underscore.
+    """
+    if len(terminal_phone) != 12 or not terminal_phone.isdigit():
+        raise MalformedFrameError(
+            f"terminal_phone must be exactly 12 decimal digits: {terminal_phone!r}."
+        )
+    result = bytearray()
+    for i in range(0, 12, 2):
+        high, low = int(terminal_phone[i]), int(terminal_phone[i + 1])
+        result.append((high << 4) | low)
+    return bytes(result)
+
+
 def _decode_bcd_phone(data: bytes) -> str:
     """BCD[6] -> 12 decimal digits (§4.2: "BCD[n]: 8421 码, n 字节" — standard packed BCD, each
     nibble one decimal digit, most-significant nibble first per byte, most-significant byte

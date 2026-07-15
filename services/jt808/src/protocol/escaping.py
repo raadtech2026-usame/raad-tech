@@ -15,6 +15,14 @@ Escape rules, verbatim (§4.4.2):
 run *before* checksum verification (`checksum.py`) in this phase's parse pipeline
 (`parser.py`) — escaping was applied *after* the checksum was computed on the sending side, so
 the checksum was never computed over escaped bytes.
+
+**`escape()` (Phase 9.4 addition):** the mirror encode-side operation, needed because JT808
+Technical Design §7's Packet Dispatcher "ensures the ack is sent" (the automatic `0x8001`
+general response) — genuinely a Dispatcher responsibility per the approved design, not a later
+Command Processing (§12) concern, which governs business-initiated downlink commands, not
+protocol-level acks. Deliberately not built in Phase 9.3, whose module docstring at the time
+said "only the receive path is this phase's job" — that was accurate for a decode-only phase;
+Phase 9.4 is the first phase that actually needs to construct outbound bytes.
 """
 
 from __future__ import annotations
@@ -49,4 +57,16 @@ def unescape(data: bytes) -> bytes:
         else:
             result.append(byte)
             i += 1
+    return bytes(result)
+
+
+def escape(data: bytes) -> bytes:
+    result = bytearray()
+    for byte in data:
+        if byte == FRAME_DELIMITER:
+            result += bytes([ESCAPE_MARKER, _ESCAPED_DELIMITER])
+        elif byte == ESCAPE_MARKER:
+            result += bytes([ESCAPE_MARKER, _ESCAPED_MARKER])
+        else:
+            result.append(byte)
     return bytes(result)

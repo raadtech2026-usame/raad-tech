@@ -16,6 +16,10 @@ session layer to transport layer, never back (".claude/rules": keep the layers s
 `close_connection()` is the matching public entry point the session layer uses to request a
 *specific* connection be closed (superseding a duplicate terminal, ADR-808-8) without needing
 direct access to a `Connection` object.
+
+**Phase 9.4 addition:** `send_to_connection()` — the same "public entry point, no direct
+`Connection` access" pattern, used by the Message Dispatcher (`dispatcher/dispatcher.py`) to
+send automatic-acknowledgment frames back to whichever connection a message arrived on.
 """
 
 from __future__ import annotations
@@ -103,6 +107,16 @@ class ConnectionManager:
         connection = self._connections.get(connection_id)
         if connection is not None:
             await connection.close(reason=reason)
+
+    async def send_to_connection(self, connection_id: str, data: bytes) -> None:
+        """Public entry point for other layers to send bytes on a specific connection (Phase
+        9.4 addition — the Message Dispatcher's automatic-response mechanism, `dispatcher/
+        dispatcher.py`) without needing direct access to the `Connection` object. A no-op if
+        the connection is already gone (the terminal disconnected before the response could
+        be sent — not an error, nothing to notify)."""
+        connection = self._connections.get(connection_id)
+        if connection is not None:
+            await connection.send(data)
 
     def start_sweep(self) -> None:
         self._sweep_task = asyncio.create_task(self._sweep_loop())

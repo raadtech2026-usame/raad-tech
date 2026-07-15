@@ -24,9 +24,12 @@ src/
 │                 #   - unescape/checksum/header parsing/reassembly  [Phase 9.3: implemented]
 │                 #   - message-specific body field decoding          [not yet implemented]
 │                 #   - vendor ACL (dialect normalization)             [not yet implemented]
-├── dispatcher/   # Packet Dispatcher — routes by message_id to handlers  [not yet implemented]
+├── dispatcher/   # Packet Dispatcher — routes by message_id to handlers  [Phase 9.4: implemented]
 ├── handlers/     # Message Handlers: register, auth, heartbeat, location,
-│                 # bulk/backfill location, alarm, command-ack       [not yet implemented]
+│                 # bulk/backfill location, alarm, command-ack
+│                 #   - placeholder (no-op, logs only) for all 8 named message IDs
+│                 #     [Phase 9.4: implemented, in src/dispatcher/placeholder_handler.py]
+│                 #   - real business logic for each                  [not yet implemented]
 ├── session/      # Session Manager
 │                 #   - transport-level ConnectionSession, keyed by connection_id
 │                 #     [Phase 9.1: implemented, in-memory only]
@@ -86,10 +89,30 @@ failure caught, not missed) and with real TCP clients sending genuinely hand-fra
 a live server (`tests/`, plus a manual script exercising escaping, checksum failure resilience,
 and cross-frame subpackage reassembly).
 
-**Not yet implemented** (see `src/dispatcher/`, `src/handlers/`, `src/commands/`,
-`src/events/`, `store/` above): message-specific body field decoding and the vendor
-Anti-Corruption Layer, the Packet Dispatcher (routing by `message_id`), message handlers
-(register/auth/heartbeat/location/alarm/command-ack), device identity/auth (credential
-verification itself — Phase 9.2's `create()` assumes it already happened), GPS position
-processing, alarm processing, Redis-backed session state, cross-shard command routing, domain
-event publishing, and command downlink.
+**Phase 9.4 (Message Dispatcher): implemented.** `src/dispatcher/dispatcher.py`'s
+`MessageDispatcher` routes a decoded `InboundMessage` (Phase 9.3's `PacketParser` output) to
+the handler registered for its `message_id` (`registry.py`'s `HandlerRegistry`), or to
+`unknown_handler.UnknownMessageHandler` if none is registered — JT808 Technical Design §7's
+documented behavior: unknown message IDs get a real, wire-encoded `0x8001` "not supported"
+general response (§8.2), never silently dropped. Exactly 8 named message IDs are registered
+(`message_ids.py`, each cross-checked against its own primary-spec section), all bound to a
+single reusable `PlaceholderMessageHandler` — no business logic, logs receipt only, sends no
+response (a documented, user-confirmed scope decision: extending the "unknown -> not
+supported" behavior to known-but-unimplemented message IDs was considered and deliberately not
+done). A handler exception is caught and reported (`on_handler_error`), never crashing the
+connection. Added the encode-side mirror of Phase 9.3's decoder (`protocol/encoder.py`,
+`escaping.escape`, `header.encode_bcd_phone`) and two minimal additions to Phase 9.1's
+`ConnectionManager` (`send_to_connection`, alongside the existing `close_connection`) — both
+needed for the dispatcher to actually send the automatic acknowledgment. Verified with real TCP
+clients sending genuinely hand-framed packets through the full TCP -> Transport -> Codec ->
+Dispatcher stack against a live server, confirming each of the 8 message IDs reaches its own
+correctly-named handler (`tests/`, plus a manual script).
+
+**Not yet implemented** (see `src/handlers/`, `src/commands/`, `src/events/`, `store/` above):
+message-specific body field decoding and the vendor Anti-Corruption Layer, real business logic
+for any of the 8 registered message IDs (register/auth/heartbeat/location/alarm/command-ack/
+logout/bulk-location), device identity/auth (credential verification itself — Phase 9.2's
+`create()` assumes it already happened), GPS position processing, alarm processing,
+Redis-backed session state, cross-shard command routing, domain event publishing, and
+business-initiated command downlink (§12 — distinct from this phase's protocol-level automatic
+acks).

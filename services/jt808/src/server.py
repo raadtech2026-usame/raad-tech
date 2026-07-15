@@ -1,7 +1,8 @@
 """JT808 TCP transport service entrypoint (Phase 9.1 Transport Layer + Phase 9.2 Session
-Management + Phase 9.3 Packet Parser; Phase 2 §5.1, Phase 3.4 §2/§5/§6). Wires config,
-logging, the transport-level `SessionRegistry`/`ConnectionManager`, the device-level
-`DeviceSessionRegistry`/`DeviceSessionManager`, and the `PacketParser` into a running
+Management + Phase 9.3 Packet Parser + Phase 9.4 Message Dispatcher; Phase 2 §5.1, Phase 3.4
+§2/§5/§6/§7). Wires config, logging, the transport-level `SessionRegistry`/`ConnectionManager`,
+the device-level `DeviceSessionRegistry`/`DeviceSessionManager`, the `PacketParser`, and the
+`MessageDispatcher` (with its `HandlerRegistry` of placeholder handlers) into a running
 `asyncio.start_server`; handles SIGINT/SIGTERM for graceful shutdown (close every connection,
 close every device session, stop both sweep tasks, stop the server) rather than letting the
 process die with sockets mid-flight.
@@ -11,14 +12,19 @@ process die with sockets mid-flight.
 `close_connection` closes the circle the other way (`DeviceSessionManager` asks
 `ConnectionManager` to close a specific socket when superseding a duplicate terminal,
 ADR-808-8) via a bound-method callback resolved at call time, not construction time, so the
-two can be built in either order without a real circular dependency.
+two can be built in either order without a real circular dependency. The dispatcher's `send`
+callback (`_send_frame`) closes an identical circle with `ConnectionManager.send_to_connection`.
 
-**`_handle_frame` (Phase 9.3) replaces Phase 9.1's log-only default `on_frame`** with a real
-`PacketParser` call — still no dispatch to any handler (none exist yet, `src/dispatcher/`/
-`src/handlers/` remain unbuilt): a successfully parsed `InboundMessage`'s key fields are
-logged; a `ProtocolError` (checksum/malformed/unescape failure) is logged and the frame
-dropped, never crashing the connection (Backend LLD §6). A `None` result means the frame was
-a non-final subpackage still awaiting the rest (`protocol/reassembly.py`).
+**`_handle_frame` now hands a successfully parsed `InboundMessage` to `MessageDispatcher.
+dispatch` (Phase 9.4)** — the "codec -> dispatcher" handoff the task describes. A `ProtocolError`
+(checksum/malformed/unescape failure) is still logged and the frame dropped *before* the
+dispatcher ever sees it — malformed packets never reach dispatch, never crashing the connection
+(Backend LLD §6). A `None` parse result (awaiting more subpackages) likewise never reaches the
+dispatcher.
+
+**Handlers registered this phase are all `PlaceholderMessageHandler`** (one per named
+`message_id`, `dispatcher/message_ids.py`) — no real business logic; see `dispatcher/
+placeholder_handler.py`'s module docstring.
 
 Framework-agnostic composition root — no FastAPI, no HTTP, no SQLAlchemy
 (`.claude/rules/architecture.md` #2: "FastAPI never terminates a device socket").
@@ -33,6 +39,11 @@ from datetime import datetime, timezone
 
 from src.config import ServerConfig
 from src.connection.manager import ConnectionManager
+from src.dispatcher import message_ids
+from src.dispatcher.dispatcher import MessageDispatcher
+from src.dispatcher.placeholder_handler import PlaceholderMessageHandler
+from src.dispatcher.registry import HandlerRegistry
+from src.dispatcher.unknown_handler import UnknownMessageHandler
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.protocol.exceptions import ProtocolError
 from src.protocol.parser import PacketParser
@@ -41,6 +52,19 @@ from src.session.device_session_registry import DeviceSessionRegistry
 from src.session.registry import SessionRegistry
 
 logger = get_logger("jt808.server")
+
+# JT808 Technical Design §7/§8's named handler set — see dispatcher/message_ids.py's module
+# docstring for the per-message-ID primary-spec citation.
+_PLACEHOLDER_HANDLER_NAMES = {
+    message_ids.TERMINAL_GENERAL_RESPONSE: "CommandAck",
+    message_ids.HEARTBEAT: "Heartbeat",
+    message_ids.LOGOUT: "Logout",
+    message_ids.REGISTRATION: "Register",
+    message_ids.AUTHENTICATION: "Auth",
+    message_ids.LOCATION_REPORT: "Location",
+    message_ids.BULK_LOCATION_REPORT: "BulkLocation",
+    message_ids.MULTIMEDIA_EVENT_UPLOAD: "Alarm",
+}
 
 
 class Jt808Server:
@@ -53,6 +77,19 @@ class Jt808Server:
             close_connection=self._close_connection,
         )
         self._parser = PacketParser()
+
+        self._handler_registry = HandlerRegistry()
+        for handler_message_id, name in _PLACEHOLDER_HANDLER_NAMES.items():
+            self._handler_registry.register(
+                handler_message_id, PlaceholderMessageHandler(name)
+            )
+        self._dispatcher = MessageDispatcher(
+            registry=self._handler_registry,
+            unknown_handler=UnknownMessageHandler(),
+            device_sessions=self._device_sessions,
+            send=self._send_frame,
+        )
+
         self._manager = ConnectionManager(
             session_registry=self._sessions,
             read_chunk_size=self._config.read_chunk_size,
@@ -66,6 +103,9 @@ class Jt808Server:
 
     async def _close_connection(self, connection_id: str, reason: str) -> None:
         await self._manager.close_connection(connection_id, reason=reason)
+
+    async def _send_frame(self, connection_id: str, data: bytes) -> None:
+        await self._manager.send_to_connection(connection_id, data)
 
     async def _handle_frame(self, connection_id: str, frame: bytes) -> None:
         try:
@@ -95,10 +135,19 @@ class Jt808Server:
             body_length=len(message.body),
             encryption_method=message.encryption_method,
         )
+        await self._dispatcher.dispatch(connection_id, message)
 
     @property
     def parser(self) -> PacketParser:
         return self._parser
+
+    @property
+    def dispatcher(self) -> MessageDispatcher:
+        return self._dispatcher
+
+    @property
+    def handler_registry(self) -> HandlerRegistry:
+        return self._handler_registry
 
     @property
     def manager(self) -> ConnectionManager:
