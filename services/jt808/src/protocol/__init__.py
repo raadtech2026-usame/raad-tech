@@ -1,7 +1,13 @@
-"""JT/T 808 wire-level framing (Phase 9.1 — Transport Layer only).
+"""JT/T 808-2013 wire-level protocol handling — two tiers.
 
-Frame *boundary detection* only — finding where one frame ends and the next begins in a byte
-stream. No byte-unescaping, checksum verification, or `message_id`/body field parsing: that is
-the Packet Parser (Phase 3.4 §6), explicitly out of this phase's scope. See `framing.py`'s
-module docstring for why boundary-scanning is protocol-correct without unescaping first.
+**Frame boundary detection (Phase 9.1):** `framing.py`'s `FrameBuffer` — finding where one
+frame ends and the next begins in a byte stream. No unescaping, checksum, or field parsing.
+
+**Packet Parser (Phase 9.3):** `escaping.py` (unescape), `checksum.py` (verify), `header.py`
+(parse the fixed header + optional subpackage block), `reassembly.py` (multi-part messages),
+`message.py` (`InboundMessage`, the typed output), `parser.py` (`PacketParser`, orchestrates
+all of the above in the spec-mandated order). Produces a validated `InboundMessage` with an
+untyped `body` — message-specific body decoding (register/auth/heartbeat/location/alarm) is
+§8 Handlers, a later phase. See `parser.py`'s module docstring for the exact pipeline and
+`header.py`'s for the primary-spec citations behind every field.
 """

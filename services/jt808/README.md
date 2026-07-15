@@ -4,8 +4,11 @@ Terminates persistent TCP connections from bus terminals, parses JT/T 808 messag
 sessions, normalizes telemetry into domain events, and relays platform commands down to devices.
 Independently deployable — the Business API never opens a device socket.
 
-Source of truth: `docs/business/RAAD_Phase3.4_JT808_Technical_Design_v1.md` and
-`docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §5.1.
+Source of truth: `docs/business/RAAD_Phase3.4_JT808_Technical_Design_v1.md`,
+`docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §5.1, and — for wire-level packet
+structure specifically (Phase 9.3 onward) — the primary JT/T 808-2013 standard
+(`JTT808-2013.pdf`, repo root; Chinese-language; 2013 edition only, no JT/T 808-2019
+compatibility attempted).
 
 **Language/runtime: Python (asyncio)**, confirmed with the user for Phase 9.1 (no approved
 document names one — see git history for the confirmation). `pyproject.toml` declares zero
@@ -18,7 +21,9 @@ src/
 ├── connection/   # TCP Acceptor / Connection Manager               [Phase 9.1: implemented]
 ├── protocol/     # Packet Parser / Framer + vendor Anti-Corruption Layer
 │                 #   - frame boundary detection (0x7e)              [Phase 9.1: implemented]
-│                 #   - unescape/checksum/field parsing               [not yet implemented]
+│                 #   - unescape/checksum/header parsing/reassembly  [Phase 9.3: implemented]
+│                 #   - message-specific body field decoding          [not yet implemented]
+│                 #   - vendor ACL (dialect normalization)             [not yet implemented]
 ├── dispatcher/   # Packet Dispatcher — routes by message_id to handlers  [not yet implemented]
 ├── handlers/     # Message Handlers: register, auth, heartbeat, location,
 │                 # bulk/backfill location, alarm, command-ack       [not yet implemented]
@@ -65,9 +70,26 @@ diagrams (Phase 3.4 §3, Phase 2 §21.1) over exactly when a session becomes `On
 resolved with the user before implementing (see `device_session_manager.py`'s module
 docstring). Verified with real TCP clients wired through the real `Jt808Server` (`tests/`).
 
+**Phase 9.3 (Packet Parser): implemented.** `src/protocol/escaping.py` (unescape, verified
+against the primary spec's own worked example), `checksum.py` (XOR verification), `header.py`
+(fixed 12-byte header + optional 4-byte subpackage block, BCD terminal-phone decode,
+body-attributes bit layout), `reassembly.py` (multi-part message reassembly, bounded +
+timeout-evicted), `message.py` (`InboundMessage`), `parser.py` (`PacketParser`, orchestrating
+all of the above in the spec-mandated unescape -> verify checksum -> parse order). Produces an
+untyped `body: bytes` — message-specific body decoding stays out of scope (§8 Handlers, a
+later phase). Encrypted bodies (RSA, body-attributes bit 10) are tagged via `encryption_
+method`, never decrypted. Wired into `server.py`'s `on_frame` (replacing Phase 9.1's log-only
+default): malformed/checksum-fail frames are logged and dropped, never crashing the
+connection. Verified against the primary JT/T 808-2013 spec text directly (extracted via
+PyMuPDF after the default `pdftotext` silently produced zero readable Chinese characters — a
+failure caught, not missed) and with real TCP clients sending genuinely hand-framed packets to
+a live server (`tests/`, plus a manual script exercising escaping, checksum failure resilience,
+and cross-frame subpackage reassembly).
+
 **Not yet implemented** (see `src/dispatcher/`, `src/handlers/`, `src/commands/`,
-`src/events/`, `store/` above): JT808 packet parsing (unescape/checksum/field decode),
-message handlers (register/auth/heartbeat/location/alarm/command-ack), device identity/auth
-(credential verification itself — Phase 9.2's `create()` assumes it already happened),
-GPS position processing, alarm processing, Redis-backed session state, cross-shard command
-routing, domain event publishing, and command downlink.
+`src/events/`, `store/` above): message-specific body field decoding and the vendor
+Anti-Corruption Layer, the Packet Dispatcher (routing by `message_id`), message handlers
+(register/auth/heartbeat/location/alarm/command-ack), device identity/auth (credential
+verification itself — Phase 9.2's `create()` assumes it already happened), GPS position
+processing, alarm processing, Redis-backed session state, cross-shard command routing, domain
+event publishing, and command downlink.
