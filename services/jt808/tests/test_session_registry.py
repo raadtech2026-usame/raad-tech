@@ -34,7 +34,9 @@ class ConnectionSessionTests(unittest.TestCase):
     def test_touch_updates_last_activity(self) -> None:
         session = ConnectionSession(connection_id="c1", remote_address="127.0.0.1:1")
         before = session.last_activity_at
-        time.sleep(0.01)
+        # 0.05s comfortably exceeds Windows' default ~15.6ms timer resolution, which made a
+        # 0.01s sleep flaky (monotonic() could round to the same tick).
+        time.sleep(0.05)
         session.touch()
         self.assertGreater(session.last_activity_at, before)
 

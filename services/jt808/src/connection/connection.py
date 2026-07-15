@@ -11,6 +11,13 @@ via `ConnectionManager`) wires a log-only callback for this phase; a later phase
 Dispatcher plugs in here without changing this class. `on_activity` and `on_close` are
 likewise injected so lifecycle bookkeeping lives in `session/`/`connection/manager.py`, not
 duplicated here.
+
+`on_close` is `async` (Phase 9.2 addition): `ConnectionManager`'s own handler needs no `await`,
+but Phase 9.2's `DeviceSessionManager.handle_connection_closed` — bridging a dropped transport
+connection to closing whatever `DeviceSession` was bound to it — does (it takes the session
+registry's lock). Awaiting `on_close` from within `close()` guarantees that bridge finishes
+before `close()` returns, so a caller awaiting `Connection.close()` never races a still-being-
+cleaned-up session.
 """
 
 from __future__ import annotations
@@ -37,7 +44,7 @@ class Connection:
         max_frame_size: int,
         on_frame: FrameHandler,
         on_activity: Callable[[], None],
-        on_close: Callable[[str], None],
+        on_close: Callable[[str], Awaitable[None]],
     ) -> None:
         self.connection_id = connection_id
         self._remote_address = writer.get_extra_info("peername")
@@ -125,7 +132,7 @@ class Connection:
             connection_id=self.connection_id,
             reason=reason,
         )
-        self._on_close(self.connection_id)
+        await self._on_close(self.connection_id)
 
     async def _read_loop(self) -> None:
         try:

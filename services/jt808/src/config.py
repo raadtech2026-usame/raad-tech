@@ -37,6 +37,14 @@ class ServerConfig:
     )
     sweep_interval_seconds: float = 15.0
 
+    # Device-session (Phase 9.2) expiration — a distinct layer from the transport-level idle
+    # timeout above: this tracks DeviceSession.last_seen_at (touched by a future heartbeat/
+    # location handler), not raw socket activity. No approved document gives a numeric
+    # heartbeat-interval/miss-factor (Phase 3.4 §9, Device Plane draft §4's "Timer table
+    # (configurable...)") — these are deliberately just configurable, not protocol constants.
+    device_session_timeout_seconds: float = 120.0
+    device_session_sweep_interval_seconds: float = 15.0
+
     @classmethod
     def from_env(cls) -> "ServerConfig":
         return cls(
@@ -49,5 +57,13 @@ class ServerConfig:
             ),
             sweep_interval_seconds=_env_float(
                 "JT808_SWEEP_INTERVAL_SECONDS", cls.sweep_interval_seconds
+            ),
+            device_session_timeout_seconds=_env_float(
+                "JT808_DEVICE_SESSION_TIMEOUT_SECONDS",
+                cls.device_session_timeout_seconds,
+            ),
+            device_session_sweep_interval_seconds=_env_float(
+                "JT808_DEVICE_SESSION_SWEEP_INTERVAL_SECONDS",
+                cls.device_session_sweep_interval_seconds,
             ),
         )

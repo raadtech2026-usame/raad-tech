@@ -6,6 +6,16 @@ frames to an injected `on_frame` callback (protocol-agnostic — see `connection
 docstring), and runs the periodic idle-timeout sweep that is this phase's "heartbeat timeout
 infrastructure (framework only, not protocol handling)": it only knows "no bytes arrived
 recently for this session," never anything about JT808's `0x0002` heartbeat message.
+
+**Phase 9.2 additions (minimal, additive — transport behavior is unchanged):** an optional
+`on_connection_closed` hook, fired after this manager's own transport-registry cleanup, lets
+the session layer (`DeviceSessionManager.handle_connection_closed`) close whatever
+`DeviceSession` was bound to a connection that just dropped, without `ConnectionManager`
+importing anything from `session/device_session*.py` — the dependency points one way, from
+session layer to transport layer, never back (".claude/rules": keep the layers separate).
+`close_connection()` is the matching public entry point the session layer uses to request a
+*specific* connection be closed (superseding a duplicate terminal, ADR-808-8) without needing
+direct access to a `Connection` object.
 """
 
 from __future__ import annotations
@@ -42,6 +52,7 @@ class ConnectionManager:
         idle_timeout_seconds: float,
         sweep_interval_seconds: float,
         on_frame: FrameHandler | None = None,
+        on_connection_closed: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._sessions = session_registry
         self._read_chunk_size = read_chunk_size
@@ -49,6 +60,7 @@ class ConnectionManager:
         self._idle_timeout_seconds = idle_timeout_seconds
         self._sweep_interval_seconds = sweep_interval_seconds
         self._on_frame = on_frame or _default_on_frame
+        self._on_connection_closed = on_connection_closed
         self._connections: dict[str, Connection] = {}
         self._sweep_task: asyncio.Task | None = None
 
@@ -75,12 +87,22 @@ class ConnectionManager:
         self._sessions.add(session)
         connection.start()
 
-    def _handle_connection_closed(self, connection_id: str) -> None:
+    async def _handle_connection_closed(self, connection_id: str) -> None:
         self._connections.pop(connection_id, None)
         session = self._sessions.get(connection_id)
         if session is not None:
             session.mark_closed()
         self._sessions.remove(connection_id)
+        if self._on_connection_closed is not None:
+            await self._on_connection_closed(connection_id)
+
+    async def close_connection(self, connection_id: str, *, reason: str) -> None:
+        """Public entry point for other layers to request a specific connection be closed
+        (e.g. the session layer superseding a duplicate terminal) without needing direct
+        access to the `Connection` object. A no-op if the connection is already gone."""
+        connection = self._connections.get(connection_id)
+        if connection is not None:
+            await connection.close(reason=reason)
 
     def start_sweep(self) -> None:
         self._sweep_task = asyncio.create_task(self._sweep_loop())
