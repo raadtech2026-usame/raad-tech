@@ -26,6 +26,7 @@ from raad.core.db.base import Base
 import raad.modules.iam.infra.models  # noqa: F401 — registers UserModel/RefreshTokenModel
 import raad.modules.organization.infra.models  # noqa: F401 — registers OrganizationModel/RegionModel
 import raad.modules.fleet_device.infra.models  # noqa: F401 — registers Vehicle/Device/Camera/DeviceAssignment models
+import raad.modules.tracking.infra.models  # noqa: F401 — registers VehiclePosition/GeofenceCrossing models
 
 config = context.config
 
