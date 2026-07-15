@@ -56,15 +56,22 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_each_registered_message_id_reaches_its_own_handler(self) -> None:
         """Sends one frame per registered message_id over a real socket and confirms each
-        correct placeholder handler receives it (matching the task's explicit requirement:
-        "Confirm the correct handler receives each packet.").
+        correct handler receives it (matching the task's explicit requirement: "Confirm the
+        correct handler receives each packet.").
 
         Spies via the dispatcher's `on_dispatched` hook, which fires once per successfully
-        dispatched *known* message, carrying the message that was routed - since every
-        registered handler this phase is a distinct `PlaceholderMessageHandler` instance
-        (`server.py`'s composition root), a message_id appearing here only if its own frame
-        was sent confirms message-ID-based routing reached the right registry entry, not just
-        "some handler ran"."""
+        dispatched *known* message, carrying the message that was routed - a message_id
+        appearing here only if its own frame was sent confirms message-ID-based routing reached
+        the right registry entry, not just "some handler ran".
+
+        **Phase 9.5 note:** `REGISTRATION` and `AUTHENTICATION` are now real handlers, not
+        placeholders. Under the default fail-closed `NullDeviceProvisioningPort` (no port wired
+        in this test), both a malformed/empty-body registration and an unverifiable auth code
+        end with the connection closed (JT808 Technical Design §4: "reject + audit + close") -
+        *after* the response is sent and `on_dispatched` fires (registration only dispatches at
+        all if its body parses, so a well-formed fixed-length body is sent here). Each is sent
+        on its own throwaway connection so its close doesn't cut off the other message IDs
+        sharing the main connection."""
         dispatched: list[int] = []
         self.server.dispatcher._on_dispatched = lambda message: dispatched.append(
             message.message_id
@@ -75,8 +82,6 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
             message_ids.TERMINAL_GENERAL_RESPONSE,
             message_ids.HEARTBEAT,
             message_ids.LOGOUT,
-            message_ids.REGISTRATION,
-            message_ids.AUTHENTICATION,
             message_ids.LOCATION_REPORT,
             message_ids.BULK_LOCATION_REPORT,
             message_ids.MULTIMEDIA_EVENT_UPLOAD,
@@ -84,6 +89,33 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
             frame = build_wire_frame(msg_id, "013800138000", 1)
             writer.write(frame)
             await writer.drain()
+
+        # Well-formed fixed-length (37-byte) registration body so it parses and dispatches
+        # (province_id, city_county_id, manufacturer_id[5], terminal_model[20],
+        # manufacturer_terminal_id[7], plate_color) - content is otherwise irrelevant, since
+        # the default fail-closed port rejects every registration regardless.
+        registration_body = (
+            (0).to_bytes(2, "big")
+            + (0).to_bytes(2, "big")
+            + b"\x00" * 5
+            + b"\x00" * 20
+            + b"\x00" * 7
+            + b"\x00"
+        )
+        _, registration_writer = await self._open_client()
+        registration_writer.write(
+            build_wire_frame(
+                message_ids.REGISTRATION, "013800138000", 1, body=registration_body
+            )
+        )
+        await registration_writer.drain()
+
+        _, auth_writer = await self._open_client()
+        auth_writer.write(
+            build_wire_frame(message_ids.AUTHENTICATION, "013800138000", 1)
+        )
+        await auth_writer.drain()
+
         await asyncio.sleep(0.1)
 
         self.assertEqual(

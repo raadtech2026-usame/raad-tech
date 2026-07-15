@@ -27,6 +27,11 @@ export" stance `connection/manager.py`'s idle-timeout sweep and `session/device_
 manager.py`'s session-lifecycle hooks already take. Together they cover Phase 3.4 §19's
 documented observability intent ("messages/sec by type... parse-error rate") without a metrics
 backend this phase has no approved library for.
+
+**`close_connection` (Phase 9.5 addition):** resolves to `ConnectionManager.close_connection`
+(already existed, Phase 9.2) — invoked *after* sending the response, when `HandlerResult.
+close_connection_after` is set (JT808 Technical Design §4: a rejected registration or a failed
+authentication is "reject + audit + close," response first, then close).
 """
 
 from __future__ import annotations
@@ -43,6 +48,7 @@ from src.session.device_session_manager import DeviceSessionManager
 logger = get_logger("jt808.dispatcher")
 
 SendFrame = Callable[[str, bytes], Awaitable[None]]
+CloseConnection = Callable[[str, str], Awaitable[None]]
 OnDispatched = Callable[[InboundMessage], None]
 OnUnknownMessage = Callable[[InboundMessage], None]
 OnHandlerError = Callable[[InboundMessage, Exception], None]
@@ -99,6 +105,7 @@ class MessageDispatcher:
         unknown_handler: MessageHandler,
         device_sessions: DeviceSessionManager,
         send: SendFrame,
+        close_connection: CloseConnection,
         on_dispatched: OnDispatched | None = None,
         on_unknown_message: OnUnknownMessage | None = None,
         on_handler_error: OnHandlerError | None = None,
@@ -107,6 +114,7 @@ class MessageDispatcher:
         self._unknown_handler = unknown_handler
         self._device_sessions = device_sessions
         self._send = send
+        self._close_connection = close_connection
         self._on_dispatched = on_dispatched or _default_on_dispatched
         self._on_unknown_message = on_unknown_message or _default_on_unknown_message
         self._on_handler_error = on_handler_error or _default_on_handler_error
@@ -142,3 +150,8 @@ class MessageDispatcher:
                 body=result.response_body,
             )
             await self._send(connection_id, frame)
+
+        if result.close_connection_after:
+            await self._close_connection(
+                connection_id, result.close_reason or "handler_requested_close"
+            )

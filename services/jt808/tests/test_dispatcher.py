@@ -53,11 +53,13 @@ def make_dispatcher(**overrides):
     sender = overrides.pop("sender", RecordingSender())
     registry = overrides.pop("registry", HandlerRegistry())
     unknown_handler = overrides.pop("unknown_handler", UnknownMessageHandler())
+    close_connection = overrides.pop("close_connection", noop_close_connection)
     dispatcher = MessageDispatcher(
         registry=registry,
         unknown_handler=unknown_handler,
         device_sessions=device_sessions,
         send=sender,
+        close_connection=close_connection,
         **overrides,
     )
     return dispatcher, registry, sender

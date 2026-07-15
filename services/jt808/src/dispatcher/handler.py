@@ -15,9 +15,20 @@ reachable from here, by construction (nothing on this object exposes any of them
 Response dispatch flow" the dispatcher owns (`dispatcher.py`). Per the resolved Phase 9.4
 scope: `HandlerResult.no_response()` (both fields `None`) sends nothing; a handler that wants
 a reply sets both `response_message_id` and `response_body`. `response_body` is a fully
-formed, message-specific body — this phase's handlers never construct one themselves (that
+formed, message-specific body — Phase 9.4's own handlers never construct one themselves (that
 requires business content), only `UnknownMessageHandler` does (a generic "not supported" ack,
-`general_response.py`).
+`general_response.py`); Phase 9.5's registration/authentication handlers are the first to
+build real message-specific bodies (`handlers/registration_response.py`,
+`dispatcher/general_response.py`).
+
+**`close_connection_after`/`close_reason` (Phase 9.5 addition):** JT808 Technical Design §4 is
+explicit that both a rejected registration and a failed authentication end with "reject +
+audit + close" — the socket is closed *after* the rejection/failure response is sent. Declaring
+this via `HandlerResult` (rather than a handler calling some close capability directly) keeps
+"handlers own protocol behaviour only, dispatcher owns routing/flow" intact: the dispatcher
+(`dispatcher.py`) sends the response first, then closes, in that order, using its own injected
+`close_connection` callback — a handler never touches a `Connection`/`ConnectionManager`
+object directly.
 """
 
 from __future__ import annotations
@@ -42,6 +53,8 @@ class HandlerContext:
 class HandlerResult:
     response_message_id: int | None = None
     response_body: bytes | None = None
+    close_connection_after: bool = False
+    close_reason: str | None = None
 
     @classmethod
     def no_response(cls) -> "HandlerResult":

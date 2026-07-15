@@ -1,11 +1,12 @@
 """JT808 TCP transport service entrypoint (Phase 9.1 Transport Layer + Phase 9.2 Session
-Management + Phase 9.3 Packet Parser + Phase 9.4 Message Dispatcher; Phase 2 §5.1, Phase 3.4
-§2/§5/§6/§7). Wires config, logging, the transport-level `SessionRegistry`/`ConnectionManager`,
-the device-level `DeviceSessionRegistry`/`DeviceSessionManager`, the `PacketParser`, and the
-`MessageDispatcher` (with its `HandlerRegistry` of placeholder handlers) into a running
-`asyncio.start_server`; handles SIGINT/SIGTERM for graceful shutdown (close every connection,
-close every device session, stop both sweep tasks, stop the server) rather than letting the
-process die with sockets mid-flight.
+Management + Phase 9.3 Packet Parser + Phase 9.4 Message Dispatcher + Phase 9.5 Authentication
+& Registration; Phase 2 §5.1, Phase 3.4 §2/§4/§5/§6/§7/§8). Wires config, logging, the
+transport-level `SessionRegistry`/`ConnectionManager`, the device-level `DeviceSessionRegistry`/
+`DeviceSessionManager`, the `PacketParser`, and the `MessageDispatcher` (with its
+`HandlerRegistry` of registration/auth handlers plus placeholders for everything else) into a
+running `asyncio.start_server`; handles SIGINT/SIGTERM for graceful shutdown (close every
+connection, close every device session, stop both sweep tasks, stop the server) rather than
+letting the process die with sockets mid-flight.
 
 `DeviceSessionManager` is constructed *before* `ConnectionManager` so its
 `handle_connection_closed` can be wired as `ConnectionManager`'s `on_connection_closed` hook —
@@ -13,18 +14,29 @@ process die with sockets mid-flight.
 `ConnectionManager` to close a specific socket when superseding a duplicate terminal,
 ADR-808-8) via a bound-method callback resolved at call time, not construction time, so the
 two can be built in either order without a real circular dependency. The dispatcher's `send`
-callback (`_send_frame`) closes an identical circle with `ConnectionManager.send_to_connection`.
+callback (`_send_frame`) closes an identical circle with `ConnectionManager.send_to_connection`;
+`_close_connection` is now shared by *three* callers (`DeviceSessionManager`, `MessageDispatcher`
+for handler-requested closes, and nothing else) — one bound method, no duplication.
 
-**`_handle_frame` now hands a successfully parsed `InboundMessage` to `MessageDispatcher.
-dispatch` (Phase 9.4)** — the "codec -> dispatcher" handoff the task describes. A `ProtocolError`
-(checksum/malformed/unescape failure) is still logged and the frame dropped *before* the
-dispatcher ever sees it — malformed packets never reach dispatch, never crashing the connection
-(Backend LLD §6). A `None` parse result (awaiting more subpackages) likewise never reaches the
-dispatcher.
+**`_handle_frame` hands a successfully parsed `InboundMessage` to `MessageDispatcher.dispatch`**
+— the "codec -> dispatcher" handoff. A `ProtocolError` (checksum/malformed/unescape failure) is
+still logged and the frame dropped *before* the dispatcher ever sees it — malformed packets
+never reach dispatch, never crashing the connection (Backend LLD §6). A `None` parse result
+(awaiting more subpackages) likewise never reaches the dispatcher.
 
-**Handlers registered this phase are all `PlaceholderMessageHandler`** (one per named
-`message_id`, `dispatcher/message_ids.py`) — no real business logic; see `dispatcher/
-placeholder_handler.py`'s module docstring.
+**`device_provisioning` (Phase 9.5, constructor parameter):** the seam `TerminalRegistrationHandler`/
+`TerminalAuthenticationHandler` use to decide accept/reject and verify auth codes
+(`handlers/provisioning_port.py` — no concrete implementation exists in this codebase yet).
+Defaults to `NullDeviceProvisioningPort`, fail-closed (every registration/auth rejected) —
+the same "fail loudly, don't fake it" policy the Business API's own DI container applies to an
+unconfigured port, never silently accepting every device. A real implementation is injected
+here once one is built (a later phase, with real device-provisioning-workflow access).
+
+**Handlers registered this phase:** `TerminalRegistrationHandler` (`0x0100`),
+`TerminalAuthenticationHandler` (`0x0102`) — real protocol behavior, Phase 9.5. Every other
+named `message_id` still resolves to a no-op `PlaceholderMessageHandler` (`dispatcher/
+placeholder_handler.py`'s module docstring) — Heartbeat/Location/BulkLocation/Alarm/CommandAck/
+Logout business logic remains a later phase's job.
 
 Framework-agnostic composition root — no FastAPI, no HTTP, no SQLAlchemy
 (`.claude/rules/architecture.md` #2: "FastAPI never terminates a device socket").
@@ -44,6 +56,12 @@ from src.dispatcher.dispatcher import MessageDispatcher
 from src.dispatcher.placeholder_handler import PlaceholderMessageHandler
 from src.dispatcher.registry import HandlerRegistry
 from src.dispatcher.unknown_handler import UnknownMessageHandler
+from src.handlers.authentication_handler import TerminalAuthenticationHandler
+from src.handlers.provisioning_port import (
+    DeviceProvisioningPort,
+    NullDeviceProvisioningPort,
+)
+from src.handlers.registration_handler import TerminalRegistrationHandler
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.protocol.exceptions import ProtocolError
 from src.protocol.parser import PacketParser
@@ -53,14 +71,13 @@ from src.session.registry import SessionRegistry
 
 logger = get_logger("jt808.server")
 
-# JT808 Technical Design §7/§8's named handler set — see dispatcher/message_ids.py's module
-# docstring for the per-message-ID primary-spec citation.
+# JT808 Technical Design §7/§8's named handler set that stays a placeholder this phase — see
+# dispatcher/message_ids.py's module docstring for the per-message-ID primary-spec citation.
+# REGISTRATION and AUTHENTICATION are deliberately absent: they get real handlers below.
 _PLACEHOLDER_HANDLER_NAMES = {
     message_ids.TERMINAL_GENERAL_RESPONSE: "CommandAck",
     message_ids.HEARTBEAT: "Heartbeat",
     message_ids.LOGOUT: "Logout",
-    message_ids.REGISTRATION: "Register",
-    message_ids.AUTHENTICATION: "Auth",
     message_ids.LOCATION_REPORT: "Location",
     message_ids.BULK_LOCATION_REPORT: "BulkLocation",
     message_ids.MULTIMEDIA_EVENT_UPLOAD: "Alarm",
@@ -68,8 +85,14 @@ _PLACEHOLDER_HANDLER_NAMES = {
 
 
 class Jt808Server:
-    def __init__(self, config: ServerConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ServerConfig | None = None,
+        *,
+        device_provisioning: DeviceProvisioningPort | None = None,
+    ) -> None:
         self._config = config or ServerConfig.from_env()
+        self._device_provisioning = device_provisioning or NullDeviceProvisioningPort()
         self._sessions = SessionRegistry()
         self._device_session_registry = DeviceSessionRegistry()
         self._device_sessions = DeviceSessionManager(
@@ -83,11 +106,20 @@ class Jt808Server:
             self._handler_registry.register(
                 handler_message_id, PlaceholderMessageHandler(name)
             )
+        self._handler_registry.register(
+            message_ids.REGISTRATION,
+            TerminalRegistrationHandler(self._device_provisioning),
+        )
+        self._handler_registry.register(
+            message_ids.AUTHENTICATION,
+            TerminalAuthenticationHandler(self._device_provisioning),
+        )
         self._dispatcher = MessageDispatcher(
             registry=self._handler_registry,
             unknown_handler=UnknownMessageHandler(),
             device_sessions=self._device_sessions,
             send=self._send_frame,
+            close_connection=self._close_connection,
         )
 
         self._manager = ConnectionManager(
@@ -155,9 +187,14 @@ class Jt808Server:
 
     @property
     def device_sessions(self) -> DeviceSessionManager:
-        """Public entry point a future phase's `AuthHandler` (not built yet) calls
-        `.create(...)` on, once packet parsing/dispatch exist."""
+        """`.create(...)` is called by `TerminalAuthenticationHandler` on successful
+        authentication (Phase 9.5) — exposed publicly mainly for tests/manual verification to
+        assert on session state directly."""
         return self._device_sessions
+
+    @property
+    def device_provisioning(self) -> DeviceProvisioningPort:
+        return self._device_provisioning
 
     @property
     def session_count(self) -> int:

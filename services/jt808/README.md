@@ -27,9 +27,13 @@ src/
 ├── dispatcher/   # Packet Dispatcher — routes by message_id to handlers  [Phase 9.4: implemented]
 ├── handlers/     # Message Handlers: register, auth, heartbeat, location,
 │                 # bulk/backfill location, alarm, command-ack
-│                 #   - placeholder (no-op, logs only) for all 8 named message IDs
+│                 #   - registration (0x0100 -> 0x8100) and authentication (0x0102 -> 0x8001):
+│                 #     real protocol behavior, session binding, reject/fail + close
+│                 #     [Phase 9.5: implemented, in src/handlers/]
+│                 #   - placeholder (no-op, logs only) for the remaining 6 named message IDs
 │                 #     [Phase 9.4: implemented, in src/dispatcher/placeholder_handler.py]
-│                 #   - real business logic for each                  [not yet implemented]
+│                 #   - real business logic for heartbeat/location/alarm/etc.
+│                 #                                                  [not yet implemented]
 ├── session/      # Session Manager
 │                 #   - transport-level ConnectionSession, keyed by connection_id
 │                 #     [Phase 9.1: implemented, in-memory only]
@@ -108,11 +112,39 @@ clients sending genuinely hand-framed packets through the full TCP -> Transport 
 Dispatcher stack against a live server, confirming each of the 8 message IDs reaches its own
 correctly-named handler (`tests/`, plus a manual script).
 
+**Phase 9.5 (Authentication & Registration): implemented.** `src/handlers/registration_handler.py`
+(`TerminalRegistrationHandler`, `0x0100 -> 0x8100`) and `authentication_handler.py`
+(`TerminalAuthenticationHandler`, `0x0102 -> 0x8001`) — the first *real* message handlers in
+this service, JT808 Technical Design §4/§8 and JT/T 808-2013 §8.5/§8.6/§8.8. Both depend only
+on an injected `DeviceProvisioningPort` (`handlers/provisioning_port.py`) — a ports/interfaces
+seam, per the task's explicit "if future persistence is required, use ports/interfaces only";
+no concrete implementation exists yet (no Database, no Fleet Device integration, no Redis), so
+`server.py`'s composition root binds the fail-closed `NullDeviceProvisioningPort` by default
+(every registration/auth rejected until a real port is wired). A flagged, unresolved conflict
+between JT808 Technical Design §4 (reads as: a static, pre-provisioned device secret) and the
+primary JT/T 808-2013 spec (reads as: a platform-issued code, minted at registration and echoed
+back at auth) was surfaced and confirmed with the user before implementing — resolved by
+keeping the port's `auth_code` semantically opaque rather than committing to either reading
+(see `provisioning_port.py`'s module docstring for both sources verbatim). On successful
+authentication, `TerminalAuthenticationHandler` binds a `DeviceSession` via Phase 9.2's
+`DeviceSessionManager.create()` (in `AUTHENTICATED` state); it deliberately does **not** call
+`touch()` — promotion to `ONLINE` is reserved for a future Heartbeat/Location handler, per the
+Phase 9.2-established state-machine reading, reconfirmed with the user for this phase.
+Duplicate/repeated authentication needed no new logic — Phase 9.2's `create()` already
+implements ADR-808-8 supersede (different connection) and safe idempotent replace (same
+connection). Rejection/failure follow JT808 Technical Design §4's "reject + audit + close":
+the dispatcher sends the response, then closes the connection (`HandlerResult.
+close_connection_after`, a minimal Phase 9.4 dispatcher addition). Verified with 32 new unit
+and full-stack integration tests (registration/auth encoding, handler behavior against a fake
+provisioning port, real TCP clients against a live `Jt808Server`) plus a manual verification
+script covering Register -> Authenticate -> Heartbeat-ready state, ADR-808-8 supersede, and
+clean shutdown with zero leaked tasks.
+
 **Not yet implemented** (see `src/handlers/`, `src/commands/`, `src/events/`, `store/` above):
-message-specific body field decoding and the vendor Anti-Corruption Layer, real business logic
-for any of the 8 registered message IDs (register/auth/heartbeat/location/alarm/command-ack/
-logout/bulk-location), device identity/auth (credential verification itself — Phase 9.2's
-`create()` assumes it already happened), GPS position processing, alarm processing,
-Redis-backed session state, cross-shard command routing, domain event publishing, and
-business-initiated command downlink (§12 — distinct from this phase's protocol-level automatic
-acks).
+message-specific body field decoding and the vendor Anti-Corruption Layer for the remaining 6
+message IDs, real business logic for heartbeat/location/alarm/command-ack/logout/bulk-location,
+a concrete `DeviceProvisioningPort` implementation (real credential/device-lookup logic — this
+phase only defines the seam), the `AUTHENTICATED -> ONLINE` transition itself (needs a
+Heartbeat/Location handler), GPS position processing, alarm processing, Redis-backed session
+state, cross-shard command routing, domain event publishing, and business-initiated command
+downlink (§12 — distinct from this phase's protocol-level automatic acks).
