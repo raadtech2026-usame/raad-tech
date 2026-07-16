@@ -40,6 +40,16 @@ defining a transport-eligibility concept distinct from the CR-1 parent-access ga
 policies`, not `transport_ops` (mirroring `organization.domain.policies`'s identical reasoning
 for why `SubscriptionAccessPolicy`/`VideoAccessPolicy` aren't domain policies of that module
 either). See `policies.py`.
+
+**Phase 10.2 addendum: `update_details`.** The Phase 10.2 application layer needs an
+`UpdateStudentCommand` (editing `full_name`/`external_ref` post-enrollment) with no matching
+domain behavior method here — flagged as a conflict between that phase's own instructions
+("reuse only the completed Student Domain" vs. "implement `UpdateStudentCommand`") and
+confirmed with the user before adding this single, strictly-additive method below, rather than
+having the application layer mutate `full_name`/`external_ref` directly (which would either
+bypass this class's own validation or force the application layer to duplicate it — both
+forbidden). `_validate_full_name`/`_validate_external_ref` are factored out so `__init__` and
+`update_details` share exactly one copy of each rule.
 """
 
 from __future__ import annotations
@@ -56,6 +66,24 @@ from raad.modules.transport_ops.domain.value_objects import (
 
 _FULL_NAME_MAX_LENGTH = 200  # Database Design §6.2: full_name VARCHAR(200)
 _EXTERNAL_REF_MAX_LENGTH = 64  # Database Design §6.2: external_ref VARCHAR(64)
+
+
+def _validate_full_name(full_name: str) -> None:
+    if not full_name:
+        raise DomainError("Student full_name must not be empty")
+    if len(full_name) > _FULL_NAME_MAX_LENGTH:
+        raise DomainError(
+            f"Student full_name must be at most {_FULL_NAME_MAX_LENGTH} characters: "
+            f"{len(full_name)}"
+        )
+
+
+def _validate_external_ref(external_ref: str | None) -> None:
+    if external_ref is not None and len(external_ref) > _EXTERNAL_REF_MAX_LENGTH:
+        raise DomainError(
+            f"Student external_ref must be at most {_EXTERNAL_REF_MAX_LENGTH} "
+            f"characters: {len(external_ref)}"
+        )
 
 
 class _AggregateRoot:
@@ -90,18 +118,8 @@ class Student(_AggregateRoot):
         status: StudentStatus,
     ) -> None:
         super().__init__()
-        if not full_name:
-            raise DomainError("Student full_name must not be empty")
-        if len(full_name) > _FULL_NAME_MAX_LENGTH:
-            raise DomainError(
-                f"Student full_name must be at most {_FULL_NAME_MAX_LENGTH} characters: "
-                f"{len(full_name)}"
-            )
-        if external_ref is not None and len(external_ref) > _EXTERNAL_REF_MAX_LENGTH:
-            raise DomainError(
-                f"Student external_ref must be at most {_EXTERNAL_REF_MAX_LENGTH} "
-                f"characters: {len(external_ref)}"
-            )
+        _validate_full_name(full_name)
+        _validate_external_ref(external_ref)
         self.id = id
         self.organization_id = organization_id
         self.full_name = full_name
@@ -195,6 +213,34 @@ class Student(_AggregateRoot):
             transport_ops_events.student_transferred(
                 student_id=str(self.id),
                 organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def update_details(
+        self,
+        *,
+        full_name: str,
+        external_ref: str | None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Phase 10.2 addition — see module docstring's addendum. Idempotent: a call that
+        changes neither field is a no-op, the same "no event for no real change" precedent
+        every status-change method above already follows."""
+        _validate_full_name(full_name)
+        _validate_external_ref(external_ref)
+        if full_name == self.full_name and external_ref == self.external_ref:
+            return
+        self.full_name = full_name
+        self.external_ref = external_ref
+        self._record(
+            transport_ops_events.student_details_updated(
+                student_id=str(self.id),
+                organization_id=str(self.organization_id),
+                full_name=full_name,
+                external_ref=external_ref,
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )

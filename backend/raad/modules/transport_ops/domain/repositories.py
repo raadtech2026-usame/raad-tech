@@ -9,6 +9,13 @@ backend.md` #2). The concrete `infra/repositories.py` implementation (a later ph
 also satisfy `core.db.repository`'s interfaces if useful — an infra-layer decision.
 
 Phase 10.1 scope: `StudentRepository` only, matching `entities.py`'s `Student`-only scope.
+
+**Phase 10.2 addition: `list_all`.** The application layer's `ListStudentsQuery` needs a
+collection read this interface didn't previously expose — added here as an interface-only
+method (no infra implementation this phase), per that phase's own explicit instruction
+("Repositories remain interfaces only"). No `organization_id` parameter: tenant scoping is
+injected once at the repository/infra layer automatically (`.claude/rules/backend.md` #4), the
+same "never pass `organization_id` explicitly" convention `get`/`add` above already follow.
 """
 
 from __future__ import annotations
@@ -31,4 +38,10 @@ class StudentRepository(ABC):
     @abstractmethod
     def add(self, student: Student) -> None:
         """Persistence of changes is flushed by the Unit of Work, not the repository (§7.1)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_all(self) -> list[Student]:
+        """Backs `ListStudentsQuery` (Phase 10.2). Already implicitly scoped to the caller's
+        tenant — see module docstring."""
         raise NotImplementedError

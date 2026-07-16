@@ -256,6 +256,62 @@ class StudentStatusTransitionTests(unittest.TestCase):
         self.assertEqual(event.occurred_at, self.clock.now())
 
 
+class StudentUpdateDetailsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.clock = FixedClock(datetime(2026, 7, 16, tzinfo=timezone.utc))
+
+    def test_update_details_changes_fields_and_records_event(self) -> None:
+        student = make_student(full_name="Old Name", external_ref="OLD-1")
+        student.update_details(
+            full_name="New Name",
+            external_ref="NEW-1",
+            clock=self.clock,
+            actor_id="admin-1",
+        )
+        self.assertEqual(student.full_name, "New Name")
+        self.assertEqual(student.external_ref, "NEW-1")
+        events = student.pull_domain_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "StudentDetailsUpdated")
+        self.assertEqual(
+            events[0].payload,
+            {"full_name": "New Name", "external_ref": "NEW-1", "actor_id": "admin-1"},
+        )
+
+    def test_update_details_with_identical_values_is_idempotent_no_op(self) -> None:
+        student = make_student(full_name="Same Name", external_ref="SAME-1")
+        student.update_details(
+            full_name="Same Name", external_ref="SAME-1", clock=self.clock
+        )
+        self.assertEqual(student.pull_domain_events(), [])
+
+    def test_update_details_rejects_empty_full_name(self) -> None:
+        student = make_student()
+        with self.assertRaises(DomainError):
+            student.update_details(full_name="", external_ref=None, clock=self.clock)
+
+    def test_update_details_rejects_full_name_over_200_chars(self) -> None:
+        student = make_student()
+        with self.assertRaises(DomainError):
+            student.update_details(
+                full_name="A" * 201, external_ref=None, clock=self.clock
+            )
+
+    def test_update_details_rejects_external_ref_over_64_chars(self) -> None:
+        student = make_student()
+        with self.assertRaises(DomainError):
+            student.update_details(
+                full_name="Valid Name", external_ref="X" * 65, clock=self.clock
+            )
+
+    def test_update_details_can_clear_external_ref_to_none(self) -> None:
+        student = make_student(external_ref="SOME-REF")
+        student.update_details(
+            full_name="Valid Name", external_ref=None, clock=self.clock
+        )
+        self.assertIsNone(student.external_ref)
+
+
 class DomainEventBufferingTests(unittest.TestCase):
     def test_pull_domain_events_drains_the_buffer(self) -> None:
         clock = FixedClock(datetime(2026, 7, 16, tzinfo=timezone.utc))
@@ -298,6 +354,9 @@ class StudentRepositoryInterfaceTests(unittest.TestCase):
 
             def add(self, student: Student) -> None:
                 self._students[str(student.id)] = student
+
+            async def list_all(self) -> list[Student]:
+                return list(self._students.values())
 
         repo = InMemoryStudentRepository()
         student = make_student()

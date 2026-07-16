@@ -16,6 +16,9 @@ LLD §10.3) belong to `student_assignments` — a distinct, out-of-scope-this-ph
 `StudentGraduated`/`StudentTransferred` below are this phase's own choice, following the
 established PascalCase-past-tense convention and the Ch. 6 ubiquitous language ("Student") —
 not a verbatim-documented name. Flagged, not silently assumed to be pre-approved.
+
+**Phase 10.2 addition:** `student_details_updated`, backing `Student.update_details`
+(`entities.py`'s module docstring addendum) — same naming-note caveat applies.
 """
 
 from __future__ import annotations
@@ -60,6 +63,29 @@ def student_enrolled(
 ) -> DomainEvent:
     return _new_event(
         event_type="StudentEnrolled",
+        aggregate_type="Student",
+        aggregate_id=student_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "full_name": full_name,
+            "external_ref": external_ref,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def student_details_updated(
+    *,
+    student_id: str,
+    organization_id: str,
+    full_name: str,
+    external_ref: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="StudentDetailsUpdated",
         aggregate_type="Student",
         aggregate_id=student_id,
         org_id=organization_id,
