@@ -63,7 +63,8 @@ class IntervalScheduler(Scheduler):
 
 class LockPort(ABC):
     """Overlap guard for scheduler jobs (§11.3: "scheduler jobs are guarded against overlap —
-    a run-lock in Redis"). Interface only in this phase — no Redis client is wired yet."""
+    a run-lock in Redis"). Interface only in this phase — no Redis client is wired yet.
+    """
 
     @abstractmethod
     async def acquire(self, key: str, ttl_seconds: int) -> bool:

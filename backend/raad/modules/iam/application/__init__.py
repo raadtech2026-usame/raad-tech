@@ -18,7 +18,11 @@ from raad.modules.iam.application.commands import (
     RefreshAccessTokenCommand,
 )
 from raad.modules.iam.application.ports import IamUnitOfWork
-from raad.modules.iam.application.queries import AuthResultDTO, GetUserByIdQuery, UserDTO
+from raad.modules.iam.application.queries import (
+    AuthResultDTO,
+    GetUserByIdQuery,
+    UserDTO,
+)
 from raad.modules.iam.application.services import (
     AuthApplicationService,
     UserApplicationService,

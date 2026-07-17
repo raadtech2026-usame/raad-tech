@@ -4,6 +4,7 @@
 verification itself lives in `core/security` (RBAC/JWT), which is not implemented in this
 phase; the IAM module (`modules/iam`) owns issuing tokens.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

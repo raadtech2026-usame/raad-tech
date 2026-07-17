@@ -26,7 +26,12 @@ from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.domain.entities import RefreshToken, User
 from raad.modules.iam.domain.repositories import RefreshTokenRepository, UserRepository
-from raad.modules.iam.domain.value_objects import Email, PhoneNumber, RefreshTokenId, UserId
+from raad.modules.iam.domain.value_objects import (
+    Email,
+    PhoneNumber,
+    RefreshTokenId,
+    UserId,
+)
 from raad.modules.iam.infra.mappers import (
     model_to_refresh_token,
     model_to_user,

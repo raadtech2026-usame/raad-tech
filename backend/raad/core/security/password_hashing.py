@@ -51,7 +51,9 @@ class Pbkdf2PasswordHasher(PasswordHasher):
 
     def verify(self, plain_password: str, hashed_password: str) -> bool:
         try:
-            algorithm_id, iterations_str, salt_b64, derived_b64 = hashed_password.split("$")
+            algorithm_id, iterations_str, salt_b64, derived_b64 = hashed_password.split(
+                "$"
+            )
             if algorithm_id != _ALGORITHM_ID:
                 return False
             iterations = int(iterations_str)

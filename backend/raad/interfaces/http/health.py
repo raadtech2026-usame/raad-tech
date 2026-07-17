@@ -5,6 +5,7 @@ infrastructure/orchestrator-facing probes (load balancer health checks, Kubernet
 liveness/readiness), not part of the versioned business API contract, so they must stay
 stable even across a future `/api/v2`.
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter
@@ -30,6 +31,7 @@ async def liveness() -> dict[str, str]:
 @router.get("/health/ready")
 async def readiness() -> dict[str, str]:
     """Readiness: the process is able to serve traffic. Currently confirms settings loaded
-    successfully; DB/Redis/broker connectivity checks are added once those clients exist."""
+    successfully; DB/Redis/broker connectivity checks are added once those clients exist.
+    """
     get_settings()
     return {"status": "ready"}

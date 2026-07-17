@@ -25,7 +25,9 @@ class OutboxRelayWorker(Worker):
     async def run_once(self) -> None:
         publisher = self._container.try_resolve(OutboxPublisher)
         if publisher is None:
-            logger.debug("outbox_relay_idle", extra={"reason": "no OutboxPublisher bound"})
+            logger.debug(
+                "outbox_relay_idle", extra={"reason": "no OutboxPublisher bound"}
+            )
             return
 
         published = await publisher.publish_pending(self._batch_size)

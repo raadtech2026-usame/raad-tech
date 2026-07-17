@@ -5,6 +5,7 @@ domain stays framework-free (§3.1, §14.3). `interfaces/http` maps them to the 
 (see `handlers.py`); other delivery mechanisms (workers, WebSocket) can map the same
 exceptions to their own transport without duplicating the hierarchy.
 """
+
 from __future__ import annotations
 
 from typing import Any

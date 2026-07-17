@@ -4,6 +4,7 @@ Generic, business-rule-free helpers used across layers. Transport validation (Py
 schemas) and domain invariants (aggregate/value-object guards, policies) each carry their own
 specific rules elsewhere (§15.1) — this module only provides the reusable mechanics.
 """
+
 from __future__ import annotations
 
 from abc import ABC

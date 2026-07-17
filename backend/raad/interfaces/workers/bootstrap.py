@@ -57,7 +57,9 @@ def create_lifecycle(
     return lifecycle, registry
 
 
-async def run_workers(settings: Settings, stop_event: asyncio.Event | None = None) -> None:
+async def run_workers(
+    settings: Settings, stop_event: asyncio.Event | None = None
+) -> None:
     container = build_worker_container(settings)
     lifecycle, registry = create_lifecycle(container, settings)
 
@@ -73,7 +75,9 @@ async def run_workers(settings: Settings, stop_event: asyncio.Event | None = Non
             pass
 
     await lifecycle.start_all()
-    logger.info("workers_started", extra={"workers": [h.name for h in registry.snapshot()]})
+    logger.info(
+        "workers_started", extra={"workers": [h.name for h in registry.snapshot()]}
+    )
     await stop_event.wait()
     await lifecycle.stop_all()
     logger.info("workers_stopped")

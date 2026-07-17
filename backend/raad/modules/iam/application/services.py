@@ -145,7 +145,9 @@ class UserApplicationService:
             await uow.commit()
             return user_to_dto(user)
 
-    async def enable_mfa(self, command: EnableMfaCommand, *, uow: IamUnitOfWork) -> UserDTO:
+    async def enable_mfa(
+        self, command: EnableMfaCommand, *, uow: IamUnitOfWork
+    ) -> UserDTO:
         async with uow:
             user = await self._get_user_or_raise(uow, command.user_id)
             user.enable_mfa(clock=self._clock, actor_id=command.actor.user_id)
@@ -196,9 +198,13 @@ class AuthApplicationService:
         self._token_service = token_service
         self._password_hasher = password_hasher
 
-    async def login(self, command: LoginCommand, *, uow: IamUnitOfWork) -> AuthResultDTO:
+    async def login(
+        self, command: LoginCommand, *, uow: IamUnitOfWork
+    ) -> AuthResultDTO:
         async with uow:
-            user = await self._find_user_by_identifier(uow, command.email, command.phone)
+            user = await self._find_user_by_identifier(
+                uow, command.email, command.phone
+            )
             if (
                 user is None
                 or user.password_hash is None
@@ -254,8 +260,14 @@ class AuthApplicationService:
 
             token_hash = _hash_refresh_token(command.refresh_token)
             stored = await uow.refresh_tokens.get_by_token_hash(token_hash)
-            if stored is None or stored.is_revoked or stored.is_expired(clock=self._clock):
-                raise AuthenticationError("Refresh token is invalid or has been revoked.")
+            if (
+                stored is None
+                or stored.is_revoked
+                or stored.is_expired(clock=self._clock)
+            ):
+                raise AuthenticationError(
+                    "Refresh token is invalid or has been revoked."
+                )
 
             user = await uow.users.get(stored.user_id)
             if user is None or user.status is not UserStatus.ACTIVE:

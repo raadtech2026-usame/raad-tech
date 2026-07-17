@@ -16,5 +16,6 @@ def generate_secure_token(num_bytes: int = 32) -> str:
 
 def constant_time_equals(a: str, b: str) -> bool:
     """Timing-safe string comparison — use instead of `==` for any secret comparison
-    (tokens, API keys) to avoid leaking length/content via response-time side channels."""
+    (tokens, API keys) to avoid leaking length/content via response-time side channels.
+    """
     return hmac.compare_digest(a, b)

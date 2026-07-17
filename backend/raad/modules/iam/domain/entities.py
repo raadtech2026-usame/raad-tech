@@ -186,7 +186,9 @@ class User(_AggregateRoot):
         self.last_login_at = now
         self._record(
             iam_events.user_logged_in(
-                user_id=str(self.id), organization_id=self._org_id_value(), occurred_at=now
+                user_id=str(self.id),
+                organization_id=self._org_id_value(),
+                occurred_at=now,
             )
         )
 

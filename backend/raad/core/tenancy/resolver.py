@@ -12,6 +12,7 @@ The concrete resolver needs `region_assignments` / `support_assignments` / `org_
 which is owned by the `organization` and `iam` modules (not yet implemented). Only the
 interface is defined here, per this phase's foundation-only scope for tenancy.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

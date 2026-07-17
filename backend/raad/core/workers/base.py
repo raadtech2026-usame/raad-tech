@@ -56,7 +56,9 @@ class Worker(ABC):
         try:
             await self.run_once()
             self._last_error = None
-        except Exception as exc:  # noqa: BLE001 - a worker tick must never kill the loop
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - a worker tick must never kill the loop
             self._last_error = str(exc)
             logger.exception("worker_tick_failed", extra={"worker": self.name})
         finally:
@@ -67,7 +69,9 @@ class Worker(ABC):
         while not self._stop_event.is_set():
             await self._tick()
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=interval_seconds)
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=interval_seconds
+                )
             except asyncio.TimeoutError:
                 pass
 

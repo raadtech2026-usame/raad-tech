@@ -16,7 +16,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from raad.modules.iam.domain.entities import RefreshToken, User
-from raad.modules.iam.domain.value_objects import Email, PhoneNumber, RefreshTokenId, UserId
+from raad.modules.iam.domain.value_objects import (
+    Email,
+    PhoneNumber,
+    RefreshTokenId,
+    UserId,
+)
 
 
 class UserRepository(ABC):

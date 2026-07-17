@@ -4,6 +4,7 @@ never gain a reachable code path here (see `.claude/rules/security.md`).
 
 Empty per Phase 4.2 scope — no endpoints beyond health checks are implemented yet.
 """
+
 from fastapi import APIRouter
 
 video_router = APIRouter()

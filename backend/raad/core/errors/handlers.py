@@ -4,6 +4,7 @@ A single handler maps the `AppError` hierarchy to the stable error envelope and 
 status table below; it never leaks stack traces or internal identifiers to clients. This is
 edge/middleware-layer concern — the domain never imports FastAPI (§3.1).
 """
+
 from __future__ import annotations
 
 import logging

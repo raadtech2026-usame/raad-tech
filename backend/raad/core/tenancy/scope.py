@@ -3,6 +3,7 @@
 `TenantRegionScope` is the resolved set of organizations a principal may access. It is applied
 as a mandatory filter at the repository layer (§7.1) — never left to the caller to remember.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

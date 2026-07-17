@@ -1,4 +1,5 @@
 """Exception hierarchy, HTTP mapping, and the standard error envelope (Backend LLD §14)."""
+
 from raad.core.errors.envelope import ErrorDetail, ErrorEnvelope
 from raad.core.errors.exceptions import (
     AppError,

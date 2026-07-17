@@ -26,7 +26,9 @@ class PermissionEvaluator(ABC):
     matrix (Phase 2 §12.2) is formally approved and owned by `modules/iam`."""
 
     @abstractmethod
-    async def has_permission(self, principal: Principal, permission: Permission) -> bool:
+    async def has_permission(
+        self, principal: Principal, permission: Permission
+    ) -> bool:
         raise NotImplementedError
 
 

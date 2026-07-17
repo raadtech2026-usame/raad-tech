@@ -29,7 +29,9 @@ class EventDispatcher(ABC):
     instead, via `BrokerPort`."""
 
     @abstractmethod
-    def subscribe(self, event_type: str, handler: Callable[[DomainEvent], None]) -> None:
+    def subscribe(
+        self, event_type: str, handler: Callable[[DomainEvent], None]
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -51,7 +53,8 @@ class BrokerConsumer(ABC):
     """Inbound (consumer) side of the broker port — subscribes to event topics/streams and
     invokes a handler per message (§10.3: "anything crossing a module or service boundary
     goes through the outbox+broker"). Consumers must be idempotent (dedupe by `event_id` —
-    see `core.workers.idempotency.IdempotencyStore`), since delivery is at-least-once."""
+    see `core.workers.idempotency.IdempotencyStore`), since delivery is at-least-once.
+    """
 
     @abstractmethod
     async def consume(self, handler: Callable[[DomainEvent], Awaitable[None]]) -> None:

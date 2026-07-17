@@ -65,7 +65,8 @@ def _b64url_decode(value: str) -> bytes:
 class JwtTokenService(TokenService):
     """HS256-only by construction — the Backend LLD's `AuthSettings.jwt_algorithm` default is
     HS256 and no external identity provider / asymmetric-key flow is in scope for this phase.
-    Fails fast on construction if given anything else, rather than silently ignoring it."""
+    Fails fast on construction if given anything else, rather than silently ignoring it.
+    """
 
     def __init__(
         self,
@@ -179,7 +180,9 @@ class JwtTokenService(TokenService):
             "jti": secrets.token_hex(16),
         }
         header_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
-        payload_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+        payload_b64 = _b64url_encode(
+            json.dumps(payload, separators=(",", ":")).encode()
+        )
         signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
         signature = hmac.new(self._secret_key, signing_input, hashlib.sha256).digest()
         return f"{header_b64}.{payload_b64}.{_b64url_encode(signature)}"

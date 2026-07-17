@@ -49,7 +49,11 @@ from raad.modules.iam.application.commands import (
     RefreshAccessTokenCommand,
 )
 from raad.modules.iam.application.ports import IamUnitOfWork
-from raad.modules.iam.application.queries import AuthResultDTO, GetUserByIdQuery, UserDTO
+from raad.modules.iam.application.queries import (
+    AuthResultDTO,
+    GetUserByIdQuery,
+    UserDTO,
+)
 from raad.modules.iam.application.services import (
     AuthApplicationService,
     UserApplicationService,
@@ -280,5 +284,7 @@ async def update_user(
         # raise rather than `assert`, since `assert` is stripped under `python -O`/
         # `PYTHONOPTIMIZE` and this invariant must hold regardless of how the interpreter is
         # invoked.
-        raise RuntimeError("update_user: no field was processed despite the guard above.")
+        raise RuntimeError(
+            "update_user: no field was processed despite the guard above."
+        )
     return _user_dto_to_response(user)

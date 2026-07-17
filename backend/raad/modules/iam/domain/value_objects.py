@@ -52,7 +52,9 @@ class RefreshTokenId:
 
     def __post_init__(self) -> None:
         if not _ULID_PATTERN.match(self.value):
-            raise DomainError(f"RefreshTokenId must be a 26-character ULID: {self.value!r}")
+            raise DomainError(
+                f"RefreshTokenId must be a 26-character ULID: {self.value!r}"
+            )
 
     def __str__(self) -> str:
         return self.value
@@ -64,7 +66,8 @@ class OrganizationId:
     (Database Design §4.2) — this module never loads or mutates that aggregate, only stores
     its id, per "cross-context references are by ID only" (`.claude/rules/architecture.md` #3
     / `.claude/rules/database.md` #3). Deliberately validated as an opaque non-empty string,
-    not a specific ID format/scheme — `iam` doesn't own how `organization` mints its ids."""
+    not a specific ID format/scheme — `iam` doesn't own how `organization` mints its ids.
+    """
 
     value: str
 

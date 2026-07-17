@@ -30,4 +30,6 @@ class ExponentialBackoffRetryPolicy(RetryPolicy):
     def next_delay(self, attempt: int) -> float | None:
         if attempt >= self._max_attempts:
             return None
-        return min(self._base_delay_seconds * (2 ** (attempt - 1)), self._max_delay_seconds)
+        return min(
+            self._base_delay_seconds * (2 ** (attempt - 1)), self._max_delay_seconds
+        )

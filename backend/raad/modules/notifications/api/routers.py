@@ -3,6 +3,7 @@ realtime `/ws/notifications` WebSocket endpoint lives in `api/ws.py` (Backend LL
 
 Empty per Phase 4.2 scope — no endpoints beyond health checks are implemented yet.
 """
+
 from fastapi import APIRouter
 
 notifications_router = APIRouter()

@@ -3,6 +3,7 @@
 
 Empty per Phase 4.2 scope — no endpoints beyond health checks are implemented yet.
 """
+
 from fastapi import APIRouter
 
 reports_router = APIRouter()

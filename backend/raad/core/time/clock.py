@@ -1,4 +1,5 @@
 """Clock port (Backend LLD §17 `time`) — injectable time for deterministic domain tests."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
