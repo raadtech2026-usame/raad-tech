@@ -80,7 +80,9 @@ class SqlAlchemyRepositoryBase(Generic[TModel]):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get_by_id(self, id_: str, *, include_deleted: bool = False) -> TModel | None:
+    async def get_by_id(
+        self, id_: str, *, include_deleted: bool = False
+    ) -> TModel | None:
         statement = select(self.model).where(self.model.id == id_)
         if not include_deleted and hasattr(self.model, "deleted_at"):
             statement = statement.where(self.model.deleted_at.is_(None))

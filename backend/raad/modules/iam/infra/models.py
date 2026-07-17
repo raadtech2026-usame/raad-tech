@@ -13,9 +13,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CHAR, VARCHAR, Boolean, CheckConstraint, ForeignKey
+from sqlalchemy import CHAR, VARCHAR, Boolean, CheckConstraint, DateTime, ForeignKey
 from sqlalchemy import Enum as SqlEnum
-from sqlalchemy.dialects.mysql import DATETIME as MySqlDateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from raad.core.db.base import Base
@@ -46,10 +45,10 @@ class UserModel(
 
     The two CHECK constraints mirror the schema's stated constraints exactly: "at least one
     of email/phone present" and "organization_id required when role ∈ {org_admin, driver,
-    parent}". Uniqueness on `email`/`phone` is a plain unique index here (not the
-    generated-column soft-delete-aware idiom used for e.g. `device_assignments`' active-
-    binding keys, §9) — the Database Design doesn't call that idiom out for this table, so
-    this stays a literal reading rather than an invented extension of the approved schema.
+    parent}". Uniqueness on `email`/`phone` is a plain unique index here (not the partial-
+    unique-index idiom used for e.g. `device_assignments`' active-binding keys, §5.4/ADR-0002)
+    — the Database Design doesn't call that idiom out for this table, so this stays a literal
+    reading rather than an invented extension of the approved schema.
     """
 
     __tablename__ = "users"
@@ -63,7 +62,9 @@ class UserModel(
         ),
     )
 
-    organization_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True, index=True)
+    organization_id: Mapped[str | None] = mapped_column(
+        CHAR(26), nullable=True, index=True
+    )
     role: Mapped[str] = mapped_column(
         SqlEnum(*_ROLE_VALUES, name="user_role"), nullable=False, index=True
     )
@@ -76,7 +77,7 @@ class UserModel(
     )
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=True, default=None
+        DateTime(timezone=False), nullable=True, default=None
     )
 
 
@@ -91,12 +92,14 @@ class RefreshTokenModel(UlidPrimaryKeyMixin, Base):
         CHAR(26), ForeignKey("users.id"), nullable=False, index=True
     )
     token_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False, unique=True)
-    issued_at: Mapped[datetime] = mapped_column(MySqlDateTime(fsp=3), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), nullable=False
+    )
     expires_at: Mapped[datetime] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=False, index=True
+        DateTime(timezone=False), nullable=False, index=True
     )
     revoked_at: Mapped[datetime | None] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=True, default=None
+        DateTime(timezone=False), nullable=True, default=None
     )
     user_agent: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(VARCHAR(45), nullable=True)

@@ -1,13 +1,14 @@
 # RAAD Platform — base Docker Compose service definitions.
 # Structural placeholder only. Per docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md §11,
 # MVP deployables are: Business API, Workers, JT808 TCP Server, JT1078 Video Server, plus
-# MySQL, Redis, and an event broker. Service definitions intentionally not filled in yet.
+# PostgreSQL (ADR-0002, superseding the original MySQL choice), Redis, and an event broker.
+# Service definitions intentionally not filled in yet.
 
 # services:
 #   business-api:
 #   worker:
 #   jt808-server:
 #   jt1078-server:
-#   mysql:
+#   postgres:
 #   redis:
 #   broker:

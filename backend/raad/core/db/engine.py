@@ -1,6 +1,6 @@
 """Async SQLAlchemy engine + session factory (Backend LLD §17 `db`: "engine, session
-factory"). MySQL 8.x via the `asyncmy` driver (`.claude/rules/database.md` #1) — the
-connection string is expected in `mysql+asyncmy://...` form.
+factory"). PostgreSQL via the `asyncpg` driver (`.claude/rules/database.md` #1, ADR-0002) —
+the connection string is expected in `postgresql+asyncpg://...` form.
 """
 
 from __future__ import annotations

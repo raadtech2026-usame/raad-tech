@@ -11,8 +11,10 @@ the session tracking the rows it already knows), new cameras are appended as new
 camera-removal behavior, so no row is ever deleted here — if that behavior is ever
 documented, this sync must learn deletion alongside it.
 
-`DeviceAssignmentModel`'s generated columns (`active_device_key`/`active_vehicle_key`) are
-deliberately never touched: they are DB-maintained (Database Design §5.4)."""
+`DeviceAssignmentModel`'s one-active-binding invariant is enforced entirely by its two partial
+unique indexes (Database Design §5.4, ADR-0002) — there is no denormalized key column for this
+mapper to avoid touching; `unassigned_at` is the only column mediating "active" and it maps
+normally like any other field."""
 
 from __future__ import annotations
 

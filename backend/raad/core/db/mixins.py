@@ -14,18 +14,19 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import CHAR, Integer
-from sqlalchemy.dialects.mysql import DATETIME as MySqlDateTime
+from sqlalchemy import CHAR, DateTime, Integer
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from raad.core.ids.generator import generate_ulid
 
 
-# MySQL's DATETIME has no timezone concept (Database Design §1: "DATETIME(3)"), so values are
-# stored naive but the application-wide discipline is that every stored datetime *is* UTC —
-# hence stripping tzinfo here rather than using a timezone-aware column type MySQL can't
-# actually honor. Public (not `_`-prefixed): `core/events/outbox.py` reuses it for the same
-# naive-UTC convention on `outbox.created_at`.
+# Stored naive (`DateTime(timezone=False)`) but the application-wide discipline is that every
+# stored datetime *is* UTC — hence stripping tzinfo here rather than using a timezone-aware
+# column type (Database Design §1: "DATETIME(3)"; ADR-0002 drops the MySQL-dialect `DATETIME`
+# fractional-seconds type in favor of this portable one — PostgreSQL's `timestamp` is
+# microsecond-precision by default, no explicit precision argument needed). Public (not
+# `_`-prefixed): `core/events/outbox.py` reuses it for the same naive-UTC convention on
+# `outbox.created_at`.
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -39,13 +40,14 @@ class UlidPrimaryKeyMixin:
 class TimestampMixin:
     """`created_at`/`updated_at`, UTC, app-maintained (not DB-clock-maintained) per Database
     Design §1 — set from Python so behavior is identical across dialects and testable via
-    `core/time.Clock` at the application layer (columns themselves just need *a* value)."""
+    `core/time.Clock` at the application layer (columns themselves just need *a* value).
+    """
 
     created_at: Mapped[datetime] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=False, default=utcnow
+        DateTime(timezone=False), nullable=False, default=utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=False, default=utcnow, onupdate=utcnow
+        DateTime(timezone=False), nullable=False, default=utcnow, onupdate=utcnow
     )
 
 
@@ -62,7 +64,8 @@ class AuditActorMixin:
         """Enables SQLAlchemy's built-in optimistic-concurrency check against `row_version`
         (an `UPDATE ... WHERE row_version = :old` that raises `StaleDataError` on a
         conflicting concurrent write). A model composing another mixin that also defines
-        `__mapper_args__` must merge them explicitly — not a concern for any model today."""
+        `__mapper_args__` must merge them explicitly — not a concern for any model today.
+        """
         return {"version_id_col": cls.row_version}
 
 
@@ -72,7 +75,7 @@ class SoftDeleteMixin:
     column itself."""
 
     deleted_at: Mapped[datetime | None] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=True, default=None
+        DateTime(timezone=False), nullable=True, default=None
     )
 
 

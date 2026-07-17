@@ -125,7 +125,7 @@ def build_container(settings: Settings) -> Container:
     )
 
     # TrackingApplicationService additionally needs a LatestPositionPort (Database Design
-    # §7.1: latest position is Redis-backed, not read from the MySQL history table) — no
+    # §7.1: latest position is Redis-backed, not read from the PostgreSQL history table) — no
     # concrete implementation exists yet (Phase 8.3 deliberately deferred it), so this stays
     # unbound until one is, the same "fail loudly, don't fake it" policy OutboxPublisher/
     # BrokerPort already follow below. Written so binding it later is a one-line change.
@@ -165,8 +165,8 @@ def build_container(settings: Settings) -> Container:
         )
 
     # Engine/session factory/UnitOfWork need a configured DB URL. Left unbound without one
-    # (dev/CI with no MySQL reachable yet) — same policy as TokenService above — rather than
-    # constructing an AsyncEngine against an empty connection string.
+    # (dev/CI with no PostgreSQL reachable yet) — same policy as TokenService above — rather
+    # than constructing an AsyncEngine against an empty connection string.
     if settings.db.url:
         engine: AsyncEngine = build_engine(settings.db)
         session_factory: async_sessionmaker[AsyncSession] = build_session_factory(

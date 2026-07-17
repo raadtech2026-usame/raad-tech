@@ -16,11 +16,14 @@ even though the Database Design table shorthand writes "FK, ix". In-context refe
 (`cameras.device_id`, `device_assignments.device_id`/`vehicle_id`) are real database-enforced
 FKs, per the same rule.
 
-The §5.4 "one active binding per device & per vehicle" invariant is implemented exactly as
-documented: two MySQL **generated columns** (`active_device_key`/`active_vehicle_key`, STORED,
-`= device_id/vehicle_id when active else NULL`) each carrying a unique index — MySQL's idiom
-for a partial-unique constraint. The ORM never writes these columns (`Computed` makes them
-DB-maintained).
+The §5.4 "one active binding per device & per vehicle" invariant is implemented via two
+**PostgreSQL partial unique indexes** (`ux_device_assignments__active_device` on `device_id`,
+`ux_device_assignments__active_vehicle` on `vehicle_id`, each `WHERE unassigned_at IS NULL`) —
+PostgreSQL's native mechanism for this exact constraint shape (ADR-0002). This supersedes the
+original MySQL design, which had no native partial-index feature and instead emulated one with
+two `Computed` generated columns (`active_device_key`/`active_vehicle_key`) each carrying a
+plain unique index; PostgreSQL needs no denormalized key column at all, so neither column nor
+its DB-maintenance concern exists anymore.
 
 Index/constraint names follow `core.db.base`'s naming convention off the real column names
 (e.g. `ux_vehicles__organization_id_plate_no`, not the doc's abbreviated
@@ -31,9 +34,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CHAR, VARCHAR, Computed, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import (
+    CHAR,
+    VARCHAR,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    UniqueConstraint,
+)
 from sqlalchemy import Enum as SqlEnum
-from sqlalchemy.dialects.mysql import DATETIME as MySqlDateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from raad.core.db.base import Base
@@ -88,7 +98,7 @@ class DeviceModel(AuditedTableMixin, Base):
     )
     auth_key_hash: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=True
+        DateTime(timezone=False), nullable=True
     )
 
     # Camera child rows load eagerly with the device (selectin) — the Device aggregate owns
@@ -123,12 +133,25 @@ class CameraModel(AuditedTableMixin, Base):
 
 class DeviceAssignmentModel(UlidPrimaryKeyMixin, Base):
     """`device_assignments` (Database Design §5.4): device↔vehicle binding history.
-    `unassigned_at IS NULL` = active. The two generated columns are DB-maintained
-    (`Computed`, STORED) and never written by the ORM; their unique indexes are the database
-    half of the one-active-binding invariant (the application-layer repository guard is the
-    other half, Phase 7.2)."""
+    `unassigned_at IS NULL` = active. The one-active-binding invariant's database half is the
+    two partial unique indexes declared in `__table_args__` below (ADR-0002); the
+    application-layer repository guard is the other half (Phase 7.2)."""
 
     __tablename__ = "device_assignments"
+    __table_args__ = (
+        Index(
+            "ux_device_assignments__active_device",
+            "device_id",
+            unique=True,
+            postgresql_where="unassigned_at IS NULL",
+        ),
+        Index(
+            "ux_device_assignments__active_vehicle",
+            "vehicle_id",
+            unique=True,
+            postgresql_where="unassigned_at IS NULL",
+        ),
+    )
 
     organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
     device_id: Mapped[str] = mapped_column(
@@ -138,25 +161,9 @@ class DeviceAssignmentModel(UlidPrimaryKeyMixin, Base):
         CHAR(26), ForeignKey("vehicles.id"), nullable=False, index=True
     )
     assigned_by: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
-    assigned_at: Mapped[datetime] = mapped_column(MySqlDateTime(fsp=3), nullable=False)
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), nullable=False
+    )
     unassigned_at: Mapped[datetime | None] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=True
-    )
-    active_device_key: Mapped[str | None] = mapped_column(
-        CHAR(26),
-        Computed(
-            "(case when unassigned_at is null then device_id else null end)",
-            persisted=True,
-        ),
-        nullable=True,
-        unique=True,
-    )
-    active_vehicle_key: Mapped[str | None] = mapped_column(
-        CHAR(26),
-        Computed(
-            "(case when unassigned_at is null then vehicle_id else null end)",
-            persisted=True,
-        ),
-        nullable=True,
-        unique=True,
+        DateTime(timezone=False), nullable=True
     )

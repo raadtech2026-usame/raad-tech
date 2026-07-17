@@ -3,9 +3,10 @@
 # Dependencies below are limited to what's actually imported so far. Phase 4.2 (Backend
 # Foundation) added FastAPI + its ASGI server and pydantic-settings. Phase 4.4 (Database
 # Foundation) adds SQLAlchemy (async engine/ORM), Alembic (migrations, per
-# .claude/rules/database.md), and asyncmy (async MySQL 8.x driver). A broker client and a
-# worker runtime (Celery/arq — open item, Backend LLD §20.1) are still deferred to when the
-# broker/worker layers are wired in a later phase.
+# .claude/rules/database.md). ADR-0002 (PostgreSQL migration) replaced the original asyncmy
+# (MySQL) driver with asyncpg. A broker client and a worker runtime (Celery/arq — open item,
+# Backend LLD §20.1) are still deferred to when the broker/worker layers are wired in a later
+# phase.
 #
 # Dependency management tool (Poetry / PDM / plain pip) and dev tooling (pytest, ruff/black/
 # mypy) are not yet decided by approved documentation — this file uses the PEP 621 format,
@@ -23,7 +24,7 @@ dependencies = [
     "pydantic-settings>=2.3",
     "sqlalchemy>=2.0",
     "alembic>=1.13",
-    "asyncmy>=0.2",
+    "asyncpg>=0.29",
 ]
 
 [build-system]

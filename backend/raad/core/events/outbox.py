@@ -16,8 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import CHAR, JSON, Integer, String, select
-from sqlalchemy.dialects.mysql import DATETIME as MySqlDateTime
+from sqlalchemy import CHAR, JSON, DateTime, Integer, String, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,10 +43,10 @@ class OutboxRecord(UlidPrimaryKeyMixin, Base):
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     correlation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[Any] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=False, default=utcnow
+        DateTime(timezone=False), nullable=False, default=utcnow
     )
     published_at: Mapped[Any | None] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=True, default=None
+        DateTime(timezone=False), nullable=True, default=None
     )
 
 

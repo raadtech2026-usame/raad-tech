@@ -10,9 +10,11 @@ Two models, exactly the two tables this module owns:
   the domain layer's own reasoning (Phase 8.1: hard-pruned by partition drop, never
   soft-deleted, immutable after insert) — so not even `UlidPrimaryKeyMixin`'s single-column
   PK shape fully applies: the primary key is **composite `(id, event_time)`**, per the
-  Database Design's own explicit note ("PK includes the partition key per MySQL partitioning
-  rules") — a real MySQL requirement (every unique key, including the PK, must contain the
-  partition key on a RANGE-partitioned table), not an invented column. `UlidPrimaryKeyMixin`
+  Database Design's own explicit note ("PK includes the partition key") — a real requirement
+  shared by MySQL `RANGE` partitioning and PostgreSQL declarative partitioning alike (every
+  unique key, including the PK, must contain the partition key on a partitioned table; ADR-0002
+  retains this column shape as a portable relational-partitioning constraint, not a MySQL-only
+  artifact), not an invented column. `UlidPrimaryKeyMixin`
   is still composed for `id`'s ULID default; `event_time` separately declares
   `primary_key=True`, and SQLAlchemy combines the two into one composite key automatically.
   Actual `PARTITION BY RANGE` DDL is an Alembic-migration-time concern (a later phase,
@@ -41,9 +43,10 @@ references another table *this module* owns, so — unlike `fleet_device` (`came
 `vehicle_positions` a full per-column table marking `organization_id` as `ix`; `vehicle_id`/
 `trip_id` are also marked `ix` but that requirement is already satisfied by the two named
 composite indexes the same section's prose lists (`ix_vehicle_positions__veh_time
-(vehicle_id, event_time)`, `ix_vehicle_positions__trip_time (trip_id, event_time)` — MySQL's
-leftmost-prefix rule means a composite index already serves lookups on its leading column, so
-a redundant single-column index would be an invented extra index); `device_id` carries no `ix`
+(vehicle_id, event_time)`, `ix_vehicle_positions__trip_time (trip_id, event_time)` —
+leftmost-prefix indexing (shared by MySQL and PostgreSQL B-tree indexes) means a composite
+index already serves lookups on its leading column, so a redundant single-column index would
+be an invented extra index); `device_id` carries no `ix`
 mark at all, so it stays a plain unindexed column. §7.2's `geofence_events` is given in
 compact inline notation with only one index named in prose (`(trip_id, occurred_at)`) and no
 explicit per-column `ix` marks at all (unlike §7.1's full table) — so, to avoid inventing an
@@ -56,19 +59,27 @@ Index/constraint names follow `core.db.base`'s naming convention off the real co
 `ix_vehicle_positions__veh_time`) — the same documented stance `fleet_device.infra.models`
 takes.
 
-`latitude`/`longitude` are `mysql.DECIMAL(9, 6)` (Database Design §7.1: `DECIMAL(9,6)`) with
-`asdecimal=False`, so the Python-side attribute is a plain `float` — matching the domain
-`GeoPoint` value object's own `float` fields exactly, with no `Decimal`-handling needed in
-`mappers.py`.
+`latitude`/`longitude` are `DECIMAL(9, 6)` (Database Design §7.1: `DECIMAL(9,6)`, ANSI-standard
+— not a MySQL-specific type, so ADR-0002 leaves this one unchanged beyond dropping the dialect
+import) with `asdecimal=False`, so the Python-side attribute is a plain `float` — matching the
+domain `GeoPoint` value object's own `float` fields exactly, with no `Decimal`-handling needed
+in `mappers.py`.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CHAR, Enum as SqlEnum, Index, Integer, SmallInteger
-from sqlalchemy.dialects.mysql import DATETIME as MySqlDateTime
-from sqlalchemy.dialects.mysql import DECIMAL as MySqlDecimal
+from sqlalchemy import (
+    CHAR,
+    DECIMAL,
+    Boolean,
+    DateTime,
+    Enum as SqlEnum,
+    Index,
+    Integer,
+    SmallInteger,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from raad.core.db.base import Base
@@ -99,17 +110,21 @@ class VehiclePositionModel(UlidPrimaryKeyMixin, Base):
     device_id: Mapped[str] = mapped_column(CHAR(26), nullable=False)
     trip_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
     latitude: Mapped[float] = mapped_column(
-        MySqlDecimal(9, 6, asdecimal=False), nullable=False
+        DECIMAL(9, 6, asdecimal=False), nullable=False
     )
     longitude: Mapped[float] = mapped_column(
-        MySqlDecimal(9, 6, asdecimal=False), nullable=False
+        DECIMAL(9, 6, asdecimal=False), nullable=False
     )
     speed_kph: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     heading_deg: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     alarm_flags: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_backfill: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    event_time: Mapped[datetime] = mapped_column(MySqlDateTime(fsp=3), primary_key=True)
-    received_at: Mapped[datetime] = mapped_column(MySqlDateTime(fsp=3), nullable=False)
+    event_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), primary_key=True
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), nullable=False
+    )
 
 
 class GeofenceCrossingModel(UlidPrimaryKeyMixin, Base):
@@ -128,7 +143,9 @@ class GeofenceCrossingModel(UlidPrimaryKeyMixin, Base):
         SqlEnum(*_GEOFENCE_EVENT_TYPE_VALUES, name="geofence_event_type"),
         nullable=False,
     )
-    occurred_at: Mapped[datetime] = mapped_column(MySqlDateTime(fsp=3), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
-        MySqlDateTime(fsp=3), nullable=False, default=utcnow
+        DateTime(timezone=False), nullable=False, default=utcnow
     )
