@@ -1,0 +1,349 @@
+"""Application-layer tests for `organization`'s `OrganizationApplicationService`/
+`RegionApplicationService`. Stdlib `unittest` — no `pytest`, matching established precedent.
+In-memory fake `OrganizationUnitOfWork`/repositories. Covers: DTO mapping, service
+orchestration, validator behavior (region-must-exist, parent-org-must-exist, duplicate region
+name rejection), and status-transition regression protection.
+"""
+
+from __future__ import annotations
+
+import unittest
+from datetime import datetime, timezone
+
+from raad.core.errors.exceptions import ConflictError, NotFoundError
+from raad.core.ids.generator import IdGenerator
+from raad.core.tenancy.principal import Principal, Role
+from raad.core.time.clock import Clock
+from raad.modules.organization.application.commands import (
+    ActivateRegionCommand,
+    CreateRegionCommand,
+    DeactivateOrganizationCommand,
+    DeactivateRegionCommand,
+    ReactivateOrganizationCommand,
+    RegisterOrganizationCommand,
+    SuspendOrganizationCommand,
+)
+from raad.modules.organization.application.ports import OrganizationUnitOfWork
+from raad.modules.organization.application.queries import (
+    GetOrganizationByIdQuery,
+    GetRegionByIdQuery,
+)
+from raad.modules.organization.application.services import (
+    OrganizationApplicationService,
+    RegionApplicationService,
+)
+from raad.modules.organization.domain.entities import Organization, Region
+from raad.modules.organization.domain.repositories import (
+    OrganizationRepository,
+    RegionRepository,
+)
+from raad.modules.organization.domain.value_objects import (
+    BillingModel,
+    OrgType,
+    OrganizationId,
+    RegionId,
+)
+
+VALID_REGION_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3ME"
+NON_EXISTENT_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
+
+
+class FixedClock(Clock):
+    def __init__(self, now: datetime) -> None:
+        self._now = now
+
+    def now(self) -> datetime:
+        return self._now
+
+
+class SequentialIdGenerator(IdGenerator):
+    _PREFIX = "01J8Z3K9G6X8YV5T4N2R"
+
+    def __init__(self) -> None:
+        self._counter = 0
+
+    def new_id(self) -> str:
+        self._counter += 1
+        return f"{self._PREFIX}{self._counter:06d}"
+
+
+class InMemoryOrganizationRepository(OrganizationRepository):
+    def __init__(self) -> None:
+        self.by_id: dict[str, Organization] = {}
+
+    async def get(self, organization_id: OrganizationId) -> Organization | None:
+        return self.by_id.get(str(organization_id))
+
+    def add(self, organization: Organization) -> None:
+        self.by_id[str(organization.id)] = organization
+
+
+class InMemoryRegionRepository(RegionRepository):
+    def __init__(self) -> None:
+        self.by_id: dict[str, Region] = {}
+
+    async def get(self, region_id: RegionId) -> Region | None:
+        return self.by_id.get(str(region_id))
+
+    async def get_by_name(self, name: str) -> Region | None:
+        for region in self.by_id.values():
+            if region.name == name:
+                return region
+        return None
+
+    def add(self, region: Region) -> None:
+        self.by_id[str(region.id)] = region
+
+
+class FakeOrganizationUnitOfWork(OrganizationUnitOfWork):
+    def __init__(
+        self,
+        organizations: InMemoryOrganizationRepository,
+        regions: InMemoryRegionRepository,
+    ) -> None:
+        self.organizations = organizations
+        self.regions = regions
+        self.recorded_events = []
+        self.commit_count = 0
+        self.rollback_count = 0
+
+    def record_events(self, events) -> None:
+        self.recorded_events.extend(events)
+
+    async def commit(self) -> None:
+        self.commit_count += 1
+
+    async def rollback(self) -> None:
+        self.rollback_count += 1
+
+
+def make_actor() -> Principal:
+    return Principal(user_id="admin-1", role=Role.FOUNDER, org_id=None)
+
+
+def make_services() -> tuple[
+    OrganizationApplicationService,
+    RegionApplicationService,
+    FakeOrganizationUnitOfWork,
+]:
+    clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    id_generator = SequentialIdGenerator()
+    org_service = OrganizationApplicationService(clock=clock, id_generator=id_generator)
+    region_service = RegionApplicationService(clock=clock, id_generator=id_generator)
+    uow = FakeOrganizationUnitOfWork(
+        InMemoryOrganizationRepository(), InMemoryRegionRepository()
+    )
+    return org_service, region_service, uow
+
+
+async def _seed_region(
+    region_service: RegionApplicationService, uow, name="East Africa"
+) -> str:
+    dto = await region_service.create_region(
+        CreateRegionCommand(name=name, geographic_scope=None, actor=make_actor()),
+        uow=uow,
+    )
+    uow.recorded_events.clear()
+    return dto.id
+
+
+class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_register_requires_an_existing_region(self) -> None:
+        """Regression: `organizations.region_id` is an in-context FK (Database Design §4.2) -
+        the application layer must pre-check it (surfacing NotFoundError) rather than letting
+        an unchecked reference through."""
+        org_service, _region_service, uow = make_services()
+        with self.assertRaises(NotFoundError):
+            await org_service.register_organization(
+                RegisterOrganizationCommand(
+                    name="Sunrise School",
+                    org_type=OrgType.SCHOOL,
+                    region_id=NON_EXISTENT_ULID,
+                    billing_model=BillingModel.ORGANIZATION_PAYS,
+                    parent_org_id=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+        self.assertEqual(uow.commit_count, 0)
+
+    async def test_register_with_valid_region_succeeds(self) -> None:
+        org_service, region_service, uow = make_services()
+        region_id = await _seed_region(region_service, uow)
+
+        dto = await org_service.register_organization(
+            RegisterOrganizationCommand(
+                name="Sunrise School",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                parent_org_id=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(dto.status, "active")
+        self.assertEqual(uow.recorded_events[0].event_type, "OrganizationRegistered")
+
+    async def test_register_with_nonexistent_parent_org_raises_not_found(self) -> None:
+        """Regression: parent_org_id hierarchy - the parent must actually exist (Database
+        Design §4.2's self-referencing FK)."""
+        org_service, region_service, uow = make_services()
+        region_id = await _seed_region(region_service, uow)
+
+        with self.assertRaises(NotFoundError):
+            await org_service.register_organization(
+                RegisterOrganizationCommand(
+                    name="Sub Campus",
+                    org_type=OrgType.SCHOOL,
+                    region_id=region_id,
+                    billing_model=BillingModel.PARENT_PAYS,
+                    parent_org_id=NON_EXISTENT_ULID,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+    async def test_register_sub_organization_with_valid_parent_succeeds(self) -> None:
+        org_service, region_service, uow = make_services()
+        region_id = await _seed_region(region_service, uow)
+        parent_dto = await org_service.register_organization(
+            RegisterOrganizationCommand(
+                name="Parent Org",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                parent_org_id=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        child_dto = await org_service.register_organization(
+            RegisterOrganizationCommand(
+                name="Sub Campus",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.PARENT_PAYS,
+                parent_org_id=parent_dto.id,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(child_dto.parent_org_id, parent_dto.id)
+
+
+class OrganizationStatusTransitionApplicationTests(unittest.IsolatedAsyncioTestCase):
+    async def _registered_org_id(self, org_service, region_service, uow) -> str:
+        region_id = await _seed_region(region_service, uow)
+        dto = await org_service.register_organization(
+            RegisterOrganizationCommand(
+                name="Sunrise School",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                parent_org_id=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        uow.recorded_events.clear()
+        return dto.id
+
+    async def test_suspend_then_reactivate(self) -> None:
+        org_service, region_service, uow = make_services()
+        org_id = await self._registered_org_id(org_service, region_service, uow)
+
+        suspended = await org_service.suspend_organization(
+            SuspendOrganizationCommand(organization_id=org_id, actor=make_actor()),
+            uow=uow,
+        )
+        self.assertEqual(suspended.status, "suspended")
+
+        reactivated = await org_service.reactivate_organization(
+            ReactivateOrganizationCommand(organization_id=org_id, actor=make_actor()),
+            uow=uow,
+        )
+        self.assertEqual(reactivated.status, "active")
+
+    async def test_deactivate_organization(self) -> None:
+        org_service, region_service, uow = make_services()
+        org_id = await self._registered_org_id(org_service, region_service, uow)
+        dto = await org_service.deactivate_organization(
+            DeactivateOrganizationCommand(organization_id=org_id, actor=make_actor()),
+            uow=uow,
+        )
+        self.assertEqual(dto.status, "inactive")
+
+    async def test_transition_on_missing_organization_raises_not_found(self) -> None:
+        org_service, _region_service, uow = make_services()
+        with self.assertRaises(NotFoundError):
+            await org_service.suspend_organization(
+                SuspendOrganizationCommand(
+                    organization_id=NON_EXISTENT_ULID, actor=make_actor()
+                ),
+                uow=uow,
+            )
+
+    async def test_get_organization_by_id_returns_dto(self) -> None:
+        org_service, region_service, uow = make_services()
+        org_id = await self._registered_org_id(org_service, region_service, uow)
+        dto = await org_service.get_organization_by_id(
+            GetOrganizationByIdQuery(organization_id=org_id), uow=uow
+        )
+        self.assertEqual(dto.id, org_id)
+
+
+class RegionApplicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_create_region_succeeds(self) -> None:
+        _org_service, region_service, uow = make_services()
+        dto = await region_service.create_region(
+            CreateRegionCommand(
+                name="East Africa",
+                geographic_scope="Horn of Africa",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(dto.status, "active")
+
+    async def test_duplicate_region_name_is_rejected(self) -> None:
+        """Regression: Database Design §4.1's `regions.name` global-uniqueness (UX)."""
+        _org_service, region_service, uow = make_services()
+        await region_service.create_region(
+            CreateRegionCommand(
+                name="East Africa", geographic_scope=None, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(ConflictError):
+            await region_service.create_region(
+                CreateRegionCommand(
+                    name="East Africa", geographic_scope=None, actor=make_actor()
+                ),
+                uow=uow,
+            )
+        self.assertEqual(len(uow.regions.by_id), 1)
+
+    async def test_activate_and_deactivate_region(self) -> None:
+        _org_service, region_service, uow = make_services()
+        region_id = await _seed_region(region_service, uow)
+        deactivated = await region_service.deactivate_region(
+            DeactivateRegionCommand(region_id=region_id, actor=make_actor()), uow=uow
+        )
+        self.assertEqual(deactivated.status, "inactive")
+        activated = await region_service.activate_region(
+            ActivateRegionCommand(region_id=region_id, actor=make_actor()), uow=uow
+        )
+        self.assertEqual(activated.status, "active")
+
+    async def test_get_region_by_id_raises_not_found_for_missing_region(self) -> None:
+        _org_service, region_service, uow = make_services()
+        with self.assertRaises(NotFoundError):
+            await region_service.get_region_by_id(
+                GetRegionByIdQuery(region_id=NON_EXISTENT_ULID), uow=uow
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
