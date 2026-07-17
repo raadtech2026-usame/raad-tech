@@ -25,10 +25,15 @@ detail.
 - `adr/0001-business-entity-module-mapping.md` — confirms which bounded-context module owns each
   Ch. 6 business entity (Organization, Vehicle, Device, Driver, Student, Parent, Route, Stop, Trip,
   Subscription). Backfilled from Phase 2 §2 / Phase 3.1 §1 / Phase 3.2, not a new decision.
+- `adr/0002-postgresql-migration.md` — engine change from MySQL 8.x to PostgreSQL. A new decision,
+  not backfilled: adopts PostgreSQL partial unique indexes in place of the MySQL generated-column
+  workaround in `device_assignments`, keeps PostgreSQL native `ENUM` types, and updates
+  `.claude/rules/database.md` and `RAAD_Phase3.2_Database_Design_v1.md` §1/§5.4/§7.1/§11.1
+  accordingly.
 
 Phase 2 §15's ADR-1 through ADR-9 remain unbackfilled as individual files — still living only inside
 the Phase 2 document.
 
 ## Status
 
-Seeded with one backfilled ADR; otherwise a structural placeholder.
+Seeded with two ADRs (one backfilled, one new); otherwise a structural placeholder.

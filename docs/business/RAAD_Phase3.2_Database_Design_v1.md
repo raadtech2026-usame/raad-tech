@@ -2,7 +2,7 @@
 
 **Prepared by:** Senior Enterprise Software Architect
 **Phase:** 3.2 — Database Design (design documentation only; **no DDL / no implementation code**)
-**Engine:** MySQL 8.x (Phase-2 §10) with Redis for hot state (latest position, sessions, caches).
+**Engine:** PostgreSQL (ADR-0002, superseding the original MySQL 8.x decision from Phase-2 §10) with Redis for hot state (latest position, sessions, caches).
 **Traceability:** Phase-2 Architecture (§2, §10, §12, §17), Backend LLD (§10.4, §7, §10), locked decisions **D1–D6**, and **CR-1** (`SubscriptionAccessPolicy`; the `student_assignments` state is the access gate). No new business requirements introduced.
 
 > **Notation.** Tables are specified as **column tables** (name · type · null · key/constraint · notes). Types are logical (final DDL authored at build time). This is a design artifact, not schema code.
@@ -216,10 +216,8 @@ Unique: `ux_cameras__device_channel (device_id, channel_no)`.
 | assigned_by | CHAR(26) | yes | | actor |
 | assigned_at | DATETIME(3) | no | | |
 | unassigned_at | DATETIME(3) | yes | | null = **active** binding |
-| active_device_key | CHAR(26) generated | yes | UX | = device_id when active else NULL |
-| active_vehicle_key | CHAR(26) generated | yes | UX | = vehicle_id when active else NULL |
 
-**One active binding per device & per vehicle** (Ch. 7.4/7.5) is enforced by two **generated-column unique indexes** (`ux_device_assignments__active_device`, `ux_device_assignments__active_vehicle`) — MySQL's idiom for a partial-unique constraint. **Driver is deliberately absent** from this table (Phase-2 §19.1: device≠driver; changing a driver never touches this row).
+**One active binding per device & per vehicle** (Ch. 7.4/7.5) is enforced by two **PostgreSQL partial unique indexes** (`ux_device_assignments__active_device` on `device_id` `WHERE unassigned_at IS NULL`, `ux_device_assignments__active_vehicle` on `vehicle_id` `WHERE unassigned_at IS NULL`) — ADR-0002 replaces the original MySQL generated-column emulation (`active_device_key`/`active_vehicle_key`) with PostgreSQL's native mechanism for this exact constraint shape; no denormalized key column is stored. **Driver is deliberately absent** from this table (Phase-2 §19.1: device≠driver; changing a driver never touches this row).
 
 ---
 
@@ -330,7 +328,7 @@ Unique: `ux_stops__route_sequence (route_id, sequence_no)`.
 
 - **Latest position is NOT read from here** — it lives in Redis (Phase-2 §10.3). This table is the durable history.
 - **Partitioning:** RANGE partition by `event_time` (monthly). See §11.
-- Indexes: `ix_vehicle_positions__veh_time (vehicle_id, event_time)`, `ix_vehicle_positions__trip_time (trip_id, event_time)`. PK includes the partition key per MySQL partitioning rules.
+- Indexes: `ix_vehicle_positions__veh_time (vehicle_id, event_time)`, `ix_vehicle_positions__trip_time (trip_id, event_time)`. PK includes the partition key — a rule PostgreSQL's declarative partitioning shares with MySQL's `RANGE` partitioning (every unique/PK index must contain the partition key); retained under ADR-0002 as a shared relational-partitioning constraint, not a MySQL-only artifact.
 
 ### 7.2 `geofence_events`
 `(id, organization_id, trip_id, stop_id?, event_type ENUM(approaching_stop,entered_stop,arrived_org,exited), occurred_at, +created_at)`. Indexed `(trip_id, occurred_at)`. Long-term retained (Phase-2 §10.3). Feeds notifications (D1).
@@ -475,7 +473,7 @@ Unique: `ux_payments__idem (idempotency_key)`, `ux_payments__provider_ref (provi
 | `audit_entries` | RANGE, monthly (optional) | `created_at` | Bounded growth; efficient archival |
 | `notifications` | RANGE, monthly (at scale) | `created_at` | Large, time-addressed; older partitions archivable |
 
-**Scale path:** when partitioned MySQL for positions is outgrown, migrate `vehicle_positions` to a TSDB (TimescaleDB) behind the same repository interface (Phase-2 §10.3 / R4) — no domain change.
+**Scale path:** when partitioned PostgreSQL for positions is outgrown, migrate `vehicle_positions` to a TSDB (TimescaleDB) behind the same repository interface (Phase-2 §10.3 / R4) — no domain change. Post-ADR-0002 this is strictly easier than it was on MySQL, since TimescaleDB is a PostgreSQL extension rather than a separate engine.
 
 ### 11.2 Index strategy (principles)
 - **Tenant-first composite indexes:** almost every operational query filters by `organization_id` — lead composite indexes with it (e.g., `ix_trips__org_date_status (organization_id, scheduled_date, status)`).
