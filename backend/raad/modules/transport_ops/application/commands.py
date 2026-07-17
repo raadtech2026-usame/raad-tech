@@ -105,3 +105,23 @@ class ActivateParentCommand:
 class DisableParentCommand:
     parent_id: str
     actor: Principal
+
+
+@dataclass(frozen=True)
+class LinkParentToStudentCommand:
+    """Phase 10.7. `relationship`/`is_primary` are set-once-at-link-time only (Database Design
+    §6.4) — no `Update*Command` exists for this pair, matching `StudentParent`'s own domain
+    docstring (`domain/entities.py`)."""
+
+    student_id: str
+    parent_id: str
+    relationship: str | None
+    is_primary: bool
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class UnlinkParentFromStudentCommand:
+    student_id: str
+    parent_id: str
+    actor: Principal

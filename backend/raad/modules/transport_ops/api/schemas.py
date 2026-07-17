@@ -18,6 +18,10 @@ documented behavioral status sub-route (API Contracts §4.3's `/parents` row car
 unlike `/students/{id}/status`'s explicit line) — see `routers.py`'s module docstring for why
 `status` therefore folds into the uniform `PATCH` here instead, mirroring `organization`'s/
 `fleet_device`'s status-in-PATCH shape rather than `Student`'s dedicated-route shape.
+
+**Phase 10.7 addition: `StudentParent` link schemas.** No documented API Contracts route
+either (see `routers.py`'s module docstring for the nested-sub-resource shape chosen instead,
+mirroring the one documented precedent for a child collection, `/routes/{id}/stops`).
 """
 
 from __future__ import annotations
@@ -111,3 +115,47 @@ class UpdateParentRequest(BaseModel):
     full_name: str | None = None
     phone: str | None = None
     status: str | None = None
+
+
+class LinkParentToStudentRequest(BaseModel):
+    """`POST /students/{student_id}/parents` (Phase 10.7 — no documented API Contracts route,
+    see `routers.py`'s module docstring). `relationship`/`is_primary` map 1:1 to `student_
+    parents`' own columns (Database Design §6.4); both are optional/defaulted since §6.4 marks
+    `relationship` nullable and gives `is_primary` no documented default of its own (`false`
+    chosen as the least-surprising default, matching a boolean's ordinary zero-value).
+    """
+
+    parent_id: str
+    relationship: str | None = None
+    is_primary: bool = False
+
+
+class StudentParentLinkResponse(BaseModel):
+    """The raw link record — the response body for `POST /students/{student_id}/parents`,
+    mirroring `StudentParentDTO`'s shape (`application/queries.py`)."""
+
+    student_id: str
+    parent_id: str
+    relationship: str | None
+    is_primary: bool
+
+
+class ParentForStudentResponse(BaseModel):
+    """`GET /students/{student_id}/parents` — mirrors `ParentForStudentDTO`'s shape."""
+
+    parent_id: str
+    full_name: str
+    phone: str | None
+    status: str
+    relationship: str | None
+    is_primary: bool
+
+
+class StudentForParentResponse(BaseModel):
+    """`GET /parents/{parent_id}/students` — mirrors `StudentForParentDTO`'s shape."""
+
+    student_id: str
+    full_name: str
+    status: str
+    relationship: str | None
+    is_primary: bool

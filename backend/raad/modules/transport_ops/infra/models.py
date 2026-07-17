@@ -16,13 +16,25 @@ doc's "FK" wording, `users` is owned by `iam`, not `transport_ops`, so this is a
 column too, never a real `ForeignKey`, mirroring `organization_id`'s own treatment exactly
 (see `domain/value_objects.py`'s `UserId` docstring for the full reasoning).
 
+**Phase 10.7 addition: `StudentParentModel`.** `student_parents` (Database Design §6.4) is
+composite-keyed by `(student_id, parent_id)` with no independent `id`/audit columns — §6.4
+lists exactly four columns and no "+ standard audit cols" line, unlike every other table in
+that document, including `students`/`parents` above (confirmed with the user before
+implementing, since `.claude/rules/database.md` #4's general audit-column convention would
+otherwise conflict with this table's own narrower, explicit spec). `student_id`/`parent_id`
+**are** real database foreign keys here — unlike `organization_id`/`user_id` above — because
+`students`, `parents`, and `student_parents` are all owned by this same module: in-context FKs
+are enforced by the database (`.claude/rules/database.md` #3), the same treatment
+`fleet_device.CameraModel.device_id → devices.id` already gets for an identical
+same-module reference.
+
 PostgreSQL types only (ADR-0002) — no MySQL dialect import anywhere in this file, matching
 every other infra model rewritten during the PostgreSQL migration.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import CHAR, VARCHAR
+from sqlalchemy import CHAR, VARCHAR, Boolean, ForeignKey
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -67,3 +79,28 @@ class ParentModel(AuditedTableMixin, Base):
         nullable=False,
         index=True,
     )
+
+
+class StudentParentModel(Base):
+    """`student_parents` (Database Design §6.4, M:N): see module docstring's Phase 10.7
+    addition for why this composes `Base` directly rather than `AuditedTableMixin` (or any of
+    its constituent mixins) — no `id`, no `created_at`/`updated_at`, no `row_version`, no
+    `deleted_at`.
+
+    `parent_id` carries an explicit secondary index: the composite PK `(student_id, parent_id)`
+    only serves left-prefix lookups by `student_id` (`list_by_student`, `infra/repositories.py`)
+    — `list_by_parent`'s `WHERE parent_id = ...` needs its own index, the same reasoning
+    `fleet_device.CameraModel.device_id`/`DeviceAssignmentModel.vehicle_id` already get
+    dedicated indexes for. `student_id` needs no equivalent index of its own — it's the PK's
+    leading column, already covered."""
+
+    __tablename__ = "student_parents"
+
+    student_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("students.id"), primary_key=True
+    )
+    parent_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("parents.id"), primary_key=True, index=True
+    )
+    relationship: Mapped[str | None] = mapped_column(VARCHAR(40), nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

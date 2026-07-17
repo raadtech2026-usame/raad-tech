@@ -32,29 +32,48 @@ explicit unrestricted `TenantRegionScope` — functionally identical to no filte
 so that swapping in a real per-request scope is a one-line change once `ScopeResolver` is wired
 system-wide, rather than a rewrite. Wiring that resolver is out of this phase's scope (it is a
 cross-cutting, all-modules concern, not a Student-specific one) and is not attempted here.
+
+**Phase 10.7 addition: `SqlAlchemyStudentParentRepository`.** Cannot reuse `SqlAlchemyRepository
+Base.get_by_id`/its identity-map keying — both assume a single `.id` column, and
+`student_parents` has a composite primary key instead (`domain/repositories.py`'s Phase 10.7
+docstring). `get`/`list_by_student`/`list_by_parent` therefore issue their own `select()`
+statements directly rather than delegating to the base class's `get_by_id`, and the identity
+map is keyed by the `(student_id, parent_id)` tuple. `remove()` is new too — `StudentParent`'s
+only two lifecycle actions are a real INSERT (`add`) and a real DELETE (`remove`); there is no
+in-place field-level UPDATE the way `Student`/`Parent` get via `flush_tracked_changes`, so this
+repository defines no such method and `SqlAlchemyTransportOpsUnitOfWork.commit()` below calls
+none for it.
 """
 
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
-from raad.modules.transport_ops.domain.entities import Parent, Student
+from raad.modules.transport_ops.domain.entities import Parent, Student, StudentParent
 from raad.modules.transport_ops.domain.repositories import (
     ParentRepository,
+    StudentParentRepository,
     StudentRepository,
 )
 from raad.modules.transport_ops.domain.value_objects import ParentId, StudentId
 from raad.modules.transport_ops.infra.mappers import (
     model_to_parent,
     model_to_student,
+    model_to_student_parent,
     parent_to_model,
+    student_parent_to_model,
     student_to_model,
 )
-from raad.modules.transport_ops.infra.models import ParentModel, StudentModel
+from raad.modules.transport_ops.infra.models import (
+    ParentModel,
+    StudentModel,
+    StudentParentModel,
+)
 
 
 class SqlAlchemyStudentRepository(
@@ -132,6 +151,78 @@ class SqlAlchemyParentRepository(
         return parent
 
 
+class SqlAlchemyStudentParentRepository(StudentParentRepository):
+    """See module docstring's Phase 10.7 addition for why this does **not** compose
+    `SqlAlchemyRepositoryBase[StudentParentModel]` the way `SqlAlchemyStudentRepository`/
+    `SqlAlchemyParentRepository` do — the composite-key shape doesn't fit that base class's
+    single-`.id` assumptions, so this repository is a small, self-contained implementation
+    instead."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked: dict[
+            tuple[str, str], tuple[StudentParent, StudentParentModel]
+        ] = {}
+
+    async def get(
+        self, student_id: StudentId, parent_id: ParentId
+    ) -> StudentParent | None:
+        statement = select(StudentParentModel).where(
+            StudentParentModel.student_id == str(student_id),
+            StudentParentModel.parent_id == str(parent_id),
+        )
+        result = await self._session.execute(statement)
+        row = result.scalar_one_or_none()
+        return self._track(row)
+
+    def add(self, link: StudentParent) -> None:
+        model = student_parent_to_model(link)
+        self._session.add(model)
+        self._tracked[(str(link.student_id), str(link.parent_id))] = (link, model)
+
+    async def remove(self, link: StudentParent) -> None:
+        key = (str(link.student_id), str(link.parent_id))
+        tracked = self._tracked.pop(key, None)
+        if tracked is None:
+            # The application layer always calls get()/ensure_link_exists() before unlink()
+            # (`application/services.py`), which populates `_tracked` - unreachable in
+            # practice. Failing loudly here rather than silently no-op-ing, matching this
+            # codebase's "fail loudly, don't fake it" posture (core/di/bootstrap.py's own
+            # module docstring).
+            raise LookupError(
+                f"Cannot remove StudentParent({link.student_id}, {link.parent_id}): not "
+                "tracked by this repository (call get() first)."
+            )
+        _, model = tracked
+        # `AsyncSession.delete()` is itself a coroutine (unlike `.add()`) - it may need to
+        # load relationships/cascade before marking the row for deletion. Found live: a
+        # synchronous, un-awaited call here silently no-ops (the coroutine is created but
+        # never scheduled), so the row survives commit - caught by
+        # `test_transport_ops_student_parent_repository.py`'s round-trip test.
+        await self._session.delete(model)
+
+    async def list_by_student(self, student_id: StudentId) -> list[StudentParent]:
+        statement = select(StudentParentModel).where(
+            StudentParentModel.student_id == str(student_id)
+        )
+        result = await self._session.execute(statement)
+        return [self._track(row) for row in result.scalars().all()]
+
+    async def list_by_parent(self, parent_id: ParentId) -> list[StudentParent]:
+        statement = select(StudentParentModel).where(
+            StudentParentModel.parent_id == str(parent_id)
+        )
+        result = await self._session.execute(statement)
+        return [self._track(row) for row in result.scalars().all()]
+
+    def _track(self, row: StudentParentModel | None) -> StudentParent | None:
+        if row is None:
+            return None
+        link = model_to_student_parent(row)
+        self._tracked[(row.student_id, row.parent_id)] = (link, row)
+        return link
+
+
 class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfWork):
     """Concrete `TransportOpsUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `transport_ops`'s
     repositories once the session is open, and re-syncs every tracked aggregate's in-place
@@ -140,16 +231,20 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
     session-commit behavior, preserved exactly (§8.3), via `super().commit()`. Identical shape
     to `organization.infra.repositories.SqlAlchemyOrganizationUnitOfWork`, which already
     bundles two repositories (`organizations`/`regions`) the same way `students`/`parents` do
-    here as of Phase 10.6.
+    here as of Phase 10.6; `student_parents` (Phase 10.7) joins the same way again — but needs
+    no `flush_tracked_changes()` call of its own, per `SqlAlchemyStudentParentRepository`'s own
+    docstring.
     """
 
     students: SqlAlchemyStudentRepository
     parents: SqlAlchemyParentRepository
+    student_parents: SqlAlchemyStudentParentRepository
 
     async def __aenter__(self) -> "SqlAlchemyTransportOpsUnitOfWork":
         await super().__aenter__()
         self.students = SqlAlchemyStudentRepository(self.session)
         self.parents = SqlAlchemyParentRepository(self.session)
+        self.student_parents = SqlAlchemyStudentParentRepository(self.session)
         return self
 
     async def commit(self) -> None:

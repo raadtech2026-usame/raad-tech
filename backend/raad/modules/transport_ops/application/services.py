@@ -25,6 +25,14 @@ distinct resource prefixes) rather than `organization`'s split-by-API-grouping-w
 convention, since `Student`/`Parent` are two unrelated aggregates with no shared use-case, the
 same reasoning that keeps `VehicleApplicationService` and `DeviceApplicationService` separate
 classes.
+
+**Phase 10.7 addition: `StudentParentApplicationService`.** A third, separate service — not
+folded into `StudentApplicationService` or `ParentApplicationService` — for the same by-natural-
+API-grouping reason as above (`/students/{id}/parents` and `/parents/{id}/students` are their
+own nested-resource surface, `api/routers.py`'s Phase 10.7 addendum). No `id_generator`
+dependency, unlike the other two services: `StudentParent` has no surrogate id to mint
+(composite-keyed by `student_id`+`parent_id`, both already supplied by the caller,
+`domain/entities.py`).
 """
 
 from __future__ import annotations
@@ -39,8 +47,10 @@ from raad.modules.transport_ops.application.commands import (
     DisableStudentCommand,
     EnrollStudentCommand,
     GraduateStudentCommand,
+    LinkParentToStudentCommand,
     RegisterParentCommand,
     TransferStudentCommand,
+    UnlinkParentFromStudentCommand,
     UpdateParentCommand,
     UpdateStudentCommand,
 )
@@ -48,18 +58,32 @@ from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
     GetParentByIdQuery,
     GetStudentByIdQuery,
+    ListParentsForStudentQuery,
     ListParentsQuery,
+    ListStudentsForParentQuery,
     ListStudentsQuery,
     ParentDTO,
+    ParentForStudentDTO,
     ParentSummaryDTO,
     StudentDTO,
+    StudentForParentDTO,
+    StudentParentDTO,
     StudentSummaryDTO,
+    parent_for_student_to_dto,
     parent_to_dto,
     parent_to_summary_dto,
+    student_for_parent_to_dto,
+    student_parent_to_dto,
     student_to_dto,
     student_to_summary_dto,
 )
-from raad.modules.transport_ops.domain.entities import Parent, Student
+from raad.modules.transport_ops.application.validators import (
+    ensure_link_exists,
+    ensure_link_not_duplicate,
+    ensure_parent_exists,
+    ensure_student_exists,
+)
+from raad.modules.transport_ops.domain.entities import Parent, Student, StudentParent
 from raad.modules.transport_ops.domain.value_objects import (
     OrganizationId,
     ParentId,
@@ -256,3 +280,83 @@ class ParentApplicationService:
         if parent is None:
             raise NotFoundError(f"Parent {parent_id} not found.")
         return parent
+
+
+class StudentParentApplicationService:
+    """Parent<->Student relationship (link) use-cases (Phase 10.7): link, unlink, and the two
+    "list X for Y" read paths. See module docstring for why this is its own service rather than
+    folded into `StudentApplicationService`/`ParentApplicationService`."""
+
+    def __init__(self, *, clock: Clock) -> None:
+        self._clock = clock
+
+    async def link_parent_to_student(
+        self, command: LinkParentToStudentCommand, *, uow: TransportOpsUnitOfWork
+    ) -> StudentParentDTO:
+        async with uow:
+            student = await ensure_student_exists(uow, StudentId(command.student_id))
+            parent = await ensure_parent_exists(uow, ParentId(command.parent_id))
+            await ensure_link_not_duplicate(uow, student.id, parent.id)
+            link = StudentParent.link(
+                student_id=student.id,
+                student_organization_id=student.organization_id,
+                parent_id=parent.id,
+                parent_organization_id=parent.organization_id,
+                relationship=command.relationship,
+                is_primary=command.is_primary,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.student_parents.add(link)
+            uow.record_events(link.pull_domain_events())
+            await uow.commit()
+            return student_parent_to_dto(link)
+
+    async def unlink_parent_from_student(
+        self, command: UnlinkParentFromStudentCommand, *, uow: TransportOpsUnitOfWork
+    ) -> None:
+        async with uow:
+            student = await ensure_student_exists(uow, StudentId(command.student_id))
+            link = await ensure_link_exists(
+                uow, student.id, ParentId(command.parent_id)
+            )
+            link.unlink(
+                organization_id=student.organization_id,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            await uow.student_parents.remove(link)
+            uow.record_events(link.pull_domain_events())
+            await uow.commit()
+
+    async def list_parents_for_student(
+        self, query: ListParentsForStudentQuery, *, uow: TransportOpsUnitOfWork
+    ) -> list[ParentForStudentDTO]:
+        async with uow:
+            student = await ensure_student_exists(uow, StudentId(query.student_id))
+            links = await uow.student_parents.list_by_student(student.id)
+            result: list[ParentForStudentDTO] = []
+            for link in links:
+                parent = await uow.parents.get(link.parent_id)
+                if parent is None:
+                    # In-context FK guarantees the row exists, but a soft-deleted Parent
+                    # (`deleted_at` set) is filtered out by `get()`'s default read - skip it
+                    # rather than surfacing a confusing partial DTO for a deleted parent.
+                    continue
+                result.append(parent_for_student_to_dto(parent, link))
+            return result
+
+    async def list_students_for_parent(
+        self, query: ListStudentsForParentQuery, *, uow: TransportOpsUnitOfWork
+    ) -> list[StudentForParentDTO]:
+        async with uow:
+            parent = await ensure_parent_exists(uow, ParentId(query.parent_id))
+            links = await uow.student_parents.list_by_parent(parent.id)
+            result: list[StudentForParentDTO] = []
+            for link in links:
+                student = await uow.students.get(link.student_id)
+                if student is None:
+                    # Same soft-delete caveat as list_parents_for_student above.
+                    continue
+                result.append(student_for_parent_to_dto(student, link))
+            return result

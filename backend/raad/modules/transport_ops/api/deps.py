@@ -15,6 +15,7 @@ from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
     StudentApplicationService,
+    StudentParentApplicationService,
 )
 
 
@@ -39,3 +40,9 @@ def get_parent_service(
     container: Container = Depends(get_container),
 ) -> ParentApplicationService:
     return container.resolve(ParentApplicationService)
+
+
+def get_student_parent_service(
+    container: Container = Depends(get_container),
+) -> StudentParentApplicationService:
+    return container.resolve(StudentParentApplicationService)

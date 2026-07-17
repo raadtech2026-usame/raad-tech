@@ -55,6 +55,24 @@ Contracts §4.3's role column ("Org Admin") and §3.1's authorization layering.
   optional fields into one request, each independently dispatched, not atomically).
 - `DELETE /parents/{id}` not implemented, for the identical reason `DELETE /students/{id}`
   isn't: `Parent` has no soft-delete domain behavior.
+
+**Phase 10.7: Parent<->Student relationship — four routes, no documented API Contracts route
+at all** (confirmed by re-reading §4.3 in full: the `/students`/`/parents` rows list no linking
+sub-route, unlike `/routes/{id}/stops`'s documented "ordered stops" nesting). Modeled as nested
+sub-resource collections under the two existing routers — the one documented precedent in this
+same table for a child collection nested under a parent resource — rather than inventing a new
+top-level `/student-parents` router:
+
+- `POST /students/{student_id}/parents` — link (`students_router`) — body `{parent_id,
+  relationship?, is_primary?}`. Cross-organization/duplicate/not-found rejections all surface
+  through the standard error envelope automatically (`DomainError`/`ConflictError`/
+  `NotFoundError` from `application/services.py` and `domain/entities.py`).
+- `DELETE /students/{student_id}/parents/{parent_id}` — unlink (`students_router`) — the
+  **first real `DELETE` in this module**: unlike `Student`/`Parent`'s deferred soft-delete,
+  removing a link is a genuine deletion (`domain/entities.py`'s `StudentParent` docstring), so
+  this is the correct semantics, not a gap being filled in.
+- `GET /students/{student_id}/parents` — list a student's parents (`students_router`).
+- `GET /parents/{parent_id}/students` — list a parent's students (`parents_router`).
 """
 
 from __future__ import annotations
@@ -67,14 +85,19 @@ from raad.core.tenancy.principal import Principal
 from raad.interfaces.http.deps import require_permission
 from raad.modules.transport_ops.api.deps import (
     get_parent_service,
+    get_student_parent_service,
     get_student_service,
     get_transport_ops_uow,
 )
 from raad.modules.transport_ops.api.schemas import (
     EnrollStudentRequest,
+    LinkParentToStudentRequest,
+    ParentForStudentResponse,
     ParentResponse,
     ParentSummaryResponse,
     RegisterParentRequest,
+    StudentForParentResponse,
+    StudentParentLinkResponse,
     StudentResponse,
     StudentSummaryResponse,
     UpdateParentRequest,
@@ -88,8 +111,10 @@ from raad.modules.transport_ops.application.commands import (
     DisableStudentCommand,
     EnrollStudentCommand,
     GraduateStudentCommand,
+    LinkParentToStudentCommand,
     RegisterParentCommand,
     TransferStudentCommand,
+    UnlinkParentFromStudentCommand,
     UpdateParentCommand,
     UpdateStudentCommand,
 )
@@ -97,16 +122,22 @@ from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
     GetParentByIdQuery,
     GetStudentByIdQuery,
+    ListParentsForStudentQuery,
     ListParentsQuery,
+    ListStudentsForParentQuery,
     ListStudentsQuery,
     ParentDTO,
+    ParentForStudentDTO,
     ParentSummaryDTO,
     StudentDTO,
+    StudentForParentDTO,
+    StudentParentDTO,
     StudentSummaryDTO,
 )
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
     StudentApplicationService,
+    StudentParentApplicationService,
 )
 
 students_router = APIRouter()
@@ -149,6 +180,42 @@ def _parent_summary_dto_to_response(
 ) -> ParentSummaryResponse:
     return ParentSummaryResponse(
         id=parent.id, full_name=parent.full_name, status=parent.status
+    )
+
+
+def _student_parent_dto_to_response(
+    link: StudentParentDTO,
+) -> StudentParentLinkResponse:
+    return StudentParentLinkResponse(
+        student_id=link.student_id,
+        parent_id=link.parent_id,
+        relationship=link.relationship,
+        is_primary=link.is_primary,
+    )
+
+
+def _parent_for_student_dto_to_response(
+    dto: ParentForStudentDTO,
+) -> ParentForStudentResponse:
+    return ParentForStudentResponse(
+        parent_id=dto.parent_id,
+        full_name=dto.full_name,
+        phone=dto.phone,
+        status=dto.status,
+        relationship=dto.relationship,
+        is_primary=dto.is_primary,
+    )
+
+
+def _student_for_parent_dto_to_response(
+    dto: StudentForParentDTO,
+) -> StudentForParentResponse:
+    return StudentForParentResponse(
+        student_id=dto.student_id,
+        full_name=dto.full_name,
+        status=dto.status,
+        relationship=dto.relationship,
+        is_primary=dto.is_primary,
     )
 
 
@@ -458,3 +525,117 @@ async def update_parent(
             "update_parent: no field was processed despite the guard above."
         )
     return _parent_dto_to_response(parent)
+
+
+@students_router.post(
+    "/{student_id}/parents",
+    response_model=StudentParentLinkResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Link a parent to a student",
+    description=(
+        "Org Admin. No documented API Contracts route (Phase 10.7 — see `routers.py`'s "
+        "module docstring). Rejects cross-organization links (`DomainError`) and duplicate "
+        "links (`ConflictError`, both from `StudentParent.link`/`application/validators.py`). "
+        "Pending the approved RBAC permission matrix — see `enroll_student`'s note."
+    ),
+)
+async def link_parent_to_student(
+    student_id: str,
+    body: LinkParentToStudentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_parents.create"))
+    ),
+    student_parent_service: StudentParentApplicationService = Depends(
+        get_student_parent_service
+    ),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StudentParentLinkResponse:
+    command = LinkParentToStudentCommand(
+        student_id=student_id,
+        parent_id=body.parent_id,
+        relationship=body.relationship,
+        is_primary=body.is_primary,
+        actor=principal,
+    )
+    link = await student_parent_service.link_parent_to_student(command, uow=uow)
+    return _student_parent_dto_to_response(link)
+
+
+@students_router.delete(
+    "/{student_id}/parents/{parent_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a parent-student link",
+    description=(
+        "Org Admin. No documented API Contracts route (Phase 10.7). A real deletion, unlike "
+        "every other `DELETE` in this module (both currently unimplemented, see "
+        "`StudentParent`'s docstring for why this one differs). Pending the approved RBAC "
+        "permission matrix."
+    ),
+)
+async def unlink_parent_from_student(
+    student_id: str,
+    parent_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_parents.delete"))
+    ),
+    student_parent_service: StudentParentApplicationService = Depends(
+        get_student_parent_service
+    ),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> None:
+    command = UnlinkParentFromStudentCommand(
+        student_id=student_id, parent_id=parent_id, actor=principal
+    )
+    await student_parent_service.unlink_parent_from_student(command, uow=uow)
+
+
+@students_router.get(
+    "/{student_id}/parents",
+    response_model=list[ParentForStudentResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List a student's linked parents",
+    description=(
+        "Org Admin. No documented API Contracts route (Phase 10.7). Pending the approved "
+        "RBAC permission matrix."
+    ),
+)
+async def list_parents_for_student(
+    student_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_parents.list"))
+    ),
+    student_parent_service: StudentParentApplicationService = Depends(
+        get_student_parent_service
+    ),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[ParentForStudentResponse]:
+    results = await student_parent_service.list_parents_for_student(
+        ListParentsForStudentQuery(student_id=student_id), uow=uow
+    )
+    return [_parent_for_student_dto_to_response(dto) for dto in results]
+
+
+@parents_router.get(
+    "/{parent_id}/students",
+    response_model=list[StudentForParentResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List a parent's linked students",
+    description=(
+        "Org Admin. No documented API Contracts route (Phase 10.7). Pending the approved "
+        "RBAC permission matrix."
+    ),
+)
+async def list_students_for_parent(
+    parent_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_parents.list"))
+    ),
+    student_parent_service: StudentParentApplicationService = Depends(
+        get_student_parent_service
+    ),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[StudentForParentResponse]:
+    results = await student_parent_service.list_students_for_parent(
+        ListStudentsForParentQuery(parent_id=parent_id), uow=uow
+    )
+    return [_student_for_parent_dto_to_response(dto) for dto in results]

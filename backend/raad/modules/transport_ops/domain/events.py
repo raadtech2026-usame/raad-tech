@@ -27,6 +27,21 @@ PascalCase-past-tense convention and the Ch. 6 ubiquitous language ("Parent"), 1
 `Parent`'s own domain method names, exactly mirroring `Student`'s event set shape (minus
 `graduated`/`transferred`, which have no `Parent`-domain equivalent — `ParentStatus` is a flat
 active/inactive toggle, see `value_objects.py`).
+
+**Phase 10.7 addition:** `student_parent_linked`/`student_parent_unlinked`, backing the new
+`StudentParent` aggregate (`entities.py`, Database Design §6.4). `aggregate_id` is `student_id`
+alone, **not** a composite `student_id:parent_id` string — a composite string was tried first
+and rejected after live-database verification: `core.events.outbox.OutboxModel.aggregate_id` is
+a shared `CHAR(26)` column (`core/events/outbox.py`), sized for exactly one ULID and used
+identically by every other module's events, so a 53-character composite value fails at
+`INSERT` (`StringDataRightTruncationError`) — this is a hard, foundation-layer constraint, not
+one this module can widen unilaterally. `student_id` is chosen over `parent_id` as the single
+id to carry (both are still fully available in `payload`, so no information is lost) because
+the REST surface nests this relationship under `/students/{id}/parents` first
+(`api/routers.py`). `org_id` is threaded through explicitly by the caller (`entities.py`'s
+`StudentParent.link`/`unlink`) even though `student_parents` has no `organization_id` column of
+its own, so that outbox/event consumers still get tenant-scoping information consistent with
+every other event in this module.
 """
 
 from __future__ import annotations
@@ -249,4 +264,52 @@ def parent_disabled(
         org_id=organization_id,
         occurred_at=occurred_at,
         payload={"actor_id": actor_id},
+    )
+
+
+def student_parent_linked(
+    *,
+    student_id: str,
+    parent_id: str,
+    organization_id: str,
+    relationship: str | None,
+    is_primary: bool,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="StudentParentLinked",
+        aggregate_type="StudentParent",
+        aggregate_id=student_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "student_id": student_id,
+            "parent_id": parent_id,
+            "relationship": relationship,
+            "is_primary": is_primary,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def student_parent_unlinked(
+    *,
+    student_id: str,
+    parent_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="StudentParentUnlinked",
+        aggregate_type="StudentParent",
+        aggregate_id=student_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "student_id": student_id,
+            "parent_id": parent_id,
+            "actor_id": actor_id,
+        },
     )

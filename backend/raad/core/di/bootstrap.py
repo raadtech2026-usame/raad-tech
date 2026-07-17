@@ -60,6 +60,7 @@ from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
     StudentApplicationService,
+    StudentParentApplicationService,
 )
 from raad.modules.transport_ops.infra.repositories import (
     SqlAlchemyTransportOpsUnitOfWork,
@@ -147,6 +148,13 @@ def build_container(settings: Settings) -> Container:
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
         ),
+    )
+    # StudentParentApplicationService needs no id_generator (StudentParent has no surrogate id
+    # to mint, `application/services.py`'s Phase 10.7 docstring) or TokenService — always
+    # constructible, same reasoning as the two services above.
+    container.bind_singleton(
+        StudentParentApplicationService,
+        StudentParentApplicationService(clock=container.resolve(Clock)),
     )
 
     # TrackingApplicationService additionally needs a LatestPositionPort (Database Design

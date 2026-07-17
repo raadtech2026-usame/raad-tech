@@ -26,6 +26,7 @@ from __future__ import annotations
 from raad.core.db.unit_of_work import UnitOfWork
 from raad.modules.transport_ops.domain.repositories import (
     ParentRepository,
+    StudentParentRepository,
     StudentRepository,
 )
 
@@ -34,9 +35,11 @@ class TransportOpsUnitOfWork(UnitOfWork):
     """Bundles this module's repositories onto one transaction boundary (LLD §8.2 contract
     skeleton style — plain attributes, matching `OrganizationUnitOfWork`'s own style, which
     already bundles two repositories — `organizations`/`regions` — onto one UoW; `Parent`
-    (Phase 10.6) joins `Student` here the same way, not a second UnitOfWork). The concrete
-    implementation is `infra.repositories.SqlAlchemyTransportOpsUnitOfWork`.
+    (Phase 10.6) joins `Student` here the same way, not a second UnitOfWork; `student_parents`
+    (Phase 10.7) joins the same way again, a third repository on the one transaction boundary).
+    The concrete implementation is `infra.repositories.SqlAlchemyTransportOpsUnitOfWork`.
     """
 
     students: StudentRepository
     parents: ParentRepository
+    student_parents: StudentParentRepository

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from raad.modules.transport_ops.domain.entities import Parent, Student
+from raad.modules.transport_ops.domain.entities import Parent, Student, StudentParent
 
 
 @dataclass(frozen=True)
@@ -121,4 +121,89 @@ def parent_to_summary_dto(parent: Parent) -> ParentSummaryDTO:
     """
     return ParentSummaryDTO(
         id=str(parent.id), full_name=parent.full_name, status=parent.status.value
+    )
+
+
+@dataclass(frozen=True)
+class ListParentsForStudentQuery:
+    student_id: str
+
+
+@dataclass(frozen=True)
+class ListStudentsForParentQuery:
+    parent_id: str
+
+
+@dataclass(frozen=True)
+class StudentParentDTO:
+    """The raw link record — returned by `link_parent_to_student` (Phase 10.7). The two "list X
+    for Y" read paths return the richer `ParentForStudentDTO`/`StudentForParentDTO` below
+    instead (joining in the referenced aggregate's own fields), since a bare link record with
+    only ids is of little use to an API caller asking "which parents does this student have" —
+    flagged as a deliberate shape choice, not a silently invented one."""
+
+    student_id: str
+    parent_id: str
+    relationship: str | None
+    is_primary: bool
+
+
+@dataclass(frozen=True)
+class ParentForStudentDTO:
+    """`Parent`'s own fields plus this link's `relationship`/`is_primary` — the read shape for
+    `ListParentsForStudentQuery` (Phase 10.7)."""
+
+    parent_id: str
+    full_name: str
+    phone: str | None
+    status: str
+    relationship: str | None
+    is_primary: bool
+
+
+@dataclass(frozen=True)
+class StudentForParentDTO:
+    """`Student`'s own fields plus this link's `relationship`/`is_primary` — the read shape for
+    `ListStudentsForParentQuery` (Phase 10.7)."""
+
+    student_id: str
+    full_name: str
+    status: str
+    relationship: str | None
+    is_primary: bool
+
+
+def student_parent_to_dto(link: StudentParent) -> StudentParentDTO:
+    """Shared mapper — the only place a `StudentParent` aggregate is projected into its raw
+    link DTO."""
+    return StudentParentDTO(
+        student_id=str(link.student_id),
+        parent_id=str(link.parent_id),
+        relationship=link.relationship,
+        is_primary=link.is_primary,
+    )
+
+
+def parent_for_student_to_dto(
+    parent: Parent, link: StudentParent
+) -> ParentForStudentDTO:
+    return ParentForStudentDTO(
+        parent_id=str(parent.id),
+        full_name=parent.full_name,
+        phone=str(parent.phone) if parent.phone is not None else None,
+        status=parent.status.value,
+        relationship=link.relationship,
+        is_primary=link.is_primary,
+    )
+
+
+def student_for_parent_to_dto(
+    student: Student, link: StudentParent
+) -> StudentForParentDTO:
+    return StudentForParentDTO(
+        student_id=str(student.id),
+        full_name=student.full_name,
+        status=student.status.value,
+        relationship=link.relationship,
+        is_primary=link.is_primary,
     )

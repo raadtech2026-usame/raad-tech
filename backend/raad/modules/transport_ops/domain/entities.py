@@ -56,6 +56,17 @@ forbidden). `_validate_full_name`/`_validate_external_ref` are factored out so `
 authentication, and any change to `Student` are explicitly out of scope for this phase, per
 its own instructions. `Parent` holds no field referencing `Student`/`student_parents`, for the
 identical reason `Student` above holds no `route_id`/`trip_id`/`parent_id`.
+
+**Phase 10.7 addition: `StudentParent`.** The M:N association between `Student` and `Parent`
+(Database Design §6.4). Confirmed with the user before implementing: §6.4 lists exactly four
+columns (`student_id`, `parent_id`, `relationship`, `is_primary`) with composite PK
+`(student_id, parent_id)` and **no** "+ standard audit cols" line — unlike every other table in
+that document, including `students`/`parents` above. `StudentParent` is therefore modeled with
+no surrogate `id` and no audit/soft-delete fields, unlike every other aggregate in this file;
+its constructor only carries the four persisted columns. Neither `Student` nor `Parent` gain a
+field referencing the other — the association lives entirely in this separate aggregate, the
+same reasoning `student_assignments`/`trip_students` are deferred as their own tables rather
+than inlined fields (see this module's Phase 10.1 scope note above).
 """
 
 from __future__ import annotations
@@ -111,6 +122,18 @@ def _validate_parent_full_name(full_name: str) -> None:
         raise DomainError(
             f"Parent full_name must be at most {_PARENT_FULL_NAME_MAX_LENGTH} "
             f"characters: {len(full_name)}"
+        )
+
+
+# Phase 10.7: Database Design §6.4: `student_parents.relationship VARCHAR(40)`.
+_RELATIONSHIP_MAX_LENGTH = 40
+
+
+def _validate_relationship_label(relationship: str | None) -> None:
+    if relationship is not None and len(relationship) > _RELATIONSHIP_MAX_LENGTH:
+        raise DomainError(
+            f"relationship label must be at most {_RELATIONSHIP_MAX_LENGTH} "
+            f"characters: {len(relationship)}"
         )
 
 
@@ -395,6 +418,118 @@ class Parent(_AggregateRoot):
             transport_ops_events.parent_disabled(
                 parent_id=str(self.id),
                 organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+
+class StudentParent(_AggregateRoot):
+    """One row of `student_parents` (Database Design §6.4): an M:N association between a
+    `Student` and a `Parent`. Composite-keyed by `(student_id, parent_id)` — see module
+    docstring's Phase 10.7 addendum for why this aggregate has no surrogate `id` and no audit
+    columns, unlike `Student`/`Parent` above.
+
+    The relationship's lifecycle is binary — linked or not — so creating this aggregate *is*
+    the "link" event; there is no persisted status field. Unlinking removes the row entirely (a
+    hard delete, `infra/repositories.py`), not a soft-delete/status transition. `relationship`/
+    `is_primary` are set only at link time (Application section of this phase's task lists
+    Link/Unlink/List — no update use-case), so no `update_*` method exists here; changing either
+    field requires unlinking and re-linking.
+    """
+
+    def __init__(
+        self,
+        *,
+        student_id: StudentId,
+        parent_id: ParentId,
+        relationship: str | None,
+        is_primary: bool,
+    ) -> None:
+        super().__init__()
+        _validate_relationship_label(relationship)
+        self.student_id = student_id
+        self.parent_id = parent_id
+        self.relationship = relationship
+        self.is_primary = is_primary
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, StudentParent)
+            and self.student_id == other.student_id
+            and self.parent_id == other.parent_id
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.student_id, self.parent_id))
+
+    @classmethod
+    def link(
+        cls,
+        *,
+        student_id: StudentId,
+        student_organization_id: OrganizationId,
+        parent_id: ParentId,
+        parent_organization_id: OrganizationId,
+        relationship: str | None = None,
+        is_primary: bool = False,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "StudentParent":
+        """Factory for a new link. **Cross-organization associations are rejected here**
+        (this phase's own scope: "Prevent: Cross-organization associations") by comparing the
+        already-loaded `Student`'s and `Parent`'s `organization_id`s — a pure invariant, no I/O
+        needed, so it lives in the domain layer. This is a deliberately different placement
+        from the duplicate-link and existence checks (`application/validators.py`), which do
+        need a repository read and therefore belong in the application layer instead — the same
+        domain-vs-application split `fleet_device`'s intra-aggregate camera-channel-uniqueness
+        (domain, no I/O, `ConflictError`) vs. its `ensure_vehicle_exists` (application, I/O)
+        already establishes in this codebase."""
+        if student_organization_id != parent_organization_id:
+            raise DomainError(
+                f"Cannot link Student {student_id} (organization "
+                f"{student_organization_id}) to Parent {parent_id} (organization "
+                f"{parent_organization_id}): cross-organization parent-student links are "
+                "not permitted."
+            )
+        link = cls(
+            student_id=student_id,
+            parent_id=parent_id,
+            relationship=relationship,
+            is_primary=is_primary,
+        )
+        link._record(
+            transport_ops_events.student_parent_linked(
+                student_id=str(student_id),
+                parent_id=str(parent_id),
+                organization_id=str(student_organization_id),
+                relationship=relationship,
+                is_primary=is_primary,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+        return link
+
+    def unlink(
+        self,
+        *,
+        organization_id: OrganizationId,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Emits `StudentParentUnlinked` before the application layer removes the row
+        (`application/services.py`'s `StudentParentApplicationService.unlink_parent_from_student`)
+        — the aggregate still owns emitting its own domain event even though the persistence
+        action that follows is a delete, the same "aggregate records, application persists"
+        separation every other method in this module follows. `organization_id` is supplied by
+        the caller (from the already-loaded `Student`/`Parent`) since it isn't a field on this
+        aggregate — `student_parents` has no `organization_id` column (§6.4)."""
+        self._record(
+            transport_ops_events.student_parent_unlinked(
+                student_id=str(self.student_id),
+                parent_id=str(self.parent_id),
+                organization_id=str(organization_id),
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )
