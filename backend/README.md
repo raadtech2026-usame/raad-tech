@@ -141,8 +141,10 @@ and OAuth — all pending `modules/iam`'s application/domain layers in a later p
 ## Database Foundation (Phase 4.4)
 
 Framework-only, no business entities/tables/repositories. Adds three dependencies:
-SQLAlchemy (async engine/ORM), Alembic (migrations), `asyncmy` (async MySQL 8.x driver).
-Implemented:
+SQLAlchemy (async engine/ORM), Alembic (migrations), and an async PostgreSQL driver. Originally
+`asyncmy` (MySQL 8.x); replaced by `asyncpg`/PostgreSQL per
+`docs/architecture/adr/0002-postgresql-migration.md` — see **Database Status** below for the
+current, active configuration. Implemented:
 
 - **Async engine + session factory** (`core/db/engine.py`) — `build_engine`/
   `build_session_factory`; `pool_pre_ping=True`, `expire_on_commit=False`.
@@ -175,8 +177,9 @@ Implemented:
 - **Alembic integration** (`migrations/env.py`, `alembic.ini`) — `target_metadata =
   Base.metadata`; the connection URL is read from `raad.core.config.settings` (not
   `alembic.ini`) so there's one source of DB config; async-engine-to-sync-migration bridging
-  via `AsyncConnection.run_sync`. Verified end-to-end against a real MySQL server (reached the
-  authentication stage through the full engine/driver/Alembic chain).
+  via `AsyncConnection.run_sync`. Verified end-to-end against a real database server (reached
+  the authentication stage through the full engine/driver/Alembic chain) — originally MySQL;
+  now PostgreSQL after ADR-0002 (see **Database Status**).
 
 Deliberately **not** implemented: any module ORM model, business table, or migration revision;
 any module-specific repository; `application/`/`domain/` code for any module.
@@ -307,8 +310,10 @@ into `core/di` and exercised directly.
   §4.3/§4.5 column-for-column: both CHECK constraints ("email or phone present",
   "org-scoped role requires organization_id"), the exact indexes
   (`ix_users__organization_id`/`__role`/`__status`, `ix_refresh_tokens__user_id`/
-  `__expires_at`), unique constraints, and the `users.role`/`.status` `ENUM`s — verified by
-  rendering the actual `CREATE TABLE` DDL against the MySQL dialect.
+  `__expires_at`), unique constraints, and the `users.role`/`.status` `ENUM`s — originally
+  verified by rendering `CREATE TABLE` DDL against the MySQL dialect; re-verified against
+  PostgreSQL after ADR-0002 (native `ENUM` types, no MySQL-dialect-specific column types — see
+  **Database Status**).
 - **Mappers** (`mappers.py`) — `user_to_model`/`model_to_user`,
   `refresh_token_to_model`/`model_to_refresh_token`. The single translation point for a
   pre-existing casing mismatch: `core.tenancy.principal.Role` (Phase 4.3, already shipped)
@@ -371,8 +376,98 @@ business logic, no repository/SQLAlchemy access, no aggregate manipulation.
 
 ## Status
 
-Application foundation only — runnable, with JWT/password-hashing security, a SQLAlchemy/
-MySQL persistence foundation, a runtime-agnostic worker/event-processing foundation, a
-complete IAM domain + application + infrastructure stack, and now `iam`'s first real HTTP
-endpoints — but every other module still has no business logic or API surface beyond health
-checks.
+The phase log above (4.2–5.4) covers IAM's own build-out in detail; this section reflects the
+backend as a whole as of the most recent Architecture Review (Modules 1–5).
+
+**No longer framework-only.** Five of the ten bounded contexts are implemented end-to-end
+(domain → application → infrastructure → API → database migration), each independently
+verified against a live database, not just unit-tested in isolation:
+
+- **IAM** — users, auth (JWT), RBAC scaffolding (permission matrix itself still pending
+  formal approval).
+- **Organization** — organizations, regions, tenant hierarchy.
+- **Fleet Device** — vehicles, devices, cameras, device↔vehicle assignment lifecycle.
+- **Tracking** — vehicle positions, geofence crossings. Its application service is currently
+  unreachable via DI pending a `LatestPositionPort`/Redis implementation — an intentional
+  "fail loudly, don't fake it" deferral, not a defect.
+- **Transport Operations (Student)** — the `Student` aggregate only (enroll/update/activate/
+  disable/graduate/transfer). `Parent`/`Route`/`Stop`/`Trip`/`student_assignments` — also
+  owned by this bounded context per `docs/architecture/adr/0001-business-entity-module-mapping.md`
+  — are not yet built.
+
+The remaining five contexts (`video`, `notifications`, `billing`, `reporting`,
+`platform_audit`) are still structural scaffolds only, exactly as the Modules table above
+already states — no business logic or API surface beyond health checks for those.
+
+**Technology stack (current):**
+
+- **FastAPI** — async modular monolith, one router per bounded context.
+- **PostgreSQL** — the active relational store (`docs/architecture/adr/0002-postgresql-migration.md`,
+  superseding an earlier MySQL 8.x decision — see **Database Status** below).
+- **SQLAlchemy 2.x (async)** — declarative ORM, one shared `Base`/`MetaData` per
+  `core/db/base.py`'s naming convention.
+- **Alembic** — schema migrations, one linear revision chain (see **Database Status**).
+- **Clean Architecture** — `api → application → domain`; `infra` implements the interfaces
+  `domain` defines; domain never imports FastAPI or SQLAlchemy (`.claude/rules/backend.md` #2),
+  verified by direct grep across all five completed modules, not just asserted.
+- **Domain-Driven Design** — aggregates with buffered domain events, value objects,
+  domain-owned invariants; identical `_AggregateRoot` shape independently duplicated per module
+  (deliberately — no shared-kernel package is approved).
+- **Transactional Outbox** — every state change's domain events are written to the `outbox`
+  table in the *same* transaction as the business rows (`core/events/outbox.py`,
+  `SqlAlchemyUnitOfWork.commit()`) — no event without a committed change, no committed change
+  silently missing its event. The publish/relay side exists but stays unbound until a broker
+  is chosen (Phase 2 §4.3, still open — backend-wide, not module-specific).
+- **Dependency Injection** — one composition root, `core/di/bootstrap.py`, binding every
+  service, repository-bearing UnitOfWork, and cross-cutting port; unbound dependencies fail
+  loudly (`LookupError`/`NotImplementedError`) rather than resolving to a fake.
+
+## Database Status
+
+- **PostgreSQL is the active database** — `RAAD_DB__URL` uses the `postgresql+asyncpg://` form
+  (`.env.example`); the `asyncmy`/MySQL configuration referenced earlier in this file's phase
+  log is historical only.
+- **Alembic migration chain** is a single linear sequence, one revision per completed bounded
+  context, in build order: `iam → organization → fleet_device → tracking → transport_ops`
+  (head). No branches.
+- **Zero migration drift verified** — `alembic check` reports "No new upgrade operations
+  detected" against the live schema; the full chain has been round-tripped
+  (`upgrade head → downgrade → upgrade head`) with no orphaned database objects. Every
+  migration introducing a PostgreSQL native `ENUM` type includes an explicit `DROP TYPE` in its
+  `downgrade()` — `alembic revision --autogenerate` does not emit this itself, and omitting it
+  breaks re-upgrade after a downgrade.
+- `migrations/env.py` imports `infra/models` from exactly the five completed modules, kept in
+  sync 1:1 with which modules have a non-empty `infra/models.py`.
+- Cross-context reference columns (e.g. `organization_id`) are indexed but never
+  foreign-key-constrained, by design (`.claude/rules/database.md` #3) — preserves module
+  extraction seams. In-context references (e.g. `refresh_tokens.user_id → users.id`) are real,
+  database-enforced foreign keys.
+
+## Roadmap
+
+**Completed**
+
+- IAM, Organization, Fleet Device, Tracking, Transport Operations (Student) — full
+  domain/application/infra/API stacks, migrated onto PostgreSQL.
+- ADR-0002: MySQL → PostgreSQL engine migration, including the full Alembic history
+  regeneration described above.
+
+**In Progress**
+
+- Transport Operations: remaining entities (`Parent`, `Route`, `Stop`, `Trip`,
+  `student_assignments`) not yet started within the already-completed bounded context.
+- RBAC permission matrix and a concrete `PermissionEvaluator` (every `require_permission`
+  call across all five modules currently raises `NotImplementedError` by design).
+- `ScopeResolver` (tenant/region scope resolution) — no concrete implementation bound yet.
+
+**Planned**
+
+- Remaining bounded contexts: `video`, `notifications`, `billing`, `reporting`,
+  `platform_audit` (currently structural scaffolds only).
+- Event broker selection and `BrokerPort` implementation (Phase 2 §4.3, open item) — unlocks
+  the Outbox Relay worker and `TrackingApplicationService`'s Redis-backed
+  `LatestPositionPort`.
+- Automated architecture-boundary test suite (`tests/architecture/` is currently empty;
+  Backend LLD §2.3 calls for one — module boundaries hold today by manual discipline only).
+- Broader automated test coverage — today concentrated almost entirely in Transport
+  Operations; IAM/Organization/Fleet Device/Tracking have no automated tests yet.

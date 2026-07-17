@@ -60,15 +60,117 @@ relaying JT808/JT1078 traffic between bus terminals and the platform.
 
 ## Repository Status
 
-This repository is currently greenfield: no application code, tech stack, build tooling, or tests
-exist yet (only this file). Do not assume any particular language, framework, database, or service
-architecture — none has been chosen yet. When implementation begins, this file must be updated with:
+This repository is **no longer greenfield**. The Business API backend (`backend/`) is a running
+FastAPI modular monolith with five of its ten bounded contexts fully implemented end-to-end
+(domain → application → infrastructure → API → database migration), backed by a live PostgreSQL
+schema. The remaining five contexts (`video`, `notifications`, `billing`, `reporting`,
+`platform_audit`) are still structural scaffolds only — no domain/application/infra logic, per
+`docs/architecture/adr/0001-business-entity-module-mapping.md`'s module list. Treat those five as
+genuinely not-yet-decided; do not infer behavior for them from the five completed ones.
 
-- The actual tech stack and why it was chosen
-- Build/lint/test commands (including how to run a single test)
-- Real architecture: service boundaries, how JT808/JT1078 ingestion is structured, data flow from
-  bus terminal → platform → parent app
-- Any conventions established in code review or CLAUDE.md/rules files as the project grows
+### Tech stack (decided)
 
-Until those decisions are made, treat this file's Product Scope and Core Technical Domains sections
-as the durable source of truth, and treat everything else as not-yet-decided rather than inferable.
+- **Language/framework:** Python, FastAPI (async, modular monolith — `.claude/rules/architecture.md`).
+- **Database:** **PostgreSQL** via the `asyncpg` driver (`ADR-0002`, superseding an earlier MySQL 8.x
+  decision — see `docs/architecture/adr/0002-postgresql-migration.md` and
+  `.claude/rules/database.md`). Redis is planned for hot state (latest position, sessions, caches)
+  but not yet wired.
+- **ORM/migrations:** SQLAlchemy 2.x async + Alembic, revisions in `backend/migrations/versions/`.
+- **Dependency injection:** a small hand-rolled composition root (`backend/raad/core/di/`), not a
+  third-party DI framework.
+- **Dev tooling** (pytest, ruff/mypy): still **not formally approved** — `backend/pyproject.toml`'s
+  own comments track this as an open item. `black` is in use for formatting but is applied
+  inconsistently across the codebase (see the Phase 10 architecture review's Code Quality findings)
+  — don't assume every file is currently `black`-clean.
+
+### Completed bounded contexts
+
+Each of the five below has a full `api / application / domain / infra / events` stack (per
+`.claude/rules/backend.md` #1) and is registered in `core/di/bootstrap.py` and
+`interfaces/http/api_v1.py`:
+
+- **IAM** — users, auth (JWT), RBAC scaffolding (permission matrix itself still pending approval).
+- **Organization** — organizations, regions, tenant hierarchy.
+- **Fleet Device** — vehicles, devices, cameras, device↔vehicle assignment lifecycle.
+- **Tracking** — vehicle positions, geofence crossings (its application service is currently
+  unreachable via DI pending a `LatestPositionPort`/Redis implementation — intentional
+  "fail loudly" deferral, not a bug).
+- **Transport Operations (Student)** — the `Student` aggregate only (enroll/update/activate/
+  disable/graduate/transfer); `Parent`/`Route`/`Stop`/`Trip`/`student_assignments` (also owned by
+  this bounded context per ADR-0001) are not yet built.
+
+### Architecture patterns in use
+
+All five completed contexts apply the same patterns identically — verified module-by-module in the
+Phase 10 architecture review, not just asserted:
+
+- **Clean Architecture / layered dependency direction:** `api → application → domain`; `infra`
+  implements interfaces `domain` defines; domain never imports FastAPI or SQLAlchemy
+  (`.claude/rules/backend.md` #2).
+- **DDD:** aggregates with buffered domain events (`_AggregateRoot._record()` /
+  `pull_domain_events()`, deliberately duplicated per module rather than shared), value objects,
+  domain-owned invariants.
+- **Repository pattern:** one `SqlAlchemy<Entity>Repository` per aggregate, composing
+  `core.db.repository.SqlAlchemyRepositoryBase`; every repository keeps an in-memory identity map
+  (`{id: (domain_obj, orm_row)}`) so in-place aggregate mutations get re-projected onto their ORM
+  row via `flush_tracked_changes()` immediately before commit.
+- **Unit of Work:** `core.db.unit_of_work.SqlAlchemyUnitOfWork`, extended per module
+  (`SqlAlchemy<Module>UnitOfWork`) to bundle that module's repositories onto one transaction
+  boundary; `commit()` always flushes tracked changes, then delegates to the base class's
+  outbox-write-then-session-commit.
+- **Domain events + transactional outbox:** every state change buffers `DomainEvent`s on the
+  aggregate; the application service records them onto the UoW; `commit()` writes them to the
+  `outbox` table in the *same* transaction as the business rows (`core/events/outbox.py`) — no
+  event without a committed change, no committed change silently missing its event. The
+  publish/relay side (`SqlOutboxPublisher`) exists but stays unbound until a broker is chosen
+  (Phase 2 §4.3, still open) — this is a backend-wide deferral, not a per-module gap.
+- **Dependency injection:** one composition root, `core/di/bootstrap.py`, binding every service,
+  repository-bearing UnitOfWork, and cross-cutting port; unbound dependencies fail loudly
+  (`LookupError`/`NotImplementedError`) rather than resolving to a fake.
+- **PostgreSQL + SQLAlchemy Async + Alembic + FastAPI:** see Tech stack above.
+
+### Project structure (current)
+
+```
+backend/
+├── raad/
+│   ├── main.py            # ASGI app factory / composition root wiring
+│   ├── core/               # cross-cutting kernel: config, security, tenancy, db, events,
+│   │                       # errors, logging, di, ids, time, workers
+│   ├── modules/             # one package per bounded context, each:
+│   │   └── <context>/
+│   │       ├── domain/      # entities, value objects, domain events, repository interfaces
+│   │       ├── application/ # commands, queries, DTOs, application services, ports
+│   │       ├── infra/        # SQLAlchemy models, mappers, concrete repositories, UnitOfWork
+│   │       ├── api/          # FastAPI routers, request/response schemas, DI deps
+│   │       └── events/       # publishers/subscribers (scaffolded, broker pending)
+│   └── interfaces/http/     # api_v1 router aggregation, shared deps, middleware, error handlers
+├── migrations/               # Alembic env.py + versions/
+└── tests/                    # unit/ (Transport Ops only today), integration/ contract/
+                               # architecture/ (all still empty — see known gaps below)
+```
+
+### Migration status
+
+- **Engine:** PostgreSQL (ADR-0002).
+- **Chain:** a single linear Alembic chain, one revision per completed bounded context, in build
+  order: `iam → organization → fleet_device → tracking → transport_ops` (head). No branches.
+- **Verified zero drift:** `alembic check` reports "No new upgrade operations detected." against
+  the live schema; the full chain has been round-tripped (`upgrade head → downgrade → upgrade
+  head`) with no orphaned objects. Every migration that introduces a PostgreSQL native `ENUM`
+  type includes an explicit `DROP TYPE` in its `downgrade()` — `alembic revision --autogenerate`
+  does not emit this itself, and omitting it breaks re-upgrade after a downgrade.
+- `migrations/env.py` imports `infra/models` from exactly the five completed modules — kept in
+  sync 1:1 with which modules have a non-empty `infra/models.py`.
+
+### Known gaps (tracked, not hidden)
+
+- No automated architecture-boundary test suite yet (`tests/architecture/` is empty) — Backend LLD
+  §2.3 calls for one; module boundaries currently hold by manual discipline only.
+- Test coverage is concentrated almost entirely in Transport Ops; IAM/Organization/Fleet
+  Device/Tracking have no automated tests yet.
+- RBAC permission matrix, tenant/region `ScopeResolver`, and the event broker are all approved-open
+  items — every dependent code path is wired to fail loudly rather than fake a pass.
+
+This section must be kept current as further bounded contexts are completed — update it rather
+than letting it drift, the same discipline this rewrite itself was triggered by.
