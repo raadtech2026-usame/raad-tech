@@ -38,6 +38,23 @@ Contracts §4.3's role column ("Org Admin") and §3.1's authorization layering.
   soft-delete domain behavior (Database Design §9 keeps soft delete and business status
   explicitly separate concepts, `deleted_at` vs. `status`); same deferral `iam`/`fleet_device`
   already apply to `DELETE /users`/`DELETE /vehicles`.
+
+**Phase 10.6: `parents_router` — four routes, matching API Contracts §4.3's `/parents` row**
+(line 124: `GET/POST /parents | Org Admin |`, no notes column, unlike `/students`' explicit
+`/status` sub-route line):
+- `POST /parents` — register
+- `GET /parents` — list (same inherited unrestricted-`TenantRegionScope` caveat as
+  `list_students`)
+- `GET /parents/{id}` — get by id (uniform CRUD)
+- `PATCH /parents/{id}` — update `full_name`/`phone`/`status` **together** — unlike
+  `Student`'s split between a details-only `PATCH` and a dedicated `POST .../status` route,
+  `Parent` has no documented behavioral status sub-route to dispatch to, so `status` folds
+  into the uniform `PATCH` instead, mirroring `organization.api.routers.update_organization`/
+  `fleet_device.api.routers.update_vehicle`'s status-in-PATCH shape (via
+  `UpdateParentRequest`, which — like `iam.api.schemas.UpdateUserRequest` — composes multiple
+  optional fields into one request, each independently dispatched, not atomically).
+- `DELETE /parents/{id}` not implemented, for the identical reason `DELETE /students/{id}`
+  isn't: `Parent` has no soft-delete domain behavior.
 """
 
 from __future__ import annotations
@@ -49,32 +66,48 @@ from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
 from raad.interfaces.http.deps import require_permission
 from raad.modules.transport_ops.api.deps import (
+    get_parent_service,
     get_student_service,
     get_transport_ops_uow,
 )
 from raad.modules.transport_ops.api.schemas import (
     EnrollStudentRequest,
+    ParentResponse,
+    ParentSummaryResponse,
+    RegisterParentRequest,
     StudentResponse,
     StudentSummaryResponse,
+    UpdateParentRequest,
     UpdateStudentRequest,
     UpdateStudentStatusRequest,
 )
 from raad.modules.transport_ops.application.commands import (
+    ActivateParentCommand,
     ActivateStudentCommand,
+    DisableParentCommand,
     DisableStudentCommand,
     EnrollStudentCommand,
     GraduateStudentCommand,
+    RegisterParentCommand,
     TransferStudentCommand,
+    UpdateParentCommand,
     UpdateStudentCommand,
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
+    GetParentByIdQuery,
     GetStudentByIdQuery,
+    ListParentsQuery,
     ListStudentsQuery,
+    ParentDTO,
+    ParentSummaryDTO,
     StudentDTO,
     StudentSummaryDTO,
 )
-from raad.modules.transport_ops.application.services import StudentApplicationService
+from raad.modules.transport_ops.application.services import (
+    ParentApplicationService,
+    StudentApplicationService,
+)
 
 students_router = APIRouter()
 parents_router = APIRouter()
@@ -97,6 +130,25 @@ def _student_summary_dto_to_response(
 ) -> StudentSummaryResponse:
     return StudentSummaryResponse(
         id=student.id, full_name=student.full_name, status=student.status
+    )
+
+
+def _parent_dto_to_response(parent: ParentDTO) -> ParentResponse:
+    return ParentResponse(
+        id=parent.id,
+        organization_id=parent.organization_id,
+        user_id=parent.user_id,
+        full_name=parent.full_name,
+        phone=parent.phone,
+        status=parent.status,
+    )
+
+
+def _parent_summary_dto_to_response(
+    parent: ParentSummaryDTO,
+) -> ParentSummaryResponse:
+    return ParentSummaryResponse(
+        id=parent.id, full_name=parent.full_name, status=parent.status
     )
 
 
@@ -261,3 +313,148 @@ async def update_student_status(
         )
 
     return _student_dto_to_response(student)
+
+
+@parents_router.post(
+    "",
+    response_model=ParentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a new parent",
+    description=(
+        "Org Admin (API Contracts §4.3). Authorization uses `require_permission` — pending "
+        "the approved RBAC permission matrix, so this currently raises `NotImplementedError` "
+        "(500) rather than a guessed matrix, matching `enroll_student`'s posture."
+    ),
+)
+async def register_parent(
+    body: RegisterParentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.parents.create"))
+    ),
+    parent_service: ParentApplicationService = Depends(get_parent_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> ParentResponse:
+    command = RegisterParentCommand(
+        organization_id=body.organization_id,
+        user_id=body.user_id,
+        full_name=body.full_name,
+        phone=body.phone,
+        actor=principal,
+    )
+    parent = await parent_service.register_parent(command, uow=uow)
+    return _parent_dto_to_response(parent)
+
+
+@parents_router.get(
+    "",
+    response_model=list[ParentSummaryResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List parents",
+    description=(
+        "Org Admin (API Contracts §4.3). Not yet tenant-scoped — same inherited caveat as "
+        "`list_students`; see this module's own docstring and `infra/repositories.py`'s "
+        "(Phase 10.3). Also pending the approved RBAC permission matrix."
+    ),
+)
+async def list_parents(
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.parents.list"))
+    ),
+    parent_service: ParentApplicationService = Depends(get_parent_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[ParentSummaryResponse]:
+    parents = await parent_service.list_parents(ListParentsQuery(), uow=uow)
+    return [_parent_summary_dto_to_response(parent) for parent in parents]
+
+
+@parents_router.get(
+    "/{parent_id}",
+    response_model=ParentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a parent by id",
+    description=(
+        "Org Admin (API Contracts §4.3/§4 uniform CRUD). Pending the approved RBAC "
+        "permission matrix — see `register_parent`'s note."
+    ),
+)
+async def get_parent(
+    parent_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.parents.read"))
+    ),
+    parent_service: ParentApplicationService = Depends(get_parent_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> ParentResponse:
+    parent = await parent_service.get_parent_by_id(
+        GetParentByIdQuery(parent_id=parent_id), uow=uow
+    )
+    return _parent_dto_to_response(parent)
+
+
+@parents_router.patch(
+    "/{parent_id}",
+    response_model=ParentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update a parent's details and/or status",
+    description=(
+        "Org Admin (API Contracts §4 uniform CRUD). Composes `full_name`/`phone` (dispatched "
+        "to `update_parent`) and `status` (dispatched to `activate_parent`/`disable_parent`) "
+        "in one request, each independently — not atomically — mirroring "
+        "`iam.api.routers.update_user`'s identical composition. See `UpdateParentRequest`'s "
+        "docstring for why `status` is folded in here rather than a dedicated route, unlike "
+        "`Student`. Pending the approved RBAC permission matrix."
+    ),
+)
+async def update_parent(
+    parent_id: str,
+    body: UpdateParentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.parents.update"))
+    ),
+    parent_service: ParentApplicationService = Depends(get_parent_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> ParentResponse:
+    if body.full_name is None and body.phone is None and body.status is None:
+        raise ValidationError(
+            "At least one of 'full_name', 'phone', or 'status' must be provided.",
+            details={"fields": ["full_name", "phone", "status"]},
+        )
+
+    parent: ParentDTO | None = None
+
+    if body.full_name is not None or body.phone is not None:
+        current = await parent_service.get_parent_by_id(
+            GetParentByIdQuery(parent_id=parent_id), uow=uow
+        )
+        command = UpdateParentCommand(
+            parent_id=parent_id,
+            full_name=(
+                body.full_name if body.full_name is not None else current.full_name
+            ),
+            phone=body.phone if body.phone is not None else current.phone,
+            actor=principal,
+        )
+        parent = await parent_service.update_parent(command, uow=uow)
+
+    if body.status is not None:
+        if body.status == "active":
+            parent = await parent_service.activate_parent(
+                ActivateParentCommand(parent_id=parent_id, actor=principal), uow=uow
+            )
+        elif body.status == "inactive":
+            parent = await parent_service.disable_parent(
+                DisableParentCommand(parent_id=parent_id, actor=principal), uow=uow
+            )
+        else:
+            raise ValidationError(
+                f"Unsupported status: {body.status!r}", details={"field": "status"}
+            )
+
+    if parent is None:
+        # Guaranteed not to happen by the "at least one field" guard above — an explicit
+        # raise rather than `assert`, matching `iam.api.routers.update_user`'s identical
+        # invariant-holds-regardless-of-interpreter-flags reasoning.
+        raise RuntimeError(
+            "update_parent: no field was processed despite the guard above."
+        )
+    return _parent_dto_to_response(parent)

@@ -50,6 +50,12 @@ having the application layer mutate `full_name`/`external_ref` directly (which w
 bypass this class's own validation or force the application layer to duplicate it — both
 forbidden). `_validate_full_name`/`_validate_external_ref` are factored out so `__init__` and
 `update_details` share exactly one copy of each rule.
+
+**Phase 10.6 scope: `Parent` added.** The `Parent` aggregate only (Database Design §6.3) —
+`student_parents` linking (§6.4), guardian relationships beyond this aggregate, notifications,
+authentication, and any change to `Student` are explicitly out of scope for this phase, per
+its own instructions. `Parent` holds no field referencing `Student`/`student_parents`, for the
+identical reason `Student` above holds no `route_id`/`trip_id`/`parent_id`.
 """
 
 from __future__ import annotations
@@ -60,8 +66,12 @@ from raad.core.time.clock import Clock
 from raad.modules.transport_ops.domain import events as transport_ops_events
 from raad.modules.transport_ops.domain.value_objects import (
     OrganizationId,
+    ParentId,
+    ParentStatus,
+    PhoneNumber,
     StudentId,
     StudentStatus,
+    UserId,
 )
 
 _FULL_NAME_MAX_LENGTH = 200  # Database Design §6.2: full_name VARCHAR(200)
@@ -83,6 +93,24 @@ def _validate_external_ref(external_ref: str | None) -> None:
         raise DomainError(
             f"Student external_ref must be at most {_EXTERNAL_REF_MAX_LENGTH} "
             f"characters: {len(external_ref)}"
+        )
+
+
+# Phase 10.6: `Parent`'s own full_name length guard — same VARCHAR(200) convention as
+# `_FULL_NAME_MAX_LENGTH` above (both columns share the name/convention, see
+# `value_objects.py`'s module docstring), kept as a separate constant/function rather than
+# reused directly so a future change to one aggregate's column length can't silently affect
+# the other's.
+_PARENT_FULL_NAME_MAX_LENGTH = 200
+
+
+def _validate_parent_full_name(full_name: str) -> None:
+    if not full_name:
+        raise DomainError("Parent full_name must not be empty")
+    if len(full_name) > _PARENT_FULL_NAME_MAX_LENGTH:
+        raise DomainError(
+            f"Parent full_name must be at most {_PARENT_FULL_NAME_MAX_LENGTH} "
+            f"characters: {len(full_name)}"
         )
 
 
@@ -241,6 +269,132 @@ class Student(_AggregateRoot):
                 organization_id=str(self.organization_id),
                 full_name=full_name,
                 external_ref=external_ref,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+
+class Parent(_AggregateRoot):
+    """A parent/guardian's transport-facing profile, linked to an `iam.User` login (Database
+    Design §6.3). Tenant-owned — every instance carries `organization_id`
+    (`.claude/rules/database.md` #2). `user_id` is a cross-module reference only (see
+    `value_objects.py`'s `UserId` docstring) — this aggregate never loads or mutates the
+    linked `User`, only stores its id.
+
+    Phase 10.6 scope: the `Parent` aggregate only — no `student_parents` linking, no guardian
+    relationships beyond this aggregate, matching this phase's own explicit exclusions.
+    """
+
+    def __init__(
+        self,
+        *,
+        id: ParentId,
+        organization_id: OrganizationId,
+        user_id: UserId,
+        full_name: str,
+        phone: PhoneNumber | None,
+        status: ParentStatus,
+    ) -> None:
+        super().__init__()
+        _validate_parent_full_name(full_name)
+        self.id = id
+        self.organization_id = organization_id
+        self.user_id = user_id
+        self.full_name = full_name
+        self.phone = phone
+        self.status = status
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Parent) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    def register(
+        cls,
+        *,
+        id: ParentId,
+        organization_id: OrganizationId,
+        user_id: UserId,
+        full_name: str,
+        phone: PhoneNumber | None = None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "Parent":
+        """Factory for a newly-registered parent profile. No `pending`/`invited` status exists
+        in the (undocumented-values) status enum — see `value_objects.py`'s `ParentStatus`
+        docstring — so a registered parent starts `active`, the same reasoning
+        `Student.enroll`/`Organization.register` give for their own status enums."""
+        parent = cls(
+            id=id,
+            organization_id=organization_id,
+            user_id=user_id,
+            full_name=full_name,
+            phone=phone,
+            status=ParentStatus.ACTIVE,
+        )
+        parent._record(
+            transport_ops_events.parent_registered(
+                parent_id=str(id),
+                organization_id=str(organization_id),
+                user_id=str(user_id),
+                full_name=full_name,
+                phone=str(phone) if phone is not None else None,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+        return parent
+
+    def update_details(
+        self,
+        *,
+        full_name: str,
+        phone: PhoneNumber | None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Idempotent: a call that changes neither field is a no-op, the same "no event for no
+        real change" precedent `Student.update_details` already establishes."""
+        _validate_parent_full_name(full_name)
+        if full_name == self.full_name and phone == self.phone:
+            return
+        self.full_name = full_name
+        self.phone = phone
+        self._record(
+            transport_ops_events.parent_details_updated(
+                parent_id=str(self.id),
+                organization_id=str(self.organization_id),
+                full_name=full_name,
+                phone=str(phone) if phone is not None else None,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def activate(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if self.status == ParentStatus.ACTIVE:
+            return
+        self.status = ParentStatus.ACTIVE
+        self._record(
+            transport_ops_events.parent_activated(
+                parent_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def disable(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if self.status == ParentStatus.INACTIVE:
+            return
+        self.status = ParentStatus.INACTIVE
+        self._record(
+            transport_ops_events.parent_disabled(
+                parent_id=str(self.id),
+                organization_id=str(self.organization_id),
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )

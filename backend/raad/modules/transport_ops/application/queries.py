@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from raad.modules.transport_ops.domain.entities import Student
+from raad.modules.transport_ops.domain.entities import Parent, Student
 
 
 @dataclass(frozen=True)
@@ -72,4 +72,53 @@ def student_to_summary_dto(student: Student) -> StudentSummaryDTO:
         id=str(student.id),
         full_name=student.full_name,
         status=student.status.value,
+    )
+
+
+@dataclass(frozen=True)
+class GetParentByIdQuery:
+    parent_id: str
+
+
+@dataclass(frozen=True)
+class ListParentsQuery:
+    pass
+
+
+@dataclass(frozen=True)
+class ParentDTO:
+    id: str
+    organization_id: str
+    user_id: str
+    full_name: str
+    phone: str | None
+    status: str
+
+
+@dataclass(frozen=True)
+class ParentSummaryDTO:
+    id: str
+    full_name: str
+    status: str
+
+
+def parent_to_dto(parent: Parent) -> ParentDTO:
+    """Shared mapper — the only place a `Parent` aggregate is projected into its full DTO,
+    mirroring `student_to_dto`'s exact shape."""
+    return ParentDTO(
+        id=str(parent.id),
+        organization_id=str(parent.organization_id),
+        user_id=str(parent.user_id),
+        full_name=parent.full_name,
+        phone=str(parent.phone) if parent.phone is not None else None,
+        status=parent.status.value,
+    )
+
+
+def parent_to_summary_dto(parent: Parent) -> ParentSummaryDTO:
+    """Shared mapper — the only place a `Parent` aggregate is projected into its summary DTO
+    (`ListParentsQuery`'s read shape), mirroring `student_to_summary_dto`'s exact shape.
+    """
+    return ParentSummaryDTO(
+        id=str(parent.id), full_name=parent.full_name, status=parent.status.value
     )

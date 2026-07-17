@@ -57,7 +57,10 @@ from raad.modules.tracking.application.ports import (
 from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.tracking.infra.repositories import SqlAlchemyTrackingUnitOfWork
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
-from raad.modules.transport_ops.application.services import StudentApplicationService
+from raad.modules.transport_ops.application.services import (
+    ParentApplicationService,
+    StudentApplicationService,
+)
 from raad.modules.transport_ops.infra.repositories import (
     SqlAlchemyTransportOpsUnitOfWork,
 )
@@ -129,11 +132,18 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
-    # StudentApplicationService needs no TokenService either — always constructible, same
-    # reasoning as OrganizationApplicationService above.
+    # StudentApplicationService/ParentApplicationService need no TokenService either — always
+    # constructible, same reasoning as OrganizationApplicationService above.
     container.bind_singleton(
         StudentApplicationService,
         StudentApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+        ),
+    )
+    container.bind_singleton(
+        ParentApplicationService,
+        ParentApplicationService(
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
         ),

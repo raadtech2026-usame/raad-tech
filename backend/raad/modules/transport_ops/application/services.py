@@ -16,6 +16,15 @@ either bypass or duplicate that class's own validation.
 §5.2 has no `Student` skeleton; re-confirmed this phase). Method names below mirror `Student`'s
 own domain method names 1:1, the same relationship `OrganizationApplicationService` has to
 `Organization`.
+
+**Phase 10.6 addition: `ParentApplicationService`.** Split from `StudentApplicationService` by
+aggregate, not folded into one service — matching `fleet_device`'s
+`VehicleApplicationService`/`DeviceApplicationService` split (by natural API grouping,
+`.claude/rules/api.md` #2: `/students` and `/parents` both route to this module but are
+distinct resource prefixes) rather than `organization`'s split-by-API-grouping-within-one-file
+convention, since `Student`/`Parent` are two unrelated aggregates with no shared use-case, the
+same reasoning that keeps `VehicleApplicationService` and `DeviceApplicationService` separate
+classes.
 """
 
 from __future__ import annotations
@@ -24,24 +33,40 @@ from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
+    ActivateParentCommand,
     ActivateStudentCommand,
+    DisableParentCommand,
     DisableStudentCommand,
     EnrollStudentCommand,
     GraduateStudentCommand,
+    RegisterParentCommand,
     TransferStudentCommand,
+    UpdateParentCommand,
     UpdateStudentCommand,
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
+    GetParentByIdQuery,
     GetStudentByIdQuery,
+    ListParentsQuery,
     ListStudentsQuery,
+    ParentDTO,
+    ParentSummaryDTO,
     StudentDTO,
     StudentSummaryDTO,
+    parent_to_dto,
+    parent_to_summary_dto,
     student_to_dto,
     student_to_summary_dto,
 )
-from raad.modules.transport_ops.domain.entities import Student
-from raad.modules.transport_ops.domain.value_objects import OrganizationId, StudentId
+from raad.modules.transport_ops.domain.entities import Parent, Student
+from raad.modules.transport_ops.domain.value_objects import (
+    OrganizationId,
+    ParentId,
+    PhoneNumber,
+    StudentId,
+    UserId,
+)
 
 
 class StudentApplicationService:
@@ -146,3 +171,88 @@ class StudentApplicationService:
         if student is None:
             raise NotFoundError(f"Student {student_id} not found.")
         return student
+
+
+class ParentApplicationService:
+    """Parent lifecycle use-cases: register, update, activate, disable, and the
+    `GetParentByIdQuery`/`ListParentsQuery` read paths."""
+
+    def __init__(self, *, clock: Clock, id_generator: IdGenerator) -> None:
+        self._clock = clock
+        self._id_generator = id_generator
+
+    async def register_parent(
+        self, command: RegisterParentCommand, *, uow: TransportOpsUnitOfWork
+    ) -> ParentDTO:
+        async with uow:
+            parent = Parent.register(
+                id=ParentId(self._id_generator.new_id()),
+                organization_id=OrganizationId(command.organization_id),
+                user_id=UserId(command.user_id),
+                full_name=command.full_name,
+                phone=PhoneNumber(command.phone) if command.phone else None,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.parents.add(parent)
+            uow.record_events(parent.pull_domain_events())
+            await uow.commit()
+            return parent_to_dto(parent)
+
+    async def update_parent(
+        self, command: UpdateParentCommand, *, uow: TransportOpsUnitOfWork
+    ) -> ParentDTO:
+        async with uow:
+            parent = await self._get_parent_or_raise(uow, command.parent_id)
+            parent.update_details(
+                full_name=command.full_name,
+                phone=PhoneNumber(command.phone) if command.phone else None,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(parent.pull_domain_events())
+            await uow.commit()
+            return parent_to_dto(parent)
+
+    async def activate_parent(
+        self, command: ActivateParentCommand, *, uow: TransportOpsUnitOfWork
+    ) -> ParentDTO:
+        async with uow:
+            parent = await self._get_parent_or_raise(uow, command.parent_id)
+            parent.activate(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(parent.pull_domain_events())
+            await uow.commit()
+            return parent_to_dto(parent)
+
+    async def disable_parent(
+        self, command: DisableParentCommand, *, uow: TransportOpsUnitOfWork
+    ) -> ParentDTO:
+        async with uow:
+            parent = await self._get_parent_or_raise(uow, command.parent_id)
+            parent.disable(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(parent.pull_domain_events())
+            await uow.commit()
+            return parent_to_dto(parent)
+
+    async def get_parent_by_id(
+        self, query: GetParentByIdQuery, *, uow: TransportOpsUnitOfWork
+    ) -> ParentDTO:
+        async with uow:
+            parent = await self._get_parent_or_raise(uow, query.parent_id)
+            return parent_to_dto(parent)
+
+    async def list_parents(
+        self, query: ListParentsQuery, *, uow: TransportOpsUnitOfWork
+    ) -> list[ParentSummaryDTO]:
+        async with uow:
+            parents = await uow.parents.list_all()
+            return [parent_to_summary_dto(parent) for parent in parents]
+
+    @staticmethod
+    async def _get_parent_or_raise(
+        uow: TransportOpsUnitOfWork, parent_id: str
+    ) -> Parent:
+        parent = await uow.parents.get(ParentId(parent_id))
+        if parent is None:
+            raise NotFoundError(f"Parent {parent_id} not found.")
+        return parent

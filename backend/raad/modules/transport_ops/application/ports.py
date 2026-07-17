@@ -24,14 +24,19 @@ data source like `tracking`'s Redis latest-position cache for `Student`.
 from __future__ import annotations
 
 from raad.core.db.unit_of_work import UnitOfWork
-from raad.modules.transport_ops.domain.repositories import StudentRepository
+from raad.modules.transport_ops.domain.repositories import (
+    ParentRepository,
+    StudentRepository,
+)
 
 
 class TransportOpsUnitOfWork(UnitOfWork):
-    """Bundles the one repository this phase's use-cases need onto one transaction boundary
-    (LLD §8.2 contract skeleton style — plain attributes, matching `OrganizationUnitOfWork`'s
-    own style). The concrete implementation (a future `SqlAlchemyTransportOpsUnitOfWork
-    (SqlAlchemyUnitOfWork, TransportOpsUnitOfWork)`) is infra, not implemented in this phase.
+    """Bundles this module's repositories onto one transaction boundary (LLD §8.2 contract
+    skeleton style — plain attributes, matching `OrganizationUnitOfWork`'s own style, which
+    already bundles two repositories — `organizations`/`regions` — onto one UoW; `Parent`
+    (Phase 10.6) joins `Student` here the same way, not a second UnitOfWork). The concrete
+    implementation is `infra.repositories.SqlAlchemyTransportOpsUnitOfWork`.
     """
 
     students: StudentRepository
+    parents: ParentRepository

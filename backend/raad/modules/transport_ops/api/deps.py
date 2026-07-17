@@ -12,7 +12,10 @@ from fastapi import Depends
 from raad.core.di.container import Container
 from raad.interfaces.http.deps import get_container
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
-from raad.modules.transport_ops.application.services import StudentApplicationService
+from raad.modules.transport_ops.application.services import (
+    ParentApplicationService,
+    StudentApplicationService,
+)
 
 
 def get_transport_ops_uow(
@@ -20,9 +23,9 @@ def get_transport_ops_uow(
 ) -> TransportOpsUnitOfWork:
     """Resolves a fresh `TransportOpsUnitOfWork` per call — **not** entered here, for the same
     reason `organization.api.deps.get_organization_uow` isn't: every
-    `StudentApplicationService` method already manages its own `async with uow:` block
-    (`application/services.py`), so wrapping it again here would call `__aenter__`/`__aexit__`
-    twice on the same instance."""
+    `StudentApplicationService`/`ParentApplicationService` method already manages its own
+    `async with uow:` block (`application/services.py`), so wrapping it again here would call
+    `__aenter__`/`__aexit__` twice on the same instance."""
     return container.resolve(TransportOpsUnitOfWork)
 
 
@@ -30,3 +33,9 @@ def get_student_service(
     container: Container = Depends(get_container),
 ) -> StudentApplicationService:
     return container.resolve(StudentApplicationService)
+
+
+def get_parent_service(
+    container: Container = Depends(get_container),
+) -> ParentApplicationService:
+    return container.resolve(ParentApplicationService)

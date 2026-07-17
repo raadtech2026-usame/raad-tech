@@ -11,6 +11,13 @@ StudentStatus`'s enum values one-for-one — no case-folding translation needed 
 
 Only `StudentSummaryResponse` omits `organization_id`/`external_ref`, mirroring
 `StudentSummaryDTO`'s own lighter shape (`application/queries.py`) for the list endpoint.
+
+**Phase 10.6 addition: `Parent` schemas.** `ParentStatus`'s two values (`active`/`inactive`,
+`domain/value_objects.py`) transport the same way. Unlike `Student`, `Parent` has no
+documented behavioral status sub-route (API Contracts §4.3's `/parents` row carries no notes,
+unlike `/students/{id}/status`'s explicit line) — see `routers.py`'s module docstring for why
+`status` therefore folds into the uniform `PATCH` here instead, mirroring `organization`'s/
+`fleet_device`'s status-in-PATCH shape rather than `Student`'s dedicated-route shape.
 """
 
 from __future__ import annotations
@@ -68,3 +75,39 @@ class UpdateStudentStatusRequest(BaseModel):
     assumption — flagged in `routers.py`."""
 
     status: str
+
+
+class ParentResponse(BaseModel):
+    id: str
+    organization_id: str
+    user_id: str
+    full_name: str
+    phone: str | None
+    status: str
+
+
+class ParentSummaryResponse(BaseModel):
+    id: str
+    full_name: str
+    status: str
+
+
+class RegisterParentRequest(BaseModel):
+    organization_id: str
+    user_id: str
+    full_name: str
+    phone: str | None = None
+
+
+class UpdateParentRequest(BaseModel):
+    """Uniform-CRUD `PATCH /parents/{id}` (API Contracts §4 preamble). Unlike
+    `UpdateStudentRequest`, this bundles `status` alongside `full_name`/`phone` in one
+    request — mirroring `iam.api.schemas.UpdateUserRequest`'s composed-fields shape — since no
+    dedicated behavioral status sub-route is documented for `/parents` (see `routers.py`'s
+    module docstring). `status` accepts `ParentStatus`'s two values (`active`/`inactive`).
+
+    At least one field must be given."""
+
+    full_name: str | None = None
+    phone: str | None = None
+    status: str | None = None

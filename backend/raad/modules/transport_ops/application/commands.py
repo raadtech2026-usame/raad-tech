@@ -20,6 +20,15 @@ each (unlike `fleet_device`'s `/devices/{id}/activate`-style routes). That fan-o
 API-layer concern (a later phase); at the application layer each transition is still its own
 command, matching `Student`'s own domain method granularity and every sibling module's
 1:1 command-per-domain-method convention.
+
+**Phase 10.6 addition: `Parent` commands.** `RegisterParentCommand`/`UpdateParentCommand`/
+`ActivateParentCommand`/`DisableParentCommand`, 1:1 with `Parent`'s own domain method names
+(`domain/entities.py`) — no `Transfer`/`Graduate` equivalent, since `ParentStatus` is a flat
+active/inactive toggle (`domain/value_objects.py`), unlike `StudentStatus`'s four values.
+`RegisterParentCommand` (not `EnrollParentCommand`) mirrors `Parent.register`'s own naming,
+itself mirroring `Organization.register`/`Vehicle.register`/`Device.register`'s established
+"register a new instance of this aggregate" convention — `enroll` is `Student`-specific
+ubiquitous language (Ch. 6), not a generic verb this aggregate reuses.
 """
 
 from __future__ import annotations
@@ -66,4 +75,33 @@ class ActivateStudentCommand:
 @dataclass(frozen=True)
 class DisableStudentCommand:
     student_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RegisterParentCommand:
+    organization_id: str
+    user_id: str
+    full_name: str
+    phone: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class UpdateParentCommand:
+    parent_id: str
+    full_name: str
+    phone: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class ActivateParentCommand:
+    parent_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class DisableParentCommand:
+    parent_id: str
     actor: Principal

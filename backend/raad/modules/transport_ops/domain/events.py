@@ -19,6 +19,14 @@ not a verbatim-documented name. Flagged, not silently assumed to be pre-approved
 
 **Phase 10.2 addition:** `student_details_updated`, backing `Student.update_details`
 (`entities.py`'s module docstring addendum) — same naming-note caveat applies.
+
+**Phase 10.6 addition:** `parent_registered`/`parent_details_updated`/`parent_activated`/
+`parent_disabled`, backing the new `Parent` aggregate (`entities.py`). Same naming-note caveat:
+no approved document names a `Parent` event either — these follow the identical
+PascalCase-past-tense convention and the Ch. 6 ubiquitous language ("Parent"), 1:1 with
+`Parent`'s own domain method names, exactly mirroring `Student`'s event set shape (minus
+`graduated`/`transferred`, which have no `Parent`-domain equivalent — `ParentStatus` is a flat
+active/inactive toggle, see `value_objects.py`).
 """
 
 from __future__ import annotations
@@ -160,6 +168,84 @@ def student_transferred(
         event_type="StudentTransferred",
         aggregate_type="Student",
         aggregate_id=student_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def parent_registered(
+    *,
+    parent_id: str,
+    organization_id: str,
+    user_id: str,
+    full_name: str,
+    phone: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="ParentRegistered",
+        aggregate_type="Parent",
+        aggregate_id=parent_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "user_id": user_id,
+            "full_name": full_name,
+            "phone": phone,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def parent_details_updated(
+    *,
+    parent_id: str,
+    organization_id: str,
+    full_name: str,
+    phone: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="ParentDetailsUpdated",
+        aggregate_type="Parent",
+        aggregate_id=parent_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"full_name": full_name, "phone": phone, "actor_id": actor_id},
+    )
+
+
+def parent_activated(
+    *,
+    parent_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="ParentActivated",
+        aggregate_type="Parent",
+        aggregate_id=parent_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def parent_disabled(
+    *,
+    parent_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="ParentDisabled",
+        aggregate_type="Parent",
+        aggregate_id=parent_id,
         org_id=organization_id,
         occurred_at=occurred_at,
         payload={"actor_id": actor_id},

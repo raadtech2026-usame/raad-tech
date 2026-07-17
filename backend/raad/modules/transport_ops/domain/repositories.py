@@ -22,8 +22,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from raad.modules.transport_ops.domain.entities import Student
-from raad.modules.transport_ops.domain.value_objects import StudentId
+from raad.modules.transport_ops.domain.entities import Parent, Student
+from raad.modules.transport_ops.domain.value_objects import ParentId, StudentId
 
 
 class StudentRepository(ABC):
@@ -43,5 +43,28 @@ class StudentRepository(ABC):
     @abstractmethod
     async def list_all(self) -> list[Student]:
         """Backs `ListStudentsQuery` (Phase 10.2). Already implicitly scoped to the caller's
+        tenant — see module docstring."""
+        raise NotImplementedError
+
+
+class ParentRepository(ABC):
+    """`parents` has no module-owned uniqueness constraint beyond its primary key (Database
+    Design §6.3 lists no `UX` on `user_id` or any other column, matching `StudentRepository`'s
+    identical reading of §6.2) — no `get_by_*` uniqueness-backing lookup is needed. Mirrors
+    `StudentRepository`'s exact shape, including `list_all` (Phase 10.6, matching Phase 10.2's
+    precedent)."""
+
+    @abstractmethod
+    async def get(self, parent_id: ParentId) -> Parent | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, parent: Parent) -> None:
+        """Persistence of changes is flushed by the Unit of Work, not the repository (§7.1)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_all(self) -> list[Parent]:
+        """Backs `ListParentsQuery` (Phase 10.6). Already implicitly scoped to the caller's
         tenant — see module docstring."""
         raise NotImplementedError

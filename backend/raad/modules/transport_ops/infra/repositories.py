@@ -42,11 +42,19 @@ from raad.core.db.repository import SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
-from raad.modules.transport_ops.domain.entities import Student
-from raad.modules.transport_ops.domain.repositories import StudentRepository
-from raad.modules.transport_ops.domain.value_objects import StudentId
-from raad.modules.transport_ops.infra.mappers import model_to_student, student_to_model
-from raad.modules.transport_ops.infra.models import StudentModel
+from raad.modules.transport_ops.domain.entities import Parent, Student
+from raad.modules.transport_ops.domain.repositories import (
+    ParentRepository,
+    StudentRepository,
+)
+from raad.modules.transport_ops.domain.value_objects import ParentId, StudentId
+from raad.modules.transport_ops.infra.mappers import (
+    model_to_parent,
+    model_to_student,
+    parent_to_model,
+    student_to_model,
+)
+from raad.modules.transport_ops.infra.models import ParentModel, StudentModel
 
 
 class SqlAlchemyStudentRepository(
@@ -85,22 +93,66 @@ class SqlAlchemyStudentRepository(
         return student
 
 
+class SqlAlchemyParentRepository(
+    SqlAlchemyRepositoryBase[ParentModel], ParentRepository
+):
+    """Mirrors `SqlAlchemyStudentRepository`'s exact identity-map/`flush_tracked_changes`
+    shape, including `list_all`'s same unrestricted-`TenantRegionScope` caveat (Phase 10.3's
+    module docstring, unchanged this phase — still a system-wide `ScopeResolver` gap, not a
+    `Parent`-specific one)."""
+
+    model = ParentModel
+
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+        self._tracked: dict[str, tuple[Parent, ParentModel]] = {}
+
+    async def get(self, parent_id: ParentId) -> Parent | None:
+        row = await self.get_by_id(str(parent_id))
+        return self._track(row)
+
+    def add(self, parent: Parent) -> None:
+        model = parent_to_model(parent)
+        super().add(model)
+        self._tracked[str(parent.id)] = (parent, model)
+
+    async def list_all(self) -> list[Parent]:
+        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        return [model_to_parent(row) for row in rows]
+
+    def flush_tracked_changes(self) -> None:
+        for parent, model in self._tracked.values():
+            parent_to_model(parent, existing=model)
+
+    def _track(self, row: ParentModel | None) -> Parent | None:
+        if row is None:
+            return None
+        parent = model_to_parent(row)
+        self._tracked[row.id] = (parent, row)
+        return parent
+
+
 class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfWork):
     """Concrete `TransportOpsUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `transport_ops`'s
-    one repository once the session is open, and re-syncs every tracked aggregate's in-place
+    repositories once the session is open, and re-syncs every tracked aggregate's in-place
     mutations onto its ORM row (`flush_tracked_changes`, above) immediately before delegating
     to `SqlAlchemyUnitOfWork.commit()` — which still owns the actual outbox-write +
     session-commit behavior, preserved exactly (§8.3), via `super().commit()`. Identical shape
-    to `organization.infra.repositories.SqlAlchemyOrganizationUnitOfWork`.
+    to `organization.infra.repositories.SqlAlchemyOrganizationUnitOfWork`, which already
+    bundles two repositories (`organizations`/`regions`) the same way `students`/`parents` do
+    here as of Phase 10.6.
     """
 
     students: SqlAlchemyStudentRepository
+    parents: SqlAlchemyParentRepository
 
     async def __aenter__(self) -> "SqlAlchemyTransportOpsUnitOfWork":
         await super().__aenter__()
         self.students = SqlAlchemyStudentRepository(self.session)
+        self.parents = SqlAlchemyParentRepository(self.session)
         return self
 
     async def commit(self) -> None:
         self.students.flush_tracked_changes()
+        self.parents.flush_tracked_changes()
         await super().commit()
