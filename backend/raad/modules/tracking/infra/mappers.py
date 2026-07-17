@@ -15,6 +15,8 @@ against a future phase adding a legitimate mutation (there is precedent for exac
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from raad.modules.tracking.domain.entities import GeofenceCrossing, VehiclePosition
 from raad.modules.tracking.domain.value_objects import (
     AlarmFlags,
@@ -35,6 +37,16 @@ from raad.modules.tracking.infra.models import (
     VehiclePositionModel,
 )
 
+
+def _naive(value: datetime | None) -> datetime | None:
+    """Strips tzinfo before a domain-computed timestamp crosses into a `DateTime(timezone=
+    False)` column (ADR-0002) — the same pattern `core.events.outbox.OutboxWriter.write()`
+    already applies to `DomainEvent.occurred_at`. `event_time`/`received_at`/`occurred_at` can
+    all be tz-aware in memory (device-plane-supplied or `Clock.now()`-derived); the DB columns
+    are naive-UTC-by-convention (`core.db.mixins.utcnow`'s own discipline)."""
+    return value.replace(tzinfo=None) if value is not None and value.tzinfo else value
+
+
 # --- VehiclePosition ------------------------------------------------------------------------
 
 
@@ -51,7 +63,7 @@ def vehicle_position_to_model(
         model = existing
     else:
         model = VehiclePositionModel(
-            id=str(position.id), event_time=position.event_time
+            id=str(position.id), event_time=_naive(position.event_time)
         )
     model.organization_id = str(position.organization_id)
     model.vehicle_id = str(position.vehicle_id)
@@ -69,7 +81,7 @@ def vehicle_position_to_model(
         position.alarm_flags.value if position.alarm_flags is not None else None
     )
     model.is_backfill = position.is_backfill
-    model.received_at = position.received_at
+    model.received_at = _naive(position.received_at)
     return model
 
 
@@ -107,7 +119,7 @@ def geofence_crossing_to_model(
     model.trip_id = str(crossing.trip_id)
     model.stop_id = str(crossing.stop_id) if crossing.stop_id is not None else None
     model.event_type = crossing.event_type.value
-    model.occurred_at = crossing.occurred_at
+    model.occurred_at = _naive(crossing.occurred_at)
     return model
 
 

@@ -12,6 +12,8 @@ so a plain case-fold round-trips exactly.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from raad.core.tenancy.principal import Role
 from raad.modules.iam.domain.entities import RefreshToken, User
 from raad.modules.iam.domain.value_objects import (
@@ -23,6 +25,18 @@ from raad.modules.iam.domain.value_objects import (
     UserStatus,
 )
 from raad.modules.iam.infra.models import RefreshTokenModel, UserModel
+
+
+def _naive(value: datetime | None) -> datetime | None:
+    """Strips tzinfo before a domain-computed timestamp crosses into a `DateTime(timezone=
+    False)` column (ADR-0002) — the same pattern `core.events.outbox.OutboxWriter.write()`
+    already applies to `DomainEvent.occurred_at`. `Clock.now()` (`SystemClock`) and JWT-decoded
+    claims are tz-aware in memory; the DB column is naive-UTC-by-convention
+    (`core.db.mixins.utcnow`'s own discipline) — without this, inserting e.g.
+    `RefreshToken.expires_at` raises `asyncpg.exceptions.DataError` ("can't subtract
+    offset-naive and offset-aware datetimes"), caught by this phase's PostgreSQL integration
+    tests."""
+    return value.replace(tzinfo=None) if value is not None and value.tzinfo else value
 
 
 def user_to_model(user: User, *, existing: UserModel | None = None) -> UserModel:
@@ -41,7 +55,7 @@ def user_to_model(user: User, *, existing: UserModel | None = None) -> UserModel
     model.full_name = user.full_name
     model.status = user.status.value
     model.mfa_enabled = user.mfa_enabled
-    model.last_login_at = user.last_login_at
+    model.last_login_at = _naive(user.last_login_at)
     return model
 
 
@@ -68,9 +82,9 @@ def refresh_token_to_model(
     model = existing if existing is not None else RefreshTokenModel(id=str(token.id))
     model.user_id = str(token.user_id)
     model.token_hash = token.token_hash
-    model.issued_at = token.issued_at
-    model.expires_at = token.expires_at
-    model.revoked_at = token.revoked_at
+    model.issued_at = _naive(token.issued_at)
+    model.expires_at = _naive(token.expires_at)
+    model.revoked_at = _naive(token.revoked_at)
     return model
 
 

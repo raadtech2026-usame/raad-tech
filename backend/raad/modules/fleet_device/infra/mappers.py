@@ -18,6 +18,8 @@ normally like any other field."""
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from raad.modules.fleet_device.domain.entities import (
     Camera,
     Device,
@@ -42,6 +44,17 @@ from raad.modules.fleet_device.infra.models import (
     DeviceModel,
     VehicleModel,
 )
+
+
+def _naive(value: datetime | None) -> datetime | None:
+    """Strips tzinfo before a domain-computed timestamp crosses into a `DateTime(timezone=
+    False)` column (ADR-0002) — the same pattern `core.events.outbox.OutboxWriter.write()`
+    already applies to `DomainEvent.occurred_at`. `DeviceAssignment.assigned_at`/
+    `unassigned_at` are set from `Clock.now()` (tz-aware, `SystemClock`) directly, unlike the
+    audit-mixin `created_at`/`updated_at` columns, which already get a naive value from
+    `core.db.mixins.utcnow`'s own Python-level `default=`."""
+    return value.replace(tzinfo=None) if value is not None and value.tzinfo else value
+
 
 # --- Vehicle ------------------------------------------------------------------------------
 
@@ -167,8 +180,8 @@ def assignment_to_model(
     model.device_id = str(assignment.device_id)
     model.vehicle_id = str(assignment.vehicle_id)
     model.assigned_by = assignment.assigned_by
-    model.assigned_at = assignment.assigned_at
-    model.unassigned_at = assignment.unassigned_at
+    model.assigned_at = _naive(assignment.assigned_at)
+    model.unassigned_at = _naive(assignment.unassigned_at)
     return model
 
 
