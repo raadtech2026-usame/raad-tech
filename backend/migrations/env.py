@@ -27,6 +27,7 @@ import raad.modules.iam.infra.models  # noqa: F401 — registers UserModel/Refre
 import raad.modules.organization.infra.models  # noqa: F401 — registers OrganizationModel/RegionModel
 import raad.modules.fleet_device.infra.models  # noqa: F401 — registers Vehicle/Device/Camera/DeviceAssignment models
 import raad.modules.tracking.infra.models  # noqa: F401 — registers VehiclePosition/GeofenceCrossing models
+import raad.modules.transport_ops.infra.models  # noqa: F401 — registers StudentModel
 
 config = context.config
 
