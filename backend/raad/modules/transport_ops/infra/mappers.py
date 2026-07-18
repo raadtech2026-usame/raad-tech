@@ -9,12 +9,22 @@ has no surrogate id — `existing=` still works the same way (the caller supplie
 tracked `StudentParentModel` instance, keyed by the composite `(student_id, parent_id)` in
 `repositories.py`, rather than by a single `id`), but a brand-new instance's constructor takes
 `student_id`/`parent_id` instead of `id=...`.
+
+**Phase 10.8 addition: `driver_to_model`/`model_to_driver`.** Mirrors `parent_to_model`/
+`model_to_parent`'s exact `existing=` in-place-update pattern.
 """
 
 from __future__ import annotations
 
-from raad.modules.transport_ops.domain.entities import Parent, Student, StudentParent
+from raad.modules.transport_ops.domain.entities import (
+    Driver,
+    Parent,
+    Student,
+    StudentParent,
+)
 from raad.modules.transport_ops.domain.value_objects import (
+    DriverId,
+    DriverStatus,
     OrganizationId,
     ParentId,
     ParentStatus,
@@ -24,6 +34,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     UserId,
 )
 from raad.modules.transport_ops.infra.models import (
+    DriverModel,
     ParentModel,
     StudentModel,
     StudentParentModel,
@@ -104,4 +115,27 @@ def model_to_student_parent(model: StudentParentModel) -> StudentParent:
         parent_id=ParentId(model.parent_id),
         relationship=model.relationship,
         is_primary=model.is_primary,
+    )
+
+
+def driver_to_model(
+    driver: Driver, *, existing: DriverModel | None = None
+) -> DriverModel:
+    """Projects a `Driver` aggregate onto its ORM row, mirroring `parent_to_model`'s exact
+    `existing=` in-place-update pattern."""
+    model = existing if existing is not None else DriverModel(id=str(driver.id))
+    model.organization_id = str(driver.organization_id)
+    model.user_id = str(driver.user_id)
+    model.license_no = driver.license_no
+    model.status = driver.status.value
+    return model
+
+
+def model_to_driver(model: DriverModel) -> Driver:
+    return Driver(
+        id=DriverId(model.id),
+        organization_id=OrganizationId(model.organization_id),
+        user_id=UserId(model.user_id),
+        license_no=model.license_no,
+        status=DriverStatus(model.status),
     )

@@ -67,6 +67,17 @@ its constructor only carries the four persisted columns. Neither `Student` nor `
 field referencing the other — the association lives entirely in this separate aggregate, the
 same reasoning `student_assignments`/`trip_students` are deferred as their own tables rather
 than inlined fields (see this module's Phase 10.1 scope note above).
+
+**Phase 10.8 addition: `Driver`.** The `Driver` aggregate only (Database Design §6.1, ADR-0001:
+Driver owned by `transport_ops`, "no separate driver identity concern beyond IAM login"). Mirrors
+`Parent`'s exact shape — a profile linked to an `iam.User` login via `user_id`, tenant-owned,
+flat active/inactive status — since Database Design §6.1's own compact notation
+(`drivers(id, organization_id, user_id FK→users, license_no, status, +audit)`) is structurally
+identical to §6.3's `parents(...)` notation, just with `license_no` in place of
+`full_name`/`phone`. `Driver` holds no `vehicle_id`/`trip_id`/`route_id` field — §6.1's own
+closing line ("Vehicle↔driver is per-trip ... not stored here") places that linkage entirely on
+the out-of-scope `Trip` aggregate (`trips.driver_id`), the same reasoning `Student` above holds
+no `route_id`/`trip_id`/`parent_id` of its own.
 """
 
 from __future__ import annotations
@@ -76,6 +87,8 @@ from raad.core.events.base import DomainEvent
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.domain import events as transport_ops_events
 from raad.modules.transport_ops.domain.value_objects import (
+    DriverId,
+    DriverStatus,
     OrganizationId,
     ParentId,
     ParentStatus,
@@ -134,6 +147,23 @@ def _validate_relationship_label(relationship: str | None) -> None:
         raise DomainError(
             f"relationship label must be at most {_RELATIONSHIP_MAX_LENGTH} "
             f"characters: {len(relationship)}"
+        )
+
+
+# Phase 10.8: Database Design §6.1 gives no explicit VARCHAR length for `drivers.license_no`
+# (compact notation, no fully-spelled-out table unlike §6.2's `students`) - mirrors
+# `_EXTERNAL_REF_MAX_LENGTH` above's VARCHAR(64) precedent for an unformatted identifier string
+# with no documented length of its own, rather than inventing an unrelated number.
+_LICENSE_NO_MAX_LENGTH = 64
+
+
+def _validate_license_no(license_no: str) -> None:
+    if not license_no:
+        raise DomainError("Driver license_no must not be empty")
+    if len(license_no) > _LICENSE_NO_MAX_LENGTH:
+        raise DomainError(
+            f"Driver license_no must be at most {_LICENSE_NO_MAX_LENGTH} characters: "
+            f"{len(license_no)}"
         )
 
 
@@ -530,6 +560,128 @@ class StudentParent(_AggregateRoot):
                 student_id=str(self.student_id),
                 parent_id=str(self.parent_id),
                 organization_id=str(organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+
+class Driver(_AggregateRoot):
+    """A vehicle operator's transport-facing profile, linked to an `iam.User` login with
+    `role=driver` (Database Design §6.1, ADR-0001). Tenant-owned — every instance carries
+    `organization_id` (`.claude/rules/database.md` #2). `user_id` is a cross-module reference
+    only (see `value_objects.py`'s `UserId` docstring) — this aggregate never loads or mutates
+    the linked `User`, only stores its id, mirroring `Parent`'s identical treatment exactly.
+
+    Phase 10.8 scope: the `Driver` aggregate only — no vehicle/trip assignment, no
+    authentication, no scheduling (all out of scope per this phase's own instructions).
+    Vehicle↔driver binding is per-trip (`trips.driver_id`, Database Design §6.1's own closing
+    line), a separate, out-of-scope `Trip` aggregate — so `Driver` holds no `vehicle_id`/
+    `trip_id`/`route_id` field, the same reasoning `Student`'s module docstring gives for its
+    own absent cross-aggregate fields.
+    """
+
+    def __init__(
+        self,
+        *,
+        id: DriverId,
+        organization_id: OrganizationId,
+        user_id: UserId,
+        license_no: str,
+        status: DriverStatus,
+    ) -> None:
+        super().__init__()
+        _validate_license_no(license_no)
+        self.id = id
+        self.organization_id = organization_id
+        self.user_id = user_id
+        self.license_no = license_no
+        self.status = status
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Driver) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    def register(
+        cls,
+        *,
+        id: DriverId,
+        organization_id: OrganizationId,
+        user_id: UserId,
+        license_no: str,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "Driver":
+        """Factory for a newly-registered driver profile. No `pending`/`invited` status exists
+        in the (undocumented-values) status enum — see `value_objects.py`'s `DriverStatus`
+        docstring — so a registered driver starts `active`, the same reasoning `Parent.register`
+        gives for its own status enum."""
+        driver = cls(
+            id=id,
+            organization_id=organization_id,
+            user_id=user_id,
+            license_no=license_no,
+            status=DriverStatus.ACTIVE,
+        )
+        driver._record(
+            transport_ops_events.driver_registered(
+                driver_id=str(id),
+                organization_id=str(organization_id),
+                user_id=str(user_id),
+                license_no=license_no,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+        return driver
+
+    def update_details(
+        self,
+        *,
+        license_no: str,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Idempotent: a call that changes nothing is a no-op, the same "no event for no real
+        change" precedent `Parent.update_details` already establishes."""
+        _validate_license_no(license_no)
+        if license_no == self.license_no:
+            return
+        self.license_no = license_no
+        self._record(
+            transport_ops_events.driver_details_updated(
+                driver_id=str(self.id),
+                organization_id=str(self.organization_id),
+                license_no=license_no,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def activate(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if self.status == DriverStatus.ACTIVE:
+            return
+        self.status = DriverStatus.ACTIVE
+        self._record(
+            transport_ops_events.driver_activated(
+                driver_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def disable(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if self.status == DriverStatus.INACTIVE:
+            return
+        self.status = DriverStatus.INACTIVE
+        self._record(
+            transport_ops_events.driver_disabled(
+                driver_id=str(self.id),
+                organization_id=str(self.organization_id),
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )

@@ -29,6 +29,12 @@ active/inactive toggle (`domain/value_objects.py`), unlike `StudentStatus`'s fou
 itself mirroring `Organization.register`/`Vehicle.register`/`Device.register`'s established
 "register a new instance of this aggregate" convention — `enroll` is `Student`-specific
 ubiquitous language (Ch. 6), not a generic verb this aggregate reuses.
+
+**Phase 10.8 addition: `Driver` commands.** `RegisterDriverCommand`/`UpdateDriverCommand`/
+`ActivateDriverCommand`/`DisableDriverCommand`, 1:1 with `Driver`'s own domain method names
+(`domain/entities.py`), mirroring `Parent`'s command set exactly (`register`, not `enroll`; no
+`Transfer`/`Graduate` equivalent, since `DriverStatus` is likewise a flat active/inactive
+toggle).
 """
 
 from __future__ import annotations
@@ -124,4 +130,31 @@ class LinkParentToStudentCommand:
 class UnlinkParentFromStudentCommand:
     student_id: str
     parent_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RegisterDriverCommand:
+    organization_id: str
+    user_id: str
+    license_no: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class UpdateDriverCommand:
+    driver_id: str
+    license_no: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class ActivateDriverCommand:
+    driver_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class DisableDriverCommand:
+    driver_id: str
     actor: Principal

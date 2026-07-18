@@ -22,6 +22,12 @@ unlike `/students/{id}/status`'s explicit line) — see `routers.py`'s module do
 **Phase 10.7 addition: `StudentParent` link schemas.** No documented API Contracts route
 either (see `routers.py`'s module docstring for the nested-sub-resource shape chosen instead,
 mirroring the one documented precedent for a child collection, `/routes/{id}/stops`).
+
+**Phase 10.8 addition: `Driver` schemas.** `DriverStatus`'s two values (`active`/`inactive`,
+`domain/value_objects.py`) transport the same way `ParentStatus`'s do. Like `Parent`, `Driver`
+has no documented behavioral status sub-route (in fact **no** `/drivers` route of any kind is
+documented in API Contracts §4.3 — see `routers.py`'s module docstring for the full gap and why
+a uniform-CRUD resource is built anyway), so `status` folds into the uniform `PATCH` here too.
 """
 
 from __future__ import annotations
@@ -159,3 +165,36 @@ class StudentForParentResponse(BaseModel):
     status: str
     relationship: str | None
     is_primary: bool
+
+
+class DriverResponse(BaseModel):
+    id: str
+    organization_id: str
+    user_id: str
+    license_no: str
+    status: str
+
+
+class DriverSummaryResponse(BaseModel):
+    id: str
+    license_no: str
+    status: str
+
+
+class RegisterDriverRequest(BaseModel):
+    organization_id: str
+    user_id: str
+    license_no: str
+
+
+class UpdateDriverRequest(BaseModel):
+    """Uniform-CRUD `PATCH /drivers/{id}` (API Contracts §4 preamble's general uniform-CRUD
+    convention — no `/drivers` row exists in §4.3 itself, see `routers.py`'s module docstring).
+    Bundles `license_no`/`status` in one request, mirroring `UpdateParentRequest`'s composed-
+    fields shape, since no dedicated behavioral status sub-route is documented for `/drivers`
+    either.
+
+    At least one field must be given."""
+
+    license_no: str | None = None
+    status: str | None = None

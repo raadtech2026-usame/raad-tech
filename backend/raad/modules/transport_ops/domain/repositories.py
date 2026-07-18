@@ -23,14 +23,29 @@ same "never pass `organization_id` explicitly" convention `get`/`add` above alre
 takes both ids, and a `remove` method is added (absent from the other two interfaces) since
 unlinking is a real deletion, not a status transition — there is nothing to "add back" the way
 `Student`/`Parent` are always re-fetched-and-mutated in place.
+
+**Phase 10.8 addition: `DriverRepository`.** Mirrors `ParentRepository`'s exact shape —
+`drivers` has no module-owned uniqueness constraint beyond its primary key either (Database
+Design §6.1 lists no `UX` on `user_id`/`license_no`), so no `get_by_*` uniqueness-backing lookup
+is needed, including `list_all` (matching `StudentRepository`/`ParentRepository`'s identical
+precedent).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from raad.modules.transport_ops.domain.entities import Parent, Student, StudentParent
-from raad.modules.transport_ops.domain.value_objects import ParentId, StudentId
+from raad.modules.transport_ops.domain.entities import (
+    Driver,
+    Parent,
+    Student,
+    StudentParent,
+)
+from raad.modules.transport_ops.domain.value_objects import (
+    DriverId,
+    ParentId,
+    StudentId,
+)
 
 
 class StudentRepository(ABC):
@@ -112,4 +127,25 @@ class StudentParentRepository(ABC):
     @abstractmethod
     async def list_by_parent(self, parent_id: ParentId) -> list[StudentParent]:
         """Backs `ListStudentsForParentQuery`."""
+        raise NotImplementedError
+
+
+class DriverRepository(ABC):
+    """`drivers` has no module-owned uniqueness constraint beyond its primary key (Database
+    Design §6.1 lists no `UX` on `user_id`/`license_no`) — mirrors `ParentRepository`'s exact
+    shape, including `list_all` (matching Phase 10.2/10.6's precedent)."""
+
+    @abstractmethod
+    async def get(self, driver_id: DriverId) -> Driver | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, driver: Driver) -> None:
+        """Persistence of changes is flushed by the Unit of Work, not the repository (§7.1)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_all(self) -> list[Driver]:
+        """Backs `ListDriversQuery` (Phase 10.8). Already implicitly scoped to the caller's
+        tenant — see module docstring."""
         raise NotImplementedError

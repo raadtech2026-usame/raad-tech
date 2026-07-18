@@ -27,6 +27,11 @@ establishes for a `vehicle_id` referenced by a `DeviceAssignment` command:
 Cross-organization rejection is **not** here — it needs no repository I/O once `Student`/
 `Parent` are already loaded, so it lives in the domain layer instead
 (`domain/entities.py`'s `StudentParent.link` docstring explains the split).
+
+**Phase 10.8: none added for `Driver` either**, for the identical reason Phases 10.1-10.6 gave —
+no uniqueness constraint beyond its own primary key, no cross-aggregate reference, and its own
+existence-checking lives on `DriverApplicationService._get_driver_or_raise`
+(`application/services.py`), not a function here.
 """
 
 from __future__ import annotations

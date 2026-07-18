@@ -42,6 +42,15 @@ the REST surface nests this relationship under `/students/{id}/parents` first
 `StudentParent.link`/`unlink`) even though `student_parents` has no `organization_id` column of
 its own, so that outbox/event consumers still get tenant-scoping information consistent with
 every other event in this module.
+
+**Phase 10.8 addition:** `driver_registered`/`driver_details_updated`/`driver_activated`/
+`driver_disabled`, backing the new `Driver` aggregate (`entities.py`, Database Design §6.1).
+Same naming-note caveat as `Parent`'s own event set above: no approved document names a
+`Driver` event either — these follow the identical PascalCase-past-tense convention and the
+Ch. 6 ubiquitous language ("Driver"), 1:1 with `Driver`'s own domain method names, exactly
+mirroring `Parent`'s event set shape (`registered`/`details_updated`/`activated`/`disabled` —
+no `graduated`/`transferred` equivalent, since `DriverStatus` is likewise a flat active/inactive
+toggle, `value_objects.py`).
 """
 
 from __future__ import annotations
@@ -312,4 +321,79 @@ def student_parent_unlinked(
             "parent_id": parent_id,
             "actor_id": actor_id,
         },
+    )
+
+
+def driver_registered(
+    *,
+    driver_id: str,
+    organization_id: str,
+    user_id: str,
+    license_no: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="DriverRegistered",
+        aggregate_type="Driver",
+        aggregate_id=driver_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "user_id": user_id,
+            "license_no": license_no,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def driver_details_updated(
+    *,
+    driver_id: str,
+    organization_id: str,
+    license_no: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="DriverDetailsUpdated",
+        aggregate_type="Driver",
+        aggregate_id=driver_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"license_no": license_no, "actor_id": actor_id},
+    )
+
+
+def driver_activated(
+    *,
+    driver_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="DriverActivated",
+        aggregate_type="Driver",
+        aggregate_id=driver_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def driver_disabled(
+    *,
+    driver_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="DriverDisabled",
+        aggregate_type="Driver",
+        aggregate_id=driver_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
     )

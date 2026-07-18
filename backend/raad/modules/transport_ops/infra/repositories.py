@@ -43,6 +43,10 @@ only two lifecycle actions are a real INSERT (`add`) and a real DELETE (`remove`
 in-place field-level UPDATE the way `Student`/`Parent` get via `flush_tracked_changes`, so this
 repository defines no such method and `SqlAlchemyTransportOpsUnitOfWork.commit()` below calls
 none for it.
+
+**Phase 10.8 addition: `SqlAlchemyDriverRepository`.** Mirrors `SqlAlchemyParentRepository`'s
+exact identity-map/`flush_tracked_changes`/`list_all` shape (single-column `.id` PK, same
+unrestricted-`TenantRegionScope` caveat, pending the same system-wide `ScopeResolver` binding).
 """
 
 from __future__ import annotations
@@ -54,14 +58,26 @@ from raad.core.db.repository import SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
-from raad.modules.transport_ops.domain.entities import Parent, Student, StudentParent
+from raad.modules.transport_ops.domain.entities import (
+    Driver,
+    Parent,
+    Student,
+    StudentParent,
+)
 from raad.modules.transport_ops.domain.repositories import (
+    DriverRepository,
     ParentRepository,
     StudentParentRepository,
     StudentRepository,
 )
-from raad.modules.transport_ops.domain.value_objects import ParentId, StudentId
+from raad.modules.transport_ops.domain.value_objects import (
+    DriverId,
+    ParentId,
+    StudentId,
+)
 from raad.modules.transport_ops.infra.mappers import (
+    driver_to_model,
+    model_to_driver,
     model_to_parent,
     model_to_student,
     model_to_student_parent,
@@ -70,6 +86,7 @@ from raad.modules.transport_ops.infra.mappers import (
     student_to_model,
 )
 from raad.modules.transport_ops.infra.models import (
+    DriverModel,
     ParentModel,
     StudentModel,
     StudentParentModel,
@@ -223,6 +240,44 @@ class SqlAlchemyStudentParentRepository(StudentParentRepository):
         return link
 
 
+class SqlAlchemyDriverRepository(
+    SqlAlchemyRepositoryBase[DriverModel], DriverRepository
+):
+    """Mirrors `SqlAlchemyParentRepository`'s exact identity-map/`flush_tracked_changes` shape,
+    including `list_all`'s same unrestricted-`TenantRegionScope` caveat (still a system-wide
+    `ScopeResolver` gap, not a `Driver`-specific one)."""
+
+    model = DriverModel
+
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+        self._tracked: dict[str, tuple[Driver, DriverModel]] = {}
+
+    async def get(self, driver_id: DriverId) -> Driver | None:
+        row = await self.get_by_id(str(driver_id))
+        return self._track(row)
+
+    def add(self, driver: Driver) -> None:
+        model = driver_to_model(driver)
+        super().add(model)
+        self._tracked[str(driver.id)] = (driver, model)
+
+    async def list_all(self) -> list[Driver]:
+        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        return [model_to_driver(row) for row in rows]
+
+    def flush_tracked_changes(self) -> None:
+        for driver, model in self._tracked.values():
+            driver_to_model(driver, existing=model)
+
+    def _track(self, row: DriverModel | None) -> Driver | None:
+        if row is None:
+            return None
+        driver = model_to_driver(row)
+        self._tracked[row.id] = (driver, row)
+        return driver
+
+
 class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfWork):
     """Concrete `TransportOpsUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `transport_ops`'s
     repositories once the session is open, and re-syncs every tracked aggregate's in-place
@@ -233,21 +288,25 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
     bundles two repositories (`organizations`/`regions`) the same way `students`/`parents` do
     here as of Phase 10.6; `student_parents` (Phase 10.7) joins the same way again — but needs
     no `flush_tracked_changes()` call of its own, per `SqlAlchemyStudentParentRepository`'s own
-    docstring.
+    docstring; `drivers` (Phase 10.8) joins the same way again, and *does* need its own
+    `flush_tracked_changes()` call, mirroring `students`/`parents`.
     """
 
     students: SqlAlchemyStudentRepository
     parents: SqlAlchemyParentRepository
     student_parents: SqlAlchemyStudentParentRepository
+    drivers: SqlAlchemyDriverRepository
 
     async def __aenter__(self) -> "SqlAlchemyTransportOpsUnitOfWork":
         await super().__aenter__()
         self.students = SqlAlchemyStudentRepository(self.session)
         self.parents = SqlAlchemyParentRepository(self.session)
         self.student_parents = SqlAlchemyStudentParentRepository(self.session)
+        self.drivers = SqlAlchemyDriverRepository(self.session)
         return self
 
     async def commit(self) -> None:
         self.students.flush_tracked_changes()
         self.parents.flush_tracked_changes()
+        self.drivers.flush_tracked_changes()
         await super().commit()

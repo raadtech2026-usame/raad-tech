@@ -33,6 +33,13 @@ own nested-resource surface, `api/routers.py`'s Phase 10.7 addendum). No `id_gen
 dependency, unlike the other two services: `StudentParent` has no surrogate id to mint
 (composite-keyed by `student_id`+`parent_id`, both already supplied by the caller,
 `domain/entities.py`).
+
+**Phase 10.8 addition: `DriverApplicationService`.** A fourth, separate service, split out for
+the same by-natural-API-grouping reason as `ParentApplicationService` — `/drivers` is its own
+resource prefix (`api/routers.py`'s Phase 10.8 addendum), a distinct aggregate with no shared
+use-case with `Student`/`Parent`/`StudentParent`. Mirrors `ParentApplicationService`'s exact
+shape (register/update/activate/disable + get/list), including the `id_generator` dependency
+(`Driver` has a surrogate `id`, unlike `StudentParent`).
 """
 
 from __future__ import annotations
@@ -41,23 +48,31 @@ from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
+    ActivateDriverCommand,
     ActivateParentCommand,
     ActivateStudentCommand,
+    DisableDriverCommand,
     DisableParentCommand,
     DisableStudentCommand,
     EnrollStudentCommand,
     GraduateStudentCommand,
     LinkParentToStudentCommand,
+    RegisterDriverCommand,
     RegisterParentCommand,
     TransferStudentCommand,
     UnlinkParentFromStudentCommand,
+    UpdateDriverCommand,
     UpdateParentCommand,
     UpdateStudentCommand,
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
+    DriverDTO,
+    DriverSummaryDTO,
+    GetDriverByIdQuery,
     GetParentByIdQuery,
     GetStudentByIdQuery,
+    ListDriversQuery,
     ListParentsForStudentQuery,
     ListParentsQuery,
     ListStudentsForParentQuery,
@@ -69,6 +84,8 @@ from raad.modules.transport_ops.application.queries import (
     StudentForParentDTO,
     StudentParentDTO,
     StudentSummaryDTO,
+    driver_to_dto,
+    driver_to_summary_dto,
     parent_for_student_to_dto,
     parent_to_dto,
     parent_to_summary_dto,
@@ -83,8 +100,14 @@ from raad.modules.transport_ops.application.validators import (
     ensure_parent_exists,
     ensure_student_exists,
 )
-from raad.modules.transport_ops.domain.entities import Parent, Student, StudentParent
+from raad.modules.transport_ops.domain.entities import (
+    Driver,
+    Parent,
+    Student,
+    StudentParent,
+)
 from raad.modules.transport_ops.domain.value_objects import (
+    DriverId,
     OrganizationId,
     ParentId,
     PhoneNumber,
@@ -360,3 +383,88 @@ class StudentParentApplicationService:
                     continue
                 result.append(student_for_parent_to_dto(student, link))
             return result
+
+
+class DriverApplicationService:
+    """Driver lifecycle use-cases: register, update, activate, disable, and the
+    `GetDriverByIdQuery`/`ListDriversQuery` read paths. Mirrors `ParentApplicationService`'s
+    exact shape — both aggregates share the identical "profile linked to an `iam.User` login,
+    flat active/inactive status" structure (Database Design §6.1/§6.3)."""
+
+    def __init__(self, *, clock: Clock, id_generator: IdGenerator) -> None:
+        self._clock = clock
+        self._id_generator = id_generator
+
+    async def register_driver(
+        self, command: RegisterDriverCommand, *, uow: TransportOpsUnitOfWork
+    ) -> DriverDTO:
+        async with uow:
+            driver = Driver.register(
+                id=DriverId(self._id_generator.new_id()),
+                organization_id=OrganizationId(command.organization_id),
+                user_id=UserId(command.user_id),
+                license_no=command.license_no,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.drivers.add(driver)
+            uow.record_events(driver.pull_domain_events())
+            await uow.commit()
+            return driver_to_dto(driver)
+
+    async def update_driver(
+        self, command: UpdateDriverCommand, *, uow: TransportOpsUnitOfWork
+    ) -> DriverDTO:
+        async with uow:
+            driver = await self._get_driver_or_raise(uow, command.driver_id)
+            driver.update_details(
+                license_no=command.license_no,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(driver.pull_domain_events())
+            await uow.commit()
+            return driver_to_dto(driver)
+
+    async def activate_driver(
+        self, command: ActivateDriverCommand, *, uow: TransportOpsUnitOfWork
+    ) -> DriverDTO:
+        async with uow:
+            driver = await self._get_driver_or_raise(uow, command.driver_id)
+            driver.activate(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(driver.pull_domain_events())
+            await uow.commit()
+            return driver_to_dto(driver)
+
+    async def disable_driver(
+        self, command: DisableDriverCommand, *, uow: TransportOpsUnitOfWork
+    ) -> DriverDTO:
+        async with uow:
+            driver = await self._get_driver_or_raise(uow, command.driver_id)
+            driver.disable(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(driver.pull_domain_events())
+            await uow.commit()
+            return driver_to_dto(driver)
+
+    async def get_driver_by_id(
+        self, query: GetDriverByIdQuery, *, uow: TransportOpsUnitOfWork
+    ) -> DriverDTO:
+        async with uow:
+            driver = await self._get_driver_or_raise(uow, query.driver_id)
+            return driver_to_dto(driver)
+
+    async def list_drivers(
+        self, query: ListDriversQuery, *, uow: TransportOpsUnitOfWork
+    ) -> list[DriverSummaryDTO]:
+        async with uow:
+            drivers = await uow.drivers.list_all()
+            return [driver_to_summary_dto(driver) for driver in drivers]
+
+    @staticmethod
+    async def _get_driver_or_raise(
+        uow: TransportOpsUnitOfWork, driver_id: str
+    ) -> Driver:
+        driver = await uow.drivers.get(DriverId(driver_id))
+        if driver is None:
+            raise NotFoundError(f"Driver {driver_id} not found.")
+        return driver

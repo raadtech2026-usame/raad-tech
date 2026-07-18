@@ -19,13 +19,23 @@ a "summary" vs. "full" DTO distinction; every aggregate has exactly one DTO shap
 only because the task explicitly requests it: a lighter projection for `list_students` (omitting
 `organization_id`/`external_ref`, which a listing view doesn't need) alongside the full
 `StudentDTO` for `get_student_by_id`.
+
+**Phase 10.8 addition: `Driver` queries/DTOs.** `GetDriverByIdQuery`/`ListDriversQuery`/
+`DriverDTO`/`DriverSummaryDTO`, mirroring `Parent`'s equivalents exactly (by-then an established
+pattern, not a new one) — see `DriverSummaryDTO`'s own docstring for the one shape difference
+(`license_no` instead of `full_name`, since `Driver` has none of its own).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from raad.modules.transport_ops.domain.entities import Parent, Student, StudentParent
+from raad.modules.transport_ops.domain.entities import (
+    Driver,
+    Parent,
+    Student,
+    StudentParent,
+)
 
 
 @dataclass(frozen=True)
@@ -206,4 +216,56 @@ def student_for_parent_to_dto(
         status=student.status.value,
         relationship=link.relationship,
         is_primary=link.is_primary,
+    )
+
+
+@dataclass(frozen=True)
+class GetDriverByIdQuery:
+    driver_id: str
+
+
+@dataclass(frozen=True)
+class ListDriversQuery:
+    pass
+
+
+@dataclass(frozen=True)
+class DriverDTO:
+    id: str
+    organization_id: str
+    user_id: str
+    license_no: str
+    status: str
+
+
+@dataclass(frozen=True)
+class DriverSummaryDTO:
+    """Lighter listing projection, mirroring `StudentSummaryDTO`/`ParentSummaryDTO`'s shape —
+    `license_no` stands in for those DTOs' `full_name` as `Driver`'s own readable identifying
+    field (`Driver` has no `full_name` of its own; that lives on the linked `iam.User`,
+    `domain/entities.py`)."""
+
+    id: str
+    license_no: str
+    status: str
+
+
+def driver_to_dto(driver: Driver) -> DriverDTO:
+    """Shared mapper — the only place a `Driver` aggregate is projected into its full DTO,
+    mirroring `parent_to_dto`'s exact shape."""
+    return DriverDTO(
+        id=str(driver.id),
+        organization_id=str(driver.organization_id),
+        user_id=str(driver.user_id),
+        license_no=driver.license_no,
+        status=driver.status.value,
+    )
+
+
+def driver_to_summary_dto(driver: Driver) -> DriverSummaryDTO:
+    """Shared mapper — the only place a `Driver` aggregate is projected into its summary DTO
+    (`ListDriversQuery`'s read shape), mirroring `parent_to_summary_dto`'s exact shape.
+    """
+    return DriverSummaryDTO(
+        id=str(driver.id), license_no=driver.license_no, status=driver.status.value
     )

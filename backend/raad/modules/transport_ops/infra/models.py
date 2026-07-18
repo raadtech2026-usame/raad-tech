@@ -28,6 +28,15 @@ are enforced by the database (`.claude/rules/database.md` #3), the same treatmen
 `fleet_device.CameraModel.device_id → devices.id` already gets for an identical
 same-module reference.
 
+**Phase 10.8 addition: `DriverModel`.** `drivers` (Database Design §6.1, ADR-0001) gets the same
+"+ standard audit cols" treatment as `students`/`parents` above, so it composes
+`AuditedTableMixin` too. `organization_id`/`user_id` are indexed plain columns, not database
+FKs — the identical cross-context-reference-by-ID-only treatment `ParentModel` already gets
+(`.claude/rules/database.md` #3; `user_id` references `iam.UserModel`, despite Database Design
+§6.1's "FK" shorthand). `license_no` uses `VARCHAR(64)` — Database Design §6.1 gives no explicit
+length (compact notation), so this mirrors `StudentModel.external_ref`'s identical VARCHAR(64)
+precedent for an unformatted identifier string (`domain/entities.py`'s Phase 10.8 addendum).
+
 PostgreSQL types only (ADR-0002) — no MySQL dialect import anywhere in this file, matching
 every other infra model rewritten during the PostgreSQL migration.
 """
@@ -43,6 +52,7 @@ from raad.core.db.mixins import AuditedTableMixin
 
 _STUDENT_STATUS_VALUES = ("active", "disabled", "graduated", "transferred")
 _PARENT_STATUS_VALUES = ("active", "inactive")
+_DRIVER_STATUS_VALUES = ("active", "inactive")
 
 
 class StudentModel(AuditedTableMixin, Base):
@@ -104,3 +114,20 @@ class StudentParentModel(Base):
     )
     relationship: Mapped[str | None] = mapped_column(VARCHAR(40), nullable=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class DriverModel(AuditedTableMixin, Base):
+    """`drivers` (Database Design §6.1, ADR-0001): a vehicle operator's transport-facing
+    profile, linked to an `iam.User` login. `license_no` uses `VARCHAR(64)` — see module
+    docstring's Phase 10.8 addition for why."""
+
+    __tablename__ = "drivers"
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    license_no: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        SqlEnum(*_DRIVER_STATUS_VALUES, name="driver_status"),
+        nullable=False,
+        index=True,
+    )

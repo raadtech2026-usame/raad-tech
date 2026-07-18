@@ -58,6 +58,7 @@ from raad.modules.tracking.application.services import TrackingApplicationServic
 from raad.modules.tracking.infra.repositories import SqlAlchemyTrackingUnitOfWork
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
+    DriverApplicationService,
     ParentApplicationService,
     StudentApplicationService,
     StudentParentApplicationService,
@@ -155,6 +156,15 @@ def build_container(settings: Settings) -> Container:
     container.bind_singleton(
         StudentParentApplicationService,
         StudentParentApplicationService(clock=container.resolve(Clock)),
+    )
+    # DriverApplicationService needs no TokenService either — always constructible, same
+    # reasoning as StudentApplicationService/ParentApplicationService above.
+    container.bind_singleton(
+        DriverApplicationService,
+        DriverApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+        ),
     )
 
     # TrackingApplicationService additionally needs a LatestPositionPort (Database Design

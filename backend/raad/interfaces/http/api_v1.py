@@ -17,6 +17,7 @@ from raad.modules.platform_audit.api.routers import admin_router
 from raad.modules.reporting.api.routers import reports_router
 from raad.modules.tracking.api.routers import tracking_router
 from raad.modules.transport_ops.api.routers import (
+    drivers_router,
     parents_router,
     routes_router,
     students_router,
@@ -45,6 +46,9 @@ api_router.include_router(
 api_router.include_router(parents_router, prefix="/parents", tags=["transport-ops"])
 api_router.include_router(routes_router, prefix="/routes", tags=["transport-ops"])
 api_router.include_router(trips_router, prefix="/trips", tags=["transport-ops"])
+api_router.include_router(
+    drivers_router, prefix="/drivers", tags=["transport-ops"]
+)  # transport_ops (C4) — Phase 10.8; no documented API Contracts row, see routers.py
 
 api_router.include_router(
     tracking_router, prefix="/tracking", tags=["tracking"]

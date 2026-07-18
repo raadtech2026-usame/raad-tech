@@ -24,6 +24,13 @@ are declared here rather than imported from `iam.domain.value_objects`, since
 — the same reasoning `_AggregateRoot`'s per-module duplication already establishes in this
 codebase. `PhoneNumber` mirrors `iam.domain.value_objects.PhoneNumber`'s E.164 validation
 exactly, for the same reason.
+
+**Phase 10.8 addition: `Driver`.** `DriverId` is minted and owned by this module (`drivers` is
+this module's own table, Database Design §6.1, ADR-0001) — strict ULID shape, same treatment as
+`StudentId`/`ParentId`. No new `UserId`/`OrganizationId` declaration is needed — `Driver.user_id`
+reuses the same cross-module-reference `UserId` already declared for `Parent` above (Database
+Design §6.1: "`user_id FK→users`", the identical "FK" shorthand for an `iam`-owned table).
+`DriverStatus` mirrors `ParentStatus`'s exact reasoning below — see its own docstring.
 """
 
 from __future__ import annotations
@@ -153,6 +160,33 @@ class ParentStatus(str, Enum):
     "Login is via the linked `users` row") — this status is `transport_ops`'s own, separate
     concept (e.g. an Org Admin enabling/disabling a parent's transport-facing profile without
     touching their login credentials)."""
+
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+@dataclass(frozen=True)
+class DriverId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"DriverId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class DriverStatus(str, Enum):
+    """Database Design §6.1 gives `drivers.status` with no enumerated values at all (unlike
+    §6.2's fully-spelled-out `students.status ENUM(...)`) — flagged, not guessed, the identical
+    situation `ParentStatus` above already documents for `parents.status`. Same simplest
+    defensible choice: a flat active/inactive toggle, not an invented richer state machine.
+    `Driver`'s own login/account lifecycle lives entirely on the linked `iam.User` row (Database
+    Design §6.1: "Profile for users with `role=driver`") — this status is `transport_ops`'s own,
+    separate concept (e.g. an Org Admin enabling/disabling a driver's transport-facing profile
+    without touching their login credentials), mirroring `ParentStatus`'s identical reasoning.
+    """
 
     ACTIVE = "active"
     INACTIVE = "inactive"

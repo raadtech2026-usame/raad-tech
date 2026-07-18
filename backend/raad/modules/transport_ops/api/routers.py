@@ -73,6 +73,27 @@ top-level `/student-parents` router:
   this is the correct semantics, not a gap being filled in.
 - `GET /students/{student_id}/parents` — list a student's parents (`students_router`).
 - `GET /parents/{parent_id}/students` — list a parent's students (`parents_router`).
+
+**Phase 10.8: `drivers_router` — four routes, `/drivers` (Database Design §6.1, ADR-0001).
+Flagged, not silently assumed: unlike `/students`/`/parents`, API Contracts §4.3 documents
+*no* `/drivers` resource row at all** (re-read in full before implementing — the only
+`Driver`-related rows are `/trips/{id}/driver` PATCH, `/trips/{id}/start`, `/trips/{id}/end`,
+all `Trip`-aggregate concerns, not `Driver`-profile CRUD). Built anyway, for the same reason
+Phase 10.7 built `StudentParent`'s routes despite an identical documentation gap: Database
+Design §6.1 unambiguously defines the `drivers` table and ADR-0001 unambiguously assigns it to
+this module, the task's own requirements explicitly ask for "FastAPI endpoints", and API
+Contracts §4's own preamble establishes a *uniform CRUD pattern per resource* that this
+resource simply isn't enumerated under (the `4.3` table is headed "(representative)" — not
+exhaustive). This is a real documentation gap, reported here rather than silently decided:
+
+- `POST /drivers` — register (uniform CRUD)
+- `GET /drivers` — list (same inherited unrestricted-`TenantRegionScope` caveat as
+  `list_students`/`list_parents`)
+- `GET /drivers/{id}` — get by id (uniform CRUD)
+- `PATCH /drivers/{id}` — update `license_no`/`status` together, mirroring `update_parent`'s
+  exact shape (no dedicated behavioral status sub-route is documented for `/drivers` either)
+- `DELETE /drivers/{id}` not implemented, for the identical reason `DELETE /students/{id}`/
+  `DELETE /parents/{id}` aren't: `Driver` has no soft-delete domain behavior.
 """
 
 from __future__ import annotations
@@ -84,44 +105,57 @@ from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
 from raad.interfaces.http.deps import require_permission
 from raad.modules.transport_ops.api.deps import (
+    get_driver_service,
     get_parent_service,
     get_student_parent_service,
     get_student_service,
     get_transport_ops_uow,
 )
 from raad.modules.transport_ops.api.schemas import (
+    DriverResponse,
+    DriverSummaryResponse,
     EnrollStudentRequest,
     LinkParentToStudentRequest,
     ParentForStudentResponse,
     ParentResponse,
     ParentSummaryResponse,
+    RegisterDriverRequest,
     RegisterParentRequest,
     StudentForParentResponse,
     StudentParentLinkResponse,
     StudentResponse,
     StudentSummaryResponse,
+    UpdateDriverRequest,
     UpdateParentRequest,
     UpdateStudentRequest,
     UpdateStudentStatusRequest,
 )
 from raad.modules.transport_ops.application.commands import (
+    ActivateDriverCommand,
     ActivateParentCommand,
     ActivateStudentCommand,
+    DisableDriverCommand,
     DisableParentCommand,
     DisableStudentCommand,
     EnrollStudentCommand,
     GraduateStudentCommand,
     LinkParentToStudentCommand,
+    RegisterDriverCommand,
     RegisterParentCommand,
     TransferStudentCommand,
     UnlinkParentFromStudentCommand,
+    UpdateDriverCommand,
     UpdateParentCommand,
     UpdateStudentCommand,
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
+    DriverDTO,
+    DriverSummaryDTO,
+    GetDriverByIdQuery,
     GetParentByIdQuery,
     GetStudentByIdQuery,
+    ListDriversQuery,
     ListParentsForStudentQuery,
     ListParentsQuery,
     ListStudentsForParentQuery,
@@ -135,6 +169,7 @@ from raad.modules.transport_ops.application.queries import (
     StudentSummaryDTO,
 )
 from raad.modules.transport_ops.application.services import (
+    DriverApplicationService,
     ParentApplicationService,
     StudentApplicationService,
     StudentParentApplicationService,
@@ -144,6 +179,7 @@ students_router = APIRouter()
 parents_router = APIRouter()
 routes_router = APIRouter()
 trips_router = APIRouter()
+drivers_router = APIRouter()
 
 
 def _student_dto_to_response(student: StudentDTO) -> StudentResponse:
@@ -216,6 +252,24 @@ def _student_for_parent_dto_to_response(
         status=dto.status,
         relationship=dto.relationship,
         is_primary=dto.is_primary,
+    )
+
+
+def _driver_dto_to_response(driver: DriverDTO) -> DriverResponse:
+    return DriverResponse(
+        id=driver.id,
+        organization_id=driver.organization_id,
+        user_id=driver.user_id,
+        license_no=driver.license_no,
+        status=driver.status,
+    )
+
+
+def _driver_summary_dto_to_response(
+    driver: DriverSummaryDTO,
+) -> DriverSummaryResponse:
+    return DriverSummaryResponse(
+        id=driver.id, license_no=driver.license_no, status=driver.status
     )
 
 
@@ -639,3 +693,144 @@ async def list_students_for_parent(
         ListStudentsForParentQuery(parent_id=parent_id), uow=uow
     )
     return [_student_for_parent_dto_to_response(dto) for dto in results]
+
+
+@drivers_router.post(
+    "",
+    response_model=DriverResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a new driver",
+    description=(
+        "Org Admin. No documented API Contracts route (Phase 10.8 — see this module's own "
+        "docstring for the full gap: Database Design §6.1/ADR-0001 define the `drivers` table "
+        "and its ownership unambiguously, but API Contracts §4.3 lists no `/drivers` resource "
+        "row). Authorization uses `require_permission` — pending the approved RBAC permission "
+        "matrix, so this currently raises `NotImplementedError` (500) rather than a guessed "
+        "matrix, matching `enroll_student`'s posture."
+    ),
+)
+async def register_driver(
+    body: RegisterDriverRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.drivers.create"))
+    ),
+    driver_service: DriverApplicationService = Depends(get_driver_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> DriverResponse:
+    command = RegisterDriverCommand(
+        organization_id=body.organization_id,
+        user_id=body.user_id,
+        license_no=body.license_no,
+        actor=principal,
+    )
+    driver = await driver_service.register_driver(command, uow=uow)
+    return _driver_dto_to_response(driver)
+
+
+@drivers_router.get(
+    "",
+    response_model=list[DriverSummaryResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List drivers",
+    description=(
+        "Org Admin. No documented API Contracts route (Phase 10.8, see this module's own "
+        "docstring). Not yet tenant-scoped — same inherited caveat as `list_students`/"
+        "`list_parents`. Also pending the approved RBAC permission matrix."
+    ),
+)
+async def list_drivers(
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.drivers.list"))
+    ),
+    driver_service: DriverApplicationService = Depends(get_driver_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[DriverSummaryResponse]:
+    drivers = await driver_service.list_drivers(ListDriversQuery(), uow=uow)
+    return [_driver_summary_dto_to_response(driver) for driver in drivers]
+
+
+@drivers_router.get(
+    "/{driver_id}",
+    response_model=DriverResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a driver by id",
+    description=(
+        "Org Admin. No documented API Contracts route (Phase 10.8, see this module's own "
+        "docstring). Pending the approved RBAC permission matrix — see `register_driver`'s "
+        "note."
+    ),
+)
+async def get_driver(
+    driver_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.drivers.read"))
+    ),
+    driver_service: DriverApplicationService = Depends(get_driver_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> DriverResponse:
+    driver = await driver_service.get_driver_by_id(
+        GetDriverByIdQuery(driver_id=driver_id), uow=uow
+    )
+    return _driver_dto_to_response(driver)
+
+
+@drivers_router.patch(
+    "/{driver_id}",
+    response_model=DriverResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update a driver's details and/or status",
+    description=(
+        "Org Admin. No documented API Contracts route (Phase 10.8, see this module's own "
+        "docstring). Composes `license_no` (dispatched to `update_driver`) and `status` "
+        "(dispatched to `activate_driver`/`disable_driver`) in one request, each "
+        "independently — not atomically — mirroring `update_parent`'s identical composition. "
+        "Pending the approved RBAC permission matrix."
+    ),
+)
+async def update_driver(
+    driver_id: str,
+    body: UpdateDriverRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.drivers.update"))
+    ),
+    driver_service: DriverApplicationService = Depends(get_driver_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> DriverResponse:
+    if body.license_no is None and body.status is None:
+        raise ValidationError(
+            "At least one of 'license_no' or 'status' must be provided.",
+            details={"fields": ["license_no", "status"]},
+        )
+
+    driver: DriverDTO | None = None
+
+    if body.license_no is not None:
+        command = UpdateDriverCommand(
+            driver_id=driver_id,
+            license_no=body.license_no,
+            actor=principal,
+        )
+        driver = await driver_service.update_driver(command, uow=uow)
+
+    if body.status is not None:
+        if body.status == "active":
+            driver = await driver_service.activate_driver(
+                ActivateDriverCommand(driver_id=driver_id, actor=principal), uow=uow
+            )
+        elif body.status == "inactive":
+            driver = await driver_service.disable_driver(
+                DisableDriverCommand(driver_id=driver_id, actor=principal), uow=uow
+            )
+        else:
+            raise ValidationError(
+                f"Unsupported status: {body.status!r}", details={"field": "status"}
+            )
+
+    if driver is None:
+        # Guaranteed not to happen by the "at least one field" guard above — an explicit
+        # raise rather than `assert`, matching `update_parent`'s identical
+        # invariant-holds-regardless-of-interpreter-flags reasoning.
+        raise RuntimeError(
+            "update_driver: no field was processed despite the guard above."
+        )
+    return _driver_dto_to_response(driver)
