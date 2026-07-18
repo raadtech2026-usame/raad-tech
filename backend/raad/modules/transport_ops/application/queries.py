@@ -24,6 +24,16 @@ only because the task explicitly requests it: a lighter projection for `list_stu
 `DriverDTO`/`DriverSummaryDTO`, mirroring `Parent`'s equivalents exactly (by-then an established
 pattern, not a new one) — see `DriverSummaryDTO`'s own docstring for the one shape difference
 (`license_no` instead of `full_name`, since `Driver` has none of its own).
+
+**Phase 11 addition: `Route`/`Stop` queries/DTOs.** `RouteDTO` embeds
+`stops: tuple[StopDTO, ...]`, mirroring `fleet_device.application.queries.DeviceDTO`'s identical
+`cameras: tuple[CameraDTO, ...]` shape for an intra-aggregate child collection.
+`RouteSummaryDTO` (the `ListRoutesQuery` read shape) omits `stops` — a listing view doesn't
+need the full nested collection, the same reasoning `StudentSummaryDTO`/`ParentSummaryDTO`
+already establish for their own omitted fields. `list_stops_for_route` reuses `Route.stops`'s
+own always-sorted-by-`sequence_no` ordering (`domain/entities.py`) rather than re-sorting here —
+a second, possibly-diverging sort implementation would be a needless duplicate of the one
+already-correct source.
 """
 
 from __future__ import annotations
@@ -33,6 +43,8 @@ from dataclasses import dataclass
 from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
+    Route,
+    Stop,
     Student,
     StudentParent,
 )
@@ -269,3 +281,77 @@ def driver_to_summary_dto(driver: Driver) -> DriverSummaryDTO:
     return DriverSummaryDTO(
         id=str(driver.id), license_no=driver.license_no, status=driver.status.value
     )
+
+
+@dataclass(frozen=True)
+class GetRouteByIdQuery:
+    route_id: str
+
+
+@dataclass(frozen=True)
+class ListRoutesQuery:
+    pass
+
+
+@dataclass(frozen=True)
+class ListStopsForRouteQuery:
+    route_id: str
+
+
+@dataclass(frozen=True)
+class StopDTO:
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+    sequence_no: int
+    geofence_radius_m: int | None
+
+
+@dataclass(frozen=True)
+class RouteDTO:
+    id: str
+    organization_id: str
+    name: str
+    status: str
+    stops: tuple[StopDTO, ...]
+
+
+@dataclass(frozen=True)
+class RouteSummaryDTO:
+    id: str
+    name: str
+    status: str
+
+
+def stop_to_dto(stop: Stop) -> StopDTO:
+    """Shared mapper — the only place a `Stop` child entity is projected into its DTO,
+    mirroring `fleet_device.application.queries.camera_to_dto`'s identical shape."""
+    return StopDTO(
+        id=str(stop.id),
+        name=stop.name,
+        latitude=stop.latitude,
+        longitude=stop.longitude,
+        sequence_no=stop.sequence_no,
+        geofence_radius_m=stop.geofence_radius_m,
+    )
+
+
+def route_to_dto(route: Route) -> RouteDTO:
+    """Shared mapper — the only place a `Route` aggregate is projected into its full DTO,
+    mirroring `fleet_device.application.queries.device_to_dto`'s identical shape (embedding
+    the child-entity collection)."""
+    return RouteDTO(
+        id=str(route.id),
+        organization_id=str(route.organization_id),
+        name=route.name,
+        status=route.status.value,
+        stops=tuple(stop_to_dto(stop) for stop in route.stops),
+    )
+
+
+def route_to_summary_dto(route: Route) -> RouteSummaryDTO:
+    """Shared mapper — the only place a `Route` aggregate is projected into its summary DTO
+    (`ListRoutesQuery`'s read shape), mirroring `parent_to_summary_dto`'s exact shape.
+    """
+    return RouteSummaryDTO(id=str(route.id), name=route.name, status=route.status.value)

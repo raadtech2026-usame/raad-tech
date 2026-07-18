@@ -32,6 +32,13 @@ Cross-organization rejection is **not** here — it needs no repository I/O once
 no uniqueness constraint beyond its own primary key, no cross-aggregate reference, and its own
 existence-checking lives on `DriverApplicationService._get_driver_or_raise`
 (`application/services.py`), not a function here.
+
+**Phase 11 addition — `ensure_route_name_available`.** `routes` has a real per-tenant
+uniqueness constraint this time (Database Design §6.5: `Unique (organization_id, name)`) —
+mirroring `fleet_device.application.validators.ensure_plate_no_available`'s identical shape for
+`vehicles`' own per-tenant `ux_vehicles__org_plate`. `Route`'s own existence-checking still
+lives on `RouteApplicationService._get_route_or_raise`, not here, for the same reason
+Phases 10.1-10.8 keep that check off this file.
 """
 
 from __future__ import annotations
@@ -79,3 +86,11 @@ async def ensure_link_exists(
             f"No link between student {student_id} and parent {parent_id}."
         )
     return link
+
+
+async def ensure_route_name_available(uow: TransportOpsUnitOfWork, name: str) -> None:
+    existing = await uow.routes.get_by_name(name)
+    if existing is not None:
+        raise ConflictError(
+            f"A route named {name!r} already exists in this organization."
+        )

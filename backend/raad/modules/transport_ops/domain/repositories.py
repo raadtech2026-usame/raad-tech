@@ -29,6 +29,13 @@ unlinking is a real deletion, not a status transition — there is nothing to "a
 Design §6.1 lists no `UX` on `user_id`/`license_no`), so no `get_by_*` uniqueness-backing lookup
 is needed, including `list_all` (matching `StudentRepository`/`ParentRepository`'s identical
 precedent).
+
+**Phase 11 addition: `RouteRepository`.** No separate `StopRepository` — `Stop` is a child
+entity owned by `Route` (`entities.py`'s Phase 11 addition), the identical shape
+`fleet_device.domain.repositories` already establishes (no `CameraRepository` alongside
+`DeviceRepository`). `get_by_name` backs the per-tenant name uniqueness pre-check (Database
+Design §6.5: `Unique (organization_id, name)`), mirroring `fleet_device.domain.repositories.
+VehicleRepository.get_by_plate_no`'s identical shape for an analogous per-tenant unique column.
 """
 
 from __future__ import annotations
@@ -38,12 +45,14 @@ from abc import ABC, abstractmethod
 from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
+    Route,
     Student,
     StudentParent,
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     ParentId,
+    RouteId,
     StudentId,
 )
 
@@ -147,5 +156,33 @@ class DriverRepository(ABC):
     @abstractmethod
     async def list_all(self) -> list[Driver]:
         """Backs `ListDriversQuery` (Phase 10.8). Already implicitly scoped to the caller's
+        tenant — see module docstring."""
+        raise NotImplementedError
+
+
+class RouteRepository(ABC):
+    """`Route` owns its `Stop` children (`entities.py`'s Phase 11 addition) — `get`/`add`
+    always operate on the whole aggregate, stops included, mirroring
+    `fleet_device.domain.repositories.DeviceRepository`'s identical shape for its own
+    `Camera` children."""
+
+    @abstractmethod
+    async def get(self, route_id: RouteId) -> Route | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_name(self, name: str) -> Route | None:
+        """Backs the per-tenant route-name uniqueness pre-check (Database Design §6.5:
+        `Unique (organization_id, name)`)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, route: Route) -> None:
+        """Persistence of changes is flushed by the Unit of Work, not the repository (§7.1)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_all(self) -> list[Route]:
+        """Backs `ListRoutesQuery` (Phase 11). Already implicitly scoped to the caller's
         tenant — see module docstring."""
         raise NotImplementedError

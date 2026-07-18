@@ -10,4 +10,12 @@ services are stateless operations over already-loaded entities, LLD §5.1), mirr
 service here only if a future rule genuinely needs to span two loaded aggregates without I/O —
 e.g. once `StudentAssignment` (a later phase, deliberately out of this phase's scope per
 `entities.py`'s module docstring) exists alongside `Student`.
+
+**Phase 11 (`Route`/`Stop`):** same reasoning again. `Route`'s own constructor/`add_stop`/
+`move_stop` already enforce everything that's a pure function of already-loaded state
+(sequence uniqueness, coordinate bounds, name length) directly on the aggregate — no separate
+domain service needed. Per-tenant route-name uniqueness needs a repository query (I/O), so it
+is an application-layer concern (`application/validators.py`'s `ensure_route_name_available`),
+mirroring `fleet_device.application.validators.ensure_plate_no_available`'s identical
+reasoning.
 """

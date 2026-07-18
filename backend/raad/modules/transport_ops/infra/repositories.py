@@ -47,6 +47,13 @@ none for it.
 **Phase 10.8 addition: `SqlAlchemyDriverRepository`.** Mirrors `SqlAlchemyParentRepository`'s
 exact identity-map/`flush_tracked_changes`/`list_all` shape (single-column `.id` PK, same
 unrestricted-`TenantRegionScope` caveat, pending the same system-wide `ScopeResolver` binding).
+
+**Phase 11 addition: `SqlAlchemyRouteRepository`.** Mirrors `fleet_device.infra.repositories.
+SqlAlchemyDeviceRepository`'s exact shape — `RouteModel.stops` rides the selectin-eager
+relationship (`infra/models.py`), so a tracked `Route` re-projection
+(`flush_tracked_changes` → `route_to_model`) also syncs the stop rows (add/update/remove, per
+`infra/mappers.py`'s Phase 11 addition). `get_by_name` backs the per-tenant name-uniqueness
+pre-check, mirroring `SqlAlchemyVehicleRepository.get_by_plate_no`'s identical shape.
 """
 
 from __future__ import annotations
@@ -61,33 +68,39 @@ from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
+    Route,
     Student,
     StudentParent,
 )
 from raad.modules.transport_ops.domain.repositories import (
     DriverRepository,
     ParentRepository,
+    RouteRepository,
     StudentParentRepository,
     StudentRepository,
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     ParentId,
+    RouteId,
     StudentId,
 )
 from raad.modules.transport_ops.infra.mappers import (
     driver_to_model,
     model_to_driver,
     model_to_parent,
+    model_to_route,
     model_to_student,
     model_to_student_parent,
     parent_to_model,
+    route_to_model,
     student_parent_to_model,
     student_to_model,
 )
 from raad.modules.transport_ops.infra.models import (
     DriverModel,
     ParentModel,
+    RouteModel,
     StudentModel,
     StudentParentModel,
 )
@@ -278,6 +291,50 @@ class SqlAlchemyDriverRepository(
         return driver
 
 
+class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepository):
+    """Mirrors `fleet_device.infra.repositories.SqlAlchemyDeviceRepository`'s exact shape —
+    `flush_tracked_changes` re-projects the whole aggregate (stops included) via
+    `route_to_model`, the same "Device+Camera" precedent, including `list_all`'s same
+    unrestricted-`TenantRegionScope` caveat as every other `list_all` in this module."""
+
+    model = RouteModel
+
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+        self._tracked: dict[str, tuple[Route, RouteModel]] = {}
+
+    async def get(self, route_id: RouteId) -> Route | None:
+        row = await self.get_by_id(str(route_id))
+        return self._track(row)
+
+    async def get_by_name(self, name: str) -> Route | None:
+        statement = select(RouteModel).where(
+            RouteModel.name == name, RouteModel.deleted_at.is_(None)
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
+
+    def add(self, route: Route) -> None:
+        model = route_to_model(route)
+        super().add(model)
+        self._tracked[str(route.id)] = (route, model)
+
+    async def list_all(self) -> list[Route]:
+        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        return [model_to_route(row) for row in rows]
+
+    def flush_tracked_changes(self) -> None:
+        for route, model in self._tracked.values():
+            route_to_model(route, existing=model)
+
+    def _track(self, row: RouteModel | None) -> Route | None:
+        if row is None:
+            return None
+        route = model_to_route(row)
+        self._tracked[row.id] = (route, row)
+        return route
+
+
 class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfWork):
     """Concrete `TransportOpsUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `transport_ops`'s
     repositories once the session is open, and re-syncs every tracked aggregate's in-place
@@ -289,13 +346,15 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
     here as of Phase 10.6; `student_parents` (Phase 10.7) joins the same way again — but needs
     no `flush_tracked_changes()` call of its own, per `SqlAlchemyStudentParentRepository`'s own
     docstring; `drivers` (Phase 10.8) joins the same way again, and *does* need its own
-    `flush_tracked_changes()` call, mirroring `students`/`parents`.
+    `flush_tracked_changes()` call, mirroring `students`/`parents`; `routes` (Phase 11) joins
+    the same way again, a fifth.
     """
 
     students: SqlAlchemyStudentRepository
     parents: SqlAlchemyParentRepository
     student_parents: SqlAlchemyStudentParentRepository
     drivers: SqlAlchemyDriverRepository
+    routes: SqlAlchemyRouteRepository
 
     async def __aenter__(self) -> "SqlAlchemyTransportOpsUnitOfWork":
         await super().__aenter__()
@@ -303,10 +362,12 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
         self.parents = SqlAlchemyParentRepository(self.session)
         self.student_parents = SqlAlchemyStudentParentRepository(self.session)
         self.drivers = SqlAlchemyDriverRepository(self.session)
+        self.routes = SqlAlchemyRouteRepository(self.session)
         return self
 
     async def commit(self) -> None:
         self.students.flush_tracked_changes()
         self.parents.flush_tracked_changes()
         self.drivers.flush_tracked_changes()
+        self.routes.flush_tracked_changes()
         await super().commit()

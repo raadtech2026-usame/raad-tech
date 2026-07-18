@@ -15,6 +15,7 @@ from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
     DriverApplicationService,
     ParentApplicationService,
+    RouteApplicationService,
     StudentApplicationService,
     StudentParentApplicationService,
 )
@@ -53,3 +54,9 @@ def get_driver_service(
     container: Container = Depends(get_container),
 ) -> DriverApplicationService:
     return container.resolve(DriverApplicationService)
+
+
+def get_route_service(
+    container: Container = Depends(get_container),
+) -> RouteApplicationService:
+    return container.resolve(RouteApplicationService)

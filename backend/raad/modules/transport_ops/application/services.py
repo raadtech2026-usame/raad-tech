@@ -40,6 +40,15 @@ resource prefix (`api/routers.py`'s Phase 10.8 addendum), a distinct aggregate w
 use-case with `Student`/`Parent`/`StudentParent`. Mirrors `ParentApplicationService`'s exact
 shape (register/update/activate/disable + get/list), including the `id_generator` dependency
 (`Driver` has a surrogate `id`, unlike `StudentParent`).
+
+**Phase 11 addition: `RouteApplicationService`.** A fifth, separate service — `/routes` is its
+own resource prefix. `create_route` runs `ensure_route_name_available` before the aggregate
+factory (mirroring `VehicleApplicationService.register_vehicle`'s `ensure_plate_no_available`
+pre-check exactly). `add_stop_to_route`/`remove_stop_from_route`/`move_stop` all load the whole
+`Route` aggregate (its `Stop` children ride along, `domain/repositories.py`'s Phase 11
+addendum) and delegate the actual mutation to `Route`'s own methods — this service performs no
+child-entity logic itself, matching `DeviceApplicationService.register_camera`'s identical
+"load aggregate, call its method, commit" shape.
 """
 
 from __future__ import annotations
@@ -50,19 +59,26 @@ from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
     ActivateDriverCommand,
     ActivateParentCommand,
+    ActivateRouteCommand,
     ActivateStudentCommand,
+    AddStopToRouteCommand,
+    CreateRouteCommand,
     DisableDriverCommand,
     DisableParentCommand,
+    DisableRouteCommand,
     DisableStudentCommand,
     EnrollStudentCommand,
     GraduateStudentCommand,
     LinkParentToStudentCommand,
+    MoveStopCommand,
     RegisterDriverCommand,
     RegisterParentCommand,
+    RemoveStopFromRouteCommand,
     TransferStudentCommand,
     UnlinkParentFromStudentCommand,
     UpdateDriverCommand,
     UpdateParentCommand,
+    UpdateRouteCommand,
     UpdateStudentCommand,
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
@@ -71,15 +87,21 @@ from raad.modules.transport_ops.application.queries import (
     DriverSummaryDTO,
     GetDriverByIdQuery,
     GetParentByIdQuery,
+    GetRouteByIdQuery,
     GetStudentByIdQuery,
     ListDriversQuery,
     ListParentsForStudentQuery,
     ListParentsQuery,
+    ListRoutesQuery,
+    ListStopsForRouteQuery,
     ListStudentsForParentQuery,
     ListStudentsQuery,
     ParentDTO,
     ParentForStudentDTO,
     ParentSummaryDTO,
+    RouteDTO,
+    RouteSummaryDTO,
+    StopDTO,
     StudentDTO,
     StudentForParentDTO,
     StudentParentDTO,
@@ -89,6 +111,9 @@ from raad.modules.transport_ops.application.queries import (
     parent_for_student_to_dto,
     parent_to_dto,
     parent_to_summary_dto,
+    route_to_dto,
+    route_to_summary_dto,
+    stop_to_dto,
     student_for_parent_to_dto,
     student_parent_to_dto,
     student_to_dto,
@@ -98,11 +123,13 @@ from raad.modules.transport_ops.application.validators import (
     ensure_link_exists,
     ensure_link_not_duplicate,
     ensure_parent_exists,
+    ensure_route_name_available,
     ensure_student_exists,
 )
 from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
+    Route,
     Student,
     StudentParent,
 )
@@ -111,6 +138,8 @@ from raad.modules.transport_ops.domain.value_objects import (
     OrganizationId,
     ParentId,
     PhoneNumber,
+    RouteId,
+    StopId,
     StudentId,
     UserId,
 )
@@ -468,3 +497,146 @@ class DriverApplicationService:
         if driver is None:
             raise NotFoundError(f"Driver {driver_id} not found.")
         return driver
+
+
+class RouteApplicationService:
+    """Route lifecycle + stop-management use-cases: create, update, activate, disable,
+    add/remove/move stop, and the `GetRouteByIdQuery`/`ListRoutesQuery`/
+    `ListStopsForRouteQuery` read paths."""
+
+    def __init__(self, *, clock: Clock, id_generator: IdGenerator) -> None:
+        self._clock = clock
+        self._id_generator = id_generator
+
+    async def create_route(
+        self, command: CreateRouteCommand, *, uow: TransportOpsUnitOfWork
+    ) -> RouteDTO:
+        async with uow:
+            await ensure_route_name_available(uow, command.name)
+
+            route = Route.create(
+                id=RouteId(self._id_generator.new_id()),
+                organization_id=OrganizationId(command.organization_id),
+                name=command.name,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.routes.add(route)
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            return route_to_dto(route)
+
+    async def update_route(
+        self, command: UpdateRouteCommand, *, uow: TransportOpsUnitOfWork
+    ) -> RouteDTO:
+        async with uow:
+            route = await self._get_route_or_raise(uow, command.route_id)
+            route.update_details(
+                name=command.name,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            return route_to_dto(route)
+
+    async def activate_route(
+        self, command: ActivateRouteCommand, *, uow: TransportOpsUnitOfWork
+    ) -> RouteDTO:
+        async with uow:
+            route = await self._get_route_or_raise(uow, command.route_id)
+            route.activate(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            return route_to_dto(route)
+
+    async def disable_route(
+        self, command: DisableRouteCommand, *, uow: TransportOpsUnitOfWork
+    ) -> RouteDTO:
+        async with uow:
+            route = await self._get_route_or_raise(uow, command.route_id)
+            route.disable(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            return route_to_dto(route)
+
+    async def add_stop_to_route(
+        self, command: AddStopToRouteCommand, *, uow: TransportOpsUnitOfWork
+    ) -> StopDTO:
+        async with uow:
+            route = await self._get_route_or_raise(uow, command.route_id)
+            stop = route.add_stop(
+                id=StopId(self._id_generator.new_id()),
+                name=command.name,
+                latitude=command.latitude,
+                longitude=command.longitude,
+                sequence_no=command.sequence_no,
+                geofence_radius_m=command.geofence_radius_m,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            return stop_to_dto(stop)
+
+    async def remove_stop_from_route(
+        self, command: RemoveStopFromRouteCommand, *, uow: TransportOpsUnitOfWork
+    ) -> RouteDTO:
+        """No approved HTTP route yet (`api/routers.py`'s module docstring) — reachable at
+        this layer only, mirroring `DeviceApplicationService.register_camera`'s identical
+        "use-case exists, no approved endpoint yet" posture."""
+        async with uow:
+            route = await self._get_route_or_raise(uow, command.route_id)
+            route.remove_stop(
+                StopId(command.stop_id),
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            return route_to_dto(route)
+
+    async def move_stop(
+        self, command: MoveStopCommand, *, uow: TransportOpsUnitOfWork
+    ) -> RouteDTO:
+        """No approved HTTP route yet (`api/routers.py`'s module docstring) — reachable at
+        this layer only, same posture as `remove_stop_from_route` above."""
+        async with uow:
+            route = await self._get_route_or_raise(uow, command.route_id)
+            route.move_stop(
+                StopId(command.stop_id),
+                new_sequence_no=command.new_sequence_no,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            return route_to_dto(route)
+
+    async def get_route_by_id(
+        self, query: GetRouteByIdQuery, *, uow: TransportOpsUnitOfWork
+    ) -> RouteDTO:
+        async with uow:
+            route = await self._get_route_or_raise(uow, query.route_id)
+            return route_to_dto(route)
+
+    async def list_routes(
+        self, query: ListRoutesQuery, *, uow: TransportOpsUnitOfWork
+    ) -> list[RouteSummaryDTO]:
+        async with uow:
+            routes = await uow.routes.list_all()
+            return [route_to_summary_dto(route) for route in routes]
+
+    async def list_stops_for_route(
+        self, query: ListStopsForRouteQuery, *, uow: TransportOpsUnitOfWork
+    ) -> list[StopDTO]:
+        async with uow:
+            route = await self._get_route_or_raise(uow, query.route_id)
+            return [stop_to_dto(stop) for stop in route.stops]
+
+    @staticmethod
+    async def _get_route_or_raise(uow: TransportOpsUnitOfWork, route_id: str) -> Route:
+        route = await uow.routes.get(RouteId(route_id))
+        if route is None:
+            raise NotFoundError(f"Route {route_id} not found.")
+        return route

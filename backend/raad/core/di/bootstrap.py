@@ -60,6 +60,7 @@ from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
     DriverApplicationService,
     ParentApplicationService,
+    RouteApplicationService,
     StudentApplicationService,
     StudentParentApplicationService,
 )
@@ -162,6 +163,15 @@ def build_container(settings: Settings) -> Container:
     container.bind_singleton(
         DriverApplicationService,
         DriverApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+        ),
+    )
+    # RouteApplicationService needs no TokenService either — always constructible, same
+    # reasoning as the services above.
+    container.bind_singleton(
+        RouteApplicationService,
+        RouteApplicationService(
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
         ),

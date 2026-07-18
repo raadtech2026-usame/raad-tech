@@ -35,6 +35,19 @@ ubiquitous language (Ch. 6), not a generic verb this aggregate reuses.
 (`domain/entities.py`), mirroring `Parent`'s command set exactly (`register`, not `enroll`; no
 `Transfer`/`Graduate` equivalent, since `DriverStatus` is likewise a flat active/inactive
 toggle).
+
+**Phase 11 addition: `Route`/`Stop` commands.** `CreateRouteCommand` (not `RegisterRouteCommand`
+or `EnrollRouteCommand`) — "Route creation" is this phase's own scope wording verbatim, and no
+approved document gives Route a more specific ubiquitous-language verb the way `Student.enroll`
+has one; flagged as this phase's own naming choice, not a silently-assumed one.
+`UpdateRouteCommand`/`ActivateRouteCommand`/`DisableRouteCommand` mirror `Driver`'s command set
+shape exactly. `AddStopToRouteCommand`/`RemoveStopFromRouteCommand`/`MoveStopCommand` back the
+`Stop` child-entity operations (`domain/entities.py`) — 1:1 with `Route.add_stop`/`remove_stop`/
+`move_stop`. Only `AddStopToRouteCommand`/list-stops are reachable via HTTP this phase
+(`api/routers.py`'s module docstring); `RemoveStopFromRouteCommand`/`MoveStopCommand` stay
+reachable for the future contract revision that documents a route for them, mirroring
+`fleet_device.application.commands.RegisterCameraCommand`'s identical "use-case exists, no
+approved endpoint yet" posture.
 """
 
 from __future__ import annotations
@@ -130,6 +143,64 @@ class LinkParentToStudentCommand:
 class UnlinkParentFromStudentCommand:
     student_id: str
     parent_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class CreateRouteCommand:
+    organization_id: str
+    name: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class UpdateRouteCommand:
+    route_id: str
+    name: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class ActivateRouteCommand:
+    route_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class DisableRouteCommand:
+    route_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class AddStopToRouteCommand:
+    route_id: str
+    name: str
+    latitude: float
+    longitude: float
+    sequence_no: int
+    geofence_radius_m: int | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RemoveStopFromRouteCommand:
+    """No approved HTTP route yet (`api/routers.py`'s module docstring) — reachable at the
+    application layer only, mirroring `RegisterCameraCommand`'s identical posture."""
+
+    route_id: str
+    stop_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class MoveStopCommand:
+    """No approved HTTP route yet (`api/routers.py`'s module docstring) — reachable at the
+    application layer only, mirroring `RegisterCameraCommand`'s identical posture."""
+
+    route_id: str
+    stop_id: str
+    new_sequence_no: int
     actor: Principal
 
 

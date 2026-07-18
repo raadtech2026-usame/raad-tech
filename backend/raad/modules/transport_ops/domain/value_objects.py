@@ -31,6 +31,15 @@ this module's own table, Database Design §6.1, ADR-0001) — strict ULID shape,
 reuses the same cross-module-reference `UserId` already declared for `Parent` above (Database
 Design §6.1: "`user_id FK→users`", the identical "FK" shorthand for an `iam`-owned table).
 `DriverStatus` mirrors `ParentStatus`'s exact reasoning below — see its own docstring.
+
+**Phase 11 addition: `Route`/`Stop`.** `RouteId`/`StopId` are minted and owned by this module
+(`routes`/`stops` are this module's own tables, Database Design §6.5/§6.6) — strict ULID shape,
+same treatment as every other module-owned id above. `RouteStatus` is, unlike `ParentStatus`/
+`DriverStatus`, **actually documented**: Database Design §6.5 spells out
+`routes.status ENUM(active,inactive)` explicitly — not a guessed flat toggle this time, though
+the two enums happen to end up the same shape. No "archived" value is documented anywhere
+(§6.5's enum is exhaustively two values) — flagged in `entities.py`'s module docstring rather
+than invented, since the task scope for this phase explicitly says "Archive (if specified)".
 """
 
 from __future__ import annotations
@@ -187,6 +196,40 @@ class DriverStatus(str, Enum):
     separate concept (e.g. an Org Admin enabling/disabling a driver's transport-facing profile
     without touching their login credentials), mirroring `ParentStatus`'s identical reasoning.
     """
+
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+@dataclass(frozen=True)
+class RouteId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"RouteId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class StopId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"StopId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class RouteStatus(str, Enum):
+    """Database Design §6.5: `routes.status ENUM(active,inactive)` — documented explicitly,
+    unlike `ParentStatus`/`DriverStatus` above (both flat-toggle guesses for an undocumented
+    enum). No third "archived" value exists in this enum; `Route`'s behavior methods
+    (`entities.py`) therefore only ever set one of these two values."""
 
     ACTIVE = "active"
     INACTIVE = "inactive"

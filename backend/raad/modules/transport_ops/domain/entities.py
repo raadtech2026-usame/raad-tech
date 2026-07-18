@@ -78,11 +78,45 @@ identical to §6.3's `parents(...)` notation, just with `license_no` in place of
 closing line ("Vehicle↔driver is per-trip ... not stored here") places that linkage entirely on
 the out-of-scope `Trip` aggregate (`trips.driver_id`), the same reasoning `Student` above holds
 no `route_id`/`trip_id`/`parent_id` of its own.
+
+**Phase 11 addition: `Route` (+ `Stop` child entity).** Database Design §6.5/§6.6 define
+`routes`/`stops` as a 1:N parent-child pair (`stops.route_id → routes.id`), not an M:N like
+`student_parents` — structurally the same shape `fleet_device.domain.entities.Device` (root) /
+`Camera` (child) already establishes for this codebase, verified before implementing: camera
+channel-uniqueness (`ux_cameras__device_channel`) is an intra-aggregate invariant enforced by
+the `Device` root, and `ux_stops__route_sequence` is the identical shape for `Route`/`Stop`.
+`Stop` is therefore modeled the same way `Camera` is — identity + fields only, no aggregate
+root behavior of its own, mutated exclusively through `Route`'s own methods
+(`add_stop`/`remove_stop`/`move_stop`).
+
+**Naming note.** The task's own scope names this "RouteStop" descriptively (the Stop entity
+within a Route's aggregate boundary); the class below is named `Stop`, matching Database
+Design §6.6's table name and Project Brief Ch. 6.9's ubiquitous-language noun exactly
+(`.claude/rules/naming.md`: "use the Ch. 6 ubiquitous language verbatim ... Stop"), the same
+"table/ubiquitous-language name, not a compound" convention `Camera` (not `DeviceCamera`)
+already establishes for an identically-shaped child entity.
+
+**No `Route.archive()` — flagged, not silently built.** Database Design §6.5 gives
+`routes.status ENUM(active,inactive)` — exhaustively two values, no `archived`. This phase's
+own scope lists "Archive (if specified)"; since no approved document specifies a third status
+value or an archival concept for routes, `activate`/`disable` are the only two lifecycle
+methods here, the same restraint `ParentStatus`/`DriverStatus` already establish for their own
+undocumented-richer-lifecycle situations (`value_objects.py`).
+
+**Stop validation scope.** `add_stop`/`move_stop` enforce: `sequence_no` is a positive integer
+(a sequence number of 0 or below is not a meaningful position); `latitude`/`longitude` fall
+within the actual geographic range a coordinate can hold (±90/±180) — a definitional bound on
+what the DECIMAL(9,6) columns represent, not an invented business rule; and
+`ux_stops__route_sequence` (no two stops in one route share a `sequence_no`) as an
+intra-aggregate invariant, the same reasoning `Device.register_camera` gives for
+`ux_cameras__device_channel`. No "sequence numbers must be contiguous, no gaps" rule is
+enforced — no approved document requires it, and inventing one would reject a legitimate
+delete-the-middle-stop-and-renumber-later workflow no design document forbids.
 """
 
 from __future__ import annotations
 
-from raad.core.errors.exceptions import DomainError
+from raad.core.errors.exceptions import ConflictError, DomainError
 from raad.core.events.base import DomainEvent
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.domain import events as transport_ops_events
@@ -93,6 +127,9 @@ from raad.modules.transport_ops.domain.value_objects import (
     ParentId,
     ParentStatus,
     PhoneNumber,
+    RouteId,
+    RouteStatus,
+    StopId,
     StudentId,
     StudentStatus,
     UserId,
@@ -164,6 +201,59 @@ def _validate_license_no(license_no: str) -> None:
         raise DomainError(
             f"Driver license_no must be at most {_LICENSE_NO_MAX_LENGTH} characters: "
             f"{len(license_no)}"
+        )
+
+
+# Phase 11: Database Design §6.5 gives no explicit VARCHAR length for `routes.name` (compact
+# notation, same situation as `parents`/`drivers` above) - mirrors the sibling `stops.name
+# VARCHAR(160)` length (§6.6, the same document section) rather than an unrelated cross-module
+# borrow, since both are short human-readable labels defined side by side in the same table
+# group.
+_ROUTE_NAME_MAX_LENGTH = 160
+_STOP_NAME_MAX_LENGTH = 160  # Database Design §6.6: name VARCHAR(160)
+_MIN_LATITUDE = -90.0
+_MAX_LATITUDE = 90.0
+_MIN_LONGITUDE = -180.0
+_MAX_LONGITUDE = 180.0
+
+
+def _validate_route_name(name: str) -> None:
+    if not name:
+        raise DomainError("Route name must not be empty")
+    if len(name) > _ROUTE_NAME_MAX_LENGTH:
+        raise DomainError(
+            f"Route name must be at most {_ROUTE_NAME_MAX_LENGTH} characters: {len(name)}"
+        )
+
+
+def _validate_stop_name(name: str) -> None:
+    if not name:
+        raise DomainError("Stop name must not be empty")
+    if len(name) > _STOP_NAME_MAX_LENGTH:
+        raise DomainError(
+            f"Stop name must be at most {_STOP_NAME_MAX_LENGTH} characters: {len(name)}"
+        )
+
+
+def _validate_latitude(latitude: float) -> None:
+    if not (_MIN_LATITUDE <= latitude <= _MAX_LATITUDE):
+        raise DomainError(
+            f"Stop latitude must be between {_MIN_LATITUDE} and {_MAX_LATITUDE}: {latitude}"
+        )
+
+
+def _validate_longitude(longitude: float) -> None:
+    if not (_MIN_LONGITUDE <= longitude <= _MAX_LONGITUDE):
+        raise DomainError(
+            f"Stop longitude must be between {_MIN_LONGITUDE} and {_MAX_LONGITUDE}: "
+            f"{longitude}"
+        )
+
+
+def _validate_sequence_no(sequence_no: int) -> None:
+    if sequence_no < 1:
+        raise DomainError(
+            f"Stop sequence_no must be a positive integer (>= 1): {sequence_no}"
         )
 
 
@@ -682,6 +772,274 @@ class Driver(_AggregateRoot):
             transport_ops_events.driver_disabled(
                 driver_id=str(self.id),
                 organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+
+class Stop:
+    """Child entity of the `Route` aggregate (Database Design §6.6) — identity + fields only,
+    no base class and no domain-event buffer of its own; all mutation goes through `Route`'s
+    own methods, the aggregate root (`fleet_device.domain.entities.Camera`'s identical
+    precedent for `Device` — same plain-class shape, not extending `_AggregateRoot`). `Route`
+    is the one that records `RouteStop*` events, exactly how `Device.register_camera` records
+    `CameraRegistered` rather than `Camera` recording it itself.
+    """
+
+    def __init__(
+        self,
+        *,
+        id: StopId,
+        name: str,
+        latitude: float,
+        longitude: float,
+        sequence_no: int,
+        geofence_radius_m: int | None,
+    ) -> None:
+        _validate_stop_name(name)
+        _validate_latitude(latitude)
+        _validate_longitude(longitude)
+        _validate_sequence_no(sequence_no)
+        self.id = id
+        self.name = name
+        self.latitude = latitude
+        self.longitude = longitude
+        self.sequence_no = sequence_no
+        self.geofence_radius_m = geofence_radius_m
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Stop) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+
+class Route(_AggregateRoot):
+    """A transportation path followed by a vehicle (Database Design §6.5), owning its `Stop`
+    children (§6.6). Tenant-owned — every instance carries `organization_id`
+    (`.claude/rules/database.md` #2). Per-tenant name uniqueness (`Unique
+    (organization_id, name)`, §6.5) needs a repository read, so it is an application-layer
+    pre-check (`application/validators.py`'s `ensure_route_name_available`), not enforced here
+    — the same domain-vs-application split `fleet_device`'s plate/terminal-id uniqueness
+    checks already establish.
+
+    Phase 11 scope: `Route`/`Stop` only. Trip execution, driver/vehicle assignment to trips,
+    GPS tracking, geofencing execution, ETA calculation, parent notifications, and
+    boarding/alighting are all explicitly out of scope for this phase (they belong to the
+    `Trip`/`Tracking` phases) — `Route` therefore holds no `trip_id`/`vehicle_id`/`driver_id`
+    field, the same reasoning `Student`'s module docstring gives for its own absent
+    cross-aggregate fields.
+    """
+
+    def __init__(
+        self,
+        *,
+        id: RouteId,
+        organization_id: OrganizationId,
+        name: str,
+        status: RouteStatus,
+        stops: list[Stop] | None = None,
+    ) -> None:
+        super().__init__()
+        _validate_route_name(name)
+        self.id = id
+        self.organization_id = organization_id
+        self.name = name
+        self.status = status
+        self._stops: list[Stop] = list(stops) if stops else []
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Route) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @property
+    def stops(self) -> tuple[Stop, ...]:
+        """Read-only view, always returned **ordered by `sequence_no`** ("ordered stops",
+        API Contracts §4.3) regardless of construction/insertion order — mutation only via
+        `add_stop`/`remove_stop`/`move_stop` (aggregate-root rule)."""
+        return tuple(sorted(self._stops, key=lambda stop: stop.sequence_no))
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        id: RouteId,
+        organization_id: OrganizationId,
+        name: str,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "Route":
+        """Factory for a newly-created route. No `pending`/`draft` status exists in the
+        documented 2-value enum (Database Design §6.5), so a created route starts `active` —
+        the same reasoning `Parent.register`/`Driver.register` give for their own status
+        enums."""
+        route = cls(
+            id=id,
+            organization_id=organization_id,
+            name=name,
+            status=RouteStatus.ACTIVE,
+        )
+        route._record(
+            transport_ops_events.route_created(
+                route_id=str(id),
+                organization_id=str(organization_id),
+                name=name,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+        return route
+
+    def update_details(
+        self, *, name: str, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """Idempotent: a call that changes nothing is a no-op, the same "no event for no real
+        change" precedent `Parent.update_details`/`Driver.update_details` already establish.
+        """
+        _validate_route_name(name)
+        if name == self.name:
+            return
+        self.name = name
+        self._record(
+            transport_ops_events.route_details_updated(
+                route_id=str(self.id),
+                organization_id=str(self.organization_id),
+                name=name,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def activate(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if self.status == RouteStatus.ACTIVE:
+            return
+        self.status = RouteStatus.ACTIVE
+        self._record(
+            transport_ops_events.route_activated(
+                route_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def disable(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if self.status == RouteStatus.INACTIVE:
+            return
+        self.status = RouteStatus.INACTIVE
+        self._record(
+            transport_ops_events.route_disabled(
+                route_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def _ensure_sequence_available(
+        self, sequence_no: int, *, excluding_stop_id: StopId | None = None
+    ) -> None:
+        """`ux_stops__route_sequence` (Database Design §6.6) — an intra-aggregate uniqueness
+        invariant, enforced here without I/O, the same placement `Device.register_camera`
+        gives `ux_cameras__device_channel`."""
+        for stop in self._stops:
+            if excluding_stop_id is not None and stop.id == excluding_stop_id:
+                continue
+            if stop.sequence_no == sequence_no:
+                raise ConflictError(
+                    f"Route {self.id} already has a stop at sequence_no {sequence_no}."
+                )
+
+    def add_stop(
+        self,
+        *,
+        id: StopId,
+        name: str,
+        latitude: float,
+        longitude: float,
+        sequence_no: int,
+        geofence_radius_m: int | None = None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> Stop:
+        """Adds a stop at a free sequence position (see module docstring's Stop validation
+        scope note for the exact invariants enforced)."""
+        self._ensure_sequence_available(sequence_no)
+        stop = Stop(
+            id=id,
+            name=name,
+            latitude=latitude,
+            longitude=longitude,
+            sequence_no=sequence_no,
+            geofence_radius_m=geofence_radius_m,
+        )
+        self._stops.append(stop)
+        self._record(
+            transport_ops_events.route_stop_added(
+                route_id=str(self.id),
+                organization_id=str(self.organization_id),
+                stop_id=str(id),
+                name=name,
+                latitude=latitude,
+                longitude=longitude,
+                sequence_no=sequence_no,
+                geofence_radius_m=geofence_radius_m,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+        return stop
+
+    def remove_stop(
+        self, stop_id: StopId, *, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """Removes a stop from the route. A pure in-memory operation over already-loaded child
+        entities (no I/O), so a missing `stop_id` is a `DomainError` — the same "domain raises
+        for invariant/precondition violations over loaded state" convention every other method
+        in this module follows, distinct from the application layer's `NotFoundError` for a
+        missing *aggregate root* (`application/services.py`'s `_get_route_or_raise`)."""
+        match = next((stop for stop in self._stops if stop.id == stop_id), None)
+        if match is None:
+            raise DomainError(f"Route {self.id} has no stop {stop_id}.")
+        self._stops.remove(match)
+        self._record(
+            transport_ops_events.route_stop_removed(
+                route_id=str(self.id),
+                organization_id=str(self.organization_id),
+                stop_id=str(stop_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def move_stop(
+        self,
+        stop_id: StopId,
+        *,
+        new_sequence_no: int,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Reorders one existing stop to `new_sequence_no`. Idempotent: moving a stop to its
+        own current position is a no-op, the same "no event for no real change" precedent
+        every status-change method in this module follows."""
+        match = next((stop for stop in self._stops if stop.id == stop_id), None)
+        if match is None:
+            raise DomainError(f"Route {self.id} has no stop {stop_id}.")
+        _validate_sequence_no(new_sequence_no)
+        if match.sequence_no == new_sequence_no:
+            return
+        self._ensure_sequence_available(new_sequence_no, excluding_stop_id=stop_id)
+        match.sequence_no = new_sequence_no
+        self._record(
+            transport_ops_events.route_stop_reordered(
+                route_id=str(self.id),
+                organization_id=str(self.organization_id),
+                stop_id=str(stop_id),
+                new_sequence_no=new_sequence_no,
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )

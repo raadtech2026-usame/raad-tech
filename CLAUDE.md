@@ -97,14 +97,20 @@ Each of the five below has a full `api / application / domain / infra / events` 
   "fail loudly" deferral, not a bug).
 - **Transport Operations** — `Student` (enroll/update/activate/disable/graduate/transfer),
   `Parent` (register/update/activate/disable), the `student_parents` M:N link
-  (link/unlink/list-by-student/list-by-parent), and `Driver` (register/update/activate/disable)
-  are built. `Route`/`Stop`/`Trip`/`student_assignments` (also owned by this bounded context per
-  ADR-0001) are not yet built. The `/drivers` REST resource has no corresponding row in
-  `docs/business/RAAD_Phase3.3_API_Contracts_v1.md` §4.3 (only `Trip`-level `/trips/{id}/driver`
-  is documented there) — built anyway on Database Design §6.1/ADR-0001's unambiguous table
-  definition and ownership, following the same uniform-CRUD precedent `student_parents` already
-  established for an identically undocumented sub-resource; flagged in
-  `modules/transport_ops/api/routers.py`'s module docstring, not silently assumed.
+  (link/unlink/list-by-student/list-by-parent), `Driver` (register/update/activate/disable),
+  and `Route` (create/update/activate/disable) with its `Stop` child entity
+  (add/remove/move-sequence, ordered by `sequence_no`) are built. `Trip`/`student_assignments`
+  (also owned by this bounded context per ADR-0001) are not yet built. The `/drivers` REST
+  resource has no corresponding row in `docs/business/RAAD_Phase3.3_API_Contracts_v1.md` §4.3
+  (only `Trip`-level `/trips/{id}/driver` is documented there) — built anyway on Database
+  Design §6.1/ADR-0001's unambiguous table definition and ownership, following the same
+  uniform-CRUD precedent `student_parents` already established for an identically undocumented
+  sub-resource; flagged in `modules/transport_ops/api/routers.py`'s module docstring, not
+  silently assumed. `/routes` and `/routes/{id}/stops` (GET/POST only) **are** documented (API
+  Contracts §4.3) — individual stop update/removal/reorder have no documented route yet, so
+  `Route.remove_stop`/`Route.move_stop` are implemented and unit-tested but not HTTP-exposed
+  this phase, mirroring `fleet_device`'s identical "use-case exists, no approved endpoint yet"
+  posture for `RegisterCameraCommand`.
 
 ### Architecture patterns in use
 

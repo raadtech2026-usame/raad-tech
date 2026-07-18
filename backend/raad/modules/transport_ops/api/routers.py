@@ -94,6 +94,41 @@ exhaustive). This is a real documentation gap, reported here rather than silentl
   exact shape (no dedicated behavioral status sub-route is documented for `/drivers` either)
 - `DELETE /drivers/{id}` not implemented, for the identical reason `DELETE /students/{id}`/
   `DELETE /parents/{id}` aren't: `Driver` has no soft-delete domain behavior.
+
+**Phase 11: `routes_router` — six routes, matching API Contracts §4.3's `/routes` rows.**
+Unlike `Driver`/`StudentParent`, this phase's core routes **are** documented (line 125:
+`GET/POST /routes | Org Admin |`; line 126: `GET/POST /routes/{id}/stops | Org Admin | ordered
+stops`) — no documentation gap for these six:
+
+- `POST /routes` — create (the doc's uniform "`GET/POST /routes`" create half)
+- `GET /routes` — list (the doc's uniform "`GET/POST /routes`" list half; same inherited
+  unrestricted-`TenantRegionScope` caveat as `list_students`/`list_parents`/`list_drivers`)
+- `GET /routes/{id}` — get by id (uniform CRUD; embeds the route's ordered stops)
+- `PATCH /routes/{id}` — update `name`/`status` together, mirroring `update_parent`'s exact
+  shape (no dedicated behavioral status sub-route is documented for `/routes` either, and no
+  `archived` status value exists to dispatch to — see `domain/entities.py`'s module docstring)
+- `POST /routes/{route_id}/stops` — add a stop (API Contracts §4.3 line 126 verbatim: "ordered
+  stops"). Returns the created `StopResponse`, mirroring `StudentParentLinkResponse`'s
+  "POST-to-a-nested-collection returns the created child" shape (Phase 10.7) rather than the
+  whole parent — the closer precedent here than `fleet_device`'s `register_camera` (which has
+  no HTTP route at all to set a response-shape precedent from).
+- `GET /routes/{route_id}/stops` — list a route's stops, already ordered by `sequence_no`
+  (`domain/entities.py`'s `Route.stops` property).
+
+**Documentation gap encountered and flagged, not silently decided:** API Contracts §4.3 line
+126 documents only `GET/POST /routes/{id}/stops` for the stops sub-resource — no route exists
+for updating, removing, or reordering an individual stop. `Route.remove_stop`/`Route.move_stop`
+and their application-service/command counterparts (`application/services.py`,
+`application/commands.py`) are fully implemented and unit-tested, but **no HTTP endpoint is
+exposed for them this phase** — mirroring `fleet_device.api.routers`'s identical restraint for
+`RegisterCameraCommand` ("routes are contract-driven, not capability-driven"). A future API
+Contracts revision that documents `PATCH`/`DELETE /routes/{route_id}/stops/{stop_id}` can wire
+these straight through with no domain/application change.
+
+**Endpoints deliberately not implemented:**
+- `DELETE /routes/{id}` (uniform-CRUD soft delete, §4 preamble) — `Route` has no soft-delete
+  domain behavior, the identical deferral `DELETE /students/{id}`/`DELETE /parents/{id}`/
+  `DELETE /drivers/{id}` already apply.
 """
 
 from __future__ import annotations
@@ -107,11 +142,14 @@ from raad.interfaces.http.deps import require_permission
 from raad.modules.transport_ops.api.deps import (
     get_driver_service,
     get_parent_service,
+    get_route_service,
     get_student_parent_service,
     get_student_service,
     get_transport_ops_uow,
 )
 from raad.modules.transport_ops.api.schemas import (
+    AddStopToRouteRequest,
+    CreateRouteRequest,
     DriverResponse,
     DriverSummaryResponse,
     EnrollStudentRequest,
@@ -121,21 +159,29 @@ from raad.modules.transport_ops.api.schemas import (
     ParentSummaryResponse,
     RegisterDriverRequest,
     RegisterParentRequest,
+    RouteResponse,
+    RouteSummaryResponse,
+    StopResponse,
     StudentForParentResponse,
     StudentParentLinkResponse,
     StudentResponse,
     StudentSummaryResponse,
     UpdateDriverRequest,
     UpdateParentRequest,
+    UpdateRouteRequest,
     UpdateStudentRequest,
     UpdateStudentStatusRequest,
 )
 from raad.modules.transport_ops.application.commands import (
     ActivateDriverCommand,
     ActivateParentCommand,
+    ActivateRouteCommand,
     ActivateStudentCommand,
+    AddStopToRouteCommand,
+    CreateRouteCommand,
     DisableDriverCommand,
     DisableParentCommand,
+    DisableRouteCommand,
     DisableStudentCommand,
     EnrollStudentCommand,
     GraduateStudentCommand,
@@ -146,6 +192,7 @@ from raad.modules.transport_ops.application.commands import (
     UnlinkParentFromStudentCommand,
     UpdateDriverCommand,
     UpdateParentCommand,
+    UpdateRouteCommand,
     UpdateStudentCommand,
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
@@ -154,15 +201,21 @@ from raad.modules.transport_ops.application.queries import (
     DriverSummaryDTO,
     GetDriverByIdQuery,
     GetParentByIdQuery,
+    GetRouteByIdQuery,
     GetStudentByIdQuery,
     ListDriversQuery,
     ListParentsForStudentQuery,
     ListParentsQuery,
+    ListRoutesQuery,
+    ListStopsForRouteQuery,
     ListStudentsForParentQuery,
     ListStudentsQuery,
     ParentDTO,
     ParentForStudentDTO,
     ParentSummaryDTO,
+    RouteDTO,
+    RouteSummaryDTO,
+    StopDTO,
     StudentDTO,
     StudentForParentDTO,
     StudentParentDTO,
@@ -171,6 +224,7 @@ from raad.modules.transport_ops.application.queries import (
 from raad.modules.transport_ops.application.services import (
     DriverApplicationService,
     ParentApplicationService,
+    RouteApplicationService,
     StudentApplicationService,
     StudentParentApplicationService,
 )
@@ -271,6 +325,31 @@ def _driver_summary_dto_to_response(
     return DriverSummaryResponse(
         id=driver.id, license_no=driver.license_no, status=driver.status
     )
+
+
+def _stop_dto_to_response(stop: StopDTO) -> StopResponse:
+    return StopResponse(
+        id=stop.id,
+        name=stop.name,
+        latitude=stop.latitude,
+        longitude=stop.longitude,
+        sequence_no=stop.sequence_no,
+        geofence_radius_m=stop.geofence_radius_m,
+    )
+
+
+def _route_dto_to_response(route: RouteDTO) -> RouteResponse:
+    return RouteResponse(
+        id=route.id,
+        organization_id=route.organization_id,
+        name=route.name,
+        status=route.status,
+        stops=[_stop_dto_to_response(stop) for stop in route.stops],
+    )
+
+
+def _route_summary_dto_to_response(route: RouteSummaryDTO) -> RouteSummaryResponse:
+    return RouteSummaryResponse(id=route.id, name=route.name, status=route.status)
 
 
 @students_router.post(
@@ -834,3 +913,200 @@ async def update_driver(
             "update_driver: no field was processed despite the guard above."
         )
     return _driver_dto_to_response(driver)
+
+
+@routes_router.post(
+    "",
+    response_model=RouteResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new route",
+    description=(
+        "Org Admin (API Contracts §4.3 line 125). Authorization uses `require_permission` — "
+        "pending the approved RBAC permission matrix, so this currently raises "
+        "`NotImplementedError` (500) rather than a guessed matrix, matching "
+        "`enroll_student`'s posture."
+    ),
+)
+async def create_route(
+    body: CreateRouteRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.routes.create"))
+    ),
+    route_service: RouteApplicationService = Depends(get_route_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> RouteResponse:
+    command = CreateRouteCommand(
+        organization_id=body.organization_id,
+        name=body.name,
+        actor=principal,
+    )
+    route = await route_service.create_route(command, uow=uow)
+    return _route_dto_to_response(route)
+
+
+@routes_router.get(
+    "",
+    response_model=list[RouteSummaryResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List routes",
+    description=(
+        "Org Admin (API Contracts §4.3 line 125). Not yet tenant-scoped — same inherited "
+        "caveat as `list_students`/`list_parents`/`list_drivers`. Also pending the approved "
+        "RBAC permission matrix."
+    ),
+)
+async def list_routes(
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.routes.list"))
+    ),
+    route_service: RouteApplicationService = Depends(get_route_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[RouteSummaryResponse]:
+    routes = await route_service.list_routes(ListRoutesQuery(), uow=uow)
+    return [_route_summary_dto_to_response(route) for route in routes]
+
+
+@routes_router.get(
+    "/{route_id}",
+    response_model=RouteResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a route by id",
+    description=(
+        "Org Admin (API Contracts §4.3/§4 uniform CRUD). Embeds the route's ordered stops. "
+        "Pending the approved RBAC permission matrix — see `create_route`'s note."
+    ),
+)
+async def get_route(
+    route_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.routes.read"))
+    ),
+    route_service: RouteApplicationService = Depends(get_route_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> RouteResponse:
+    route = await route_service.get_route_by_id(
+        GetRouteByIdQuery(route_id=route_id), uow=uow
+    )
+    return _route_dto_to_response(route)
+
+
+@routes_router.patch(
+    "/{route_id}",
+    response_model=RouteResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update a route's details and/or status",
+    description=(
+        "Org Admin (API Contracts §4 uniform CRUD). Composes `name` (dispatched to "
+        "`update_route`) and `status` (dispatched to `activate_route`/`disable_route`) in one "
+        "request, each independently — not atomically — mirroring `update_parent`'s identical "
+        "composition. No `archived` status value exists to dispatch to (Database Design §6.5's "
+        "enum is exhaustively `active`/`inactive`, `domain/entities.py`'s module docstring). "
+        "Pending the approved RBAC permission matrix."
+    ),
+)
+async def update_route(
+    route_id: str,
+    body: UpdateRouteRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.routes.update"))
+    ),
+    route_service: RouteApplicationService = Depends(get_route_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> RouteResponse:
+    if body.name is None and body.status is None:
+        raise ValidationError(
+            "At least one of 'name' or 'status' must be provided.",
+            details={"fields": ["name", "status"]},
+        )
+
+    route: RouteDTO | None = None
+
+    if body.name is not None:
+        command = UpdateRouteCommand(
+            route_id=route_id,
+            name=body.name,
+            actor=principal,
+        )
+        route = await route_service.update_route(command, uow=uow)
+
+    if body.status is not None:
+        if body.status == "active":
+            route = await route_service.activate_route(
+                ActivateRouteCommand(route_id=route_id, actor=principal), uow=uow
+            )
+        elif body.status == "inactive":
+            route = await route_service.disable_route(
+                DisableRouteCommand(route_id=route_id, actor=principal), uow=uow
+            )
+        else:
+            raise ValidationError(
+                f"Unsupported status: {body.status!r}", details={"field": "status"}
+            )
+
+    if route is None:
+        # Guaranteed not to happen by the "at least one field" guard above — an explicit
+        # raise rather than `assert`, matching `update_parent`'s identical
+        # invariant-holds-regardless-of-interpreter-flags reasoning.
+        raise RuntimeError(
+            "update_route: no field was processed despite the guard above."
+        )
+    return _route_dto_to_response(route)
+
+
+@routes_router.post(
+    "/{route_id}/stops",
+    response_model=StopResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a stop to a route",
+    description=(
+        "Org Admin — 'ordered stops' (API Contracts §4.3 line 126 verbatim). Rejects a "
+        "duplicate `sequence_no` (`ConflictError`) and out-of-range coordinates/sequence "
+        "(`DomainError`), both from `Route.add_stop` (`domain/entities.py`). Pending the "
+        "approved RBAC permission matrix — see `create_route`'s note."
+    ),
+)
+async def add_stop_to_route(
+    route_id: str,
+    body: AddStopToRouteRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.routes.stops.create"))
+    ),
+    route_service: RouteApplicationService = Depends(get_route_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StopResponse:
+    command = AddStopToRouteCommand(
+        route_id=route_id,
+        name=body.name,
+        latitude=body.latitude,
+        longitude=body.longitude,
+        sequence_no=body.sequence_no,
+        geofence_radius_m=body.geofence_radius_m,
+        actor=principal,
+    )
+    stop = await route_service.add_stop_to_route(command, uow=uow)
+    return _stop_dto_to_response(stop)
+
+
+@routes_router.get(
+    "/{route_id}/stops",
+    response_model=list[StopResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List a route's stops in order",
+    description=(
+        "Org Admin — 'ordered stops' (API Contracts §4.3 line 126 verbatim). Always sorted by "
+        "`sequence_no` (`domain/entities.py`'s `Route.stops` property). Pending the approved "
+        "RBAC permission matrix — see `create_route`'s note."
+    ),
+)
+async def list_stops_for_route(
+    route_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.routes.stops.list"))
+    ),
+    route_service: RouteApplicationService = Depends(get_route_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[StopResponse]:
+    stops = await route_service.list_stops_for_route(
+        ListStopsForRouteQuery(route_id=route_id), uow=uow
+    )
+    return [_stop_dto_to_response(stop) for stop in stops]

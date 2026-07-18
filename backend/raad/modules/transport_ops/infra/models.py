@@ -37,15 +37,37 @@ FKs — the identical cross-context-reference-by-ID-only treatment `ParentModel`
 length (compact notation), so this mirrors `StudentModel.external_ref`'s identical VARCHAR(64)
 precedent for an unformatted identifier string (`domain/entities.py`'s Phase 10.8 addendum).
 
+**Phase 11 addition: `RouteModel`/`StopModel`.** `routes` (§6.5) composes `AuditedTableMixin`
+("+ standard audit cols") with a per-tenant unique constraint on `(organization_id, name)`,
+mirroring `VehicleModel`'s identical `(organization_id, plate_no)` constraint
+(`fleet_device.infra.models`). `stops` (§6.6) is a same-module in-context child of `routes`, so
+`route_id` **is** a real database `ForeignKey` (unlike the cross-module `organization_id`/
+`user_id` columns above), the identical treatment `CameraModel.device_id → devices.id` already
+gets. `RouteModel.stops` is a `selectin`-eager relationship ordered by `sequence_no`, cascading
+`all, delete-orphan` — a `Route` is never materialized without its stops, and removing a stop
+from the aggregate's collection deletes its row, the exact shape
+`fleet_device.infra.models.DeviceModel.cameras` already establishes for `Camera`, extended here
+with delete support since `Route.remove_stop` exists (unlike `Device`, which has no
+camera-removal domain behavior — `infra/mappers.py`'s Phase 11 addition explains the one
+resulting difference in the mapper sync logic).
+
 PostgreSQL types only (ADR-0002) — no MySQL dialect import anywhere in this file, matching
 every other infra model rewritten during the PostgreSQL migration.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import CHAR, VARCHAR, Boolean, ForeignKey
+from sqlalchemy import (
+    CHAR,
+    DECIMAL,
+    VARCHAR,
+    Boolean,
+    ForeignKey,
+    Integer,
+    UniqueConstraint,
+)
 from sqlalchemy import Enum as SqlEnum
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from raad.core.db.base import Base
 from raad.core.db.mixins import AuditedTableMixin
@@ -53,6 +75,7 @@ from raad.core.db.mixins import AuditedTableMixin
 _STUDENT_STATUS_VALUES = ("active", "disabled", "graduated", "transferred")
 _PARENT_STATUS_VALUES = ("active", "inactive")
 _DRIVER_STATUS_VALUES = ("active", "inactive")
+_ROUTE_STATUS_VALUES = ("active", "inactive")
 
 
 class StudentModel(AuditedTableMixin, Base):
@@ -131,3 +154,57 @@ class DriverModel(AuditedTableMixin, Base):
         nullable=False,
         index=True,
     )
+
+
+class RouteModel(AuditedTableMixin, Base):
+    """`routes` (Database Design §6.5): a transportation path followed by a vehicle. Per-tenant
+    name uniqueness via the composite unique constraint, mirroring `VehicleModel`'s identical
+    `(organization_id, plate_no)` shape."""
+
+    __tablename__ = "routes"
+    __table_args__ = (UniqueConstraint("organization_id", "name"),)
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(VARCHAR(160), nullable=False)
+    status: Mapped[str] = mapped_column(
+        SqlEnum(*_ROUTE_STATUS_VALUES, name="route_status"),
+        nullable=False,
+        index=True,
+    )
+
+    # Stop child rows load eagerly with the route (selectin) - the Route aggregate owns its
+    # stops (Phase 11), so a Route is never materialized without them.
+    stops: Mapped[list["StopModel"]] = relationship(
+        back_populates="route",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="StopModel.sequence_no",
+    )
+
+
+class StopModel(AuditedTableMixin, Base):
+    """`stops` (Database Design §6.6): child of `routes` (in-context FK, DB-enforced).
+    `organization_id` is the documented denormalized tenant key for scoping, mirroring
+    `CameraModel`'s identical treatment."""
+
+    __tablename__ = "stops"
+    __table_args__ = (UniqueConstraint("route_id", "sequence_no"),)
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    route_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("routes.id"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(VARCHAR(160), nullable=False)
+    # asdecimal=False -> Python float, matching tracking.infra.models.VehiclePositionModel's
+    # identical DECIMAL(9,6) lat/long columns exactly (Decimal would otherwise be the default
+    # SQLAlchemy DECIMAL return type, mismatching Stop.latitude/longitude's `float` fields).
+    latitude: Mapped[float] = mapped_column(
+        DECIMAL(9, 6, asdecimal=False), nullable=False
+    )
+    longitude: Mapped[float] = mapped_column(
+        DECIMAL(9, 6, asdecimal=False), nullable=False
+    )
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    geofence_radius_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    route: Mapped[RouteModel] = relationship(back_populates="stops")

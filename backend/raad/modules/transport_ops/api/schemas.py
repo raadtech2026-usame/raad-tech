@@ -28,6 +28,15 @@ mirroring the one documented precedent for a child collection, `/routes/{id}/sto
 has no documented behavioral status sub-route (in fact **no** `/drivers` route of any kind is
 documented in API Contracts §4.3 — see `routers.py`'s module docstring for the full gap and why
 a uniform-CRUD resource is built anyway), so `status` folds into the uniform `PATCH` here too.
+
+**Phase 11 addition: `Route`/`Stop` schemas.** `RouteStatus`'s two values transport the same
+way, folded into `UpdateRouteRequest`'s `PATCH` for the identical reason (no documented status
+sub-route for `/routes`). `RouteResponse` embeds `stops: list[StopResponse]`, mirroring
+`fleet_device.api.schemas.DeviceResponse`'s identical `cameras: list[CameraResponse]` shape.
+`/routes` and `/routes/{id}/stops` **are** documented (API Contracts §4.3: `GET/POST /routes`,
+`GET/POST /routes/{id}/stops` "ordered stops") — unlike `Driver`/`StudentParent` above, no
+documentation gap exists for the routes this phase actually exposes; see `routers.py`'s module
+docstring for the one real gap this phase does have (individual stop update/removal/reorder).
 """
 
 from __future__ import annotations
@@ -198,3 +207,54 @@ class UpdateDriverRequest(BaseModel):
 
     license_no: str | None = None
     status: str | None = None
+
+
+class StopResponse(BaseModel):
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+    sequence_no: int
+    geofence_radius_m: int | None
+
+
+class RouteResponse(BaseModel):
+    id: str
+    organization_id: str
+    name: str
+    status: str
+    stops: list[StopResponse]
+
+
+class RouteSummaryResponse(BaseModel):
+    id: str
+    name: str
+    status: str
+
+
+class CreateRouteRequest(BaseModel):
+    organization_id: str
+    name: str
+
+
+class UpdateRouteRequest(BaseModel):
+    """Uniform-CRUD `PATCH /routes/{id}` (API Contracts §4 preamble). Bundles `name`/`status`
+    in one request, mirroring `UpdateParentRequest`'s composed-fields shape, since no dedicated
+    behavioral status sub-route is documented for `/routes` either.
+
+    At least one field must be given."""
+
+    name: str | None = None
+    status: str | None = None
+
+
+class AddStopToRouteRequest(BaseModel):
+    """`POST /routes/{route_id}/stops` (API Contracts §4.3 verbatim: "ordered stops").
+    `geofence_radius_m` is optional — Database Design §6.6 marks it nullable ("overrides org
+    default")."""
+
+    name: str
+    latitude: float
+    longitude: float
+    sequence_no: int
+    geofence_radius_m: int | None = None

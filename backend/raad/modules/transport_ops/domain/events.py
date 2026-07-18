@@ -51,6 +51,15 @@ Ch. 6 ubiquitous language ("Driver"), 1:1 with `Driver`'s own domain method name
 mirroring `Parent`'s event set shape (`registered`/`details_updated`/`activated`/`disabled` —
 no `graduated`/`transferred` equivalent, since `DriverStatus` is likewise a flat active/inactive
 toggle, `value_objects.py`).
+
+**Phase 11 addition:** `route_created`/`route_details_updated`/`route_activated`/
+`route_disabled`/`route_stop_added`/`route_stop_removed`/`route_stop_reordered`, backing the
+new `Route`/`Stop` aggregate (`entities.py`, Database Design §6.5/§6.6). Same naming-note
+caveat: no approved document names any of these events. The three `route_stop_*` events all
+carry `aggregate_type="Route"`/`aggregate_id=route_id` (never `"Stop"`/`stop_id`) — `Stop` has
+no aggregate identity of its own to record against (it is a child entity, `entities.py`'s Phase
+11 addition), exactly mirroring `fleet_device.domain.events.camera_registered`'s identical
+`aggregate_type="Device"` choice for an intra-aggregate child fact.
 """
 
 from __future__ import annotations
@@ -396,4 +405,146 @@ def driver_disabled(
         org_id=organization_id,
         occurred_at=occurred_at,
         payload={"actor_id": actor_id},
+    )
+
+
+def route_created(
+    *,
+    route_id: str,
+    organization_id: str,
+    name: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="RouteCreated",
+        aggregate_type="Route",
+        aggregate_id=route_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"name": name, "actor_id": actor_id},
+    )
+
+
+def route_details_updated(
+    *,
+    route_id: str,
+    organization_id: str,
+    name: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="RouteDetailsUpdated",
+        aggregate_type="Route",
+        aggregate_id=route_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"name": name, "actor_id": actor_id},
+    )
+
+
+def route_activated(
+    *,
+    route_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="RouteActivated",
+        aggregate_type="Route",
+        aggregate_id=route_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def route_disabled(
+    *,
+    route_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="RouteDisabled",
+        aggregate_type="Route",
+        aggregate_id=route_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def route_stop_added(
+    *,
+    route_id: str,
+    organization_id: str,
+    stop_id: str,
+    name: str,
+    latitude: float,
+    longitude: float,
+    sequence_no: int,
+    geofence_radius_m: int | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="RouteStopAdded",
+        aggregate_type="Route",
+        aggregate_id=route_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "stop_id": stop_id,
+            "name": name,
+            "latitude": latitude,
+            "longitude": longitude,
+            "sequence_no": sequence_no,
+            "geofence_radius_m": geofence_radius_m,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def route_stop_removed(
+    *,
+    route_id: str,
+    organization_id: str,
+    stop_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="RouteStopRemoved",
+        aggregate_type="Route",
+        aggregate_id=route_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"stop_id": stop_id, "actor_id": actor_id},
+    )
+
+
+def route_stop_reordered(
+    *,
+    route_id: str,
+    organization_id: str,
+    stop_id: str,
+    new_sequence_no: int,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="RouteStopReordered",
+        aggregate_type="Route",
+        aggregate_id=route_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "stop_id": stop_id,
+            "new_sequence_no": new_sequence_no,
+            "actor_id": actor_id,
+        },
     )

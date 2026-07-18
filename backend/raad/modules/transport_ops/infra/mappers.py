@@ -12,6 +12,15 @@ tracked `StudentParentModel` instance, keyed by the composite `(student_id, pare
 
 **Phase 10.8 addition: `driver_to_model`/`model_to_driver`.** Mirrors `parent_to_model`/
 `model_to_parent`'s exact `existing=` in-place-update pattern.
+
+**Phase 11 addition: `route_to_model`/`model_to_route` (+ `stop_to_model`/`model_to_stop`).**
+The `Route` aggregate owns `Stop` children (Phase 11), so `route_to_model` also syncs the stop
+collection — mirroring `fleet_device.infra.mappers.device_to_model`'s camera-sync exactly for
+the add/update halves, but going one step further: unlike `Camera` (no removal domain
+behavior, so `device_to_model` never deletes a row), `Route.remove_stop` *does* exist
+(`domain/entities.py`), so `route_to_model` also removes any tracked `StopModel` row whose id
+is no longer present among `route.stops` — `RouteModel.stops`'s `cascade="all, delete-orphan"`
+(`infra/models.py`) then deletes that orphaned row on flush.
 """
 
 from __future__ import annotations
@@ -19,6 +28,8 @@ from __future__ import annotations
 from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
+    Route,
+    Stop,
     Student,
     StudentParent,
 )
@@ -29,6 +40,9 @@ from raad.modules.transport_ops.domain.value_objects import (
     ParentId,
     ParentStatus,
     PhoneNumber,
+    RouteId,
+    RouteStatus,
+    StopId,
     StudentId,
     StudentStatus,
     UserId,
@@ -36,6 +50,8 @@ from raad.modules.transport_ops.domain.value_objects import (
 from raad.modules.transport_ops.infra.models import (
     DriverModel,
     ParentModel,
+    RouteModel,
+    StopModel,
     StudentModel,
     StudentParentModel,
 )
@@ -138,4 +154,79 @@ def model_to_driver(model: DriverModel) -> Driver:
         user_id=UserId(model.user_id),
         license_no=model.license_no,
         status=DriverStatus(model.status),
+    )
+
+
+def stop_to_model(
+    stop: Stop,
+    *,
+    route_id: str,
+    organization_id: str,
+    existing: StopModel | None = None,
+) -> StopModel:
+    model = existing if existing is not None else StopModel(id=str(stop.id))
+    model.organization_id = organization_id
+    model.route_id = route_id
+    model.name = stop.name
+    model.latitude = stop.latitude
+    model.longitude = stop.longitude
+    model.sequence_no = stop.sequence_no
+    model.geofence_radius_m = stop.geofence_radius_m
+    return model
+
+
+def model_to_stop(model: StopModel) -> Stop:
+    return Stop(
+        id=StopId(model.id),
+        name=model.name,
+        latitude=model.latitude,
+        longitude=model.longitude,
+        sequence_no=model.sequence_no,
+        geofence_radius_m=model.geofence_radius_m,
+    )
+
+
+def route_to_model(route: Route, *, existing: RouteModel | None = None) -> RouteModel:
+    """Projects a `Route` aggregate (including its stops) onto its ORM row — see module
+    docstring for the add/update/**remove** stop-collection sync rules."""
+    model = existing if existing is not None else RouteModel(id=str(route.id))
+    model.organization_id = str(route.organization_id)
+    model.name = route.name
+    model.status = route.status.value
+
+    existing_rows = {row.id: row for row in model.stops}
+    current_ids = {str(stop.id) for stop in route.stops}
+    for row_id, row in list(existing_rows.items()):
+        if row_id not in current_ids:
+            model.stops.remove(
+                row
+            )  # cascade="all, delete-orphan" deletes the orphaned row
+
+    for stop in route.stops:
+        row = existing_rows.get(str(stop.id))
+        if row is not None:
+            stop_to_model(
+                stop,
+                route_id=str(route.id),
+                organization_id=str(route.organization_id),
+                existing=row,
+            )
+        else:
+            model.stops.append(
+                stop_to_model(
+                    stop,
+                    route_id=str(route.id),
+                    organization_id=str(route.organization_id),
+                )
+            )
+    return model
+
+
+def model_to_route(model: RouteModel) -> Route:
+    return Route(
+        id=RouteId(model.id),
+        organization_id=OrganizationId(model.organization_id),
+        name=model.name,
+        status=RouteStatus(model.status),
+        stops=[model_to_stop(row) for row in model.stops],
     )
