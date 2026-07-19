@@ -29,9 +29,18 @@ parent live-GPS-during-active-trip capability is "never revoked by subscription 
 safety-over-billing). Backend LLD §5.4 (CR-1) states the *entire* Parent surface — its own text
 says explicitly including live GPS — is gated by `assignment_state`/subscription, and that CR-1
 "supersedes" the earlier safety policy. This module does not decide which reading wins: it
-receives `has_capability` as an already-resolved boolean from whichever policy the owning
-module (`billing`, once built) implements, and applies it uniformly. Confirm the D4/CR-1
-reconciliation with an approved doc update before that policy is built, not here.
+receives `has_capability` as an already-resolved boolean from whichever policy call the caller
+performs, and applies it uniformly. Confirm the D4/CR-1 reconciliation with an approved doc
+update before that wiring is built, not here.
+
+**Phase 14 update:** `SubscriptionAccessPolicy` is now implemented
+(`raad.core.policies.subscription_access` — corrected ownership: it lives in `core/policies`,
+not `billing`, per Backend LLD §17's own module table). This module's own `has_capability`
+input is still not wired to it — that composition (calling `SubscriptionAccessPolicy.evaluate`
+to help produce `has_capability` here) is exactly the enforcement-point wiring the paragraph
+above defers pending the D4/CR-1 reconciliation, and remains out of this phase's scope
+(`core/policies` implements policy logic only, per its own phase's instructions — it does not
+wire itself into any bounded-context module's call sites).
 """
 
 from __future__ import annotations

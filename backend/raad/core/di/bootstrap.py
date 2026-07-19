@@ -22,6 +22,7 @@ from raad.core.events.outbox import OutboxWriter, SqlOutboxPublisher
 from raad.core.events.ports import BrokerPort, OutboxPublisher
 from raad.core.events.processor import EventProcessorRegistry
 from raad.core.ids.generator import IdGenerator, UlidGenerator
+from raad.core.policies import SubscriptionAccessPolicy, VideoAccessPolicy
 from raad.core.security.password_hashing import PasswordHasher, Pbkdf2PasswordHasher
 from raad.core.security.password_policy import PasswordPolicy
 from raad.core.security.tokens import JwtTokenService, TokenService
@@ -80,6 +81,10 @@ def build_container(settings: Settings) -> Container:
         PasswordPolicy, PasswordPolicy(settings.auth.password_policy)
     )
     container.bind_singleton(IdGenerator, UlidGenerator())
+    # Phase 14: stateless, pure decision objects - no constructor dependencies, same
+    # unconditional-singleton treatment as any other side-effect-free core service.
+    container.bind_singleton(SubscriptionAccessPolicy, SubscriptionAccessPolicy())
+    container.bind_singleton(VideoAccessPolicy, VideoAccessPolicy())
     container.bind_singleton(OutboxWriter, OutboxWriter())
     container.bind_singleton(EventProcessorRegistry, EventProcessorRegistry())
     container.bind_singleton(
