@@ -67,6 +67,20 @@ from raad.modules.transport_ops.domain.value_objects import (
 from raad.modules.transport_ops.infra.repositories import (
     SqlAlchemyTransportOpsUnitOfWork,
 )
+from raad.modules.billing.domain.entities import Invoice, Payment, Plan, Subscription
+from raad.modules.billing.domain.value_objects import (
+    BillingCycle,
+    BillingScope,
+    InvoiceId,
+    Money,
+    OrganizationId as BillingOrganizationId,
+    PaymentId,
+    PlanId,
+    SubscriberId,
+    SubscriberType,
+    SubscriptionId,
+)
+from raad.modules.billing.infra.repositories import SqlAlchemyBillingUnitOfWork
 
 
 def _db_available() -> bool:
@@ -562,6 +576,206 @@ class IamDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
                 copy_2.disable(clock=self.clock)
                 uow_2.record_events(copy_2.pull_domain_events())
                 await uow_2.commit()  # still thinks row_version=1 -> must fail, not overwrite
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class BillingDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
+    """Phase 15: the two global-uniqueness constraints Database Design §8.3/§8.4 document for
+    `billing` (`ux_invoices__number`, `ux_payments__idempotency_key`), proven at the real
+    database layer — defense-in-depth over `PaymentRepository.get_by_idempotency_key`'s
+    application-level find-or-return check (`application/validators.py`'s own docstring: no
+    `ensure_idempotency_key_available` guard exists precisely because idempotency is
+    "return the original," not "reject the duplicate" — this DB constraint is what actually
+    stops two *independently minted* `Payment` rows from ever sharing a key, e.g. a
+    non-idempotent caller bug). No partial-unique index exists for any billing table
+    (`infra/models.py`'s own module docstring — no "one active X" invariant is documented for
+    `billing`), so unlike the `Trip`/`StudentAssignment`/`DeviceAssignment` classes above, there
+    is nothing analogous to prove here.
+    """
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_payment_ids: list[str] = []
+        self._created_invoice_ids: list[str] = []
+        self._created_subscription_ids: list[str] = []
+        self._created_plan_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        from sqlalchemy import text
+
+        async with self.engine.begin() as conn:
+            if self._created_payment_ids:
+                await conn.execute(
+                    text("DELETE FROM payments WHERE id = ANY(:ids)"),
+                    {"ids": self._created_payment_ids},
+                )
+            if self._created_invoice_ids:
+                await conn.execute(
+                    text("DELETE FROM invoices WHERE id = ANY(:ids)"),
+                    {"ids": self._created_invoice_ids},
+                )
+            if self._created_subscription_ids:
+                await conn.execute(
+                    text("DELETE FROM subscriptions WHERE id = ANY(:ids)"),
+                    {"ids": self._created_subscription_ids},
+                )
+            if self._created_plan_ids:
+                await conn.execute(
+                    text("DELETE FROM plans WHERE id = ANY(:ids)"),
+                    {"ids": self._created_plan_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyBillingUnitOfWork:
+        return SqlAlchemyBillingUnitOfWork(self.session_factory, self.outbox_writer)
+
+    async def _seed_invoice(self) -> Invoice:
+        org_id = self.id_generator.new_id()
+        async with self._new_uow() as uow:
+            plan = Plan.create(
+                id=PlanId(self.id_generator.new_id()),
+                name=f"Plan {self.tag}",
+                billing_scope=BillingScope.PARENT,
+                price=Money(15.00, "USD"),
+                billing_cycle=BillingCycle.MONTHLY,
+                clock=self.clock,
+            )
+            uow.plans.add(plan)
+            uow.record_events(plan.pull_domain_events())
+            await uow.commit()
+            self._created_plan_ids.append(str(plan.id))
+
+        async with self._new_uow() as uow:
+            subscription = Subscription.open(
+                id=SubscriptionId(self.id_generator.new_id()),
+                organization_id=BillingOrganizationId(org_id),
+                subscriber_type=SubscriberType.PARENT,
+                subscriber_id=SubscriberId(self.id_generator.new_id()),
+                plan_id=plan.id,
+                clock=self.clock,
+            )
+            uow.subscriptions.add(subscription)
+            uow.record_events(subscription.pull_domain_events())
+            await uow.commit()
+            self._created_subscription_ids.append(str(subscription.id))
+
+        async with self._new_uow() as uow:
+            invoice = Invoice.issue(
+                id=InvoiceId(self.id_generator.new_id()),
+                organization_id=BillingOrganizationId(org_id),
+                subscription_id=subscription.id,
+                amount=Money(15.00, "USD"),
+                period_start=date(2026, 7, 20),
+                period_end=date(2026, 8, 19),
+                due_at=None,
+                clock=self.clock,
+            )
+            uow.invoices.add(invoice)
+            uow.record_events(invoice.pull_domain_events())
+            await uow.commit()
+            self._created_invoice_ids.append(str(invoice.id))
+        return invoice
+
+    async def test_duplicate_idempotency_key_violates_db_unique_constraint(self) -> None:
+        """Regression, at the database layer: `ux_payments__idempotency_key` rejects a second
+        `Payment` row with the same key even if the application-layer find-or-return check were
+        somehow bypassed (e.g. a race between two concurrent requests neither of which has
+        loaded the other's row yet)."""
+        invoice = await self._seed_invoice()
+        idempotency_key = f"dbtest-idem-{self.tag}"
+
+        async with self._new_uow() as uow:
+            first = Payment.initiate(
+                id=PaymentId(self.id_generator.new_id()),
+                organization_id=invoice.organization_id,
+                invoice_id=invoice.id,
+                provider="evcplus",
+                msisdn_masked=None,
+                amount=Money(15.00, "USD"),
+                idempotency_key=idempotency_key,
+                clock=self.clock,
+            )
+            uow.payments.add(first)
+            uow.record_events(first.pull_domain_events())
+            await uow.commit()
+            self._created_payment_ids.append(str(first.id))
+
+        with self.assertRaises(sqlalchemy.exc.IntegrityError):
+            async with self._new_uow() as uow:
+                second = Payment.initiate(
+                    id=PaymentId(self.id_generator.new_id()),
+                    organization_id=invoice.organization_id,
+                    invoice_id=invoice.id,
+                    provider="evcplus",
+                    msisdn_masked=None,
+                    amount=Money(15.00, "USD"),
+                    idempotency_key=idempotency_key,  # same key -> DB rejects
+                    clock=self.clock,
+                )
+                uow.payments.add(second)
+                uow.record_events(second.pull_domain_events())
+                await uow.commit()
+                self._created_payment_ids.append(str(second.id))
+
+    async def test_duplicate_invoice_number_violates_db_unique_constraint(self) -> None:
+        """Regression: `ux_invoices__number` (Database Design §8.3). `Invoice.issue()` always
+        sets `number` to the invoice's own globally-unique id (`entities.py`'s own documented
+        reasoning), so this can only be provoked by inserting a second row that reuses an
+        already-issued invoice's `number` directly — proving the DB constraint actually exists
+        and is wired, independent of the applicaton-layer numbering choice that happens to
+        avoid ever colliding with it in practice."""
+        first_invoice = await self._seed_invoice()
+
+        async with self._new_uow() as uow:
+            plan = Plan.create(
+                id=PlanId(self.id_generator.new_id()),
+                name=f"Plan {self.tag}-2",
+                billing_scope=BillingScope.PARENT,
+                price=Money(15.00, "USD"),
+                billing_cycle=BillingCycle.MONTHLY,
+                clock=self.clock,
+            )
+            uow.plans.add(plan)
+            uow.record_events(plan.pull_domain_events())
+            await uow.commit()
+            self._created_plan_ids.append(str(plan.id))
+
+            subscription = Subscription.open(
+                id=SubscriptionId(self.id_generator.new_id()),
+                organization_id=first_invoice.organization_id,
+                subscriber_type=SubscriberType.PARENT,
+                subscriber_id=SubscriberId(self.id_generator.new_id()),
+                plan_id=plan.id,
+                clock=self.clock,
+            )
+            uow.subscriptions.add(subscription)
+            uow.record_events(subscription.pull_domain_events())
+            await uow.commit()
+            self._created_subscription_ids.append(str(subscription.id))
+
+        with self.assertRaises(sqlalchemy.exc.IntegrityError):
+            async with self._new_uow() as uow:
+                second_invoice = Invoice.issue(
+                    id=InvoiceId(self.id_generator.new_id()),
+                    organization_id=first_invoice.organization_id,
+                    subscription_id=subscription.id,
+                    amount=Money(15.00, "USD"),
+                    period_start=date(2026, 8, 20),
+                    period_end=date(2026, 9, 19),
+                    due_at=None,
+                    clock=self.clock,
+                )
+                second_invoice.number = str(first_invoice.id)  # force a collision
+                uow.invoices.add(second_invoice)
+                uow.record_events(second_invoice.pull_domain_events())
+                await uow.commit()
+                self._created_invoice_ids.append(str(second_invoice.id))
 
 
 if __name__ == "__main__":

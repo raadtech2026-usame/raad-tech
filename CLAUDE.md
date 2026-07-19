@@ -61,12 +61,12 @@ relaying JT808/JT1078 traffic between bus terminals and the platform.
 ## Repository Status
 
 This repository is **no longer greenfield**. The Business API backend (`backend/`) is a running
-FastAPI modular monolith with five of its ten bounded contexts fully implemented end-to-end
+FastAPI modular monolith with six of its ten bounded contexts fully implemented end-to-end
 (domain → application → infrastructure → API → database migration), backed by a live PostgreSQL
-schema. The remaining five contexts (`video`, `notifications`, `billing`, `reporting`,
-`platform_audit`) are still structural scaffolds only — no domain/application/infra logic, per
-`docs/architecture/adr/0001-business-entity-module-mapping.md`'s module list. Treat those five as
-genuinely not-yet-decided; do not infer behavior for them from the five completed ones.
+schema. The remaining four contexts (`video`, `notifications`, `reporting`, `platform_audit`) are
+still structural scaffolds only — no domain/application/infra logic, per
+`docs/architecture/adr/0001-business-entity-module-mapping.md`'s module list. Treat those four as
+genuinely not-yet-decided; do not infer behavior for them from the six completed ones.
 
 ### Tech stack (decided)
 
@@ -85,7 +85,7 @@ genuinely not-yet-decided; do not infer behavior for them from the five complete
 
 ### Completed bounded contexts
 
-Each of the five below has a full `api / application / domain / infra / events` stack (per
+Each of the six below has a full `api / application / domain / infra / events` stack (per
 `.claude/rules/backend.md` #1) and is registered in `core/di/bootstrap.py` and
 `interfaces/http/api_v1.py`:
 
@@ -139,11 +139,40 @@ Each of the five below has a full `api / application / domain / infra / events` 
   ever exposed ORM-only audit columns through its DTO — `StudentAssignmentResponse` follows the
   5-aggregate-deep established precedent (omits them) rather than introducing a one-off
   inconsistency; retrofitting all six aggregates is out of this phase's scope.
+- **Billing (C8)** — `Plan` (create/activate/disable, not tenant-owned — Database Design §8.1
+  has no `organization_id` column at all), `Subscription` (open/renew/expire/suspend/cancel),
+  `Invoice` (issue/mark_paid/void), `Payment` (initiate/mark_processing/mark_paid/mark_failed/
+  mark_expired — no `retry()`, a retry is a brand-new `Payment.initiate(...)` with a fresh
+  idempotency key), and `TransportFee` (create/mark_paid/mark_overdue/waive, no HTTP route —
+  no documented API surface). Only five HTTP routes are exposed, matching API Contracts §4.7
+  exactly: `GET /billing/plans`, `GET /billing/subscriptions`, `GET /billing/invoices`,
+  `POST /billing/payments`, `POST /billing/payments/callback` — `Plan`/`Subscription` have no
+  documented write routes at all (`RenewParentSubscriptionCommand`, LLD §4.2, is reachable at
+  the application layer only). `PaymentProviderPort` (LLD §4.2, EVC Plus's interface) has no
+  bound adapter — `initiate_payment` persists the `Payment` as `PENDING` then raises
+  `NotImplementedError` at the charge step, the same "fail loudly, don't fake" deferral
+  `TrackingApplicationService`'s `LatestPositionPort` already established, applied at
+  method-granularity here since only one of ~25 methods needs the provider.
+  `POST /billing/payments/callback` is **not** wired to `handle_payment_callback` — no
+  signature/secret verification scheme is documented anywhere (a firm requirement per
+  `.claude/rules/security.md` #10, but with no specified mechanism), and the "provider (signed)"
+  caller has no `Principal` to authenticate through this codebase's `require_permission` model;
+  the route exists but always raises `NotImplementedError`, flagged in
+  `modules/billing/api/routers.py`'s module docstring. Two real documentation conflicts were
+  found and resolved, not silently picked: (1) Phase-2 §20.2's narrative says "Mark Invoice
+  FAILED" on a declined payment, but Database Design §8.3's `invoices.status` enum has no
+  `failed` value — resolved by marking `Payment` (which does have `failed`) and leaving the
+  invoice unchanged, `entities.py`'s module docstring has the full reasoning. (2)
+  `payments.idempotency_key` is `CHAR(64)` per Database Design §8.3 verbatim, but PostgreSQL
+  blank-pads `CHAR(n)` storage and returns it padded on `SELECT` (unlike `VARCHAR`) —
+  implemented exactly as documented, with `infra/mappers.py`'s `model_to_payment` stripping the
+  padding artifact back off before it reaches the domain layer.
 
 ### Architecture patterns in use
 
-All five completed contexts apply the same patterns identically — verified module-by-module in the
-Phase 10 architecture review, not just asserted:
+All six completed contexts apply the same patterns identically — verified module-by-module in the
+Phase 10 architecture review (and, for Billing, via this codebase's own automated
+`tests/architecture/` gate suite), not just asserted:
 
 - **Clean Architecture / layered dependency direction:** `api → application → domain`; `infra`
   implements interfaces `domain` defines; domain never imports FastAPI or SQLAlchemy
@@ -187,31 +216,36 @@ backend/
 │   │       └── events/       # publishers/subscribers (scaffolded, broker pending)
 │   └── interfaces/http/     # api_v1 router aggregation, shared deps, middleware, error handlers
 ├── migrations/               # Alembic env.py + versions/
-└── tests/                    # unit/ (Transport Ops only today), integration/ contract/
-                               # architecture/ (all still empty — see known gaps below)
+└── tests/                    # unit/ (Transport Ops, core/policies, Billing today), integration/,
+                               # contract/ (still empty), architecture/ (see known gaps below)
 ```
 
 ### Migration status
 
 - **Engine:** PostgreSQL (ADR-0002).
-- **Chain:** a single linear Alembic chain, one revision per completed bounded context, in build
-  order: `iam → organization → fleet_device → tracking → transport_ops` (head). No branches.
+- **Chain:** a single linear Alembic chain, one or more revisions per completed bounded context
+  (`transport_ops` has several — one per aggregate), in build order:
+  `iam → organization → fleet_device → tracking → transport_ops (student → parent →
+  student_parents → driver → route → trip → student_assignment) → billing` (head). No branches.
 - **Verified zero drift:** `alembic check` reports "No new upgrade operations detected." against
   the live schema; the full chain has been round-tripped (`upgrade head → downgrade → upgrade
   head`) with no orphaned objects. Every migration that introduces a PostgreSQL native `ENUM`
   type includes an explicit `DROP TYPE` in its `downgrade()` — `alembic revision --autogenerate`
   does not emit this itself, and omitting it breaks re-upgrade after a downgrade.
-- `migrations/env.py` imports `infra/models` from exactly the five completed modules — kept in
+- `migrations/env.py` imports `infra/models` from exactly the six completed modules — kept in
   sync 1:1 with which modules have a non-empty `infra/models.py`.
 
 ### Known gaps (tracked, not hidden)
 
-- No automated architecture-boundary test suite yet (`tests/architecture/` is empty) — Backend LLD
-  §2.3 calls for one; module boundaries currently hold by manual discipline only.
-- Test coverage is concentrated almost entirely in Transport Ops; IAM/Organization/Fleet
-  Device/Tracking have no automated tests yet.
+- `tests/architecture/` now has ten automated boundary-gate tests (domain purity, layer
+  dependency direction, module boundaries, API-layer boundaries) enforcing Backend LLD §2.3
+  across all six completed modules — no longer empty.
+- Test coverage is concentrated in Transport Ops, `core/policies`, and Billing; IAM/Organization/
+  Fleet Device/Tracking have no automated tests yet.
 - RBAC permission matrix, tenant/region `ScopeResolver`, and the event broker are all approved-open
-  items — every dependent code path is wired to fail loudly rather than fake a pass.
+  items — every dependent code path is wired to fail loudly rather than fake a pass. Billing's
+  `PaymentProviderPort` (no EVC Plus adapter) and its `POST /billing/payments/callback` webhook
+  (no documented signature-verification scheme) carry the identical posture.
 
 This section must be kept current as further bounded contexts are completed — update it rather
 than letting it drift, the same discipline this rewrite itself was triggered by.

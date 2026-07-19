@@ -70,6 +70,9 @@ from raad.modules.transport_ops.application.services import (
 from raad.modules.transport_ops.infra.repositories import (
     SqlAlchemyTransportOpsUnitOfWork,
 )
+from raad.modules.billing.application.ports import BillingUnitOfWork, PaymentProviderPort
+from raad.modules.billing.application.services import BillingApplicationService
+from raad.modules.billing.infra.repositories import SqlAlchemyBillingUnitOfWork
 
 
 def build_container(settings: Settings) -> Container:
@@ -202,6 +205,21 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
+    # BillingApplicationService is always constructible too — `payment_provider` is optional
+    # by design (see that class's own module docstring: only `initiate_payment`'s actual charge
+    # step needs it, and no `PaymentProviderPort` adapter exists yet — Phase 15's own scope
+    # explicitly forbids integrating a real one). `try_resolve` mirrors `LatestPositionPort`'s
+    # pattern above but, unlike Tracking, a `None` result here does not block binding the
+    # service — it is passed straight through to the optional constructor arg.
+    container.bind_singleton(
+        BillingApplicationService,
+        BillingApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+            payment_provider=container.try_resolve(PaymentProviderPort),
+        ),
+    )
+
     # TrackingApplicationService additionally needs a LatestPositionPort (Database Design
     # §7.1: latest position is Redis-backed, not read from the PostgreSQL history table) — no
     # concrete implementation exists yet (Phase 8.3 deliberately deferred it), so this stays
@@ -285,6 +303,12 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             TransportOpsUnitOfWork,
             lambda: SqlAlchemyTransportOpsUnitOfWork(
+                session_factory, container.resolve(OutboxWriter)
+            ),
+        )
+        container.bind_factory(
+            BillingUnitOfWork,
+            lambda: SqlAlchemyBillingUnitOfWork(
                 session_factory, container.resolve(OutboxWriter)
             ),
         )
