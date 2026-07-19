@@ -10,4 +10,9 @@ phase, out of this phase's scope per `entities.py`'s module docstring), not an i
 a policy here only once an approved document defines a `Student`-owned access-control predicate
 that composes already-resolved facts (the `core.policies.Policy` shape `tracking.domain.
 policies.TrackingVisibilityPolicy` already establishes).
+
+**Phase 12 (`Trip`):** same reasoning again. `Trip`'s lifecycle-transition legality
+(`entities.py`'s `start`/`end`/`interrupt`/`resume`) is a pure function of the aggregate's own
+`status` field, enforced directly on the aggregate — not a candidate for a separate policy
+object.
 """

@@ -18,6 +18,7 @@ from raad.modules.transport_ops.application.services import (
     RouteApplicationService,
     StudentApplicationService,
     StudentParentApplicationService,
+    TripApplicationService,
 )
 
 
@@ -60,3 +61,9 @@ def get_route_service(
     container: Container = Depends(get_container),
 ) -> RouteApplicationService:
     return container.resolve(RouteApplicationService)
+
+
+def get_trip_service(
+    container: Container = Depends(get_container),
+) -> TripApplicationService:
+    return container.resolve(TripApplicationService)

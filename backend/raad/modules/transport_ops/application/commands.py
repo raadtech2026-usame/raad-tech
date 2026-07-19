@@ -48,11 +48,21 @@ shape exactly. `AddStopToRouteCommand`/`RemoveStopFromRouteCommand`/`MoveStopCom
 reachable for the future contract revision that documents a route for them, mirroring
 `fleet_device.application.commands.RegisterCameraCommand`'s identical "use-case exists, no
 approved endpoint yet" posture.
+
+**Phase 12 addition: `Trip` commands.** `ScheduleTripCommand`/`StartTripCommand`/
+`EndTripCommand`/`ChangeTripDriverCommand`, 1:1 with `Trip`'s own domain method names
+(`domain/entities.py`). `StartTripCommand`/`EndTripCommand`/`ChangeTripDriverCommand` back
+API Contracts §4.3's documented `/trips/{id}/start`, `/trips/{id}/end`, `PATCH /trips/{id}/driver`
+routes (lines 130-132). `InterruptTripCommand`/`ResumeTripCommand` back `Trip.interrupt`/
+`resume` — no approved HTTP route exists for either this phase (`api/routers.py`'s module
+docstring), the same "reachable at the application layer only" posture
+`RemoveStopFromRouteCommand`/`MoveStopCommand` already establish.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from raad.core.tenancy.principal import Principal
 
@@ -227,5 +237,54 @@ class ActivateDriverCommand:
 
 @dataclass(frozen=True)
 class DisableDriverCommand:
+    driver_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class ScheduleTripCommand:
+    organization_id: str
+    vehicle_id: str
+    driver_id: str
+    route_id: str
+    trip_type: str
+    scheduled_date: date
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class StartTripCommand:
+    trip_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class EndTripCommand:
+    trip_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class InterruptTripCommand:
+    """No approved HTTP route yet (`api/routers.py`'s module docstring) — reachable at the
+    application layer only, mirroring `RemoveStopFromRouteCommand`'s identical posture."""
+
+    trip_id: str
+    reason: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class ResumeTripCommand:
+    """No approved HTTP route yet (`api/routers.py`'s module docstring) — reachable at the
+    application layer only, same posture as `InterruptTripCommand` above."""
+
+    trip_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class ChangeTripDriverCommand:
+    trip_id: str
     driver_id: str
     actor: Principal

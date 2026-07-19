@@ -34,11 +34,18 @@ already establish for their own omitted fields. `list_stops_for_route` reuses `R
 own always-sorted-by-`sequence_no` ordering (`domain/entities.py`) rather than re-sorting here —
 a second, possibly-diverging sort implementation would be a needless duplicate of the one
 already-correct source.
+
+**Phase 12 addition: `Trip` queries/DTOs.** `TripDTO`/`TripSummaryDTO` mirror `DriverDTO`/
+`DriverSummaryDTO`'s exact shape. `started_at`/`ended_at` stay native `datetime | None`
+(`scheduled_date` stays native `date`) — this file's own documented convention ("timestamps...
+stay native `datetime`, never `.isoformat()`-stringified at this layer"); the API layer's
+Pydantic schemas (`api/schemas.py`) handle JSON serialization, not this one.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 
 from raad.modules.transport_ops.domain.entities import (
     Driver,
@@ -47,6 +54,7 @@ from raad.modules.transport_ops.domain.entities import (
     Stop,
     Student,
     StudentParent,
+    Trip,
 )
 
 
@@ -355,3 +363,72 @@ def route_to_summary_dto(route: Route) -> RouteSummaryDTO:
     (`ListRoutesQuery`'s read shape), mirroring `parent_to_summary_dto`'s exact shape.
     """
     return RouteSummaryDTO(id=str(route.id), name=route.name, status=route.status.value)
+
+
+@dataclass(frozen=True)
+class GetTripByIdQuery:
+    trip_id: str
+
+
+@dataclass(frozen=True)
+class ListTripsQuery:
+    pass
+
+
+@dataclass(frozen=True)
+class TripDTO:
+    id: str
+    organization_id: str
+    vehicle_id: str
+    driver_id: str
+    route_id: str
+    trip_type: str
+    status: str
+    scheduled_date: date
+    started_at: datetime | None
+    ended_at: datetime | None
+
+
+@dataclass(frozen=True)
+class TripSummaryDTO:
+    """Lighter listing projection, mirroring `DriverSummaryDTO`/`RouteSummaryDTO`'s shape."""
+
+    id: str
+    vehicle_id: str
+    driver_id: str
+    route_id: str
+    trip_type: str
+    status: str
+    scheduled_date: date
+
+
+def trip_to_dto(trip: Trip) -> TripDTO:
+    """Shared mapper — the only place a `Trip` aggregate is projected into its full DTO,
+    mirroring `route_to_dto`'s exact shape."""
+    return TripDTO(
+        id=str(trip.id),
+        organization_id=str(trip.organization_id),
+        vehicle_id=str(trip.vehicle_id),
+        driver_id=str(trip.driver_id),
+        route_id=str(trip.route_id),
+        trip_type=trip.trip_type.value,
+        status=trip.status.value,
+        scheduled_date=trip.scheduled_date,
+        started_at=trip.started_at,
+        ended_at=trip.ended_at,
+    )
+
+
+def trip_to_summary_dto(trip: Trip) -> TripSummaryDTO:
+    """Shared mapper — the only place a `Trip` aggregate is projected into its summary DTO
+    (`ListTripsQuery`'s read shape), mirroring `route_to_summary_dto`'s exact shape.
+    """
+    return TripSummaryDTO(
+        id=str(trip.id),
+        vehicle_id=str(trip.vehicle_id),
+        driver_id=str(trip.driver_id),
+        route_id=str(trip.route_id),
+        trip_type=trip.trip_type.value,
+        status=trip.status.value,
+        scheduled_date=trip.scheduled_date,
+    )

@@ -129,6 +129,39 @@ these straight through with no domain/application change.
 - `DELETE /routes/{id}` (uniform-CRUD soft delete, §4 preamble) — `Route` has no soft-delete
   domain behavior, the identical deferral `DELETE /students/{id}`/`DELETE /parents/{id}`/
   `DELETE /drivers/{id}` already apply.
+
+**Phase 12: `trips_router` — six routes.** Matches API Contracts §4.3 lines 129-132 for five of
+them; the sixth (`GET /trips/{id}`) is this phase's own uniform-CRUD addition, flagged below:
+
+- `POST /trips` — schedule (the doc's uniform "`GET/POST /trips`" create half; line 129, "Org
+  Admin", "scheduled trips").
+- `GET /trips` — list (the list half of the same line; same inherited unrestricted-
+  `TenantRegionScope` caveat every other list endpoint in this module carries).
+- `GET /trips/{id}` — get by id. Not literally itemized in §4.3's compact table (only
+  `GET/POST /trips` appears), but every sibling resource in this module has this uniform-CRUD
+  route (API Contracts §4 preamble) — built for the same reason `Driver`'s whole resource was,
+  flagged here rather than silently assumed.
+- `POST /trips/{id}/start` — line 130, **Driver (own)** → `TripStarted`. No request body (the
+  documented "Trip start response" sample shows no request example).
+- `POST /trips/{id}/end` — line 131, **Driver (own)** → `TripEnded`. No request body, same
+  reasoning.
+- `PATCH /trips/{id}/driver` — line 132, **Org Admin**, body `{driver_id}` verbatim — "change
+  driver — no device change".
+
+**`start`/`end` are this module's first "Driver (own)" routes** — every prior route in
+`transport_ops` is Org-Admin-only. Actually verifying the calling driver owns the trip (i.e.
+`principal.user_id` resolves to `trip.driver_id`'s linked `iam.User`) is part of the still-
+pending RBAC/scope work (`require_permission` raises `NotImplementedError` here exactly like
+every other route in this module) — not built this phase, the same deferral already applied to
+the permission matrix itself.
+
+**Not exposed this phase** (flagged, not silently dropped): `Trip.interrupt`/`resume`
+(`InterruptTripCommand`/`ResumeTripCommand`) have no approved HTTP route — no documented
+`/trips/{id}/interrupt` or `/trips/{id}/resume` path exists anywhere in API Contracts §4.3 —
+mirroring `Route.remove_stop`/`move_stop`'s identical "use-case exists, no approved endpoint
+yet" posture; a generic `PATCH /trips/{id}` and `DELETE /trips/{id}` — no field beyond `driver`
+is documented as post-creation-editable, and `Trip` has no soft-delete domain behavior, the
+identical deferral every other `DELETE` in this module already applies.
 """
 
 from __future__ import annotations
@@ -146,9 +179,11 @@ from raad.modules.transport_ops.api.deps import (
     get_student_parent_service,
     get_student_service,
     get_transport_ops_uow,
+    get_trip_service,
 )
 from raad.modules.transport_ops.api.schemas import (
     AddStopToRouteRequest,
+    ChangeTripDriverRequest,
     CreateRouteRequest,
     DriverResponse,
     DriverSummaryResponse,
@@ -161,11 +196,14 @@ from raad.modules.transport_ops.api.schemas import (
     RegisterParentRequest,
     RouteResponse,
     RouteSummaryResponse,
+    ScheduleTripRequest,
     StopResponse,
     StudentForParentResponse,
     StudentParentLinkResponse,
     StudentResponse,
     StudentSummaryResponse,
+    TripResponse,
+    TripSummaryResponse,
     UpdateDriverRequest,
     UpdateParentRequest,
     UpdateRouteRequest,
@@ -178,16 +216,20 @@ from raad.modules.transport_ops.application.commands import (
     ActivateRouteCommand,
     ActivateStudentCommand,
     AddStopToRouteCommand,
+    ChangeTripDriverCommand,
     CreateRouteCommand,
     DisableDriverCommand,
     DisableParentCommand,
     DisableRouteCommand,
     DisableStudentCommand,
+    EndTripCommand,
     EnrollStudentCommand,
     GraduateStudentCommand,
     LinkParentToStudentCommand,
     RegisterDriverCommand,
     RegisterParentCommand,
+    ScheduleTripCommand,
+    StartTripCommand,
     TransferStudentCommand,
     UnlinkParentFromStudentCommand,
     UpdateDriverCommand,
@@ -203,6 +245,7 @@ from raad.modules.transport_ops.application.queries import (
     GetParentByIdQuery,
     GetRouteByIdQuery,
     GetStudentByIdQuery,
+    GetTripByIdQuery,
     ListDriversQuery,
     ListParentsForStudentQuery,
     ListParentsQuery,
@@ -210,6 +253,7 @@ from raad.modules.transport_ops.application.queries import (
     ListStopsForRouteQuery,
     ListStudentsForParentQuery,
     ListStudentsQuery,
+    ListTripsQuery,
     ParentDTO,
     ParentForStudentDTO,
     ParentSummaryDTO,
@@ -220,6 +264,8 @@ from raad.modules.transport_ops.application.queries import (
     StudentForParentDTO,
     StudentParentDTO,
     StudentSummaryDTO,
+    TripDTO,
+    TripSummaryDTO,
 )
 from raad.modules.transport_ops.application.services import (
     DriverApplicationService,
@@ -227,6 +273,7 @@ from raad.modules.transport_ops.application.services import (
     RouteApplicationService,
     StudentApplicationService,
     StudentParentApplicationService,
+    TripApplicationService,
 )
 
 students_router = APIRouter()
@@ -350,6 +397,33 @@ def _route_dto_to_response(route: RouteDTO) -> RouteResponse:
 
 def _route_summary_dto_to_response(route: RouteSummaryDTO) -> RouteSummaryResponse:
     return RouteSummaryResponse(id=route.id, name=route.name, status=route.status)
+
+
+def _trip_dto_to_response(trip: TripDTO) -> TripResponse:
+    return TripResponse(
+        id=trip.id,
+        organization_id=trip.organization_id,
+        vehicle_id=trip.vehicle_id,
+        driver_id=trip.driver_id,
+        route_id=trip.route_id,
+        trip_type=trip.trip_type,
+        status=trip.status,
+        scheduled_date=trip.scheduled_date,
+        started_at=trip.started_at,
+        ended_at=trip.ended_at,
+    )
+
+
+def _trip_summary_dto_to_response(trip: TripSummaryDTO) -> TripSummaryResponse:
+    return TripSummaryResponse(
+        id=trip.id,
+        vehicle_id=trip.vehicle_id,
+        driver_id=trip.driver_id,
+        route_id=trip.route_id,
+        trip_type=trip.trip_type,
+        status=trip.status,
+        scheduled_date=trip.scheduled_date,
+    )
 
 
 @students_router.post(
@@ -1110,3 +1184,167 @@ async def list_stops_for_route(
         ListStopsForRouteQuery(route_id=route_id), uow=uow
     )
     return [_stop_dto_to_response(stop) for stop in stops]
+
+
+@trips_router.post(
+    "",
+    response_model=TripResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Schedule a new trip",
+    description=(
+        "Org Admin — 'scheduled trips' (API Contracts §4.3 line 129). Rejects a driver/route "
+        "not found (`NotFoundError`) and cross-organization driver/route assignment "
+        "(`DomainError`), from `ensure_driver_exists`/`ensure_route_exists`/`Trip.schedule`. "
+        "Pending the approved RBAC permission matrix — see `enroll_student`'s note."
+    ),
+)
+async def schedule_trip(
+    body: ScheduleTripRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.trips.create"))
+    ),
+    trip_service: TripApplicationService = Depends(get_trip_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TripResponse:
+    command = ScheduleTripCommand(
+        organization_id=body.organization_id,
+        vehicle_id=body.vehicle_id,
+        driver_id=body.driver_id,
+        route_id=body.route_id,
+        trip_type=body.trip_type,
+        scheduled_date=body.scheduled_date,
+        actor=principal,
+    )
+    trip = await trip_service.schedule_trip(command, uow=uow)
+    return _trip_dto_to_response(trip)
+
+
+@trips_router.get(
+    "",
+    response_model=list[TripSummaryResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List trips",
+    description=(
+        "Org Admin (API Contracts §4.3 line 129). Not yet tenant-scoped — same inherited "
+        "caveat as `list_students`/`list_parents`/`list_drivers`/`list_routes`. Also pending "
+        "the approved RBAC permission matrix."
+    ),
+)
+async def list_trips(
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.trips.list"))
+    ),
+    trip_service: TripApplicationService = Depends(get_trip_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[TripSummaryResponse]:
+    trips = await trip_service.list_trips(ListTripsQuery(), uow=uow)
+    return [_trip_summary_dto_to_response(trip) for trip in trips]
+
+
+@trips_router.get(
+    "/{trip_id}",
+    response_model=TripResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a trip by id",
+    description=(
+        "Org Admin (API Contracts §4 uniform CRUD — not itemized separately in §4.3's compact "
+        "table, see `routers.py`'s module docstring). Pending the approved RBAC permission "
+        "matrix — see `schedule_trip`'s note."
+    ),
+)
+async def get_trip(
+    trip_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.trips.read"))
+    ),
+    trip_service: TripApplicationService = Depends(get_trip_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TripResponse:
+    trip = await trip_service.get_trip_by_id(
+        GetTripByIdQuery(trip_id=trip_id), uow=uow
+    )
+    return _trip_dto_to_response(trip)
+
+
+@trips_router.post(
+    "/{trip_id}/start",
+    response_model=TripResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Start a trip",
+    description=(
+        "**Driver (own)** -> `TripStarted` (API Contracts §4.3 line 130 verbatim). Legal only "
+        "from `SCHEDULED` (Phase-2 §6.2) — any other status raises `RuleViolationError` "
+        "(`409 RULE_VIOLATION`, §5.2's own 'start an already-in-progress trip' example). "
+        "Rejects a vehicle that already has another active trip (`ConflictError`, "
+        "`409 CONFLICT`, one-active-trip-per-vehicle, Database Design §6.8). Driver-ownership "
+        "verification is not yet implemented — pending the approved RBAC permission matrix, "
+        "see `routers.py`'s module docstring."
+    ),
+)
+async def start_trip(
+    trip_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.trips.start"))
+    ),
+    trip_service: TripApplicationService = Depends(get_trip_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TripResponse:
+    trip = await trip_service.start_trip(
+        StartTripCommand(trip_id=trip_id, actor=principal), uow=uow
+    )
+    return _trip_dto_to_response(trip)
+
+
+@trips_router.post(
+    "/{trip_id}/end",
+    response_model=TripResponse,
+    status_code=status.HTTP_200_OK,
+    summary="End a trip",
+    description=(
+        "**Driver (own)** -> `TripEnded` (API Contracts §4.3 line 131 verbatim). Legal from "
+        "`IN_PROGRESS` or `INTERRUPTED` (Phase-2 §6.2's 'end'/'force end' edges) — any other "
+        "status raises `RuleViolationError`. Driver-ownership verification is not yet "
+        "implemented — see `start_trip`'s note."
+    ),
+)
+async def end_trip(
+    trip_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.trips.end"))
+    ),
+    trip_service: TripApplicationService = Depends(get_trip_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TripResponse:
+    trip = await trip_service.end_trip(
+        EndTripCommand(trip_id=trip_id, actor=principal), uow=uow
+    )
+    return _trip_dto_to_response(trip)
+
+
+@trips_router.patch(
+    "/{trip_id}/driver",
+    response_model=TripResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Change a trip's driver",
+    description=(
+        "Org Admin — 'change driver — no device change' (API Contracts §4.3 line 132 "
+        "verbatim), body `{driver_id}`. Rejects a driver not found (`NotFoundError`) and a "
+        "cross-organization driver (`DomainError`), from `ensure_driver_exists`/"
+        "`Trip.change_driver`. No status restriction — see `Trip.change_driver`'s own "
+        "docstring (`domain/entities.py`). Pending the approved RBAC permission matrix."
+    ),
+)
+async def change_trip_driver(
+    trip_id: str,
+    body: ChangeTripDriverRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.trips.change_driver"))
+    ),
+    trip_service: TripApplicationService = Depends(get_trip_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TripResponse:
+    command = ChangeTripDriverCommand(
+        trip_id=trip_id, driver_id=body.driver_id, actor=principal
+    )
+    trip = await trip_service.change_trip_driver(command, uow=uow)
+    return _trip_dto_to_response(trip)

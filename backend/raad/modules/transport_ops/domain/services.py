@@ -18,4 +18,11 @@ domain service needed. Per-tenant route-name uniqueness needs a repository query
 is an application-layer concern (`application/validators.py`'s `ensure_route_name_available`),
 mirroring `fleet_device.application.validators.ensure_plate_no_available`'s identical
 reasoning.
+
+**Phase 12 (`Trip`):** same reasoning again. `Trip.schedule`'s cross-organization check
+compares two already-loaded aggregates' `organization_id`s with no I/O of its own (mirroring
+`StudentParent.link`'s identical placement) — a pure aggregate-constructor concern, not a
+domain service. `Trip`'s one genuinely I/O-dependent rule, one-active-trip-per-vehicle, needs a
+repository query, so it lives in the application layer instead
+(`application/validators.py`'s `ensure_vehicle_has_no_active_trip`).
 """

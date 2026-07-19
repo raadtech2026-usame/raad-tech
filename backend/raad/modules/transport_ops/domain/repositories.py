@@ -36,6 +36,16 @@ entity owned by `Route` (`entities.py`'s Phase 11 addition), the identical shape
 `DeviceRepository`). `get_by_name` backs the per-tenant name uniqueness pre-check (Database
 Design §6.5: `Unique (organization_id, name)`), mirroring `fleet_device.domain.repositories.
 VehicleRepository.get_by_plate_no`'s identical shape for an analogous per-tenant unique column.
+
+**Phase 12 addition: `TripRepository`.** `active_trip_for_vehicle`/`for_route` (implemented
+here as `list_for_route`) are Backend LLD §7.2's own `TripRepository` contract skeleton,
+verbatim. `active_trip_for_vehicle` backs the one-active-trip-per-vehicle guard
+(`application/validators.py`'s `ensure_vehicle_has_no_active_trip`), mirroring
+`fleet_device.domain.repositories.DeviceAssignmentRepository.active_for_vehicle`'s identical
+role for its own one-active-device-per-vehicle invariant. `list_for_route` carries no
+pagination — `core/pagination` is still an empty module (no limit/offset/cursor convention
+exists to reuse), the same reasoning `application/queries.py`'s `ListStudentsQuery` docstring
+already gives for deferring pagination entirely.
 """
 
 from __future__ import annotations
@@ -48,12 +58,15 @@ from raad.modules.transport_ops.domain.entities import (
     Route,
     Student,
     StudentParent,
+    Trip,
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     ParentId,
     RouteId,
     StudentId,
+    TripId,
+    VehicleId,
 )
 
 
@@ -185,4 +198,37 @@ class RouteRepository(ABC):
     async def list_all(self) -> list[Route]:
         """Backs `ListRoutesQuery` (Phase 11). Already implicitly scoped to the caller's
         tenant — see module docstring."""
+        raise NotImplementedError
+
+
+class TripRepository(ABC):
+    """Backend LLD §7.2's `TripRepository` contract skeleton, verbatim (see module docstring's
+    Phase 12 addition)."""
+
+    @abstractmethod
+    async def get(self, trip_id: TripId) -> Trip | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, trip: Trip) -> None:
+        """Persistence of changes is flushed by the Unit of Work, not the repository (§7.1)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_all(self) -> list[Trip]:
+        """Backs `ListTripsQuery` (Phase 12). Already implicitly scoped to the caller's
+        tenant — see module docstring."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def active_trip_for_vehicle(self, vehicle_id: VehicleId) -> Trip | None:
+        """LLD §7.2 verbatim — the currently `IN_PROGRESS` trip for a vehicle, or None. Backs
+        the one-active-trip-per-vehicle guard (safety-critical invariant,
+        `.claude/rules/testing.md` #3)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_route(self, route_id: RouteId) -> list[Trip]:
+        """LLD §7.2's `for_route`, without pagination — see module docstring's Phase 12
+        addition for why."""
         raise NotImplementedError

@@ -30,6 +30,7 @@ from raad.modules.transport_ops.domain.repositories import (
     RouteRepository,
     StudentParentRepository,
     StudentRepository,
+    TripRepository,
 )
 
 
@@ -41,7 +42,8 @@ class TransportOpsUnitOfWork(UnitOfWork):
     (Phase 10.7) joins the same way again, a third repository on the one transaction boundary;
     `drivers` (Phase 10.8) joins the same way again, a fourth; `routes` (Phase 11) joins the
     same way again, a fifth — no separate `stops` repository, `Stop` being a `Route`-owned
-    child entity (`domain/repositories.py`'s Phase 11 addition).
+    child entity (`domain/repositories.py`'s Phase 11 addition); `trips` (Phase 12) joins the
+    same way again, a sixth.
     The concrete implementation is `infra.repositories.SqlAlchemyTransportOpsUnitOfWork`.
     """
 
@@ -50,3 +52,4 @@ class TransportOpsUnitOfWork(UnitOfWork):
     student_parents: StudentParentRepository
     drivers: DriverRepository
     routes: RouteRepository
+    trips: TripRepository

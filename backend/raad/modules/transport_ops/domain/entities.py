@@ -112,11 +112,31 @@ intra-aggregate invariant, the same reasoning `Device.register_camera` gives for
 `ux_cameras__device_channel`. No "sequence numbers must be contiguous, no gaps" rule is
 enforced — no approved document requires it, and inventing one would reject a legitimate
 delete-the-middle-stop-and-renumber-later workflow no design document forbids.
-"""
+
+**Phase 12 addition: `Trip`.** Database Design §6.8's aggregate — vehicle+driver+route for a
+day's journey. Confirmed with the user before implementing: `trip_students` (§6.9, "roster
+snapshot") is deferred entirely this phase, since its documented data source,
+`student_assignments` (§6.7), is not built yet — `Trip` therefore holds no roster/student
+reference, the same "don't model what an out-of-scope table would supply" reasoning `Student`'s
+own module docstring gives for its absent `route_id`/`trip_id`/`parent_id` fields above.
+`Trip.vehicle_id` is a cross-module reference (`value_objects.py`'s Phase 12 addition) —
+opaque, never existence-checked — while `driver_id`/`route_id` are same-module references,
+existence-checked at the application layer (`ensure_driver_exists`/`ensure_route_exists`,
+`application/validators.py`) exactly like `ensure_student_exists`/`ensure_parent_exists`
+already are for `StudentParent`.
+
+Unlike every prior aggregate in this module, `Trip.status` has a **documented transition
+graph** (Phase-2 §6.2), not a flat undocumented toggle — so `Trip`'s behavior methods below are
+the first in this module to raise `RuleViolationError` for an illegal transition, rather than
+silently treating every value as directly settable. `interrupt()`'s `reason` is carried only in
+the `TripInterrupted` event payload, never persisted on the row — Database Design §6.8 has no
+`interrupted_at`/`interrupt_reason` column, so no such field is invented here."""
 
 from __future__ import annotations
 
-from raad.core.errors.exceptions import ConflictError, DomainError
+from datetime import date, datetime
+
+from raad.core.errors.exceptions import ConflictError, DomainError, RuleViolationError
 from raad.core.events.base import DomainEvent
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.domain import events as transport_ops_events
@@ -132,7 +152,11 @@ from raad.modules.transport_ops.domain.value_objects import (
     StopId,
     StudentId,
     StudentStatus,
+    TripId,
+    TripStatus,
+    TripType,
     UserId,
+    VehicleId,
 )
 
 _FULL_NAME_MAX_LENGTH = 200  # Database Design §6.2: full_name VARCHAR(200)
@@ -254,6 +278,23 @@ def _validate_sequence_no(sequence_no: int) -> None:
     if sequence_no < 1:
         raise DomainError(
             f"Stop sequence_no must be a positive integer (>= 1): {sequence_no}"
+        )
+
+
+# Phase 12: no `trips.interrupt_reason` column exists (Database Design §6.8) to borrow a
+# documented length from - `reason` is only ever carried in the `TripInterrupted` event
+# payload (`entities.py`'s module docstring). 500 is a generous, defensible free-text bound
+# for a short diagnostic note, not a guessed DB constraint.
+_INTERRUPT_REASON_MAX_LENGTH = 500
+
+
+def _validate_interrupt_reason(reason: str) -> None:
+    if not reason:
+        raise DomainError("Trip interrupt reason must not be empty")
+    if len(reason) > _INTERRUPT_REASON_MAX_LENGTH:
+        raise DomainError(
+            f"Trip interrupt reason must be at most {_INTERRUPT_REASON_MAX_LENGTH} "
+            f"characters: {len(reason)}"
         )
 
 
@@ -1040,6 +1081,246 @@ class Route(_AggregateRoot):
                 organization_id=str(self.organization_id),
                 stop_id=str(stop_id),
                 new_sequence_no=new_sequence_no,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+
+class Trip(_AggregateRoot):
+    """The operational aggregate root for a day's journey (Database Design §6.8, Phase-2 §6.2).
+    Tenant-owned — every instance carries `organization_id` (`.claude/rules/database.md` #2).
+    `vehicle_id` is a cross-module reference (never existence-checked, see `value_objects.py`'s
+    Phase 12 addition); `driver_id`/`route_id` are same-module references, existence-checked at
+    the application layer before this aggregate is constructed.
+
+    Phase 12 scope: `Trip` only — no `trip_students` roster, no GPS/geofence execution, no
+    notifications (all out of scope per this phase's own instructions; see module docstring's
+    Phase 12 addition for the full reasoning).
+    """
+
+    def __init__(
+        self,
+        *,
+        id: TripId,
+        organization_id: OrganizationId,
+        vehicle_id: VehicleId,
+        driver_id: DriverId,
+        route_id: RouteId,
+        trip_type: TripType,
+        status: TripStatus,
+        scheduled_date: date,
+        started_at: datetime | None,
+        ended_at: datetime | None,
+    ) -> None:
+        super().__init__()
+        self.id = id
+        self.organization_id = organization_id
+        self.vehicle_id = vehicle_id
+        self.driver_id = driver_id
+        self.route_id = route_id
+        self.trip_type = trip_type
+        self.status = status
+        self.scheduled_date = scheduled_date
+        self.started_at = started_at
+        self.ended_at = ended_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Trip) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    def schedule(
+        cls,
+        *,
+        id: TripId,
+        organization_id: OrganizationId,
+        vehicle_id: VehicleId,
+        driver_id: DriverId,
+        driver_organization_id: OrganizationId,
+        route_id: RouteId,
+        route_organization_id: OrganizationId,
+        trip_type: TripType,
+        scheduled_date: date,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "Trip":
+        """Factory for a newly-scheduled trip. Starts `SCHEDULED` — the sole entry point of
+        the documented state diagram (Phase-2 §6.2: `[*] --> Scheduled`). Rejects
+        cross-organization `driver`/`route` (`DomainError`) by comparing the already-loaded
+        `Driver`/`Parent`'s own `organization_id` against this trip's — the identical pure,
+        no-I/O placement `StudentParent.link`'s cross-organization check already establishes
+        (the application layer loads both aggregates first, `application/services.py`).
+        `vehicle_id`'s organization is **not** cross-checked — see this class's own docstring
+        and `value_objects.py`'s Phase 12 addition for why."""
+        if driver_organization_id != organization_id:
+            raise DomainError(
+                f"Cannot schedule a Trip for organization {organization_id} with Driver "
+                f"{driver_id} (organization {driver_organization_id}): cross-organization "
+                "trip assignments are not permitted."
+            )
+        if route_organization_id != organization_id:
+            raise DomainError(
+                f"Cannot schedule a Trip for organization {organization_id} with Route "
+                f"{route_id} (organization {route_organization_id}): cross-organization "
+                "trip assignments are not permitted."
+            )
+        trip = cls(
+            id=id,
+            organization_id=organization_id,
+            vehicle_id=vehicle_id,
+            driver_id=driver_id,
+            route_id=route_id,
+            trip_type=trip_type,
+            status=TripStatus.SCHEDULED,
+            scheduled_date=scheduled_date,
+            started_at=None,
+            ended_at=None,
+        )
+        trip._record(
+            transport_ops_events.trip_scheduled(
+                trip_id=str(id),
+                organization_id=str(organization_id),
+                vehicle_id=str(vehicle_id),
+                driver_id=str(driver_id),
+                route_id=str(route_id),
+                trip_type=trip_type.value,
+                scheduled_date=scheduled_date.isoformat(),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+        return trip
+
+    def start(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        """`Scheduled -> InProgress` (Phase-2 §6.2: "Driver starts trip"). Any other current
+        status is an illegal transition (`RuleViolationError` — API Contracts §5.2's own
+        example: "start an already-in-progress trip" -> `409 RULE_VIOLATION`), unlike every
+        other status-change method in this module, which treat their own undocumented
+        transitions as idempotent no-ops (see module docstring's Phase 12 addition)."""
+        if self.status != TripStatus.SCHEDULED:
+            raise RuleViolationError(
+                f"Trip {self.id} cannot start from status {self.status.value!r} "
+                "(only SCHEDULED -> IN_PROGRESS is legal, Phase-2 §6.2)."
+            )
+        self.status = TripStatus.IN_PROGRESS
+        self.started_at = clock.now()
+        self._record(
+            transport_ops_events.trip_started(
+                trip_id=str(self.id),
+                organization_id=str(self.organization_id),
+                vehicle_id=str(self.vehicle_id),
+                driver_id=str(self.driver_id),
+                route_id=str(self.route_id),
+                started_at=self.started_at,
+                actor_id=actor_id,
+            )
+        )
+
+    def end(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        """`InProgress -> Completed` or `Interrupted -> Completed` ("force end", Phase-2 §6.2)
+        — the diagram's only two edges into the terminal state. Any other current status is an
+        illegal transition (`RuleViolationError`)."""
+        if self.status not in (TripStatus.IN_PROGRESS, TripStatus.INTERRUPTED):
+            raise RuleViolationError(
+                f"Trip {self.id} cannot end from status {self.status.value!r} (only "
+                "IN_PROGRESS -> COMPLETED or INTERRUPTED -> COMPLETED are legal, Phase-2 "
+                "§6.2)."
+            )
+        self.status = TripStatus.COMPLETED
+        self.ended_at = clock.now()
+        self._record(
+            transport_ops_events.trip_ended(
+                trip_id=str(self.id),
+                organization_id=str(self.organization_id),
+                vehicle_id=str(self.vehicle_id),
+                driver_id=str(self.driver_id),
+                route_id=str(self.route_id),
+                ended_at=self.ended_at,
+                actor_id=actor_id,
+            )
+        )
+
+    def interrupt(
+        self, reason: str, *, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """`InProgress -> Interrupted` (Phase-2 §6.2: "timeout / device offline / manual").
+        Legal only from `IN_PROGRESS`; else `RuleViolationError`. No approved HTTP route
+        exists this phase (`api/routers.py`'s module docstring) — reachable at the application
+        layer only, mirroring `Route.remove_stop`/`move_stop`'s identical posture. `reason` is
+        never persisted on this row (no such column, Database Design §6.8) — it travels only
+        in the `TripInterrupted` event payload."""
+        if self.status != TripStatus.IN_PROGRESS:
+            raise RuleViolationError(
+                f"Trip {self.id} cannot be interrupted from status {self.status.value!r} "
+                "(only IN_PROGRESS -> INTERRUPTED is legal, Phase-2 §6.2)."
+            )
+        _validate_interrupt_reason(reason)
+        self.status = TripStatus.INTERRUPTED
+        self._record(
+            transport_ops_events.trip_interrupted(
+                trip_id=str(self.id),
+                organization_id=str(self.organization_id),
+                vehicle_id=str(self.vehicle_id),
+                reason=reason,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def resume(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        """`Interrupted -> InProgress` (Phase-2 §6.2: "resume"). Legal only from `INTERRUPTED`;
+        else `RuleViolationError`. No approved HTTP route exists this phase — same posture as
+        `interrupt` above. `TripResumed` is this phase's own PascalCase-past-tense naming
+        choice — no approved document names this event, flagged in `domain/events.py`."""
+        if self.status != TripStatus.INTERRUPTED:
+            raise RuleViolationError(
+                f"Trip {self.id} cannot resume from status {self.status.value!r} (only "
+                "INTERRUPTED -> IN_PROGRESS is legal, Phase-2 §6.2)."
+            )
+        self.status = TripStatus.IN_PROGRESS
+        self._record(
+            transport_ops_events.trip_resumed(
+                trip_id=str(self.id),
+                organization_id=str(self.organization_id),
+                vehicle_id=str(self.vehicle_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def change_driver(
+        self,
+        new_driver_id: DriverId,
+        *,
+        new_driver_organization_id: OrganizationId,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Backs `PATCH /trips/{id}/driver` ("change driver — no device change", API Contracts
+        line 132). Rejects a cross-organization driver (`DomainError`), the identical check
+        `schedule()` above performs. Idempotent: reassigning the same driver is a no-op,
+        matching every other method's "no event for no real change" convention. **No status
+        restriction** — no approved document restricts changing a trip's driver at any
+        particular status, and this module's own precedent (`StudentStatus`/`ParentStatus`
+        methods) is to not invent a restriction graph where none is documented."""
+        if new_driver_organization_id != self.organization_id:
+            raise DomainError(
+                f"Cannot assign Driver {new_driver_id} (organization "
+                f"{new_driver_organization_id}) to Trip {self.id} (organization "
+                f"{self.organization_id}): cross-organization trip assignments are not "
+                "permitted."
+            )
+        if new_driver_id == self.driver_id:
+            return
+        self.driver_id = new_driver_id
+        self._record(
+            transport_ops_events.trip_driver_changed(
+                trip_id=str(self.id),
+                organization_id=str(self.organization_id),
+                driver_id=str(new_driver_id),
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )

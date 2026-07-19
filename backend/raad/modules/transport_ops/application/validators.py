@@ -39,14 +39,37 @@ mirroring `fleet_device.application.validators.ensure_plate_no_available`'s iden
 `vehicles`' own per-tenant `ux_vehicles__org_plate`. `Route`'s own existence-checking still
 lives on `RouteApplicationService._get_route_or_raise`, not here, for the same reason
 Phases 10.1-10.8 keep that check off this file.
+
+**Phase 12 addition — `Trip` cross-aggregate checks.** `ensure_driver_exists`/
+`ensure_route_exists` mirror `ensure_student_exists`/`ensure_parent_exists` exactly — `Trip`
+references two *other* same-module aggregates (`Driver`, `Route`), the identical shape
+`StudentParent` already establishes for `Student`/`Parent`. `ensure_vehicle_has_no_active_trip`
+mirrors `fleet_device.application.validators.ensure_vehicle_has_no_active_device` exactly —
+defense-in-depth over `ux_trips__active_vehicle` (the DB partial unique index,
+`infra/models.py`), surfacing a typed `ConflictError` instead of a raw constraint violation, via
+`TripRepository.active_trip_for_vehicle` (Backend LLD §7.2 verbatim). `Trip`'s own
+existence-checking lives on `TripApplicationService._get_trip_or_raise`, not here, for the same
+reason every other aggregate in this module keeps that check off this file.
 """
 
 from __future__ import annotations
 
 from raad.core.errors.exceptions import ConflictError, NotFoundError
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
-from raad.modules.transport_ops.domain.entities import Parent, Student, StudentParent
-from raad.modules.transport_ops.domain.value_objects import ParentId, StudentId
+from raad.modules.transport_ops.domain.entities import (
+    Driver,
+    Parent,
+    Route,
+    Student,
+    StudentParent,
+)
+from raad.modules.transport_ops.domain.value_objects import (
+    DriverId,
+    ParentId,
+    RouteId,
+    StudentId,
+    VehicleId,
+)
 
 
 async def ensure_student_exists(
@@ -93,4 +116,31 @@ async def ensure_route_name_available(uow: TransportOpsUnitOfWork, name: str) ->
     if existing is not None:
         raise ConflictError(
             f"A route named {name!r} already exists in this organization."
+        )
+
+
+async def ensure_driver_exists(
+    uow: TransportOpsUnitOfWork, driver_id: DriverId
+) -> Driver:
+    driver = await uow.drivers.get(driver_id)
+    if driver is None:
+        raise NotFoundError(f"Driver {driver_id} not found.")
+    return driver
+
+
+async def ensure_route_exists(uow: TransportOpsUnitOfWork, route_id: RouteId) -> Route:
+    route = await uow.routes.get(route_id)
+    if route is None:
+        raise NotFoundError(f"Route {route_id} not found.")
+    return route
+
+
+async def ensure_vehicle_has_no_active_trip(
+    uow: TransportOpsUnitOfWork, vehicle_id: VehicleId
+) -> None:
+    active = await uow.trips.active_trip_for_vehicle(vehicle_id)
+    if active is not None:
+        raise ConflictError(
+            f"Vehicle {vehicle_id} already has an active trip {active.id} "
+            "(one active trip per vehicle, Database Design §6.8)."
         )

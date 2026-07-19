@@ -37,9 +37,21 @@ sub-route for `/routes`). `RouteResponse` embeds `stops: list[StopResponse]`, mi
 `GET/POST /routes/{id}/stops` "ordered stops") — unlike `Driver`/`StudentParent` above, no
 documentation gap exists for the routes this phase actually exposes; see `routers.py`'s module
 docstring for the one real gap this phase does have (individual stop update/removal/reorder).
+
+**Phase 12 addition: `Trip` schemas.** `TripStatus`'s four values (`scheduled`/`in_progress`/
+`interrupted`/`completed`) and `TripType`'s two (`morning`/`afternoon`) transport the same
+lower-case snake_case way. `ScheduleTripRequest` backs the documented `POST /trips` (API
+Contracts §4.3 line 129). `start`/`end` (lines 130-131) take no request body — the documented
+"Trip start response" sample shows no request example, matching a Driver-initiated,
+path-identified action. `ChangeTripDriverRequest` backs the documented
+`PATCH /trips/{id}/driver` (line 132, body `{driver_id}` verbatim) — this is Trip's *only*
+uniform-CRUD-style `PATCH`; no other field is documented as post-creation-editable, so there is
+no general `UpdateTripRequest` the way every other aggregate in this module has one.
 """
 
 from __future__ import annotations
+
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -258,3 +270,42 @@ class AddStopToRouteRequest(BaseModel):
     longitude: float
     sequence_no: int
     geofence_radius_m: int | None = None
+
+
+class TripResponse(BaseModel):
+    id: str
+    organization_id: str
+    vehicle_id: str
+    driver_id: str
+    route_id: str
+    trip_type: str
+    status: str
+    scheduled_date: date
+    started_at: datetime | None
+    ended_at: datetime | None
+
+
+class TripSummaryResponse(BaseModel):
+    id: str
+    vehicle_id: str
+    driver_id: str
+    route_id: str
+    trip_type: str
+    status: str
+    scheduled_date: date
+
+
+class ScheduleTripRequest(BaseModel):
+    organization_id: str
+    vehicle_id: str
+    driver_id: str
+    route_id: str
+    trip_type: str
+    scheduled_date: date
+
+
+class ChangeTripDriverRequest(BaseModel):
+    """`PATCH /trips/{id}/driver` (API Contracts §4.3 line 132 verbatim: "change driver — no
+    device change")."""
+
+    driver_id: str

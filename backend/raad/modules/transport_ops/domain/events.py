@@ -60,7 +60,18 @@ carry `aggregate_type="Route"`/`aggregate_id=route_id` (never `"Stop"`/`stop_id`
 no aggregate identity of its own to record against (it is a child entity, `entities.py`'s Phase
 11 addition), exactly mirroring `fleet_device.domain.events.camera_registered`'s identical
 `aggregate_type="Device"` choice for an intra-aggregate child fact.
-"""
+
+**Phase 12 addition:** `trip_scheduled`/`trip_started`/`trip_ended`/`trip_interrupted`/
+`trip_resumed`/`trip_driver_changed`, backing the new `Trip` aggregate (`entities.py`, Database
+Design §6.8, Phase-2 §6.2). Unlike every prior addition's naming-note caveat, `TripStarted` and
+`TripEnded` **are** approved, documented names — Backend LLD §5.2's aggregate skeleton
+(`start(actor, clock) -> [TripStarted]`, `end(actor, clock) -> [TripEnded]`) and Phase-2 §6.1's
+event catalog both name them verbatim. `TripInterrupted` is likewise LLD-documented verbatim
+(`interrupt(reason) -> [TripInterrupted]`). `TripScheduled`/`TripResumed`/`TripDriverChanged`
+have no approved document naming them — the same "flagged, not silently assumed" caveat every
+prior phase's own unnamed events already carry — chosen to match this class's own domain method
+names 1:1 (`Trip.schedule`/`resume`/`change_driver`) and the established PascalCase-past-tense
+convention exactly."""
 
 from __future__ import annotations
 
@@ -547,4 +558,140 @@ def route_stop_reordered(
             "new_sequence_no": new_sequence_no,
             "actor_id": actor_id,
         },
+    )
+
+
+def trip_scheduled(
+    *,
+    trip_id: str,
+    organization_id: str,
+    vehicle_id: str,
+    driver_id: str,
+    route_id: str,
+    trip_type: str,
+    scheduled_date: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="TripScheduled",
+        aggregate_type="Trip",
+        aggregate_id=trip_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "vehicle_id": vehicle_id,
+            "driver_id": driver_id,
+            "route_id": route_id,
+            "trip_type": trip_type,
+            "scheduled_date": scheduled_date,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def trip_started(
+    *,
+    trip_id: str,
+    organization_id: str,
+    vehicle_id: str,
+    driver_id: str,
+    route_id: str,
+    started_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="TripStarted",
+        aggregate_type="Trip",
+        aggregate_id=trip_id,
+        org_id=organization_id,
+        occurred_at=started_at,
+        payload={
+            "vehicle_id": vehicle_id,
+            "driver_id": driver_id,
+            "route_id": route_id,
+            "started_at": started_at.isoformat(),
+            "actor_id": actor_id,
+        },
+    )
+
+
+def trip_ended(
+    *,
+    trip_id: str,
+    organization_id: str,
+    vehicle_id: str,
+    driver_id: str,
+    route_id: str,
+    ended_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="TripEnded",
+        aggregate_type="Trip",
+        aggregate_id=trip_id,
+        org_id=organization_id,
+        occurred_at=ended_at,
+        payload={
+            "vehicle_id": vehicle_id,
+            "driver_id": driver_id,
+            "route_id": route_id,
+            "ended_at": ended_at.isoformat(),
+            "actor_id": actor_id,
+        },
+    )
+
+
+def trip_interrupted(
+    *,
+    trip_id: str,
+    organization_id: str,
+    vehicle_id: str,
+    reason: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="TripInterrupted",
+        aggregate_type="Trip",
+        aggregate_id=trip_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"vehicle_id": vehicle_id, "reason": reason, "actor_id": actor_id},
+    )
+
+
+def trip_resumed(
+    *,
+    trip_id: str,
+    organization_id: str,
+    vehicle_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="TripResumed",
+        aggregate_type="Trip",
+        aggregate_id=trip_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"vehicle_id": vehicle_id, "actor_id": actor_id},
+    )
+
+
+def trip_driver_changed(
+    *,
+    trip_id: str,
+    organization_id: str,
+    driver_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="TripDriverChanged",
+        aggregate_type="Trip",
+        aggregate_id=trip_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"driver_id": driver_id, "actor_id": actor_id},
     )

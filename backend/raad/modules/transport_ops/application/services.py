@@ -49,6 +49,20 @@ pre-check exactly). `add_stop_to_route`/`remove_stop_from_route`/`move_stop` all
 addendum) and delegate the actual mutation to `Route`'s own methods — this service performs no
 child-entity logic itself, matching `DeviceApplicationService.register_camera`'s identical
 "load aggregate, call its method, commit" shape.
+
+**Phase 12 addition: `TripApplicationService`.** A sixth, separate service — `/trips` is its
+own resource prefix. `schedule_trip` runs `ensure_driver_exists`/`ensure_route_exists` before
+the aggregate factory (mirroring `create_route`'s pre-check placement), passing the loaded
+`Driver`/`Route`'s own `organization_id` into `Trip.schedule` for its cross-organization check.
+`start_trip` and `resume_trip` both run `ensure_vehicle_has_no_active_trip` immediately before
+calling the aggregate's own `start`/`resume` method — `resume_trip` needs this guard too, not
+just `start_trip`: the DB partial unique index only covers `status='in_progress'`, so while a
+trip sits `INTERRUPTED` a *different* trip could legally become the vehicle's active one in the
+meantime, and resuming the first would otherwise silently create two in-progress trips for one
+vehicle. `interrupt_trip`/`resume_trip` have no approved HTTP route this phase (`api/routers.py`'s
+module docstring) but are fully implemented and unit-tested, mirroring
+`remove_stop_from_route`/`move_stop`'s identical "use-case exists, no approved endpoint yet"
+posture.
 """
 
 from __future__ import annotations
@@ -62,18 +76,24 @@ from raad.modules.transport_ops.application.commands import (
     ActivateRouteCommand,
     ActivateStudentCommand,
     AddStopToRouteCommand,
+    ChangeTripDriverCommand,
     CreateRouteCommand,
     DisableDriverCommand,
     DisableParentCommand,
     DisableRouteCommand,
     DisableStudentCommand,
+    EndTripCommand,
     EnrollStudentCommand,
     GraduateStudentCommand,
+    InterruptTripCommand,
     LinkParentToStudentCommand,
     MoveStopCommand,
     RegisterDriverCommand,
     RegisterParentCommand,
     RemoveStopFromRouteCommand,
+    ResumeTripCommand,
+    ScheduleTripCommand,
+    StartTripCommand,
     TransferStudentCommand,
     UnlinkParentFromStudentCommand,
     UpdateDriverCommand,
@@ -89,6 +109,7 @@ from raad.modules.transport_ops.application.queries import (
     GetParentByIdQuery,
     GetRouteByIdQuery,
     GetStudentByIdQuery,
+    GetTripByIdQuery,
     ListDriversQuery,
     ListParentsForStudentQuery,
     ListParentsQuery,
@@ -96,6 +117,7 @@ from raad.modules.transport_ops.application.queries import (
     ListStopsForRouteQuery,
     ListStudentsForParentQuery,
     ListStudentsQuery,
+    ListTripsQuery,
     ParentDTO,
     ParentForStudentDTO,
     ParentSummaryDTO,
@@ -106,6 +128,8 @@ from raad.modules.transport_ops.application.queries import (
     StudentForParentDTO,
     StudentParentDTO,
     StudentSummaryDTO,
+    TripDTO,
+    TripSummaryDTO,
     driver_to_dto,
     driver_to_summary_dto,
     parent_for_student_to_dto,
@@ -118,13 +142,18 @@ from raad.modules.transport_ops.application.queries import (
     student_parent_to_dto,
     student_to_dto,
     student_to_summary_dto,
+    trip_to_dto,
+    trip_to_summary_dto,
 )
 from raad.modules.transport_ops.application.validators import (
+    ensure_driver_exists,
     ensure_link_exists,
     ensure_link_not_duplicate,
     ensure_parent_exists,
+    ensure_route_exists,
     ensure_route_name_available,
     ensure_student_exists,
+    ensure_vehicle_has_no_active_trip,
 )
 from raad.modules.transport_ops.domain.entities import (
     Driver,
@@ -132,6 +161,7 @@ from raad.modules.transport_ops.domain.entities import (
     Route,
     Student,
     StudentParent,
+    Trip,
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
@@ -141,7 +171,10 @@ from raad.modules.transport_ops.domain.value_objects import (
     RouteId,
     StopId,
     StudentId,
+    TripId,
+    TripType,
     UserId,
+    VehicleId,
 )
 
 
@@ -640,3 +673,126 @@ class RouteApplicationService:
         if route is None:
             raise NotFoundError(f"Route {route_id} not found.")
         return route
+
+
+class TripApplicationService:
+    """Trip lifecycle use-cases: schedule, start, end, interrupt, resume, change driver, and the
+    `GetTripByIdQuery`/`ListTripsQuery` read paths. See module docstring for the
+    `ensure_vehicle_has_no_active_trip` guard's placement on both `start_trip` and
+    `resume_trip`."""
+
+    def __init__(self, *, clock: Clock, id_generator: IdGenerator) -> None:
+        self._clock = clock
+        self._id_generator = id_generator
+
+    async def schedule_trip(
+        self, command: ScheduleTripCommand, *, uow: TransportOpsUnitOfWork
+    ) -> TripDTO:
+        async with uow:
+            driver = await ensure_driver_exists(uow, DriverId(command.driver_id))
+            route = await ensure_route_exists(uow, RouteId(command.route_id))
+
+            trip = Trip.schedule(
+                id=TripId(self._id_generator.new_id()),
+                organization_id=OrganizationId(command.organization_id),
+                vehicle_id=VehicleId(command.vehicle_id),
+                driver_id=driver.id,
+                driver_organization_id=driver.organization_id,
+                route_id=route.id,
+                route_organization_id=route.organization_id,
+                trip_type=TripType(command.trip_type),
+                scheduled_date=command.scheduled_date,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.trips.add(trip)
+            uow.record_events(trip.pull_domain_events())
+            await uow.commit()
+            return trip_to_dto(trip)
+
+    async def start_trip(
+        self, command: StartTripCommand, *, uow: TransportOpsUnitOfWork
+    ) -> TripDTO:
+        async with uow:
+            trip = await self._get_trip_or_raise(uow, command.trip_id)
+            await ensure_vehicle_has_no_active_trip(uow, trip.vehicle_id)
+            trip.start(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(trip.pull_domain_events())
+            await uow.commit()
+            return trip_to_dto(trip)
+
+    async def end_trip(
+        self, command: EndTripCommand, *, uow: TransportOpsUnitOfWork
+    ) -> TripDTO:
+        async with uow:
+            trip = await self._get_trip_or_raise(uow, command.trip_id)
+            trip.end(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(trip.pull_domain_events())
+            await uow.commit()
+            return trip_to_dto(trip)
+
+    async def interrupt_trip(
+        self, command: InterruptTripCommand, *, uow: TransportOpsUnitOfWork
+    ) -> TripDTO:
+        """No approved HTTP route yet (`api/routers.py`'s module docstring) — reachable at
+        this layer only, mirroring `RouteApplicationService.remove_stop_from_route`'s identical
+        "use-case exists, no approved endpoint yet" posture."""
+        async with uow:
+            trip = await self._get_trip_or_raise(uow, command.trip_id)
+            trip.interrupt(
+                command.reason, clock=self._clock, actor_id=command.actor.user_id
+            )
+            uow.record_events(trip.pull_domain_events())
+            await uow.commit()
+            return trip_to_dto(trip)
+
+    async def resume_trip(
+        self, command: ResumeTripCommand, *, uow: TransportOpsUnitOfWork
+    ) -> TripDTO:
+        """No approved HTTP route yet — same posture as `interrupt_trip` above. Also re-runs
+        `ensure_vehicle_has_no_active_trip` — see module docstring for why resuming needs the
+        same guard `start_trip` has."""
+        async with uow:
+            trip = await self._get_trip_or_raise(uow, command.trip_id)
+            await ensure_vehicle_has_no_active_trip(uow, trip.vehicle_id)
+            trip.resume(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(trip.pull_domain_events())
+            await uow.commit()
+            return trip_to_dto(trip)
+
+    async def change_trip_driver(
+        self, command: ChangeTripDriverCommand, *, uow: TransportOpsUnitOfWork
+    ) -> TripDTO:
+        async with uow:
+            trip = await self._get_trip_or_raise(uow, command.trip_id)
+            new_driver = await ensure_driver_exists(uow, DriverId(command.driver_id))
+            trip.change_driver(
+                new_driver.id,
+                new_driver_organization_id=new_driver.organization_id,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(trip.pull_domain_events())
+            await uow.commit()
+            return trip_to_dto(trip)
+
+    async def get_trip_by_id(
+        self, query: GetTripByIdQuery, *, uow: TransportOpsUnitOfWork
+    ) -> TripDTO:
+        async with uow:
+            trip = await self._get_trip_or_raise(uow, query.trip_id)
+            return trip_to_dto(trip)
+
+    async def list_trips(
+        self, query: ListTripsQuery, *, uow: TransportOpsUnitOfWork
+    ) -> list[TripSummaryDTO]:
+        async with uow:
+            trips = await uow.trips.list_all()
+            return [trip_to_summary_dto(trip) for trip in trips]
+
+    @staticmethod
+    async def _get_trip_or_raise(uow: TransportOpsUnitOfWork, trip_id: str) -> Trip:
+        trip = await uow.trips.get(TripId(trip_id))
+        if trip is None:
+            raise NotFoundError(f"Trip {trip_id} not found.")
+        return trip

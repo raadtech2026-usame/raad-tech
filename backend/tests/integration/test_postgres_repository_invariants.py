@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import sqlalchemy.exc
 from sqlalchemy.orm.exc import StaleDataError
@@ -45,6 +45,19 @@ from raad.modules.iam.infra.models import UserModel
 from raad.modules.iam.infra.repositories import SqlAlchemyIamUnitOfWork
 from raad.core.tenancy.principal import Role
 from raad.core.time.clock import SystemClock
+from raad.modules.transport_ops.domain.entities import Driver, Route, Trip
+from raad.modules.transport_ops.domain.value_objects import (
+    DriverId,
+    OrganizationId as TransportOpsOrganizationId,
+    RouteId,
+    TripId,
+    TripType,
+    UserId as TransportOpsUserId,
+    VehicleId,
+)
+from raad.modules.transport_ops.infra.repositories import (
+    SqlAlchemyTransportOpsUnitOfWork,
+)
 
 
 def _db_available() -> bool:
@@ -170,6 +183,127 @@ class FleetDeviceAssignmentDatabaseInvariantTests(unittest.IsolatedAsyncioTestCa
                 uow.device_assignments.add(second)
                 await uow.commit()
                 self._created_ids["device_assignments"].append(str(second.id))
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class TripDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
+    """One-active-trip-per-vehicle (Phase 12, Database Design §6.8), proven at the actual
+    database layer — the real `ux_trips__active_vehicle` partial unique index (`WHERE
+    status = 'in_progress'`), the same category of proof
+    `FleetDeviceAssignmentDatabaseInvariantTests` above already gives
+    `ux_device_assignments__active_vehicle`."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_ids: dict[str, list[str]] = {
+            "trips": [],
+            "drivers": [],
+            "routes": [],
+        }
+
+    async def asyncTearDown(self) -> None:
+        from sqlalchemy import text
+
+        async with self.engine.begin() as conn:
+            if self._created_ids["trips"]:
+                await conn.execute(
+                    text("DELETE FROM trips WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids["trips"]},
+                )
+            if self._created_ids["drivers"]:
+                await conn.execute(
+                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids["drivers"]},
+                )
+            if self._created_ids["routes"]:
+                await conn.execute(
+                    text("DELETE FROM routes WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids["routes"]},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyTransportOpsUnitOfWork:
+        return SqlAlchemyTransportOpsUnitOfWork(self.session_factory, self.outbox_writer)
+
+    async def _seed_driver_and_route(self, org_id: str):
+        async with self._new_uow() as uow:
+            driver = Driver.register(
+                id=DriverId(self.id_generator.new_id()),
+                organization_id=TransportOpsOrganizationId(org_id),
+                user_id=TransportOpsUserId(self.id_generator.new_id()),
+                license_no=f"LIC-{self.tag}",
+                clock=self.clock,
+            )
+            route = Route.create(
+                id=RouteId(self.id_generator.new_id()),
+                organization_id=TransportOpsOrganizationId(org_id),
+                name=f"Route {self.tag}",
+                clock=self.clock,
+            )
+            uow.drivers.add(driver)
+            uow.routes.add(route)
+            uow.record_events(driver.pull_domain_events())
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            self._created_ids["drivers"].append(str(driver.id))
+            self._created_ids["routes"].append(str(route.id))
+            return driver.id, route.id
+
+    async def test_two_in_progress_trips_for_the_same_vehicle_violate_db_constraint(
+        self,
+    ) -> None:
+        """Regression, at the database layer: `ux_trips__active_vehicle` (partial unique
+        index, WHERE status = 'in_progress') rejects a second in-progress trip for the same
+        vehicle even if the application-layer `ensure_vehicle_has_no_active_trip` guard were
+        somehow bypassed (e.g. a race between two concurrent requests)."""
+        org_id = f"org-{self.tag}"
+        driver_id, route_id = await self._seed_driver_and_route(org_id)
+        vehicle_id = VehicleId(self.id_generator.new_id())
+
+        async with self._new_uow() as uow:
+            first = Trip.schedule(
+                id=TripId(self.id_generator.new_id()),
+                organization_id=TransportOpsOrganizationId(org_id),
+                vehicle_id=vehicle_id,
+                driver_id=driver_id,
+                driver_organization_id=TransportOpsOrganizationId(org_id),
+                route_id=route_id,
+                route_organization_id=TransportOpsOrganizationId(org_id),
+                trip_type=TripType.MORNING,
+                scheduled_date=date(2026, 7, 20),
+                clock=self.clock,
+            )
+            first.start(clock=self.clock)
+            uow.trips.add(first)
+            uow.record_events(first.pull_domain_events())
+            await uow.commit()
+            self._created_ids["trips"].append(str(first.id))
+
+        with self.assertRaises(sqlalchemy.exc.IntegrityError):
+            async with self._new_uow() as uow:
+                second = Trip.schedule(
+                    id=TripId(self.id_generator.new_id()),
+                    organization_id=TransportOpsOrganizationId(org_id),
+                    vehicle_id=vehicle_id,  # same vehicle, still in_progress -> DB rejects
+                    driver_id=driver_id,
+                    driver_organization_id=TransportOpsOrganizationId(org_id),
+                    route_id=route_id,
+                    route_organization_id=TransportOpsOrganizationId(org_id),
+                    trip_type=TripType.AFTERNOON,
+                    scheduled_date=date(2026, 7, 20),
+                    clock=self.clock,
+                )
+                second.start(clock=self.clock)
+                uow.trips.add(second)
+                uow.record_events(second.pull_domain_events())
+                await uow.commit()
+                self._created_ids["trips"].append(str(second.id))
 
 
 @unittest.skipUnless(_db_available(), _SKIP_REASON)

@@ -21,9 +21,17 @@ behavior, so `device_to_model` never deletes a row), `Route.remove_stop` *does* 
 (`domain/entities.py`), so `route_to_model` also removes any tracked `StopModel` row whose id
 is no longer present among `route.stops` — `RouteModel.stops`'s `cascade="all, delete-orphan"`
 (`infra/models.py`) then deletes that orphaned row on flush.
+
+**Phase 12 addition: `trip_to_model`/`model_to_trip`.** Mirrors `driver_to_model`/
+`model_to_driver`'s exact `existing=` in-place-update pattern — `Trip` has no child-entity
+collection to sync (unlike `Route`), so the mapper is a flat field projection. `_to_naive_utc`
+strips tzinfo off `started_at`/`ended_at` before they reach the ORM row — see its own
+docstring for the live-verification finding that motivated it.
 """
 
 from __future__ import annotations
+
+from datetime import datetime
 
 from raad.modules.transport_ops.domain.entities import (
     Driver,
@@ -32,6 +40,7 @@ from raad.modules.transport_ops.domain.entities import (
     Stop,
     Student,
     StudentParent,
+    Trip,
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
@@ -45,7 +54,11 @@ from raad.modules.transport_ops.domain.value_objects import (
     StopId,
     StudentId,
     StudentStatus,
+    TripId,
+    TripStatus,
+    TripType,
     UserId,
+    VehicleId,
 )
 from raad.modules.transport_ops.infra.models import (
     DriverModel,
@@ -54,6 +67,7 @@ from raad.modules.transport_ops.infra.models import (
     StopModel,
     StudentModel,
     StudentParentModel,
+    TripModel,
 )
 
 
@@ -229,4 +243,49 @@ def model_to_route(model: RouteModel) -> Route:
         name=model.name,
         status=RouteStatus(model.status),
         stops=[model_to_stop(row) for row in model.stops],
+    )
+
+
+def _to_naive_utc(value: datetime | None) -> datetime | None:
+    """`started_at`/`ended_at` come from `Clock.now()` (`SystemClock` returns tz-aware UTC,
+    `domain/entities.py`'s `Trip.start`/`end`) but `TripModel.started_at`/`ended_at` are
+    `DateTime(timezone=False)` (Database Design §1's naive-storage convention, `core/db/
+    mixins.py`'s `utcnow()`) — found live: asyncpg's codec for `TIMESTAMP WITHOUT TIME ZONE`
+    rejects a tz-aware `datetime` outright (`DataError: can't subtract offset-naive and
+    offset-aware datetimes`), caught by this module's own integration tests. Strips tzinfo
+    here, at the ORM-translation boundary, rather than in the domain layer, which stores
+    whatever the injected `Clock` returns."""
+    if value is None:
+        return None
+    return value.replace(tzinfo=None) if value.tzinfo is not None else value
+
+
+def trip_to_model(trip: Trip, *, existing: TripModel | None = None) -> TripModel:
+    """Projects a `Trip` aggregate onto its ORM row, mirroring `driver_to_model`'s exact
+    `existing=` in-place-update pattern."""
+    model = existing if existing is not None else TripModel(id=str(trip.id))
+    model.organization_id = str(trip.organization_id)
+    model.vehicle_id = str(trip.vehicle_id)
+    model.driver_id = str(trip.driver_id)
+    model.route_id = str(trip.route_id)
+    model.trip_type = trip.trip_type.value
+    model.status = trip.status.value
+    model.scheduled_date = trip.scheduled_date
+    model.started_at = _to_naive_utc(trip.started_at)
+    model.ended_at = _to_naive_utc(trip.ended_at)
+    return model
+
+
+def model_to_trip(model: TripModel) -> Trip:
+    return Trip(
+        id=TripId(model.id),
+        organization_id=OrganizationId(model.organization_id),
+        vehicle_id=VehicleId(model.vehicle_id),
+        driver_id=DriverId(model.driver_id),
+        route_id=RouteId(model.route_id),
+        trip_type=TripType(model.trip_type),
+        status=TripStatus(model.status),
+        scheduled_date=model.scheduled_date,
+        started_at=model.started_at,
+        ended_at=model.ended_at,
     )

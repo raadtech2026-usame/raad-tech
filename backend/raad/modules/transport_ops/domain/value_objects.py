@@ -40,6 +40,21 @@ same treatment as every other module-owned id above. `RouteStatus` is, unlike `P
 the two enums happen to end up the same shape. No "archived" value is documented anywhere
 (§6.5's enum is exhaustively two values) — flagged in `entities.py`'s module docstring rather
 than invented, since the task scope for this phase explicitly says "Archive (if specified)".
+
+**Phase 12 addition: `Trip`.** `TripId` is minted and owned by this module (`trips` is this
+module's own table, Database Design §6.8, ADR-0001) — strict ULID shape, same treatment as
+`RouteId`/`DriverId`. `TripStatus` is, like `RouteStatus`, **actually documented**: Database
+Design §6.8 spells out `ENUM(scheduled,in_progress,interrupted,completed)` explicitly, and
+Phase-2 §6.2's state diagram confirms the exact same four values with the exact transition
+graph enforced in `entities.py`'s `Trip` behavior methods — not a guessed flat toggle. `TripType`
+is likewise documented (`ENUM(morning,afternoon)`, §6.8, "Ch. 7.9 independent"). `VehicleId` is
+a **cross-module reference** to the `fleet_device` module's `Vehicle` aggregate — confirmed with
+the user before implementing: `transport_ops` cannot perform a cross-module DB read
+(`.claude/rules/backend.md` #3), and the only cross-module-coordination design in this codebase,
+ADR-0003, is still "Proposed, not accepted" and covers a write workflow, not a read/validation.
+Mirrors `OrganizationId`/`UserId`'s identical treatment above exactly: opaque, non-empty string
+only, no existence check anywhere in this module — the same trust level already given to
+`Parent.user_id`/`Driver.user_id` for their own cross-module references.
 """
 
 from __future__ import annotations
@@ -233,3 +248,62 @@ class RouteStatus(str, Enum):
 
     ACTIVE = "active"
     INACTIVE = "inactive"
+
+
+@dataclass(frozen=True)
+class TripId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"TripId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class VehicleId:
+    """Cross-module reference to a `Vehicle` aggregate owned by `fleet_device` — opaque,
+    non-empty string only, mirroring this file's own `OrganizationId`/`UserId` treatment
+    exactly (`.claude/rules/database.md` #3; see module docstring's Phase 12 addition)."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value:
+            raise DomainError("VehicleId must not be empty")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class TripType(str, Enum):
+    """Database Design §6.8: `trips.trip_type ENUM(morning,afternoon)` — "Ch. 7.9 independent"
+    (morning and afternoon are separate `Trip` instances, not two phases of one trip, Phase-2
+    §6.2's closing note)."""
+
+    MORNING = "morning"
+    AFTERNOON = "afternoon"
+
+
+class TripStatus(str, Enum):
+    """Database Design §6.8: `trips.status ENUM(scheduled,in_progress,interrupted,completed)`,
+    matching Phase-2 §6.2's documented state diagram exactly:
+
+        Scheduled -> InProgress (Driver starts trip)
+        InProgress -> Completed (Driver ends trip)
+        InProgress -> Interrupted (timeout / device offline / manual)
+        Interrupted -> InProgress (resume)
+        Interrupted -> Completed (force end)
+
+    Unlike `ParentStatus`/`DriverStatus`, this is a fully documented enum **and** a documented
+    transition graph — `Trip`'s behavior methods (`entities.py`) enforce the graph above exactly,
+    raising `RuleViolationError` (not the flat idempotent-no-op convention `Student`/`Parent`/
+    `Driver`/`Route` use for their own undocumented-transition enums) for any edge not drawn
+    above."""
+
+    SCHEDULED = "scheduled"
+    IN_PROGRESS = "in_progress"
+    INTERRUPTED = "interrupted"
+    COMPLETED = "completed"

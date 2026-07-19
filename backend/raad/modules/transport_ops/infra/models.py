@@ -53,16 +53,34 @@ resulting difference in the mapper sync logic).
 
 PostgreSQL types only (ADR-0002) — no MySQL dialect import anywhere in this file, matching
 every other infra model rewritten during the PostgreSQL migration.
+
+**Phase 12 addition: `TripModel`.** `trips` (§6.8) composes `AuditedTableMixin` ("+ standard
+audit cols"). `driver_id`/`route_id` are real database `ForeignKey`s — in-context, same-module
+references (`drivers.id`/`routes.id`), the identical treatment `stops.route_id` already gets;
+`vehicle_id`/`organization_id` stay plain indexed columns — cross-module references, the same
+`organization_id`/`user_id` treatment every other table in this file gets. The one-active-
+trip-per-vehicle invariant (§6.8: "generated-column unique... = vehicle_id when
+status=in_progress else NULL") is implemented the same way `device_assignments`'
+one-active-binding invariant already is under ADR-0002: a **PostgreSQL partial unique index**
+(`ux_trips__active_vehicle` on `vehicle_id`, `WHERE status = 'in_progress'`) rather than a
+generated denormalized key column — no MySQL-emulation column exists here either. The plain
+composite index `ix_trips__organization_id_scheduled_date_status` is §6.8's own documented
+`ix_trips__org_date_status`.
 """
 
 from __future__ import annotations
+
+from datetime import date, datetime
 
 from sqlalchemy import (
     CHAR,
     DECIMAL,
     VARCHAR,
     Boolean,
+    Date,
+    DateTime,
     ForeignKey,
+    Index,
     Integer,
     UniqueConstraint,
 )
@@ -76,6 +94,8 @@ _STUDENT_STATUS_VALUES = ("active", "disabled", "graduated", "transferred")
 _PARENT_STATUS_VALUES = ("active", "inactive")
 _DRIVER_STATUS_VALUES = ("active", "inactive")
 _ROUTE_STATUS_VALUES = ("active", "inactive")
+_TRIP_TYPE_VALUES = ("morning", "afternoon")
+_TRIP_STATUS_VALUES = ("scheduled", "in_progress", "interrupted", "completed")
 
 
 class StudentModel(AuditedTableMixin, Base):
@@ -208,3 +228,47 @@ class StopModel(AuditedTableMixin, Base):
     geofence_radius_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     route: Mapped[RouteModel] = relationship(back_populates="stops")
+
+
+class TripModel(AuditedTableMixin, Base):
+    """`trips` (Database Design §6.8): the operational aggregate root for a day's journey."""
+
+    __tablename__ = "trips"
+    __table_args__ = (
+        Index(
+            "ux_trips__active_vehicle",
+            "vehicle_id",
+            unique=True,
+            postgresql_where="status = 'in_progress'",
+        ),
+        Index(
+            "ix_trips__organization_id_scheduled_date_status",
+            "organization_id",
+            "scheduled_date",
+            "status",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    vehicle_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    driver_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("drivers.id"), nullable=False, index=True
+    )
+    route_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("routes.id"), nullable=False, index=True
+    )
+    trip_type: Mapped[str] = mapped_column(
+        SqlEnum(*_TRIP_TYPE_VALUES, name="trip_type"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        SqlEnum(*_TRIP_STATUS_VALUES, name="trip_status"),
+        nullable=False,
+        index=True,
+    )
+    scheduled_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )

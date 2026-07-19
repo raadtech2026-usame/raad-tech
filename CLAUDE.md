@@ -98,9 +98,9 @@ Each of the five below has a full `api / application / domain / infra / events` 
 - **Transport Operations** — `Student` (enroll/update/activate/disable/graduate/transfer),
   `Parent` (register/update/activate/disable), the `student_parents` M:N link
   (link/unlink/list-by-student/list-by-parent), `Driver` (register/update/activate/disable),
-  and `Route` (create/update/activate/disable) with its `Stop` child entity
-  (add/remove/move-sequence, ordered by `sequence_no`) are built. `Trip`/`student_assignments`
-  (also owned by this bounded context per ADR-0001) are not yet built. The `/drivers` REST
+  `Route` (create/update/activate/disable) with its `Stop` child entity
+  (add/remove/move-sequence, ordered by `sequence_no`), and now `Trip`
+  (schedule/start/end/interrupt/resume/change-driver) are built. The `/drivers` REST
   resource has no corresponding row in `docs/business/RAAD_Phase3.3_API_Contracts_v1.md` §4.3
   (only `Trip`-level `/trips/{id}/driver` is documented there) — built anyway on Database
   Design §6.1/ADR-0001's unambiguous table definition and ownership, following the same
@@ -110,7 +110,19 @@ Each of the five below has a full `api / application / domain / infra / events` 
   Contracts §4.3) — individual stop update/removal/reorder have no documented route yet, so
   `Route.remove_stop`/`Route.move_stop` are implemented and unit-tested but not HTTP-exposed
   this phase, mirroring `fleet_device`'s identical "use-case exists, no approved endpoint yet"
-  posture for `RegisterCameraCommand`.
+  posture for `RegisterCameraCommand`. `Trip.vehicle_id` references `fleet_device`'s `Vehicle`
+  aggregate (a different bounded context) and is treated as an opaque, format-validated-only
+  cross-module id with **no existence check** — confirmed with the user: this mirrors the
+  existing `Parent.user_id`/`Driver.user_id` precedent exactly, since `transport_ops` cannot
+  perform a cross-module DB read (`.claude/rules/backend.md` #3) and the only cross-module
+  coordination design in this codebase, ADR-0003, is still "Proposed, not accepted" and covers
+  a write workflow, not a read/validation. `trip_students` (Database Design §6.9, "roster
+  snapshot") remains **not built** — its data source, `student_assignments` (§6.7, also owned
+  by this bounded context per ADR-0001), is itself not built yet, so `Trip` ships as
+  vehicle+driver+route only, no student roster. `Trip.interrupt`/`resume` are implemented and
+  unit-tested at the domain/application layers but have no HTTP route this phase (no documented
+  `/trips/{id}/interrupt`/`/trips/{id}/resume` path exists), the same "use-case exists, no
+  approved endpoint yet" posture already established for `Route.remove_stop`/`move_stop`.
 
 ### Architecture patterns in use
 
