@@ -66,6 +66,24 @@ one-active-binding invariant already is under ADR-0002: a **PostgreSQL partial u
 generated denormalized key column — no MySQL-emulation column exists here either. The plain
 composite index `ix_trips__organization_id_scheduled_date_status` is §6.8's own documented
 `ix_trips__org_date_status`.
+
+**Phase 13 addition: `StudentAssignmentModel`.** `student_assignments` (§6.7) composes
+`AuditedTableMixin` ("+ standard audit cols"). `student_id`/`route_id`/`pickup_stop_id`/
+`dropoff_stop_id` are real database `ForeignKey`s — all four are same-module, in-context
+references (`students.id`/`routes.id`/`stops.id`), the identical treatment `stops.route_id`
+already gets; `vehicle_id`/`organization_id` stay plain indexed columns (cross-module/tenant
+references). `vehicle_id` is additionally **nullable** — §6.7 marks it optional, unlike
+`TripModel.vehicle_id` (`NOT NULL`). The one-active-assignment-per-student invariant (§6.7:
+"generated-column unique... = student_id when status=active else NULL") is implemented the same
+way `TripModel`'s one-active-trip-per-vehicle invariant already is: a **PostgreSQL partial
+unique index** (`ux_student_assignments__active_student` on `student_id`,
+`WHERE status = 'active'`), no generated denormalized key column. The two plain composite
+indexes (`ix_student_assignments__organization_id_status`,
+`ix_student_assignments__student_id_status`) are §6.7's own documented
+`ix_student_assignments__org_status`/`ix_student_assignments__student_status`, expanded to real
+column names per `core.db.base`'s naming convention (off the actual column names, not the
+doc's abbreviated form — the same expansion `TripModel`'s own composite index above already
+applies).
 """
 
 from __future__ import annotations
@@ -96,6 +114,13 @@ _DRIVER_STATUS_VALUES = ("active", "inactive")
 _ROUTE_STATUS_VALUES = ("active", "inactive")
 _TRIP_TYPE_VALUES = ("morning", "afternoon")
 _TRIP_STATUS_VALUES = ("scheduled", "in_progress", "interrupted", "completed")
+_STUDENT_ASSIGNMENT_STATUS_VALUES = (
+    "active",
+    "removed",
+    "transferred",
+    "graduated",
+    "disabled",
+)
 
 
 class StudentModel(AuditedTableMixin, Base):
@@ -268,6 +293,59 @@ class TripModel(AuditedTableMixin, Base):
     scheduled_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+
+
+class StudentAssignmentModel(AuditedTableMixin, Base):
+    """`student_assignments` (Database Design §6.7): "the CR-1 access gate" — binds a Student
+    to a Route, pickup/dropoff Stop, and optionally a Vehicle."""
+
+    __tablename__ = "student_assignments"
+    __table_args__ = (
+        Index(
+            "ux_student_assignments__active_student",
+            "student_id",
+            unique=True,
+            postgresql_where="status = 'active'",
+        ),
+        Index(
+            "ix_student_assignments__organization_id_status",
+            "organization_id",
+            "status",
+        ),
+        Index(
+            "ix_student_assignments__student_id_status",
+            "student_id",
+            "status",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    student_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("students.id"), nullable=False, index=True
+    )
+    route_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("routes.id"), nullable=False, index=True
+    )
+    pickup_stop_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("stops.id"), nullable=False
+    )
+    dropoff_stop_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("stops.id"), nullable=False
+    )
+    vehicle_id: Mapped[str | None] = mapped_column(
+        CHAR(26), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        SqlEnum(*_STUDENT_ASSIGNMENT_STATUS_VALUES, name="student_assignment_status"),
+        nullable=False,
+        index=True,
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), nullable=False
     )
     ended_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True

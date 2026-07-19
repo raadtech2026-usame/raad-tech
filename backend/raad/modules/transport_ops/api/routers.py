@@ -162,6 +162,29 @@ mirroring `Route.remove_stop`/`move_stop`'s identical "use-case exists, no appro
 yet" posture; a generic `PATCH /trips/{id}` and `DELETE /trips/{id}` — no field beyond `driver`
 is documented as post-creation-editable, and `Trip` has no soft-delete domain behavior, the
 identical deferral every other `DELETE` in this module already applies.
+
+**Phase 13: `student_assignments_router` — four routes, matching API Contracts §4.3's
+`/student-assignments` rows exactly (lines 127-128):**
+
+- `POST /student-assignments` — assign (the doc's uniform "`GET/POST /student-assignments`"
+  create half; line 127, "Org Admin", "the CR-1 gate record").
+- `GET /student-assignments` — list (the list half of the same line; same inherited
+  unrestricted-`TenantRegionScope` caveat every other list endpoint in this module carries).
+- `GET /student-assignments/{id}` — get by id. Not literally itemized in §4.3's compact table
+  (only `GET/POST /student-assignments` appears), but every sibling resource in this module has
+  this uniform-CRUD route — built for the same reason `Trip`'s equivalent was, flagged here
+  rather than silently assumed.
+- `POST /student-assignments/{id}/end` — line 128 verbatim: "status→removed/transferred/… →
+  CR-1 revocation event". Org Admin. Body `{status}`, dispatched to
+  `remove`/`transfer`/`graduate`/`disable` exactly like `update_student_status` already
+  dispatches `Student`'s own four-way status field — see `domain/entities.py`'s module docstring
+  for the `event_type` collision this shares with `Student`'s own status events.
+
+**Not exposed this phase:** a generic `PATCH /student-assignments/{id}` and
+`DELETE /student-assignments/{id}` — no field is documented as post-creation-editable beyond
+status (which has its own dedicated `/end` route, mirroring `Student`'s `/status` split), and no
+soft-delete domain behavior exists, the identical deferral every other `DELETE` in this module
+already applies.
 """
 
 from __future__ import annotations
@@ -176,6 +199,7 @@ from raad.modules.transport_ops.api.deps import (
     get_driver_service,
     get_parent_service,
     get_route_service,
+    get_student_assignment_service,
     get_student_parent_service,
     get_student_service,
     get_transport_ops_uow,
@@ -183,6 +207,7 @@ from raad.modules.transport_ops.api.deps import (
 )
 from raad.modules.transport_ops.api.schemas import (
     AddStopToRouteRequest,
+    AssignStudentToRouteRequest,
     ChangeTripDriverRequest,
     CreateRouteRequest,
     DriverResponse,
@@ -198,6 +223,8 @@ from raad.modules.transport_ops.api.schemas import (
     RouteSummaryResponse,
     ScheduleTripRequest,
     StopResponse,
+    StudentAssignmentResponse,
+    StudentAssignmentSummaryResponse,
     StudentForParentResponse,
     StudentParentLinkResponse,
     StudentResponse,
@@ -207,6 +234,7 @@ from raad.modules.transport_ops.api.schemas import (
     UpdateDriverRequest,
     UpdateParentRequest,
     UpdateRouteRequest,
+    UpdateStudentAssignmentStatusRequest,
     UpdateStudentRequest,
     UpdateStudentStatusRequest,
 )
@@ -216,20 +244,25 @@ from raad.modules.transport_ops.application.commands import (
     ActivateRouteCommand,
     ActivateStudentCommand,
     AddStopToRouteCommand,
+    AssignStudentToRouteCommand,
     ChangeTripDriverCommand,
     CreateRouteCommand,
     DisableDriverCommand,
     DisableParentCommand,
     DisableRouteCommand,
+    DisableStudentAssignmentCommand,
     DisableStudentCommand,
     EndTripCommand,
     EnrollStudentCommand,
+    GraduateStudentAssignmentCommand,
     GraduateStudentCommand,
     LinkParentToStudentCommand,
     RegisterDriverCommand,
     RegisterParentCommand,
+    RemoveStudentAssignmentCommand,
     ScheduleTripCommand,
     StartTripCommand,
+    TransferStudentAssignmentCommand,
     TransferStudentCommand,
     UnlinkParentFromStudentCommand,
     UpdateDriverCommand,
@@ -244,6 +277,7 @@ from raad.modules.transport_ops.application.queries import (
     GetDriverByIdQuery,
     GetParentByIdQuery,
     GetRouteByIdQuery,
+    GetStudentAssignmentByIdQuery,
     GetStudentByIdQuery,
     GetTripByIdQuery,
     ListDriversQuery,
@@ -251,6 +285,7 @@ from raad.modules.transport_ops.application.queries import (
     ListParentsQuery,
     ListRoutesQuery,
     ListStopsForRouteQuery,
+    ListStudentAssignmentsQuery,
     ListStudentsForParentQuery,
     ListStudentsQuery,
     ListTripsQuery,
@@ -260,6 +295,8 @@ from raad.modules.transport_ops.application.queries import (
     RouteDTO,
     RouteSummaryDTO,
     StopDTO,
+    StudentAssignmentDTO,
+    StudentAssignmentSummaryDTO,
     StudentDTO,
     StudentForParentDTO,
     StudentParentDTO,
@@ -272,6 +309,7 @@ from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
     RouteApplicationService,
     StudentApplicationService,
+    StudentAssignmentApplicationService,
     StudentParentApplicationService,
     TripApplicationService,
 )
@@ -281,6 +319,7 @@ parents_router = APIRouter()
 routes_router = APIRouter()
 trips_router = APIRouter()
 drivers_router = APIRouter()
+student_assignments_router = APIRouter()
 
 
 def _student_dto_to_response(student: StudentDTO) -> StudentResponse:
@@ -423,6 +462,34 @@ def _trip_summary_dto_to_response(trip: TripSummaryDTO) -> TripSummaryResponse:
         trip_type=trip.trip_type,
         status=trip.status,
         scheduled_date=trip.scheduled_date,
+    )
+
+
+def _student_assignment_dto_to_response(
+    assignment: StudentAssignmentDTO,
+) -> StudentAssignmentResponse:
+    return StudentAssignmentResponse(
+        id=assignment.id,
+        organization_id=assignment.organization_id,
+        student_id=assignment.student_id,
+        route_id=assignment.route_id,
+        pickup_stop_id=assignment.pickup_stop_id,
+        dropoff_stop_id=assignment.dropoff_stop_id,
+        vehicle_id=assignment.vehicle_id,
+        status=assignment.status,
+        assigned_at=assignment.assigned_at,
+        ended_at=assignment.ended_at,
+    )
+
+
+def _student_assignment_summary_dto_to_response(
+    assignment: StudentAssignmentSummaryDTO,
+) -> StudentAssignmentSummaryResponse:
+    return StudentAssignmentSummaryResponse(
+        id=assignment.id,
+        student_id=assignment.student_id,
+        route_id=assignment.route_id,
+        status=assignment.status,
     )
 
 
@@ -1348,3 +1415,157 @@ async def change_trip_driver(
     )
     trip = await trip_service.change_trip_driver(command, uow=uow)
     return _trip_dto_to_response(trip)
+
+
+@student_assignments_router.post(
+    "",
+    response_model=StudentAssignmentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Assign a student to a route",
+    description=(
+        "Org Admin — 'the CR-1 gate record' (API Contracts §4.3 line 127). Rejects a "
+        "student/route not found (`NotFoundError`), a pickup/dropoff stop not on the given "
+        "route (`NotFoundError`), cross-organization student/route (`DomainError`), and a "
+        "student who already has an active assignment (`ConflictError`, one-active-assignment-"
+        "per-student, Database Design §6.7). Pending the approved RBAC permission matrix — see "
+        "`enroll_student`'s note."
+    ),
+)
+async def assign_student_to_route(
+    body: AssignStudentToRouteRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_assignments.create"))
+    ),
+    student_assignment_service: StudentAssignmentApplicationService = Depends(
+        get_student_assignment_service
+    ),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StudentAssignmentResponse:
+    command = AssignStudentToRouteCommand(
+        organization_id=body.organization_id,
+        student_id=body.student_id,
+        route_id=body.route_id,
+        pickup_stop_id=body.pickup_stop_id,
+        dropoff_stop_id=body.dropoff_stop_id,
+        vehicle_id=body.vehicle_id,
+        actor=principal,
+    )
+    assignment = await student_assignment_service.assign_student_to_route(
+        command, uow=uow
+    )
+    return _student_assignment_dto_to_response(assignment)
+
+
+@student_assignments_router.get(
+    "",
+    response_model=list[StudentAssignmentSummaryResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List student assignments",
+    description=(
+        "Org Admin (API Contracts §4.3 line 127). Not yet tenant-scoped — same inherited "
+        "caveat as `list_students`/`list_trips`. Also pending the approved RBAC permission "
+        "matrix."
+    ),
+)
+async def list_student_assignments(
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_assignments.list"))
+    ),
+    student_assignment_service: StudentAssignmentApplicationService = Depends(
+        get_student_assignment_service
+    ),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[StudentAssignmentSummaryResponse]:
+    assignments = await student_assignment_service.list_student_assignments(
+        ListStudentAssignmentsQuery(), uow=uow
+    )
+    return [
+        _student_assignment_summary_dto_to_response(assignment)
+        for assignment in assignments
+    ]
+
+
+@student_assignments_router.get(
+    "/{student_assignment_id}",
+    response_model=StudentAssignmentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a student assignment by id",
+    description=(
+        "Org Admin (API Contracts §4 uniform CRUD — not itemized separately in §4.3's compact "
+        "table, see `routers.py`'s module docstring). Pending the approved RBAC permission "
+        "matrix — see `assign_student_to_route`'s note."
+    ),
+)
+async def get_student_assignment(
+    student_assignment_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_assignments.read"))
+    ),
+    student_assignment_service: StudentAssignmentApplicationService = Depends(
+        get_student_assignment_service
+    ),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StudentAssignmentResponse:
+    assignment = await student_assignment_service.get_student_assignment_by_id(
+        GetStudentAssignmentByIdQuery(student_assignment_id=student_assignment_id),
+        uow=uow,
+    )
+    return _student_assignment_dto_to_response(assignment)
+
+
+@student_assignments_router.post(
+    "/{student_assignment_id}/end",
+    response_model=StudentAssignmentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Transition a student assignment's status",
+    description=(
+        "Org Admin — body `{status}` -> removed/transferred/graduated/disabled -> CR-1 "
+        "revocation event (API Contracts §4.3 line 128 verbatim). Pending the approved RBAC "
+        "permission matrix — see `assign_student_to_route`'s note."
+    ),
+)
+async def end_student_assignment(
+    student_assignment_id: str,
+    body: UpdateStudentAssignmentStatusRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_assignments.end"))
+    ),
+    student_assignment_service: StudentAssignmentApplicationService = Depends(
+        get_student_assignment_service
+    ),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StudentAssignmentResponse:
+    if body.status == "removed":
+        assignment = await student_assignment_service.remove_student_assignment(
+            RemoveStudentAssignmentCommand(
+                student_assignment_id=student_assignment_id, actor=principal
+            ),
+            uow=uow,
+        )
+    elif body.status == "transferred":
+        assignment = await student_assignment_service.transfer_student_assignment(
+            TransferStudentAssignmentCommand(
+                student_assignment_id=student_assignment_id, actor=principal
+            ),
+            uow=uow,
+        )
+    elif body.status == "graduated":
+        assignment = await student_assignment_service.graduate_student_assignment(
+            GraduateStudentAssignmentCommand(
+                student_assignment_id=student_assignment_id, actor=principal
+            ),
+            uow=uow,
+        )
+    elif body.status == "disabled":
+        assignment = await student_assignment_service.disable_student_assignment(
+            DisableStudentAssignmentCommand(
+                student_assignment_id=student_assignment_id, actor=principal
+            ),
+            uow=uow,
+        )
+    else:
+        raise ValidationError(
+            f"Unsupported status: {body.status!r}", details={"field": "status"}
+        )
+
+    return _student_assignment_dto_to_response(assignment)

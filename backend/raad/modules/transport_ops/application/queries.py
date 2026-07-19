@@ -40,6 +40,14 @@ already-correct source.
 (`scheduled_date` stays native `date`) — this file's own documented convention ("timestamps...
 stay native `datetime`, never `.isoformat()`-stringified at this layer"); the API layer's
 Pydantic schemas (`api/schemas.py`) handle JSON serialization, not this one.
+
+**Phase 13 addition: `StudentAssignment` queries/DTOs.** `StudentAssignmentDTO`/
+`StudentAssignmentSummaryDTO` mirror `TripDTO`/`TripSummaryDTO`'s exact shape. **Not** included:
+`created_at`/`updated_at` — API Contracts §6's documented example resource for this aggregate
+shows them, but no DTO in this module has ever carried ORM-only audit columns (they are not
+domain-aggregate fields anywhere in this file); flagged as a pre-existing, module-wide
+documentation-vs-implementation gap in `domain/entities.py`'s module docstring, not fixed
+one-off here.
 """
 
 from __future__ import annotations
@@ -53,6 +61,7 @@ from raad.modules.transport_ops.domain.entities import (
     Route,
     Stop,
     Student,
+    StudentAssignment,
     StudentParent,
     Trip,
 )
@@ -431,4 +440,71 @@ def trip_to_summary_dto(trip: Trip) -> TripSummaryDTO:
         trip_type=trip.trip_type.value,
         status=trip.status.value,
         scheduled_date=trip.scheduled_date,
+    )
+
+
+@dataclass(frozen=True)
+class GetStudentAssignmentByIdQuery:
+    student_assignment_id: str
+
+
+@dataclass(frozen=True)
+class ListStudentAssignmentsQuery:
+    pass
+
+
+@dataclass(frozen=True)
+class StudentAssignmentDTO:
+    id: str
+    organization_id: str
+    student_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    vehicle_id: str | None
+    status: str
+    assigned_at: datetime
+    ended_at: datetime | None
+
+
+@dataclass(frozen=True)
+class StudentAssignmentSummaryDTO:
+    """Lighter listing projection, mirroring `TripSummaryDTO`'s shape."""
+
+    id: str
+    student_id: str
+    route_id: str
+    status: str
+
+
+def student_assignment_to_dto(assignment: StudentAssignment) -> StudentAssignmentDTO:
+    """Shared mapper — the only place a `StudentAssignment` aggregate is projected into its
+    full DTO, mirroring `trip_to_dto`'s exact shape."""
+    return StudentAssignmentDTO(
+        id=str(assignment.id),
+        organization_id=str(assignment.organization_id),
+        student_id=str(assignment.student_id),
+        route_id=str(assignment.route_id),
+        pickup_stop_id=str(assignment.pickup_stop_id),
+        dropoff_stop_id=str(assignment.dropoff_stop_id),
+        vehicle_id=(
+            str(assignment.vehicle_id) if assignment.vehicle_id is not None else None
+        ),
+        status=assignment.status.value,
+        assigned_at=assignment.assigned_at,
+        ended_at=assignment.ended_at,
+    )
+
+
+def student_assignment_to_summary_dto(
+    assignment: StudentAssignment,
+) -> StudentAssignmentSummaryDTO:
+    """Shared mapper — the only place a `StudentAssignment` aggregate is projected into its
+    summary DTO (`ListStudentAssignmentsQuery`'s read shape), mirroring `trip_to_summary_dto`'s
+    exact shape."""
+    return StudentAssignmentSummaryDTO(
+        id=str(assignment.id),
+        student_id=str(assignment.student_id),
+        route_id=str(assignment.route_id),
+        status=assignment.status.value,
     )

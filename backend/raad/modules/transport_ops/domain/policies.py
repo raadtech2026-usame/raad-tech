@@ -15,4 +15,10 @@ policies.TrackingVisibilityPolicy` already establishes).
 (`entities.py`'s `start`/`end`/`interrupt`/`resume`) is a pure function of the aggregate's own
 `status` field, enforced directly on the aggregate — not a candidate for a separate policy
 object.
+
+**Phase 13 (`StudentAssignment`):** `SubscriptionAccessPolicy` (CR-1) itself is still not
+implemented anywhere in this codebase — it remains owned by `billing`/`core/policies` per this
+file's own opening paragraph, unchanged by this phase. `StudentAssignment` only produces the
+`assignment_state` fact (its own `status` field) and emits the four named revocation events that
+policy is documented to consume (Backend LLD §5.4) — it does not evaluate the policy itself.
 """

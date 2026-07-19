@@ -63,6 +63,17 @@ vehicle. `interrupt_trip`/`resume_trip` have no approved HTTP route this phase (
 module docstring) but are fully implemented and unit-tested, mirroring
 `remove_stop_from_route`/`move_stop`'s identical "use-case exists, no approved endpoint yet"
 posture.
+
+**Phase 13 addition: `StudentAssignmentApplicationService`.** A seventh, separate service —
+`/student-assignments` is its own resource prefix. `assign_student_to_route` runs
+`ensure_student_exists`/`ensure_route_exists` (both reused as-is from Phase 12/10.7 — no new
+existence-check function needed for either), then `ensure_pickup_and_dropoff_stops_exist` against
+the just-loaded `Route`, then `ensure_student_has_no_active_assignment`, before calling the
+aggregate factory — the same ordering discipline (cheap/independent checks before the
+I/O-dependent uniqueness guard) `RouteApplicationService.create_route` already establishes.
+`remove_student_assignment`/`transfer_student_assignment`/`graduate_student_assignment`/
+`disable_student_assignment` all mirror `StudentApplicationService`'s four identically-shaped
+status methods exactly — load, call the one matching domain method, commit.
 """
 
 from __future__ import annotations
@@ -76,14 +87,17 @@ from raad.modules.transport_ops.application.commands import (
     ActivateRouteCommand,
     ActivateStudentCommand,
     AddStopToRouteCommand,
+    AssignStudentToRouteCommand,
     ChangeTripDriverCommand,
     CreateRouteCommand,
     DisableDriverCommand,
     DisableParentCommand,
     DisableRouteCommand,
+    DisableStudentAssignmentCommand,
     DisableStudentCommand,
     EndTripCommand,
     EnrollStudentCommand,
+    GraduateStudentAssignmentCommand,
     GraduateStudentCommand,
     InterruptTripCommand,
     LinkParentToStudentCommand,
@@ -91,9 +105,11 @@ from raad.modules.transport_ops.application.commands import (
     RegisterDriverCommand,
     RegisterParentCommand,
     RemoveStopFromRouteCommand,
+    RemoveStudentAssignmentCommand,
     ResumeTripCommand,
     ScheduleTripCommand,
     StartTripCommand,
+    TransferStudentAssignmentCommand,
     TransferStudentCommand,
     UnlinkParentFromStudentCommand,
     UpdateDriverCommand,
@@ -108,6 +124,7 @@ from raad.modules.transport_ops.application.queries import (
     GetDriverByIdQuery,
     GetParentByIdQuery,
     GetRouteByIdQuery,
+    GetStudentAssignmentByIdQuery,
     GetStudentByIdQuery,
     GetTripByIdQuery,
     ListDriversQuery,
@@ -115,6 +132,7 @@ from raad.modules.transport_ops.application.queries import (
     ListParentsQuery,
     ListRoutesQuery,
     ListStopsForRouteQuery,
+    ListStudentAssignmentsQuery,
     ListStudentsForParentQuery,
     ListStudentsQuery,
     ListTripsQuery,
@@ -124,6 +142,8 @@ from raad.modules.transport_ops.application.queries import (
     RouteDTO,
     RouteSummaryDTO,
     StopDTO,
+    StudentAssignmentDTO,
+    StudentAssignmentSummaryDTO,
     StudentDTO,
     StudentForParentDTO,
     StudentParentDTO,
@@ -138,6 +158,8 @@ from raad.modules.transport_ops.application.queries import (
     route_to_dto,
     route_to_summary_dto,
     stop_to_dto,
+    student_assignment_to_dto,
+    student_assignment_to_summary_dto,
     student_for_parent_to_dto,
     student_parent_to_dto,
     student_to_dto,
@@ -150,9 +172,11 @@ from raad.modules.transport_ops.application.validators import (
     ensure_link_exists,
     ensure_link_not_duplicate,
     ensure_parent_exists,
+    ensure_pickup_and_dropoff_stops_exist,
     ensure_route_exists,
     ensure_route_name_available,
     ensure_student_exists,
+    ensure_student_has_no_active_assignment,
     ensure_vehicle_has_no_active_trip,
 )
 from raad.modules.transport_ops.domain.entities import (
@@ -160,6 +184,7 @@ from raad.modules.transport_ops.domain.entities import (
     Parent,
     Route,
     Student,
+    StudentAssignment,
     StudentParent,
     Trip,
 )
@@ -170,6 +195,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     PhoneNumber,
     RouteId,
     StopId,
+    StudentAssignmentId,
     StudentId,
     TripId,
     TripType,
@@ -796,3 +822,128 @@ class TripApplicationService:
         if trip is None:
             raise NotFoundError(f"Trip {trip_id} not found.")
         return trip
+
+
+class StudentAssignmentApplicationService:
+    """Student-assignment lifecycle use-cases: assign, remove, transfer, graduate, disable, and
+    the `GetStudentAssignmentByIdQuery`/`ListStudentAssignmentsQuery` read paths. See module
+    docstring for the pre-check ordering `assign_student_to_route` follows."""
+
+    def __init__(self, *, clock: Clock, id_generator: IdGenerator) -> None:
+        self._clock = clock
+        self._id_generator = id_generator
+
+    async def assign_student_to_route(
+        self, command: AssignStudentToRouteCommand, *, uow: TransportOpsUnitOfWork
+    ) -> StudentAssignmentDTO:
+        async with uow:
+            student = await ensure_student_exists(uow, StudentId(command.student_id))
+            route = await ensure_route_exists(uow, RouteId(command.route_id))
+            ensure_pickup_and_dropoff_stops_exist(
+                route,
+                StopId(command.pickup_stop_id),
+                StopId(command.dropoff_stop_id),
+            )
+            await ensure_student_has_no_active_assignment(uow, student.id)
+
+            assignment = StudentAssignment.assign(
+                id=StudentAssignmentId(self._id_generator.new_id()),
+                organization_id=OrganizationId(command.organization_id),
+                student_id=student.id,
+                student_organization_id=student.organization_id,
+                route_id=route.id,
+                route_organization_id=route.organization_id,
+                pickup_stop_id=StopId(command.pickup_stop_id),
+                dropoff_stop_id=StopId(command.dropoff_stop_id),
+                vehicle_id=(
+                    VehicleId(command.vehicle_id)
+                    if command.vehicle_id is not None
+                    else None
+                ),
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.student_assignments.add(assignment)
+            uow.record_events(assignment.pull_domain_events())
+            await uow.commit()
+            return student_assignment_to_dto(assignment)
+
+    async def remove_student_assignment(
+        self, command: RemoveStudentAssignmentCommand, *, uow: TransportOpsUnitOfWork
+    ) -> StudentAssignmentDTO:
+        async with uow:
+            assignment = await self._get_assignment_or_raise(
+                uow, command.student_assignment_id
+            )
+            assignment.remove(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(assignment.pull_domain_events())
+            await uow.commit()
+            return student_assignment_to_dto(assignment)
+
+    async def transfer_student_assignment(
+        self, command: TransferStudentAssignmentCommand, *, uow: TransportOpsUnitOfWork
+    ) -> StudentAssignmentDTO:
+        async with uow:
+            assignment = await self._get_assignment_or_raise(
+                uow, command.student_assignment_id
+            )
+            assignment.transfer(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(assignment.pull_domain_events())
+            await uow.commit()
+            return student_assignment_to_dto(assignment)
+
+    async def graduate_student_assignment(
+        self, command: GraduateStudentAssignmentCommand, *, uow: TransportOpsUnitOfWork
+    ) -> StudentAssignmentDTO:
+        async with uow:
+            assignment = await self._get_assignment_or_raise(
+                uow, command.student_assignment_id
+            )
+            assignment.graduate(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(assignment.pull_domain_events())
+            await uow.commit()
+            return student_assignment_to_dto(assignment)
+
+    async def disable_student_assignment(
+        self, command: DisableStudentAssignmentCommand, *, uow: TransportOpsUnitOfWork
+    ) -> StudentAssignmentDTO:
+        async with uow:
+            assignment = await self._get_assignment_or_raise(
+                uow, command.student_assignment_id
+            )
+            assignment.disable(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(assignment.pull_domain_events())
+            await uow.commit()
+            return student_assignment_to_dto(assignment)
+
+    async def get_student_assignment_by_id(
+        self, query: GetStudentAssignmentByIdQuery, *, uow: TransportOpsUnitOfWork
+    ) -> StudentAssignmentDTO:
+        async with uow:
+            assignment = await self._get_assignment_or_raise(
+                uow, query.student_assignment_id
+            )
+            return student_assignment_to_dto(assignment)
+
+    async def list_student_assignments(
+        self, query: ListStudentAssignmentsQuery, *, uow: TransportOpsUnitOfWork
+    ) -> list[StudentAssignmentSummaryDTO]:
+        async with uow:
+            assignments = await uow.student_assignments.list_all()
+            return [
+                student_assignment_to_summary_dto(assignment)
+                for assignment in assignments
+            ]
+
+    @staticmethod
+    async def _get_assignment_or_raise(
+        uow: TransportOpsUnitOfWork, student_assignment_id: str
+    ) -> StudentAssignment:
+        assignment = await uow.student_assignments.get(
+            StudentAssignmentId(student_assignment_id)
+        )
+        if assignment is None:
+            raise NotFoundError(
+                f"StudentAssignment {student_assignment_id} not found."
+            )
+        return assignment

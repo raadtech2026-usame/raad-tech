@@ -27,6 +27,12 @@ is no longer present among `route.stops` — `RouteModel.stops`'s `cascade="all,
 collection to sync (unlike `Route`), so the mapper is a flat field projection. `_to_naive_utc`
 strips tzinfo off `started_at`/`ended_at` before they reach the ORM row — see its own
 docstring for the live-verification finding that motivated it.
+
+**Phase 13 addition: `student_assignment_to_model`/`model_to_student_assignment`.** Mirrors
+`trip_to_model`/`model_to_trip`'s exact shape, including reusing `_to_naive_utc` for
+`assigned_at`/`ended_at` — both come from the same `Clock.now()` source as `Trip.started_at`/
+`ended_at`, so the identical tz-aware-into-naive-column mismatch applies pre-emptively here
+rather than being rediscovered live again.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ from raad.modules.transport_ops.domain.entities import (
     Route,
     Stop,
     Student,
+    StudentAssignment,
     StudentParent,
     Trip,
 )
@@ -52,6 +59,8 @@ from raad.modules.transport_ops.domain.value_objects import (
     RouteId,
     RouteStatus,
     StopId,
+    StudentAssignmentId,
+    StudentAssignmentStatus,
     StudentId,
     StudentStatus,
     TripId,
@@ -65,6 +74,7 @@ from raad.modules.transport_ops.infra.models import (
     ParentModel,
     RouteModel,
     StopModel,
+    StudentAssignmentModel,
     StudentModel,
     StudentParentModel,
     TripModel,
@@ -287,5 +297,45 @@ def model_to_trip(model: TripModel) -> Trip:
         status=TripStatus(model.status),
         scheduled_date=model.scheduled_date,
         started_at=model.started_at,
+        ended_at=model.ended_at,
+    )
+
+
+def student_assignment_to_model(
+    assignment: StudentAssignment, *, existing: StudentAssignmentModel | None = None
+) -> StudentAssignmentModel:
+    """Projects a `StudentAssignment` aggregate onto its ORM row, mirroring `trip_to_model`'s
+    exact `existing=` in-place-update pattern, including `_to_naive_utc` for `assigned_at`/
+    `ended_at`."""
+    model = (
+        existing
+        if existing is not None
+        else StudentAssignmentModel(id=str(assignment.id))
+    )
+    model.organization_id = str(assignment.organization_id)
+    model.student_id = str(assignment.student_id)
+    model.route_id = str(assignment.route_id)
+    model.pickup_stop_id = str(assignment.pickup_stop_id)
+    model.dropoff_stop_id = str(assignment.dropoff_stop_id)
+    model.vehicle_id = (
+        str(assignment.vehicle_id) if assignment.vehicle_id is not None else None
+    )
+    model.status = assignment.status.value
+    model.assigned_at = _to_naive_utc(assignment.assigned_at)
+    model.ended_at = _to_naive_utc(assignment.ended_at)
+    return model
+
+
+def model_to_student_assignment(model: StudentAssignmentModel) -> StudentAssignment:
+    return StudentAssignment(
+        id=StudentAssignmentId(model.id),
+        organization_id=OrganizationId(model.organization_id),
+        student_id=StudentId(model.student_id),
+        route_id=RouteId(model.route_id),
+        pickup_stop_id=StopId(model.pickup_stop_id),
+        dropoff_stop_id=StopId(model.dropoff_stop_id),
+        vehicle_id=VehicleId(model.vehicle_id) if model.vehicle_id else None,
+        status=StudentAssignmentStatus(model.status),
+        assigned_at=model.assigned_at,
         ended_at=model.ended_at,
     )

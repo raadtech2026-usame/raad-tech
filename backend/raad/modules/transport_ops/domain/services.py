@@ -25,4 +25,12 @@ compares two already-loaded aggregates' `organization_id`s with no I/O of its ow
 domain service. `Trip`'s one genuinely I/O-dependent rule, one-active-trip-per-vehicle, needs a
 repository query, so it lives in the application layer instead
 (`application/validators.py`'s `ensure_vehicle_has_no_active_trip`).
+
+**Phase 13 (`StudentAssignment`):** same reasoning again. `StudentAssignment.assign`'s
+cross-organization checks are pure, no-I/O comparisons of already-loaded aggregates, mirroring
+`Trip.schedule`'s identical placement. The one I/O-dependent rule, one-active-assignment-per-
+student, lives in the application layer (`application/validators.py`'s
+`ensure_student_has_no_active_assignment`), and pickup/dropoff stop existence-checking is a
+repository-query concern too (`ensure_pickup_and_dropoff_stops_exist`) — neither is a domain
+service.
 """

@@ -62,6 +62,7 @@ from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
     RouteApplicationService,
     StudentApplicationService,
+    StudentAssignmentApplicationService,
     StudentParentApplicationService,
     TripApplicationService,
 )
@@ -182,6 +183,15 @@ def build_container(settings: Settings) -> Container:
     container.bind_singleton(
         TripApplicationService,
         TripApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+        ),
+    )
+    # StudentAssignmentApplicationService needs no TokenService either — always constructible,
+    # same reasoning as the services above.
+    container.bind_singleton(
+        StudentAssignmentApplicationService,
+        StudentAssignmentApplicationService(
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
         ),

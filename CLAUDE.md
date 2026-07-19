@@ -99,8 +99,12 @@ Each of the five below has a full `api / application / domain / infra / events` 
   `Parent` (register/update/activate/disable), the `student_parents` M:N link
   (link/unlink/list-by-student/list-by-parent), `Driver` (register/update/activate/disable),
   `Route` (create/update/activate/disable) with its `Stop` child entity
-  (add/remove/move-sequence, ordered by `sequence_no`), and now `Trip`
-  (schedule/start/end/interrupt/resume/change-driver) are built. The `/drivers` REST
+  (add/remove/move-sequence, ordered by `sequence_no`), `Trip`
+  (schedule/start/end/interrupt/resume/change-driver), and now `StudentAssignment`
+  (assign/remove/transfer/graduate/disable — "the CR-1 access gate", Database Design §6.7) are
+  built. Of `transport_ops`'s eight tables (Database Design §6: `students`, `parents`,
+  `student_parents`, `routes`, `stops`, `trips`, `student_assignments`, `trip_students`), only
+  `trip_students` remains unbuilt (deliberately deferred, see below). The `/drivers` REST
   resource has no corresponding row in `docs/business/RAAD_Phase3.3_API_Contracts_v1.md` §4.3
   (only `Trip`-level `/trips/{id}/driver` is documented there) — built anyway on Database
   Design §6.1/ADR-0001's unambiguous table definition and ownership, following the same
@@ -123,6 +127,18 @@ Each of the five below has a full `api / application / domain / infra / events` 
   unit-tested at the domain/application layers but have no HTTP route this phase (no documented
   `/trips/{id}/interrupt`/`/trips/{id}/resume` path exists), the same "use-case exists, no
   approved endpoint yet" posture already established for `Route.remove_stop`/`move_stop`.
+  `StudentAssignment.vehicle_id` gets the identical opaque, no-existence-check cross-module
+  treatment as `Trip.vehicle_id`. **Two documentation findings surfaced while building
+  `StudentAssignment`, flagged rather than silently resolved:** (1) Backend LLD §5.4 names this
+  aggregate's four revocation events (`StudentAssignmentRemoved`/`StudentTransferred`/
+  `StudentGraduated`/`StudentDisabled`) — three of those four exact `event_type` strings already
+  belong to `Student`'s own status-change events (Phase 10.1); both aggregates now emit
+  identically-named events, distinguishable only by `aggregate_type`, a collision the LLD's own
+  event catalog never disambiguated. (2) API Contracts §6's documented example resource for
+  `student_assignments` includes `created_at`/`updated_at`, but no aggregate in this module has
+  ever exposed ORM-only audit columns through its DTO — `StudentAssignmentResponse` follows the
+  5-aggregate-deep established precedent (omits them) rather than introducing a one-off
+  inconsistency; retrofitting all six aggregates is out of this phase's scope.
 
 ### Architecture patterns in use
 

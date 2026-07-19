@@ -55,6 +55,21 @@ ADR-0003, is still "Proposed, not accepted" and covers a write workflow, not a r
 Mirrors `OrganizationId`/`UserId`'s identical treatment above exactly: opaque, non-empty string
 only, no existence check anywhere in this module — the same trust level already given to
 `Parent.user_id`/`Driver.user_id` for their own cross-module references.
+
+**Phase 13 addition: `StudentAssignment`.** `StudentAssignmentId` is minted and owned by this
+module (`student_assignments` is this module's own table, Database Design §6.7, ADR-0001) —
+strict ULID shape, same treatment as every other module-owned id above. `StudentAssignmentStatus`
+mirrors `StudentStatus`'s exact situation, not `RouteStatus`'s/`TripStatus`'s: Database Design
+§6.7 gives the enum values explicitly (`active,removed,transferred,graduated,disabled`) but,
+unlike `Trip`'s Phase-2 §6.2 diagram, **no transition graph is documented anywhere** for this
+enum — confirmed by re-reading Backend LLD §5.4 (which describes the CR-1 policy's *consumption*
+of `assignment_state`, not a state machine for producing it) and the Phase-2 architecture
+document in full. `StudentAssignment`'s behavior methods (`entities.py`) therefore follow
+`Student`'s own precedent exactly: every status directly settable, idempotent same-state no-op,
+not a `RuleViolationError`-raising machine like `Trip`'s. `StudentAssignment.vehicle_id` reuses
+this file's own `VehicleId` (cross-module, `fleet_device`) — Database Design §6.7 marks this
+column **nullable** ("assigned vehicle"), unlike `Trip.vehicle_id` (`NOT NULL`), so it is typed
+`VehicleId | None` on the aggregate.
 """
 
 from __future__ import annotations
@@ -307,3 +322,32 @@ class TripStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     INTERRUPTED = "interrupted"
     COMPLETED = "completed"
+
+
+@dataclass(frozen=True)
+class StudentAssignmentId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(
+                f"StudentAssignmentId must be a 26-character ULID: {self.value!r}"
+            )
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class StudentAssignmentStatus(str, Enum):
+    """Database Design §6.7: `student_assignments.status
+    ENUM(active,removed,transferred,graduated,disabled)` — **the CR-1 access gate**
+    (`assignment_state` input to `SubscriptionAccessPolicy`, Backend LLD §5.4). No transition
+    graph is documented for this enum — see module docstring's Phase 13 addition. Every value
+    is directly settable with an idempotent same-state no-op, mirroring `StudentStatus`'s
+    identical situation exactly (both enums even share three of their four non-active values)."""
+
+    ACTIVE = "active"
+    REMOVED = "removed"
+    TRANSFERRED = "transferred"
+    GRADUATED = "graduated"
+    DISABLED = "disabled"

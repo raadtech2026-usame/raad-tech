@@ -45,11 +45,20 @@ from raad.modules.iam.infra.models import UserModel
 from raad.modules.iam.infra.repositories import SqlAlchemyIamUnitOfWork
 from raad.core.tenancy.principal import Role
 from raad.core.time.clock import SystemClock
-from raad.modules.transport_ops.domain.entities import Driver, Route, Trip
+from raad.modules.transport_ops.domain.entities import (
+    Driver,
+    Route,
+    Student,
+    StudentAssignment,
+    Trip,
+)
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     OrganizationId as TransportOpsOrganizationId,
     RouteId,
+    StopId,
+    StudentAssignmentId,
+    StudentId,
     TripId,
     TripType,
     UserId as TransportOpsUserId,
@@ -304,6 +313,144 @@ class TripDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
                 uow.record_events(second.pull_domain_events())
                 await uow.commit()
                 self._created_ids["trips"].append(str(second.id))
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class StudentAssignmentDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
+    """One-active-assignment-per-student (Phase 13, Database Design §6.7), proven at the actual
+    database layer — the real `ux_student_assignments__active_student` partial unique index
+    (`WHERE status = 'active'`), the same category of proof `TripDatabaseInvariantTests` above
+    already gives `ux_trips__active_vehicle`."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_ids: dict[str, list[str]] = {
+            "student_assignments": [],
+            "students": [],
+            "routes": [],
+        }
+
+    async def asyncTearDown(self) -> None:
+        from sqlalchemy import text
+
+        async with self.engine.begin() as conn:
+            if self._created_ids["student_assignments"]:
+                await conn.execute(
+                    text("DELETE FROM student_assignments WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids["student_assignments"]},
+                )
+            if self._created_ids["students"]:
+                await conn.execute(
+                    text("DELETE FROM students WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids["students"]},
+                )
+            if self._created_ids["routes"]:
+                await conn.execute(
+                    text("DELETE FROM stops WHERE route_id = ANY(:ids)"),
+                    {"ids": self._created_ids["routes"]},
+                )
+                await conn.execute(
+                    text("DELETE FROM routes WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids["routes"]},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyTransportOpsUnitOfWork:
+        return SqlAlchemyTransportOpsUnitOfWork(self.session_factory, self.outbox_writer)
+
+    async def _seed_student_and_route(self, org_id: str):
+        async with self._new_uow() as uow:
+            student = Student.enroll(
+                id=StudentId(self.id_generator.new_id()),
+                organization_id=TransportOpsOrganizationId(org_id),
+                full_name=f"Student {self.tag}",
+                clock=self.clock,
+            )
+            route = Route.create(
+                id=RouteId(self.id_generator.new_id()),
+                organization_id=TransportOpsOrganizationId(org_id),
+                name=f"Route {self.tag}",
+                clock=self.clock,
+            )
+            pickup = route.add_stop(
+                id=StopId(self.id_generator.new_id()),
+                name="Pickup",
+                latitude=2.5,
+                longitude=45.3,
+                sequence_no=1,
+                clock=self.clock,
+            )
+            dropoff = route.add_stop(
+                id=StopId(self.id_generator.new_id()),
+                name="Dropoff",
+                latitude=2.6,
+                longitude=45.4,
+                sequence_no=2,
+                clock=self.clock,
+            )
+            uow.students.add(student)
+            uow.routes.add(route)
+            uow.record_events(student.pull_domain_events())
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            self._created_ids["students"].append(str(student.id))
+            self._created_ids["routes"].append(str(route.id))
+            return student.id, route.id, pickup.id, dropoff.id
+
+    async def test_two_active_assignments_for_the_same_student_violate_db_constraint(
+        self,
+    ) -> None:
+        """Regression, at the database layer: `ux_student_assignments__active_student` (partial
+        unique index, WHERE status = 'active') rejects a second active assignment for the same
+        student even if the application-layer `ensure_student_has_no_active_assignment` guard
+        were somehow bypassed (e.g. a race between two concurrent requests)."""
+        org_id = f"org-{self.tag}"
+        student_id, route_id, pickup_id, dropoff_id = await self._seed_student_and_route(
+            org_id
+        )
+
+        async with self._new_uow() as uow:
+            first = StudentAssignment.assign(
+                id=StudentAssignmentId(self.id_generator.new_id()),
+                organization_id=TransportOpsOrganizationId(org_id),
+                student_id=student_id,
+                student_organization_id=TransportOpsOrganizationId(org_id),
+                route_id=route_id,
+                route_organization_id=TransportOpsOrganizationId(org_id),
+                pickup_stop_id=pickup_id,
+                dropoff_stop_id=dropoff_id,
+                vehicle_id=None,
+                clock=self.clock,
+            )
+            uow.student_assignments.add(first)
+            uow.record_events(first.pull_domain_events())
+            await uow.commit()
+            self._created_ids["student_assignments"].append(str(first.id))
+
+        with self.assertRaises(sqlalchemy.exc.IntegrityError):
+            async with self._new_uow() as uow:
+                second = StudentAssignment.assign(
+                    id=StudentAssignmentId(self.id_generator.new_id()),
+                    organization_id=TransportOpsOrganizationId(org_id),
+                    student_id=student_id,  # same student, still active -> DB rejects
+                    student_organization_id=TransportOpsOrganizationId(org_id),
+                    route_id=route_id,
+                    route_organization_id=TransportOpsOrganizationId(org_id),
+                    pickup_stop_id=pickup_id,
+                    dropoff_stop_id=dropoff_id,
+                    vehicle_id=None,
+                    clock=self.clock,
+                )
+                uow.student_assignments.add(second)
+                uow.record_events(second.pull_domain_events())
+                await uow.commit()
+                self._created_ids["student_assignments"].append(str(second.id))
 
 
 @unittest.skipUnless(_db_available(), _SKIP_REASON)

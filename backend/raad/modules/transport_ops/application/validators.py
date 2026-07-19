@@ -50,6 +50,17 @@ defense-in-depth over `ux_trips__active_vehicle` (the DB partial unique index,
 `TripRepository.active_trip_for_vehicle` (Backend LLD §7.2 verbatim). `Trip`'s own
 existence-checking lives on `TripApplicationService._get_trip_or_raise`, not here, for the same
 reason every other aggregate in this module keeps that check off this file.
+
+**Phase 13 addition — `StudentAssignment` cross-aggregate checks.** `ensure_pickup_and_dropoff_
+stops_exist` checks `Stop` existence via the already-loaded `Route`'s own `stops` collection —
+`Stop` has no repository of its own to query directly (`domain/repositories.py`'s Phase 11
+addition), the same "child entity, no independent existence check" situation
+`fleet_device.application.validators` would face for a `Camera`. `ensure_student_has_no_active_
+assignment` mirrors `ensure_vehicle_has_no_active_trip` exactly — defense-in-depth over
+`ux_student_assignments__active_student` (the DB partial unique index, `infra/models.py`), via
+`StudentAssignmentRepository.active_assignment_for_student`. `StudentAssignment`'s own
+existence-checking lives on `StudentAssignmentApplicationService._get_assignment_or_raise`, not
+here, for the same reason every other aggregate in this module keeps that check off this file.
 """
 
 from __future__ import annotations
@@ -67,6 +78,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     ParentId,
     RouteId,
+    StopId,
     StudentId,
     VehicleId,
 )
@@ -143,4 +155,34 @@ async def ensure_vehicle_has_no_active_trip(
         raise ConflictError(
             f"Vehicle {vehicle_id} already has an active trip {active.id} "
             "(one active trip per vehicle, Database Design §6.8)."
+        )
+
+
+def ensure_pickup_and_dropoff_stops_exist(
+    route: Route, pickup_stop_id: StopId, dropoff_stop_id: StopId
+) -> None:
+    """No repository query — `Stop` only exists as a member of an already-loaded `Route`'s
+    `stops` collection (`domain/repositories.py`'s Phase 11 addition), so this is a pure,
+    in-memory check over state the caller already has, not an I/O-dependent validator. Kept in
+    this module for consistency with every other `ensure_*` pre-check, even though it takes no
+    `uow`."""
+    stop_ids = {stop.id for stop in route.stops}
+    if pickup_stop_id not in stop_ids:
+        raise NotFoundError(
+            f"Stop {pickup_stop_id} not found on Route {route.id}."
+        )
+    if dropoff_stop_id not in stop_ids:
+        raise NotFoundError(
+            f"Stop {dropoff_stop_id} not found on Route {route.id}."
+        )
+
+
+async def ensure_student_has_no_active_assignment(
+    uow: TransportOpsUnitOfWork, student_id: StudentId
+) -> None:
+    active = await uow.student_assignments.active_assignment_for_student(student_id)
+    if active is not None:
+        raise ConflictError(
+            f"Student {student_id} already has an active assignment {active.id} "
+            "(one active assignment per student, Database Design §6.7)."
         )

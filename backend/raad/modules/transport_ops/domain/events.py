@@ -71,7 +71,30 @@ event catalog both name them verbatim. `TripInterrupted` is likewise LLD-documen
 have no approved document naming them — the same "flagged, not silently assumed" caveat every
 prior phase's own unnamed events already carry — chosen to match this class's own domain method
 names 1:1 (`Trip.schedule`/`resume`/`change_driver`) and the established PascalCase-past-tense
-convention exactly."""
+convention exactly.
+
+**Phase 13 addition:** `student_assignment_created`/`student_assignment_removed`/
+`student_assignment_transferred`/`student_assignment_graduated`/`student_assignment_disabled`,
+backing the new `StudentAssignment` aggregate (`entities.py`, Database Design §6.7). Four of the
+five event *types* are LLD-documented verbatim (§5.4): `StudentAssignmentRemoved`,
+`StudentTransferred`, `StudentGraduated`, `StudentDisabled`. `student_assignment_created`'s
+`"StudentAssignmentCreated"` has no approved document naming it — same "flagged, not silently
+assumed" caveat as every prior creation event in this file.
+
+**Event-name collision, called out explicitly — see this file's own opening "naming note"
+above.** That note, written in Phase 10.1, already flagged that `StudentAssignmentRemoved`/
+`StudentTransferred`/`StudentGraduated`/`StudentDisabled` are "a distinct, out-of-scope-this-
+phase aggregate['s]" event names — yet `student_graduated`/`student_transferred`/
+`student_disabled` (above, Phase 10.1) went ahead and used the exact same three `event_type`
+strings (`"StudentGraduated"`/`"StudentTransferred"`/`"StudentDisabled"`) for the **`Student`**
+aggregate's own status-change events, `aggregate_type="Student"`. This phase's
+`student_assignment_transferred`/`_graduated`/`_disabled` (below) now use those identical three
+strings again, `aggregate_type="StudentAssignment"`. The two families of events are
+distinguishable only by `aggregate_type`, never by `event_type` alone — a real collision, not
+introduced by this phase (it was already latent in Phase 10.1's own choice, made concrete now
+that the LLD-documented aggregate the names actually belong to is finally being built), flagged
+here and in `entities.py`'s module docstring rather than silently worked around by inventing an
+undocumented rename on either side."""
 
 from __future__ import annotations
 
@@ -694,4 +717,108 @@ def trip_driver_changed(
         org_id=organization_id,
         occurred_at=occurred_at,
         payload={"driver_id": driver_id, "actor_id": actor_id},
+    )
+
+
+def student_assignment_created(
+    *,
+    student_assignment_id: str,
+    organization_id: str,
+    student_id: str,
+    route_id: str,
+    pickup_stop_id: str,
+    dropoff_stop_id: str,
+    vehicle_id: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="StudentAssignmentCreated",
+        aggregate_type="StudentAssignment",
+        aggregate_id=student_assignment_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "student_id": student_id,
+            "route_id": route_id,
+            "pickup_stop_id": pickup_stop_id,
+            "dropoff_stop_id": dropoff_stop_id,
+            "vehicle_id": vehicle_id,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def student_assignment_removed(
+    *,
+    student_assignment_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """`StudentAssignmentRemoved` (Backend LLD §5.4 verbatim) — CR-1 revocation event."""
+    return _new_event(
+        event_type="StudentAssignmentRemoved",
+        aggregate_type="StudentAssignment",
+        aggregate_id=student_assignment_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def student_assignment_transferred(
+    *,
+    student_assignment_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """`StudentTransferred` (Backend LLD §5.4 verbatim) — see module docstring's Phase 13
+    addition for the flagged collision with `student_transferred`'s identical `event_type`."""
+    return _new_event(
+        event_type="StudentTransferred",
+        aggregate_type="StudentAssignment",
+        aggregate_id=student_assignment_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def student_assignment_graduated(
+    *,
+    student_assignment_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """`StudentGraduated` (Backend LLD §5.4 verbatim) — see module docstring's Phase 13
+    addition for the flagged collision with `student_graduated`'s identical `event_type`."""
+    return _new_event(
+        event_type="StudentGraduated",
+        aggregate_type="StudentAssignment",
+        aggregate_id=student_assignment_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def student_assignment_disabled(
+    *,
+    student_assignment_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """`StudentDisabled` (Backend LLD §5.4 verbatim) — see module docstring's Phase 13
+    addition for the flagged collision with `student_disabled`'s identical `event_type`."""
+    return _new_event(
+        event_type="StudentDisabled",
+        aggregate_type="StudentAssignment",
+        aggregate_id=student_assignment_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
     )

@@ -130,7 +130,54 @@ graph** (Phase-2 §6.2), not a flat undocumented toggle — so `Trip`'s behavior
 the first in this module to raise `RuleViolationError` for an illegal transition, rather than
 silently treating every value as directly settable. `interrupt()`'s `reason` is carried only in
 the `TripInterrupted` event payload, never persisted on the row — Database Design §6.8 has no
-`interrupted_at`/`interrupt_reason` column, so no such field is invented here."""
+`interrupted_at`/`interrupt_reason` column, so no such field is invented here.
+
+**Phase 13 addition: `StudentAssignment`.** Database Design §6.7's aggregate — "the CR-1 access
+gate" binding Student↔Route↔pickup/dropoff Stop, with an optional assigned Vehicle. Confirmed
+with the user before implementing: `trip_students` snapshot generation, `Notifications`,
+`Billing`, and geofence processing are all explicitly out of scope for this phase, per its own
+instructions — `StudentAssignment` therefore has no field or method touching any of those.
+
+**No documented transition graph for `student_assignments.status`** — mirrors `StudentStatus`'s
+exact situation (`value_objects.py`'s Phase 13 addition), not `TripStatus`'s: every status is
+directly settable with an idempotent same-state no-op, the same `organization.domain.entities.
+Organization.suspend/reactivate/deactivate` precedent `Student` already follows. `ended_at` is
+set only on the specific transition where `self.status == ACTIVE` at the moment a non-active
+status is applied — matching Database Design §6.7's literal wording ("set when status **leaves**
+active") precisely; a later move between two already-non-active statuses (e.g. `removed` ->
+`disabled`) does not re-stamp it. This is an interpretive reading of ambiguous wording, flagged
+here rather than silently picked.
+
+**Event-name collision — flagged, not silently resolved.** Backend LLD §5.4 names this
+aggregate's four status-change events verbatim: `StudentAssignmentRemoved`, `StudentTransferred`,
+`StudentGraduated`, `StudentDisabled` (`domain/events.py`'s Phase 13 addition uses these exact
+strings). Three of the four — `StudentTransferred`/`StudentGraduated`/`StudentDisabled` — are
+**already** the exact `event_type` strings the `Student` aggregate's own status-change methods
+emit (Phase 10.1, this file's own `Student.transfer`/`graduate`/`disable`, `aggregate_type=
+"Student"`). The LLD's own event catalog does not disambiguate which aggregate emits these names
+— read in context (§5.4's "Inputs" section defines `assignment_state` as the
+`student_assignments`-owned fact), they are unambiguously meant for *this* aggregate, not
+`Student`. Implemented here exactly as named, matching the task's explicit instruction — the
+collision (identical `event_type`, distinguished only by `aggregate_type`) is a pre-existing LLD
+naming gap, surfaced now because this is the first phase to actually implement the second half
+of it, not something invented by this implementation.
+
+**`created_at`/`updated_at` not exposed — a pre-existing, module-wide gap, not new.** API
+Contracts §6's documented example resource for this aggregate includes `created_at`/`updated_at`
+in the response body. No aggregate in this module (`Student`/`Parent`/`Driver`/`Route`/`Trip`)
+has ever carried these as domain fields — they are ORM-only audit columns
+(`core/db/mixins.py`), invisible to the domain layer by this codebase's own established layering
+(`.claude/rules/backend.md` #2). Adding them only for `StudentAssignment` would create a
+one-off inconsistency across the module rather than fix anything; retrofitting all five prior
+aggregates is a cross-cutting change well beyond this phase's scope. Flagged here and in the
+final report, not silently resolved either way.
+
+**Pickup/dropoff stop validation.** `pickup_stop_id`/`dropoff_stop_id` are validated for
+existence by checking membership in the already-loaded `Route`'s own `stops` collection
+(`application/validators.py`) — the only way a `Stop`'s existence can be checked at all, since
+`Stop` has no repository of its own (`domain/repositories.py`'s Phase 11 addition: it is a
+`Route`-owned child entity). This is existence-checking, not an invented "stop must belong to
+this route" business rule — no other route could be checked against regardless."""
 
 from __future__ import annotations
 
@@ -150,6 +197,8 @@ from raad.modules.transport_ops.domain.value_objects import (
     RouteId,
     RouteStatus,
     StopId,
+    StudentAssignmentId,
+    StudentAssignmentStatus,
     StudentId,
     StudentStatus,
     TripId,
@@ -1321,6 +1370,190 @@ class Trip(_AggregateRoot):
                 trip_id=str(self.id),
                 organization_id=str(self.organization_id),
                 driver_id=str(new_driver_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+
+class StudentAssignment(_AggregateRoot):
+    """"The CR-1 access gate" (Database Design §6.7) — binds a Student to a Route, pickup Stop,
+    dropoff Stop, and optionally a Vehicle. Tenant-owned — every instance carries
+    `organization_id` (`.claude/rules/database.md` #2). `vehicle_id` is a cross-module
+    reference (never existence-checked, see `value_objects.py`'s Phase 13 addition);
+    `student_id`/`route_id`/`pickup_stop_id`/`dropoff_stop_id` are same-module references,
+    existence-checked at the application layer before this aggregate is constructed
+    (`application/validators.py`).
+
+    Phase 13 scope: `StudentAssignment` only — no `trip_students` snapshot, no Notifications,
+    no Billing, no geofence processing (all out of scope per this phase's own instructions; see
+    module docstring's Phase 13 addition for the full reasoning, including two flagged
+    documentation gaps).
+    """
+
+    def __init__(
+        self,
+        *,
+        id: StudentAssignmentId,
+        organization_id: OrganizationId,
+        student_id: StudentId,
+        route_id: RouteId,
+        pickup_stop_id: StopId,
+        dropoff_stop_id: StopId,
+        vehicle_id: VehicleId | None,
+        status: StudentAssignmentStatus,
+        assigned_at: datetime,
+        ended_at: datetime | None,
+    ) -> None:
+        super().__init__()
+        self.id = id
+        self.organization_id = organization_id
+        self.student_id = student_id
+        self.route_id = route_id
+        self.pickup_stop_id = pickup_stop_id
+        self.dropoff_stop_id = dropoff_stop_id
+        self.vehicle_id = vehicle_id
+        self.status = status
+        self.assigned_at = assigned_at
+        self.ended_at = ended_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, StudentAssignment) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    def assign(
+        cls,
+        *,
+        id: StudentAssignmentId,
+        organization_id: OrganizationId,
+        student_id: StudentId,
+        student_organization_id: OrganizationId,
+        route_id: RouteId,
+        route_organization_id: OrganizationId,
+        pickup_stop_id: StopId,
+        dropoff_stop_id: StopId,
+        vehicle_id: VehicleId | None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "StudentAssignment":
+        """Factory for a newly-created assignment ("Assign Student to Route" — this phase's own
+        task wording, no more specific approved ubiquitous-language verb exists; flagged as this
+        phase's own naming choice, the same posture `CreateRouteCommand` already establishes for
+        an identically unnamed creation use-case). Starts `ACTIVE` — the enum's only
+        non-terminal-reading value (Database Design §6.7). Rejects cross-organization
+        `student`/`route` (`DomainError`), the identical pure, no-I/O placement `StudentParent.
+        link`/`Trip.schedule` already establish for their own cross-aggregate organization
+        checks."""
+        if student_organization_id != organization_id:
+            raise DomainError(
+                f"Cannot assign Student {student_id} (organization "
+                f"{student_organization_id}) to organization {organization_id}'s "
+                "StudentAssignment: cross-organization assignments are not permitted."
+            )
+        if route_organization_id != organization_id:
+            raise DomainError(
+                f"Cannot assign Route {route_id} (organization {route_organization_id}) to "
+                f"organization {organization_id}'s StudentAssignment: cross-organization "
+                "assignments are not permitted."
+            )
+        assignment = cls(
+            id=id,
+            organization_id=organization_id,
+            student_id=student_id,
+            route_id=route_id,
+            pickup_stop_id=pickup_stop_id,
+            dropoff_stop_id=dropoff_stop_id,
+            vehicle_id=vehicle_id,
+            status=StudentAssignmentStatus.ACTIVE,
+            assigned_at=clock.now(),
+            ended_at=None,
+        )
+        assignment._record(
+            transport_ops_events.student_assignment_created(
+                student_assignment_id=str(id),
+                organization_id=str(organization_id),
+                student_id=str(student_id),
+                route_id=str(route_id),
+                pickup_stop_id=str(pickup_stop_id),
+                dropoff_stop_id=str(dropoff_stop_id),
+                vehicle_id=str(vehicle_id) if vehicle_id is not None else None,
+                occurred_at=assignment.assigned_at,
+                actor_id=actor_id,
+            )
+        )
+        return assignment
+
+    def remove(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        """`StudentAssignmentRemoved` (Backend LLD §5.4 verbatim) — CR-1 revocation event.
+        Idempotent same-state no-op, mirroring `Student`'s status methods exactly. `ended_at` is
+        stamped only the moment status leaves `ACTIVE` — see module docstring's Phase 13
+        addition for why a later non-active-to-non-active move does not re-stamp it."""
+        if self.status == StudentAssignmentStatus.REMOVED:
+            return
+        if self.status == StudentAssignmentStatus.ACTIVE:
+            self.ended_at = clock.now()
+        self.status = StudentAssignmentStatus.REMOVED
+        self._record(
+            transport_ops_events.student_assignment_removed(
+                student_assignment_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def transfer(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        """`StudentTransferred` (Backend LLD §5.4 verbatim) — see module docstring's Phase 13
+        addition for the flagged collision with `Student.transfer`'s identically-named event.
+        Idempotent same-state no-op, same `ended_at` rule as `remove` above."""
+        if self.status == StudentAssignmentStatus.TRANSFERRED:
+            return
+        if self.status == StudentAssignmentStatus.ACTIVE:
+            self.ended_at = clock.now()
+        self.status = StudentAssignmentStatus.TRANSFERRED
+        self._record(
+            transport_ops_events.student_assignment_transferred(
+                student_assignment_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def graduate(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        """`StudentGraduated` (Backend LLD §5.4 verbatim) — see module docstring's Phase 13
+        addition for the flagged collision with `Student.graduate`'s identically-named event.
+        Idempotent same-state no-op, same `ended_at` rule as `remove` above."""
+        if self.status == StudentAssignmentStatus.GRADUATED:
+            return
+        if self.status == StudentAssignmentStatus.ACTIVE:
+            self.ended_at = clock.now()
+        self.status = StudentAssignmentStatus.GRADUATED
+        self._record(
+            transport_ops_events.student_assignment_graduated(
+                student_assignment_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def disable(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        """`StudentDisabled` (Backend LLD §5.4 verbatim) — see module docstring's Phase 13
+        addition for the flagged collision with `Student.disable`'s identically-named event.
+        Idempotent same-state no-op, same `ended_at` rule as `remove` above."""
+        if self.status == StudentAssignmentStatus.DISABLED:
+            return
+        if self.status == StudentAssignmentStatus.ACTIVE:
+            self.ended_at = clock.now()
+        self.status = StudentAssignmentStatus.DISABLED
+        self._record(
+            transport_ops_events.student_assignment_disabled(
+                student_assignment_id=str(self.id),
+                organization_id=str(self.organization_id),
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )

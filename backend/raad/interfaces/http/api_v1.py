@@ -20,6 +20,7 @@ from raad.modules.transport_ops.api.routers import (
     drivers_router,
     parents_router,
     routes_router,
+    student_assignments_router,
     students_router,
     trips_router,
 )
@@ -49,6 +50,11 @@ api_router.include_router(trips_router, prefix="/trips", tags=["transport-ops"])
 api_router.include_router(
     drivers_router, prefix="/drivers", tags=["transport-ops"]
 )  # transport_ops (C4) — Phase 10.8; no documented API Contracts row, see routers.py
+api_router.include_router(
+    student_assignments_router,
+    prefix="/student-assignments",
+    tags=["transport-ops"],
+)  # transport_ops (C4) — Phase 13
 
 api_router.include_router(
     tracking_router, prefix="/tracking", tags=["tracking"]

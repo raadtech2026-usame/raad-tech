@@ -47,6 +47,15 @@ path-identified action. `ChangeTripDriverRequest` backs the documented
 `PATCH /trips/{id}/driver` (line 132, body `{driver_id}` verbatim) — this is Trip's *only*
 uniform-CRUD-style `PATCH`; no other field is documented as post-creation-editable, so there is
 no general `UpdateTripRequest` the way every other aggregate in this module has one.
+
+**Phase 13 addition: `StudentAssignment` schemas.** `StudentAssignmentStatus`'s five values
+transport the same lower-case snake_case way. `AssignStudentToRouteRequest` backs the documented
+`POST /student-assignments` (API Contracts line 127). `UpdateStudentAssignmentStatusRequest`
+(body `{status}`) backs the documented `POST /student-assignments/{id}/end` (line 128:
+"status→removed/transferred/… → CR-1 revocation event"), mirroring `UpdateStudentStatusRequest`'s
+identical one-endpoint-many-transitions shape even though the mount path is named `/end`, not
+`/status`. **Not included:** `created_at`/`updated_at` — see `application/queries.py`'s Phase 13
+addition for the flagged, pre-existing, module-wide gap this follows rather than fixes one-off.
 """
 
 from __future__ import annotations
@@ -309,3 +318,39 @@ class ChangeTripDriverRequest(BaseModel):
     device change")."""
 
     driver_id: str
+
+
+class StudentAssignmentResponse(BaseModel):
+    id: str
+    organization_id: str
+    student_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    vehicle_id: str | None
+    status: str
+    assigned_at: datetime
+    ended_at: datetime | None
+
+
+class StudentAssignmentSummaryResponse(BaseModel):
+    id: str
+    student_id: str
+    route_id: str
+    status: str
+
+
+class AssignStudentToRouteRequest(BaseModel):
+    organization_id: str
+    student_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    vehicle_id: str | None = None
+
+
+class UpdateStudentAssignmentStatusRequest(BaseModel):
+    """`POST /student-assignments/{id}/end` (API Contracts §4.3 line 128 verbatim: 'body
+    `{status}` -> removed/transferred/graduated/disabled -> CR-1 revocation event')."""
+
+    status: str

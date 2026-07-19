@@ -57,6 +57,21 @@ routes (lines 130-132). `InterruptTripCommand`/`ResumeTripCommand` back `Trip.in
 `resume` — no approved HTTP route exists for either this phase (`api/routers.py`'s module
 docstring), the same "reachable at the application layer only" posture
 `RemoveStopFromRouteCommand`/`MoveStopCommand` already establish.
+
+**Phase 13 addition: `StudentAssignment` commands.** `AssignStudentToRouteCommand` — "Assign
+Student to Route" is this phase's own task wording verbatim, the same "no more specific approved
+verb exists" posture `CreateRouteCommand` already establishes. `RemoveStudentAssignmentCommand`/
+`TransferStudentAssignmentCommand`/`GraduateStudentAssignmentCommand`/
+`DisableStudentAssignmentCommand`, 1:1 with `StudentAssignment`'s own domain method names
+(`domain/entities.py`) — prefixed `StudentAssignment...`, not `Student...`, to stay unambiguous
+next to `Student`'s own identically-shaped `TransferStudentCommand`/`GraduateStudentCommand`/
+`DisableStudentCommand` above (see `domain/events.py`'s Phase 13 addition for the same
+underlying `event_type` collision this naming keeps the *command* layer clear of, even though
+the events themselves still collide). All four back the single documented
+`POST /student-assignments/{id}/end` route (API Contracts line 128: "status→removed/
+transferred/… → CR-1 revocation event"), fanning out by `status` exactly like `Student`'s own
+`/status` route already does — the identical one-endpoint-many-commands shape
+`services.py`'s module docstring documents for `Student`.
 """
 
 from __future__ import annotations
@@ -287,4 +302,39 @@ class ResumeTripCommand:
 class ChangeTripDriverCommand:
     trip_id: str
     driver_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class AssignStudentToRouteCommand:
+    organization_id: str
+    student_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    vehicle_id: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RemoveStudentAssignmentCommand:
+    student_assignment_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class TransferStudentAssignmentCommand:
+    student_assignment_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class GraduateStudentAssignmentCommand:
+    student_assignment_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class DisableStudentAssignmentCommand:
+    student_assignment_id: str
     actor: Principal

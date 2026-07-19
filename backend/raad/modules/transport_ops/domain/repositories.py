@@ -46,6 +46,14 @@ role for its own one-active-device-per-vehicle invariant. `list_for_route` carri
 pagination — `core/pagination` is still an empty module (no limit/offset/cursor convention
 exists to reuse), the same reasoning `application/queries.py`'s `ListStudentsQuery` docstring
 already gives for deferring pagination entirely.
+
+**Phase 13 addition: `StudentAssignmentRepository`.** No LLD-given contract skeleton exists for
+this repository (unlike `TripRepository`/`DeviceAssignmentRepository`, which LLD §7.2 gives
+verbatim) — built by structural analogy to `TripRepository`'s shape, the closest documented
+precedent: both aggregates have a single-column surrogate id and a documented "one active X per
+Y" invariant. `active_assignment_for_student` backs the one-active-assignment-per-student guard
+(`application/validators.py`'s `ensure_student_has_no_active_assignment`), the identical role
+`active_trip_for_vehicle` plays for `Trip`.
 """
 
 from __future__ import annotations
@@ -57,6 +65,7 @@ from raad.modules.transport_ops.domain.entities import (
     Parent,
     Route,
     Student,
+    StudentAssignment,
     StudentParent,
     Trip,
 )
@@ -64,6 +73,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     ParentId,
     RouteId,
+    StudentAssignmentId,
     StudentId,
     TripId,
     VehicleId,
@@ -231,4 +241,34 @@ class TripRepository(ABC):
     async def list_for_route(self, route_id: RouteId) -> list[Trip]:
         """LLD §7.2's `for_route`, without pagination — see module docstring's Phase 12
         addition for why."""
+        raise NotImplementedError
+
+
+class StudentAssignmentRepository(ABC):
+    """No LLD-given contract skeleton — see module docstring's Phase 13 addition."""
+
+    @abstractmethod
+    async def get(
+        self, student_assignment_id: StudentAssignmentId
+    ) -> StudentAssignment | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, assignment: StudentAssignment) -> None:
+        """Persistence of changes is flushed by the Unit of Work, not the repository (§7.1)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_all(self) -> list[StudentAssignment]:
+        """Backs `ListStudentAssignmentsQuery` (Phase 13). Already implicitly scoped to the
+        caller's tenant — see module docstring."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def active_assignment_for_student(
+        self, student_id: StudentId
+    ) -> StudentAssignment | None:
+        """The currently `ACTIVE` assignment for a student, or None. Backs the
+        one-active-assignment-per-student guard (safety-critical/CR-1-relevant invariant,
+        `.claude/rules/testing.md` #3)."""
         raise NotImplementedError
