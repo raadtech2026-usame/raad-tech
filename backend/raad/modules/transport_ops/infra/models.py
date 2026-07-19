@@ -330,11 +330,22 @@ class StudentAssignmentModel(AuditedTableMixin, Base):
     route_id: Mapped[str] = mapped_column(
         CHAR(26), ForeignKey("routes.id"), nullable=False, index=True
     )
+    # Explicit names required: two FKs to the same target table (`stops.id`) would otherwise
+    # both collapse to the identical auto-derived name `fk_student_assignments__stops`
+    # (`core/db/base.py`'s naming convention only encodes the *target* table, not the *source*
+    # column) - PostgreSQL rejects two constraints sharing one name on the same table. Must
+    # match the names the migration already created live
+    # (`migrations/versions/20260719_1400_acfa30ebf4d8_..._student_.py`) exactly, since no new
+    # migration accompanies this fix.
     pickup_stop_id: Mapped[str] = mapped_column(
-        CHAR(26), ForeignKey("stops.id"), nullable=False
+        CHAR(26),
+        ForeignKey("stops.id", name="fk_student_assignments__stops_pickup"),
+        nullable=False,
     )
     dropoff_stop_id: Mapped[str] = mapped_column(
-        CHAR(26), ForeignKey("stops.id"), nullable=False
+        CHAR(26),
+        ForeignKey("stops.id", name="fk_student_assignments__stops_dropoff"),
+        nullable=False,
     )
     vehicle_id: Mapped[str | None] = mapped_column(
         CHAR(26), nullable=True, index=True
