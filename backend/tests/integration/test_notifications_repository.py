@@ -27,6 +27,7 @@ from sqlalchemy import text
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.events.outbox import OutboxWriter
+from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.time.clock import SystemClock
 from raad.modules.notifications.domain.entities import DeviceToken, Notification
@@ -61,6 +62,7 @@ class NotificationsRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.id_generator = UlidGenerator()
         self.clock = SystemClock()
         self.tag = uuid.uuid4().hex[:8]
@@ -82,7 +84,7 @@ class NotificationsRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     def _new_uow(self) -> SqlAlchemyNotificationsUnitOfWork:
-        return SqlAlchemyNotificationsUnitOfWork(self.session_factory, self.outbox_writer)
+        return SqlAlchemyNotificationsUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
 
     async def test_notification_add_then_get_round_trips(self) -> None:
         org_id = self.id_generator.new_id()

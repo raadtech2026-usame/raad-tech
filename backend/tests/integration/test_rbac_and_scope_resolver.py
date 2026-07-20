@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.events.outbox import OutboxWriter
+from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal, Role
@@ -57,6 +58,7 @@ class IamPermissionEvaluatorRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.tag = uuid.uuid4().hex[:8]
         self._granted: list[tuple[str, str]] = []
 
@@ -74,7 +76,7 @@ class IamPermissionEvaluatorRoundTripTests(unittest.IsolatedAsyncioTestCase):
 
     def _evaluator(self) -> IamPermissionEvaluator:
         return IamPermissionEvaluator(
-            lambda: SqlAlchemyIamUnitOfWork(self.session_factory, self.outbox_writer)
+            lambda: SqlAlchemyIamUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
         )
 
     async def test_seeded_matrix_grants_org_admin_transport_ops_create(self) -> None:
@@ -110,7 +112,7 @@ class IamPermissionEvaluatorRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(before)
 
         async with SqlAlchemyIamUnitOfWork(
-            self.session_factory, self.outbox_writer
+            self.session_factory, self.outbox_writer, self.audit_writer
         ) as uow:
             await uow.role_permissions.grant(Role.DRIVER, test_permission)
             await uow.commit()
@@ -122,7 +124,7 @@ class IamPermissionEvaluatorRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(after_grant)
 
         async with SqlAlchemyIamUnitOfWork(
-            self.session_factory, self.outbox_writer
+            self.session_factory, self.outbox_writer, self.audit_writer
         ) as uow:
             await uow.role_permissions.revoke(Role.DRIVER, test_permission)
             await uow.commit()
@@ -140,6 +142,7 @@ class OrganizationScopeResolverRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.id_generator = UlidGenerator()
         self.clock = SystemClock()
         self.tag = uuid.uuid4().hex[:8]
@@ -170,7 +173,7 @@ class OrganizationScopeResolverRoundTripTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     def _new_uow(self) -> SqlAlchemyOrganizationUnitOfWork:
-        return SqlAlchemyOrganizationUnitOfWork(self.session_factory, self.outbox_writer)
+        return SqlAlchemyOrganizationUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
 
     def _resolver(self) -> OrganizationScopeResolver:
         return OrganizationScopeResolver(self._new_uow)

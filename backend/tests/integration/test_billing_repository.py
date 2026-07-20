@@ -28,6 +28,7 @@ from sqlalchemy import text
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.events.outbox import OutboxWriter
+from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.time.clock import SystemClock
 from raad.modules.billing.domain.entities import Invoice, Payment, Plan, Subscription, TransportFee
@@ -65,6 +66,7 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.id_generator = UlidGenerator()
         self.clock = SystemClock()
         self.tag = uuid.uuid4().hex[:8]
@@ -104,7 +106,7 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     def _new_uow(self) -> SqlAlchemyBillingUnitOfWork:
-        return SqlAlchemyBillingUnitOfWork(self.session_factory, self.outbox_writer)
+        return SqlAlchemyBillingUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
 
     async def _seed_plan(self, uow: SqlAlchemyBillingUnitOfWork) -> PlanId:
         plan = Plan.create(

@@ -27,6 +27,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.events.outbox import OutboxWriter
+from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.modules.fleet_device.domain.entities import Device, DeviceAssignment, Vehicle
 from raad.modules.fleet_device.domain.value_objects import (
@@ -114,6 +115,7 @@ class FleetDeviceAssignmentDatabaseInvariantTests(unittest.IsolatedAsyncioTestCa
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.id_generator = UlidGenerator()
         self.clock = SystemClock()
         self.tag = uuid.uuid4().hex[:8]
@@ -146,7 +148,7 @@ class FleetDeviceAssignmentDatabaseInvariantTests(unittest.IsolatedAsyncioTestCa
         await self.engine.dispose()
 
     def _new_uow(self) -> SqlAlchemyFleetDeviceUnitOfWork:
-        return SqlAlchemyFleetDeviceUnitOfWork(self.session_factory, self.outbox_writer)
+        return SqlAlchemyFleetDeviceUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
 
     async def _seed_vehicle_and_devices(self, org_id: str):
         async with self._new_uow() as uow:
@@ -231,6 +233,7 @@ class TripDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.id_generator = UlidGenerator()
         self.clock = SystemClock()
         self.tag = uuid.uuid4().hex[:8]
@@ -262,7 +265,7 @@ class TripDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     def _new_uow(self) -> SqlAlchemyTransportOpsUnitOfWork:
-        return SqlAlchemyTransportOpsUnitOfWork(self.session_factory, self.outbox_writer)
+        return SqlAlchemyTransportOpsUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
 
     async def _seed_driver_and_route(self, org_id: str):
         async with self._new_uow() as uow:
@@ -351,6 +354,7 @@ class StudentAssignmentDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.id_generator = UlidGenerator()
         self.clock = SystemClock()
         self.tag = uuid.uuid4().hex[:8]
@@ -386,7 +390,7 @@ class StudentAssignmentDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     def _new_uow(self) -> SqlAlchemyTransportOpsUnitOfWork:
-        return SqlAlchemyTransportOpsUnitOfWork(self.session_factory, self.outbox_writer)
+        return SqlAlchemyTransportOpsUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
 
     async def _seed_student_and_route(self, org_id: str):
         async with self._new_uow() as uow:
@@ -487,6 +491,7 @@ class IamDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.id_generator = UlidGenerator()
         self.clock = SystemClock()
         self.tag = uuid.uuid4().hex[:8]
@@ -504,7 +509,7 @@ class IamDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     def _new_uow(self) -> SqlAlchemyIamUnitOfWork:
-        return SqlAlchemyIamUnitOfWork(self.session_factory, self.outbox_writer)
+        return SqlAlchemyIamUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
 
     async def test_duplicate_email_violates_db_unique_constraint(self) -> None:
         """Regression, at the database layer: `ux_users__email` rejects a second user with the
@@ -608,6 +613,7 @@ class BillingDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.id_generator = UlidGenerator()
         self.clock = SystemClock()
         self.tag = uuid.uuid4().hex[:8]
@@ -643,7 +649,7 @@ class BillingDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     def _new_uow(self) -> SqlAlchemyBillingUnitOfWork:
-        return SqlAlchemyBillingUnitOfWork(self.session_factory, self.outbox_writer)
+        return SqlAlchemyBillingUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
 
     async def _seed_invoice(self) -> Invoice:
         org_id = self.id_generator.new_id()
@@ -804,6 +810,7 @@ class NotificationsDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.id_generator = UlidGenerator()
         self.clock = SystemClock()
         self.tag = uuid.uuid4().hex[:8]
@@ -821,7 +828,7 @@ class NotificationsDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     def _new_uow(self) -> SqlAlchemyNotificationsUnitOfWork:
-        return SqlAlchemyNotificationsUnitOfWork(self.session_factory, self.outbox_writer)
+        return SqlAlchemyNotificationsUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
 
     async def test_duplicate_fcm_token_violates_db_unique_constraint(self) -> None:
         """Regression, at the database layer: `ux_device_tokens__token` rejects a second

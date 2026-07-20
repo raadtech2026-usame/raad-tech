@@ -17,10 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from raad.core.events.base import DomainEvent
 
 if TYPE_CHECKING:
-    # Deferred to break the core.db <-> core.events import cycle (core.events.outbox needs
-    # `core.db.base.Base`; this module only needs `OutboxWriter` for a type hint, which
-    # `from __future__ import annotations` already makes a lazily-evaluated string, so no
-    # runtime import is required).
+    # Deferred to break the core.db <-> core.events / core.db <-> core.audit import cycles
+    # (core.events.outbox and core.audit.writer both need `core.db.base.Base`; this module only
+    # needs `OutboxWriter`/`AuditWriter` for type hints, which `from __future__ import
+    # annotations` already makes lazily-evaluated strings, so no runtime import is required).
+    from raad.core.audit.writer import AuditWriter
     from raad.core.events.outbox import OutboxWriter
 
 
@@ -66,15 +67,28 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     (e.g. `class TransportOpsUnitOfWork(SqlAlchemyUnitOfWork): trips: TripRepository`) to add
     its own, constructing them from `self.session` once that module's `infra/repositories.py`
     exists.
+
+    **`audit_writer` (ADR-0007, Backend Stabilization phase)** writes one `audit_entries` row
+    per buffered event in `commit()`, the same transaction as `outbox_writer` and the business
+    rows themselves — the resolution to the confirmed conflict between Database Design §10
+    ("audit_entries... written transactionally by the domain") and `.claude/rules/backend.md`
+    #3 (no module may write another module's tables; `audit_entries` is `platform_audit`-owned).
+    See `core/audit/writer.py`'s module docstring for the full architecture. Required (not
+    defaulted) — every module's `SqlAlchemy<Module>UnitOfWork` factory binding
+    (`core/di/bootstrap.py`) passes the same DI-bound singleton, mirroring `outbox_writer`'s
+    identical treatment exactly rather than self-constructing a default, so this class has
+    exactly one way any dependency reaches it: the composition root.
     """
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         outbox_writer: OutboxWriter,
+        audit_writer: AuditWriter,
     ) -> None:
         self._session_factory = session_factory
         self._outbox_writer = outbox_writer
+        self._audit_writer = audit_writer
         self._session: AsyncSession | None = None
         self._events: list[DomainEvent] = []
 
@@ -103,6 +117,7 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
 
     async def commit(self) -> None:
         await self._outbox_writer.write_all(self.session, self._events)
+        await self._audit_writer.write_all(self.session, self._events)
         await self.session.commit()
         self._events.clear()
 

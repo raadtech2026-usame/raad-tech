@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from raad.core.audit.writer import AuditWriter
 from raad.core.config.settings import Settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork, UnitOfWork
@@ -90,6 +91,11 @@ from raad.modules.reporting.infra.repositories import SqlAlchemyReportingUnitOfW
 from raad.modules.video.application.ports import VideoProviderPort, VideoUnitOfWork
 from raad.modules.video.application.services import VideoApplicationService
 from raad.modules.video.infra.repositories import SqlAlchemyVideoUnitOfWork
+from raad.modules.platform_audit.application.ports import PlatformAuditUnitOfWork
+from raad.modules.platform_audit.application.services import PlatformAuditApplicationService
+from raad.modules.platform_audit.infra.repositories import (
+    SqlAlchemyPlatformAuditUnitOfWork,
+)
 
 
 def build_container(settings: Settings) -> Container:
@@ -106,6 +112,9 @@ def build_container(settings: Settings) -> Container:
     container.bind_singleton(SubscriptionAccessPolicy, SubscriptionAccessPolicy())
     container.bind_singleton(VideoAccessPolicy, VideoAccessPolicy())
     container.bind_singleton(OutboxWriter, OutboxWriter())
+    # AuditWriter (ADR-0007) - stateless, same unconditional-singleton treatment as
+    # OutboxWriter above; threaded through every SqlAlchemy<Module>UnitOfWork factory below.
+    container.bind_singleton(AuditWriter, AuditWriter())
     container.bind_singleton(EventProcessorRegistry, EventProcessorRegistry())
     container.bind_singleton(
         RetryPolicy,
@@ -283,6 +292,14 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
+    # PlatformAuditApplicationService needs no id_generator (AuditEntry is never created
+    # through this module; SystemSetting is keyed by its own `key`, not a minted id) or
+    # TokenService — always constructible, same reasoning as the services above.
+    container.bind_singleton(
+        PlatformAuditApplicationService,
+        PlatformAuditApplicationService(clock=container.resolve(Clock)),
+    )
+
     # TrackingApplicationService additionally needs a LatestPositionPort (Database Design
     # §7.1: latest position is Redis-backed, not read from the PostgreSQL history table) — no
     # concrete implementation exists yet (Phase 8.3 deliberately deferred it), so this stays
@@ -336,13 +353,17 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             UnitOfWork,
             lambda: SqlAlchemyUnitOfWork(
-                session_factory, container.resolve(OutboxWriter)
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
             ),
         )
         container.bind_factory(
             IamUnitOfWork,
             lambda: SqlAlchemyIamUnitOfWork(
-                session_factory, container.resolve(OutboxWriter)
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
             ),
         )
         # PermissionEvaluator (Database Design §4.4's RBAC permission matrix) needs a fresh
@@ -356,7 +377,9 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             OrganizationUnitOfWork,
             lambda: SqlAlchemyOrganizationUnitOfWork(
-                session_factory, container.resolve(OutboxWriter)
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
             ),
         )
         # ScopeResolver (Phase 2 §17.4's effective_org_scope) needs a fresh
@@ -370,43 +393,65 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             FleetDeviceUnitOfWork,
             lambda: SqlAlchemyFleetDeviceUnitOfWork(
-                session_factory, container.resolve(OutboxWriter)
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
             ),
         )
         container.bind_factory(
             TrackingUnitOfWork,
             lambda: SqlAlchemyTrackingUnitOfWork(
-                session_factory, container.resolve(OutboxWriter)
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
             ),
         )
         container.bind_factory(
             TransportOpsUnitOfWork,
             lambda: SqlAlchemyTransportOpsUnitOfWork(
-                session_factory, container.resolve(OutboxWriter)
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
             ),
         )
         container.bind_factory(
             BillingUnitOfWork,
             lambda: SqlAlchemyBillingUnitOfWork(
-                session_factory, container.resolve(OutboxWriter)
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
             ),
         )
         container.bind_factory(
             NotificationsUnitOfWork,
             lambda: SqlAlchemyNotificationsUnitOfWork(
-                session_factory, container.resolve(OutboxWriter)
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
             ),
         )
         container.bind_factory(
             ReportingUnitOfWork,
             lambda: SqlAlchemyReportingUnitOfWork(
-                session_factory, container.resolve(OutboxWriter)
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
             ),
         )
         container.bind_factory(
             VideoUnitOfWork,
             lambda: SqlAlchemyVideoUnitOfWork(
-                session_factory, container.resolve(OutboxWriter)
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
+            ),
+        )
+        container.bind_factory(
+            PlatformAuditUnitOfWork,
+            lambda: SqlAlchemyPlatformAuditUnitOfWork(
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
             ),
         )
 

@@ -15,7 +15,16 @@ Rules covered here:
   suite's own module docstring in `test_api_layer_boundaries.py` for the honestly-scoped
   limitation); what *is* checked here is the strongest available static proxy: every concrete
   repository's `model = ...` ORM binding must point at a model defined in that repository's own
-  module — never another module's `infra/models.py`.
+  module — never another *bounded-context* module's `infra/models.py`.
+
+  **Exception, added under ADR-0007 (Backend Stabilization phase):** a `model = ...` binding
+  imported from `raad.core.*` (a shared-kernel package — e.g. `core.audit.writer.
+  AuditEntryRecord`, `core.events.outbox.OutboxRecord`) is not a rule-7 violation. `core/` is
+  depended upon by every bounded-context module already (`Base` itself, `core.db.base`, is
+  imported by literally every `infra/models.py` in this codebase) — the rule this test enforces
+  is "no module reaches into *another module's* table," not "no model may ever come from outside
+  the repository's own file," and a shared-kernel table owned by no bounded context (the same
+  category `outbox` has always been in) was never the risk rule 7 exists to catch.
 """
 
 from __future__ import annotations
@@ -142,8 +151,13 @@ class TestRepositoriesBindOnlyOwnModuleModels(unittest.TestCase):
                         continue
                     bound_name = stmt.value.id
                     origin = origin_of.get(bound_name)
-                    if origin is not None and origin != own_models_module:
-                        violations.append(
+                    if origin is None or origin == own_models_module:
+                        continue
+                    # Shared-kernel exception (ADR-0007) — see module docstring: `core/` is not
+                    # "another module," it's the common dependency every module already has.
+                    if origin == "raad.core" or origin.startswith("raad.core."):
+                        continue
+                    violations.append(
                             f"{relative_label(repo_path)}:{stmt.lineno} — "
                             f"'{node.name}.model = {bound_name}' binds a model imported "
                             f"from '{origin}', not this module's own "

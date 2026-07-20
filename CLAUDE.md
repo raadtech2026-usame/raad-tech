@@ -61,12 +61,13 @@ relaying JT808/JT1078 traffic between bus terminals and the platform.
 ## Repository Status
 
 This repository is **no longer greenfield**. The Business API backend (`backend/`) is a running
-FastAPI modular monolith with eight of its ten bounded contexts fully implemented end-to-end
+FastAPI modular monolith with **all ten** of its bounded contexts fully implemented end-to-end
 (domain → application → infrastructure → API → database migration), backed by a live PostgreSQL
-schema. The remaining two contexts (`video`, `platform_audit`) are still structural scaffolds
-only — no domain/application/infra logic, per
-`docs/architecture/adr/0001-business-entity-module-mapping.md`'s module list. Treat those two as
-genuinely not-yet-decided; do not infer behavior for them from the eight completed ones.
+schema, as of the Backend Stabilization phase (ADR-0004 through ADR-0007). Cross-cutting
+authorization (RBAC permission matrix, tenant/region `ScopeResolver`, CR-1/D5 policy enforcement)
+and the `audit_entries` write architecture are likewise implemented and verified — see "Known
+gaps" below for what genuinely remains (the event broker, `PaymentProviderPort`/
+`VideoProviderPort` adapters, Notification/Report Workers, CI/CD, contract/load tests).
 
 ### Tech stack (decided)
 
@@ -85,16 +86,25 @@ genuinely not-yet-decided; do not infer behavior for them from the eight complet
 
 ### Completed bounded contexts
 
-Each of the eight below has a full `api / application / domain / infra / events` stack (per
+Each of the ten below has a full `api / application / domain / infra / events` stack (per
 `.claude/rules/backend.md` #1) and is registered in `core/di/bootstrap.py` and
 `interfaces/http/api_v1.py`:
 
-- **IAM** — users, auth (JWT), RBAC scaffolding (permission matrix itself still pending approval).
-- **Organization** — organizations, regions, tenant hierarchy.
+- **IAM** — users, auth (JWT), and (as of the Backend Stabilization phase) a real, seeded RBAC
+  permission matrix (`role_permissions` table, Database Design §4.4; ADR-0004) —
+  `require_permission` resolves for real on every route via `IamPermissionEvaluator`, no longer a
+  guaranteed-`NotImplementedError` placeholder.
+- **Organization** — organizations, regions, tenant hierarchy, and (ADR-0005) `region_assignments`/
+  `support_assignments` backing a real `ScopeResolver` (`interfaces/http/deps.get_scope` resolves
+  for real now too).
 - **Fleet Device** — vehicles, devices, cameras, device↔vehicle assignment lifecycle.
 - **Tracking** — vehicle positions, geofence crossings (its application service is currently
   unreachable via DI pending a `LatestPositionPort`/Redis implementation — intentional
-  "fail loudly" deferral, not a bug).
+  "fail loudly" deferral, not a bug; still open). Both routes now enforce `TrackingVisibilityPolicy`
+  (`.claude/rules/security.md` #4's four-dimension predicate) via `interfaces/http/policy_guards.
+  resolve_tracking_decision` — ADR-0006 resolves the D4-vs-CR-1 documentation conflict this
+  required (safety-over-billing wins for genuinely live position during an active trip; trip
+  history stays fully CR-1-gated).
 - **Transport Operations** — `Student` (enroll/update/activate/disable/graduate/transfer),
   `Parent` (register/update/activate/disable), the `student_parents` M:N link
   (link/unlink/list-by-student/list-by-parent), `Driver` (register/update/activate/disable),
@@ -214,12 +224,37 @@ Each of the eight below has a full `api / application / domain / infra / events`
   entirely out of scope this phase — `request_report` persists a `QUEUED` row only;
   `start`/`succeed`/`fail` exist at the application layer only, for a not-yet-built worker, no
   HTTP route. `report_runs.params_json` reuses the `JSONB` pattern Notifications established.
+- **Video (C6)** — `VideoSession` (`request_live`/`request_playback`/`activate`/`end`/`fail`,
+  Database Design §7.4) is the only aggregate built — `playback_requests`, mentioned in the same
+  section with no distinct column list of its own, is read as descriptive elaboration of
+  `video_sessions.window_start`/`window_end` (already modeled), not a second aggregate; flagged
+  in `domain/entities.py`'s own docstring rather than silently invented. **Native JT1078 is
+  explicitly not implemented** — per this phase's own explicit instruction, the system is built
+  around a `VideoProviderPort` abstraction (MVP: a hardware/vendor video API), deliberately left
+  unbound (`infra/adapters.py` is a docstring-only module, mirroring `PaymentProviderPort`'s
+  identical "fail loudly, don't fake" precedent). All three documented routes (`POST /video/live`,
+  `POST /video/playback`, `POST /video/sessions/{id}/stop`, API Contracts §4.5) call
+  `interfaces/http/policy_guards.enforce_d5` — D5 (`.claude/rules/jt1078.md` #1: "Parents have
+  zero reachable path to video, anywhere, ever") — before any application-service call, resolving
+  the device's `organization_id` via `fleet_device`'s own `DeviceApplicationService` (no
+  cross-module DB read). `video_sessions` carries no `stream_url`/token column — that stays
+  Redis-owned by the (not-yet-built) JT1078 service itself; a bound provider's return value is
+  surfaced only in the API response, never persisted.
+- **Platform & Audit (C10)** — `AuditEntry` (`GET /admin/audit`, read-only) and `SystemSetting`
+  (`create`/`update_value`, `GET`/`PATCH /admin/settings`) are built; `Integration` (Database
+  Design §8.9) is **not** — no document gives it any lifecycle verbs or API route at all (unlike
+  `TransportFee`'s "use-case exists, no endpoint" precedent, which at least has documented CRUD
+  semantics), flagged in `domain/entities.py`'s own docstring. **`AuditEntry` is never created
+  through this module** — see ADR-0007: `audit_entries` is a shared-kernel table (like `outbox`),
+  written transactionally by every *other* module's own `UnitOfWork.commit()` via
+  `core.audit.writer.AuditWriter`, with zero changes to any of those modules' own source files.
+  `platform_audit` is purely the read side.
 
 ### Architecture patterns in use
 
-All eight completed contexts apply the same patterns identically — verified module-by-module in
-the Phase 10 architecture review (and, for Billing/Notifications/Reporting, via this codebase's
-own automated `tests/architecture/` gate suite), not just asserted:
+All ten completed contexts apply the same patterns identically — verified module-by-module in
+the Phase 10 architecture review (and, for Billing/Notifications/Reporting/Video/Platform &
+Audit, via this codebase's own automated `tests/architecture/` gate suite), not just asserted:
 
 - **Clean Architecture / layered dependency direction:** `api → application → domain`; `infra`
   implements interfaces `domain` defines; domain never imports FastAPI or SQLAlchemy
@@ -235,15 +270,26 @@ own automated `tests/architecture/` gate suite), not just asserted:
   (`SqlAlchemy<Module>UnitOfWork`) to bundle that module's repositories onto one transaction
   boundary; `commit()` always flushes tracked changes, then delegates to the base class's
   outbox-write-then-session-commit.
-- **Domain events + transactional outbox:** every state change buffers `DomainEvent`s on the
-  aggregate; the application service records them onto the UoW; `commit()` writes them to the
-  `outbox` table in the *same* transaction as the business rows (`core/events/outbox.py`) — no
-  event without a committed change, no committed change silently missing its event. The
-  publish/relay side (`SqlOutboxPublisher`) exists but stays unbound until a broker is chosen
-  (Phase 2 §4.3, still open) — this is a backend-wide deferral, not a per-module gap.
+- **Domain events + transactional outbox + transactional audit trail:** every state change
+  buffers `DomainEvent`s on the aggregate; the application service records them onto the UoW;
+  `commit()` writes them to the `outbox` table **and** the `audit_entries` table, in the *same*
+  transaction as the business rows (`core/events/outbox.py`, `core/audit/writer.py` — ADR-0007)
+  — no event without a committed change, no committed change silently missing its event or its
+  audit row. Both are shared-kernel tables owned by no bounded context, mirroring each other
+  exactly. The outbox's publish/relay side (`SqlOutboxPublisher`) exists but stays unbound until
+  a broker is chosen (Phase 2 §4.3, still open) — this is a backend-wide deferral, not a
+  per-module gap; `audit_entries`' own read side (`GET /admin/audit`, `platform_audit`) has no
+  such dependency and is fully live.
 - **Dependency injection:** one composition root, `core/di/bootstrap.py`, binding every service,
   repository-bearing UnitOfWork, and cross-cutting port; unbound dependencies fail loudly
   (`LookupError`/`NotImplementedError`) rather than resolving to a fake.
+- **RBAC + tenant/region scope + domain policies (ADR-0004/0005/0006):** `require_permission`
+  (RBAC, `role_permissions` matrix) and `get_scope`/`ScopeResolver` (region/support assignments)
+  both resolve for real now, on every route in every module. `interfaces/http/policy_guards.py`
+  (outside any single module, since it orchestrates multiple modules' own application services)
+  is the CR-1/D5 enforcement point — `TrackingVisibilityPolicy` on both `tracking` routes,
+  `VideoAccessPolicy` on all three `video` routes — composing RBAC + scope + the relevant domain
+  policy, never bypassable at any of those five routes.
 - **PostgreSQL + SQLAlchemy Async + Alembic + FastAPI:** see Tech stack above.
 
 ### Project structure (current)
@@ -252,7 +298,7 @@ own automated `tests/architecture/` gate suite), not just asserted:
 backend/
 ├── raad/
 │   ├── main.py            # ASGI app factory / composition root wiring
-│   ├── core/               # cross-cutting kernel: config, security, tenancy, db, events,
+│   ├── core/               # cross-cutting kernel: config, security, tenancy, db, events, audit,
 │   │                       # errors, logging, di, ids, time, workers
 │   ├── modules/             # one package per bounded context, each:
 │   │   └── <context>/
@@ -263,8 +309,9 @@ backend/
 │   │       └── events/       # publishers/subscribers (scaffolded, broker pending)
 │   └── interfaces/http/     # api_v1 router aggregation, shared deps, middleware, error handlers
 ├── migrations/               # Alembic env.py + versions/
-└── tests/                    # unit/ (Transport Ops, core/policies, Billing, Notifications,
-                               # Reporting today), integration/, contract/ (still empty),
+└── tests/                    # unit/ (all ten modules' domain/application layers, core/policies,
+                               # core/audit), integration/ (live-DB round trips + DB-invariant
+                               # proofs for nine modules), contract/ (still empty),
                                # architecture/ (see known gaps below)
 ```
 
@@ -275,29 +322,53 @@ backend/
   (`transport_ops` has several — one per aggregate), in build order:
   `iam → organization → fleet_device → tracking → transport_ops (student → parent →
   student_parents → driver → route → trip → student_assignment) → billing → notifications →
-  reporting` (head). No branches.
+  reporting → iam (role_permissions, ADR-0004) → organization (region/support_assignments,
+  ADR-0005) → video → core (audit_entries, ADR-0007) → platform_audit (system_settings)` (head).
+  No branches. Two revisions (`role_permissions`, `audit_entries`) are owned by `core`/shared
+  infrastructure rather than a single bounded context's own aggregate build-out — flagged in
+  their own migration files' docstrings, not silently folded into an unrelated module's chain
+  entry.
 - **Verified zero drift:** `alembic check` reports "No new upgrade operations detected." against
   the live schema; the full chain has been round-tripped (`upgrade head → downgrade → upgrade
   head`) with no orphaned objects. Every migration that introduces a PostgreSQL native `ENUM`
   type includes an explicit `DROP TYPE` in its `downgrade()` — `alembic revision --autogenerate`
   does not emit this itself, and omitting it breaks re-upgrade after a downgrade.
-- `migrations/env.py` imports `infra/models` from exactly the eight completed modules — kept in
-  sync 1:1 with which modules have a non-empty `infra/models.py`.
+- `migrations/env.py` imports `infra/models` from all ten modules plus `core.audit.writer`
+  (the shared-kernel `audit_entries` model, ADR-0007) — kept in sync 1:1 with which modules/
+  shared-kernel packages have a non-empty/model-bearing source file.
 
 ### Known gaps (tracked, not hidden)
 
-- `tests/architecture/` now has ten automated boundary-gate tests (domain purity, layer
-  dependency direction, module boundaries, API-layer boundaries) enforcing Backend LLD §2.3
-  across all eight completed modules — no longer empty.
-- Test coverage is concentrated in Transport Ops, `core/policies`, Billing, Notifications, and
-  Reporting; IAM/Organization/Fleet Device/Tracking have no automated tests yet.
-- RBAC permission matrix, tenant/region `ScopeResolver`, and the event broker are all approved-open
-  items — every dependent code path is wired to fail loudly rather than fake a pass. Billing's
-  `PaymentProviderPort` (no EVC Plus adapter) and its `POST /billing/payments/callback` webhook
-  (no documented signature-verification scheme), Notifications' `/ws/notifications` (no broker,
-  no Notification Worker), and Reporting's actual PDF/Excel rendering (no Report Worker, no
-  renderer port — `ReportRun` stays `QUEUED` forever without one) all carry the identical
-  posture.
+- `tests/architecture/` has ten automated boundary-gate tests (domain purity, layer dependency
+  direction, module boundaries, API-layer boundaries) enforcing Backend LLD §2.3 across all ten
+  completed modules — rule 7 (static proxy) was extended with an explicit `raad.core.*`-origin
+  exception (ADR-0007) so `platform_audit`'s own repository can legitimately bind to the
+  shared-kernel `AuditEntryRecord` without tripping a false positive.
+- Test coverage now spans all ten modules' domain/application layers plus `core/policies` and
+  `core/audit`; live-DB integration coverage spans nine modules (IAM/Organization/Fleet
+  Device/Tracking still have no dedicated live-DB integration test file, though their
+  `SqlAlchemyUnitOfWork` wiring is exercised indirectly via `test_rbac_and_scope_resolver.py`
+  and `test_postgres_repository_invariants.py`).
+- **The event broker is still the one open item every module's own outbox-publish path depends
+  on** (Phase 2 §4.3) — `SqlOutboxPublisher` exists but stays unbound until a broker is chosen;
+  this is what blocks the Notification Worker (event consumption, `/ws/notifications`) and the
+  Report Worker (actual PDF/Excel rendering — `ReportRun` stays `QUEUED` forever without one)
+  from being built, not a per-module gap. `audit_entries`' own read side has no such dependency
+  and is fully live (ADR-0007) — only the outbox's *publish* side, not every event-driven
+  capability, is blocked on the broker.
+- Billing's `PaymentProviderPort` (no EVC Plus adapter) and its `POST /billing/payments/callback`
+  webhook (no documented signature-verification scheme), and Video's `VideoProviderPort` (no
+  vendor/hardware adapter — native JT1078 intentionally postponed per this phase's own explicit
+  instruction) all carry the identical "fail loudly, don't fake" posture.
+- RBAC (`role_permissions`) and `ScopeResolver` (`region_assignments`/`support_assignments`)
+  editing has no HTTP route yet — `PermissionApplicationService.grant`/`revoke` and
+  `ScopeAssignmentApplicationService`'s own grant/revoke methods are reachable at the application
+  layer only, the same "use-case exists, no approved endpoint yet" posture as
+  `Route.remove_stop`/`Trip.interrupt` (ADR-0004/0005).
+- No module's own `list_all()` repository method is filtered by the now-real `ScopeResolver` —
+  every one still applies an unrestricted `TenantRegionScope(organization_ids=None)` internally,
+  a system-wide gap predating ADR-0005 that ADR-0005 made a real resolver *available* for but did
+  not retrofit onto every existing list endpoint (a separate, larger, cross-cutting change).
 - **Real, unresolved documentation gap** (Reporting, Phase 17): Phase 2 Enterprise Architecture
   §2/§10.1 names a `ReportDefinition` domain concept as a documented pairing with `ReportRun`,
   but Database Design (the schema authority) never gives it a table, and no API route manages

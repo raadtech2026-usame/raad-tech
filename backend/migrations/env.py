@@ -21,6 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from raad.core.config.settings import get_settings
 from raad.core.db.base import Base
 
+# Shared-kernel tables (not owned by any single bounded-context module — ADR-0007 for
+# audit_entries; outbox registers transitively via core/di/bootstrap.py's own import chain
+# today, but audit_entries is imported explicitly here rather than relying on that same
+# incidental mechanism).
+import raad.core.audit.writer  # noqa: F401 — registers AuditEntryRecord
+
 # Import every module's `infra/models.py` here so their ORM classes register onto
 # `Base.metadata` before autogenerate runs.
 import raad.modules.iam.infra.models  # noqa: F401 — registers UserModel/RefreshTokenModel
@@ -32,6 +38,7 @@ import raad.modules.billing.infra.models  # noqa: F401 — registers Plan/Subscr
 import raad.modules.notifications.infra.models  # noqa: F401 — registers Notification/DeviceToken models
 import raad.modules.reporting.infra.models  # noqa: F401 — registers ReportRun model
 import raad.modules.video.infra.models  # noqa: F401 — registers VideoSessionModel
+import raad.modules.platform_audit.infra.models  # noqa: F401 — registers SystemSettingModel
 
 config = context.config
 

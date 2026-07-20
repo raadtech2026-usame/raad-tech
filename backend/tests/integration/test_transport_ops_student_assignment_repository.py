@@ -27,6 +27,7 @@ from sqlalchemy import text
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.events.outbox import OutboxWriter
+from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.time.clock import SystemClock
 from raad.modules.transport_ops.domain.entities import Route, Student, StudentAssignment
@@ -63,6 +64,7 @@ class StudentAssignmentRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase
         self.engine = build_engine(settings.db)
         self.session_factory = build_session_factory(self.engine)
         self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
         self.id_generator = UlidGenerator()
         self.clock = SystemClock()
         self.tag = uuid.uuid4().hex[:8]
@@ -98,7 +100,7 @@ class StudentAssignmentRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase
 
     def _new_uow(self) -> SqlAlchemyTransportOpsUnitOfWork:
         return SqlAlchemyTransportOpsUnitOfWork(
-            self.session_factory, self.outbox_writer
+            self.session_factory, self.outbox_writer, self.audit_writer
         )
 
     async def _seed_student_and_route(
