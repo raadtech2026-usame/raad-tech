@@ -74,8 +74,9 @@ gaps" below for what genuinely remains (the event broker, `PaymentProviderPort`/
 - **Language/framework:** Python, FastAPI (async, modular monolith — `.claude/rules/architecture.md`).
 - **Database:** **PostgreSQL** via the `asyncpg` driver (`ADR-0002`, superseding an earlier MySQL 8.x
   decision — see `docs/architecture/adr/0002-postgresql-migration.md` and
-  `.claude/rules/database.md`). Redis is planned for hot state (latest position, sessions, caches)
-  but not yet wired.
+  `.claude/rules/database.md`). **Redis** (via `redis-py`/`redis.asyncio`, Backend Stabilization
+  phase) backs `tracking`'s `RedisLatestPositionPort` (read-only — see the Tracking bullet
+  below); sessions/other hot-state caching is not yet wired.
 - **ORM/migrations:** SQLAlchemy 2.x async + Alembic, revisions in `backend/migrations/versions/`.
 - **Dependency injection:** a small hand-rolled composition root (`backend/raad/core/di/`), not a
   third-party DI framework.
@@ -98,9 +99,14 @@ Each of the ten below has a full `api / application / domain / infra / events` s
   `support_assignments` backing a real `ScopeResolver` (`interfaces/http/deps.get_scope` resolves
   for real now too).
 - **Fleet Device** — vehicles, devices, cameras, device↔vehicle assignment lifecycle.
-- **Tracking** — vehicle positions, geofence crossings (its application service is currently
-  unreachable via DI pending a `LatestPositionPort`/Redis implementation — intentional
-  "fail loudly" deferral, not a bug; still open). Both routes now enforce `TrackingVisibilityPolicy`
+- **Tracking** — vehicle positions, geofence crossings. `LatestPositionPort` now has a concrete,
+  read-only `RedisLatestPositionPort` (`tracking/infra/adapters.py`, Database Design §7.1's
+  `vehicle:{id}:last` key), bound in DI whenever `RAAD_REDIS__URL` is configured (no Redis is
+  reachable in this dev sandbox, so it stays unbound here — same "fail loudly, don't fake it"
+  policy `db.url` follows). No write path exists on either the port or the adapter: the JT808
+  Technical Design (§21.2) names the JT808 device-plane service itself, not this backend, as the
+  key's writer — `TrackingApplicationService.record_vehicle_position` persists history only,
+  deliberately never also writing Redis. Both routes now enforce `TrackingVisibilityPolicy`
   (`.claude/rules/security.md` #4's four-dimension predicate) via `interfaces/http/policy_guards.
   resolve_tracking_decision` — ADR-0006 resolves the D4-vs-CR-1 documentation conflict this
   required (safety-over-billing wins for genuinely live position during an active trip; trip

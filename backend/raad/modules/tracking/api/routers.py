@@ -13,10 +13,14 @@ Two routes, exactly API Contracts §4.4's two REST rows:
 
 **Architecture Resolution (Backend Stabilization phase, Critical/High findings #1/#3/#4 of the
 pre-production review):** RBAC (`require_permission`) now resolves for real (Database Design
-§4.4's `role_permissions` matrix). `GET /tracking/vehicles/{vehicle_id}/latest` still fails
-loudly with `LookupError` (500) if no `LatestPositionPort` is bound — that specific gap
-(Redis-backed latest-position store) is addressed separately, see `application/ports.py`. Both
-routes now also call `interfaces.http.policy_guards.resolve_tracking_decision` —
+§4.4's `role_permissions` matrix). `GET /tracking/vehicles/{vehicle_id}/latest` fails loudly
+with `LookupError` (500) only if no `LatestPositionPort` is bound — `RedisLatestPositionPort`
+(`tracking.infra.adapters`) now exists and is bound whenever `RAAD_REDIS__URL` is configured; in
+an environment with no reachable Redis (including no writer, i.e. no JT808 deployment) it
+correctly resolves to a `404 Not Found` per-vehicle rather than 500ing, since `get_latest`
+returns `None` for a vehicle with no cached position — an honest "no live position known"
+answer, not a bug. Both routes now also call `interfaces.http.policy_guards.
+resolve_tracking_decision` —
 `TrackingVisibilityPolicy` (`.claude/rules/security.md` #4's mandatory four-dimension
 predicate), previously defined but never invoked anywhere in this codebase (the review's own
 exhaustive repo-wide search) — composing RBAC (already-passed by the time this runs) + CR-1

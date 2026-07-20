@@ -19,9 +19,12 @@ plainly "Latest position is NOT read from here" — the current position lives i
 history table `VehiclePositionRepository` backs. `GetCurrentVehiclePositionQuery` is an
 explicitly approved use case (API Contracts §4.4: `GET /tracking/vehicles/{id}/latest`) whose
 only documented backing store is Redis, so — unlike the fleet_device precedent — declining to
-define this port would leave an approved use case with no way to be implemented at all. Only
-the abstract interface is defined here; the concrete Redis-backed implementation is infra, not
-built this phase.
+define this port would leave an approved use case with no way to be implemented at all. The abstract interface is
+defined here; the concrete Redis-backed implementation
+(`infra.adapters.RedisLatestPositionPort`, Backend Stabilization phase) is read-only — see that
+module's own docstring for why no write method exists on either the interface or the adapter
+(the JT808 device-plane service, not this backend, is the documented writer of
+`vehicle:{id}:last`).
 """
 
 from __future__ import annotations

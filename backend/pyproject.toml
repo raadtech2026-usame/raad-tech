@@ -4,9 +4,12 @@
 # Foundation) added FastAPI + its ASGI server and pydantic-settings. Phase 4.4 (Database
 # Foundation) adds SQLAlchemy (async engine/ORM), Alembic (migrations, per
 # .claude/rules/database.md). ADR-0002 (PostgreSQL migration) replaced the original asyncmy
-# (MySQL) driver with asyncpg. A broker client and a worker runtime (Celery/arq — open item,
-# Backend LLD §20.1) are still deferred to when the broker/worker layers are wired in a later
-# phase.
+# (MySQL) driver with asyncpg. Backend Stabilization phase adds `redis` (the official Python
+# client, BSD-3-Clause license; its bundled `redis.asyncio` submodule replaces the old separate
+# `aioredis` package, merged upstream since redis-py 4.2) for `tracking.infra.adapters.
+# RedisLatestPositionPort` — Database Design §7.1's documented latest-vehicle-position store.
+# A broker client and a worker runtime (Celery/arq — open item, Backend LLD §20.1) are still
+# deferred to when the broker/worker layers are wired in a later phase.
 #
 # Dependency management tool (Poetry / PDM / plain pip) and dev tooling (pytest, ruff/black/
 # mypy) are not yet decided by approved documentation — this file uses the PEP 621 format,
@@ -25,6 +28,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "alembic>=1.13",
     "asyncpg>=0.29",
+    "redis>=5.0",
 ]
 
 [build-system]

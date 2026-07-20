@@ -12,6 +12,7 @@ instead of silently resolving to a fake.
 
 from __future__ import annotations
 
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from raad.core.audit.writer import AuditWriter
@@ -63,6 +64,7 @@ from raad.modules.tracking.application.ports import (
     TrackingUnitOfWork,
 )
 from raad.modules.tracking.application.services import TrackingApplicationService
+from raad.modules.tracking.infra.adapters import RedisLatestPositionPort
 from raad.modules.tracking.infra.repositories import SqlAlchemyTrackingUnitOfWork
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
@@ -300,11 +302,28 @@ def build_container(settings: Settings) -> Container:
         PlatformAuditApplicationService(clock=container.resolve(Clock)),
     )
 
-    # TrackingApplicationService additionally needs a LatestPositionPort (Database Design
-    # §7.1: latest position is Redis-backed, not read from the PostgreSQL history table) — no
-    # concrete implementation exists yet (Phase 8.3 deliberately deferred it), so this stays
-    # unbound until one is, the same "fail loudly, don't fake it" policy OutboxPublisher/
-    # BrokerPort already follow below. Written so binding it later is a one-line change.
+    # LatestPositionPort (Database Design §7.1: latest position is Redis-backed, not read from
+    # the PostgreSQL history table) — RedisLatestPositionPort (Backend Stabilization phase)
+    # needs a reachable `RAAD_REDIS__URL`; left unbound without one, same "fail loudly, don't
+    # fake it" policy as `db.url`/`jwt_secret_key` below. `decode_responses=True` since the
+    # adapter reads the key's value as a JSON *string* (`redis.asyncio.Redis.get` would
+    # otherwise return `bytes`).
+    if settings.redis.url:
+        redis_client = Redis.from_url(settings.redis.url, decode_responses=True)
+        container.bind_singleton(Redis, redis_client)
+        container.bind_singleton(
+            LatestPositionPort,
+            RedisLatestPositionPort(
+                redis_client,
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
+            ),
+        )
+
+    # TrackingApplicationService additionally needs the LatestPositionPort bound just above —
+    # no concrete implementation existed before this phase (Phase 8.3 deliberately deferred
+    # it), so this stays unbound without a reachable Redis, the same "fail loudly, don't fake
+    # it" policy OutboxPublisher/BrokerPort already follow below.
     latest_position_port = container.try_resolve(LatestPositionPort)
     if latest_position_port is not None:
         container.bind_singleton(

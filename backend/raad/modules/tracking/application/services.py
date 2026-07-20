@@ -206,9 +206,10 @@ class TrackingApplicationService:
     async def get_current_vehicle_position(
         self, query: GetCurrentVehiclePositionQuery
     ) -> VehiclePositionDTO | None:
-        """Served by `LatestPositionPort` (Redis-backed in infra, a later phase) — never
-        `TrackingUnitOfWork.vehicle_positions`, per that repository's own "latest is not read
-        from here" contract (Phase 8.1)."""
+        """Served by `LatestPositionPort` (Redis-backed via `infra.adapters.
+        RedisLatestPositionPort`, Backend Stabilization phase) — never `TrackingUnitOfWork.
+        vehicle_positions`, per that repository's own "latest is not read from here" contract
+        (Phase 8.1)."""
         position = await self._latest_position_port.get_latest(
             VehicleId(query.vehicle_id)
         )
