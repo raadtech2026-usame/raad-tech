@@ -68,7 +68,9 @@ authorization (RBAC permission matrix, tenant/region `ScopeResolver`, CR-1/D5 po
 the `audit_entries` write architecture, the Redis Streams event broker, both background workers,
 and three scheduled jobs are likewise implemented and verified — see "Known gaps" below for what
 genuinely remains (`PaymentProviderPort`/`VideoProviderPort`/`ReportRendererPort` adapters,
-`/ws/tracking`/`/ws/notifications`, CI/CD, contract/load tests).
+`/ws/tracking`/`/ws/notifications`, load tests). A real CI/CD gate
+(`.github/workflows/backend-pipeline.yml`) and a contract test suite (`tests/contract/`) are
+both now implemented, closing what was previously the largest item on this list.
 
 ### Tech stack (decided)
 
@@ -354,10 +356,24 @@ backend/
   exception (ADR-0007) so `platform_audit`'s own repository can legitimately bind to the
   shared-kernel `AuditEntryRecord` without tripping a false positive.
 - Test coverage now spans all ten modules' domain/application layers plus `core/policies` and
-  `core/audit`; live-DB integration coverage spans nine modules (IAM/Organization/Fleet
-  Device/Tracking still have no dedicated live-DB integration test file, though their
-  `SqlAlchemyUnitOfWork` wiring is exercised indirectly via `test_rbac_and_scope_resolver.py`
-  and `test_postgres_repository_invariants.py`).
+  `core/audit`; live-DB integration coverage now spans all ten modules — IAM/Organization/Fleet
+  Device/Tracking each got their own dedicated `test_{module}_repository.py` this phase,
+  closing the last gap in this list (their `SqlAlchemyUnitOfWork` wiring was previously
+  exercised only indirectly via `test_rbac_and_scope_resolver.py`/
+  `test_postgres_repository_invariants.py`). Writing `tracking`'s own file caught a real,
+  previously-undetected production bug: `SqlAlchemyVehiclePositionRepository.delete_before`
+  bound a tz-aware `cutoff` directly against a naive-UTC column, crashing on every real
+  invocation — fixed by reusing `mappers._naive`, the same helper `event_time`/`received_at`
+  already use. `tests/contract/` is also no longer empty: `test_api_contracts_routes.py`
+  validates the built OpenAPI surface against API Contracts §2/§4 (schema-only — `httpx`/
+  `TestClient` is not an approved dependency in this environment), and building it surfaced +
+  fixed five previously-flagged, now-resolvable missing `GET`-list routes (`/organizations`,
+  `/regions`, `/vehicles`, `/devices`, `/users` — each blocked only on ScopeResolver, ADR-0005,
+  now resolved). `raad/core/validation/` (`SelfValidating`/`ensure`/`guard_not_none`) was
+  retired — zero imports anywhere in the codebase, confirmed by grep before removal; every
+  module validates via Pydantic at the API boundary and domain-layer `DomainError`/
+  `ValidationError` instead. See `docs/architecture/backend-stabilization-final-report.md` for
+  the full per-issue writeup and scored assessment of this entire stabilization phase.
 - **The event broker is now chosen and implemented: Redis Streams (ADR-0008)** —
   `core/events/redis_streams.py`'s `RedisStreamsBrokerPort`/`RedisStreamsBrokerConsumer`, bound
   in DI whenever `RAAD_BROKER__URL` is configured (no broker is reachable in this dev sandbox,
