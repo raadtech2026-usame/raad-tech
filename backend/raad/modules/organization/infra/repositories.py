@@ -21,6 +21,8 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime, timezone
+
 from raad.core.db.repository import SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
@@ -28,6 +30,7 @@ from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.repositories import (
     OrganizationRepository,
     RegionRepository,
+    ScopeAssignmentRepository,
 )
 from raad.modules.organization.domain.value_objects import OrganizationId, RegionId
 from raad.modules.organization.infra.mappers import (
@@ -36,7 +39,12 @@ from raad.modules.organization.infra.mappers import (
     organization_to_model,
     region_to_model,
 )
-from raad.modules.organization.infra.models import OrganizationModel, RegionModel
+from raad.modules.organization.infra.models import (
+    OrganizationModel,
+    RegionAssignmentModel,
+    RegionModel,
+    SupportAssignmentModel,
+)
 
 
 class SqlAlchemyOrganizationRepository(
@@ -61,6 +69,18 @@ class SqlAlchemyOrganizationRepository(
         model = organization_to_model(organization)
         super().add(model)
         self._tracked[str(organization.id)] = (organization, model)
+
+    async def list_ids_by_region_ids(
+        self, region_ids: frozenset[str]
+    ) -> frozenset[str]:
+        if not region_ids:
+            return frozenset()
+        statement = select(OrganizationModel.id).where(
+            OrganizationModel.region_id.in_(region_ids),
+            OrganizationModel.deleted_at.is_(None),
+        )
+        result = await self._session.execute(statement)
+        return frozenset(result.scalars().all())
 
     def flush_tracked_changes(self) -> None:
         for organization, model in self._tracked.values():
@@ -111,9 +131,79 @@ class SqlAlchemyRegionRepository(
         return region
 
 
+class SqlAlchemyScopeAssignmentRepository(ScopeAssignmentRepository):
+    """No identity-map/`flush_tracked_changes` needed — pure grant data, same reasoning as
+    `iam.infra.repositories.SqlAlchemyRolePermissionRepository`."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_assigned_region_ids(self, user_id: str) -> frozenset[str]:
+        statement = select(RegionAssignmentModel.region_id).where(
+            RegionAssignmentModel.user_id == user_id
+        )
+        result = await self._session.execute(statement)
+        return frozenset(result.scalars().all())
+
+    async def list_assigned_organization_ids(self, user_id: str) -> frozenset[str]:
+        statement = select(SupportAssignmentModel.organization_id).where(
+            SupportAssignmentModel.user_id == user_id
+        )
+        result = await self._session.execute(statement)
+        return frozenset(result.scalars().all())
+
+    async def grant_region(
+        self, user_id: str, region_id: str, *, granted_by: str | None
+    ) -> None:
+        existing = await self._session.get(
+            RegionAssignmentModel, (user_id, region_id)
+        )
+        if existing is not None:
+            return
+        self._session.add(
+            RegionAssignmentModel(
+                user_id=user_id,
+                region_id=region_id,
+                granted_by=granted_by,
+                granted_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+        )
+
+    async def revoke_region(self, user_id: str, region_id: str) -> None:
+        existing = await self._session.get(
+            RegionAssignmentModel, (user_id, region_id)
+        )
+        if existing is not None:
+            await self._session.delete(existing)
+
+    async def grant_organization(
+        self, user_id: str, organization_id: str, *, granted_by: str | None
+    ) -> None:
+        existing = await self._session.get(
+            SupportAssignmentModel, (user_id, organization_id)
+        )
+        if existing is not None:
+            return
+        self._session.add(
+            SupportAssignmentModel(
+                user_id=user_id,
+                organization_id=organization_id,
+                granted_by=granted_by,
+                granted_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+        )
+
+    async def revoke_organization(self, user_id: str, organization_id: str) -> None:
+        existing = await self._session.get(
+            SupportAssignmentModel, (user_id, organization_id)
+        )
+        if existing is not None:
+            await self._session.delete(existing)
+
+
 class SqlAlchemyOrganizationUnitOfWork(SqlAlchemyUnitOfWork, OrganizationUnitOfWork):
     """Concrete `OrganizationUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `organization`'s
-    two repositories once the session is open, and re-syncs every tracked aggregate's in-place
+    repositories once the session is open, and re-syncs every tracked aggregate's in-place
     mutations onto its ORM row (`flush_tracked_changes`, above) immediately before delegating
     to `SqlAlchemyUnitOfWork.commit()` — which still owns the actual outbox-write +
     session-commit behavior, preserved exactly (§8.3), via `super().commit()`. Identical shape
@@ -122,11 +212,13 @@ class SqlAlchemyOrganizationUnitOfWork(SqlAlchemyUnitOfWork, OrganizationUnitOfW
 
     organizations: SqlAlchemyOrganizationRepository
     regions: SqlAlchemyRegionRepository
+    scope_assignments: SqlAlchemyScopeAssignmentRepository
 
     async def __aenter__(self) -> "SqlAlchemyOrganizationUnitOfWork":
         await super().__aenter__()
         self.organizations = SqlAlchemyOrganizationRepository(self.session)
         self.regions = SqlAlchemyRegionRepository(self.session)
+        self.scope_assignments = SqlAlchemyScopeAssignmentRepository(self.session)
         return self
 
     async def commit(self) -> None:

@@ -152,3 +152,74 @@ def region_deactivated(
         occurred_at=occurred_at,
         payload={"actor_id": actor_id},
     )
+
+
+def region_assignment_granted(
+    *, user_id: str, region_id: str, occurred_at: datetime, actor_id: str | None
+) -> DomainEvent:
+    """RBAC/scope change (Database Design §10's audit-worthy action list) — no approved
+    document names this event; this phase's own flagged choice, mirroring `iam.domain.events.
+    role_permission_granted`'s identical reasoning."""
+    return _new_event(
+        event_type="RegionAssignmentGranted",
+        aggregate_type="ScopeAssignment",
+        aggregate_id=f"{user_id}:{region_id}",
+        org_id=None,
+        occurred_at=occurred_at,
+        payload={"user_id": user_id, "region_id": region_id, "actor_id": actor_id},
+    )
+
+
+def region_assignment_revoked(
+    *, user_id: str, region_id: str, occurred_at: datetime, actor_id: str | None
+) -> DomainEvent:
+    return _new_event(
+        event_type="RegionAssignmentRevoked",
+        aggregate_type="ScopeAssignment",
+        aggregate_id=f"{user_id}:{region_id}",
+        org_id=None,
+        occurred_at=occurred_at,
+        payload={"user_id": user_id, "region_id": region_id, "actor_id": actor_id},
+    )
+
+
+def support_assignment_granted(
+    *,
+    user_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="SupportAssignmentGranted",
+        aggregate_type="ScopeAssignment",
+        aggregate_id=f"{user_id}:{organization_id}",
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "user_id": user_id,
+            "organization_id": organization_id,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def support_assignment_revoked(
+    *,
+    user_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="SupportAssignmentRevoked",
+        aggregate_type="ScopeAssignment",
+        aggregate_id=f"{user_id}:{organization_id}",
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "user_id": user_id,
+            "organization_id": organization_id,
+            "actor_id": actor_id,
+        },
+    )

@@ -36,6 +36,7 @@ from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.repositories import (
     OrganizationRepository,
     RegionRepository,
+    ScopeAssignmentRepository,
 )
 from raad.modules.organization.domain.value_objects import (
     BillingModel,
@@ -77,6 +78,47 @@ class InMemoryOrganizationRepository(OrganizationRepository):
     def add(self, organization: Organization) -> None:
         self.by_id[str(organization.id)] = organization
 
+    async def list_ids_by_region_ids(
+        self, region_ids: frozenset[str]
+    ) -> frozenset[str]:
+        return frozenset(
+            org_id
+            for org_id, org in self.by_id.items()
+            if str(org.region_id) in region_ids
+        )
+
+
+class InMemoryScopeAssignmentRepository(ScopeAssignmentRepository):
+    def __init__(self) -> None:
+        self.region_assignments: set[tuple[str, str]] = set()
+        self.support_assignments: set[tuple[str, str]] = set()
+
+    async def list_assigned_region_ids(self, user_id: str) -> frozenset[str]:
+        return frozenset(
+            region_id for uid, region_id in self.region_assignments if uid == user_id
+        )
+
+    async def list_assigned_organization_ids(self, user_id: str) -> frozenset[str]:
+        return frozenset(
+            org_id for uid, org_id in self.support_assignments if uid == user_id
+        )
+
+    async def grant_region(
+        self, user_id: str, region_id: str, *, granted_by: str | None
+    ) -> None:
+        self.region_assignments.add((user_id, region_id))
+
+    async def revoke_region(self, user_id: str, region_id: str) -> None:
+        self.region_assignments.discard((user_id, region_id))
+
+    async def grant_organization(
+        self, user_id: str, organization_id: str, *, granted_by: str | None
+    ) -> None:
+        self.support_assignments.add((user_id, organization_id))
+
+    async def revoke_organization(self, user_id: str, organization_id: str) -> None:
+        self.support_assignments.discard((user_id, organization_id))
+
 
 class InMemoryRegionRepository(RegionRepository):
     def __init__(self) -> None:
@@ -100,9 +142,11 @@ class FakeOrganizationUnitOfWork(OrganizationUnitOfWork):
         self,
         organizations: InMemoryOrganizationRepository,
         regions: InMemoryRegionRepository,
+        scope_assignments: InMemoryScopeAssignmentRepository | None = None,
     ) -> None:
         self.organizations = organizations
         self.regions = regions
+        self.scope_assignments = scope_assignments or InMemoryScopeAssignmentRepository()
         self.recorded_events = []
         self.commit_count = 0
         self.rollback_count = 0

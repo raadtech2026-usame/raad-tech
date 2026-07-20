@@ -102,6 +102,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     StudentAssignmentId,
     StudentId,
     TripId,
+    UserId,
     VehicleId,
 )
 from raad.modules.transport_ops.infra.mappers import (
@@ -184,6 +185,13 @@ class SqlAlchemyParentRepository(
     async def get(self, parent_id: ParentId) -> Parent | None:
         row = await self.get_by_id(str(parent_id))
         return self._track(row)
+
+    async def get_by_user_id(self, user_id: UserId) -> Parent | None:
+        statement = select(ParentModel).where(
+            ParentModel.user_id == str(user_id), ParentModel.deleted_at.is_(None)
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
 
     def add(self, parent: Parent) -> None:
         model = parent_to_model(parent)

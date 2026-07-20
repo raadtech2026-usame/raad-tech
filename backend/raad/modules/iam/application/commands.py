@@ -69,3 +69,25 @@ class RefreshAccessTokenCommand:
 @dataclass(frozen=True)
 class LogoutCommand:
     refresh_token: str
+
+
+@dataclass(frozen=True)
+class GrantRolePermissionCommand:
+    """Backs the RBAC permission matrix's documented "editable by Founder... without code
+    change" requirement (Database Design §4.4). No approved HTTP route exists for this yet
+    (API Contracts documents no `/admin/roles` or similar surface) — reachable at the
+    application layer only, the same "use-case exists, no approved endpoint yet" posture
+    `RenewParentSubscriptionCommand` already establishes. Enforcement of "only Founder may
+    call this" belongs to whichever future route wires it, via `require_permission` itself —
+    not re-implemented here."""
+
+    role: Role
+    permission: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RevokeRolePermissionCommand:
+    role: Role
+    permission: str
+    actor: Principal

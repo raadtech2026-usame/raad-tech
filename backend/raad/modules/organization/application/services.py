@@ -21,8 +21,12 @@ from raad.modules.organization.application.commands import (
     CreateRegionCommand,
     DeactivateOrganizationCommand,
     DeactivateRegionCommand,
+    GrantRegionAssignmentCommand,
+    GrantSupportAssignmentCommand,
     ReactivateOrganizationCommand,
     RegisterOrganizationCommand,
+    RevokeRegionAssignmentCommand,
+    RevokeSupportAssignmentCommand,
     SuspendOrganizationCommand,
 )
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
@@ -39,6 +43,7 @@ from raad.modules.organization.application.validators import (
     ensure_region_exists,
     ensure_region_name_available,
 )
+from raad.modules.organization.domain import events as org_events
 from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.value_objects import OrganizationId, RegionId
 
@@ -195,3 +200,92 @@ class RegionApplicationService:
         if region is None:
             raise NotFoundError(f"Region {region_id} not found.")
         return region
+
+
+class ScopeAssignmentApplicationService:
+    """RAAD-staff scope assignment management (Database Design §4.6): grants/revokes that back
+    `ScopeResolver`'s Regional Manager/Support Staff formulas. No approved HTTP route exists yet
+    (`application/commands.py`'s own docstring) — reachable at the application layer only, the
+    same posture `iam.application.services.PermissionApplicationService` has for the analogous
+    `role_permissions` grant. No `id_generator` — composite-key grant data, no surrogate id."""
+
+    def __init__(self, *, clock: Clock) -> None:
+        self._clock = clock
+
+    async def grant_region_assignment(
+        self, command: GrantRegionAssignmentCommand, *, uow: OrganizationUnitOfWork
+    ) -> None:
+        async with uow:
+            await uow.scope_assignments.grant_region(
+                command.user_id, command.region_id, granted_by=command.actor.user_id
+            )
+            uow.record_events(
+                [
+                    org_events.region_assignment_granted(
+                        user_id=command.user_id,
+                        region_id=command.region_id,
+                        occurred_at=self._clock.now(),
+                        actor_id=command.actor.user_id,
+                    )
+                ]
+            )
+            await uow.commit()
+
+    async def revoke_region_assignment(
+        self, command: RevokeRegionAssignmentCommand, *, uow: OrganizationUnitOfWork
+    ) -> None:
+        async with uow:
+            await uow.scope_assignments.revoke_region(
+                command.user_id, command.region_id
+            )
+            uow.record_events(
+                [
+                    org_events.region_assignment_revoked(
+                        user_id=command.user_id,
+                        region_id=command.region_id,
+                        occurred_at=self._clock.now(),
+                        actor_id=command.actor.user_id,
+                    )
+                ]
+            )
+            await uow.commit()
+
+    async def grant_support_assignment(
+        self, command: GrantSupportAssignmentCommand, *, uow: OrganizationUnitOfWork
+    ) -> None:
+        async with uow:
+            await uow.scope_assignments.grant_organization(
+                command.user_id,
+                command.organization_id,
+                granted_by=command.actor.user_id,
+            )
+            uow.record_events(
+                [
+                    org_events.support_assignment_granted(
+                        user_id=command.user_id,
+                        organization_id=command.organization_id,
+                        occurred_at=self._clock.now(),
+                        actor_id=command.actor.user_id,
+                    )
+                ]
+            )
+            await uow.commit()
+
+    async def revoke_support_assignment(
+        self, command: RevokeSupportAssignmentCommand, *, uow: OrganizationUnitOfWork
+    ) -> None:
+        async with uow:
+            await uow.scope_assignments.revoke_organization(
+                command.user_id, command.organization_id
+            )
+            uow.record_events(
+                [
+                    org_events.support_assignment_revoked(
+                        user_id=command.user_id,
+                        organization_id=command.organization_id,
+                        occurred_at=self._clock.now(),
+                        actor_id=command.actor.user_id,
+                    )
+                ]
+            )
+            await uow.commit()

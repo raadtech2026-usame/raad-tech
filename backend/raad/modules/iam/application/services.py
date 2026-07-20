@@ -20,6 +20,7 @@ import hashlib
 from raad.core.errors.exceptions import AuthenticationError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.security.claims import TokenType
+from raad.core.tenancy.principal import Role
 from raad.core.security.password_hashing import PasswordHasher
 from raad.core.security.password_policy import PasswordPolicy
 from raad.core.security.tokens import TokenService
@@ -30,10 +31,12 @@ from raad.modules.iam.application.commands import (
     DisableMfaCommand,
     DisableUserCommand,
     EnableMfaCommand,
+    GrantRolePermissionCommand,
     InviteUserCommand,
     LoginCommand,
     LogoutCommand,
     RefreshAccessTokenCommand,
+    RevokeRolePermissionCommand,
 )
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.queries import (
@@ -46,6 +49,7 @@ from raad.modules.iam.application.validators import (
     ensure_email_available,
     ensure_phone_available,
 )
+from raad.modules.iam.domain import events as iam_events
 from raad.modules.iam.domain.entities import RefreshToken, User
 from raad.modules.iam.domain.value_objects import (
     Email,
@@ -325,3 +329,55 @@ class AuthApplicationService:
         if phone:
             return await uow.users.get_by_phone(PhoneNumber(phone))
         return None
+
+
+class PermissionApplicationService:
+    """RBAC permission-matrix management (Database Design §4.4). No approved HTTP route exists
+    yet (`application/commands.py`'s own docstring) — reachable at the application layer only,
+    and by the migration-time seed (`migrations/versions/...`) that installs this codebase's
+    own derived starting matrix. `Clock` is the only dependency — no `id_generator` (composite
+    PK, no surrogate id to mint, the same reasoning `StudentParentApplicationService` already
+    gives for its own link-table aggregate)."""
+
+    def __init__(self, *, clock: Clock) -> None:
+        self._clock = clock
+
+    async def grant_role_permission(
+        self, command: GrantRolePermissionCommand, *, uow: IamUnitOfWork
+    ) -> None:
+        async with uow:
+            await uow.role_permissions.grant(command.role, command.permission)
+            uow.record_events(
+                [
+                    iam_events.role_permission_granted(
+                        role=command.role.value,
+                        permission=command.permission,
+                        occurred_at=self._clock.now(),
+                        actor_id=command.actor.user_id,
+                    )
+                ]
+            )
+            await uow.commit()
+
+    async def revoke_role_permission(
+        self, command: RevokeRolePermissionCommand, *, uow: IamUnitOfWork
+    ) -> None:
+        async with uow:
+            await uow.role_permissions.revoke(command.role, command.permission)
+            uow.record_events(
+                [
+                    iam_events.role_permission_revoked(
+                        role=command.role.value,
+                        permission=command.permission,
+                        occurred_at=self._clock.now(),
+                        actor_id=command.actor.user_id,
+                    )
+                ]
+            )
+            await uow.commit()
+
+    async def list_permissions_for_role(
+        self, role: Role, *, uow: IamUnitOfWork
+    ) -> frozenset[str]:
+        async with uow:
+            return await uow.role_permissions.list_permissions_for_role(role)

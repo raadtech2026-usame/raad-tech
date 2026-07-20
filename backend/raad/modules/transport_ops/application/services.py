@@ -376,6 +376,18 @@ class ParentApplicationService:
             parent = await self._get_parent_or_raise(uow, query.parent_id)
             return parent_to_dto(parent)
 
+    async def get_parent_by_user_id(
+        self, user_id: str, *, uow: TransportOpsUnitOfWork
+    ) -> ParentDTO | None:
+        """Resolves an authenticated `Principal.user_id` to this module's own `Parent`
+        aggregate — added under the Backend Stabilization phase for CR-1 enforcement
+        (`interfaces/http/deps.parent_access_guard`), which starts from a JWT principal, not a
+        `Parent` id. Returns `None` rather than raising — "this authenticated user has no
+        `Parent` profile" is an expected, non-exceptional outcome for non-parent callers."""
+        async with uow:
+            parent = await uow.parents.get_by_user_id(UserId(user_id))
+            return parent_to_dto(parent) if parent is not None else None
+
     async def list_parents(
         self, query: ListParentsQuery, *, uow: TransportOpsUnitOfWork
     ) -> list[ParentSummaryDTO]:
@@ -934,6 +946,22 @@ class StudentAssignmentApplicationService:
                 student_assignment_to_summary_dto(assignment)
                 for assignment in assignments
             ]
+
+    async def get_active_assignment_for_student(
+        self, student_id: str, *, uow: TransportOpsUnitOfWork
+    ) -> StudentAssignmentDTO | None:
+        """Application-layer read path over `StudentAssignmentRepository.
+        active_assignment_for_student` — previously reachable only as a domain-layer/repository
+        method, not a standalone query. Added under the Backend Stabilization phase to back
+        CR-1 enforcement (`interfaces/http/deps.parent_access_guard`), which needs a specific
+        student's current `assignment_state` without loading by assignment id."""
+        async with uow:
+            assignment = await uow.student_assignments.active_assignment_for_student(
+                StudentId(student_id)
+            )
+            return (
+                student_assignment_to_dto(assignment) if assignment is not None else None
+            )
 
     @staticmethod
     async def _get_assignment_or_raise(

@@ -296,6 +296,21 @@ class BillingApplicationService:
             subscriptions = await uow.subscriptions.list_all()
             return [subscription_to_dto(s) for s in subscriptions]
 
+    async def get_active_subscription_for_subscriber(
+        self, subscriber_type: str, subscriber_id: str, *, uow: BillingUnitOfWork
+    ) -> SubscriptionDTO | None:
+        """Application-layer read path over `SubscriptionRepository.get_active_by_subscriber`
+        (`domain/repositories.py`'s own flagged "not EXPIRED/CANCELLED" reading) — previously
+        reachable only from `renew_parent_subscription`'s internal orchestration, not as a
+        standalone query. Added under the Backend Stabilization phase to back CR-1 enforcement
+        (`interfaces/http/deps.parent_access_guard`), which needs a parent's current
+        `subscription_state` without also renewing anything."""
+        async with uow:
+            subscription = await uow.subscriptions.get_active_by_subscriber(
+                SubscriberType(subscriber_type), SubscriberId(subscriber_id)
+            )
+            return subscription_to_dto(subscription) if subscription is not None else None
+
     # --- Invoice ---------------------------------------------------------------------------
 
     async def issue_invoice(

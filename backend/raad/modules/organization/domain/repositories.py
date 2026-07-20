@@ -31,6 +31,15 @@ class OrganizationRepository(ABC):
         """Persistence of changes is flushed by the Unit of Work, not the repository (§7.1)."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_ids_by_region_ids(
+        self, region_ids: frozenset[str]
+    ) -> frozenset[str]:
+        """Backs `ScopeResolver`'s Regional Manager formula (Phase 2 §17.4: "organizations
+        WHERE region_id IN user.assigned_regions"). An in-module query (`organizations` and
+        `region_assignments` are both owned by this same module), not a cross-module read."""
+        raise NotImplementedError
+
 
 class RegionRepository(ABC):
     @abstractmethod
@@ -45,4 +54,48 @@ class RegionRepository(ABC):
 
     @abstractmethod
     def add(self, region: Region) -> None:
+        raise NotImplementedError
+
+
+class ScopeAssignmentRepository(ABC):
+    """Backs `region_assignments`/`support_assignments` (Database Design §4.6): "RAAD-staff
+    scoping... applied as an *additional* scope filter." Previously deferred in this module's
+    own `domain/entities.py` docstring ("needs an explicit design decision before
+    implementation") — built now under the Backend Stabilization phase's explicit authority to
+    resolve confirmed architectural gaps (`core.tenancy.resolver.ScopeResolver` has been an
+    unbound interface since Phase 4.3 for exactly this reason).
+
+    Pure grant/revoke reference data, no aggregate lifecycle — mirrors `iam.domain.repositories.
+    RolePermissionRepository`'s identical "no rich entity, primitives in and out" shape for the
+    analogous `role_permissions` table.
+    """
+
+    @abstractmethod
+    async def list_assigned_region_ids(self, user_id: str) -> frozenset[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_assigned_organization_ids(self, user_id: str) -> frozenset[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def grant_region(
+        self, user_id: str, region_id: str, *, granted_by: str | None
+    ) -> None:
+        """Idempotent: granting an already-held region assignment is a no-op."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def revoke_region(self, user_id: str, region_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def grant_organization(
+        self, user_id: str, organization_id: str, *, granted_by: str | None
+    ) -> None:
+        """Idempotent: granting an already-held support (org) assignment is a no-op."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def revoke_organization(self, user_id: str, organization_id: str) -> None:
         raise NotImplementedError

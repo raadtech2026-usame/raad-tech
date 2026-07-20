@@ -18,15 +18,22 @@ code never references it directly, and the LLD's own `application/ports.py` cont
 from __future__ import annotations
 
 from raad.core.db.unit_of_work import UnitOfWork
-from raad.modules.iam.domain.repositories import RefreshTokenRepository, UserRepository
+from raad.modules.iam.domain.repositories import (
+    RefreshTokenRepository,
+    RolePermissionRepository,
+    UserRepository,
+)
 
 
 class IamUnitOfWork(UnitOfWork):
-    """Bundles the two repositories `iam`'s use-cases need onto one transaction boundary (LLD
+    """Bundles the repositories `iam`'s use-cases need onto one transaction boundary (LLD
     §8.2 contract skeleton: `trips: TripRepository`, etc. — declared as plain attributes,
-    matching that skeleton's own style, not abstract methods). The concrete implementation
-    (a future `SqlAlchemyIamUnitOfWork(SqlAlchemyUnitOfWork, IamUnitOfWork)`) is infra, not
-    implemented in this phase."""
+    matching that skeleton's own style, not abstract methods). The concrete implementation is
+    `infra.repositories.SqlAlchemyIamUnitOfWork`.
+
+    `role_permissions` added for the RBAC permission matrix (Database Design §4.4) — see
+    `domain/repositories.py`'s `RolePermissionRepository` docstring."""
 
     users: UserRepository
     refresh_tokens: RefreshTokenRepository
+    role_permissions: RolePermissionRepository

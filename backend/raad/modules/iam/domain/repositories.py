@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from raad.core.tenancy.principal import Role
 from raad.modules.iam.domain.entities import RefreshToken, User
 from raad.modules.iam.domain.value_objects import (
     Email,
@@ -63,4 +64,39 @@ class RefreshTokenRepository(ABC):
 
     @abstractmethod
     def add(self, refresh_token: RefreshToken) -> None:
+        raise NotImplementedError
+
+
+class RolePermissionRepository(ABC):
+    """Backs the RBAC permission matrix (Database Design §4.4: `role_permissions(role_key,
+    permission_key)`, "seedable reference data... editable by Founder... without code change").
+    Pure reference/grant data — no aggregate lifecycle beyond grant/revoke, so this repository
+    operates on primitives (`Role`, `Permission`) directly rather than a dedicated domain
+    entity, mirroring how `student_parents` (a pure link table) needed no richer aggregate
+    either (`transport_ops.domain.entities.StudentParent`'s own precedent).
+
+    **Scope reduction, flagged:** Database Design §4.4 also names `roles`/`permissions`
+    reference tables (id/label metadata for a future admin UI). Neither is built here — nothing
+    in this codebase consumes a human-readable label yet, and `Role` is already a fixed Python
+    `Enum` (`core.tenancy.principal.Role`) used pervasively across every module; making the role
+    *set* itself dynamic would be a breaking change to `Principal.role`'s type well beyond this
+    phase's "resolve confirmed issues, prefer minimal changes" mandate. What IS built —
+    `role_permissions` — is the operationally load-bearing table: which permissions a role
+    holds, editable without a code deploy, exactly as documented.
+    """
+
+    @abstractmethod
+    async def list_permissions_for_role(self, role: Role) -> frozenset[str]:
+        """Returns every `Permission` key granted to `role`. Used by the concrete
+        `PermissionEvaluator` (`infra/permission_evaluator.py`)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def grant(self, role: Role, permission: str) -> None:
+        """Idempotent: granting an already-held permission is a no-op, not an error."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def revoke(self, role: Role, permission: str) -> None:
+        """Idempotent: revoking a permission the role never held is a no-op."""
         raise NotImplementedError

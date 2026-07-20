@@ -80,6 +80,11 @@ class InMemoryParentRepository(ParentRepository):
     async def get(self, parent_id: ParentId) -> Parent | None:
         return self.by_id.get(str(parent_id))
 
+    async def get_by_user_id(self, user_id) -> Parent | None:
+        return next(
+            (p for p in self.by_id.values() if str(p.user_id) == str(user_id)), None
+        )
+
     def add(self, parent: Parent) -> None:
         self.by_id[str(parent.id)] = parent
 

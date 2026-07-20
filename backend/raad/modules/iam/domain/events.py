@@ -190,3 +190,32 @@ def refresh_token_revoked(
         occurred_at=occurred_at,
         payload={"user_id": user_id},
     )
+
+
+def role_permission_granted(
+    *, role: str, permission: str, occurred_at: datetime, actor_id: str | None
+) -> DomainEvent:
+    """RBAC/scope change (Database Design §10's audit-worthy action list names this category
+    explicitly) — no approved document names this event; this phase's own flagged choice,
+    matching every other unnamed-event precedent in this codebase."""
+    return _new_event(
+        event_type="RolePermissionGranted",
+        aggregate_type="RolePermission",
+        aggregate_id=f"{role}:{permission}",
+        org_id=None,
+        occurred_at=occurred_at,
+        payload={"role": role, "permission": permission, "actor_id": actor_id},
+    )
+
+
+def role_permission_revoked(
+    *, role: str, permission: str, occurred_at: datetime, actor_id: str | None
+) -> DomainEvent:
+    return _new_event(
+        event_type="RolePermissionRevoked",
+        aggregate_type="RolePermission",
+        aggregate_id=f"{role}:{permission}",
+        org_id=None,
+        occurred_at=occurred_at,
+        payload={"role": role, "permission": permission, "actor_id": actor_id},
+    )

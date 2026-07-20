@@ -354,6 +354,16 @@ class ParentRepositoryInterfaceTests(unittest.TestCase):
             async def get(self, parent_id: ParentId) -> Parent | None:
                 return self._parents.get(str(parent_id))
 
+            async def get_by_user_id(self, user_id) -> Parent | None:
+                return next(
+                    (
+                        p
+                        for p in self._parents.values()
+                        if str(p.user_id) == str(user_id)
+                    ),
+                    None,
+                )
+
             def add(self, parent: Parent) -> None:
                 self._parents[str(parent.id)] = parent
 

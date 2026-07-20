@@ -12,7 +12,9 @@ own table spec explicitly has no such line.
 
 from __future__ import annotations
 
-from sqlalchemy import CHAR, VARCHAR, ForeignKey
+from datetime import datetime
+
+from sqlalchemy import CHAR, VARCHAR, DateTime, ForeignKey
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -71,3 +73,37 @@ class OrganizationModel(AuditedTableMixin, Base):
         nullable=False,
         index=True,
     )
+
+
+class RegionAssignmentModel(Base):
+    """`region_assignments` (Database Design §4.6): RAAD-staff (Regional Manager) scoping.
+    Composite PK `(user_id, region_id)`, no surrogate id — pure grant data, same treatment
+    `iam.infra.models.RolePermissionModel` gets for `role_permissions`. `region_id` is an
+    in-context FK (this module owns `regions` too); `user_id`/`granted_by` are cross-module
+    references to `iam.User` — plain indexed columns, never FKs
+    (`.claude/rules/database.md` #3)."""
+
+    __tablename__ = "region_assignments"
+
+    user_id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
+    region_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("regions.id"), primary_key=True, index=True
+    )
+    granted_by: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+
+
+class SupportAssignmentModel(Base):
+    """`support_assignments` (Database Design §4.6): RAAD-staff (Support Staff) scoping.
+    Composite PK `(user_id, organization_id)`. `organization_id` is an in-context FK (this
+    module owns `organizations`); `user_id`/`granted_by` are cross-module references to
+    `iam.User` — plain indexed columns."""
+
+    __tablename__ = "support_assignments"
+
+    user_id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("organizations.id"), primary_key=True, index=True
+    )
+    granted_by: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)

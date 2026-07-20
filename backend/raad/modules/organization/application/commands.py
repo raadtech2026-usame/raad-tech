@@ -60,3 +60,35 @@ class ActivateRegionCommand:
 class DeactivateRegionCommand:
     region_id: str
     actor: Principal
+
+
+@dataclass(frozen=True)
+class GrantRegionAssignmentCommand:
+    """Backs `ScopeResolver`'s Regional Manager formula (Database Design §4.6). No approved
+    HTTP route exists yet — reachable at the application layer only, same posture as
+    `iam.application.commands.GrantRolePermissionCommand`."""
+
+    user_id: str
+    region_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RevokeRegionAssignmentCommand:
+    user_id: str
+    region_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class GrantSupportAssignmentCommand:
+    user_id: str
+    organization_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RevokeSupportAssignmentCommand:
+    user_id: str
+    organization_id: str
+    actor: Principal

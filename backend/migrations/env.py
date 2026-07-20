@@ -31,6 +31,7 @@ import raad.modules.transport_ops.infra.models  # noqa: F401 — registers Stude
 import raad.modules.billing.infra.models  # noqa: F401 — registers Plan/Subscription/Invoice/Payment/TransportFee models
 import raad.modules.notifications.infra.models  # noqa: F401 — registers Notification/DeviceToken models
 import raad.modules.reporting.infra.models  # noqa: F401 — registers ReportRun model
+import raad.modules.video.infra.models  # noqa: F401 — registers VideoSessionModel
 
 config = context.config
 

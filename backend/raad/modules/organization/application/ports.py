@@ -20,15 +20,19 @@ from raad.core.db.unit_of_work import UnitOfWork
 from raad.modules.organization.domain.repositories import (
     OrganizationRepository,
     RegionRepository,
+    ScopeAssignmentRepository,
 )
 
 
 class OrganizationUnitOfWork(UnitOfWork):
-    """Bundles the two repositories `organization`'s use-cases need onto one transaction
+    """Bundles the repositories `organization`'s use-cases need onto one transaction
     boundary (LLD §8.2 contract skeleton style — plain attributes, matching
-    `IamUnitOfWork`'s own style). The concrete implementation (a future
-    `SqlAlchemyOrganizationUnitOfWork(SqlAlchemyUnitOfWork, OrganizationUnitOfWork)`) is infra,
-    not implemented in this phase."""
+    `IamUnitOfWork`'s own style). The concrete implementation is
+    `infra.repositories.SqlAlchemyOrganizationUnitOfWork`.
+
+    `scope_assignments` added for `ScopeResolver` (Database Design §4.6) — see
+    `domain/repositories.py`'s `ScopeAssignmentRepository` docstring."""
 
     organizations: OrganizationRepository
     regions: RegionRepository
+    scope_assignments: ScopeAssignmentRepository

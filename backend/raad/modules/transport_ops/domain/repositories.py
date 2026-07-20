@@ -76,6 +76,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     StudentAssignmentId,
     StudentId,
     TripId,
+    UserId,
     VehicleId,
 )
 
@@ -102,14 +103,22 @@ class StudentRepository(ABC):
 
 
 class ParentRepository(ABC):
-    """`parents` has no module-owned uniqueness constraint beyond its primary key (Database
+    """`parents` has no module-owned *uniqueness* constraint beyond its primary key (Database
     Design §6.3 lists no `UX` on `user_id` or any other column, matching `StudentRepository`'s
-    identical reading of §6.2) — no `get_by_*` uniqueness-backing lookup is needed. Mirrors
-    `StudentRepository`'s exact shape, including `list_all` (Phase 10.6, matching Phase 10.2's
-    precedent)."""
+    identical reading of §6.2). Mirrors `StudentRepository`'s exact shape, including `list_all`
+    (Phase 10.6, matching Phase 10.2's precedent)."""
 
     @abstractmethod
     async def get(self, parent_id: ParentId) -> Parent | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_user_id(self, user_id: UserId) -> Parent | None:
+        """Resolves the authenticated `Principal.user_id` (an `iam.User`) to this module's own
+        `Parent` aggregate id — needed by any parent-facing self-service feature, not just CR-1
+        (`interfaces/http/deps.parent_access_guard`, Backend Stabilization phase). Not a
+        uniqueness-backing lookup (no `UX` on `user_id`) — a plain finder, mirroring
+        `SqlAlchemyDriverRepository`'s identical non-unique `user_id` filter shape."""
         raise NotImplementedError
 
     @abstractmethod

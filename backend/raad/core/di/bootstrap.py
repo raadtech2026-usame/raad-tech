@@ -25,15 +25,19 @@ from raad.core.ids.generator import IdGenerator, UlidGenerator
 from raad.core.policies import SubscriptionAccessPolicy, VideoAccessPolicy
 from raad.core.security.password_hashing import PasswordHasher, Pbkdf2PasswordHasher
 from raad.core.security.password_policy import PasswordPolicy
+from raad.core.security.permissions import PermissionEvaluator
 from raad.core.security.tokens import JwtTokenService, TokenService
+from raad.core.tenancy.resolver import ScopeResolver
 from raad.core.time.clock import Clock, SystemClock
 from raad.core.workers.idempotency import IdempotencyStore, InMemoryIdempotencyStore
 from raad.core.workers.retry import ExponentialBackoffRetryPolicy, RetryPolicy
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.services import (
     AuthApplicationService,
+    PermissionApplicationService,
     UserApplicationService,
 )
+from raad.modules.iam.infra.adapters import IamPermissionEvaluator
 from raad.modules.iam.infra.repositories import SqlAlchemyIamUnitOfWork
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.services import (
@@ -47,7 +51,9 @@ from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.application.services import (
     OrganizationApplicationService,
     RegionApplicationService,
+    ScopeAssignmentApplicationService,
 )
+from raad.modules.organization.infra.adapters import OrganizationScopeResolver
 from raad.modules.organization.infra.repositories import (
     SqlAlchemyOrganizationUnitOfWork,
 )
@@ -81,6 +87,9 @@ from raad.modules.notifications.infra.repositories import (
 from raad.modules.reporting.application.ports import ReportingUnitOfWork
 from raad.modules.reporting.application.services import ReportingApplicationService
 from raad.modules.reporting.infra.repositories import SqlAlchemyReportingUnitOfWork
+from raad.modules.video.application.ports import VideoProviderPort, VideoUnitOfWork
+from raad.modules.video.application.services import VideoApplicationService
+from raad.modules.video.infra.repositories import SqlAlchemyVideoUnitOfWork
 
 
 def build_container(settings: Settings) -> Container:
@@ -121,6 +130,12 @@ def build_container(settings: Settings) -> Container:
             password_policy=container.resolve(PasswordPolicy),
         ),
     )
+    # PermissionApplicationService needs no TokenService either — always constructible, same
+    # reasoning as UserApplicationService above.
+    container.bind_singleton(
+        PermissionApplicationService,
+        PermissionApplicationService(clock=container.resolve(Clock)),
+    )
 
     # OrganizationApplicationService/RegionApplicationService need no TokenService either —
     # always constructible, same reasoning as UserApplicationService above.
@@ -137,6 +152,12 @@ def build_container(settings: Settings) -> Container:
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
         ),
+    )
+    # ScopeAssignmentApplicationService needs no id_generator either — composite-key grant
+    # data, same reasoning as PermissionApplicationService above.
+    container.bind_singleton(
+        ScopeAssignmentApplicationService,
+        ScopeAssignmentApplicationService(clock=container.resolve(Clock)),
     )
     container.bind_singleton(
         VehicleApplicationService,
@@ -248,6 +269,20 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
+    # VideoApplicationService is always constructible too — `video_provider` is optional by
+    # design (see that class's own module docstring), identical to `BillingApplicationService.
+    # payment_provider` above. No `VideoProviderPort` adapter exists this phase — the user's own
+    # task scope explicitly forbids implementing native JT1078 or integrating a real vendor
+    # video API this phase ("Implement only the abstraction layer if needed").
+    container.bind_singleton(
+        VideoApplicationService,
+        VideoApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+            video_provider=container.try_resolve(VideoProviderPort),
+        ),
+    )
+
     # TrackingApplicationService additionally needs a LatestPositionPort (Database Design
     # §7.1: latest position is Redis-backed, not read from the PostgreSQL history table) — no
     # concrete implementation exists yet (Phase 8.3 deliberately deferred it), so this stays
@@ -310,10 +345,26 @@ def build_container(settings: Settings) -> Container:
                 session_factory, container.resolve(OutboxWriter)
             ),
         )
+        # PermissionEvaluator (Database Design §4.4's RBAC permission matrix) needs a fresh
+        # IamUnitOfWork per `has_permission` call, not a shared one — `container.resolve`
+        # (not a captured variable) re-invokes the `IamUnitOfWork` factory above every time,
+        # exactly like every other per-request UnitOfWork resolution in this codebase.
+        container.bind_singleton(
+            PermissionEvaluator,
+            IamPermissionEvaluator(lambda: container.resolve(IamUnitOfWork)),
+        )
         container.bind_factory(
             OrganizationUnitOfWork,
             lambda: SqlAlchemyOrganizationUnitOfWork(
                 session_factory, container.resolve(OutboxWriter)
+            ),
+        )
+        # ScopeResolver (Phase 2 §17.4's effective_org_scope) needs a fresh
+        # OrganizationUnitOfWork per call, same reasoning as PermissionEvaluator above.
+        container.bind_singleton(
+            ScopeResolver,
+            OrganizationScopeResolver(
+                lambda: container.resolve(OrganizationUnitOfWork)
             ),
         )
         container.bind_factory(
@@ -349,6 +400,12 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             ReportingUnitOfWork,
             lambda: SqlAlchemyReportingUnitOfWork(
+                session_factory, container.resolve(OutboxWriter)
+            ),
+        )
+        container.bind_factory(
+            VideoUnitOfWork,
+            lambda: SqlAlchemyVideoUnitOfWork(
                 session_factory, container.resolve(OutboxWriter)
             ),
         )

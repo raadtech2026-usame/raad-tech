@@ -23,9 +23,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
+from raad.core.tenancy.principal import Role
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.domain.entities import RefreshToken, User
-from raad.modules.iam.domain.repositories import RefreshTokenRepository, UserRepository
+from raad.modules.iam.domain.repositories import (
+    RefreshTokenRepository,
+    RolePermissionRepository,
+    UserRepository,
+)
 from raad.modules.iam.domain.value_objects import (
     Email,
     PhoneNumber,
@@ -38,7 +43,11 @@ from raad.modules.iam.infra.mappers import (
     refresh_token_to_model,
     user_to_model,
 )
-from raad.modules.iam.infra.models import RefreshTokenModel, UserModel
+from raad.modules.iam.infra.models import (
+    RefreshTokenModel,
+    RolePermissionModel,
+    UserModel,
+)
 
 
 class SqlAlchemyUserRepository(SqlAlchemyRepositoryBase[UserModel], UserRepository):
@@ -128,8 +137,43 @@ class SqlAlchemyRefreshTokenRepository(
         return token
 
 
+class SqlAlchemyRolePermissionRepository(RolePermissionRepository):
+    """No identity-map/`flush_tracked_changes` needed — `role_permissions` has no domain
+    entity to track (`domain/repositories.py`'s own docstring); `grant`/`revoke` write directly
+    via the session, matching `core.db.repository.SqlAlchemyRepositoryBase.add`'s identical
+    "session.add is enough" shape for a row with no in-place-mutation lifecycle.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_permissions_for_role(self, role: Role) -> frozenset[str]:
+        statement = select(RolePermissionModel.permission).where(
+            RolePermissionModel.role == role.value.lower()
+        )
+        result = await self._session.execute(statement)
+        return frozenset(result.scalars().all())
+
+    async def grant(self, role: Role, permission: str) -> None:
+        existing = await self._session.get(
+            RolePermissionModel, (role.value.lower(), permission)
+        )
+        if existing is not None:
+            return
+        self._session.add(
+            RolePermissionModel(role=role.value.lower(), permission=permission)
+        )
+
+    async def revoke(self, role: Role, permission: str) -> None:
+        existing = await self._session.get(
+            RolePermissionModel, (role.value.lower(), permission)
+        )
+        if existing is not None:
+            await self._session.delete(existing)
+
+
 class SqlAlchemyIamUnitOfWork(SqlAlchemyUnitOfWork, IamUnitOfWork):
-    """Concrete `IamUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `iam`'s two repositories
+    """Concrete `IamUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `iam`'s three repositories
     once the session is open, and re-syncs every tracked aggregate's in-place mutations onto
     its ORM row (`flush_tracked_changes`, above) immediately before delegating to
     `SqlAlchemyUnitOfWork.commit()` — which still owns the actual outbox-write + session-commit
@@ -138,11 +182,13 @@ class SqlAlchemyIamUnitOfWork(SqlAlchemyUnitOfWork, IamUnitOfWork):
 
     users: SqlAlchemyUserRepository
     refresh_tokens: SqlAlchemyRefreshTokenRepository
+    role_permissions: SqlAlchemyRolePermissionRepository
 
     async def __aenter__(self) -> "SqlAlchemyIamUnitOfWork":
         await super().__aenter__()
         self.users = SqlAlchemyUserRepository(self.session)
         self.refresh_tokens = SqlAlchemyRefreshTokenRepository(self.session)
+        self.role_permissions = SqlAlchemyRolePermissionRepository(self.session)
         return self
 
     async def commit(self) -> None:

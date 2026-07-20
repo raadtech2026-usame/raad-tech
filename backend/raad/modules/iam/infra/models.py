@@ -81,6 +81,24 @@ class UserModel(
     )
 
 
+class RolePermissionModel(Base):
+    """`role_permissions` (Database Design §4.4) — a pure grant table, no surrogate id, no
+    audit-column bundle (reference/config data, not a business aggregate; grant/revoke history
+    itself is captured via `RolePermissionGranted`/`Revoked` domain events -> outbox ->
+    `audit_entries`, not a `deleted_at`/`row_version` pair on this row). Composite PK
+    `(role, permission)`, matching `role_permissions(role_key, permission_key)` verbatim — see
+    `domain/repositories.py`'s `RolePermissionRepository` docstring for why the separate
+    `roles`/`permissions` label-metadata tables §4.4 also names are not built.
+    """
+
+    __tablename__ = "role_permissions"
+
+    role: Mapped[str] = mapped_column(
+        SqlEnum(*_ROLE_VALUES, name="role_permission_role"), primary_key=True
+    )
+    permission: Mapped[str] = mapped_column(VARCHAR(120), primary_key=True)
+
+
 class RefreshTokenModel(UlidPrimaryKeyMixin, Base):
     """`refresh_tokens` (Database Design §4.5). No standard audit-column bundle — that note is
     only attached to the `users` table; this table's own `issued_at`/`revoked_at` already
