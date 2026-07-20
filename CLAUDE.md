@@ -61,12 +61,12 @@ relaying JT808/JT1078 traffic between bus terminals and the platform.
 ## Repository Status
 
 This repository is **no longer greenfield**. The Business API backend (`backend/`) is a running
-FastAPI modular monolith with seven of its ten bounded contexts fully implemented end-to-end
+FastAPI modular monolith with eight of its ten bounded contexts fully implemented end-to-end
 (domain → application → infrastructure → API → database migration), backed by a live PostgreSQL
-schema. The remaining three contexts (`video`, `reporting`, `platform_audit`) are still
-structural scaffolds only — no domain/application/infra logic, per
-`docs/architecture/adr/0001-business-entity-module-mapping.md`'s module list. Treat those three
-as genuinely not-yet-decided; do not infer behavior for them from the seven completed ones.
+schema. The remaining two contexts (`video`, `platform_audit`) are still structural scaffolds
+only — no domain/application/infra logic, per
+`docs/architecture/adr/0001-business-entity-module-mapping.md`'s module list. Treat those two as
+genuinely not-yet-decided; do not infer behavior for them from the eight completed ones.
 
 ### Tech stack (decided)
 
@@ -85,7 +85,7 @@ as genuinely not-yet-decided; do not infer behavior for them from the seven comp
 
 ### Completed bounded contexts
 
-Each of the seven below has a full `api / application / domain / infra / events` stack (per
+Each of the eight below has a full `api / application / domain / infra / events` stack (per
 `.claude/rules/backend.md` #1) and is registered in `core/di/bootstrap.py` and
 `interfaces/http/api_v1.py`:
 
@@ -197,12 +197,29 @@ Each of the seven below has a full `api / application / domain / infra / events`
   explicitly out of scope), so the conflict is recorded but blocks nothing built here.
   `notifications.data_json` is this codebase's first JSON column — PostgreSQL native `JSONB`
   (ADR-0002), no prior precedent to follow.
+- **Reporting (C9)** — `ReportRun` (request/start/succeed/fail) is the only aggregate built.
+  `ReportDefinition` (Phase 2 §2's conceptual pairing with `ReportRun`) is **not built** — no
+  `report_definitions` table exists anywhere in Database Design (the schema authority), no API
+  route manages one; flagged as a real Phase-2-vs-Phase-3.2 gap, not silently resolved. `Report
+  Type` is modeled as an opaque, non-empty, length-validated string over `report_runs.
+  definition_key` rather than a closed enum — Database Design §8.6 gives that column no
+  `ENUM(...)` notation (unlike `status`, which does get one), and neither Project Brief §5.8's
+  two prose categories ("Student Transport Reports", "Transport Payment Reports") nor any other
+  document gives exact wire-format values; inventing a closed set was avoided. Two routes
+  exposed, matching API Contracts §4.8 exactly (`POST /reports/runs` → `202 Accepted` +
+  resource, `GET /reports/runs/{id}`) — no list route is documented, so none exists.
+  `GET /reports/runs/{id}` is scoped to "requester" (`requested_by = principal.user_id`), the
+  same personal-ownership/404-over-403 posture `notifications` already established. Actual
+  report rendering (PDF/Excel, the documented Report Worker's job, Backend LLD §11.2) is
+  entirely out of scope this phase — `request_report` persists a `QUEUED` row only;
+  `start`/`succeed`/`fail` exist at the application layer only, for a not-yet-built worker, no
+  HTTP route. `report_runs.params_json` reuses the `JSONB` pattern Notifications established.
 
 ### Architecture patterns in use
 
-All seven completed contexts apply the same patterns identically — verified module-by-module in
-the Phase 10 architecture review (and, for Billing/Notifications, via this codebase's own
-automated `tests/architecture/` gate suite), not just asserted:
+All eight completed contexts apply the same patterns identically — verified module-by-module in
+the Phase 10 architecture review (and, for Billing/Notifications/Reporting, via this codebase's
+own automated `tests/architecture/` gate suite), not just asserted:
 
 - **Clean Architecture / layered dependency direction:** `api → application → domain`; `infra`
   implements interfaces `domain` defines; domain never imports FastAPI or SQLAlchemy
@@ -246,9 +263,9 @@ backend/
 │   │       └── events/       # publishers/subscribers (scaffolded, broker pending)
 │   └── interfaces/http/     # api_v1 router aggregation, shared deps, middleware, error handlers
 ├── migrations/               # Alembic env.py + versions/
-└── tests/                    # unit/ (Transport Ops, core/policies, Billing, Notifications
-                               # today), integration/, contract/ (still empty), architecture/
-                               # (see known gaps below)
+└── tests/                    # unit/ (Transport Ops, core/policies, Billing, Notifications,
+                               # Reporting today), integration/, contract/ (still empty),
+                               # architecture/ (see known gaps below)
 ```
 
 ### Migration status
@@ -257,28 +274,36 @@ backend/
 - **Chain:** a single linear Alembic chain, one or more revisions per completed bounded context
   (`transport_ops` has several — one per aggregate), in build order:
   `iam → organization → fleet_device → tracking → transport_ops (student → parent →
-  student_parents → driver → route → trip → student_assignment) → billing → notifications`
-  (head). No branches.
+  student_parents → driver → route → trip → student_assignment) → billing → notifications →
+  reporting` (head). No branches.
 - **Verified zero drift:** `alembic check` reports "No new upgrade operations detected." against
   the live schema; the full chain has been round-tripped (`upgrade head → downgrade → upgrade
   head`) with no orphaned objects. Every migration that introduces a PostgreSQL native `ENUM`
   type includes an explicit `DROP TYPE` in its `downgrade()` — `alembic revision --autogenerate`
   does not emit this itself, and omitting it breaks re-upgrade after a downgrade.
-- `migrations/env.py` imports `infra/models` from exactly the seven completed modules — kept in
+- `migrations/env.py` imports `infra/models` from exactly the eight completed modules — kept in
   sync 1:1 with which modules have a non-empty `infra/models.py`.
 
 ### Known gaps (tracked, not hidden)
 
 - `tests/architecture/` now has ten automated boundary-gate tests (domain purity, layer
   dependency direction, module boundaries, API-layer boundaries) enforcing Backend LLD §2.3
-  across all seven completed modules — no longer empty.
-- Test coverage is concentrated in Transport Ops, `core/policies`, Billing, and Notifications;
-  IAM/Organization/Fleet Device/Tracking have no automated tests yet.
+  across all eight completed modules — no longer empty.
+- Test coverage is concentrated in Transport Ops, `core/policies`, Billing, Notifications, and
+  Reporting; IAM/Organization/Fleet Device/Tracking have no automated tests yet.
 - RBAC permission matrix, tenant/region `ScopeResolver`, and the event broker are all approved-open
   items — every dependent code path is wired to fail loudly rather than fake a pass. Billing's
   `PaymentProviderPort` (no EVC Plus adapter) and its `POST /billing/payments/callback` webhook
-  (no documented signature-verification scheme), and Notifications' `/ws/notifications` (no
-  broker, no Notification Worker), all carry the identical posture.
+  (no documented signature-verification scheme), Notifications' `/ws/notifications` (no broker,
+  no Notification Worker), and Reporting's actual PDF/Excel rendering (no Report Worker, no
+  renderer port — `ReportRun` stays `QUEUED` forever without one) all carry the identical
+  posture.
+- **Real, unresolved documentation gap** (Reporting, Phase 17): Phase 2 Enterprise Architecture
+  §2/§10.1 names a `ReportDefinition` domain concept as a documented pairing with `ReportRun`,
+  but Database Design (the schema authority) never gives it a table, and no API route manages
+  one. `ReportType`/`report_runs.definition_key` is therefore an opaque string, not a closed
+  catalog — this will need resolving by an approved documentation update (a `report_definitions`
+  table and/or a formal enum) before report content generation can be meaningfully implemented.
 - **Real, unresolved event-contract conflict** (Notifications, Phase 16): API Contracts §13.2's
   documented `student.assignment_changed` wire event (with a `new_status` payload field) does
   not match the four separate events `transport_ops.StudentAssignment` already emits
