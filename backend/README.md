@@ -11,8 +11,8 @@ Source of truth: `docs/business/RAAD_Phase3.1_Backend_LLD_v1_2.md`.
 ```
 raad/
 ├── main.py            # application entrypoint
-├── core/               # cross-cutting kernel: config, security, tenancy, db, events,
-│                       # errors, logging, validation, pagination, policies, time, ids, di
+├── core/               # cross-cutting kernel: config, security, tenancy, db, events, audit,
+│                       # errors, logging, pagination, policies, time, ids, di, workers
 ├── modules/            # one package per bounded context (see below)
 ├── interfaces/         # delivery mechanisms: http (REST/WS) and workers
 └── shared_contracts/   # event schemas and read-models shared across modules
@@ -82,7 +82,6 @@ The application is runnable. Implemented, framework-only (no business logic):
 - **Tenancy foundation** (`core/tenancy`) — `Principal`, `TenantRegionScope` types and the
   `ScopeResolver` interface (§17.4). No concrete resolution yet — needs the `organization`/
   `iam` modules.
-- **Validation infra** (`core/validation`) — generic guard helpers, no business rules.
 - **Event infra** (`core/events`) — `DomainEvent` envelope, `OutboxPublisher`/`EventDispatcher`/
   `BrokerPort` interfaces only (§10). No persistence or broker wiring yet.
 - **UoW + repository base interfaces** (`core/db`) — `UnitOfWork`, `Repository`,
@@ -376,28 +375,21 @@ business logic, no repository/SQLAlchemy access, no aggregate manipulation.
 
 ## Status
 
-The phase log above (4.2–5.4) covers IAM's own build-out in detail; this section reflects the
-backend as a whole as of the most recent Architecture Review (Modules 1–5).
+The phase log above (4.2–5.4) is a historical build-out record of IAM's own early phases and is
+kept as-is for that reason — it does **not** describe current backend-wide status. **The
+authoritative, currently-maintained status is `CLAUDE.md`'s "Repository Status" section** at the
+repo root; this section is a short pointer to it, not a duplicate, to avoid the exact staleness
+this section itself accumulated pre-Backend-Stabilization (it previously read "five of ten
+bounded contexts implemented," "tests/architecture/ is currently empty" — both long false).
 
-**No longer framework-only.** Five of the ten bounded contexts are implemented end-to-end
-(domain → application → infrastructure → API → database migration), each independently
-verified against a live database, not just unit-tested in isolation:
-
-- **IAM** — users, auth (JWT), RBAC scaffolding (permission matrix itself still pending
-  formal approval).
-- **Organization** — organizations, regions, tenant hierarchy.
-- **Fleet Device** — vehicles, devices, cameras, device↔vehicle assignment lifecycle.
-- **Tracking** — vehicle positions, geofence crossings. Its application service is currently
-  unreachable via DI pending a `LatestPositionPort`/Redis implementation — an intentional
-  "fail loudly, don't fake it" deferral, not a defect.
-- **Transport Operations (Student)** — the `Student` aggregate only (enroll/update/activate/
-  disable/graduate/transfer). `Parent`/`Route`/`Stop`/`Trip`/`student_assignments` — also
-  owned by this bounded context per `docs/architecture/adr/0001-business-entity-module-mapping.md`
-  — are not yet built.
-
-The remaining five contexts (`video`, `notifications`, `billing`, `reporting`,
-`platform_audit`) are still structural scaffolds only, exactly as the Modules table above
-already states — no business logic or API surface beyond health checks for those.
+As of the Backend Stabilization phase (ADR-0004 through ADR-0008): **all ten** bounded contexts
+are implemented end-to-end (domain → application → infrastructure → API → database migration);
+RBAC (`role_permissions`) and `ScopeResolver` (`region_assignments`/`support_assignments`) both
+resolve for real on every route; the Redis Streams event broker, Notification Worker, Report
+Worker, and scheduled jobs are wired (ADR-0008); a real GitHub Actions CI gate exists
+(`.github/workflows/backend-pipeline.yml`); `tests/architecture/` has ten automated boundary-gate
+tests, and `tests/contract/` validates the built OpenAPI surface against the documented API
+Contracts. See `CLAUDE.md`'s "Known gaps" for what genuinely remains.
 
 **Technology stack (current):**
 
@@ -426,18 +418,19 @@ already states — no business logic or API surface beyond health checks for tho
 
 - **PostgreSQL is the active database** — `RAAD_DB__URL` uses the `postgresql+asyncpg://` form
   (`.env.example`); the `asyncmy`/MySQL configuration referenced earlier in this file's phase
-  log is historical only.
-- **Alembic migration chain** is a single linear sequence, one revision per completed bounded
-  context, in build order: `iam → organization → fleet_device → tracking → transport_ops`
-  (head). No branches.
+  log is historical only (`docs/architecture/adr/0002-postgresql-migration.md`).
+- **Alembic migration chain** is a single linear sequence spanning all ten bounded contexts plus
+  two shared-kernel revisions (`role_permissions`, `audit_entries`) — see `CLAUDE.md`'s
+  "Migration status" for the exact current build order. No branches.
 - **Zero migration drift verified** — `alembic check` reports "No new upgrade operations
   detected" against the live schema; the full chain has been round-tripped
   (`upgrade head → downgrade → upgrade head`) with no orphaned database objects. Every
   migration introducing a PostgreSQL native `ENUM` type includes an explicit `DROP TYPE` in its
   `downgrade()` — `alembic revision --autogenerate` does not emit this itself, and omitting it
   breaks re-upgrade after a downgrade.
-- `migrations/env.py` imports `infra/models` from exactly the five completed modules, kept in
-  sync 1:1 with which modules have a non-empty `infra/models.py`.
+- `migrations/env.py` imports `infra/models` from all ten modules plus `core.audit.writer`
+  (ADR-0007), kept in sync 1:1 with which modules/shared-kernel packages have a non-empty
+  model-bearing source file.
 - Cross-context reference columns (e.g. `organization_id`) are indexed but never
   foreign-key-constrained, by design (`.claude/rules/database.md` #3) — preserves module
   extraction seams. In-context references (e.g. `refresh_tokens.user_id → users.id`) are real,
@@ -445,29 +438,12 @@ already states — no business logic or API surface beyond health checks for tho
 
 ## Roadmap
 
-**Completed**
-
-- IAM, Organization, Fleet Device, Tracking, Transport Operations (Student) — full
-  domain/application/infra/API stacks, migrated onto PostgreSQL.
-- ADR-0002: MySQL → PostgreSQL engine migration, including the full Alembic history
-  regeneration described above.
-
-**In Progress**
-
-- Transport Operations: remaining entities (`Parent`, `Route`, `Stop`, `Trip`,
-  `student_assignments`) not yet started within the already-completed bounded context.
-- RBAC permission matrix and a concrete `PermissionEvaluator` (every `require_permission`
-  call across all five modules currently raises `NotImplementedError` by design).
-- `ScopeResolver` (tenant/region scope resolution) — no concrete implementation bound yet.
-
-**Planned**
-
-- Remaining bounded contexts: `video`, `notifications`, `billing`, `reporting`,
-  `platform_audit` (currently structural scaffolds only).
-- Event broker selection and `BrokerPort` implementation (Phase 2 §4.3, open item) — unlocks
-  the Outbox Relay worker and `TrackingApplicationService`'s Redis-backed
-  `LatestPositionPort`.
-- Automated architecture-boundary test suite (`tests/architecture/` is currently empty;
-  Backend LLD §2.3 calls for one — module boundaries hold today by manual discipline only).
-- Broader automated test coverage — today concentrated almost entirely in Transport
-  Operations; IAM/Organization/Fleet Device/Tracking have no automated tests yet.
+See `CLAUDE.md`'s "Known gaps" section for the currently-maintained, single source of truth on
+what remains — this avoids the exact duplication-then-staleness this section itself suffered
+from previously (it once listed nine of ten bounded contexts as "Planned" after they had already
+shipped). In short: the event broker's *publish* side is wired (ADR-0008) but the
+`PaymentProviderPort`/`VideoProviderPort` vendor adapters and the payment-callback signature
+scheme remain deliberately unbound ("fail loudly, don't fake it"); no `list_all()` repository
+method is yet filtered by the real `ScopeResolver`; and `ReportDefinition`
+(Reporting)/`student.assignment_changed` (Notifications) are real, unresolved documentation
+conflicts awaiting an approved doc update, not a code fix.

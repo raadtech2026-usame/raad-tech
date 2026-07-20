@@ -46,6 +46,7 @@ from raad.modules.tracking.domain.value_objects import (
     VehiclePositionId,
 )
 from raad.modules.tracking.infra.mappers import (
+    _naive,
     geofence_crossing_to_model,
     model_to_geofence_crossing,
     model_to_vehicle_position,
@@ -94,8 +95,15 @@ class SqlAlchemyVehiclePositionRepository(
         self._tracked[str(position.id)] = (position, model)
 
     async def delete_before(self, cutoff: datetime) -> int:
+        """`cutoff` is typically a `Clock.now()`-derived, tz-aware value (the scheduled-job
+        caller's own arithmetic); `event_time` is a naive-UTC `DateTime(timezone=False)`
+        column (ADR-0002). Reuses `mappers._naive` — the same strip-tzinfo-before-binding fix
+        every other tz-aware-value-into-this-schema path in this module already applies —
+        caught live: an unconverted tz-aware `cutoff` raises `asyncpg.exceptions.DataError`
+        ("can't subtract offset-naive and offset-aware datetimes"), not a silent wrong answer.
+        """
         statement = delete(VehiclePositionModel).where(
-            VehiclePositionModel.event_time < cutoff
+            VehiclePositionModel.event_time < _naive(cutoff)
         )
         result = await self._session.execute(statement)
         return result.rowcount or 0
