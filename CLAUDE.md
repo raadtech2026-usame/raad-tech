@@ -63,11 +63,12 @@ relaying JT808/JT1078 traffic between bus terminals and the platform.
 This repository is **no longer greenfield**. The Business API backend (`backend/`) is a running
 FastAPI modular monolith with **all ten** of its bounded contexts fully implemented end-to-end
 (domain → application → infrastructure → API → database migration), backed by a live PostgreSQL
-schema, as of the Backend Stabilization phase (ADR-0004 through ADR-0007). Cross-cutting
-authorization (RBAC permission matrix, tenant/region `ScopeResolver`, CR-1/D5 policy enforcement)
-and the `audit_entries` write architecture are likewise implemented and verified — see "Known
-gaps" below for what genuinely remains (the event broker, `PaymentProviderPort`/
-`VideoProviderPort` adapters, Notification/Report Workers, CI/CD, contract/load tests).
+schema, as of the Backend Stabilization phase (ADR-0004 through ADR-0008). Cross-cutting
+authorization (RBAC permission matrix, tenant/region `ScopeResolver`, CR-1/D5 policy enforcement),
+the `audit_entries` write architecture, the Redis Streams event broker, both background workers,
+and three scheduled jobs are likewise implemented and verified — see "Known gaps" below for what
+genuinely remains (`PaymentProviderPort`/`VideoProviderPort`/`ReportRendererPort` adapters,
+`/ws/tracking`/`/ws/notifications`, CI/CD, contract/load tests).
 
 ### Tech stack (decided)
 
@@ -76,7 +77,9 @@ gaps" below for what genuinely remains (the event broker, `PaymentProviderPort`/
   decision — see `docs/architecture/adr/0002-postgresql-migration.md` and
   `.claude/rules/database.md`). **Redis** (via `redis-py`/`redis.asyncio`, Backend Stabilization
   phase) backs `tracking`'s `RedisLatestPositionPort` (read-only — see the Tracking bullet
-  below); sessions/other hot-state caching is not yet wired.
+  below) **and**, independently configurable (`RAAD_BROKER__URL`), the event broker (ADR-0008:
+  Redis Streams) plus its `LockPort`/`DeadLetterQueue` — see "Known gaps" below; session/other
+  hot-state caching is not yet wired.
 - **ORM/migrations:** SQLAlchemy 2.x async + Alembic, revisions in `backend/migrations/versions/`.
 - **Dependency injection:** a small hand-rolled composition root (`backend/raad/core/di/`), not a
   third-party DI framework.
@@ -282,10 +285,10 @@ Audit, via this codebase's own automated `tests/architecture/` gate suite), not 
   transaction as the business rows (`core/events/outbox.py`, `core/audit/writer.py` — ADR-0007)
   — no event without a committed change, no committed change silently missing its event or its
   audit row. Both are shared-kernel tables owned by no bounded context, mirroring each other
-  exactly. The outbox's publish/relay side (`SqlOutboxPublisher`) exists but stays unbound until
-  a broker is chosen (Phase 2 §4.3, still open) — this is a backend-wide deferral, not a
-  per-module gap; `audit_entries`' own read side (`GET /admin/audit`, `platform_audit`) has no
-  such dependency and is fully live.
+  exactly. The outbox's publish/relay side (`SqlOutboxPublisher`) is bound whenever a broker is
+  configured (ADR-0008: Redis Streams, `RAAD_BROKER__URL`) — unbound without one, the same
+  "fail loudly" policy every other pending-infra port follows; `audit_entries`' own read side
+  (`GET /admin/audit`, `platform_audit`) has no such dependency and is fully live regardless.
 - **Dependency injection:** one composition root, `core/di/bootstrap.py`, binding every service,
   repository-bearing UnitOfWork, and cross-cutting port; unbound dependencies fail loudly
   (`LookupError`/`NotImplementedError`) rather than resolving to a fake.
@@ -355,13 +358,47 @@ backend/
   Device/Tracking still have no dedicated live-DB integration test file, though their
   `SqlAlchemyUnitOfWork` wiring is exercised indirectly via `test_rbac_and_scope_resolver.py`
   and `test_postgres_repository_invariants.py`).
-- **The event broker is still the one open item every module's own outbox-publish path depends
-  on** (Phase 2 §4.3) — `SqlOutboxPublisher` exists but stays unbound until a broker is chosen;
-  this is what blocks the Notification Worker (event consumption, `/ws/notifications`) and the
-  Report Worker (actual PDF/Excel rendering — `ReportRun` stays `QUEUED` forever without one)
-  from being built, not a per-module gap. `audit_entries`' own read side has no such dependency
-  and is fully live (ADR-0007) — only the outbox's *publish* side, not every event-driven
-  capability, is blocked on the broker.
+- **The event broker is now chosen and implemented: Redis Streams (ADR-0008)** —
+  `core/events/redis_streams.py`'s `RedisStreamsBrokerPort`/`RedisStreamsBrokerConsumer`, bound
+  in DI whenever `RAAD_BROKER__URL` is configured (no broker is reachable in this dev sandbox,
+  so it stays unbound here — same "fail loudly, don't fake it" policy `db.url`/`redis.url`
+  follow). `SqlOutboxPublisher` needed zero changes — it already depended only on the abstract
+  `BrokerPort`. `core.workers.scheduler.LockPort` (`RedisLockPort`) and `core.workers.dlq.
+  DeadLetterQueue` (`RedisDeadLetterQueue`) are likewise now concrete, sharing the broker's own
+  Redis connection. `/ws/tracking`/`/ws/notifications` remain unwired — realtime WebSocket
+  fan-out is a distinct capability from the broker/worker plumbing this phase completes, out of
+  scope here.
+- **Notification Worker built** (`interfaces/workers/notification_worker.py` + `modules/
+  notifications/events/subscribers.py`): consumes the broker (only started when a
+  `BrokerConsumer` is bound), dispatches via `core.events.processor.EventProcessorRegistry` to
+  four D1-catalog processors (`trip_started`/`trip_completed`/`approaching_stop`/`arrived_org`),
+  resolving recipients via `transport_ops`'s own already-existing application services and
+  gating each one through `SubscriptionAccessPolicy` (CR-1) before calling `Notification.
+  create()` — the enforcement point `notifications/domain/policies.py`'s own docstring had
+  named as "the not-yet-built Notification Worker"'s job. `subscription`/`system` notification
+  types are **not** auto-triggered from any event — no document names which billing/system
+  event(s) should produce one, flagged rather than invented.
+- **Report Worker built** (`interfaces/workers/report_worker.py`): polls `queued` `ReportRun`s
+  (new `ListReportRunsQuery`/`list_report_runs`, `reporting` module) and attempts rendering via
+  the newly-added `ReportRendererPort` abstraction (`reporting/application/ports.py`) — left
+  unbound, the identical `PaymentProviderPort`/`VideoProviderPort` "fail loudly, don't fake"
+  posture, so every run this worker picks up ends `failed` in this environment (no rendering
+  engine exists) rather than sitting `QUEUED` forever.
+- **Three scheduled jobs registered** (`interfaces/workers/bootstrap.py`), guarded by
+  `RedisLockPort` whenever a broker is configured: `prune_vehicle_positions` (new
+  `TrackingApplicationService.prune_position_history` + `VehiclePositionRepository.
+  delete_before` — a plain bulk `DELETE`, not `PARTITION BY RANGE` + partition-drop, since
+  `vehicle_positions` isn't actually partitioned yet, `.claude/rules/database.md` #6's own
+  literal mechanism deferred separately), `sweep_expired_subscriptions` and
+  `reconcile_expired_payments` (new `BillingApplicationService` methods, both bulk-scan
+  orchestration over already-existing `Subscription.expire()`/`Payment.mark_expired()`).
+  **Trip generation is deliberately not registered** — Backend LLD §11.2 names "daily trip
+  generation" as a Scheduler job, but no document gives any schedule/recurrence data model a
+  `Trip` could be generated from; inventing one was out of scope. `TrackingApplicationService`
+  is now always constructible (`latest_position_port` optional at the service level, matching
+  `BillingApplicationService`/`VideoApplicationService`'s already-established pattern) so the
+  retention job — which needs no Redis at all — stays reachable even without one configured;
+  only `get_current_vehicle_position` still fails loudly without a bound port.
 - Billing's `PaymentProviderPort` (no EVC Plus adapter) and its `POST /billing/payments/callback`
   webhook (no documented signature-verification scheme), and Video's `VideoProviderPort` (no
   vendor/hardware adapter — native JT1078 intentionally postponed per this phase's own explicit

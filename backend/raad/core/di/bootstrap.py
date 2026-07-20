@@ -2,12 +2,11 @@
 
 Binds the interfaces that have a concrete implementation *today*. Module-specific ports
 (`PushSenderPort` -> `FcmPushSender`, `PaymentProviderPort` -> `EvcPlusPaymentAdapter`,
-`DeviceCommandPort` -> `DeviceCommandClient`, `VideoSignalingPort` -> `VideoSignalingClient`,
-`ScopeResolver`, `PermissionEvaluator`) — plus `BrokerPort`/`BrokerConsumer`/
-`DeadLetterQueue`/`LockPort` (all pending the broker choice, Phase 2 §4.3, still an open
-item) — are bound here once their owning module/infra is implemented in a later phase,
-deliberately absent now rather than stubbed, so a missing binding fails loudly (`LookupError`)
-instead of silently resolving to a fake.
+`DeviceCommandPort` -> `DeviceCommandClient`, `VideoSignalingPort` -> `VideoSignalingClient`)
+still have no bound adapter and stay deliberately absent, so resolving them fails loudly
+(`LookupError`) instead of silently resolving to a fake. `ScopeResolver`/`PermissionEvaluator`
+(ADR-0004/0005) and `BrokerPort`/`BrokerConsumer`/`DeadLetterQueue`/`LockPort` (ADR-0008, Redis
+Streams at MVP) are now bound for real, conditional on their own settings being configured.
 """
 
 from __future__ import annotations
@@ -21,8 +20,13 @@ from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork, UnitOfWork
 from raad.core.di.container import Container
 from raad.core.events.outbox import OutboxWriter, SqlOutboxPublisher
-from raad.core.events.ports import BrokerPort, OutboxPublisher
+from raad.core.events.ports import BrokerConsumer, BrokerPort, OutboxPublisher
 from raad.core.events.processor import EventProcessorRegistry
+from raad.core.events.redis_streams import (
+    RedisDeadLetterQueue,
+    RedisStreamsBrokerConsumer,
+    RedisStreamsBrokerPort,
+)
 from raad.core.ids.generator import IdGenerator, UlidGenerator
 from raad.core.policies import SubscriptionAccessPolicy, VideoAccessPolicy
 from raad.core.security.password_hashing import PasswordHasher, Pbkdf2PasswordHasher
@@ -31,8 +35,10 @@ from raad.core.security.permissions import PermissionEvaluator
 from raad.core.security.tokens import JwtTokenService, TokenService
 from raad.core.tenancy.resolver import ScopeResolver
 from raad.core.time.clock import Clock, SystemClock
+from raad.core.workers.dlq import DeadLetterQueue
 from raad.core.workers.idempotency import IdempotencyStore, InMemoryIdempotencyStore
 from raad.core.workers.retry import ExponentialBackoffRetryPolicy, RetryPolicy
+from raad.core.workers.scheduler import LockPort, RedisLockPort
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.services import (
     AuthApplicationService,
@@ -84,6 +90,7 @@ from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.billing.infra.repositories import SqlAlchemyBillingUnitOfWork
 from raad.modules.notifications.application.ports import NotificationsUnitOfWork
 from raad.modules.notifications.application.services import NotificationApplicationService
+from raad.modules.notifications.events.subscribers import register_notification_processors
 from raad.modules.notifications.infra.repositories import (
     SqlAlchemyNotificationsUnitOfWork,
 )
@@ -309,30 +316,62 @@ def build_container(settings: Settings) -> Container:
     # adapter reads the key's value as a JSON *string* (`redis.asyncio.Redis.get` would
     # otherwise return `bytes`).
     if settings.redis.url:
-        redis_client = Redis.from_url(settings.redis.url, decode_responses=True)
-        container.bind_singleton(Redis, redis_client)
+        latest_position_redis_client = Redis.from_url(
+            settings.redis.url, decode_responses=True
+        )
         container.bind_singleton(
             LatestPositionPort,
             RedisLatestPositionPort(
-                redis_client,
+                latest_position_redis_client,
                 clock=container.resolve(Clock),
                 id_generator=container.resolve(IdGenerator),
             ),
         )
 
-    # TrackingApplicationService additionally needs the LatestPositionPort bound just above —
-    # no concrete implementation existed before this phase (Phase 8.3 deliberately deferred
-    # it), so this stays unbound without a reachable Redis, the same "fail loudly, don't fake
-    # it" policy OutboxPublisher/BrokerPort already follow below.
-    latest_position_port = container.try_resolve(LatestPositionPort)
-    if latest_position_port is not None:
+    # TrackingApplicationService is always constructible — `latest_position_port` is optional
+    # at the service level (Backend Stabilization phase, see that class's own module
+    # docstring), identical to `BillingApplicationService.payment_provider`/
+    # `VideoApplicationService.video_provider`'s already-established pattern. Only
+    # `get_current_vehicle_position` needs the port and fails loudly without one; every other
+    # method (including `prune_position_history`, the retention scheduled job's own entry
+    # point) needs no Redis at all and must stay reachable regardless.
+    container.bind_singleton(
+        TrackingApplicationService,
+        TrackingApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+            latest_position_port=container.try_resolve(LatestPositionPort),
+        ),
+    )
+
+    # Event broker (ADR-0008: Redis Streams at MVP) - BrokerPort/BrokerConsumer/LockPort/
+    # DeadLetterQueue all stay unbound without a reachable RAAD_BROKER__URL, the same "fail
+    # loudly, don't fake it" policy every other pending-infra port in this file follows. A
+    # separate Redis client from `latest_position_redis_client` above - `broker.url` is an
+    # independently configurable setting (ADR-0008's own reasoning), even though an MVP
+    # deployment will typically point both at the same instance.
+    if settings.broker.url:
+        broker_redis_client = Redis.from_url(settings.broker.url, decode_responses=True)
+        broker_port = RedisStreamsBrokerPort(broker_redis_client)
+        container.bind_singleton(BrokerPort, broker_port)
+        container.bind_singleton(LockPort, RedisLockPort(broker_redis_client))
+        dead_letter_queue = RedisDeadLetterQueue(broker_redis_client)
+        container.bind_singleton(DeadLetterQueue, dead_letter_queue)
         container.bind_singleton(
-            TrackingApplicationService,
-            TrackingApplicationService(
-                clock=container.resolve(Clock),
-                id_generator=container.resolve(IdGenerator),
-                latest_position_port=latest_position_port,
+            BrokerConsumer,
+            RedisStreamsBrokerConsumer(
+                broker_redis_client,
+                group_name="notification-worker",
+                retry_policy=container.resolve(RetryPolicy),
+                dead_letter_queue=dead_letter_queue,
             ),
+        )
+
+        # EventProcessorRegistry (already bound as an empty singleton above) gets the
+        # Notification Worker's four D1 processors registered - see
+        # `modules/notifications/events/subscribers.py`'s own module docstring.
+        register_notification_processors(
+            container.resolve(EventProcessorRegistry), container
         )
 
     # TokenService needs a non-empty signing secret. In `dev`/`staging` without one configured
@@ -475,9 +514,10 @@ def build_container(settings: Settings) -> Container:
         )
 
         # OutboxPublisher (the Outbox Relay's read/publish side) additionally needs a
-        # BrokerPort — never bound in this phase (broker choice is still an open item), so
-        # this stays unbound too until one is. Written so binding it later is a one-line
-        # change, not a redesign.
+        # BrokerPort — bound above (ADR-0008) only when `settings.broker.url` is configured;
+        # stays unbound without one, the same "fail loudly, don't fake it" policy as every
+        # other pending-infra port. `OutboxRelayWorker` already documents the resulting
+        # previously-permanent no-op this makes conditional instead.
         broker = container.try_resolve(BrokerPort)
         if broker is not None:
             container.bind_singleton(

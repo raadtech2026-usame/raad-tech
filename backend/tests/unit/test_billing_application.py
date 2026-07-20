@@ -844,5 +844,298 @@ class TransportFeeApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(fees), 1)
 
 
+class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """`sweep_expired_subscriptions`/`reconcile_expired_payments` (Backend Stabilization phase)
+    — the subscription-status-sweep and payment-reconciliation scheduled jobs' own entry
+    points. Uses two `BillingApplicationService` instances sharing one fake `uow`, each with
+    its own `FixedClock`, to simulate "time passing" between creation and the sweep."""
+
+    async def test_sweep_expired_subscriptions_expires_past_period_end(self) -> None:
+        """A `Subscription` only gets a real `current_period_end` once a payment actually
+        succeeds (`handle_payment_callback(status="paid")` calls `Subscription.renew()`,
+        `application/services.py`'s own module docstring) — `renew_parent_subscription` alone
+        leaves it `TRIAL`/`current_period_end=None`. This test drives the full pay-and-confirm
+        flow so the sweep has a real, in-the-past period end to find."""
+        early_clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        provider = FakePaymentProvider()
+        early_service = BillingApplicationService(
+            clock=early_clock, id_generator=SequentialIdGenerator(), payment_provider=provider
+        )
+        uow = make_uow()
+        plan = await early_service.create_plan(
+            CreatePlanCommand(
+                name="Parent Plan",
+                billing_scope="parent",
+                amount=10.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        renewal = await early_service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-ref-sweep-1",
+                plan_id=plan.id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        payment = await early_service.initiate_payment(
+            InitiatePaymentCommand(
+                invoice_id=renewal.id,
+                method="evcplus",
+                msisdn="+2526000000",
+                amount=10.00,
+                currency="USD",
+                idempotency_key="idem-sweep-1",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await early_service.handle_payment_callback(
+            PaymentCallbackCommand(
+                payment_id=payment.id,
+                status="paid",
+                provider_ref="EVC-REF-SWEEP-1",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        # current_period_end is now early_clock.now() + 30 days = 2026-01-31.
+
+        late_clock = FixedClock(datetime(2026, 3, 1, tzinfo=timezone.utc))
+        late_service = BillingApplicationService(
+            clock=late_clock, id_generator=SequentialIdGenerator()
+        )
+        expired_count = await late_service.sweep_expired_subscriptions(uow=uow)
+
+        self.assertEqual(expired_count, 1)
+        stored = await uow.subscriptions.get(SubscriptionId(renewal.subscription_id))
+        self.assertEqual(stored.status.value, "expired")
+
+    async def test_sweep_expired_subscriptions_skips_not_yet_due(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        provider = FakePaymentProvider()
+        service = BillingApplicationService(
+            clock=clock, id_generator=SequentialIdGenerator(), payment_provider=provider
+        )
+        uow = make_uow()
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Parent Plan",
+                billing_scope="parent",
+                amount=10.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        renewal = await service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-ref-sweep-2",
+                plan_id=plan.id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        payment = await service.initiate_payment(
+            InitiatePaymentCommand(
+                invoice_id=renewal.id,
+                method="evcplus",
+                msisdn="+2526000000",
+                amount=10.00,
+                currency="USD",
+                idempotency_key="idem-sweep-2",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.handle_payment_callback(
+            PaymentCallbackCommand(
+                payment_id=payment.id,
+                status="paid",
+                provider_ref="EVC-REF-SWEEP-2",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        # current_period_end is now 2026-01-31 - still in the future relative to `clock` itself.
+
+        expired_count = await service.sweep_expired_subscriptions(uow=uow)
+        self.assertEqual(expired_count, 0)
+        stored = await uow.subscriptions.get(SubscriptionId(renewal.subscription_id))
+        self.assertEqual(stored.status.value, "active")
+
+    async def test_reconcile_expired_payments_expires_stale_pending(self) -> None:
+        early_clock = FixedClock(datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc))
+        early_service = BillingApplicationService(
+            clock=early_clock, id_generator=SequentialIdGenerator(), payment_provider=None
+        )
+        uow = make_uow()
+        plan = await early_service.create_plan(
+            CreatePlanCommand(
+                name="Parent Plan",
+                billing_scope="parent",
+                amount=25.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        invoice = await early_service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-ref-reconcile-1",
+                plan_id=plan.id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(NotImplementedError):
+            await early_service.initiate_payment(
+                InitiatePaymentCommand(
+                    invoice_id=invoice.id,
+                    method="evcplus",
+                    msisdn="+2526000000",
+                    amount=25.00,
+                    currency="USD",
+                    idempotency_key="idem-reconcile-1",
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+        payment_id = next(iter(uow.payments.by_id.values())).id.value
+
+        late_clock = FixedClock(datetime(2026, 1, 1, 1, 0, 0, tzinfo=timezone.utc))
+        late_service = BillingApplicationService(
+            clock=late_clock, id_generator=SequentialIdGenerator()
+        )
+        expired_count = await late_service.reconcile_expired_payments(
+            timeout_minutes=30, uow=uow
+        )
+
+        self.assertEqual(expired_count, 1)
+        stored = await uow.payments.get(PaymentId(payment_id))
+        self.assertEqual(stored.status.value, "expired")
+
+    async def test_reconcile_expired_payments_skips_recent_pending(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        service = BillingApplicationService(
+            clock=clock, id_generator=SequentialIdGenerator(), payment_provider=None
+        )
+        uow = make_uow()
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Parent Plan",
+                billing_scope="parent",
+                amount=25.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        invoice = await service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-ref-reconcile-2",
+                plan_id=plan.id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(NotImplementedError):
+            await service.initiate_payment(
+                InitiatePaymentCommand(
+                    invoice_id=invoice.id,
+                    method="evcplus",
+                    msisdn="+2526000000",
+                    amount=25.00,
+                    currency="USD",
+                    idempotency_key="idem-reconcile-2",
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        expired_count = await service.reconcile_expired_payments(
+            timeout_minutes=30, uow=uow
+        )
+        self.assertEqual(expired_count, 0)
+
+    async def test_reconcile_expired_payments_ignores_paid(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        provider = FakePaymentProvider()
+        service = BillingApplicationService(
+            clock=clock, id_generator=SequentialIdGenerator(), payment_provider=provider
+        )
+        uow = make_uow()
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Parent Plan",
+                billing_scope="parent",
+                amount=25.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        invoice = await service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-ref-reconcile-3",
+                plan_id=plan.id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        payment = await service.initiate_payment(
+            InitiatePaymentCommand(
+                invoice_id=invoice.id,
+                method="evcplus",
+                msisdn="+2526000000",
+                amount=25.00,
+                currency="USD",
+                idempotency_key="idem-reconcile-3",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.handle_payment_callback(
+            PaymentCallbackCommand(
+                payment_id=payment.id,
+                status="paid",
+                provider_ref="EVC-REF-1",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        late_clock = FixedClock(datetime(2026, 3, 1, tzinfo=timezone.utc))
+        late_service = BillingApplicationService(
+            clock=late_clock, id_generator=SequentialIdGenerator()
+        )
+        expired_count = await late_service.reconcile_expired_payments(
+            timeout_minutes=30, uow=uow
+        )
+        self.assertEqual(expired_count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

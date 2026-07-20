@@ -14,11 +14,12 @@ Two routes, exactly API Contracts §4.4's two REST rows:
 **Architecture Resolution (Backend Stabilization phase, Critical/High findings #1/#3/#4 of the
 pre-production review):** RBAC (`require_permission`) now resolves for real (Database Design
 §4.4's `role_permissions` matrix). `GET /tracking/vehicles/{vehicle_id}/latest` fails loudly
-with `LookupError` (500) only if no `LatestPositionPort` is bound — `RedisLatestPositionPort`
-(`tracking.infra.adapters`) now exists and is bound whenever `RAAD_REDIS__URL` is configured; in
-an environment with no reachable Redis (including no writer, i.e. no JT808 deployment) it
-correctly resolves to a `404 Not Found` per-vehicle rather than 500ing, since `get_latest`
-returns `None` for a vehicle with no cached position — an honest "no live position known"
+with `NotImplementedError` (500) only if no `LatestPositionPort` is bound (no `RAAD_REDIS__URL`
+configured) — `TrackingApplicationService` itself is always constructible now (`application.
+services.py`'s own docstring); only the one method that actually needs Redis raises. With a
+reachable Redis but no cached key for a given vehicle (including "no JT808 deployment writing
+`vehicle:{id}:last` at all," true in this sandbox), the route correctly resolves to a
+`404 Not Found` instead — `get_latest` returning `None` is an honest "no live position known"
 answer, not a bug. Both routes now also call `interfaces.http.policy_guards.
 resolve_tracking_decision` —
 `TrackingVisibilityPolicy` (`.claude/rules/security.md` #4's mandatory four-dimension

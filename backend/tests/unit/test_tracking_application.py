@@ -95,6 +95,16 @@ class InMemoryVehiclePositionRepository(VehiclePositionRepository):
     def add(self, position: VehiclePosition) -> None:
         self.by_id[str(position.id)] = position
 
+    async def delete_before(self, cutoff) -> int:
+        stale_ids = [
+            position_id
+            for position_id, position in self.by_id.items()
+            if position.event_time < cutoff
+        ]
+        for position_id in stale_ids:
+            del self.by_id[position_id]
+        return len(stale_ids)
+
 
 class InMemoryGeofenceCrossingRepository(GeofenceCrossingRepository):
     def __init__(self) -> None:
@@ -385,6 +395,62 @@ class GetCurrentVehiclePositionTests(unittest.IsolatedAsyncioTestCase):
             GetCurrentVehiclePositionQuery(vehicle_id=VALID_VEHICLE_ULID)
         )
         self.assertIsNone(result)
+
+    async def test_raises_not_implemented_when_no_port_bound(self) -> None:
+        """`latest_position_port` is optional at the service level (Backend Stabilization
+        phase) — the whole service stays constructible without Redis, but this one method
+        fails loudly when the port itself is missing, mirroring `BillingApplicationService.
+        initiate_payment`'s identical method-granularity treatment of `PaymentProviderPort`."""
+        from raad.modules.tracking.application.queries import (
+            GetCurrentVehiclePositionQuery,
+        )
+
+        service = TrackingApplicationService(
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            id_generator=SequentialIdGenerator(),
+            latest_position_port=None,
+        )
+        with self.assertRaises(NotImplementedError):
+            await service.get_current_vehicle_position(
+                GetCurrentVehiclePositionQuery(vehicle_id=VALID_VEHICLE_ULID)
+            )
+
+
+class PrunePositionHistoryTests(unittest.IsolatedAsyncioTestCase):
+    """`prune_position_history` (Backend Stabilization phase) — the retention-pruning
+    scheduled job's own entry point. Needs no `LatestPositionPort` at all (unlike
+    `get_current_vehicle_position`) — exercised here via `make_service()`'s `NullLatestPositionPort`
+    purely to prove that's true, not because the method touches it."""
+
+    async def test_deletes_positions_older_than_retention_window(self) -> None:
+        service, uow = make_service()
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        old_position = await service.record_vehicle_position(
+            _position_command((now - timedelta(days=100)).replace(tzinfo=None)), uow=uow
+        )
+        recent_position = await service.record_vehicle_position(
+            _position_command((now - timedelta(days=10)).replace(tzinfo=None)), uow=uow
+        )
+
+        deleted_count = await service.prune_position_history(90, uow=uow)
+
+        self.assertEqual(deleted_count, 1)
+        self.assertIsNone(await uow.vehicle_positions.get(
+            VehiclePositionId(old_position.id)
+        ))
+        self.assertIsNotNone(
+            await uow.vehicle_positions.get(VehiclePositionId(recent_position.id))
+        )
+
+    async def test_no_positions_older_than_window_deletes_nothing(self) -> None:
+        service, uow = make_service()
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        await service.record_vehicle_position(
+            _position_command((now - timedelta(days=1)).replace(tzinfo=None)), uow=uow
+        )
+
+        deleted_count = await service.prune_position_history(90, uow=uow)
+        self.assertEqual(deleted_count, 0)
 
 
 if __name__ == "__main__":

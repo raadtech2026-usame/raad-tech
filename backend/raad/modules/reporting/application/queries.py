@@ -1,6 +1,12 @@
 """Reporting application queries and DTOs (Backend LLD §4.2/§7.1 CQRS-lite read-models). DTOs
 are plain dataclasses — id fields become `str(vo)`, enum fields become `.value`, timestamps stay
 native `datetime`, mirroring `billing.application.queries`'s exact convention.
+
+**`ListReportRunsQuery` has no approved HTTP route** — API Contracts §4.8 documents no list
+route for `report_runs` (this module's own `CLAUDE.md`-recorded scope note). Added under the
+Backend Stabilization phase as the Report Worker's own entry point for finding `queued` work,
+the same "use-case exists, no approved endpoint yet" posture `StartReportCommand`/
+`MarkReportSucceededCommand` already establish for this identical module.
 """
 
 from __future__ import annotations
@@ -23,6 +29,11 @@ class GetReportRunByIdQuery:
 
     report_run_id: str
     requester_user_id: str
+
+
+@dataclass(frozen=True)
+class ListReportRunsQuery:
+    status: str | None = None
 
 
 @dataclass(frozen=True)

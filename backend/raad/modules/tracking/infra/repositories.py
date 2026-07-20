@@ -24,7 +24,9 @@ still pending (see `fleet_device.infra.repositories`'s identical note).
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import SqlAlchemyRepositoryBase
@@ -90,6 +92,13 @@ class SqlAlchemyVehiclePositionRepository(
         model = vehicle_position_to_model(position)
         super().add(model)
         self._tracked[str(position.id)] = (position, model)
+
+    async def delete_before(self, cutoff: datetime) -> int:
+        statement = delete(VehiclePositionModel).where(
+            VehiclePositionModel.event_time < cutoff
+        )
+        result = await self._session.execute(statement)
+        return result.rowcount or 0
 
     def flush_tracked_changes(self) -> None:
         for position, model in self._tracked.values():

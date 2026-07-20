@@ -28,6 +28,8 @@ phase's queries return data for an already-authorized caller.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from raad.core.ids.generator import IdGenerator
 from raad.core.time.clock import Clock
 from raad.modules.tracking.application.commands import (
@@ -74,7 +76,7 @@ class TrackingApplicationService:
         *,
         clock: Clock,
         id_generator: IdGenerator,
-        latest_position_port: LatestPositionPort,
+        latest_position_port: LatestPositionPort | None = None,
     ) -> None:
         self._clock = clock
         self._id_generator = id_generator
@@ -209,7 +211,19 @@ class TrackingApplicationService:
         """Served by `LatestPositionPort` (Redis-backed via `infra.adapters.
         RedisLatestPositionPort`, Backend Stabilization phase) — never `TrackingUnitOfWork.
         vehicle_positions`, per that repository's own "latest is not read from here" contract
-        (Phase 8.1)."""
+        (Phase 8.1). `latest_position_port` is optional at the *service* level (constructor)
+        so the rest of this service — including `prune_position_history`, the retention
+        scheduled job's own entry point, which needs no Redis at all — stays reachable even
+        without a configured Redis; only this one method needs the port, so only this method
+        fails loudly when it's unbound, mirroring `BillingApplicationService.initiate_payment`'s
+        identical method-granularity "fail loudly, don't fake" treatment of its own optional
+        `PaymentProviderPort`."""
+        if self._latest_position_port is None:
+            raise NotImplementedError(
+                "No LatestPositionPort is bound - RAAD_REDIS__URL is not configured in this "
+                "environment. See tracking.infra.adapters.RedisLatestPositionPort's own "
+                "module docstring."
+            )
         position = await self._latest_position_port.get_latest(
             VehicleId(query.vehicle_id)
         )
@@ -221,6 +235,22 @@ class TrackingApplicationService:
         async with uow:
             positions = await uow.vehicle_positions.list_for_trip(TripId(query.trip_id))
             return [vehicle_position_to_dto(position) for position in positions]
+
+    async def prune_position_history(
+        self, retention_days: int, *, uow: TrackingUnitOfWork
+    ) -> int:
+        """No approved HTTP route — the retention-pruning scheduled job's own entry point
+        (`.claude/rules/database.md` #6; see `domain.repositories.VehiclePositionRepository.
+        delete_before`'s own docstring for why this is a bulk `DELETE`, not a partition drop).
+        Returns the number of rows deleted."""
+        async with uow:
+            now = self._clock.now()
+            # `event_time` is stored naive (`DateTime(timezone=False)`, Database Design §7.1)
+            # but `Clock.now()` returns tz-aware UTC (`SystemClock`) - stripped here, the same
+            # fix `infra/mappers.py`'s own `_to_naive_utc` already applies throughout this
+            # codebase for the identical aware/naive mismatch.
+            cutoff = (now - timedelta(days=retention_days)).replace(tzinfo=None)
+            return await uow.vehicle_positions.delete_before(cutoff)
 
     async def get_geofence_crossings(
         self, query: GetGeofenceCrossingsQuery, *, uow: TrackingUnitOfWork

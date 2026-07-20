@@ -99,6 +99,7 @@ from raad.modules.billing.domain.value_objects import (
     SubscriberId,
     SubscriberType,
     SubscriptionId,
+    SubscriptionStatus,
     TransportFeeId,
 )
 
@@ -115,6 +116,19 @@ _BILLING_CYCLE_DAYS = {
 
 def _advance_period(start: datetime, cycle: BillingCycle) -> datetime:
     return start + timedelta(days=_BILLING_CYCLE_DAYS[cycle])
+
+
+def _to_naive(value: datetime) -> datetime:
+    """Normalizes to a naive `datetime` regardless of the caller's own tz-awareness — a real
+    DB-loaded aggregate's timestamp fields are always naive (`infra/mappers.py`'s own
+    `_to_naive_utc` already strips this on the way in), but a freshly-constructed in-memory
+    aggregate (this method's own `self._clock.now()`, or any aggregate never round-tripped
+    through a mapper — e.g. in-memory test fakes) may still be tz-aware; comparing the two
+    without normalizing both sides raises `TypeError: can't compare offset-naive and
+    offset-aware datetimes`. Used by `sweep_expired_subscriptions`/
+    `reconcile_expired_payments`, the two scheduled-job methods that compare a freshly-computed
+    `now`/`cutoff` against a loaded aggregate's own timestamp field."""
+    return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
 
 class BillingApplicationService:
@@ -255,6 +269,41 @@ class BillingApplicationService:
             uow.record_events(subscription.pull_domain_events())
             await uow.commit()
             return subscription_to_dto(subscription)
+
+    async def sweep_expired_subscriptions(
+        self, *, actor_id: str = "system", uow: BillingUnitOfWork
+    ) -> int:
+        """The subscription-status-sweep scheduled job's own entry point (Backend LLD §11.2's
+        "Scheduler" row: "subscription-status sweeps"; no approved HTTP route). Expires every
+        non-terminal subscription (`trial`/`active`/`suspended`) whose `current_period_end` has
+        passed — `Subscription.expire()` already exists and is idempotent (Phase 15); this only
+        adds the bulk-scan orchestration no single-subscription command could do. Returns the
+        number of subscriptions expired. `actor_id="system"` (a plain string, not a synthesized
+        `Principal`) since this method takes no `Command`/`actor: Principal` the way every
+        HTTP-reachable use-case does — see `modules/notifications/events/subscribers.py`'s own
+        `SYSTEM_PRINCIPAL` docstring for the identical gap this sidesteps by not requiring a
+        `Principal` at all for a method with no HTTP-facing counterpart."""
+        async with uow:
+            now = self._clock.now().replace(tzinfo=None)
+            subscriptions = await uow.subscriptions.list_all()
+            expired_count = 0
+            for subscription in subscriptions:
+                if subscription.status not in (
+                    SubscriptionStatus.TRIAL,
+                    SubscriptionStatus.ACTIVE,
+                    SubscriptionStatus.SUSPENDED,
+                ):
+                    continue
+                if subscription.current_period_end is None or _to_naive(
+                    subscription.current_period_end
+                ) >= now:
+                    continue
+                subscription.expire(clock=self._clock, actor_id=actor_id)
+                uow.record_events(subscription.pull_domain_events())
+                expired_count += 1
+            if expired_count:
+                await uow.commit()
+            return expired_count
 
     async def suspend_subscription(
         self, command: SuspendSubscriptionCommand, *, uow: BillingUnitOfWork
@@ -482,6 +531,32 @@ class BillingApplicationService:
             uow.record_events(payment.pull_domain_events())
             await uow.commit()
             return payment_to_dto(payment)
+
+    async def reconcile_expired_payments(
+        self, *, timeout_minutes: int, actor_id: str = "system", uow: BillingUnitOfWork
+    ) -> int:
+        """The payment-reconciliation scheduled job's own entry point (Backend LLD §11.2's
+        "Scheduler" row: "payment reconciliation"; Phase-2 §20.3: `Pending --> Expired: no
+        action within window`). Expires every `pending`/`processing` payment older than
+        `timeout_minutes` — `Payment.mark_expired()` already exists (Phase 15); this adds only
+        the bulk-scan orchestration. Returns the number of payments expired. Same
+        `actor_id="system"` plain-string posture as `sweep_expired_subscriptions` above."""
+        async with uow:
+            now = self._clock.now().replace(tzinfo=None)
+            cutoff = now - timedelta(minutes=timeout_minutes)
+            payments = await uow.payments.list_all()
+            expired_count = 0
+            for payment in payments:
+                if payment.status not in (PaymentStatus.PENDING, PaymentStatus.PROCESSING):
+                    continue
+                if _to_naive(payment.created_at) >= cutoff:
+                    continue
+                payment.mark_expired(clock=self._clock, actor_id=actor_id)
+                uow.record_events(payment.pull_domain_events())
+                expired_count += 1
+            if expired_count:
+                await uow.commit()
+            return expired_count
 
     async def get_payment_by_id(
         self, query: GetPaymentByIdQuery, *, uow: BillingUnitOfWork

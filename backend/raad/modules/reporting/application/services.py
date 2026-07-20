@@ -28,6 +28,7 @@ from raad.modules.reporting.application.commands import (
 from raad.modules.reporting.application.ports import ReportingUnitOfWork
 from raad.modules.reporting.application.queries import (
     GetReportRunByIdQuery,
+    ListReportRunsQuery,
     ReportRunDTO,
     report_run_to_dto,
 )
@@ -74,6 +75,20 @@ class ReportingApplicationService:
             if str(report_run.requested_by) != query.requester_user_id:
                 raise NotFoundError(f"ReportRun {query.report_run_id} not found.")
             return report_run_to_dto(report_run)
+
+    async def list_report_runs(
+        self, query: ListReportRunsQuery, *, uow: ReportingUnitOfWork
+    ) -> list[ReportRunDTO]:
+        """No approved HTTP route — see `queries.py`'s `ListReportRunsQuery` docstring. Filters
+        client-side over `list_all()` rather than adding a new repository method, mirroring
+        `notifications.events.subscribers`'s identical minimal-change choice for its own
+        vehicle-scoped assignment filter."""
+        async with uow:
+            report_runs = await uow.report_runs.list_all()
+            dtos = [report_run_to_dto(r) for r in report_runs]
+            if query.status is not None:
+                dtos = [dto for dto in dtos if dto.status == query.status]
+            return dtos
 
     async def start_report(
         self, command: StartReportCommand, *, uow: ReportingUnitOfWork

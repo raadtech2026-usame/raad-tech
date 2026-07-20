@@ -1,7 +1,7 @@
 """Dead Letter Queue foundation (Backend LLD §11.3: "Retry with backoff, bounded attempts,
-then dead-letter queue + alert"). Interface only — a concrete sink (a broker-backed DLQ topic,
-or a DB table) is added once the broker (Phase 2 §4.3) is chosen; not implemented in this
-phase (no RabbitMQ/Kafka, no new business table).
+then dead-letter queue + alert"). `RedisDeadLetterQueue` (Backend Stabilization phase,
+ADR-0008 — `core/events/redis_streams.py`) is the concrete sink, a second Redis Stream
+alongside the broker's own event stream.
 """
 
 from __future__ import annotations

@@ -28,6 +28,7 @@ index (repeat crossings of the same type are legitimate history rows, not violat
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from raad.modules.tracking.domain.entities import GeofenceCrossing, VehiclePosition
 from raad.modules.tracking.domain.value_objects import (
@@ -64,6 +65,21 @@ class VehiclePositionRepository(ABC):
     def add(self, position: VehiclePosition) -> None:
         """Persistence of changes is flushed by the Unit of Work, not the repository
         (LLD §7.1)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_before(self, cutoff: datetime) -> int:
+        """Bulk-deletes every row with `event_time < cutoff`; returns the number deleted.
+        Backend Stabilization phase addition for the retention-pruning scheduled job
+        (`.claude/rules/database.md` #6: "bounded retention window (recommend 90 days,
+        configurable)"). A plain bulk `DELETE`, not `PARTITION BY RANGE` + partition-drop —
+        `.claude/rules/database.md` #6's own literal mechanism — because `vehicle_positions`
+        is not actually partitioned yet (`infra/models.py`'s own docstring already flags this
+        as deferred to "a later phase"); implementing real native partitioning now would be a
+        larger, riskier schema change than this phase's "prefer minimal changes" instruction
+        allows, so this satisfies the underlying *requirement* (bounded, hard-deleted retention)
+        via the mechanism already available, flagged as a deviation from the exact documented
+        approach rather than silently presented as partition-drop."""
         raise NotImplementedError
 
 

@@ -107,6 +107,18 @@ class WorkerSettings(BaseModel):
     retry_max_attempts: int = 5
     retry_base_delay_seconds: float = 1.0
     retry_max_delay_seconds: float = 300.0
+    # Backend Stabilization phase (ADR-0008) - scheduled-job tuning. Registered by
+    # `interfaces/workers/bootstrap.py`, consumed by `tracking`/`billing`'s own new
+    # `prune_position_history`/`sweep_expired_subscriptions`/`reconcile_expired_payments`
+    # application-service methods.
+    notification_worker_interval_seconds: float = 5.0
+    report_worker_interval_seconds: float = 10.0
+    vehicle_position_retention_days: int = 90  # `.claude/rules/database.md` #6's own
+    # "recommend 90 days, configurable"
+    vehicle_position_retention_job_interval_seconds: float = 3600.0
+    subscription_sweep_interval_seconds: float = 3600.0
+    payment_reconciliation_timeout_minutes: int = 30
+    payment_reconciliation_interval_seconds: float = 600.0
 
 
 class Settings(BaseSettings):

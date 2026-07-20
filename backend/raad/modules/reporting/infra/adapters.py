@@ -1,10 +1,12 @@
 """External adapters for `reporting` (Backend LLD §6.2/§6.3 Anti-Corruption Layer).
 
-Deliberately empty this phase. The task's own Out of Scope section explicitly forbids PDF
-generation, Excel generation, BI dashboards, scheduled reports, and an analytics engine —
-persistence only. No rendering port exists to adapt either (`application/ports.py`'s own
-docstring explains why none was declared). A future `ReportRenderer` adapter (object-store
-artifact writer, PDF/Excel engine) belongs here once a documented port interface and an
-approved integration exist — mirrors `billing.infra.adapters`/`notifications.infra.adapters`'s
-identical "deliberately absent, not stubbed" precedent.
+Deliberately empty this phase. `application/ports.ReportRendererPort` now exists (Backend
+Stabilization phase), but no concrete implementation is bound here — actual PDF/Excel
+generation remains out of scope (no rendering engine or object-store integration has been
+approved), the same "define the interface, leave the adapter unbound" doctrine `billing.infra.
+adapters.PaymentProviderPort`/`video.infra.adapters.VideoProviderPort` already establish. The
+Report Worker (`interfaces/workers/report_worker.py`) therefore starts every `queued` run,
+attempts to resolve this port, and marks the run `failed` (not a crash) when none is bound —
+the identical "fail loudly per unit of work, don't fake a render" posture `BillingApplicationService.
+initiate_payment` already established for its own unbound `PaymentProviderPort`.
 """
