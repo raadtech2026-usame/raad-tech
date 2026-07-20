@@ -81,6 +81,16 @@ from raad.modules.billing.domain.value_objects import (
     SubscriptionId,
 )
 from raad.modules.billing.infra.repositories import SqlAlchemyBillingUnitOfWork
+from raad.modules.notifications.domain.entities import DeviceToken
+from raad.modules.notifications.domain.value_objects import (
+    DeviceTokenId,
+    FcmToken,
+    Platform,
+    UserId as NotificationsUserId,
+)
+from raad.modules.notifications.infra.repositories import (
+    SqlAlchemyNotificationsUnitOfWork,
+)
 
 
 def _db_available() -> bool:
@@ -776,6 +786,76 @@ class BillingDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
                 uow.record_events(second_invoice.pull_domain_events())
                 await uow.commit()
                 self._created_invoice_ids.append(str(second_invoice.id))
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class NotificationsDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
+    """Phase 16: the one global-uniqueness constraint Database Design §7.6 documents for
+    `notifications` (`ux_device_tokens__token`), proven at the real database layer —
+    defense-in-depth over `application/validators.py`'s `ensure_fcm_token_available` check.
+    No partial-unique index exists for either table (`infra/models.py`'s own module docstring —
+    no "one active X" invariant is documented for this module), so unlike the `Trip`/
+    `StudentAssignment`/`DeviceAssignment` classes above, there is nothing analogous to prove
+    here.
+    """
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_device_token_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        from sqlalchemy import text
+
+        async with self.engine.begin() as conn:
+            if self._created_device_token_ids:
+                await conn.execute(
+                    text("DELETE FROM device_tokens WHERE id = ANY(:ids)"),
+                    {"ids": self._created_device_token_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyNotificationsUnitOfWork:
+        return SqlAlchemyNotificationsUnitOfWork(self.session_factory, self.outbox_writer)
+
+    async def test_duplicate_fcm_token_violates_db_unique_constraint(self) -> None:
+        """Regression, at the database layer: `ux_device_tokens__token` rejects a second
+        `DeviceToken` row with the same token even if the application-layer
+        `ensure_fcm_token_available` check were somehow bypassed (e.g. a race between two
+        concurrent registration requests neither of which has loaded the other's row yet)."""
+        fcm_token = f"dbtest-fcm-{self.tag}"
+
+        async with self._new_uow() as uow:
+            first = DeviceToken.register(
+                id=DeviceTokenId(self.id_generator.new_id()),
+                user_id=NotificationsUserId(self.id_generator.new_id()),
+                fcm_token=FcmToken(fcm_token),
+                platform=Platform.ANDROID,
+                clock=self.clock,
+            )
+            uow.device_tokens.add(first)
+            uow.record_events(first.pull_domain_events())
+            await uow.commit()
+            self._created_device_token_ids.append(str(first.id))
+
+        with self.assertRaises(sqlalchemy.exc.IntegrityError):
+            async with self._new_uow() as uow:
+                second = DeviceToken.register(
+                    id=DeviceTokenId(self.id_generator.new_id()),
+                    user_id=NotificationsUserId(self.id_generator.new_id()),
+                    fcm_token=FcmToken(fcm_token),  # same token -> DB rejects
+                    platform=Platform.IOS,
+                    clock=self.clock,
+                )
+                uow.device_tokens.add(second)
+                uow.record_events(second.pull_domain_events())
+                await uow.commit()
+                self._created_device_token_ids.append(str(second.id))
 
 
 if __name__ == "__main__":

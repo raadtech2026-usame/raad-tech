@@ -73,6 +73,11 @@ from raad.modules.transport_ops.infra.repositories import (
 from raad.modules.billing.application.ports import BillingUnitOfWork, PaymentProviderPort
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.billing.infra.repositories import SqlAlchemyBillingUnitOfWork
+from raad.modules.notifications.application.ports import NotificationsUnitOfWork
+from raad.modules.notifications.application.services import NotificationApplicationService
+from raad.modules.notifications.infra.repositories import (
+    SqlAlchemyNotificationsUnitOfWork,
+)
 
 
 def build_container(settings: Settings) -> Container:
@@ -220,6 +225,16 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
+    # NotificationApplicationService needs no TokenService either — always constructible, same
+    # reasoning as the services above.
+    container.bind_singleton(
+        NotificationApplicationService,
+        NotificationApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+        ),
+    )
+
     # TrackingApplicationService additionally needs a LatestPositionPort (Database Design
     # §7.1: latest position is Redis-backed, not read from the PostgreSQL history table) — no
     # concrete implementation exists yet (Phase 8.3 deliberately deferred it), so this stays
@@ -309,6 +324,12 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             BillingUnitOfWork,
             lambda: SqlAlchemyBillingUnitOfWork(
+                session_factory, container.resolve(OutboxWriter)
+            ),
+        )
+        container.bind_factory(
+            NotificationsUnitOfWork,
+            lambda: SqlAlchemyNotificationsUnitOfWork(
                 session_factory, container.resolve(OutboxWriter)
             ),
         )

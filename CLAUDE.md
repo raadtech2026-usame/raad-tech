@@ -61,12 +61,12 @@ relaying JT808/JT1078 traffic between bus terminals and the platform.
 ## Repository Status
 
 This repository is **no longer greenfield**. The Business API backend (`backend/`) is a running
-FastAPI modular monolith with six of its ten bounded contexts fully implemented end-to-end
+FastAPI modular monolith with seven of its ten bounded contexts fully implemented end-to-end
 (domain → application → infrastructure → API → database migration), backed by a live PostgreSQL
-schema. The remaining four contexts (`video`, `notifications`, `reporting`, `platform_audit`) are
-still structural scaffolds only — no domain/application/infra logic, per
-`docs/architecture/adr/0001-business-entity-module-mapping.md`'s module list. Treat those four as
-genuinely not-yet-decided; do not infer behavior for them from the six completed ones.
+schema. The remaining three contexts (`video`, `reporting`, `platform_audit`) are still
+structural scaffolds only — no domain/application/infra logic, per
+`docs/architecture/adr/0001-business-entity-module-mapping.md`'s module list. Treat those three
+as genuinely not-yet-decided; do not infer behavior for them from the seven completed ones.
 
 ### Tech stack (decided)
 
@@ -85,7 +85,7 @@ genuinely not-yet-decided; do not infer behavior for them from the six completed
 
 ### Completed bounded contexts
 
-Each of the six below has a full `api / application / domain / infra / events` stack (per
+Each of the seven below has a full `api / application / domain / infra / events` stack (per
 `.claude/rules/backend.md` #1) and is registered in `core/di/bootstrap.py` and
 `interfaces/http/api_v1.py`:
 
@@ -167,12 +167,42 @@ Each of the six below has a full `api / application / domain / infra / events` s
   blank-pads `CHAR(n)` storage and returns it padded on `SELECT` (unlike `VARCHAR`) —
   implemented exactly as documented, with `infra/mappers.py`'s `model_to_payment` stripping the
   padding artifact back off before it reaches the domain layer.
+- **Notifications (C7)** — `Notification` (create/mark_read, the in-app store — D2) and
+  `DeviceToken` (register/revoke, FCM registration). `notification_preferences` (Database
+  Design §7.7) is **not built** — no document gives it an HTTP route and the task's own scope
+  named only "Notification aggregate," the same "documented table, no documented read/write
+  path, not built this phase" posture `TransportFee`/`trip_students` already establish
+  elsewhere. Four routes exposed, matching API Contracts §4.6 exactly (`GET /notifications`,
+  `GET /notifications/{id}` — uniform-CRUD addition, `POST /notifications/{id}/read`,
+  `POST /notifications/tokens`, `DELETE /notifications/tokens/{id}`); `/ws/notifications` is
+  **not wired** — mirrors `/ws/tracking`'s identical, already-established deferral
+  (`interfaces/http/api_v1.py`'s own module docstring), since both the broker and the
+  Notification Worker itself (event consumption, recipient resolution) are out of this phase's
+  scope. `GET /notifications` and `GET /notifications/{id}` are scoped by personal ownership
+  (`recipient_user_id = principal.user_id`), not tenant — the first list/get endpoints in this
+  codebase scoped that way; a non-owner request raises `NotFoundError` (404), not
+  `AuthorizationError`, generalizing Backend LLD §14.3's "404-over-403 avoids confirming
+  existence of out-of-scope data" reasoning from its literal cross-tenant wording, flagged as
+  this phase's own interpretive extension. `Notification.create()` does **not** call
+  `SubscriptionAccessPolicy` — mirrors `transport_ops`/`tracking`'s identical, already-
+  established deferral of that policy's actual enforcement-point wiring (`domain/policies.py`'s
+  module docstring has the full reasoning); the withholding decision belongs to the not-yet-
+  built Notification Worker. **A real event-contract conflict was found and documented, not
+  invented around:** API Contracts §13.2 documents a single `student.assignment_changed` wire
+  event (payload including `new_status`), but the actually-implemented Backend LLD event
+  contract in `transport_ops` is four separate, already-shipped events
+  (`StudentAssignmentRemoved`/`StudentTransferred`/`StudentGraduated`/`StudentDisabled`, no
+  `new_status` field) — per this phase's explicit instruction, no translation layer was added;
+  this module does not consume events at all this phase (broker wiring/event consumption
+  explicitly out of scope), so the conflict is recorded but blocks nothing built here.
+  `notifications.data_json` is this codebase's first JSON column — PostgreSQL native `JSONB`
+  (ADR-0002), no prior precedent to follow.
 
 ### Architecture patterns in use
 
-All six completed contexts apply the same patterns identically — verified module-by-module in the
-Phase 10 architecture review (and, for Billing, via this codebase's own automated
-`tests/architecture/` gate suite), not just asserted:
+All seven completed contexts apply the same patterns identically — verified module-by-module in
+the Phase 10 architecture review (and, for Billing/Notifications, via this codebase's own
+automated `tests/architecture/` gate suite), not just asserted:
 
 - **Clean Architecture / layered dependency direction:** `api → application → domain`; `infra`
   implements interfaces `domain` defines; domain never imports FastAPI or SQLAlchemy
@@ -216,8 +246,9 @@ backend/
 │   │       └── events/       # publishers/subscribers (scaffolded, broker pending)
 │   └── interfaces/http/     # api_v1 router aggregation, shared deps, middleware, error handlers
 ├── migrations/               # Alembic env.py + versions/
-└── tests/                    # unit/ (Transport Ops, core/policies, Billing today), integration/,
-                               # contract/ (still empty), architecture/ (see known gaps below)
+└── tests/                    # unit/ (Transport Ops, core/policies, Billing, Notifications
+                               # today), integration/, contract/ (still empty), architecture/
+                               # (see known gaps below)
 ```
 
 ### Migration status
@@ -226,26 +257,35 @@ backend/
 - **Chain:** a single linear Alembic chain, one or more revisions per completed bounded context
   (`transport_ops` has several — one per aggregate), in build order:
   `iam → organization → fleet_device → tracking → transport_ops (student → parent →
-  student_parents → driver → route → trip → student_assignment) → billing` (head). No branches.
+  student_parents → driver → route → trip → student_assignment) → billing → notifications`
+  (head). No branches.
 - **Verified zero drift:** `alembic check` reports "No new upgrade operations detected." against
   the live schema; the full chain has been round-tripped (`upgrade head → downgrade → upgrade
   head`) with no orphaned objects. Every migration that introduces a PostgreSQL native `ENUM`
   type includes an explicit `DROP TYPE` in its `downgrade()` — `alembic revision --autogenerate`
   does not emit this itself, and omitting it breaks re-upgrade after a downgrade.
-- `migrations/env.py` imports `infra/models` from exactly the six completed modules — kept in
+- `migrations/env.py` imports `infra/models` from exactly the seven completed modules — kept in
   sync 1:1 with which modules have a non-empty `infra/models.py`.
 
 ### Known gaps (tracked, not hidden)
 
 - `tests/architecture/` now has ten automated boundary-gate tests (domain purity, layer
   dependency direction, module boundaries, API-layer boundaries) enforcing Backend LLD §2.3
-  across all six completed modules — no longer empty.
-- Test coverage is concentrated in Transport Ops, `core/policies`, and Billing; IAM/Organization/
-  Fleet Device/Tracking have no automated tests yet.
+  across all seven completed modules — no longer empty.
+- Test coverage is concentrated in Transport Ops, `core/policies`, Billing, and Notifications;
+  IAM/Organization/Fleet Device/Tracking have no automated tests yet.
 - RBAC permission matrix, tenant/region `ScopeResolver`, and the event broker are all approved-open
   items — every dependent code path is wired to fail loudly rather than fake a pass. Billing's
   `PaymentProviderPort` (no EVC Plus adapter) and its `POST /billing/payments/callback` webhook
-  (no documented signature-verification scheme) carry the identical posture.
+  (no documented signature-verification scheme), and Notifications' `/ws/notifications` (no
+  broker, no Notification Worker), all carry the identical posture.
+- **Real, unresolved event-contract conflict** (Notifications, Phase 16): API Contracts §13.2's
+  documented `student.assignment_changed` wire event (with a `new_status` payload field) does
+  not match the four separate events `transport_ops.StudentAssignment` already emits
+  (`StudentAssignmentRemoved`/`StudentTransferred`/`StudentGraduated`/`StudentDisabled`, no
+  `new_status` field). No translation layer exists anywhere in this codebase. This will need
+  resolving — by an approved documentation update, not code-level invention — before the
+  Notification Worker (event consumption) can be built.
 
 This section must be kept current as further bounded contexts are completed — update it rather
 than letting it drift, the same discipline this rewrite itself was triggered by.

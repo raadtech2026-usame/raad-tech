@@ -1,9 +1,235 @@
 """HTTP surface of the `notifications` module (C7). Mounted at `/api/v1/notifications`; the
-realtime `/ws/notifications` WebSocket endpoint lives in `api/ws.py` (Backend LLD §16.1, §1).
+realtime `/ws/notifications` WebSocket endpoint lives in `api/ws.py` (Backend LLD §16.1, §1) —
+still a docstring-only scaffold this phase, see that file for why. Thin controllers only
+(Backend LLD §16.2): parse the request DTO, call exactly one `NotificationApplicationService`
+method, return the response DTO — every error already maps to the standard `ErrorEnvelope` via
+the global exception handlers. Mirrors `billing.api.routers`'s shape.
 
-Empty per Phase 4.2 scope — no endpoints beyond health checks are implemented yet.
+**Five routes, matching API Contracts §4.6's table exactly (lines 161-164) plus one uniform-CRUD
+addition — no more, no less:**
+
+- `GET /notifications` — list (line 161, "any authenticated", "own in-app notifications
+  (paginated)"). Scoped to the caller's own `recipient_user_id` (`principal.user_id`), **not**
+  `organization_id`/`TenantRegionScope` — the first list endpoint in this codebase scoped by
+  personal ownership rather than tenant. Not paginated — `core/pagination` is empty, the same
+  pre-existing gap `list_students`/`list_parents`/etc. already carry.
+- `GET /notifications/{notification_id}` — get by id. Not itemized in §4.6's compact table, but
+  every sibling resource in this codebase gets this uniform-CRUD route — built for the same
+  reason `Trip`'s/`StudentAssignment`'s equivalent were, flagged here rather than silently
+  assumed. Ownership-scoped identically to the list route (`NotFoundError` on a non-owner
+  request — see `application/queries.py`'s `GetNotificationByIdQuery` docstring for why 404,
+  not 403).
+- `POST /notifications/{notification_id}/read` — line 162, "recipient", mark read. Ownership
+  enforced directly (not RBAC-deferred) — see `application/services.py`'s module docstring.
+- `POST /notifications/tokens` — line 163, "Parent/Driver", register FCM token. No documented
+  request/response body shape (§4.6 gives only the route row); `RegisterDeviceTokenRequest`
+  mirrors the `DeviceToken.register()` factory's own fields 1:1, the established convention
+  every other module's create-request schema already follows.
+- `DELETE /notifications/tokens/{device_token_id}` — line 164, "owner", revoke token. A soft
+  revoke (`revoked_at` set), not a row deletion — see `domain/entities.py`'s `DeviceToken.revoke`
+  docstring for why. Ownership enforced directly, same posture as the notification routes.
+
+**Route registration order:** the literal `/tokens`/`/tokens/{device_token_id}` paths are
+registered before the parameterized `/{notification_id}` routes, avoiding any path-matching
+ambiguity between a bare path segment and a path parameter (no such ambiguity actually exists
+here — no `GET /notifications/tokens` route is documented — but the ordering is deliberate,
+not incidental).
+
+**Not exposed this phase** (flagged, not silently dropped): a generic `POST /notifications`
+(no document names one — `application/commands.py`'s own docstring); `GET/DELETE` for
+individual `DeviceToken`s beyond the documented revoke; any `notification_preferences`
+(§7.7) read/write route (no document names one, and no `NotificationPreference` aggregate is
+built this phase at all — see `domain/entities.py`'s module docstring for the full gap).
 """
 
-from fastapi import APIRouter
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, status
+
+from raad.core.security.permissions import Permission
+from raad.core.tenancy.principal import Principal
+from raad.interfaces.http.deps import require_permission
+from raad.modules.notifications.api.deps import (
+    get_notification_service,
+    get_notifications_uow,
+)
+from raad.modules.notifications.api.schemas import (
+    DeviceTokenResponse,
+    NotificationResponse,
+    RegisterDeviceTokenRequest,
+)
+from raad.modules.notifications.application.commands import (
+    MarkNotificationReadCommand,
+    RegisterDeviceTokenCommand,
+    RevokeDeviceTokenCommand,
+)
+from raad.modules.notifications.application.ports import NotificationsUnitOfWork
+from raad.modules.notifications.application.queries import (
+    DeviceTokenDTO,
+    GetNotificationByIdQuery,
+    ListNotificationsForRecipientQuery,
+    NotificationDTO,
+)
+from raad.modules.notifications.application.services import NotificationApplicationService
 
 notifications_router = APIRouter()
+
+
+def _notification_dto_to_response(notification: NotificationDTO) -> NotificationResponse:
+    return NotificationResponse(
+        id=notification.id,
+        organization_id=notification.organization_id,
+        recipient_user_id=notification.recipient_user_id,
+        type=notification.type,
+        title=notification.title,
+        body=notification.body,
+        data=notification.data,
+        trip_id=notification.trip_id,
+        status=notification.status,
+        created_at=notification.created_at,
+        read_at=notification.read_at,
+    )
+
+
+def _device_token_dto_to_response(device_token: DeviceTokenDTO) -> DeviceTokenResponse:
+    return DeviceTokenResponse(
+        id=device_token.id,
+        user_id=device_token.user_id,
+        fcm_token=device_token.fcm_token,
+        platform=device_token.platform,
+        created_at=device_token.created_at,
+        revoked_at=device_token.revoked_at,
+    )
+
+
+@notifications_router.post(
+    "/tokens",
+    response_model=DeviceTokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register an FCM device token",
+    description=(
+        "Parent/Driver (API Contracts §4.6 line 163). Rejects a token already registered "
+        "(`ConflictError`, `ux_device_tokens__token` defense-in-depth — "
+        "`application/validators.py`'s `ensure_fcm_token_available`). Pending the approved "
+        "RBAC permission matrix — raises `NotImplementedError` (500), matching every other "
+        "module's identical posture."
+    ),
+)
+async def register_device_token(
+    body: RegisterDeviceTokenRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("notifications.tokens.create"))
+    ),
+    notification_service: NotificationApplicationService = Depends(get_notification_service),
+    uow: NotificationsUnitOfWork = Depends(get_notifications_uow),
+) -> DeviceTokenResponse:
+    command = RegisterDeviceTokenCommand(
+        fcm_token=body.fcm_token, platform=body.platform, actor=principal
+    )
+    device_token = await notification_service.register_device_token(command, uow=uow)
+    return _device_token_dto_to_response(device_token)
+
+
+@notifications_router.delete(
+    "/tokens/{device_token_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke an FCM device token",
+    description=(
+        "Owner (API Contracts §4.6 line 164). A soft revoke, not a row deletion — see "
+        "`domain/entities.py`'s `DeviceToken.revoke` docstring. Ownership enforced directly: a "
+        "non-owner request raises `NotFoundError` (404), not `AuthorizationError` — see "
+        "`application/queries.py`'s `GetNotificationByIdQuery` docstring for the 404-over-403 "
+        "reasoning applied uniformly across this module. Pending the approved RBAC permission "
+        "matrix."
+    ),
+)
+async def revoke_device_token(
+    device_token_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("notifications.tokens.delete"))
+    ),
+    notification_service: NotificationApplicationService = Depends(get_notification_service),
+    uow: NotificationsUnitOfWork = Depends(get_notifications_uow),
+) -> None:
+    command = RevokeDeviceTokenCommand(device_token_id=device_token_id, actor=principal)
+    await notification_service.revoke_device_token(command, uow=uow)
+
+
+@notifications_router.get(
+    "",
+    response_model=list[NotificationResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List the caller's own notifications",
+    description=(
+        "Any authenticated (API Contracts §4.6 line 161: \"own in-app notifications "
+        "(paginated)\"). Scoped to `recipient_user_id = principal.user_id` — the first list "
+        "endpoint in this codebase scoped by personal ownership rather than tenant. Not "
+        "paginated — `core/pagination` is empty, the same pre-existing gap every other list "
+        "endpoint in this codebase already carries. Pending the approved RBAC permission "
+        "matrix."
+    ),
+)
+async def list_notifications(
+    principal: Principal = Depends(
+        require_permission(Permission("notifications.notifications.list"))
+    ),
+    notification_service: NotificationApplicationService = Depends(get_notification_service),
+    uow: NotificationsUnitOfWork = Depends(get_notifications_uow),
+) -> list[NotificationResponse]:
+    notifications = await notification_service.list_notifications_for_recipient(
+        ListNotificationsForRecipientQuery(recipient_user_id=principal.user_id), uow=uow
+    )
+    return [_notification_dto_to_response(n) for n in notifications]
+
+
+@notifications_router.get(
+    "/{notification_id}",
+    response_model=NotificationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a notification by id",
+    description=(
+        "Not itemized in API Contracts §4.6's compact table — uniform-CRUD addition, see "
+        "`routers.py`'s module docstring. Ownership-scoped identically to `list_notifications`; "
+        "a non-owner request raises `NotFoundError` (404). Pending the approved RBAC "
+        "permission matrix."
+    ),
+)
+async def get_notification(
+    notification_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("notifications.notifications.read"))
+    ),
+    notification_service: NotificationApplicationService = Depends(get_notification_service),
+    uow: NotificationsUnitOfWork = Depends(get_notifications_uow),
+) -> NotificationResponse:
+    notification = await notification_service.get_notification_by_id(
+        GetNotificationByIdQuery(
+            notification_id=notification_id, recipient_user_id=principal.user_id
+        ),
+        uow=uow,
+    )
+    return _notification_dto_to_response(notification)
+
+
+@notifications_router.post(
+    "/{notification_id}/read",
+    response_model=NotificationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Mark a notification read",
+    description=(
+        "Recipient (API Contracts §4.6 line 162). Ownership enforced directly — see "
+        "`application/services.py`'s module docstring. Idempotent (`domain/entities.py`'s "
+        "`Notification.mark_read`). Pending the approved RBAC permission matrix."
+    ),
+)
+async def mark_notification_read(
+    notification_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("notifications.notifications.update"))
+    ),
+    notification_service: NotificationApplicationService = Depends(get_notification_service),
+    uow: NotificationsUnitOfWork = Depends(get_notifications_uow),
+) -> NotificationResponse:
+    command = MarkNotificationReadCommand(notification_id=notification_id, actor=principal)
+    notification = await notification_service.mark_notification_read(command, uow=uow)
+    return _notification_dto_to_response(notification)

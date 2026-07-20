@@ -29,6 +29,7 @@ import raad.modules.fleet_device.infra.models  # noqa: F401 — registers Vehicl
 import raad.modules.tracking.infra.models  # noqa: F401 — registers VehiclePosition/GeofenceCrossing models
 import raad.modules.transport_ops.infra.models  # noqa: F401 — registers StudentModel/ParentModel
 import raad.modules.billing.infra.models  # noqa: F401 — registers Plan/Subscription/Invoice/Payment/TransportFee models
+import raad.modules.notifications.infra.models  # noqa: F401 — registers Notification/DeviceToken models
 
 config = context.config
 
