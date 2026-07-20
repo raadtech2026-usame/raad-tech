@@ -17,8 +17,18 @@ class GetOrganizationByIdQuery:
 
 
 @dataclass(frozen=True)
+class ListOrganizationsQuery:
+    pass
+
+
+@dataclass(frozen=True)
 class GetRegionByIdQuery:
     region_id: str
+
+
+@dataclass(frozen=True)
+class ListRegionsQuery:
+    pass
 
 
 @dataclass(frozen=True)

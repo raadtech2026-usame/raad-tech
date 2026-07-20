@@ -47,6 +47,8 @@ from raad.modules.fleet_device.application.queries import (
     DeviceDTO,
     GetDeviceByIdQuery,
     GetVehicleByIdQuery,
+    ListDevicesQuery,
+    ListVehiclesQuery,
     VehicleDTO,
     assignment_to_dto,
     device_to_dto,
@@ -138,6 +140,16 @@ class VehicleApplicationService:
         async with uow:
             vehicle = await self._get_vehicle_or_raise(uow, query.vehicle_id)
             return vehicle_to_dto(vehicle)
+
+    async def list_vehicles(
+        self, query: ListVehiclesQuery, *, uow: FleetDeviceUnitOfWork
+    ) -> list[VehicleDTO]:
+        """Backs `GET /vehicles` (API Contracts §4.2) — Backend Stabilization phase addition,
+        see `domain/repositories.py`'s `VehicleRepository.list_all` docstring for why this was
+        previously deferred and what unblocked it."""
+        async with uow:
+            vehicles = await uow.vehicles.list_all()
+            return [vehicle_to_dto(v) for v in vehicles]
 
     @staticmethod
     async def _get_vehicle_or_raise(
@@ -258,6 +270,14 @@ class DeviceApplicationService:
         async with uow:
             device = await self._get_device_or_raise(uow, query.device_id)
             return device_to_dto(device)
+
+    async def list_devices(
+        self, query: ListDevicesQuery, *, uow: FleetDeviceUnitOfWork
+    ) -> list[DeviceDTO]:
+        """Backs `GET /devices` (API Contracts §4.2) — Backend Stabilization phase addition."""
+        async with uow:
+            devices = await uow.devices.list_all()
+            return [device_to_dto(d) for d in devices]
 
     # --- Device ↔ Vehicle assignment ----------------------------------------------------
 

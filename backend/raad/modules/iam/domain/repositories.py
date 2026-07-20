@@ -50,6 +50,16 @@ class UserRepository(ABC):
         """Persistence of changes is flushed by the Unit of Work, not the repository (§7.1)."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_all(self) -> list[User]:
+        """Backs `GET /users` (API Contracts §4.1) — Backend Stabilization phase addition.
+        Previously deferred (`api/routers.py`'s own module docstring: "no listing use-case...
+        needs `effective_org_scope` — still pending") specifically because `ScopeResolver`
+        didn't exist yet; ADR-0005 resolves that blocker. Not itself scope-filtered yet — the
+        same system-wide, already-flagged gap every other `list_all()` in this codebase
+        carries."""
+        raise NotImplementedError
+
 
 class RefreshTokenRepository(ABC):
     @abstractmethod

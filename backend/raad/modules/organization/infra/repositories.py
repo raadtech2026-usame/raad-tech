@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 
 from raad.core.db.repository import SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.repositories import (
@@ -82,6 +83,14 @@ class SqlAlchemyOrganizationRepository(
         result = await self._session.execute(statement)
         return frozenset(result.scalars().all())
 
+    async def list_all(self) -> list[Organization]:
+        """`list_scoped`'s org filter is inert here (`OrganizationModel` has no
+        `organization_id` column — it *is* the tenant root), the identical situation
+        `billing.infra.repositories.SqlAlchemyPlanRepository.list_all` already establishes for
+        `PlanModel`; the soft-delete filter still applies."""
+        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        return [self._track(row) for row in rows]  # type: ignore[misc]
+
     def flush_tracked_changes(self) -> None:
         for organization, model in self._tracked.values():
             organization_to_model(organization, existing=model)
@@ -118,6 +127,13 @@ class SqlAlchemyRegionRepository(
         model = region_to_model(region)
         super().add(model)
         self._tracked[str(region.id)] = (region, model)
+
+    async def list_all(self) -> list[Region]:
+        """`RegionModel` has no `organization_id` either (a platform-level geographic
+        division, not tenant-owned) — same inert-filter posture as
+        `SqlAlchemyOrganizationRepository.list_all` above."""
+        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        return [self._track(row) for row in rows]  # type: ignore[misc]
 
     def flush_tracked_changes(self) -> None:
         for region, model in self._tracked.values():

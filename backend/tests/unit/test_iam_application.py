@@ -101,6 +101,9 @@ class InMemoryUserRepository(UserRepository):
     def add(self, user: User) -> None:
         self.by_id[str(user.id)] = user
 
+    async def list_all(self) -> list[User]:
+        return list(self.by_id.values())
+
 
 class InMemoryRefreshTokenRepository(RefreshTokenRepository):
     def __init__(self) -> None:

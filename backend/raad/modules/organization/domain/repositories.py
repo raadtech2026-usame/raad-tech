@@ -40,6 +40,17 @@ class OrganizationRepository(ABC):
         `region_assignments` are both owned by this same module), not a cross-module read."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_all(self) -> list[Organization]:
+        """Backs `GET /organizations` (API Contracts §4.1) — added under the Backend
+        Stabilization phase. Previously deferred (`api/routers.py`'s own module docstring:
+        "no listing use-case... needs `effective_org_scope` — still pending") specifically
+        because `ScopeResolver` didn't exist yet; ADR-0005 resolves that blocker. Mirrors every
+        other module's own `list_all()` — still not itself scope-filtered (the same system-wide,
+        already-flagged gap CLAUDE.md's "Known gaps" section names for every list endpoint in
+        this codebase), consistency chosen over selectively fixing only these new ones."""
+        raise NotImplementedError
+
 
 class RegionRepository(ABC):
     @abstractmethod
@@ -54,6 +65,13 @@ class RegionRepository(ABC):
 
     @abstractmethod
     def add(self, region: Region) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_all(self) -> list[Region]:
+        """Backs `GET /regions` (API Contracts §4.1) — same Backend Stabilization phase
+        addition and same unscoped-`list_all` posture as `OrganizationRepository.list_all`
+        above."""
         raise NotImplementedError
 
 

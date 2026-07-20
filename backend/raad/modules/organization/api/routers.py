@@ -12,15 +12,19 @@ below is authorization-gated the same way `iam`'s are, so it currently raises
 `NotImplementedError` (500) rather than a guessed permission matrix, per API Contracts §4.1's
 role column and §3.1's authorization layering.
 
+**`GET /organizations` / `GET /regions` (list) — added under the Backend Stabilization phase.**
+Previously deferred here for exactly the reason this same paragraph used to give: no listing
+use-case/repository method existed, and API Contracts §4.1 requires the organizations list to
+be scope-filtered (Founder/all, Reg.Mgr/region, Support/assigned), which needed
+`effective_org_scope` — itself pending at the time. `ScopeResolver` (ADR-0005) is now real, and
+`list_organizations`/`list_regions` now exist (`application/services.py`) — but **neither list
+route is itself scope-filtered yet**, the same system-wide, already-flagged gap every other
+`list_all()`-backed endpoint in this codebase carries (CLAUDE.md's "Known gaps": retrofitting
+real per-request scope-filtering onto every existing list endpoint at once is a separate, larger
+change, not bundled into this addition for consistency's sake).
+
 **Endpoints deliberately not implemented** (see this module's own docstrings for why touching
 Domain/Application is out of scope this phase):
-- `GET /organizations` (list) — `OrganizationApplicationService` has no listing use-case, and
-  `OrganizationRepository` (Phase 6.1/6.3) has no `list()`/scope-filtered query method either;
-  API Contracts §4.1 also requires this list to be **scope-filtered** (Founder/all,
-  Reg.Mgr/region, Support/assigned), which needs `effective_org_scope` — itself pending the
-  `organization` module per `interfaces/http/deps.get_scope`'s own docstring. Adding list means
-  touching Application (and, for scope-filtering, `core.tenancy`), both out of scope here.
-- `GET /regions` (list) — same reasoning: no listing use-case/repository method exists.
 - `POST /regions/{id}/assignments` — `organization.domain.entities`'s own docstring records
   `region_assignments`/`support_assignments` (Database Design §4.6) as deliberately deferred:
   module ownership isn't settled by the API contract rule (which routes only `/organizations`
@@ -65,6 +69,8 @@ from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.application.queries import (
     GetOrganizationByIdQuery,
     GetRegionByIdQuery,
+    ListOrganizationsQuery,
+    ListRegionsQuery,
     OrganizationDTO,
     RegionDTO,
 )
@@ -117,6 +123,27 @@ def _region_dto_to_response(region: RegionDTO) -> RegionResponse:
         geographic_scope=region.geographic_scope,
         status=region.status,
     )
+
+
+@organizations_router.get(
+    "",
+    response_model=list[OrganizationResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List organizations",
+    description=(
+        "Founder(all)/Reg.Mgr(region)/Support(assigned) (API Contracts §4.1). Not yet "
+        "scope-filtered — see this file's module docstring."
+    ),
+)
+async def list_organizations(
+    principal: Principal = Depends(
+        require_permission(Permission("organization.organizations.read"))
+    ),
+    org_service: OrganizationApplicationService = Depends(get_organization_service),
+    uow: OrganizationUnitOfWork = Depends(get_organization_uow),
+) -> list[OrganizationResponse]:
+    organizations = await org_service.list_organizations(ListOrganizationsQuery(), uow=uow)
+    return [_organization_dto_to_response(o) for o in organizations]
 
 
 @organizations_router.post(
@@ -228,6 +255,27 @@ async def update_organization(
         )
 
     return _organization_dto_to_response(organization)
+
+
+@regions_router.get(
+    "",
+    response_model=list[RegionResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List regions",
+    description=(
+        "Founder (API Contracts §4.1). Not yet scope-filtered — see this file's module "
+        "docstring."
+    ),
+)
+async def list_regions(
+    principal: Principal = Depends(
+        require_permission(Permission("organization.regions.read"))
+    ),
+    region_service: RegionApplicationService = Depends(get_region_service),
+    uow: OrganizationUnitOfWork = Depends(get_organization_uow),
+) -> list[RegionResponse]:
+    regions = await region_service.list_regions(ListRegionsQuery(), uow=uow)
+    return [_region_dto_to_response(r) for r in regions]
 
 
 @regions_router.post(

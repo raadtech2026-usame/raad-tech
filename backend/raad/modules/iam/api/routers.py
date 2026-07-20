@@ -8,11 +8,15 @@ layers already maps to the standard `ErrorEnvelope` via the global exception han
 (`core/errors/handlers.py`, registered once in `main.py`); routers never build an error
 response themselves.
 
+**`GET /users` (list) — added under the Backend Stabilization phase.** Previously deferred here
+("no listing use-case... adding one means touching Domain and Application, both frozen this
+phase") because RBAC/scope work was explicitly out of scope at the time; `UserRepository.
+list_all` (`domain/repositories.py`) and `UserApplicationService.list_users` now exist. Not
+itself scope-filtered yet — the same system-wide, already-flagged gap every other
+`list_all()`-backed endpoint in this codebase carries (CLAUDE.md's "Known gaps").
+
 **Endpoints deliberately not implemented** (see the module's own docstrings for why touching
 Domain/Application is out of scope this phase):
-- `GET /users` (list) — `UserApplicationService` has no listing use-case, and
-  `UserRepository`/`RefreshTokenRepository` (Phase 5.1) have no `list()` method either; adding
-  one means touching Domain and Application, both frozen this phase.
 - `DELETE /users/{id}` — Database Design §9 keeps "soft delete" (`deleted_at`) and
   "business status" (`user.disable()`, `status=disabled`) explicitly separate concepts; the
   `User` aggregate has no soft-delete behavior, so a correct implementation needs a Domain
@@ -52,6 +56,7 @@ from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.queries import (
     AuthResultDTO,
     GetUserByIdQuery,
+    ListUsersQuery,
     UserDTO,
 )
 from raad.modules.iam.application.services import (
@@ -175,6 +180,25 @@ async def get_me(
         GetUserByIdQuery(user_id=principal.user_id), uow=uow
     )
     return _user_dto_to_response(user)
+
+
+@users_router.get(
+    "",
+    response_model=list[UserResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List users",
+    description=(
+        "In-scope admin (API Contracts §4.1). Not yet scope-filtered — see this file's module "
+        "docstring."
+    ),
+)
+async def list_users(
+    principal: Principal = Depends(require_permission(Permission("iam.users.read"))),
+    user_service: UserApplicationService = Depends(get_user_service),
+    uow: IamUnitOfWork = Depends(get_iam_uow),
+) -> list[UserResponse]:
+    users = await user_service.list_users(ListUsersQuery(), uow=uow)
+    return [_user_dto_to_response(u) for u in users]
 
 
 @users_router.post(

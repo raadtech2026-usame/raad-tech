@@ -28,8 +28,18 @@ class GetVehicleByIdQuery:
 
 
 @dataclass(frozen=True)
+class ListVehiclesQuery:
+    pass
+
+
+@dataclass(frozen=True)
 class GetDeviceByIdQuery:
     device_id: str
+
+
+@dataclass(frozen=True)
+class ListDevicesQuery:
+    pass
 
 
 @dataclass(frozen=True)

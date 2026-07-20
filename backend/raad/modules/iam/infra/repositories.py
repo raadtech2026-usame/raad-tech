@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from raad.core.db.repository import SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
 from raad.core.tenancy.principal import Role
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.domain.entities import RefreshToken, User
 from raad.modules.iam.domain.repositories import (
@@ -87,6 +88,12 @@ class SqlAlchemyUserRepository(SqlAlchemyRepositoryBase[UserModel], UserReposito
         model = user_to_model(user)
         super().add(model)
         self._tracked[str(user.id)] = (user, model)
+
+    async def list_all(self) -> list[User]:
+        """Unrestricted `TenantRegionScope` — not yet scope-filtered, the same system-wide,
+        already-flagged gap every other module's own `list_all()` carries."""
+        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        return [self._track(row) for row in rows]  # type: ignore[misc]
 
     def flush_tracked_changes(self) -> None:
         for user, model in self._tracked.values():

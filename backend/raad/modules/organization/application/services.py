@@ -33,6 +33,8 @@ from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.application.queries import (
     GetOrganizationByIdQuery,
     GetRegionByIdQuery,
+    ListOrganizationsQuery,
+    ListRegionsQuery,
     OrganizationDTO,
     RegionDTO,
     organization_to_dto,
@@ -129,6 +131,16 @@ class OrganizationApplicationService:
             )
             return organization_to_dto(organization)
 
+    async def list_organizations(
+        self, query: ListOrganizationsQuery, *, uow: OrganizationUnitOfWork
+    ) -> list[OrganizationDTO]:
+        """Backs `GET /organizations` (API Contracts §4.1) — Backend Stabilization phase
+        addition, see `domain/repositories.py`'s `OrganizationRepository.list_all` docstring
+        for why this was previously deferred and what unblocked it."""
+        async with uow:
+            organizations = await uow.organizations.list_all()
+            return [organization_to_dto(o) for o in organizations]
+
     @staticmethod
     async def _get_organization_or_raise(
         uow: OrganizationUnitOfWork, organization_id: str
@@ -191,6 +203,14 @@ class RegionApplicationService:
         async with uow:
             region = await self._get_region_or_raise(uow, query.region_id)
             return region_to_dto(region)
+
+    async def list_regions(
+        self, query: ListRegionsQuery, *, uow: OrganizationUnitOfWork
+    ) -> list[RegionDTO]:
+        """Backs `GET /regions` (API Contracts §4.1) — Backend Stabilization phase addition."""
+        async with uow:
+            regions = await uow.regions.list_all()
+            return [region_to_dto(r) for r in regions]
 
     @staticmethod
     async def _get_region_or_raise(

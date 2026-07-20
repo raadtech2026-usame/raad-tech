@@ -89,6 +89,9 @@ class InMemoryVehicleRepository(VehicleRepository):
     def add(self, vehicle: Vehicle) -> None:
         self.by_id[str(vehicle.id)] = vehicle
 
+    async def list_all(self) -> list[Vehicle]:
+        return list(self.by_id.values())
+
 
 class InMemoryDeviceRepository(DeviceRepository):
     def __init__(self) -> None:
@@ -105,6 +108,9 @@ class InMemoryDeviceRepository(DeviceRepository):
 
     def add(self, device: Device) -> None:
         self.by_id[str(device.id)] = device
+
+    async def list_all(self) -> list[Device]:
+        return list(self.by_id.values())
 
 
 class InMemoryDeviceAssignmentRepository(DeviceAssignmentRepository):

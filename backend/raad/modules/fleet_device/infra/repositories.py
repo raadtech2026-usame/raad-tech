@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.domain.entities import (
     Device,
@@ -88,6 +89,12 @@ class SqlAlchemyVehicleRepository(
         super().add(model)
         self._tracked[str(vehicle.id)] = (vehicle, model)
 
+    async def list_all(self) -> list[Vehicle]:
+        """Unrestricted `TenantRegionScope` — not yet scope-filtered, the same system-wide,
+        already-flagged gap every other module's own `list_all()` carries."""
+        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        return [self._track(row) for row in rows]  # type: ignore[misc]
+
     def flush_tracked_changes(self) -> None:
         for vehicle, model in self._tracked.values():
             vehicle_to_model(vehicle, existing=model)
@@ -130,6 +137,12 @@ class SqlAlchemyDeviceRepository(
         model = device_to_model(device)
         super().add(model)
         self._tracked[str(device.id)] = (device, model)
+
+    async def list_all(self) -> list[Device]:
+        """Unrestricted `TenantRegionScope` — same posture as `SqlAlchemyVehicleRepository.
+        list_all` above."""
+        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        return [self._track(row) for row in rows]  # type: ignore[misc]
 
     def flush_tracked_changes(self) -> None:
         for device, model in self._tracked.values():

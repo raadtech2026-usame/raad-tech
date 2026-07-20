@@ -17,6 +17,11 @@ class GetUserByIdQuery:
 
 
 @dataclass(frozen=True)
+class ListUsersQuery:
+    pass
+
+
+@dataclass(frozen=True)
 class UserDTO:
     id: str
     organization_id: str | None

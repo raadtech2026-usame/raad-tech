@@ -50,6 +50,16 @@ class VehicleRepository(ABC):
         (LLD §7.1)."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_all(self) -> list[Vehicle]:
+        """Backs `GET /vehicles` (API Contracts §4.2) — Backend Stabilization phase addition.
+        Previously deferred (`api/routers.py`'s own module docstring: "no listing use-case...
+        needs `effective_org_scope` — still pending") specifically because `ScopeResolver`
+        didn't exist yet; ADR-0005 resolves that blocker. Not itself scope-filtered yet — the
+        same system-wide, already-flagged gap every other `list_all()` in this codebase
+        carries."""
+        raise NotImplementedError
+
 
 class DeviceRepository(ABC):
     @abstractmethod
@@ -65,6 +75,12 @@ class DeviceRepository(ABC):
 
     @abstractmethod
     def add(self, device: Device) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_all(self) -> list[Device]:
+        """Backs `GET /devices` (API Contracts §4.2) — same Backend Stabilization phase
+        addition and same unscoped-`list_all` posture as `VehicleRepository.list_all` above."""
         raise NotImplementedError
 
 

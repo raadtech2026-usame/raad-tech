@@ -87,6 +87,9 @@ class InMemoryOrganizationRepository(OrganizationRepository):
             if str(org.region_id) in region_ids
         )
 
+    async def list_all(self) -> list[Organization]:
+        return list(self.by_id.values())
+
 
 class InMemoryScopeAssignmentRepository(ScopeAssignmentRepository):
     def __init__(self) -> None:
@@ -135,6 +138,9 @@ class InMemoryRegionRepository(RegionRepository):
 
     def add(self, region: Region) -> None:
         self.by_id[str(region.id)] = region
+
+    async def list_all(self) -> list[Region]:
+        return list(self.by_id.values())
 
 
 class FakeOrganizationUnitOfWork(OrganizationUnitOfWork):

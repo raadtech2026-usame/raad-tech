@@ -42,6 +42,7 @@ from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.queries import (
     AuthResultDTO,
     GetUserByIdQuery,
+    ListUsersQuery,
     UserDTO,
     user_to_dto,
 )
@@ -175,6 +176,16 @@ class UserApplicationService:
         async with uow:
             user = await self._get_user_or_raise(uow, query.user_id)
             return user_to_dto(user)
+
+    async def list_users(
+        self, query: ListUsersQuery, *, uow: IamUnitOfWork
+    ) -> list[UserDTO]:
+        """Backs `GET /users` (API Contracts §4.1) — Backend Stabilization phase addition, see
+        `domain/repositories.py`'s `UserRepository.list_all` docstring for why this was
+        previously deferred and what unblocked it."""
+        async with uow:
+            users = await uow.users.list_all()
+            return [user_to_dto(u) for u in users]
 
     @staticmethod
     async def _get_user_or_raise(uow: IamUnitOfWork, user_id: str) -> User:

@@ -5,17 +5,21 @@ Thin controllers only (Backend LLD §16.2): parse the request DTO, call exactly 
 application-service method, return the response DTO. No business logic, no repository/
 SQLAlchemy access, no aggregate manipulation — every error raised by the application/domain
 layers already maps to the standard `ErrorEnvelope` via the global exception handlers.
-Mirrors `iam`/`organization.api.routers`'s shape exactly, including the
-`require_permission`-pending-RBAC-matrix posture (`interfaces/http/deps.py`): every route is
-authorization-gated the same way, so it currently raises `NotImplementedError` (500) rather
-than a guessed permission matrix, per API Contracts §4.2's role column and §3.1's layering.
+Mirrors `iam`/`organization.api.routers`'s shape exactly. `require_permission` now resolves for
+real (Database Design §4.4's `role_permissions` matrix, ADR-0004) — no longer a guaranteed
+`NotImplementedError` placeholder.
+
+**`GET /vehicles` / `GET /devices` (list) — added under the Backend Stabilization phase.**
+Previously deferred here for the same reason this paragraph used to give: no listing use-case/
+repository method existed, and API Contracts §4.2's role column requires scope-filtering
+("+RAAD in scope"), which needed `effective_org_scope` — itself pending at the time.
+`ScopeResolver` (ADR-0005) is now real, and `list_vehicles`/`list_devices` now exist
+(`application/services.py`) — but **neither list route is itself scope-filtered yet**, the same
+system-wide, already-flagged gap every other `list_all()`-backed endpoint in this codebase
+carries (CLAUDE.md's "Known gaps"). Same addition, same reasoning, as `GET /users` and
+`GET /organizations`/`GET /regions`.
 
 **Endpoints deliberately not implemented** (documented, not silently dropped):
-- `GET /vehicles` and `GET /devices` (list) — no listing use-case or scope-filtered query
-  exists in the application/repository layers, and API Contracts §4.2's role column requires
-  scope-filtering ("+RAAD in scope"), which needs `effective_org_scope` — still pending per
-  `interfaces/http/deps.get_scope`. Same deferral as `GET /users` (5.4) and
-  `GET /organizations` (6.4).
 - `DELETE /vehicles/{id}` / `DELETE /devices/{id}` (uniform-CRUD soft delete, §4 preamble) —
   neither aggregate has soft-delete behavior in the domain (Database Design §9 keeps soft
   delete and business status separate concepts); same deferral as `DELETE /users` (5.4).
@@ -78,6 +82,8 @@ from raad.modules.fleet_device.application.queries import (
     DeviceDTO,
     GetDeviceByIdQuery,
     GetVehicleByIdQuery,
+    ListDevicesQuery,
+    ListVehiclesQuery,
     VehicleDTO,
 )
 from raad.modules.fleet_device.application.services import (
@@ -138,6 +144,27 @@ def _assignment_dto_to_response(
 
 
 # --- Vehicles -------------------------------------------------------------------------
+
+
+@vehicles_router.get(
+    "",
+    response_model=list[VehicleResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List vehicles",
+    description=(
+        "Org Admin (+RAAD in scope) (API Contracts §4.2). Not yet scope-filtered — see this "
+        "file's module docstring."
+    ),
+)
+async def list_vehicles(
+    principal: Principal = Depends(
+        require_permission(Permission("fleet_device.vehicles.read"))
+    ),
+    vehicle_service: VehicleApplicationService = Depends(get_vehicle_service),
+    uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> list[VehicleResponse]:
+    vehicles = await vehicle_service.list_vehicles(ListVehiclesQuery(), uow=uow)
+    return [_vehicle_dto_to_response(v) for v in vehicles]
 
 
 @vehicles_router.post(
@@ -243,6 +270,27 @@ async def update_vehicle(
 
 
 # --- Devices --------------------------------------------------------------------------
+
+
+@devices_router.get(
+    "",
+    response_model=list[DeviceResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List devices",
+    description=(
+        "Org Admin / Support (API Contracts §4.2). Not yet scope-filtered — see this file's "
+        "module docstring."
+    ),
+)
+async def list_devices(
+    principal: Principal = Depends(
+        require_permission(Permission("fleet_device.devices.read"))
+    ),
+    device_service: DeviceApplicationService = Depends(get_device_service),
+    uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> list[DeviceResponse]:
+    devices = await device_service.list_devices(ListDevicesQuery(), uow=uow)
+    return [_device_dto_to_response(d) for d in devices]
 
 
 @devices_router.post(
