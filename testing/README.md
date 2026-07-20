@@ -15,4 +15,7 @@ exercise the system as a whole.
 
 ## Status
 
-Structural scaffold only. No test suites are implemented yet.
+Structural scaffold only. No test suites are implemented yet. `load/README.md` documents the
+planned scenarios and the concrete blockers preventing an executable suite (no deployed
+environment to test against, §13.1's NFR targets are still unconfirmed proposals, no
+load-testing tool is an approved dependency yet) — intentionally deferred, not silently skipped.
