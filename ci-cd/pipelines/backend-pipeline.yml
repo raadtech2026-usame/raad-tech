@@ -1,0 +1,14 @@
+# RAAD Business API — pipeline index entry, not an executable workflow.
+#
+# The actual, executable CI gate lives at `.github/workflows/backend-pipeline.yml` — GitHub
+# Actions only ever runs workflows placed under `.github/workflows/`, so a second copy of the
+# same YAML here would just be an unenforced, driftable duplicate. This file exists only as
+# this repo's own organizational placeholder alongside its four siblings
+# (frontend/mobile/jt808/jt1078-pipeline.yml, `infrastructure-pipeline.yml`), so all five
+# deployables' pipeline status can be found in one place — see that real workflow file for the
+# actual build -> migrate -> test stages and the reasoning behind its current scope (no deploy
+# step, no lint/format gate, no security-scan step — all explained in its own header comment).
+#
+# Status: backend's own CI gate is implemented (Backend Stabilization phase). The other four
+# siblings remain empty — none of those deployables (frontend, mobile, jt808, jt1078,
+# infrastructure) exist in this repository yet.

@@ -1,0 +1,104 @@
+# RAAD Business API — CI gate (Backend Stabilization phase; resolves pre-production
+# architecture review Medium finding #8, "no CI/CD pipeline").
+#
+# Scope, deliberately: build -> migrate -> test only, no deploy step and no security-scan step
+# (Phase 2 Enterprise Architecture §11's "build -> test -> scan -> deploy" is the eventual full
+# shape; there is no deployment target configured anywhere in this repository yet — docker/*.yml
+# are structural placeholders, docs/business names no hosting target — and no security-scanning
+# tool is an approved dependency, so neither is invented here). Lint/format (black/ruff/mypy) is
+# also deliberately NOT a blocking gate: backend/pyproject.toml's own comments track dev tooling
+# as "not yet formally approved," and CLAUDE.md documents that `black` is applied inconsistently
+# across the existing codebase today — a blocking `black --check` would fail on pre-existing,
+# already-approved code for reasons unrelated to this change, not a real regression gate.
+#
+# `ci-cd/pipelines/backend-pipeline.yml` is this repo's own cross-deployable pipeline index
+# (frontend/mobile/jt808/jt1078/infrastructure siblings, all still empty placeholders since none
+# of those deployables exist yet) — GitHub Actions only ever executes workflows under
+# `.github/workflows/`, so this file, not that one, is what actually runs.
+
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-pipeline.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-pipeline.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    # Self-contained service containers rather than depending on docker/docker-compose.yml
+    # (still an unfilled structural placeholder) — the standard, self-contained GitHub Actions
+    # pattern for a CI database/cache, matching the same PostgreSQL/Redis versions this
+    # project's own ADR-0002/Backend-Stabilization-phase decisions already commit to.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: raad
+          POSTGRES_PASSWORD: raad
+          POSTGRES_DB: raad
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U raad"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      RAAD_DB__URL: postgresql+asyncpg://raad:raad@localhost:5432/raad
+      # A real Redis service container in CI (unlike this sandbox's own dev environment, where
+      # none is reachable) - exercises RedisLatestPositionPort/the Redis Streams broker/
+      # RedisLockPort/RedisDeadLetterQueue for real, not just their fake-backed unit tests.
+      RAAD_REDIS__URL: redis://localhost:6379/0
+      RAAD_BROKER__URL: redis://localhost:6379/1
+      # CI-only value, never a real secret - required for TokenService/AuthApplicationService
+      # to bind (core/di/bootstrap.py's own "fail loudly without one" policy).
+      RAAD_AUTH__JWT_SECRET_KEY: ci-only-not-a-real-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend package
+        run: pip install -e .
+
+      - name: Compile-check every source file
+        run: python -m compileall -q raad migrations tests
+
+      - name: Apply migrations to the CI database
+        run: python -m alembic upgrade head
+
+      - name: Verify zero migration drift
+        run: python -m alembic check
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests/unit -v
+
+      - name: Run architecture boundary-gate tests
+        run: python -m unittest discover -s tests/architecture -v
+
+      - name: Run integration tests (live Postgres + Redis service containers)
+        run: python -m unittest discover -s tests/integration -v
