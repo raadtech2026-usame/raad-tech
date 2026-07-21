@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from raad.core.config.settings import get_settings
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    settings = get_settings()
     app = FastAPI(
         title="RAAD Business API",
         version="0.1.0",
@@ -61,12 +63,23 @@ def create_app() -> FastAPI:
     # first on the way in. Added innermost-first: RequestLoggingMiddleware must run innermost
     # so CorrelationIdMiddleware's and SecurityContextMiddleware's bound context (request/
     # correlation IDs, principal) is already set when the request-completed log line is
-    # written; SecurityHeadersMiddleware is outermost so it stamps every response, including
-    # ones produced by the global exception handlers.
+    # written; SecurityHeadersMiddleware is outermost of those four so it stamps every
+    # response, including ones produced by the global exception handlers. CORSMiddleware is
+    # added last of all (truly outermost) — a preflight `OPTIONS` request carries no
+    # `Authorization` header, so it must be answered before `SecurityContextMiddleware` (or
+    # any other layer) ever runs, and every response (success or error) needs the CORS headers
+    # stamped on it for the browser to expose it to the calling frontend at all.
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(SecurityContextMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors.allowed_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     register_exception_handlers(app)
 

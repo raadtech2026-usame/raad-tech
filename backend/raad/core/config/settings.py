@@ -83,6 +83,18 @@ class DevicePlaneSettings(BaseModel):
     jt1078_signaling_url: str = ""
 
 
+class CorsSettings(BaseModel):
+    """Cross-origin access for the React web frontend (`.claude/rules/frontend.md`) — this API
+    has no browser-facing origin of its own, so without this every cross-origin request from a
+    dev or prod frontend is blocked by the browser regardless of a valid bearer token.
+    `allowed_origins` defaults to the local React dev server only; add the deployed frontend's
+    origin(s) via `RAAD_CORS__ALLOWED_ORIGINS` (a JSON array) once one exists. `allow_credentials`
+    stays `False` — auth is a bearer token in the `Authorization` header (`.claude/rules/api.md`
+    #3), never a cookie, so the browser's credentialed-request mode is not needed here."""
+
+    allowed_origins: list[str] = ["http://localhost:3000"]
+
+
 class ObservabilitySettings(BaseModel):
     log_level: str = "INFO"
     log_format: str = "json"
@@ -142,6 +154,7 @@ class Settings(BaseSettings):
     payment: PaymentSettings = PaymentSettings()
     maps: MapSettings = MapSettings()
     device_plane: DevicePlaneSettings = DevicePlaneSettings()
+    cors: CorsSettings = CorsSettings()
     observability: ObservabilitySettings = ObservabilitySettings()
     feature_flags: FeatureFlags = FeatureFlags()
     workers: WorkerSettings = WorkerSettings()
