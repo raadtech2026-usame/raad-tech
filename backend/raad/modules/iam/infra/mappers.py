@@ -12,7 +12,7 @@ so a plain case-fold round-trips exactly.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from raad.core.tenancy.principal import Role
 from raad.modules.iam.domain.entities import RefreshToken, User
@@ -37,6 +37,22 @@ def _naive(value: datetime | None) -> datetime | None:
     offset-naive and offset-aware datetimes"), caught by this phase's PostgreSQL integration
     tests."""
     return value.replace(tzinfo=None) if value is not None and value.tzinfo else value
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    """The inverse of `_naive` above, applied on the read side. `core.db.mixins.utcnow`'s own
+    naive-storage convention is that every stored datetime *is* UTC — so a value read back from
+    a `DateTime(timezone=False)` column is re-stamped `tzinfo=timezone.utc` rather than left
+    naive, keeping a reloaded domain object's datetime fields directly comparable to a
+    `Clock.now()`-derived value (`SystemClock` is tz-aware) without every call site needing to
+    know which construction path produced the instance. Regression: `RefreshToken.is_expired`
+    (`domain/entities.py`) compares `clock.now() >= self.expires_at` — before this helper
+    existed, a `RefreshToken` reloaded via `model_to_refresh_token` carried a naive `expires_at`
+    read straight off the model, so every real `POST /auth/refresh` call raised `TypeError:
+    can't compare offset-naive and offset-aware datetimes` the moment it checked expiry against
+    an actually-persisted token; a freshly-`.issue()`d, never-reloaded token never exercised this
+    path, which is why no prior test caught it."""
+    return value.replace(tzinfo=timezone.utc) if value is not None and value.tzinfo is None else value
 
 
 def user_to_model(user: User, *, existing: UserModel | None = None) -> UserModel:
@@ -97,7 +113,7 @@ def model_to_refresh_token(model: RefreshTokenModel) -> RefreshToken:
         id=RefreshTokenId(model.id),
         user_id=UserId(model.user_id),
         token_hash=model.token_hash,
-        issued_at=model.issued_at,
-        expires_at=model.expires_at,
-        revoked_at=model.revoked_at,
+        issued_at=_aware_utc(model.issued_at),
+        expires_at=_aware_utc(model.expires_at),
+        revoked_at=_aware_utc(model.revoked_at),
     )
