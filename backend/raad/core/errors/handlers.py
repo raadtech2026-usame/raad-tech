@@ -73,6 +73,8 @@ def register_exception_handlers(app: FastAPI) -> None:
                 message=exc.message,
                 correlation_id=correlation_id,
                 details=exc.details,
+                reason=getattr(exc, "reason", None),
+                required_action=getattr(exc, "required_action", None),
             )
         )
         return JSONResponse(status_code=status_code, content=envelope.model_dump())

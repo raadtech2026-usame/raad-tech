@@ -10,9 +10,11 @@ from raad.core.errors.exceptions import (
     ExternalServiceError,
     InfrastructureError,
     NotFoundError,
+    ParentAccessDeniedError,
     PaymentError,
     RuleViolationError,
     ValidationError,
+    VideoForbiddenError,
 )
 from raad.core.errors.handlers import register_exception_handlers, resolve_status
 
@@ -27,9 +29,11 @@ __all__ = [
     "ExternalServiceError",
     "InfrastructureError",
     "NotFoundError",
+    "ParentAccessDeniedError",
     "PaymentError",
     "RuleViolationError",
     "ValidationError",
+    "VideoForbiddenError",
     "register_exception_handlers",
     "resolve_status",
 ]

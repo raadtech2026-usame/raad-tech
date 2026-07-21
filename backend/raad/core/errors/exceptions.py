@@ -50,13 +50,36 @@ class ValidationError(AppError):
 class AuthenticationError(AppError):
     """Not authenticated."""
 
-    code = "AUTHENTICATION_REQUIRED"
+    code = "UNAUTHENTICATED"
 
 
 class AuthorizationError(AppError):
     """Authenticated but not permitted (RBAC / scope / policy)."""
 
     code = "FORBIDDEN"
+
+
+class ParentAccessDeniedError(AuthorizationError):
+    """CR-1 denial (Backend LLD §5.4), raised by `interfaces.http.policy_guards.enforce_cr1`.
+    Carries the policy's own `reason`/`required_action` (API Contracts §3.3/§5.2's documented
+    `PARENT_ACCESS_DENIED` shape) so a Parent client can distinguish "assignment ended" from
+    "renew your subscription" instead of a generic 403."""
+
+    code = "PARENT_ACCESS_DENIED"
+
+    def __init__(self, *, reason: str | None, required_action: str | None) -> None:
+        super().__init__(f"Access denied: {reason}")
+        self.reason = reason
+        self.required_action = required_action
+
+
+class VideoForbiddenError(AuthorizationError):
+    """D5 denial (`.claude/rules/jt1078.md` #1), raised by
+    `interfaces.http.policy_guards.enforce_d5` (API Contracts §5.2's documented
+    `VIDEO_FORBIDDEN` code). No `reason`/`required_action` taxonomy is documented for video,
+    unlike CR-1 — message-only."""
+
+    code = "VIDEO_FORBIDDEN"
 
 
 class NotFoundError(AppError):

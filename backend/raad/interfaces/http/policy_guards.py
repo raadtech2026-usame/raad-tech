@@ -18,7 +18,11 @@ service" rule exactly — no cross-module DB read anywhere in this file.
 
 from __future__ import annotations
 
-from raad.core.errors.exceptions import AuthorizationError, NotFoundError
+from raad.core.errors.exceptions import (
+    NotFoundError,
+    ParentAccessDeniedError,
+    VideoForbiddenError,
+)
 from raad.core.di.container import Container
 from raad.core.policies.base import PolicyDecision
 from raad.core.policies.subscription_access import (
@@ -142,7 +146,9 @@ async def enforce_cr1(
         safety_override=safety_override,
     )
     if not decision.allowed:
-        raise AuthorizationError(f"Access denied: {decision.reason}")
+        raise ParentAccessDeniedError(
+            reason=decision.reason, required_action=decision.required_action
+        )
 
 
 async def _resolve_parent_id(principal: Principal, container: Container) -> str:
@@ -258,15 +264,14 @@ async def resolve_d5_decision(
 async def enforce_d5(
     *, principal: Principal, device_organization_id: str, container: Container
 ) -> None:
-    """Raises `AuthorizationError` (403, mapped to `VIDEO_FORBIDDEN` at the router per API
-    Contracts §5.2) on a D5 denial. Unlike CR-1, this applies unconditionally — D5 is not
-    role-scoped the way CR-1 is; `VideoAccessPolicy.evaluate` itself already returns `denied`
-    for every non-eligible role (Parent/Driver included), so no role short-circuit is needed
-    here."""
+    """Raises `VideoForbiddenError` (403, `VIDEO_FORBIDDEN` per API Contracts §5.2) on a D5
+    denial. Unlike CR-1, this applies unconditionally — D5 is not role-scoped the way CR-1 is;
+    `VideoAccessPolicy.evaluate` itself already returns `denied` for every non-eligible role
+    (Parent/Driver included), so no role short-circuit is needed here."""
     decision = await resolve_d5_decision(
         principal=principal,
         device_organization_id=device_organization_id,
         container=container,
     )
     if not decision.allowed:
-        raise AuthorizationError("VIDEO_FORBIDDEN")
+        raise VideoForbiddenError("Video access denied.")
