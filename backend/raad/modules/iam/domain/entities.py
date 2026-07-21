@@ -71,6 +71,8 @@ class User(_AggregateRoot):
         phone: PhoneNumber | None,
         full_name: str,
         status: UserStatus,
+        created_at: datetime,
+        updated_at: datetime,
         password_hash: str | None = None,
         mfa_enabled: bool = False,
         last_login_at: datetime | None = None,
@@ -86,6 +88,8 @@ class User(_AggregateRoot):
         self.phone = phone
         self.full_name = full_name
         self.status = status
+        self.created_at = created_at
+        self.updated_at = updated_at
         self.password_hash = password_hash
         self.mfa_enabled = mfa_enabled
         self.last_login_at = last_login_at
@@ -132,6 +136,7 @@ class User(_AggregateRoot):
         """Factory for a newly-invited user (`status=invited`, no password yet — Database
         Design §4.3's `password_hash` is nullable; it's set once the invitee completes
         registration, via `change_password_hash`)."""
+        now = clock.now()
         user = cls(
             id=id,
             organization_id=organization_id,
@@ -140,6 +145,8 @@ class User(_AggregateRoot):
             phone=phone,
             full_name=full_name,
             status=UserStatus.INVITED,
+            created_at=now,
+            updated_at=now,
         )
         user._record(
             iam_events.user_invited(
@@ -159,6 +166,7 @@ class User(_AggregateRoot):
         if self.status == UserStatus.ACTIVE:
             return
         self.status = UserStatus.ACTIVE
+        self.updated_at = clock.now()
         self._record(
             iam_events.user_activated(
                 user_id=str(self.id),
@@ -172,6 +180,7 @@ class User(_AggregateRoot):
         if self.status == UserStatus.DISABLED:
             return
         self.status = UserStatus.DISABLED
+        self.updated_at = clock.now()
         self._record(
             iam_events.user_disabled(
                 user_id=str(self.id),
@@ -184,6 +193,7 @@ class User(_AggregateRoot):
     def record_login(self, *, clock: Clock) -> None:
         now = clock.now()
         self.last_login_at = now
+        self.updated_at = now
         self._record(
             iam_events.user_logged_in(
                 user_id=str(self.id),
@@ -201,6 +211,7 @@ class User(_AggregateRoot):
         if not new_password_hash:
             raise DomainError("password hash must not be empty")
         self.password_hash = new_password_hash
+        self.updated_at = clock.now()
         self._record(
             iam_events.user_password_changed(
                 user_id=str(self.id),
@@ -214,6 +225,7 @@ class User(_AggregateRoot):
         if self.mfa_enabled:
             return
         self.mfa_enabled = True
+        self.updated_at = clock.now()
         self._record(
             iam_events.user_mfa_enabled(
                 user_id=str(self.id),
@@ -227,6 +239,7 @@ class User(_AggregateRoot):
         if not self.mfa_enabled:
             return
         self.mfa_enabled = False
+        self.updated_at = clock.now()
         self._record(
             iam_events.user_mfa_disabled(
                 user_id=str(self.id),

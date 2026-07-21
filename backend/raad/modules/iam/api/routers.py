@@ -120,6 +120,8 @@ def _user_dto_to_response(user: UserDTO) -> UserResponse:
         phone=user.phone,
         full_name=user.full_name,
         status=user.status,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
         mfa_enabled=user.mfa_enabled,
         last_login_at=user.last_login_at,
     )

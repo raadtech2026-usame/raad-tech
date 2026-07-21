@@ -540,6 +540,8 @@ class LoginTests(unittest.IsolatedAsyncioTestCase):
             phone=None,
             full_name="Login User",
             status=UserStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             password_hash=hasher.hash(password),
         )
         uow.users.add(user)
@@ -620,6 +622,8 @@ class RefreshTokenFlowTests(unittest.IsolatedAsyncioTestCase):
             phone=None,
             full_name="Refresh User",
             status=UserStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             password_hash=hasher.hash("pw"),
         )
         uow.users.add(user)
@@ -661,6 +665,8 @@ class RefreshTokenFlowTests(unittest.IsolatedAsyncioTestCase):
             phone=None,
             full_name="Expiry User",
             status=UserStatus.ACTIVE,
+            created_at=issue_time,
+            updated_at=issue_time,
             password_hash=hasher.hash("pw"),
         )
         uow.users.add(user)
@@ -690,6 +696,8 @@ class LogoutTests(unittest.IsolatedAsyncioTestCase):
             phone=None,
             full_name="Logout User",
             status=UserStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             password_hash=hasher.hash("pw"),
         )
         uow.users.add(user)

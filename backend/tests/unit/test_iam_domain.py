@@ -101,6 +101,8 @@ class UserInvariantTests(unittest.TestCase):
                 phone=None,
                 full_name="No Contact",
                 status=UserStatus.ACTIVE,
+                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             )
 
     def test_org_scoped_role_requires_organization_id(self) -> None:
@@ -113,6 +115,8 @@ class UserInvariantTests(unittest.TestCase):
                 phone=None,
                 full_name="Org Admin",
                 status=UserStatus.ACTIVE,
+                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             )
 
     def test_staff_role_must_not_have_organization_id(self) -> None:
@@ -125,6 +129,8 @@ class UserInvariantTests(unittest.TestCase):
                 phone=None,
                 full_name="Founder",
                 status=UserStatus.ACTIVE,
+                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             )
 
     def test_staff_role_with_no_organization_id_is_valid(self) -> None:
@@ -136,6 +142,8 @@ class UserInvariantTests(unittest.TestCase):
             phone=None,
             full_name="Support",
             status=UserStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         self.assertIsNone(user.organization_id)
 
@@ -148,6 +156,8 @@ class UserInvariantTests(unittest.TestCase):
             phone=PhoneNumber("+252700000000"),
             full_name="Driver",
             status=UserStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         self.assertEqual(str(user.organization_id), VALID_ORG_ULID)
 
@@ -160,6 +170,8 @@ class UserInvariantTests(unittest.TestCase):
             phone=PhoneNumber("+252700000000"),
             full_name="Phone Only",
             status=UserStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         self.assertIsNone(user.email)
 
@@ -219,6 +231,8 @@ class UserStateTransitionTests(unittest.TestCase):
             phone=None,
             full_name="Founder",
             status=status,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
 
     def test_activate_sets_active_status_and_records_event(self) -> None:

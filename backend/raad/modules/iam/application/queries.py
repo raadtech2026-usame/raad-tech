@@ -30,6 +30,8 @@ class UserDTO:
     phone: str | None
     full_name: str
     status: str
+    created_at: datetime
+    updated_at: datetime
     mfa_enabled: bool
     last_login_at: datetime | None
 
@@ -56,6 +58,8 @@ def user_to_dto(user: User) -> UserDTO:
         phone=str(user.phone) if user.phone is not None else None,
         full_name=user.full_name,
         status=user.status.value,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
         mfa_enabled=user.mfa_enabled,
         last_login_at=user.last_login_at,
     )

@@ -56,6 +56,8 @@ def user_to_model(user: User, *, existing: UserModel | None = None) -> UserModel
     model.status = user.status.value
     model.mfa_enabled = user.mfa_enabled
     model.last_login_at = _naive(user.last_login_at)
+    model.created_at = _naive(user.created_at)
+    model.updated_at = _naive(user.updated_at)
     return model
 
 
@@ -70,6 +72,8 @@ def model_to_user(model: UserModel) -> User:
         phone=PhoneNumber(model.phone) if model.phone else None,
         full_name=model.full_name,
         status=UserStatus(model.status),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
         password_hash=model.password_hash,
         mfa_enabled=model.mfa_enabled,
         last_login_at=model.last_login_at,

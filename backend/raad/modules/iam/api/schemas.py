@@ -59,6 +59,8 @@ class UserResponse(BaseModel):
     phone: str | None
     full_name: str
     status: str
+    created_at: datetime
+    updated_at: datetime
     mfa_enabled: bool
     last_login_at: datetime | None
 
