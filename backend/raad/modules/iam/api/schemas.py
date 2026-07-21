@@ -28,8 +28,9 @@ class PrincipalResponse(BaseModel):
     region_ids: list[str] = Field(
         default_factory=list,
         description=(
-            "Always empty in this phase — RAAD-staff region/org scope resolution "
-            "(`core.tenancy.ScopeResolver`) is pending the `organization` module."
+            "Resolved via `core.tenancy.ScopeResolver.effective_org_scope` (ADR-0005). Only "
+            "ever non-empty for a Regional Manager's assigned regions — every other role "
+            "resolves to an empty list, matching that resolver's own documented formula."
         ),
     )
 

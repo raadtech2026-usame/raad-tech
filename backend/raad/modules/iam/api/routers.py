@@ -25,12 +25,14 @@ Domain/Application is out of scope this phase):
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 
+from raad.core.di.container import Container
 from raad.core.errors.exceptions import ValidationError
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal, Role
-from raad.interfaces.http.deps import get_current_user, require_permission
+from raad.core.tenancy.resolver import ScopeResolver
+from raad.interfaces.http.deps import get_container, get_current_user, require_permission
 from raad.modules.iam.api.deps import get_auth_service, get_iam_uow, get_user_service
 from raad.modules.iam.api.schemas import (
     CreateUserRequest,
@@ -77,7 +79,24 @@ def _parse_role(value: str) -> Role:
         ) from exc
 
 
-def _auth_result_to_response(result: AuthResultDTO) -> TokenResponse:
+async def _resolve_region_ids(result: AuthResultDTO, *, container: Container) -> list[str]:
+    """RAAD-staff region scope (`core.tenancy.ScopeResolver.effective_org_scope`) is real now
+    (ADR-0005, `organization.infra.adapters.OrganizationScopeResolver`) — only a Regional
+    Manager's `TenantRegionScope.region_ids` is ever non-empty (every other role resolves to
+    `frozenset()`), matching that resolver's own documented formula exactly."""
+    resolver = container.resolve(ScopeResolver)
+    principal = Principal(
+        user_id=result.user.id,
+        role=Role(result.user.role),
+        org_id=result.user.organization_id,
+    )
+    scope = await resolver.effective_org_scope(principal)
+    return sorted(scope.region_ids)
+
+
+def _auth_result_to_response(
+    result: AuthResultDTO, *, region_ids: list[str]
+) -> TokenResponse:
     return TokenResponse(
         access_token=result.access_token,
         token_type=result.token_type,
@@ -87,7 +106,7 @@ def _auth_result_to_response(result: AuthResultDTO) -> TokenResponse:
             user_id=result.user.id,
             role=result.user.role.lower(),
             organization_id=result.user.organization_id,
-            region_ids=[],
+            region_ids=region_ids,
         ),
     )
 
@@ -114,6 +133,7 @@ def _user_dto_to_response(user: UserDTO) -> UserResponse:
     description="Public (API Contracts §2.1). `identifier` is an email or E.164 phone number.",
 )
 async def login(
+    request: Request,
     body: LoginRequest,
     auth_service: AuthApplicationService = Depends(get_auth_service),
     uow: IamUnitOfWork = Depends(get_iam_uow),
@@ -122,7 +142,8 @@ async def login(
     phone = body.identifier if body.identifier.startswith("+") else None
     command = LoginCommand(email=email, phone=phone, plain_password=body.password)
     result = await auth_service.login(command, uow=uow)
-    return _auth_result_to_response(result)
+    region_ids = await _resolve_region_ids(result, container=get_container(request))
+    return _auth_result_to_response(result, region_ids=region_ids)
 
 
 @auth_router.post(
@@ -136,13 +157,15 @@ async def login(
     ),
 )
 async def refresh(
+    request: Request,
     body: RefreshRequest,
     auth_service: AuthApplicationService = Depends(get_auth_service),
     uow: IamUnitOfWork = Depends(get_iam_uow),
 ) -> TokenResponse:
     command = RefreshAccessTokenCommand(refresh_token=body.refresh_token)
     result = await auth_service.refresh(command, uow=uow)
-    return _auth_result_to_response(result)
+    region_ids = await _resolve_region_ids(result, container=get_container(request))
+    return _auth_result_to_response(result, region_ids=region_ids)
 
 
 @auth_router.post(
