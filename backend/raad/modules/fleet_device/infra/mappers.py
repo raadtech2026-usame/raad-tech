@@ -72,6 +72,8 @@ def vehicle_to_model(
     model.label = vehicle.label
     model.capacity = vehicle.capacity
     model.status = vehicle.status.value
+    model.created_at = _naive(vehicle.created_at)
+    model.updated_at = _naive(vehicle.updated_at)
     return model
 
 
@@ -83,6 +85,8 @@ def model_to_vehicle(model: VehicleModel) -> Vehicle:
         label=model.label,
         capacity=model.capacity,
         status=VehicleStatus(model.status),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 
@@ -128,6 +132,8 @@ def device_to_model(
     model.lifecycle_state = device.lifecycle_state.value
     model.auth_key_hash = device.auth_key_hash
     model.last_seen_at = device.last_seen_at
+    model.created_at = _naive(device.created_at)
+    model.updated_at = _naive(device.updated_at)
 
     existing_rows = {row.id: row for row in model.cameras}
     for camera in device.cameras:
@@ -161,6 +167,8 @@ def model_to_device(model: DeviceModel) -> Device:
         lifecycle_state=DeviceLifecycleState(model.lifecycle_state),
         auth_key_hash=model.auth_key_hash,
         last_seen_at=model.last_seen_at,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
         cameras=[model_to_camera(row) for row in model.cameras],
     )
 

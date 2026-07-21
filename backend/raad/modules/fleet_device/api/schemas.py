@@ -29,6 +29,8 @@ class VehicleResponse(BaseModel):
     label: str | None
     capacity: int | None
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class RegisterVehicleRequest(BaseModel):
@@ -67,6 +69,8 @@ class DeviceResponse(BaseModel):
     sim_msisdn: str | None
     lifecycle_state: str
     last_seen_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
     cameras: list[CameraResponse]
 
 

@@ -83,6 +83,8 @@ class Vehicle(_AggregateRoot):
         label: str | None,
         capacity: int | None,
         status: VehicleStatus,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         if not plate_no:
@@ -93,6 +95,8 @@ class Vehicle(_AggregateRoot):
         self.label = label
         self.capacity = capacity
         self.status = status
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Vehicle) and self.id == other.id
@@ -112,6 +116,7 @@ class Vehicle(_AggregateRoot):
         clock: Clock,
         actor_id: str | None = None,
     ) -> "Vehicle":
+        now = clock.now()
         vehicle = cls(
             id=id,
             organization_id=organization_id,
@@ -119,6 +124,8 @@ class Vehicle(_AggregateRoot):
             label=label,
             capacity=capacity,
             status=VehicleStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
         )
         vehicle._record(
             fleet_events.vehicle_registered(
@@ -137,6 +144,7 @@ class Vehicle(_AggregateRoot):
         if self.status == VehicleStatus.ACTIVE:
             return
         self.status = VehicleStatus.ACTIVE
+        self.updated_at = clock.now()
         self._record(
             fleet_events.vehicle_activated(
                 vehicle_id=str(self.id),
@@ -150,6 +158,7 @@ class Vehicle(_AggregateRoot):
         if self.status == VehicleStatus.INACTIVE:
             return
         self.status = VehicleStatus.INACTIVE
+        self.updated_at = clock.now()
         self._record(
             fleet_events.vehicle_deactivated(
                 vehicle_id=str(self.id),
@@ -165,6 +174,7 @@ class Vehicle(_AggregateRoot):
         if self.status == VehicleStatus.MAINTENANCE:
             return
         self.status = VehicleStatus.MAINTENANCE
+        self.updated_at = clock.now()
         self._record(
             fleet_events.vehicle_marked_under_maintenance(
                 vehicle_id=str(self.id),
@@ -238,6 +248,8 @@ class Device(_AggregateRoot):
         lifecycle_state: DeviceLifecycleState,
         auth_key_hash: str | None,
         last_seen_at: datetime | None,
+        created_at: datetime,
+        updated_at: datetime,
         cameras: list[Camera] | None = None,
     ) -> None:
         super().__init__()
@@ -250,6 +262,8 @@ class Device(_AggregateRoot):
         self.lifecycle_state = lifecycle_state
         self.auth_key_hash = auth_key_hash
         self.last_seen_at = last_seen_at
+        self.created_at = created_at
+        self.updated_at = updated_at
         self._cameras: list[Camera] = list(cameras) if cameras else []
 
     def __eq__(self, other: object) -> bool:
@@ -278,6 +292,7 @@ class Device(_AggregateRoot):
         actor_id: str | None = None,
     ) -> "Device":
         """Onboarding factory (Phase 2 §19.2: "[*] --> Registered: device onboarded")."""
+        now = clock.now()
         device = cls(
             id=id,
             organization_id=organization_id,
@@ -288,6 +303,8 @@ class Device(_AggregateRoot):
             lifecycle_state=DeviceLifecycleState.REGISTERED,
             auth_key_hash=auth_key_hash,
             last_seen_at=None,
+            created_at=now,
+            updated_at=now,
         )
         device._record(
             fleet_events.device_registered(
@@ -311,6 +328,7 @@ class Device(_AggregateRoot):
         if self.lifecycle_state != DeviceLifecycleState.REGISTERED:
             self._raise_illegal_transition("activate")
         self.lifecycle_state = DeviceLifecycleState.ACTIVATED
+        self.updated_at = clock.now()
         self._record(
             fleet_events.device_activated(
                 device_id=str(self.id),
@@ -328,6 +346,7 @@ class Device(_AggregateRoot):
         if self.lifecycle_state != DeviceLifecycleState.ACTIVATED:
             self._raise_illegal_transition("suspend")
         self.lifecycle_state = DeviceLifecycleState.SUSPENDED
+        self.updated_at = clock.now()
         self._record(
             fleet_events.device_suspended(
                 device_id=str(self.id),
@@ -344,6 +363,7 @@ class Device(_AggregateRoot):
         if self.lifecycle_state != DeviceLifecycleState.SUSPENDED:
             self._raise_illegal_transition("reactivate")
         self.lifecycle_state = DeviceLifecycleState.ACTIVATED
+        self.updated_at = clock.now()
         self._record(
             fleet_events.device_reactivated(
                 device_id=str(self.id),
@@ -366,6 +386,7 @@ class Device(_AggregateRoot):
         ):
             self._raise_illegal_transition("retire")
         self.lifecycle_state = DeviceLifecycleState.RETIRED
+        self.updated_at = clock.now()
         self._record(
             fleet_events.device_retired(
                 device_id=str(self.id),
@@ -375,20 +396,22 @@ class Device(_AggregateRoot):
             )
         )
 
-    def mark_assigned(self) -> None:
+    def mark_assigned(self, *, clock: Clock) -> None:
         """Activated → Assigned. State-sync only, invoked by the application layer's
         assign/reassign use-case alongside `DeviceAssignment.open(...)` — the event for this
         fact is the assignment's (see class docstring)."""
         if self.lifecycle_state != DeviceLifecycleState.ACTIVATED:
             self._raise_illegal_transition("mark_assigned")
         self.lifecycle_state = DeviceLifecycleState.ASSIGNED
+        self.updated_at = clock.now()
 
-    def mark_unassigned(self) -> None:
+    def mark_unassigned(self, *, clock: Clock) -> None:
         """Assigned → Activated (the §19.2 diagram's `Unassigned`, per the documented enum
         reconciliation). State-sync only — the event is the assignment close's."""
         if self.lifecycle_state != DeviceLifecycleState.ASSIGNED:
             self._raise_illegal_transition("mark_unassigned")
         self.lifecycle_state = DeviceLifecycleState.ACTIVATED
+        self.updated_at = clock.now()
 
     def register_camera(
         self,

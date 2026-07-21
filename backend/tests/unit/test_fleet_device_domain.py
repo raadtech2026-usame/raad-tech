@@ -90,6 +90,8 @@ class VehicleInvariantTests(unittest.TestCase):
                 label=None,
                 capacity=None,
                 status=VehicleStatus.ACTIVE,
+                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             )
 
 
@@ -102,6 +104,8 @@ class VehicleStatusTransitionTests(unittest.TestCase):
             label=None,
             capacity=None,
             status=status,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
 
     def test_register_starts_active_and_records_event(self) -> None:
@@ -148,6 +152,8 @@ class DeviceLifecycleTests(unittest.TestCase):
             lifecycle_state=lifecycle_state,
             auth_key_hash=None,
             last_seen_at=None,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
 
     def test_register_starts_in_registered_state(self) -> None:
@@ -225,24 +231,24 @@ class DeviceLifecycleTests(unittest.TestCase):
     def test_mark_assigned_requires_activated_state(self) -> None:
         device = self.make_device(DeviceLifecycleState.REGISTERED)
         with self.assertRaises(RuleViolationError):
-            device.mark_assigned()
+            device.mark_assigned(clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)))
 
     def test_mark_assigned_from_activated_succeeds(self) -> None:
         device = self.make_device(DeviceLifecycleState.ACTIVATED)
-        device.mark_assigned()
+        device.mark_assigned(clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)))
         self.assertEqual(device.lifecycle_state, DeviceLifecycleState.ASSIGNED)
 
     def test_mark_assigned_emits_no_event(self) -> None:
         """Regression: the assignment fact is emitted once, by DeviceAssignment.open - not
         duplicated here."""
         device = self.make_device(DeviceLifecycleState.ACTIVATED)
-        device.mark_assigned()
+        device.mark_assigned(clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)))
         self.assertEqual(device.pull_domain_events(), [])
 
     def test_mark_unassigned_requires_assigned_state(self) -> None:
         device = self.make_device(DeviceLifecycleState.ACTIVATED)
         with self.assertRaises(RuleViolationError):
-            device.mark_unassigned()
+            device.mark_unassigned(clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)))
 
 
 class CameraRegistrationTests(unittest.TestCase):
@@ -257,6 +263,8 @@ class CameraRegistrationTests(unittest.TestCase):
             lifecycle_state=DeviceLifecycleState.ACTIVATED,
             auth_key_hash=None,
             last_seen_at=None,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
 
     def test_register_camera_on_free_channel_succeeds(self) -> None:

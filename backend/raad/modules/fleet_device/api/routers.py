@@ -103,6 +103,8 @@ def _vehicle_dto_to_response(vehicle: VehicleDTO) -> VehicleResponse:
         label=vehicle.label,
         capacity=vehicle.capacity,
         status=vehicle.status,
+        created_at=vehicle.created_at,
+        updated_at=vehicle.updated_at,
     )
 
 
@@ -116,6 +118,8 @@ def _device_dto_to_response(device: DeviceDTO) -> DeviceResponse:
         sim_msisdn=device.sim_msisdn,
         lifecycle_state=device.lifecycle_state,
         last_seen_at=device.last_seen_at,
+        created_at=device.created_at,
+        updated_at=device.updated_at,
         cameras=[
             CameraResponse(
                 id=camera.id,

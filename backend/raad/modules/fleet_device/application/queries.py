@@ -50,6 +50,8 @@ class VehicleDTO:
     label: str | None
     capacity: int | None
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,8 @@ class DeviceDTO:
     sim_msisdn: str | None
     lifecycle_state: str
     last_seen_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
     cameras: tuple[CameraDTO, ...]
 
 
@@ -94,6 +98,8 @@ def vehicle_to_dto(vehicle: Vehicle) -> VehicleDTO:
         label=vehicle.label,
         capacity=vehicle.capacity,
         status=vehicle.status.value,
+        created_at=vehicle.created_at,
+        updated_at=vehicle.updated_at,
     )
 
 
@@ -117,6 +123,8 @@ def device_to_dto(device: Device) -> DeviceDTO:
         sim_msisdn=str(device.sim_msisdn) if device.sim_msisdn is not None else None,
         lifecycle_state=device.lifecycle_state.value,
         last_seen_at=device.last_seen_at,
+        created_at=device.created_at,
+        updated_at=device.updated_at,
         cameras=tuple(camera_to_dto(camera) for camera in device.cameras),
     )
 

@@ -304,7 +304,7 @@ class DeviceApplicationService:
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )
-            device.mark_assigned()
+            device.mark_assigned(clock=self._clock)
 
             uow.device_assignments.add(assignment)
             uow.record_events(assignment.pull_domain_events())
@@ -325,7 +325,7 @@ class DeviceApplicationService:
                 )
 
             assignment.close(clock=self._clock, actor_id=command.actor.user_id)
-            device.mark_unassigned()
+            device.mark_unassigned(clock=self._clock)
 
             uow.record_events(assignment.pull_domain_events())
             uow.record_events(device.pull_domain_events())
