@@ -7,4 +7,7 @@ incident response, deployment rollback, and on-call procedures.
 
 ## Status
 
-Structural placeholder only. No runbooks exist yet.
+Structural placeholder for the exception-workflow/incident-response runbooks listed above. One
+real runbook exists outside that original list: [`founder-bootstrap.md`](founder-bootstrap.md) —
+first-time-deployment Founder account provisioning, added alongside
+`backend/raad/interfaces/cli/bootstrap_founder.py`.
