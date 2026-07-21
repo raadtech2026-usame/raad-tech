@@ -231,9 +231,8 @@ async def list_users(
     summary="Invite a new user",
     description=(
         "Role-restricted creation, in-scope admin (API Contracts §4.1). Authorization uses "
-        "`require_permission` (`core.security.PermissionEvaluator`) — pending the approved "
-        "RBAC permission matrix, so this currently raises `NotImplementedError` (500) rather "
-        "than a guessed matrix."
+        "`require_permission` (`core.security.PermissionEvaluator`), resolving against the "
+        "real seeded RBAC permission matrix (ADR-0004)."
     ),
 )
 async def create_user(
@@ -260,8 +259,8 @@ async def create_user(
     status_code=status.HTTP_200_OK,
     summary="Get a user by id",
     description=(
-        "In-scope admin (API Contracts §4.1). Pending the approved RBAC permission matrix "
-        "— see `create_user`'s note."
+        "In-scope admin (API Contracts §4.1). Authorization resolves against the real "
+        "seeded RBAC permission matrix — see `create_user`'s note."
     ),
 )
 async def get_user(
@@ -281,10 +280,10 @@ async def get_user(
     summary="Update a user's status or MFA flag",
     description=(
         "In-scope admin (API Contracts §4.1). Limited to the transitions the Application "
-        "layer exposes — see `UpdateUserRequest`'s docstring. Pending the approved RBAC "
-        "permission matrix — see `create_user`'s note. Composing both `status` and "
-        "`mfa_enabled` in one request performs two separate commits (not atomic), since each "
-        "reuses an existing single-purpose Application-layer method."
+        "layer exposes — see `UpdateUserRequest`'s docstring. Authorization resolves against "
+        "the real seeded RBAC permission matrix — see `create_user`'s note. Composing both "
+        "`status` and `mfa_enabled` in one request performs two separate commits (not atomic), "
+        "since each reuses an existing single-purpose Application-layer method."
     ),
 )
 async def update_user(

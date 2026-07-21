@@ -174,9 +174,8 @@ async def list_vehicles(
     summary="Register a new vehicle",
     description=(
         "Org Admin (+RAAD in scope) (API Contracts §4.2). Authorization uses "
-        "`require_permission` — pending the approved RBAC permission matrix, so this "
-        "currently raises `NotImplementedError` (500) rather than a guessed matrix, "
-        "matching `iam`/`organization`'s posture."
+        "`require_permission`, resolving against the real seeded RBAC permission matrix "
+        "(ADR-0004), matching `iam`/`organization`'s posture."
     ),
 )
 async def register_vehicle(
@@ -204,8 +203,9 @@ async def register_vehicle(
     status_code=status.HTTP_200_OK,
     summary="Get a vehicle by id",
     description=(
-        "Org Admin (+RAAD in scope) (API Contracts §4.2/§4 uniform CRUD). Pending the "
-        "approved RBAC permission matrix — see `register_vehicle`'s note."
+        "Org Admin (+RAAD in scope) (API Contracts §4.2/§4 uniform CRUD). Authorization "
+        "resolves against the real seeded RBAC permission matrix — see `register_vehicle`'s "
+        "note."
     ),
 )
 async def get_vehicle(
@@ -230,8 +230,8 @@ async def get_vehicle(
     description=(
         "Org Admin (+RAAD in scope) (API Contracts §4.2/§4 uniform CRUD). Limited to the "
         "`status` transitions the Application layer exposes — see `UpdateVehicleRequest`'s "
-        "docstring. Pending the approved RBAC permission matrix — see `register_vehicle`'s "
-        "note."
+        "docstring. Authorization resolves against the real seeded RBAC permission matrix "
+        "— see `register_vehicle`'s note."
     ),
 )
 async def update_vehicle(
@@ -299,8 +299,8 @@ async def list_devices(
     status_code=status.HTTP_201_CREATED,
     summary="Register a new device",
     description=(
-        "Org Admin / Support (API Contracts §4.2). Pending the approved RBAC permission "
-        "matrix — see `register_vehicle`'s note."
+        "Org Admin / Support (API Contracts §4.2). Authorization resolves against the real "
+        "seeded RBAC permission matrix — see `register_vehicle`'s note."
     ),
 )
 async def register_device(
@@ -329,8 +329,8 @@ async def register_device(
     status_code=status.HTTP_200_OK,
     summary="Get a device by id",
     description=(
-        "Org Admin / Support (API Contracts §4.2/§4 uniform CRUD). Pending the approved "
-        "RBAC permission matrix — see `register_vehicle`'s note."
+        "Org Admin / Support (API Contracts §4.2/§4 uniform CRUD). Authorization resolves "
+        "against the real seeded RBAC permission matrix — see `register_vehicle`'s note."
     ),
 )
 async def get_device(
@@ -356,7 +356,8 @@ async def get_device(
         "Org Admin / Support (API Contracts §4.2: 'lifecycle state'). Limited to the "
         "transitions the Application layer exposes via PATCH — see `UpdateDeviceRequest`'s "
         "docstring; activation and assignment have their own approved behavioral routes. "
-        "Pending the approved RBAC permission matrix — see `register_vehicle`'s note."
+        "Authorization resolves against the real seeded RBAC permission matrix — see "
+        "`register_vehicle`'s note."
     ),
 )
 async def update_device(
@@ -403,8 +404,9 @@ async def update_device(
     status_code=status.HTTP_200_OK,
     summary="Activate a registered device",
     description=(
-        "Support/Org Admin — Registered→Activated (API Contracts §4.2 verbatim). Pending "
-        "the approved RBAC permission matrix — see `register_vehicle`'s note."
+        "Support/Org Admin — Registered→Activated (API Contracts §4.2 verbatim). "
+        "Authorization resolves against the real seeded RBAC permission matrix — see "
+        "`register_vehicle`'s note."
     ),
 )
 async def activate_device(
@@ -429,8 +431,8 @@ async def activate_device(
     description=(
         "Org Admin — body `{vehicle_id}` → creates the active `device_assignment` "
         "(API Contracts §4.2 verbatim; one active binding per device & per vehicle, "
-        "Phase 2 §19). Pending the approved RBAC permission matrix — see "
-        "`register_vehicle`'s note."
+        "Phase 2 §19). Authorization resolves against the real seeded RBAC permission "
+        "matrix — see `register_vehicle`'s note."
     ),
 )
 async def assign_device(
@@ -458,8 +460,8 @@ async def assign_device(
     summary="Reassign a device to a different vehicle",
     description=(
         "Org Admin — closes the prior active assignment, opens a new one (API Contracts "
-        "§4.2 verbatim; Phase 2 §19.2, emits `DeviceReassigned`). Pending the approved "
-        "RBAC permission matrix — see `register_vehicle`'s note."
+        "§4.2 verbatim; Phase 2 §19.2, emits `DeviceReassigned`). Authorization resolves "
+        "against the real seeded RBAC permission matrix — see `register_vehicle`'s note."
     ),
 )
 async def reassign_device(
@@ -487,8 +489,8 @@ async def reassign_device(
     summary="Unassign a device from its vehicle",
     description=(
         "Org Admin (API Contracts §4.2 verbatim). Closes the active assignment; the device "
-        "returns to `activated`. Pending the approved RBAC permission matrix — see "
-        "`register_vehicle`'s note."
+        "returns to `activated`. Authorization resolves against the real seeded RBAC "
+        "permission matrix — see `register_vehicle`'s note."
     ),
 )
 async def unassign_device(

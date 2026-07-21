@@ -6,11 +6,10 @@ application-service method, return the response DTO. No business logic, no repos
 SQLAlchemy access, no aggregate manipulation — every error raised by the application/domain
 layers already maps to the standard `ErrorEnvelope` via the global exception handlers
 (`core/errors/handlers.py`, registered once in `main.py`); routers never build an error
-response themselves. Mirrors `iam.api.routers`'s Phase 5.4 shape exactly, including its
-`require_permission`-pending-RBAC-matrix posture (`interfaces/http/deps.py`): every route
-below is authorization-gated the same way `iam`'s are, so it currently raises
-`NotImplementedError` (500) rather than a guessed permission matrix, per API Contracts §4.1's
-role column and §3.1's authorization layering.
+response themselves. Mirrors `iam.api.routers`'s Phase 5.4 shape exactly: every route below is
+authorization-gated via `require_permission` (`interfaces/http/deps.py`), resolving against the
+real seeded RBAC permission matrix (ADR-0004), per API Contracts §4.1's role column and §3.1's
+authorization layering.
 
 **`GET /organizations` / `GET /regions` (list) — added under the Backend Stabilization phase.**
 Previously deferred here for exactly the reason this same paragraph used to give: no listing
@@ -153,9 +152,8 @@ async def list_organizations(
     summary="Register a new organization",
     description=(
         "Founder, Reg.Mgr(region), Support(assigned) (API Contracts §4.1). Authorization "
-        "uses `require_permission` — pending the approved RBAC permission matrix, so this "
-        "currently raises `NotImplementedError` (500) rather than a guessed matrix, matching "
-        "`iam.api.routers.create_user`'s posture."
+        "uses `require_permission`, resolving against the real seeded RBAC permission matrix "
+        "(ADR-0004), matching `iam.api.routers.create_user`'s posture."
     ),
 )
 async def register_organization(
@@ -184,8 +182,8 @@ async def register_organization(
     status_code=status.HTTP_200_OK,
     summary="Get an organization by id",
     description=(
-        "In-scope (API Contracts §4.1). Pending the approved RBAC permission matrix — see "
-        "`register_organization`'s note."
+        "In-scope (API Contracts §4.1). Authorization resolves against the real seeded RBAC permission matrix — "
+        "see `register_organization`'s note."
     ),
 )
 async def get_organization(
@@ -210,8 +208,8 @@ async def get_organization(
     description=(
         "In-scope (API Contracts §4.1). Limited to the `status` transition the Application "
         "layer exposes — see `UpdateOrganizationRequest`'s docstring for why `billing_model` "
-        "is not accepted here. Pending the approved RBAC permission matrix — see "
-        "`register_organization`'s note."
+        "is not accepted here. Authorization resolves against the real seeded RBAC permission matrix — "
+        "see `register_organization`'s note."
     ),
 )
 async def update_organization(
@@ -284,8 +282,8 @@ async def list_regions(
     status_code=status.HTTP_201_CREATED,
     summary="Create a new region",
     description=(
-        "Founder (API Contracts §4.1). Pending the approved RBAC permission matrix — see "
-        "`register_organization`'s note."
+        "Founder (API Contracts §4.1). Authorization resolves against the real seeded RBAC permission matrix — "
+        "see `register_organization`'s note."
     ),
 )
 async def create_region(
@@ -309,8 +307,8 @@ async def create_region(
     status_code=status.HTTP_200_OK,
     summary="Get a region by id",
     description=(
-        "Founder (API Contracts §4.1). Pending the approved RBAC permission matrix — see "
-        "`register_organization`'s note."
+        "Founder (API Contracts §4.1). Authorization resolves against the real seeded RBAC permission matrix — "
+        "see `register_organization`'s note."
     ),
 )
 async def get_region(
@@ -334,8 +332,8 @@ async def get_region(
     summary="Update a region's status",
     description=(
         "Founder (API Contracts §4.1). Limited to the `status` transition the Application "
-        "layer exposes. Pending the approved RBAC permission matrix — see "
-        "`register_organization`'s note."
+        "layer exposes. Authorization resolves against the real seeded RBAC permission matrix — "
+        "see `register_organization`'s note."
     ),
 )
 async def update_region(

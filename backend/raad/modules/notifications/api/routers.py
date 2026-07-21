@@ -110,9 +110,8 @@ def _device_token_dto_to_response(device_token: DeviceTokenDTO) -> DeviceTokenRe
     description=(
         "Parent/Driver (API Contracts §4.6 line 163). Rejects a token already registered "
         "(`ConflictError`, `ux_device_tokens__token` defense-in-depth — "
-        "`application/validators.py`'s `ensure_fcm_token_available`). Pending the approved "
-        "RBAC permission matrix — raises `NotImplementedError` (500), matching every other "
-        "module's identical posture."
+        "`application/validators.py`'s `ensure_fcm_token_available`). Authorization resolves "
+        "against the real seeded RBAC permission matrix (ADR-0004)."
     ),
 )
 async def register_device_token(
@@ -139,8 +138,8 @@ async def register_device_token(
         "`domain/entities.py`'s `DeviceToken.revoke` docstring. Ownership enforced directly: a "
         "non-owner request raises `NotFoundError` (404), not `AuthorizationError` — see "
         "`application/queries.py`'s `GetNotificationByIdQuery` docstring for the 404-over-403 "
-        "reasoning applied uniformly across this module. Pending the approved RBAC permission "
-        "matrix."
+        "reasoning applied uniformly across this module. Authorization resolves against the "
+        "real seeded RBAC permission matrix."
     ),
 )
 async def revoke_device_token(
@@ -165,8 +164,8 @@ async def revoke_device_token(
         "(paginated)\"). Scoped to `recipient_user_id = principal.user_id` — the first list "
         "endpoint in this codebase scoped by personal ownership rather than tenant. Not "
         "paginated — `core/pagination` is empty, the same pre-existing gap every other list "
-        "endpoint in this codebase already carries. Pending the approved RBAC permission "
-        "matrix."
+        "endpoint in this codebase already carries. Authorization resolves against the real "
+        "seeded RBAC permission matrix."
     ),
 )
 async def list_notifications(
@@ -190,8 +189,8 @@ async def list_notifications(
     description=(
         "Not itemized in API Contracts §4.6's compact table — uniform-CRUD addition, see "
         "`routers.py`'s module docstring. Ownership-scoped identically to `list_notifications`; "
-        "a non-owner request raises `NotFoundError` (404). Pending the approved RBAC "
-        "permission matrix."
+        "a non-owner request raises `NotFoundError` (404). Authorization resolves against "
+        "the real seeded RBAC permission matrix."
     ),
 )
 async def get_notification(
@@ -219,7 +218,8 @@ async def get_notification(
     description=(
         "Recipient (API Contracts §4.6 line 162). Ownership enforced directly — see "
         "`application/services.py`'s module docstring. Idempotent (`domain/entities.py`'s "
-        "`Notification.mark_read`). Pending the approved RBAC permission matrix."
+        "`Notification.mark_read`). Authorization resolves against the real seeded RBAC "
+        "permission matrix."
     ),
 )
 async def mark_notification_read(

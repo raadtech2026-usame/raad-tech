@@ -66,9 +66,8 @@ def _report_run_dto_to_response(report_run: ReportRunDTO) -> ReportRunResponse:
     description=(
         "Org Admin/Finance (API Contracts §4.8 line 188: \"async render -> report_run\"). "
         "Persists a `QUEUED` `ReportRun` only - actual rendering is out of this phase's scope, "
-        "see `domain/entities.py`'s module docstring. Pending the approved RBAC permission "
-        "matrix - raises `NotImplementedError` (500), matching every other module's identical "
-        "posture."
+        "see `domain/entities.py`'s module docstring. Authorization resolves against the "
+        "real seeded RBAC permission matrix (ADR-0004)."
     ),
 )
 async def request_report(
@@ -95,7 +94,8 @@ async def request_report(
     description=(
         "Requester (API Contracts §4.8 line 189: \"status + artifact url\"). Ownership "
         "enforced directly - see `application/queries.py`'s `GetReportRunByIdQuery` docstring "
-        "for the 404-over-403 reasoning. Pending the approved RBAC permission matrix."
+        "for the 404-over-403 reasoning. Authorization resolves against the real seeded "
+        "RBAC permission matrix."
     ),
 )
 async def get_report_run(

@@ -9,10 +9,10 @@ SQLAlchemy access, no aggregate manipulation — every error raised by the appli
 layers already maps to the standard `ErrorEnvelope` via the global exception handlers
 (`core/errors/handlers.py`, registered once in `main.py`); routers never build an error
 response themselves. Mirrors `organization`/`fleet_device`/`tracking.api.routers`'s shape
-exactly, including the `require_permission`-pending-RBAC-matrix posture
-(`interfaces/http/deps.py`): every route below is authorization-gated the same way, so it
-currently raises `NotImplementedError` (500) rather than a guessed permission matrix, per API
-Contracts §4.3's role column ("Org Admin") and §3.1's authorization layering.
+exactly: every route below is authorization-gated via `require_permission`
+(`interfaces/http/deps.py`), resolving against the real seeded RBAC permission matrix
+(ADR-0004), per API Contracts §4.3's role column ("Org Admin") and §3.1's authorization
+layering.
 
 **Five routes, matching API Contracts §4.3's `/students` rows exactly** (lines 122-123):
 - `POST /students` — enroll (the doc's uniform "`GET/POST /students`" create half)
@@ -499,9 +499,9 @@ def _student_assignment_summary_dto_to_response(
     status_code=status.HTTP_201_CREATED,
     summary="Enroll a new student",
     description=(
-        "Org Admin (API Contracts §4.3). Authorization uses `require_permission` — pending "
-        "the approved RBAC permission matrix, so this currently raises `NotImplementedError` "
-        "(500) rather than a guessed matrix, matching `organization`/`fleet_device`'s posture."
+        "Org Admin (API Contracts §4.3). Authorization uses `require_permission`, resolving "
+        "against the real seeded RBAC permission matrix (ADR-0004), matching "
+        "`organization`/`fleet_device`'s posture."
     ),
 )
 async def enroll_student(
@@ -531,7 +531,8 @@ async def enroll_student(
         "Org Admin (API Contracts §4.3). Not yet tenant-scoped — see this module's own "
         "docstring and `infra/repositories.py`'s (Phase 10.3): `list_all` uses an "
         "unrestricted `TenantRegionScope` pending a system-wide `ScopeResolver` binding. "
-        "Also pending the approved RBAC permission matrix — see `enroll_student`'s note."
+        "Authorization resolves against the real seeded RBAC permission matrix — see "
+        "`enroll_student`'s note."
     ),
 )
 async def list_students(
@@ -551,8 +552,8 @@ async def list_students(
     status_code=status.HTTP_200_OK,
     summary="Get a student by id",
     description=(
-        "Org Admin (API Contracts §4.3/§4 uniform CRUD). Pending the approved RBAC "
-        "permission matrix — see `enroll_student`'s note."
+        "Org Admin (API Contracts §4.3/§4 uniform CRUD). Authorization resolves against the "
+        "real seeded RBAC permission matrix — see `enroll_student`'s note."
     ),
 )
 async def get_student(
@@ -577,7 +578,8 @@ async def get_student(
     description=(
         "Org Admin (API Contracts §4 uniform CRUD). Limited to `full_name`/`external_ref` — "
         "see `UpdateStudentRequest`'s docstring for why `status` is not accepted here. "
-        "Pending the approved RBAC permission matrix — see `enroll_student`'s note."
+        "Authorization resolves against the real seeded RBAC permission matrix — see "
+        "`enroll_student`'s note."
     ),
 )
 async def update_student(
@@ -619,8 +621,8 @@ async def update_student(
         "Org Admin — body `{status}` -> disable/graduate/transfer -> emits CR-1 revocation "
         "(API Contracts §4.3 line 123 verbatim). `active` is also accepted, reaching "
         "`StudentApplicationService.activate_student` — see `UpdateStudentStatusRequest`'s "
-        "docstring. Pending the approved RBAC permission matrix — see `enroll_student`'s "
-        "note."
+        "docstring. Authorization resolves against the real seeded RBAC permission matrix "
+        "— see `enroll_student`'s note."
     ),
 )
 async def update_student_status(
@@ -662,9 +664,9 @@ async def update_student_status(
     status_code=status.HTTP_201_CREATED,
     summary="Register a new parent",
     description=(
-        "Org Admin (API Contracts §4.3). Authorization uses `require_permission` — pending "
-        "the approved RBAC permission matrix, so this currently raises `NotImplementedError` "
-        "(500) rather than a guessed matrix, matching `enroll_student`'s posture."
+        "Org Admin (API Contracts §4.3). Authorization uses `require_permission`, resolving "
+        "against the real seeded RBAC permission matrix (ADR-0004), matching "
+        "`enroll_student`'s posture."
     ),
 )
 async def register_parent(
@@ -694,7 +696,8 @@ async def register_parent(
     description=(
         "Org Admin (API Contracts §4.3). Not yet tenant-scoped — same inherited caveat as "
         "`list_students`; see this module's own docstring and `infra/repositories.py`'s "
-        "(Phase 10.3). Also pending the approved RBAC permission matrix."
+        "(Phase 10.3). Authorization resolves against the real seeded RBAC permission "
+        "matrix."
     ),
 )
 async def list_parents(
@@ -714,8 +717,8 @@ async def list_parents(
     status_code=status.HTTP_200_OK,
     summary="Get a parent by id",
     description=(
-        "Org Admin (API Contracts §4.3/§4 uniform CRUD). Pending the approved RBAC "
-        "permission matrix — see `register_parent`'s note."
+        "Org Admin (API Contracts §4.3/§4 uniform CRUD). Authorization resolves against the "
+        "real seeded RBAC permission matrix — see `register_parent`'s note."
     ),
 )
 async def get_parent(
@@ -743,7 +746,7 @@ async def get_parent(
         "in one request, each independently — not atomically — mirroring "
         "`iam.api.routers.update_user`'s identical composition. See `UpdateParentRequest`'s "
         "docstring for why `status` is folded in here rather than a dedicated route, unlike "
-        "`Student`. Pending the approved RBAC permission matrix."
+        "`Student`. Authorization resolves against the real seeded RBAC permission matrix."
     ),
 )
 async def update_parent(
@@ -810,7 +813,8 @@ async def update_parent(
         "Org Admin. No documented API Contracts route (Phase 10.7 — see `routers.py`'s "
         "module docstring). Rejects cross-organization links (`DomainError`) and duplicate "
         "links (`ConflictError`, both from `StudentParent.link`/`application/validators.py`). "
-        "Pending the approved RBAC permission matrix — see `enroll_student`'s note."
+        "Authorization resolves against the real seeded RBAC permission matrix — see "
+        "`enroll_student`'s note."
     ),
 )
 async def link_parent_to_student(
@@ -842,8 +846,8 @@ async def link_parent_to_student(
     description=(
         "Org Admin. No documented API Contracts route (Phase 10.7). A real deletion, unlike "
         "every other `DELETE` in this module (both currently unimplemented, see "
-        "`StudentParent`'s docstring for why this one differs). Pending the approved RBAC "
-        "permission matrix."
+        "`StudentParent`'s docstring for why this one differs). Authorization resolves "
+        "against the real seeded RBAC permission matrix."
     ),
 )
 async def unlink_parent_from_student(
@@ -869,8 +873,8 @@ async def unlink_parent_from_student(
     status_code=status.HTTP_200_OK,
     summary="List a student's linked parents",
     description=(
-        "Org Admin. No documented API Contracts route (Phase 10.7). Pending the approved "
-        "RBAC permission matrix."
+        "Org Admin. No documented API Contracts route (Phase 10.7). Authorization resolves "
+        "against the real seeded RBAC permission matrix."
     ),
 )
 async def list_parents_for_student(
@@ -895,8 +899,8 @@ async def list_parents_for_student(
     status_code=status.HTTP_200_OK,
     summary="List a parent's linked students",
     description=(
-        "Org Admin. No documented API Contracts route (Phase 10.7). Pending the approved "
-        "RBAC permission matrix."
+        "Org Admin. No documented API Contracts route (Phase 10.7). Authorization resolves "
+        "against the real seeded RBAC permission matrix."
     ),
 )
 async def list_students_for_parent(
@@ -924,9 +928,8 @@ async def list_students_for_parent(
         "Org Admin. No documented API Contracts route (Phase 10.8 — see this module's own "
         "docstring for the full gap: Database Design §6.1/ADR-0001 define the `drivers` table "
         "and its ownership unambiguously, but API Contracts §4.3 lists no `/drivers` resource "
-        "row). Authorization uses `require_permission` — pending the approved RBAC permission "
-        "matrix, so this currently raises `NotImplementedError` (500) rather than a guessed "
-        "matrix, matching `enroll_student`'s posture."
+        "row). Authorization uses `require_permission`, resolving against the real seeded "
+        "RBAC permission matrix (ADR-0004), matching `enroll_student`'s posture."
     ),
 )
 async def register_driver(
@@ -955,7 +958,8 @@ async def register_driver(
     description=(
         "Org Admin. No documented API Contracts route (Phase 10.8, see this module's own "
         "docstring). Not yet tenant-scoped — same inherited caveat as `list_students`/"
-        "`list_parents`. Also pending the approved RBAC permission matrix."
+        "`list_parents`. Authorization resolves against the real seeded RBAC permission "
+        "matrix."
     ),
 )
 async def list_drivers(
@@ -976,8 +980,8 @@ async def list_drivers(
     summary="Get a driver by id",
     description=(
         "Org Admin. No documented API Contracts route (Phase 10.8, see this module's own "
-        "docstring). Pending the approved RBAC permission matrix — see `register_driver`'s "
-        "note."
+        "docstring). Authorization resolves against the real seeded RBAC permission matrix "
+        "— see `register_driver`'s note."
     ),
 )
 async def get_driver(
@@ -1004,7 +1008,7 @@ async def get_driver(
         "docstring). Composes `license_no` (dispatched to `update_driver`) and `status` "
         "(dispatched to `activate_driver`/`disable_driver`) in one request, each "
         "independently — not atomically — mirroring `update_parent`'s identical composition. "
-        "Pending the approved RBAC permission matrix."
+        "Authorization resolves against the real seeded RBAC permission matrix."
     ),
 )
 async def update_driver(
@@ -1062,9 +1066,8 @@ async def update_driver(
     status_code=status.HTTP_201_CREATED,
     summary="Create a new route",
     description=(
-        "Org Admin (API Contracts §4.3 line 125). Authorization uses `require_permission` — "
-        "pending the approved RBAC permission matrix, so this currently raises "
-        "`NotImplementedError` (500) rather than a guessed matrix, matching "
+        "Org Admin (API Contracts §4.3 line 125). Authorization uses `require_permission`, "
+        "resolving against the real seeded RBAC permission matrix (ADR-0004), matching "
         "`enroll_student`'s posture."
     ),
 )
@@ -1092,8 +1095,8 @@ async def create_route(
     summary="List routes",
     description=(
         "Org Admin (API Contracts §4.3 line 125). Not yet tenant-scoped — same inherited "
-        "caveat as `list_students`/`list_parents`/`list_drivers`. Also pending the approved "
-        "RBAC permission matrix."
+        "caveat as `list_students`/`list_parents`/`list_drivers`. Authorization resolves "
+        "against the real seeded RBAC permission matrix."
     ),
 )
 async def list_routes(
@@ -1114,7 +1117,8 @@ async def list_routes(
     summary="Get a route by id",
     description=(
         "Org Admin (API Contracts §4.3/§4 uniform CRUD). Embeds the route's ordered stops. "
-        "Pending the approved RBAC permission matrix — see `create_route`'s note."
+        "Authorization resolves against the real seeded RBAC permission matrix — see "
+        "`create_route`'s note."
     ),
 )
 async def get_route(
@@ -1142,7 +1146,7 @@ async def get_route(
         "request, each independently — not atomically — mirroring `update_parent`'s identical "
         "composition. No `archived` status value exists to dispatch to (Database Design §6.5's "
         "enum is exhaustively `active`/`inactive`, `domain/entities.py`'s module docstring). "
-        "Pending the approved RBAC permission matrix."
+        "Authorization resolves against the real seeded RBAC permission matrix."
     ),
 )
 async def update_route(
@@ -1202,8 +1206,9 @@ async def update_route(
     description=(
         "Org Admin — 'ordered stops' (API Contracts §4.3 line 126 verbatim). Rejects a "
         "duplicate `sequence_no` (`ConflictError`) and out-of-range coordinates/sequence "
-        "(`DomainError`), both from `Route.add_stop` (`domain/entities.py`). Pending the "
-        "approved RBAC permission matrix — see `create_route`'s note."
+        "(`DomainError`), both from `Route.add_stop` (`domain/entities.py`). Authorization "
+        "resolves against the real seeded RBAC permission matrix — see `create_route`'s "
+        "note."
     ),
 )
 async def add_stop_to_route(
@@ -1235,8 +1240,9 @@ async def add_stop_to_route(
     summary="List a route's stops in order",
     description=(
         "Org Admin — 'ordered stops' (API Contracts §4.3 line 126 verbatim). Always sorted by "
-        "`sequence_no` (`domain/entities.py`'s `Route.stops` property). Pending the approved "
-        "RBAC permission matrix — see `create_route`'s note."
+        "`sequence_no` (`domain/entities.py`'s `Route.stops` property). Authorization "
+        "resolves against the real seeded RBAC permission matrix — see `create_route`'s "
+        "note."
     ),
 )
 async def list_stops_for_route(
@@ -1262,7 +1268,8 @@ async def list_stops_for_route(
         "Org Admin — 'scheduled trips' (API Contracts §4.3 line 129). Rejects a driver/route "
         "not found (`NotFoundError`) and cross-organization driver/route assignment "
         "(`DomainError`), from `ensure_driver_exists`/`ensure_route_exists`/`Trip.schedule`. "
-        "Pending the approved RBAC permission matrix — see `enroll_student`'s note."
+        "Authorization resolves against the real seeded RBAC permission matrix — see "
+        "`enroll_student`'s note."
     ),
 )
 async def schedule_trip(
@@ -1293,8 +1300,8 @@ async def schedule_trip(
     summary="List trips",
     description=(
         "Org Admin (API Contracts §4.3 line 129). Not yet tenant-scoped — same inherited "
-        "caveat as `list_students`/`list_parents`/`list_drivers`/`list_routes`. Also pending "
-        "the approved RBAC permission matrix."
+        "caveat as `list_students`/`list_parents`/`list_drivers`/`list_routes`. Authorization "
+        "resolves against the real seeded RBAC permission matrix."
     ),
 )
 async def list_trips(
@@ -1315,8 +1322,8 @@ async def list_trips(
     summary="Get a trip by id",
     description=(
         "Org Admin (API Contracts §4 uniform CRUD — not itemized separately in §4.3's compact "
-        "table, see `routers.py`'s module docstring). Pending the approved RBAC permission "
-        "matrix — see `schedule_trip`'s note."
+        "table, see `routers.py`'s module docstring). Authorization resolves against the "
+        "real seeded RBAC permission matrix — see `schedule_trip`'s note."
     ),
 )
 async def get_trip(
@@ -1438,7 +1445,8 @@ async def end_trip(
         "verbatim), body `{driver_id}`. Rejects a driver not found (`NotFoundError`) and a "
         "cross-organization driver (`DomainError`), from `ensure_driver_exists`/"
         "`Trip.change_driver`. No status restriction — see `Trip.change_driver`'s own "
-        "docstring (`domain/entities.py`). Pending the approved RBAC permission matrix."
+        "docstring (`domain/entities.py`). Authorization resolves against the real seeded "
+        "RBAC permission matrix."
     ),
 )
 async def change_trip_driver(
@@ -1467,8 +1475,8 @@ async def change_trip_driver(
         "student/route not found (`NotFoundError`), a pickup/dropoff stop not on the given "
         "route (`NotFoundError`), cross-organization student/route (`DomainError`), and a "
         "student who already has an active assignment (`ConflictError`, one-active-assignment-"
-        "per-student, Database Design §6.7). Pending the approved RBAC permission matrix — see "
-        "`enroll_student`'s note."
+        "per-student, Database Design §6.7). Authorization resolves against the real seeded "
+        "RBAC permission matrix — see `enroll_student`'s note."
     ),
 )
 async def assign_student_to_route(
@@ -1503,8 +1511,8 @@ async def assign_student_to_route(
     summary="List student assignments",
     description=(
         "Org Admin (API Contracts §4.3 line 127). Not yet tenant-scoped — same inherited "
-        "caveat as `list_students`/`list_trips`. Also pending the approved RBAC permission "
-        "matrix."
+        "caveat as `list_students`/`list_trips`. Authorization resolves against the real "
+        "seeded RBAC permission matrix."
     ),
 )
 async def list_student_assignments(
@@ -1532,8 +1540,8 @@ async def list_student_assignments(
     summary="Get a student assignment by id",
     description=(
         "Org Admin (API Contracts §4 uniform CRUD — not itemized separately in §4.3's compact "
-        "table, see `routers.py`'s module docstring). Pending the approved RBAC permission "
-        "matrix — see `assign_student_to_route`'s note."
+        "table, see `routers.py`'s module docstring). Authorization resolves against the "
+        "real seeded RBAC permission matrix — see `assign_student_to_route`'s note."
     ),
 )
 async def get_student_assignment(
@@ -1560,8 +1568,9 @@ async def get_student_assignment(
     summary="Transition a student assignment's status",
     description=(
         "Org Admin — body `{status}` -> removed/transferred/graduated/disabled -> CR-1 "
-        "revocation event (API Contracts §4.3 line 128 verbatim). Pending the approved RBAC "
-        "permission matrix — see `assign_student_to_route`'s note."
+        "revocation event (API Contracts §4.3 line 128 verbatim). Authorization resolves "
+        "against the real seeded RBAC permission matrix — see `assign_student_to_route`'s "
+        "note."
     ),
 )
 async def end_student_assignment(

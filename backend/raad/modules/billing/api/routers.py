@@ -145,9 +145,8 @@ def _payment_dto_to_response(payment: PaymentDTO) -> PaymentResponse:
     status_code=status.HTTP_200_OK,
     summary="List billing plans",
     description=(
-        "In-scope, no documented role restriction (API Contracts §4.7 line 170). Pending the "
-        "approved RBAC permission matrix — raises `NotImplementedError` (500), matching every "
-        "other module's identical posture."
+        "In-scope, no documented role restriction (API Contracts §4.7 line 170). "
+        "Authorization resolves against the real seeded RBAC permission matrix (ADR-0004)."
     ),
 )
 async def list_plans(
@@ -167,7 +166,8 @@ async def list_plans(
     description=(
         "Org Admin/Finance; Parent(own) (API Contracts §4.7 line 171). Not yet filtered to the "
         "caller's own subscriptions — see this file's module docstring for the inherited, "
-        "system-wide `ScopeResolver` gap. Pending the approved RBAC permission matrix."
+        "system-wide `ScopeResolver` gap. Authorization resolves against the real seeded "
+        "RBAC permission matrix."
     ),
 )
 async def list_subscriptions(
@@ -190,8 +190,8 @@ async def list_subscriptions(
     summary="List invoices",
     description=(
         "Org Admin/Finance; Parent(own) (API Contracts §4.7 line 172). Same inherited "
-        "unscoped-list caveat as `list_subscriptions`. Pending the approved RBAC permission "
-        "matrix."
+        "unscoped-list caveat as `list_subscriptions`. Authorization resolves against the "
+        "real seeded RBAC permission matrix."
     ),
 )
 async def list_invoices(
@@ -214,8 +214,9 @@ async def list_invoices(
         "the same key returns the original result, never a double charge. With no "
         "`PaymentProviderPort` bound this phase, persists the `Payment` as `PENDING` and then "
         "raises `NotImplementedError` (500) at the charge step — see this file's module "
-        "docstring and `BillingApplicationService.initiate_payment`'s own docstring. Pending "
-        "the approved RBAC permission matrix."
+        "docstring and `BillingApplicationService.initiate_payment`'s own docstring. "
+        "Authorization (distinct from the payment-provider gap above) resolves against the "
+        "real seeded RBAC permission matrix."
     ),
 )
 async def initiate_payment(
