@@ -71,6 +71,8 @@ class StudentResponse(BaseModel):
     full_name: str
     external_ref: str | None
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class StudentSummaryResponse(BaseModel):
@@ -124,6 +126,8 @@ class ParentResponse(BaseModel):
     full_name: str
     phone: str | None
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class ParentSummaryResponse(BaseModel):
@@ -203,6 +207,8 @@ class DriverResponse(BaseModel):
     user_id: str
     license_no: str
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class DriverSummaryResponse(BaseModel):
@@ -244,6 +250,8 @@ class RouteResponse(BaseModel):
     organization_id: str
     name: str
     status: str
+    created_at: datetime
+    updated_at: datetime
     stops: list[StopResponse]
 
 
@@ -292,6 +300,8 @@ class TripResponse(BaseModel):
     scheduled_date: date
     started_at: datetime | None
     ended_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class TripSummaryResponse(BaseModel):
@@ -331,6 +341,8 @@ class StudentAssignmentResponse(BaseModel):
     status: str
     assigned_at: datetime
     ended_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class StudentAssignmentSummaryResponse(BaseModel):

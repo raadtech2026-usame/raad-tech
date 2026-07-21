@@ -377,6 +377,8 @@ class Student(_AggregateRoot):
         full_name: str,
         external_ref: str | None,
         status: StudentStatus,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         _validate_full_name(full_name)
@@ -386,6 +388,8 @@ class Student(_AggregateRoot):
         self.full_name = full_name
         self.external_ref = external_ref
         self.status = status
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Student) and self.id == other.id
@@ -408,12 +412,15 @@ class Student(_AggregateRoot):
         approved enum (Database Design §6.2: `active,disabled,graduated,transferred` only), so
         an enrolled student starts `active` — the same reasoning `organization.domain.entities.
         Organization.register` gives for its own status enum."""
+        now = clock.now()
         student = cls(
             id=id,
             organization_id=organization_id,
             full_name=full_name,
             external_ref=external_ref,
             status=StudentStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
         )
         student._record(
             transport_ops_events.student_enrolled(
@@ -431,6 +438,7 @@ class Student(_AggregateRoot):
         if self.status == StudentStatus.ACTIVE:
             return
         self.status = StudentStatus.ACTIVE
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.student_activated(
                 student_id=str(self.id),
@@ -444,6 +452,7 @@ class Student(_AggregateRoot):
         if self.status == StudentStatus.DISABLED:
             return
         self.status = StudentStatus.DISABLED
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.student_disabled(
                 student_id=str(self.id),
@@ -457,6 +466,7 @@ class Student(_AggregateRoot):
         if self.status == StudentStatus.GRADUATED:
             return
         self.status = StudentStatus.GRADUATED
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.student_graduated(
                 student_id=str(self.id),
@@ -470,6 +480,7 @@ class Student(_AggregateRoot):
         if self.status == StudentStatus.TRANSFERRED:
             return
         self.status = StudentStatus.TRANSFERRED
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.student_transferred(
                 student_id=str(self.id),
@@ -496,6 +507,7 @@ class Student(_AggregateRoot):
             return
         self.full_name = full_name
         self.external_ref = external_ref
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.student_details_updated(
                 student_id=str(self.id),
@@ -528,6 +540,8 @@ class Parent(_AggregateRoot):
         full_name: str,
         phone: PhoneNumber | None,
         status: ParentStatus,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         _validate_parent_full_name(full_name)
@@ -537,6 +551,8 @@ class Parent(_AggregateRoot):
         self.full_name = full_name
         self.phone = phone
         self.status = status
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Parent) and self.id == other.id
@@ -560,6 +576,7 @@ class Parent(_AggregateRoot):
         in the (undocumented-values) status enum — see `value_objects.py`'s `ParentStatus`
         docstring — so a registered parent starts `active`, the same reasoning
         `Student.enroll`/`Organization.register` give for their own status enums."""
+        now = clock.now()
         parent = cls(
             id=id,
             organization_id=organization_id,
@@ -567,6 +584,8 @@ class Parent(_AggregateRoot):
             full_name=full_name,
             phone=phone,
             status=ParentStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
         )
         parent._record(
             transport_ops_events.parent_registered(
@@ -596,6 +615,7 @@ class Parent(_AggregateRoot):
             return
         self.full_name = full_name
         self.phone = phone
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.parent_details_updated(
                 parent_id=str(self.id),
@@ -611,6 +631,7 @@ class Parent(_AggregateRoot):
         if self.status == ParentStatus.ACTIVE:
             return
         self.status = ParentStatus.ACTIVE
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.parent_activated(
                 parent_id=str(self.id),
@@ -624,6 +645,7 @@ class Parent(_AggregateRoot):
         if self.status == ParentStatus.INACTIVE:
             return
         self.status = ParentStatus.INACTIVE
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.parent_disabled(
                 parent_id=str(self.id),
@@ -769,6 +791,8 @@ class Driver(_AggregateRoot):
         user_id: UserId,
         license_no: str,
         status: DriverStatus,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         _validate_license_no(license_no)
@@ -777,6 +801,8 @@ class Driver(_AggregateRoot):
         self.user_id = user_id
         self.license_no = license_no
         self.status = status
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Driver) and self.id == other.id
@@ -799,12 +825,15 @@ class Driver(_AggregateRoot):
         in the (undocumented-values) status enum — see `value_objects.py`'s `DriverStatus`
         docstring — so a registered driver starts `active`, the same reasoning `Parent.register`
         gives for its own status enum."""
+        now = clock.now()
         driver = cls(
             id=id,
             organization_id=organization_id,
             user_id=user_id,
             license_no=license_no,
             status=DriverStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
         )
         driver._record(
             transport_ops_events.driver_registered(
@@ -831,6 +860,7 @@ class Driver(_AggregateRoot):
         if license_no == self.license_no:
             return
         self.license_no = license_no
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.driver_details_updated(
                 driver_id=str(self.id),
@@ -845,6 +875,7 @@ class Driver(_AggregateRoot):
         if self.status == DriverStatus.ACTIVE:
             return
         self.status = DriverStatus.ACTIVE
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.driver_activated(
                 driver_id=str(self.id),
@@ -858,6 +889,7 @@ class Driver(_AggregateRoot):
         if self.status == DriverStatus.INACTIVE:
             return
         self.status = DriverStatus.INACTIVE
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.driver_disabled(
                 driver_id=str(self.id),
@@ -929,6 +961,8 @@ class Route(_AggregateRoot):
         organization_id: OrganizationId,
         name: str,
         status: RouteStatus,
+        created_at: datetime,
+        updated_at: datetime,
         stops: list[Stop] | None = None,
     ) -> None:
         super().__init__()
@@ -937,6 +971,8 @@ class Route(_AggregateRoot):
         self.organization_id = organization_id
         self.name = name
         self.status = status
+        self.created_at = created_at
+        self.updated_at = updated_at
         self._stops: list[Stop] = list(stops) if stops else []
 
     def __eq__(self, other: object) -> bool:
@@ -966,11 +1002,14 @@ class Route(_AggregateRoot):
         documented 2-value enum (Database Design §6.5), so a created route starts `active` —
         the same reasoning `Parent.register`/`Driver.register` give for their own status
         enums."""
+        now = clock.now()
         route = cls(
             id=id,
             organization_id=organization_id,
             name=name,
             status=RouteStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
         )
         route._record(
             transport_ops_events.route_created(
@@ -993,6 +1032,7 @@ class Route(_AggregateRoot):
         if name == self.name:
             return
         self.name = name
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.route_details_updated(
                 route_id=str(self.id),
@@ -1007,6 +1047,7 @@ class Route(_AggregateRoot):
         if self.status == RouteStatus.ACTIVE:
             return
         self.status = RouteStatus.ACTIVE
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.route_activated(
                 route_id=str(self.id),
@@ -1020,6 +1061,7 @@ class Route(_AggregateRoot):
         if self.status == RouteStatus.INACTIVE:
             return
         self.status = RouteStatus.INACTIVE
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.route_disabled(
                 route_id=str(self.id),
@@ -1161,6 +1203,8 @@ class Trip(_AggregateRoot):
         scheduled_date: date,
         started_at: datetime | None,
         ended_at: datetime | None,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         self.id = id
@@ -1173,6 +1217,8 @@ class Trip(_AggregateRoot):
         self.scheduled_date = scheduled_date
         self.started_at = started_at
         self.ended_at = ended_at
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Trip) and self.id == other.id
@@ -1216,6 +1262,7 @@ class Trip(_AggregateRoot):
                 f"{route_id} (organization {route_organization_id}): cross-organization "
                 "trip assignments are not permitted."
             )
+        now = clock.now()
         trip = cls(
             id=id,
             organization_id=organization_id,
@@ -1227,6 +1274,8 @@ class Trip(_AggregateRoot):
             scheduled_date=scheduled_date,
             started_at=None,
             ended_at=None,
+            created_at=now,
+            updated_at=now,
         )
         trip._record(
             transport_ops_events.trip_scheduled(
@@ -1256,6 +1305,7 @@ class Trip(_AggregateRoot):
             )
         self.status = TripStatus.IN_PROGRESS
         self.started_at = clock.now()
+        self.updated_at = self.started_at
         self._record(
             transport_ops_events.trip_started(
                 trip_id=str(self.id),
@@ -1280,6 +1330,7 @@ class Trip(_AggregateRoot):
             )
         self.status = TripStatus.COMPLETED
         self.ended_at = clock.now()
+        self.updated_at = self.ended_at
         self._record(
             transport_ops_events.trip_ended(
                 trip_id=str(self.id),
@@ -1308,6 +1359,7 @@ class Trip(_AggregateRoot):
             )
         _validate_interrupt_reason(reason)
         self.status = TripStatus.INTERRUPTED
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.trip_interrupted(
                 trip_id=str(self.id),
@@ -1330,6 +1382,7 @@ class Trip(_AggregateRoot):
                 "INTERRUPTED -> IN_PROGRESS is legal, Phase-2 §6.2)."
             )
         self.status = TripStatus.IN_PROGRESS
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.trip_resumed(
                 trip_id=str(self.id),
@@ -1365,6 +1418,7 @@ class Trip(_AggregateRoot):
         if new_driver_id == self.driver_id:
             return
         self.driver_id = new_driver_id
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.trip_driver_changed(
                 trip_id=str(self.id),
@@ -1404,6 +1458,8 @@ class StudentAssignment(_AggregateRoot):
         status: StudentAssignmentStatus,
         assigned_at: datetime,
         ended_at: datetime | None,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         self.id = id
@@ -1416,6 +1472,8 @@ class StudentAssignment(_AggregateRoot):
         self.status = status
         self.assigned_at = assigned_at
         self.ended_at = ended_at
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, StudentAssignment) and self.id == other.id
@@ -1459,6 +1517,7 @@ class StudentAssignment(_AggregateRoot):
                 f"organization {organization_id}'s StudentAssignment: cross-organization "
                 "assignments are not permitted."
             )
+        now = clock.now()
         assignment = cls(
             id=id,
             organization_id=organization_id,
@@ -1468,8 +1527,10 @@ class StudentAssignment(_AggregateRoot):
             dropoff_stop_id=dropoff_stop_id,
             vehicle_id=vehicle_id,
             status=StudentAssignmentStatus.ACTIVE,
-            assigned_at=clock.now(),
+            assigned_at=now,
             ended_at=None,
+            created_at=now,
+            updated_at=now,
         )
         assignment._record(
             transport_ops_events.student_assignment_created(
@@ -1496,6 +1557,7 @@ class StudentAssignment(_AggregateRoot):
         if self.status == StudentAssignmentStatus.ACTIVE:
             self.ended_at = clock.now()
         self.status = StudentAssignmentStatus.REMOVED
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.student_assignment_removed(
                 student_assignment_id=str(self.id),
@@ -1514,6 +1576,7 @@ class StudentAssignment(_AggregateRoot):
         if self.status == StudentAssignmentStatus.ACTIVE:
             self.ended_at = clock.now()
         self.status = StudentAssignmentStatus.TRANSFERRED
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.student_assignment_transferred(
                 student_assignment_id=str(self.id),
@@ -1532,6 +1595,7 @@ class StudentAssignment(_AggregateRoot):
         if self.status == StudentAssignmentStatus.ACTIVE:
             self.ended_at = clock.now()
         self.status = StudentAssignmentStatus.GRADUATED
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.student_assignment_graduated(
                 student_assignment_id=str(self.id),
@@ -1550,6 +1614,7 @@ class StudentAssignment(_AggregateRoot):
         if self.status == StudentAssignmentStatus.ACTIVE:
             self.ended_at = clock.now()
         self.status = StudentAssignmentStatus.DISABLED
+        self.updated_at = clock.now()
         self._record(
             transport_ops_events.student_assignment_disabled(
                 student_assignment_id=str(self.id),

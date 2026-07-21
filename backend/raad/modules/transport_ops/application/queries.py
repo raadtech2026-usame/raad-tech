@@ -84,6 +84,8 @@ class StudentDTO:
     full_name: str
     external_ref: str | None
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,8 @@ def student_to_dto(student: Student) -> StudentDTO:
         full_name=student.full_name,
         external_ref=student.external_ref,
         status=student.status.value,
+        created_at=student.created_at,
+        updated_at=student.updated_at,
     )
 
 
@@ -132,6 +136,8 @@ class ParentDTO:
     full_name: str
     phone: str | None
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -151,6 +157,8 @@ def parent_to_dto(parent: Parent) -> ParentDTO:
         full_name=parent.full_name,
         phone=str(parent.phone) if parent.phone is not None else None,
         status=parent.status.value,
+        created_at=parent.created_at,
+        updated_at=parent.updated_at,
     )
 
 
@@ -265,6 +273,8 @@ class DriverDTO:
     user_id: str
     license_no: str
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -288,6 +298,8 @@ def driver_to_dto(driver: Driver) -> DriverDTO:
         user_id=str(driver.user_id),
         license_no=driver.license_no,
         status=driver.status.value,
+        created_at=driver.created_at,
+        updated_at=driver.updated_at,
     )
 
 
@@ -331,6 +343,8 @@ class RouteDTO:
     organization_id: str
     name: str
     status: str
+    created_at: datetime
+    updated_at: datetime
     stops: tuple[StopDTO, ...]
 
 
@@ -363,6 +377,8 @@ def route_to_dto(route: Route) -> RouteDTO:
         organization_id=str(route.organization_id),
         name=route.name,
         status=route.status.value,
+        created_at=route.created_at,
+        updated_at=route.updated_at,
         stops=tuple(stop_to_dto(stop) for stop in route.stops),
     )
 
@@ -396,6 +412,8 @@ class TripDTO:
     scheduled_date: date
     started_at: datetime | None
     ended_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -425,6 +443,8 @@ def trip_to_dto(trip: Trip) -> TripDTO:
         scheduled_date=trip.scheduled_date,
         started_at=trip.started_at,
         ended_at=trip.ended_at,
+        created_at=trip.created_at,
+        updated_at=trip.updated_at,
     )
 
 
@@ -465,6 +485,8 @@ class StudentAssignmentDTO:
     status: str
     assigned_at: datetime
     ended_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -493,6 +515,8 @@ def student_assignment_to_dto(assignment: StudentAssignment) -> StudentAssignmen
         status=assignment.status.value,
         assigned_at=assignment.assigned_at,
         ended_at=assignment.ended_at,
+        created_at=assignment.created_at,
+        updated_at=assignment.updated_at,
     )
 
 

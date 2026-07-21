@@ -187,6 +187,8 @@ def make_driver(
         user_id=UserId("01J8Z3K9G6X8YV5T4N2R7QW3US"),
         license_no="LIC-001",
         status=DriverStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 
@@ -198,6 +200,8 @@ def make_route(
         organization_id=OrganizationId(organization_id),
         name="Morning Route A",
         status=RouteStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 
@@ -258,6 +262,8 @@ class DTOMappingTests(unittest.TestCase):
             scheduled_date=date(2026, 7, 20),
             started_at=None,
             ended_at=None,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
 
     def test_trip_to_dto_maps_all_fields_as_primitives(self) -> None:

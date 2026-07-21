@@ -178,6 +178,8 @@ def seed_student(
         full_name="Amina Ali",
         external_ref=None,
         status=StudentStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
     uow.students.add(student)
     return student
@@ -196,6 +198,8 @@ def seed_parent(
         full_name="Fatima Hassan",
         phone=None,
         status=ParentStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
     uow.parents.add(parent)
     return parent

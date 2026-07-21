@@ -43,6 +43,8 @@ def make_route(**overrides) -> Route:
         organization_id=OrganizationId(VALID_ORG_ULID),
         name="Morning Route A",
         status=RouteStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
     defaults.update(overrides)
     return Route(**defaults)

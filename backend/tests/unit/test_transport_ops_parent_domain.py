@@ -43,6 +43,8 @@ def make_parent(**overrides) -> Parent:
         full_name="Fatima Hassan",
         phone=None,
         status=ParentStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
     defaults.update(overrides)
     return Parent(**defaults)

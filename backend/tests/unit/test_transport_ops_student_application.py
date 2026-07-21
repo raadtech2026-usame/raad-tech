@@ -165,6 +165,8 @@ class DTOMappingTests(unittest.TestCase):
             full_name="Amina Ali",
             external_ref="SCH-042",
             status=StudentStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
 
     def test_student_to_dto_maps_all_fields_as_primitives(self) -> None:

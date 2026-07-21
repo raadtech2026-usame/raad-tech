@@ -160,6 +160,8 @@ class DTOMappingTests(unittest.TestCase):
             organization_id=OrganizationId(VALID_ORG_ULID),
             name="Morning Route A",
             status=RouteStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         return route
 

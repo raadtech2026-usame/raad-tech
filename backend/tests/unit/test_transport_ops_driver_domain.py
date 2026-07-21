@@ -41,6 +41,8 @@ def make_driver(**overrides) -> Driver:
         user_id=UserId(VALID_USER_ULID),
         license_no="DL-123456",
         status=DriverStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
     defaults.update(overrides)
     return Driver(**defaults)

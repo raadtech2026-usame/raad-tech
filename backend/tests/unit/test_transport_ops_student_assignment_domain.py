@@ -56,6 +56,8 @@ def make_assignment(**overrides) -> StudentAssignment:
         status=StudentAssignmentStatus.ACTIVE,
         assigned_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
         ended_at=None,
+        created_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
     )
     defaults.update(overrides)
     return StudentAssignment(**defaults)

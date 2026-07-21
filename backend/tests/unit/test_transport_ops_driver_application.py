@@ -162,6 +162,8 @@ class DTOMappingTests(unittest.TestCase):
             user_id=UserId(VALID_USER_ULID),
             license_no="DL-123456",
             status=DriverStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
 
     def test_driver_to_dto_maps_all_fields_as_primitives(self) -> None:

@@ -172,6 +172,8 @@ class DTOMappingTests(unittest.TestCase):
             full_name="Fatima Hassan",
             phone=PhoneNumber("+252700000000"),
             status=ParentStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
 
     def test_parent_to_dto_maps_all_fields_as_primitives(self) -> None:

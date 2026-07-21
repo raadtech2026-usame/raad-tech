@@ -93,6 +93,8 @@ def student_to_model(
     model.full_name = student.full_name
     model.external_ref = student.external_ref
     model.status = student.status.value
+    model.created_at = _to_naive_utc(student.created_at)
+    model.updated_at = _to_naive_utc(student.updated_at)
     return model
 
 
@@ -103,6 +105,8 @@ def model_to_student(model: StudentModel) -> Student:
         full_name=model.full_name,
         external_ref=model.external_ref,
         status=StudentStatus(model.status),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 
@@ -117,6 +121,8 @@ def parent_to_model(
     model.full_name = parent.full_name
     model.phone = str(parent.phone) if parent.phone is not None else None
     model.status = parent.status.value
+    model.created_at = _to_naive_utc(parent.created_at)
+    model.updated_at = _to_naive_utc(parent.updated_at)
     return model
 
 
@@ -128,6 +134,8 @@ def model_to_parent(model: ParentModel) -> Parent:
         full_name=model.full_name,
         phone=PhoneNumber(model.phone) if model.phone else None,
         status=ParentStatus(model.status),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 
@@ -168,6 +176,8 @@ def driver_to_model(
     model.user_id = str(driver.user_id)
     model.license_no = driver.license_no
     model.status = driver.status.value
+    model.created_at = _to_naive_utc(driver.created_at)
+    model.updated_at = _to_naive_utc(driver.updated_at)
     return model
 
 
@@ -178,6 +188,8 @@ def model_to_driver(model: DriverModel) -> Driver:
         user_id=UserId(model.user_id),
         license_no=model.license_no,
         status=DriverStatus(model.status),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 
@@ -217,6 +229,8 @@ def route_to_model(route: Route, *, existing: RouteModel | None = None) -> Route
     model.organization_id = str(route.organization_id)
     model.name = route.name
     model.status = route.status.value
+    model.created_at = _to_naive_utc(route.created_at)
+    model.updated_at = _to_naive_utc(route.updated_at)
 
     existing_rows = {row.id: row for row in model.stops}
     current_ids = {str(stop.id) for stop in route.stops}
@@ -252,6 +266,8 @@ def model_to_route(model: RouteModel) -> Route:
         organization_id=OrganizationId(model.organization_id),
         name=model.name,
         status=RouteStatus(model.status),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
         stops=[model_to_stop(row) for row in model.stops],
     )
 
@@ -283,6 +299,8 @@ def trip_to_model(trip: Trip, *, existing: TripModel | None = None) -> TripModel
     model.scheduled_date = trip.scheduled_date
     model.started_at = _to_naive_utc(trip.started_at)
     model.ended_at = _to_naive_utc(trip.ended_at)
+    model.created_at = _to_naive_utc(trip.created_at)
+    model.updated_at = _to_naive_utc(trip.updated_at)
     return model
 
 
@@ -298,6 +316,8 @@ def model_to_trip(model: TripModel) -> Trip:
         scheduled_date=model.scheduled_date,
         started_at=model.started_at,
         ended_at=model.ended_at,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 
@@ -323,6 +343,8 @@ def student_assignment_to_model(
     model.status = assignment.status.value
     model.assigned_at = _to_naive_utc(assignment.assigned_at)
     model.ended_at = _to_naive_utc(assignment.ended_at)
+    model.created_at = _to_naive_utc(assignment.created_at)
+    model.updated_at = _to_naive_utc(assignment.updated_at)
     return model
 
 
@@ -338,4 +360,6 @@ def model_to_student_assignment(model: StudentAssignmentModel) -> StudentAssignm
         status=StudentAssignmentStatus(model.status),
         assigned_at=model.assigned_at,
         ended_at=model.ended_at,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )

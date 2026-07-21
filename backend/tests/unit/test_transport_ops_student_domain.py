@@ -40,6 +40,8 @@ def make_student(**overrides) -> Student:
         full_name="Amina Ali",
         external_ref=None,
         status=StudentStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
     defaults.update(overrides)
     return Student(**defaults)

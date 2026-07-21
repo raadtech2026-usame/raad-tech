@@ -56,6 +56,8 @@ def make_trip(**overrides) -> Trip:
         scheduled_date=date(2026, 7, 20),
         started_at=None,
         ended_at=None,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
     defaults.update(overrides)
     return Trip(**defaults)

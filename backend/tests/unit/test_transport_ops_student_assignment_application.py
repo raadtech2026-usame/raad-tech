@@ -190,6 +190,8 @@ def make_student(
         full_name="Test Student",
         external_ref=None,
         status=StudentStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 
@@ -201,6 +203,8 @@ def make_route(
         organization_id=OrganizationId(organization_id),
         name="Morning Route A",
         status=RouteStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         stops=[
             Stop(
                 id=StopId(VALID_PICKUP_STOP_ULID),

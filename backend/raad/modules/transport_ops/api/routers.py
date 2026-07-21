@@ -329,6 +329,8 @@ def _student_dto_to_response(student: StudentDTO) -> StudentResponse:
         full_name=student.full_name,
         external_ref=student.external_ref,
         status=student.status,
+        created_at=student.created_at,
+        updated_at=student.updated_at,
     )
 
 
@@ -348,6 +350,8 @@ def _parent_dto_to_response(parent: ParentDTO) -> ParentResponse:
         full_name=parent.full_name,
         phone=parent.phone,
         status=parent.status,
+        created_at=parent.created_at,
+        updated_at=parent.updated_at,
     )
 
 
@@ -402,6 +406,8 @@ def _driver_dto_to_response(driver: DriverDTO) -> DriverResponse:
         user_id=driver.user_id,
         license_no=driver.license_no,
         status=driver.status,
+        created_at=driver.created_at,
+        updated_at=driver.updated_at,
     )
 
 
@@ -430,6 +436,8 @@ def _route_dto_to_response(route: RouteDTO) -> RouteResponse:
         organization_id=route.organization_id,
         name=route.name,
         status=route.status,
+        created_at=route.created_at,
+        updated_at=route.updated_at,
         stops=[_stop_dto_to_response(stop) for stop in route.stops],
     )
 
@@ -450,6 +458,8 @@ def _trip_dto_to_response(trip: TripDTO) -> TripResponse:
         scheduled_date=trip.scheduled_date,
         started_at=trip.started_at,
         ended_at=trip.ended_at,
+        created_at=trip.created_at,
+        updated_at=trip.updated_at,
     )
 
 
@@ -479,6 +489,8 @@ def _student_assignment_dto_to_response(
         status=assignment.status,
         assigned_at=assignment.assigned_at,
         ended_at=assignment.ended_at,
+        created_at=assignment.created_at,
+        updated_at=assignment.updated_at,
     )
 
 
