@@ -112,6 +112,8 @@ def _organization_dto_to_response(
         region_id=organization.region_id,
         billing_model=organization.billing_model,
         status=organization.status,
+        created_at=organization.created_at,
+        updated_at=organization.updated_at,
     )
 
 
@@ -121,6 +123,8 @@ def _region_dto_to_response(region: RegionDTO) -> RegionResponse:
         name=region.name,
         geographic_scope=region.geographic_scope,
         status=region.status,
+        created_at=region.created_at,
+        updated_at=region.updated_at,
     )
 
 

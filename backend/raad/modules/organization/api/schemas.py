@@ -12,6 +12,8 @@ needed here (unlike `iam.api.schemas`'s `Role`, whose domain values are upper-ca
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -23,6 +25,8 @@ class OrganizationResponse(BaseModel):
     region_id: str
     billing_model: str
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class RegisterOrganizationRequest(BaseModel):
@@ -57,6 +61,8 @@ class RegionResponse(BaseModel):
     name: str
     geographic_scope: str | None
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class CreateRegionRequest(BaseModel):

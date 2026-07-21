@@ -16,6 +16,8 @@ implementation, not an invented one here.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from raad.core.errors.exceptions import DomainError
 from raad.core.events.base import DomainEvent
 from raad.core.time.clock import Clock
@@ -70,6 +72,8 @@ class Organization(_AggregateRoot):
         region_id: RegionId,
         billing_model: BillingModel,
         status: OrganizationStatus,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         if not name:
@@ -81,6 +85,8 @@ class Organization(_AggregateRoot):
         self.region_id = region_id
         self.billing_model = billing_model
         self.status = status
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Organization) and self.id == other.id
@@ -105,6 +111,7 @@ class Organization(_AggregateRoot):
         the approved enum (Database Design §4.2: `active,suspended,inactive` only), so a
         registered organization starts `active` — unlike `iam.User.invite`, there is no
         intermediate state to model."""
+        now = clock.now()
         organization = cls(
             id=id,
             name=name,
@@ -113,6 +120,8 @@ class Organization(_AggregateRoot):
             region_id=region_id,
             billing_model=billing_model,
             status=OrganizationStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
         )
         organization._record(
             org_events.organization_registered(
@@ -132,6 +141,7 @@ class Organization(_AggregateRoot):
         if self.status == OrganizationStatus.SUSPENDED:
             return
         self.status = OrganizationStatus.SUSPENDED
+        self.updated_at = clock.now()
         self._record(
             org_events.organization_suspended(
                 organization_id=str(self.id),
@@ -144,6 +154,7 @@ class Organization(_AggregateRoot):
         if self.status == OrganizationStatus.ACTIVE:
             return
         self.status = OrganizationStatus.ACTIVE
+        self.updated_at = clock.now()
         self._record(
             org_events.organization_reactivated(
                 organization_id=str(self.id),
@@ -156,6 +167,7 @@ class Organization(_AggregateRoot):
         if self.status == OrganizationStatus.INACTIVE:
             return
         self.status = OrganizationStatus.INACTIVE
+        self.updated_at = clock.now()
         self._record(
             org_events.organization_deactivated(
                 organization_id=str(self.id),
@@ -177,6 +189,8 @@ class Region(_AggregateRoot):
         name: str,
         geographic_scope: str | None,
         status: RegionStatus,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         if not name:
@@ -185,6 +199,8 @@ class Region(_AggregateRoot):
         self.name = name
         self.geographic_scope = geographic_scope
         self.status = status
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Region) and self.id == other.id
@@ -202,11 +218,14 @@ class Region(_AggregateRoot):
         clock: Clock,
         actor_id: str | None = None,
     ) -> "Region":
+        now = clock.now()
         region = cls(
             id=id,
             name=name,
             geographic_scope=geographic_scope,
             status=RegionStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
         )
         region._record(
             org_events.region_created(
@@ -223,6 +242,7 @@ class Region(_AggregateRoot):
         if self.status == RegionStatus.ACTIVE:
             return
         self.status = RegionStatus.ACTIVE
+        self.updated_at = clock.now()
         self._record(
             org_events.region_activated(
                 region_id=str(self.id), occurred_at=clock.now(), actor_id=actor_id
@@ -233,6 +253,7 @@ class Region(_AggregateRoot):
         if self.status == RegionStatus.INACTIVE:
             return
         self.status = RegionStatus.INACTIVE
+        self.updated_at = clock.now()
         self._record(
             org_events.region_deactivated(
                 region_id=str(self.id), occurred_at=clock.now(), actor_id=actor_id

@@ -59,6 +59,8 @@ class OrganizationInvariantTests(unittest.TestCase):
             region_id=RegionId(VALID_REGION_ULID),
             billing_model=BillingModel.ORGANIZATION_PAYS,
             status=OrganizationStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         kwargs.update(overrides)
         return kwargs
@@ -134,6 +136,8 @@ class OrganizationStatusTransitionTests(unittest.TestCase):
             region_id=RegionId(VALID_REGION_ULID),
             billing_model=BillingModel.ORGANIZATION_PAYS,
             status=status,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
 
     def test_suspend_active_organization(self) -> None:
@@ -185,6 +189,8 @@ class RegionInvariantTests(unittest.TestCase):
                 name="",
                 geographic_scope=None,
                 status=RegionStatus.ACTIVE,
+                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             )
 
     def test_accepts_valid_region(self) -> None:
@@ -193,6 +199,8 @@ class RegionInvariantTests(unittest.TestCase):
             name="East Africa",
             geographic_scope="Horn of Africa",
             status=RegionStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         self.assertEqual(region.name, "East Africa")
 
@@ -215,6 +223,8 @@ class RegionStatusTransitionTests(unittest.TestCase):
             name="East Africa",
             geographic_scope=None,
             status=status,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
 
     def test_deactivate_active_region(self) -> None:

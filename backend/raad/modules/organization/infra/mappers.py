@@ -7,6 +7,8 @@ these functions, and never return an ORM model to a caller. Mirrors `iam.infra.m
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.value_objects import (
     BillingModel,
@@ -17,6 +19,15 @@ from raad.modules.organization.domain.value_objects import (
     RegionStatus,
 )
 from raad.modules.organization.infra.models import OrganizationModel, RegionModel
+
+
+def _naive(value: datetime | None) -> datetime | None:
+    """Strips tzinfo before a domain-computed timestamp crosses into a `DateTime(timezone=
+    False)` column (ADR-0002) — the same pattern `fleet_device`/`iam`/`tracking.infra.
+    mappers`'s own `_naive` helper already applies. `created_at`/`updated_at` are set from
+    `Clock.now()` (tz-aware, `SystemClock`) in the domain layer; the DB columns are
+    naive-UTC-by-convention (`core.db.mixins.utcnow`'s own discipline)."""
+    return value.replace(tzinfo=None) if value is not None and value.tzinfo else value
 
 
 def organization_to_model(
@@ -39,6 +50,8 @@ def organization_to_model(
     model.region_id = str(organization.region_id)
     model.billing_model = organization.billing_model.value
     model.status = organization.status.value
+    model.created_at = _naive(organization.created_at)
+    model.updated_at = _naive(organization.updated_at)
     return model
 
 
@@ -53,6 +66,8 @@ def model_to_organization(model: OrganizationModel) -> Organization:
         region_id=RegionId(model.region_id),
         billing_model=BillingModel(model.billing_model),
         status=OrganizationStatus(model.status),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 
@@ -63,6 +78,8 @@ def region_to_model(
     model.name = region.name
     model.geographic_scope = region.geographic_scope
     model.status = region.status.value
+    model.created_at = _naive(region.created_at)
+    model.updated_at = _naive(region.updated_at)
     return model
 
 
@@ -72,4 +89,6 @@ def model_to_region(model: RegionModel) -> Region:
         name=model.name,
         geographic_scope=model.geographic_scope,
         status=RegionStatus(model.status),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )

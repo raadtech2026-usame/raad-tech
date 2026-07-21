@@ -7,6 +7,7 @@ API/infra layer, so neither ever depends on the other's internal shape. Mirrors
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from raad.modules.organization.domain.entities import Organization, Region
 
@@ -40,6 +41,8 @@ class OrganizationDTO:
     region_id: str
     billing_model: str
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,8 @@ class RegionDTO:
     name: str
     geographic_scope: str | None
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 def organization_to_dto(organization: Organization) -> OrganizationDTO:
@@ -64,6 +69,8 @@ def organization_to_dto(organization: Organization) -> OrganizationDTO:
         region_id=str(organization.region_id),
         billing_model=organization.billing_model.value,
         status=organization.status.value,
+        created_at=organization.created_at,
+        updated_at=organization.updated_at,
     )
 
 
@@ -74,4 +81,6 @@ def region_to_dto(region: Region) -> RegionDTO:
         name=region.name,
         geographic_scope=region.geographic_scope,
         status=region.status.value,
+        created_at=region.created_at,
+        updated_at=region.updated_at,
     )
