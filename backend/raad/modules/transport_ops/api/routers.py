@@ -149,11 +149,11 @@ them; the sixth (`GET /trips/{id}`) is this phase's own uniform-CRUD addition, f
   driver — no device change".
 
 **`start`/`end` are this module's first "Driver (own)" routes** — every prior route in
-`transport_ops` is Org-Admin-only. Actually verifying the calling driver owns the trip (i.e.
-`principal.user_id` resolves to `trip.driver_id`'s linked `iam.User`) is part of the still-
-pending RBAC/scope work (`require_permission` raises `NotImplementedError` here exactly like
-every other route in this module) — not built this phase, the same deferral already applied to
-the permission matrix itself.
+`transport_ops` is Org-Admin-only. Driver-ownership is now verified (`_ensure_driver_owns_trip`,
+below): `principal.user_id` is resolved against `trip.driver_id`'s linked `Driver.user_id`,
+403 `FORBIDDEN` on a mismatch — a no-op for Org Admin, whose `transport_ops.trips.start`/`.end`
+grant (the seeded matrix's blanket transport_ops CRUD bundle, ADR-0004) is an intentional
+admin-override, not ownership-scoped.
 
 **Not exposed this phase** (flagged, not silently dropped): `Trip.interrupt`/`resume`
 (`InterruptTripCommand`/`ResumeTripCommand`) have no approved HTTP route — no documented
@@ -191,9 +191,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from raad.core.errors.exceptions import ValidationError
+from raad.core.errors.exceptions import AuthorizationError, ValidationError
 from raad.core.security.permissions import Permission
-from raad.core.tenancy.principal import Principal
+from raad.core.tenancy.principal import Principal, Role
 from raad.interfaces.http.deps import require_permission
 from raad.modules.transport_ops.api.deps import (
     get_driver_service,
@@ -1333,6 +1333,28 @@ async def get_trip(
     return _trip_dto_to_response(trip)
 
 
+async def _ensure_driver_owns_trip(
+    *,
+    trip_id: str,
+    principal: Principal,
+    trip_service: TripApplicationService,
+    driver_service: DriverApplicationService,
+    uow: TransportOpsUnitOfWork,
+) -> None:
+    """"Driver (own)" (API Contracts §4.3 lines 130-131) — only the `Driver` linked to this
+    trip's `driver_id` may start/end it. A no-op for every other role that also holds
+    `transport_ops.trips.start`/`.end` (Org Admin, per the seeded RBAC matrix's blanket
+    transport_ops CRUD grant) — that access is an intentional admin-override, not
+    ownership-scoped, mirroring `enforce_cr1`/`enforce_d5`'s own "apply only to the role this
+    check is about" posture."""
+    trip = await trip_service.get_trip_by_id(GetTripByIdQuery(trip_id=trip_id), uow=uow)
+    driver = await driver_service.get_driver_by_id(
+        GetDriverByIdQuery(driver_id=trip.driver_id), uow=uow
+    )
+    if driver.user_id != principal.user_id:
+        raise AuthorizationError("This trip is not assigned to you.")
+
+
 @trips_router.post(
     "/{trip_id}/start",
     response_model=TripResponse,
@@ -1344,8 +1366,8 @@ async def get_trip(
         "(`409 RULE_VIOLATION`, §5.2's own 'start an already-in-progress trip' example). "
         "Rejects a vehicle that already has another active trip (`ConflictError`, "
         "`409 CONFLICT`, one-active-trip-per-vehicle, Database Design §6.8). Driver-ownership "
-        "verification is not yet implemented — pending the approved RBAC permission matrix, "
-        "see `routers.py`'s module docstring."
+        "is now verified (`_ensure_driver_owns_trip`, 403 `FORBIDDEN` on mismatch) — RBAC is "
+        "live, resolving what was previously a deferred gap."
     ),
 )
 async def start_trip(
@@ -1354,8 +1376,17 @@ async def start_trip(
         require_permission(Permission("transport_ops.trips.start"))
     ),
     trip_service: TripApplicationService = Depends(get_trip_service),
+    driver_service: DriverApplicationService = Depends(get_driver_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> TripResponse:
+    if principal.role == Role.DRIVER:
+        await _ensure_driver_owns_trip(
+            trip_id=trip_id,
+            principal=principal,
+            trip_service=trip_service,
+            driver_service=driver_service,
+            uow=uow,
+        )
     trip = await trip_service.start_trip(
         StartTripCommand(trip_id=trip_id, actor=principal), uow=uow
     )
@@ -1370,8 +1401,8 @@ async def start_trip(
     description=(
         "**Driver (own)** -> `TripEnded` (API Contracts §4.3 line 131 verbatim). Legal from "
         "`IN_PROGRESS` or `INTERRUPTED` (Phase-2 §6.2's 'end'/'force end' edges) — any other "
-        "status raises `RuleViolationError`. Driver-ownership verification is not yet "
-        "implemented — see `start_trip`'s note."
+        "status raises `RuleViolationError`. Driver-ownership is now verified — see "
+        "`start_trip`'s note."
     ),
 )
 async def end_trip(
@@ -1380,8 +1411,17 @@ async def end_trip(
         require_permission(Permission("transport_ops.trips.end"))
     ),
     trip_service: TripApplicationService = Depends(get_trip_service),
+    driver_service: DriverApplicationService = Depends(get_driver_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> TripResponse:
+    if principal.role == Role.DRIVER:
+        await _ensure_driver_owns_trip(
+            trip_id=trip_id,
+            principal=principal,
+            trip_service=trip_service,
+            driver_service=driver_service,
+            uow=uow,
+        )
     trip = await trip_service.end_trip(
         EndTripCommand(trip_id=trip_id, actor=principal), uow=uow
     )
