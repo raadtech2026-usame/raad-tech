@@ -153,6 +153,8 @@ class Plan(_AggregateRoot):
         billing_cycle: BillingCycle,
         vehicle_limit: int | None,
         status: PlanStatus,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         _validate_plan_name(name)
@@ -163,6 +165,8 @@ class Plan(_AggregateRoot):
         self.billing_cycle = billing_cycle
         self.vehicle_limit = vehicle_limit
         self.status = status
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Plan) and self.id == other.id
@@ -187,6 +191,7 @@ class Plan(_AggregateRoot):
         `Plan` — starts `ACTIVE`, the same "no pending/draft status documented, so start at the
         one non-terminal documented value" reasoning `Route.create`/`Driver.register` already
         establish for their own undocumented-richer-lifecycle situations."""
+        now = clock.now()
         plan = cls(
             id=id,
             name=name,
@@ -195,6 +200,8 @@ class Plan(_AggregateRoot):
             billing_cycle=billing_cycle,
             vehicle_limit=vehicle_limit,
             status=PlanStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
         )
         plan._record(
             billing_events.plan_created(
@@ -215,6 +222,7 @@ class Plan(_AggregateRoot):
         if self.status == PlanStatus.ACTIVE:
             return
         self.status = PlanStatus.ACTIVE
+        self.updated_at = clock.now()
         self._record(
             billing_events.plan_activated(
                 plan_id=str(self.id), occurred_at=clock.now(), actor_id=actor_id
@@ -225,6 +233,7 @@ class Plan(_AggregateRoot):
         if self.status == PlanStatus.INACTIVE:
             return
         self.status = PlanStatus.INACTIVE
+        self.updated_at = clock.now()
         self._record(
             billing_events.plan_disabled(
                 plan_id=str(self.id), occurred_at=clock.now(), actor_id=actor_id
@@ -252,6 +261,8 @@ class Subscription(_AggregateRoot):
         current_period_start: datetime | None,
         current_period_end: datetime | None,
         auto_renew: bool,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         self.id = id
@@ -263,6 +274,8 @@ class Subscription(_AggregateRoot):
         self.current_period_start = current_period_start
         self.current_period_end = current_period_end
         self.auto_renew = auto_renew
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Subscription) and self.id == other.id
@@ -285,6 +298,7 @@ class Subscription(_AggregateRoot):
     ) -> "Subscription":
         """Starts `TRIAL` — see module docstring for why (not a free-trial business rule, the
         documented enum's own least-committal non-`ACTIVE` starting value)."""
+        now = clock.now()
         subscription = cls(
             id=id,
             organization_id=organization_id,
@@ -295,6 +309,8 @@ class Subscription(_AggregateRoot):
             current_period_start=None,
             current_period_end=None,
             auto_renew=auto_renew,
+            created_at=now,
+            updated_at=now,
         )
         subscription._record(
             billing_events.subscription_opened(
@@ -326,6 +342,7 @@ class Subscription(_AggregateRoot):
         self.status = SubscriptionStatus.ACTIVE
         self.current_period_start = period_start
         self.current_period_end = period_end
+        self.updated_at = clock.now()
         self._record(
             billing_events.subscription_renewed(
                 subscription_id=str(self.id),
@@ -343,6 +360,7 @@ class Subscription(_AggregateRoot):
         if self.status == SubscriptionStatus.EXPIRED:
             return
         self.status = SubscriptionStatus.EXPIRED
+        self.updated_at = clock.now()
         self._record(
             billing_events.subscription_expired(
                 subscription_id=str(self.id),
@@ -360,6 +378,7 @@ class Subscription(_AggregateRoot):
         if self.status == SubscriptionStatus.SUSPENDED:
             return
         self.status = SubscriptionStatus.SUSPENDED
+        self.updated_at = clock.now()
         self._record(
             billing_events.subscription_suspended(
                 subscription_id=str(self.id),
@@ -374,6 +393,7 @@ class Subscription(_AggregateRoot):
         if self.status == SubscriptionStatus.CANCELLED:
             return
         self.status = SubscriptionStatus.CANCELLED
+        self.updated_at = clock.now()
         self._record(
             billing_events.subscription_cancelled(
                 subscription_id=str(self.id),
@@ -403,6 +423,8 @@ class Invoice(_AggregateRoot):
         issued_at: datetime | None,
         due_at: datetime | None,
         paid_at: datetime | None,
+        created_at: datetime,
+        updated_at: datetime,
     ) -> None:
         super().__init__()
         self.id = id
@@ -416,6 +438,8 @@ class Invoice(_AggregateRoot):
         self.issued_at = issued_at
         self.due_at = due_at
         self.paid_at = paid_at
+        self.created_at = created_at
+        self.updated_at = updated_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Invoice) and self.id == other.id
@@ -450,6 +474,8 @@ class Invoice(_AggregateRoot):
             issued_at=now,
             due_at=due_at,
             paid_at=None,
+            created_at=now,
+            updated_at=now,
         )
         invoice._record(
             billing_events.invoice_issued(
@@ -471,6 +497,7 @@ class Invoice(_AggregateRoot):
             return
         self.status = InvoiceStatus.PAID
         self.paid_at = clock.now()
+        self.updated_at = self.paid_at
         self._record(
             billing_events.invoice_paid(
                 invoice_id=str(self.id),
@@ -486,6 +513,7 @@ class Invoice(_AggregateRoot):
         if self.status == InvoiceStatus.VOID:
             return
         self.status = InvoiceStatus.VOID
+        self.updated_at = clock.now()
         self._record(
             billing_events.invoice_voided(
                 invoice_id=str(self.id),

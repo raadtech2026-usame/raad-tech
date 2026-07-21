@@ -37,6 +37,8 @@ class PlanResponse(BaseModel):
     billing_cycle: str
     vehicle_limit: int | None
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class SubscriptionResponse(BaseModel):
@@ -49,6 +51,8 @@ class SubscriptionResponse(BaseModel):
     current_period_start: datetime | None
     current_period_end: datetime | None
     auto_renew: bool
+    created_at: datetime
+    updated_at: datetime
 
 
 class InvoiceResponse(BaseModel):
@@ -64,6 +68,8 @@ class InvoiceResponse(BaseModel):
     issued_at: datetime | None
     due_at: datetime | None
     paid_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class InitiatePaymentRequest(BaseModel):

@@ -65,6 +65,8 @@ def plan_to_model(plan: Plan, *, existing: PlanModel | None = None) -> PlanModel
     model.billing_cycle = plan.billing_cycle.value
     model.vehicle_limit = plan.vehicle_limit
     model.status = plan.status.value
+    model.created_at = _to_naive_utc(plan.created_at)
+    model.updated_at = _to_naive_utc(plan.updated_at)
     return model
 
 
@@ -77,6 +79,8 @@ def model_to_plan(model: PlanModel) -> Plan:
         billing_cycle=BillingCycle(model.billing_cycle),
         vehicle_limit=model.vehicle_limit,
         status=PlanStatus(model.status),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 
@@ -94,6 +98,8 @@ def subscription_to_model(
     model.current_period_start = _to_naive_utc(subscription.current_period_start)
     model.current_period_end = _to_naive_utc(subscription.current_period_end)
     model.auto_renew = subscription.auto_renew
+    model.created_at = _to_naive_utc(subscription.created_at)
+    model.updated_at = _to_naive_utc(subscription.updated_at)
     return model
 
 
@@ -108,6 +114,8 @@ def model_to_subscription(model: SubscriptionModel) -> Subscription:
         current_period_start=model.current_period_start,
         current_period_end=model.current_period_end,
         auto_renew=model.auto_renew,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 
@@ -126,6 +134,8 @@ def invoice_to_model(
     model.issued_at = _to_naive_utc(invoice.issued_at)
     model.due_at = _to_naive_utc(invoice.due_at)
     model.paid_at = _to_naive_utc(invoice.paid_at)
+    model.created_at = _to_naive_utc(invoice.created_at)
+    model.updated_at = _to_naive_utc(invoice.updated_at)
     return model
 
 
@@ -142,6 +152,8 @@ def model_to_invoice(model: InvoiceModel) -> Invoice:
         issued_at=model.issued_at,
         due_at=model.due_at,
         paid_at=model.paid_at,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )
 
 

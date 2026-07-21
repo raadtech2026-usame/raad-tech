@@ -99,6 +99,8 @@ def _plan_dto_to_response(plan: PlanDTO) -> PlanResponse:
         billing_cycle=plan.billing_cycle,
         vehicle_limit=plan.vehicle_limit,
         status=plan.status,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
     )
 
 
@@ -115,6 +117,8 @@ def _subscription_dto_to_response(
         current_period_start=subscription.current_period_start,
         current_period_end=subscription.current_period_end,
         auto_renew=subscription.auto_renew,
+        created_at=subscription.created_at,
+        updated_at=subscription.updated_at,
     )
 
 
@@ -132,6 +136,8 @@ def _invoice_dto_to_response(invoice: InvoiceDTO) -> InvoiceResponse:
         issued_at=invoice.issued_at,
         due_at=invoice.due_at,
         paid_at=invoice.paid_at,
+        created_at=invoice.created_at,
+        updated_at=invoice.updated_at,
     )
 
 

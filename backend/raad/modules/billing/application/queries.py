@@ -8,9 +8,10 @@ a full `*DTO` (for get-by-id). With five aggregates landing in one phase, this f
 single DTO shape per aggregate for both `Get*ByIdQuery` and `List*Query` — every field here is
 already a primitive/small value (no embedded child collections the way `RouteDTO`/`TripDTO`
 needed a lighter list projection for), so the split would add ten classes for no real ergonomic
-gain. Not included anywhere: `created_at`/`updated_at` — the same pre-existing, module-wide gap
-`transport_ops`'s own `StudentAssignmentDTO` already flags (ORM-only audit columns, never
-domain-aggregate fields in this codebase).
+gain. `Plan`/`Subscription`/`Invoice` now carry `created_at`/`updated_at`, closing the
+module-wide gap this docstring used to flag — `Payment` deliberately still omits them
+(`infra/models.py`'s own docstring: no `+ standard audit cols` line in Database Design §8.4,
+unlike its three siblings), and `TransportFee` has no HTTP route exposing it at all.
 """
 
 from __future__ import annotations
@@ -47,6 +48,8 @@ class PlanDTO:
     billing_cycle: str
     vehicle_limit: int | None
     status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 def plan_to_dto(plan: Plan) -> PlanDTO:
@@ -59,6 +62,8 @@ def plan_to_dto(plan: Plan) -> PlanDTO:
         billing_cycle=plan.billing_cycle.value,
         vehicle_limit=plan.vehicle_limit,
         status=plan.status.value,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
     )
 
 
@@ -83,6 +88,8 @@ class SubscriptionDTO:
     current_period_start: datetime | None
     current_period_end: datetime | None
     auto_renew: bool
+    created_at: datetime
+    updated_at: datetime
 
 
 def subscription_to_dto(subscription: Subscription) -> SubscriptionDTO:
@@ -96,6 +103,8 @@ def subscription_to_dto(subscription: Subscription) -> SubscriptionDTO:
         current_period_start=subscription.current_period_start,
         current_period_end=subscription.current_period_end,
         auto_renew=subscription.auto_renew,
+        created_at=subscription.created_at,
+        updated_at=subscription.updated_at,
     )
 
 
@@ -123,6 +132,8 @@ class InvoiceDTO:
     issued_at: datetime | None
     due_at: datetime | None
     paid_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 def invoice_to_dto(invoice: Invoice) -> InvoiceDTO:
@@ -139,6 +150,8 @@ def invoice_to_dto(invoice: Invoice) -> InvoiceDTO:
         issued_at=invoice.issued_at,
         due_at=invoice.due_at,
         paid_at=invoice.paid_at,
+        created_at=invoice.created_at,
+        updated_at=invoice.updated_at,
     )
 
 
