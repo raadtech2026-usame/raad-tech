@@ -77,7 +77,7 @@ def _system_setting_dto_to_response(setting: SystemSettingDTO) -> SystemSettingR
     ),
 )
 async def list_audit_entries(
-    principal: Principal = Depends(require_permission(Permission("admin.audit.list"))),
+    principal: Principal = Depends(require_permission(Permission("admin.audit.read"))),
     service: PlatformAuditApplicationService = Depends(get_platform_audit_service),
     uow: PlatformAuditUnitOfWork = Depends(get_platform_audit_uow),
 ) -> list[AuditEntryResponse]:
@@ -93,7 +93,7 @@ async def list_audit_entries(
     description="Founder / Org Admin (API Contracts §4.8 line 191).",
 )
 async def list_system_settings(
-    principal: Principal = Depends(require_permission(Permission("admin.settings.list"))),
+    principal: Principal = Depends(require_permission(Permission("admin.settings.read"))),
     service: PlatformAuditApplicationService = Depends(get_platform_audit_service),
     uow: PlatformAuditUnitOfWork = Depends(get_platform_audit_uow),
 ) -> list[SystemSettingResponse]:

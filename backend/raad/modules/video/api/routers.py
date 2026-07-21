@@ -115,7 +115,7 @@ def _ensure_camera_belongs_to_device(device: DeviceDTO, camera_id: str) -> None:
 async def request_live_video(
     request: Request,
     body: RequestLiveVideoRequest,
-    principal: Principal = Depends(require_permission(Permission("video.sessions.create"))),
+    principal: Principal = Depends(require_permission(Permission("video.live.start"))),
     video_service: VideoApplicationService = Depends(get_video_service),
     uow: VideoUnitOfWork = Depends(get_video_uow),
     device_service: DeviceApplicationService = Depends(get_device_service),
@@ -156,7 +156,7 @@ async def request_live_video(
 async def request_playback_video(
     request: Request,
     body: RequestPlaybackVideoRequest,
-    principal: Principal = Depends(require_permission(Permission("video.sessions.create"))),
+    principal: Principal = Depends(require_permission(Permission("video.playback.start"))),
     video_service: VideoApplicationService = Depends(get_video_service),
     uow: VideoUnitOfWork = Depends(get_video_uow),
     device_service: DeviceApplicationService = Depends(get_device_service),
