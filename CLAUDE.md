@@ -70,7 +70,11 @@ and three scheduled jobs are likewise implemented and verified — see "Known ga
 genuinely remains (`PaymentProviderPort`/`VideoProviderPort`/`ReportRendererPort` adapters,
 `/ws/tracking`/`/ws/notifications`, load tests). A real CI/CD gate
 (`.github/workflows/backend-pipeline.yml`) and a contract test suite (`tests/contract/`) are
-both now implemented, closing what was previously the largest item on this list.
+both now implemented, closing what was previously the largest item on this list. A **Final
+Backend Completion phase** subsequently closed seven confirmed RBAC/error-code/ownership/test-
+coverage/audit-column gaps and added CORS support — see "Known gaps" below for the full list —
+leaving pagination/filtering/sorting and the two WebSocket routes as the largest remaining,
+deliberately-deferred items before this backend is fully frontend/mobile-ready.
 
 ### Tech stack (decided)
 
@@ -156,10 +160,11 @@ Each of the ten below has a full `api / application / domain / infra / events` s
   belong to `Student`'s own status-change events (Phase 10.1); both aggregates now emit
   identically-named events, distinguishable only by `aggregate_type`, a collision the LLD's own
   event catalog never disambiguated. (2) API Contracts §6's documented example resource for
-  `student_assignments` includes `created_at`/`updated_at`, but no aggregate in this module has
-  ever exposed ORM-only audit columns through its DTO — `StudentAssignmentResponse` follows the
-  5-aggregate-deep established precedent (omits them) rather than introducing a one-off
-  inconsistency; retrofitting all six aggregates is out of this phase's scope.
+  `student_assignments` includes `created_at`/`updated_at` — this was a real, then-6-aggregate-
+  deep gap (no aggregate anywhere in the codebase exposed these ORM-only audit columns through
+  its DTO) until the Final Backend Completion phase closed it across all ten bounded contexts;
+  see that phase's own entry below for the resolution and its two remaining, deliberate
+  exceptions (`Payment`, `TransportFee`).
 - **Billing (C8)** — `Plan` (create/activate/disable, not tenant-owned — Database Design §8.1
   has no `organization_id` column at all), `Subscription` (open/renew/expire/suspend/cancel),
   `Invoice` (issue/mark_paid/void), `Payment` (initiate/mark_processing/mark_paid/mark_failed/
@@ -350,6 +355,46 @@ backend/
 
 ### Known gaps (tracked, not hidden)
 
+- **Final Backend Completion phase** closed seven confirmed bugs/gaps surfaced by a fresh
+  documentation-vs-code audit, plus CORS (the one Tier-2 item selected for this phase; pagination/
+  filtering/sorting and `/ws/tracking`/`/ws/notifications` remain deliberately deferred, flagged
+  below, not attempted): (1) **4 endpoints were unreachable by every role, including Founder** —
+  `GET /admin/audit`/`GET /admin/settings` required `admin.audit.list`/`admin.settings.list`, and
+  `POST /video/live`/`POST /video/playback` required `video.sessions.create`, none of which the
+  seeded `role_permissions` matrix (migration `5437a5d1651b`) actually grants; router-side
+  `Permission(...)` strings realigned to the deployed matrix rather than touching the migration.
+  (2) **Error codes didn't match the documented catalogue** (API Contracts §5.2):
+  `AuthenticationError` emitted `AUTHENTICATION_REQUIRED` where the contract names
+  `UNAUTHENTICATED`; CR-1/D5 denials fell through to generic `FORBIDDEN` instead of the documented
+  `PARENT_ACCESS_DENIED` (with `reason`/`required_action`) and `VIDEO_FORBIDDEN` — new
+  `ParentAccessDeniedError`/`VideoForbiddenError` (`core/errors/exceptions.py`) close this. (3)
+  **Trip driver-ownership was never verified** — any Driver could start/end any trip, not just
+  their own, a gap `routers.py`'s own docstring had correctly flagged as deferred back when RBAC
+  itself was still pending; now resolved via `_ensure_driver_owns_trip` (a no-op for Org Admin,
+  whose blanket transport_ops grant is an intentional admin-override). (4) `PrincipalResponse.
+  region_ids` was hardcoded to `[]` despite `ScopeResolver` being real since ADR-0005 — now
+  resolved via `effective_org_scope` on login/refresh. (5) ~45 router docstrings across 7 modules
+  still claimed `require_permission` "currently raises `NotImplementedError`" — stale since
+  ADR-0004, and surfaced verbatim in the generated `/docs` Swagger UI; corrected. (6)
+  `interfaces/http/policy_guards.py` — this codebase's own description of itself as "the CR-1/D5
+  enforcement point... never bypassable" — had zero test coverage; `tests/unit/
+  test_policy_guards.py` (23 tests) now covers the `safety_override` reconciliation, ownership
+  resolution, and both policy-decision compositions directly, using the same fake-`Container`
+  pattern `test_notification_subscribers.py` established. (7) **`created_at`/`updated_at` now
+  ship on every aggregate's response** across all ten modules (Organization/Region, Vehicle/
+  Device, Student/Parent/Driver/Route/Trip/StudentAssignment, Plan/Subscription/Invoice, User) —
+  the domain-entity gap this file used to describe per-module is closed; `Payment` (no audit-
+  column bundle, Database Design §8.4) and child/link entities with no independent top-level
+  response (`Stop`, `Camera`, `StudentParent`, `DeviceAssignment`) are the only remaining,
+  deliberate exceptions. **CORS** (`CorsSettings`, `main.py`) is now configured — previously
+  entirely absent, which would have blocked every cross-origin request from a React frontend
+  regardless of a valid bearer token; verified against a live `uvicorn` instance, not just unit
+  tests. One incidental correction surfaced along the way: this environment does in fact have a
+  reachable live PostgreSQL (the organization/fleet_device integration suites ran against it and
+  caught a real tz-aware-into-naive-column bug in the new `created_at`/`updated_at` wiring,
+  fixed with each module's own pre-existing `_naive`/`_to_naive_utc` helper) — superseding this
+  file's earlier "no live PostgreSQL reachable in this sandbox" note for `tracking`'s Redis port;
+  that Redis-specific claim itself was not re-verified and may still hold.
 - `tests/architecture/` has ten automated boundary-gate tests (domain purity, layer dependency
   direction, module boundaries, API-layer boundaries) enforcing Backend LLD §2.3 across all ten
   completed modules — rule 7 (static proxy) was extended with an explicit `raad.core.*`-origin
