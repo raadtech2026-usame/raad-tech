@@ -30,15 +30,15 @@ across every list endpoint, and both realtime WebSocket channels (`/ws/tracking`
 deliberately-deferred gaps (§6) — none of which are surprises; each was flagged the
 moment it was deferred and remains flagged here.
 
-| | |
-|---|---|
-| Bounded contexts complete | 10 / 10 |
-| Total automated tests | 1,253 (1,056 unit + 185 integration + 10 architecture + 2 contract) |
-| Tests passing | 1,249 |
-| Tests skipped (infra-dependent, not failures) | 4 (Redis/broker unreachable in this sandbox) |
-| Tests failing | 0 |
-| Known production blockers | 3 (§6) |
-| ADRs adopted | 8 (0001–0008) |
+|                                               |                                                                     |
+| --------------------------------------------- | ------------------------------------------------------------------- |
+| Bounded contexts complete                     | 10 / 10                                                             |
+| Total automated tests                         | 1,253 (1,056 unit + 185 integration + 10 architecture + 2 contract) |
+| Tests passing                                 | 1,249                                                               |
+| Tests skipped (infra-dependent, not failures) | 4 (Redis/broker unreachable in this sandbox)                        |
+| Tests failing                                 | 0                                                                   |
+| Known production blockers                     | 3 (§6)                                                              |
+| ADRs adopted                                  | 8 (0001–0008)                                                       |
 
 ---
 
@@ -56,11 +56,11 @@ and `security.md` — not asserted, verified:
   API-layer boundaries), not just code review convention.
 - **No cross-module DB reads** — cross-context data flows through the owning module's
   own application service everywhere, including the newest code (`interfaces/http/
-  policy_guards.resolve_vehicle_tracking_context` resolves `fleet_device`/`tracking`/
+policy_guards.resolve_vehicle_tracking_context` resolves `fleet_device`/`tracking`/
   `transport_ops` facts via three separate application services, never a shared query).
 - **Device plane stays a separate concern** — JT808/JT1078 are still not implemented in
   this repository by design (`architecture.md` #2); the WebSocket phase explicitly
-  treats `DevicePositionReported` as an event a *future*, separate JT808 deployable
+  treats `DevicePositionReported` as an event a _future_, separate JT808 deployable
   would publish, not something this phase builds.
 - **Tenancy is cross-cutting** — `organization_id` scoping resolved once at the edge
   (`ScopeResolver`) and threaded through every repository; the one system-wide,
@@ -82,18 +82,18 @@ found violated during this review.
 
 ## 3. Feature Completeness by Bounded Context
 
-| Context | Domain/App/Infra/API | Notable deliberate exclusions (documented, not silent) |
-|---|---|---|
-| IAM (C1) | Complete | Password reset, MFA verify — need undesigned delivery mechanisms |
-| Organization (C2) | Complete | RBAC/scope *editing* (grant/revoke) has no HTTP route yet |
-| Fleet & Device (C3) | Complete | `GET /devices/{id}/status` — needs the JT808 device plane |
-| Transport Operations (C4) | Complete | `trip_students` roster snapshot not built (depends on nothing new) |
-| Tracking (C5) | Complete, incl. `/ws/tracking` | No live position data flows without a JT808 producer (honest, not faked) |
-| Video (C6) | Complete (abstraction only) | Native JT1078 and vendor adapter explicitly out of scope |
-| Notifications (C7) | Complete, incl. `/ws/notifications` | `notification_preferences` not built (no documented route) |
-| Billing (C8) | Complete | `PaymentProviderPort` (EVC Plus) unbound; callback signature scheme undocumented |
-| Reporting (C9) | Complete | `ReportRendererPort` unbound; `ReportDefinition` is an unresolved doc gap |
-| Platform & Audit (C10) | Complete | `Integration` (Database Design §8.9) has no lifecycle documented anywhere |
+| Context                   | Domain/App/Infra/API                | Notable deliberate exclusions (documented, not silent)                           |
+| ------------------------- | ----------------------------------- | -------------------------------------------------------------------------------- |
+| IAM (C1)                  | Complete                            | Password reset, MFA verify — need undesigned delivery mechanisms                 |
+| Organization (C2)         | Complete                            | RBAC/scope _editing_ (grant/revoke) has no HTTP route yet                        |
+| Fleet & Device (C3)       | Complete                            | `GET /devices/{id}/status` — needs the JT808 device plane                        |
+| Transport Operations (C4) | Complete                            | `trip_students` roster snapshot not built (depends on nothing new)               |
+| Tracking (C5)             | Complete, incl. `/ws/tracking`      | No live position data flows without a JT808 producer (honest, not faked)         |
+| Video (C6)                | Complete (abstraction only)         | Native JT1078 and vendor adapter explicitly out of scope                         |
+| Notifications (C7)        | Complete, incl. `/ws/notifications` | `notification_preferences` not built (no documented route)                       |
+| Billing (C8)              | Complete                            | `PaymentProviderPort` (EVC Plus) unbound; callback signature scheme undocumented |
+| Reporting (C9)            | Complete                            | `ReportRendererPort` unbound; `ReportDefinition` is an unresolved doc gap        |
+| Platform & Audit (C10)    | Complete                            | `Integration` (Database Design §8.9) has no lifecycle documented anywhere        |
 
 Every exclusion above was flagged in the module's own docstring at the time it was
 deferred and remains flagged in `CLAUDE.md`'s "Known gaps" section today — none were
@@ -103,20 +103,20 @@ rediscovered as surprises while preparing this report.
 
 ## 4. Cross-Cutting Capabilities
 
-| Capability | Status |
-|---|---|
-| RBAC (`role_permissions` matrix) | Real, seeded, enforced on every route |
-| Tenant/region `ScopeResolver` | Real; **not yet** retrofitted onto every `list_all()`/`list_page()` (§6.3) |
-| CR-1 (`SubscriptionAccessPolicy`) | Enforced at REST (`policy_guards`), Notification Worker (creation-time), and `/ws/tracking` (per-send re-check) |
-| D4 (safety-over-billing) | One policy object (`TrackingVisibilityPolicy`), reconciled with CR-1 via ADR-0006 |
-| D5 (parent video exclusion) | Enforced unconditionally (`enforce_d5`), not role-scoped |
-| Audit trail (`audit_entries`) | Transactional, shared-kernel, written by every module's own `UnitOfWork.commit()` |
-| Event broker (Redis Streams, ADR-0008) | Implemented; unbound only when `RAAD_BROKER__URL` is absent (this sandbox) |
-| Background workers | Notification Worker + Report Worker, both built; 3 scheduled jobs registered |
-| Pagination/filtering/sorting | Offset pagination on every plain list; cursor pagination on the 2 documented "(paginated)" routes |
-| WebSocket realtime (`/ws/tracking`, `/ws/notifications`) | Implemented this phase — see §5 |
-| CORS | Configured for the React web frontend |
-| CI/CD gate | `.github/workflows/backend-pipeline.yml`, real (`postgres:16`/`redis:7` service containers) |
+| Capability                                               | Status                                                                                                          |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| RBAC (`role_permissions` matrix)                         | Real, seeded, enforced on every route                                                                           |
+| Tenant/region `ScopeResolver`                            | Real; **not yet** retrofitted onto every `list_all()`/`list_page()` (§6.3)                                      |
+| CR-1 (`SubscriptionAccessPolicy`)                        | Enforced at REST (`policy_guards`), Notification Worker (creation-time), and `/ws/tracking` (per-send re-check) |
+| D4 (safety-over-billing)                                 | One policy object (`TrackingVisibilityPolicy`), reconciled with CR-1 via ADR-0006                               |
+| D5 (parent video exclusion)                              | Enforced unconditionally (`enforce_d5`), not role-scoped                                                        |
+| Audit trail (`audit_entries`)                            | Transactional, shared-kernel, written by every module's own `UnitOfWork.commit()`                               |
+| Event broker (Redis Streams, ADR-0008)                   | Implemented; unbound only when `RAAD_BROKER__URL` is absent (this sandbox)                                      |
+| Background workers                                       | Notification Worker + Report Worker, both built; 3 scheduled jobs registered                                    |
+| Pagination/filtering/sorting                             | Offset pagination on every plain list; cursor pagination on the 2 documented "(paginated)" routes               |
+| WebSocket realtime (`/ws/tracking`, `/ws/notifications`) | Implemented this phase — see §5                                                                                 |
+| CORS                                                     | Configured for the React web frontend                                                                           |
+| CI/CD gate                                               | `.github/workflows/backend-pipeline.yml`, real (`postgres:16`/`redis:7` service containers)                     |
 
 ---
 
@@ -161,7 +161,7 @@ rediscovered as surprises while preparing this report.
 ### 6.1 Genuine blockers before a real deployment
 
 1. **No automated end-to-end WebSocket handshake test.** `httpx`/`starlette.
-   TestClient` is not an approved dependency (`.claude/rules/workflow.md` #1/#2 —
+TestClient` is not an approved dependency (`.claude/rules/workflow.md` #1/#2 —
    would need explicit go-ahead before adding). The WebSocket logic is thoroughly
    unit-tested (auth, subscribe, fan-out, cleanup) and one manual ASGI-level smoke
    test proved real routing/auth/dependency-injection work end-to-end, but that smoke
@@ -187,7 +187,7 @@ rediscovered as surprises while preparing this report.
 
 - `ReportRendererPort` unbound — every report run ends `failed` (correctly, not
   silently).
-- `notification_preferences`, `trip_students`, `Integration`, RBAC/scope *editing*
+- `notification_preferences`, `trip_students`, `Integration`, RBAC/scope _editing_
   routes — all documented-table-or-concept, no approved HTTP surface.
 - `ReportDefinition` (Reporting) and the `student.assignment_changed` event-contract
   conflict (Notifications) — both are **unresolved documentation gaps**, not code
@@ -201,7 +201,7 @@ rediscovered as surprises while preparing this report.
 No module's `list_all()`/`list_page()`/`list_cursor_page()` is filtered by the now-real
 `ScopeResolver` — every one still applies an unrestricted `TenantRegionScope
 (organization_ids=None)` internally. `ScopeResolver` itself is real and correctly
-enforces scope everywhere it *is* wired (RBAC, CR-1, D4, D5); retrofitting it onto
+enforces scope everywhere it _is_ wired (RBAC, CR-1, D4, D5); retrofitting it onto
 every list endpoint is a separate, larger, cross-cutting change, not attempted by any
 phase to date. **This is a real tenant-isolation gap on list endpoints specifically**
 (get-by-id and mutation routes are correctly scoped) and should be weighed seriously
@@ -211,14 +211,14 @@ before a multi-tenant production launch.
 
 ## 7. Test Coverage & Quality Gates
 
-| Suite | Count | Result |
-|---|---|---|
-| `tests/unit/` | 1,056 | All passing |
-| `tests/integration/` (live PostgreSQL) | 181 | All passing |
-| `tests/integration/` (live Redis/broker, this sandbox has neither) | 4 | Skipped, not failed |
-| `tests/architecture/` (boundary gates) | 10 | All passing |
-| `tests/contract/` (OpenAPI-schema-vs-API-Contracts) | 2 | All passing |
-| **Total** | **1,253** | **1,249 passing, 4 skipped, 0 failing** |
+| Suite                                                              | Count     | Result                                  |
+| ------------------------------------------------------------------ | --------- | --------------------------------------- |
+| `tests/unit/`                                                      | 1,056     | All passing                             |
+| `tests/integration/` (live PostgreSQL)                             | 181       | All passing                             |
+| `tests/integration/` (live Redis/broker, this sandbox has neither) | 4         | Skipped, not failed                     |
+| `tests/architecture/` (boundary gates)                             | 10        | All passing                             |
+| `tests/contract/` (OpenAPI-schema-vs-API-Contracts)                | 2         | All passing                             |
+| **Total**                                                          | **1,253** | **1,249 passing, 4 skipped, 0 failing** |
 
 Safety-critical invariants (CR-1, D4, D5, tenant isolation, one-active-device-per-
 vehicle, parent-own-children-only) each have explicit regression tests, not incidental
@@ -252,15 +252,15 @@ are absence-of-capability, not present-but-broken security holes.
 
 ## 9. Scored Assessment
 
-| Dimension | Score | Rationale |
-|---|---|---|
-| **Architecture** | 9/10 | All ten contexts complete, dependency direction and module boundaries hold under automated verification, including the newest realtime code. Docked for the still-unfiltered `list_all()` gap (§6.3). |
-| **DDD** | 8.5/10 | Aggregates, domain events, value objects, repository/UoW uniform across all ten modules. Unchanged from the prior assessment — no new DDD violations introduced by pagination or WebSocket work. |
-| **Clean Architecture / Ports & Adapters** | 9/10 | Held throughout, including the WebSocket phase's own `RealtimeConnection` Protocol (transport-decoupled by construction, not just convention). |
-| **Security** | 8.5/10 | RBAC/CR-1/D4/D5/audit all real and tested; WebSocket auth reuses REST's exact verification. Docked for the unbound payment-callback verification and the list-endpoint tenant-scoping gap. |
-| **Maintainability** | 8.5/10 | Extensive, consistent self-documentation of every deliberate deferral and interpretive choice; a real bug (malformed `vehicle_id`) was caught and fixed with a regression test before shipping, not after. |
-| **Scalability** | 7.5/10 | Redis Streams consumer groups scale horizontally; `ConnectionManager` is explicitly single-process (flagged, with a clean adapter seam for later). Docked for load tests remaining undemonstrated and the list-endpoint scoping gap. |
-| **Production Readiness** | 6.5/10 | Feature-complete and CI-gated with 1,249 passing tests, but three genuine blockers remain (§6.1): no automated WebSocket handshake test, no device-plane deployable to actually produce live data, and no bound payment provider/callback verification. These are the correct, already-known set of blockers — not new surprises — but they are real and must close before a live deployment carrying real buses, real parents, or real payments. |
+| Dimension                                 | Score  | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Architecture**                          | 9/10   | All ten contexts complete, dependency direction and module boundaries hold under automated verification, including the newest realtime code. Docked for the still-unfiltered `list_all()` gap (§6.3).                                                                                                                                                                                                                                             |
+| **DDD**                                   | 8.5/10 | Aggregates, domain events, value objects, repository/UoW uniform across all ten modules. Unchanged from the prior assessment — no new DDD violations introduced by pagination or WebSocket work.                                                                                                                                                                                                                                                  |
+| **Clean Architecture / Ports & Adapters** | 9/10   | Held throughout, including the WebSocket phase's own `RealtimeConnection` Protocol (transport-decoupled by construction, not just convention).                                                                                                                                                                                                                                                                                                    |
+| **Security**                              | 8.5/10 | RBAC/CR-1/D4/D5/audit all real and tested; WebSocket auth reuses REST's exact verification. Docked for the unbound payment-callback verification and the list-endpoint tenant-scoping gap.                                                                                                                                                                                                                                                        |
+| **Maintainability**                       | 8.5/10 | Extensive, consistent self-documentation of every deliberate deferral and interpretive choice; a real bug (malformed `vehicle_id`) was caught and fixed with a regression test before shipping, not after.                                                                                                                                                                                                                                        |
+| **Scalability**                           | 7.5/10 | Redis Streams consumer groups scale horizontally; `ConnectionManager` is explicitly single-process (flagged, with a clean adapter seam for later). Docked for load tests remaining undemonstrated and the list-endpoint scoping gap.                                                                                                                                                                                                              |
+| **Production Readiness**                  | 6.5/10 | Feature-complete and CI-gated with 1,249 passing tests, but three genuine blockers remain (§6.1): no automated WebSocket handshake test, no device-plane deployable to actually produce live data, and no bound payment provider/callback verification. These are the correct, already-known set of blockers — not new surprises — but they are real and must close before a live deployment carrying real buses, real parents, or real payments. |
 
 ---
 
@@ -278,5 +278,5 @@ further phase begins.
 
 ---
 
-*Report reflects repository state at commit `ad84f5c`. Test counts were re-run
-immediately before writing this report, not carried forward from an earlier phase.*
+_Report reflects repository state at commit `ad84f5c`. Test counts were re-run
+immediately before writing this report, not carried forward from an earlier phase._
