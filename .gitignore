@@ -18,6 +18,7 @@ dist/
 node_modules/
 dist/
 .vite/
+*.tsbuildinfo
 
 # Flutter / Dart
 .dart_tool/
