@@ -13,6 +13,7 @@ import unittest
 from datetime import datetime, timezone
 
 from raad.core.errors.exceptions import ConflictError, DomainError
+from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.domain.entities import Route, Stop
 from raad.modules.transport_ops.domain.repositories import RouteRepository
@@ -536,6 +537,27 @@ class RouteRepositoryInterfaceTests(unittest.TestCase):
 
             async def list_all(self) -> list[Route]:
                 return list(self._routes.values())
+
+            async def list_page(
+                self,
+                page_request: OffsetPageRequest,
+                *,
+                sort: list[SortSpec],
+                filters: list[FilterCondition],
+                search: str | None,
+            ) -> OffsetPage[Route]:
+                # Interface-shape satisfaction only (Tier 2 pagination phase's `list_page`
+                # addition to `RouteRepository`) - full filter/sort/paginate behavior is
+                # covered by `test_transport_ops_route_application.py`'s own dedicated tests.
+                items = list(self._routes.values())
+                start = page_request.offset
+                end = start + page_request.page_size
+                return OffsetPage(
+                    data=items[start:end],
+                    total=len(items),
+                    page=page_request.page,
+                    page_size=page_request.page_size,
+                )
 
         repo = InMemoryRouteRepository()
         route = make_route()

@@ -29,10 +29,20 @@ from fastapi import APIRouter, Depends, Request, status
 
 from raad.core.di.container import Container
 from raad.core.errors.exceptions import ValidationError
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.tenancy.resolver import ScopeResolver
-from raad.interfaces.http.deps import get_container, get_current_user, require_permission
+from raad.interfaces.http.deps import (
+    get_container,
+    get_current_user,
+    get_filter_conditions,
+    get_offset_page_request,
+    get_search_query,
+    get_sort_params,
+    require_permission,
+)
+from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
 from raad.modules.iam.api.deps import get_auth_service, get_iam_uow, get_user_service
 from raad.modules.iam.api.schemas import (
     CreateUserRequest,
@@ -209,21 +219,30 @@ async def get_me(
 
 @users_router.get(
     "",
-    response_model=list[UserResponse],
+    response_model=OffsetPageResponse[UserResponse],
     status_code=status.HTTP_200_OK,
     summary="List users",
     description=(
         "In-scope admin (API Contracts §4.1). Not yet scope-filtered — see this file's module "
-        "docstring."
+        "docstring. Paginated/filterable/sortable per §7/§8."
     ),
 )
 async def list_users(
     principal: Principal = Depends(require_permission(Permission("iam.users.read"))),
     user_service: UserApplicationService = Depends(get_user_service),
     uow: IamUnitOfWork = Depends(get_iam_uow),
-) -> list[UserResponse]:
-    users = await user_service.list_users(ListUsersQuery(), uow=uow)
-    return [_user_dto_to_response(u) for u in users]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[UserResponse]:
+    page = await user_service.list_users(
+        ListUsersQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _user_dto_to_response)
 
 
 @users_router.post(

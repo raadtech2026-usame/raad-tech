@@ -29,8 +29,10 @@ from datetime import datetime
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from raad.core.db.repository import SqlAlchemyRepositoryBase
+from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
+from raad.core.pagination import CursorPage, CursorPageRequest, FilterCondition
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.tracking.application.ports import TrackingUnitOfWork
 from raad.modules.tracking.domain.entities import GeofenceCrossing, VehiclePosition
 from raad.modules.tracking.domain.repositories import (
@@ -63,6 +65,16 @@ class SqlAlchemyVehiclePositionRepository(
 ):
     model = VehiclePositionModel
 
+    #: Per-resource filter whitelist (§8) for `list_for_trip_page` below — `trip_id` is also
+    #: exposed here (not just injected as the mandatory filter) since `_apply_filters` is a
+    #: single shared code path and rejecting a client-supplied `trip_id` filter outright would
+    #: be more surprising than simply AND-combining it (still narrowing-only, per §8).
+    filterable_fields = {
+        "trip_id": FilterField(column="trip_id"),
+        "vehicle_id": FilterField(column="vehicle_id"),
+        "is_backfill": FilterField(column="is_backfill", value_type=bool),
+    }
+
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
         self._tracked: dict[str, tuple[VehiclePosition, VehiclePositionModel]] = {}
@@ -79,6 +91,39 @@ class SqlAlchemyVehiclePositionRepository(
         )
         result = await self._session.execute(statement)
         return [self._track(row) for row in result.scalars().all()]  # type: ignore[misc]
+
+    async def list_for_trip_page(
+        self,
+        trip_id: TripId,
+        cursor_request: CursorPageRequest,
+        *,
+        filters: list[FilterCondition],
+    ) -> CursorPage[VehiclePosition]:
+        """Cursor pagination (§7) over the same `event_time` ascending keyset `list_for_trip`
+        already uses — `descending=False` is passed explicitly since `list_cursor_page`
+        defaults to `True` (`core/db/repository.py`). `trip_id` is injected as a mandatory,
+        always-ANDed filter (never a client-controlled path out of the given trip, API
+        Contracts §8: filters only narrow, never widen scope) rather than exposed solely as
+        the `trip_id` route path segment; `VehiclePositionModel` has no `organization_id`-scope
+        need beyond that (this table has no `deleted_at` either, so `list_cursor_page`'s
+        soft-delete guard simply no-ops)."""
+        combined_filters = [
+            FilterCondition(field="trip_id", op="eq", value=str(trip_id)),
+            *filters,
+        ]
+        raw_page = await super().list_cursor_page(
+            TenantRegionScope(organization_ids=None),
+            cursor_request,
+            cursor_column="event_time",
+            descending=False,
+            filters=combined_filters,
+        )
+        return CursorPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            limit=raw_page.limit,
+            next_cursor=raw_page.next_cursor,
+            has_more=raw_page.has_more,
+        )
 
     async def list_for_vehicle(self, vehicle_id: VehicleId) -> list[VehiclePosition]:
         statement = (

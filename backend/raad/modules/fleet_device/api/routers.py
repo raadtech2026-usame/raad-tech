@@ -17,7 +17,10 @@ repository method existed, and API Contracts §4.2's role column requires scope-
 (`application/services.py`) — but **neither list route is itself scope-filtered yet**, the same
 system-wide, already-flagged gap every other `list_all()`-backed endpoint in this codebase
 carries (CLAUDE.md's "Known gaps"). Same addition, same reasoning, as `GET /users` and
-`GET /organizations`/`GET /regions`.
+`GET /organizations`/`GET /regions`. Both routes are now also paginated/filterable/sortable per
+§7/§8 (Tier 2 pagination phase), mirroring `iam`/`organization`'s identical shape exactly —
+`GET /devices`'s whitelist deliberately excludes `sim_msisdn` (PII, masked in logs per
+`application/queries.py`'s own docstring).
 
 **Endpoints deliberately not implemented** (documented, not silently dropped):
 - `DELETE /vehicles/{id}` / `DELETE /devices/{id}` (uniform-CRUD soft delete, §4 preamble) —
@@ -42,9 +45,17 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, status
 
 from raad.core.errors.exceptions import ValidationError
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
-from raad.interfaces.http.deps import require_permission
+from raad.interfaces.http.deps import (
+    get_filter_conditions,
+    get_offset_page_request,
+    get_search_query,
+    get_sort_params,
+    require_permission,
+)
+from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
 from raad.modules.fleet_device.api.deps import (
     get_device_service,
     get_fleet_device_uow,
@@ -152,12 +163,13 @@ def _assignment_dto_to_response(
 
 @vehicles_router.get(
     "",
-    response_model=list[VehicleResponse],
+    response_model=OffsetPageResponse[VehicleResponse],
     status_code=status.HTTP_200_OK,
     summary="List vehicles",
     description=(
         "Org Admin (+RAAD in scope) (API Contracts §4.2). Not yet scope-filtered — see this "
-        "file's module docstring."
+        "file's module docstring. Paginated/filterable/sortable per §7/§8: `?page&page_size`, "
+        "`?filter[field]=value`, `?sort=field`, `?q=`."
     ),
 )
 async def list_vehicles(
@@ -166,9 +178,18 @@ async def list_vehicles(
     ),
     vehicle_service: VehicleApplicationService = Depends(get_vehicle_service),
     uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
-) -> list[VehicleResponse]:
-    vehicles = await vehicle_service.list_vehicles(ListVehiclesQuery(), uow=uow)
-    return [_vehicle_dto_to_response(v) for v in vehicles]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[VehicleResponse]:
+    page = await vehicle_service.list_vehicles(
+        ListVehiclesQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _vehicle_dto_to_response)
 
 
 @vehicles_router.post(
@@ -278,12 +299,14 @@ async def update_vehicle(
 
 @devices_router.get(
     "",
-    response_model=list[DeviceResponse],
+    response_model=OffsetPageResponse[DeviceResponse],
     status_code=status.HTTP_200_OK,
     summary="List devices",
     description=(
         "Org Admin / Support (API Contracts §4.2). Not yet scope-filtered — see this file's "
-        "module docstring."
+        "module docstring. Paginated/filterable/sortable per §7/§8: `?page&page_size`, "
+        "`?filter[field]=value`, `?sort=field`, `?q=`. `sim_msisdn` is never a whitelisted "
+        "field (PII)."
     ),
 )
 async def list_devices(
@@ -292,9 +315,18 @@ async def list_devices(
     ),
     device_service: DeviceApplicationService = Depends(get_device_service),
     uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
-) -> list[DeviceResponse]:
-    devices = await device_service.list_devices(ListDevicesQuery(), uow=uow)
-    return [_device_dto_to_response(d) for d in devices]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[DeviceResponse]:
+    page = await device_service.list_devices(
+        ListDevicesQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _device_dto_to_response)
 
 
 @devices_router.post(

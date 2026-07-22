@@ -19,10 +19,19 @@ use, unaffected by this file.
 **Recipient resolution and CR-1 gating happen here, not in `domain/policies.py`** — exactly the
 deferral that module's own docstring names: *"the withholding decision belongs to the not-yet-
 built Notification Worker."* For a given `vehicle_id`, this resolves every `StudentAssignment`
-currently `active` for that vehicle (`transport_ops.StudentAssignmentApplicationService.
-list_student_assignments`, filtered client-side — no new `transport_ops` repository method is
+currently `active` for that vehicle (`transport_ops`'s own `StudentAssignmentRepository.list_all`,
+via `TransportOpsUnitOfWork`, filtered client-side — no new `transport_ops` repository method is
 added; `transport_ops` is a stable, already-shipped bounded context and this phase's own "prefer
-minimal changes" constraint applies), then every parent linked to each such student
+minimal changes" constraint applies). **Deliberately not routed through
+`StudentAssignmentApplicationService.list_student_assignments`** — since the Pagination/
+Filtering/Sorting phase, that method is offset-paginated (a page, never "every assignment"), and
+this worker genuinely needs the full unscoped set to filter by `vehicle_id` client-side, exactly
+as `list_all()` (untouched by that phase) already provides; capping this read at any single
+page size would silently miss real assignments once a tenant's total row count exceeds it — a
+correctness regression this worker cannot risk. `list_all()` returns domain `StudentAssignment`
+entities, not DTOs, so `status`/`vehicle_id` are compared through their own value-object/enum
+shape (`.status.value`, `str(a.vehicle_id)`), not string equality against a DTO field. Then
+every parent linked to each such student
 (`StudentParentApplicationService.list_parents_for_student` + `ParentApplicationService.
 get_parent_by_id` for `user_id`), then evaluates `SubscriptionAccessPolicy` (CR-1) per parent
 before calling `NotificationApplicationService.create_notification` — the same policy, same
@@ -77,11 +86,9 @@ from raad.modules.transport_ops.application.queries import (
     GetParentByIdQuery,
     GetTripByIdQuery,
     ListParentsForStudentQuery,
-    ListStudentAssignmentsQuery,
 )
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
-    StudentAssignmentApplicationService,
     StudentParentApplicationService,
     TripApplicationService,
 )
@@ -109,15 +116,22 @@ class _NotificationFanOut:
         data: dict[str, Any] | None,
         trip_id: str | None,
     ) -> None:
-        assignment_service = self._container.resolve(StudentAssignmentApplicationService)
-        assignments = await assignment_service.list_student_assignments(
-            ListStudentAssignmentsQuery(),
-            uow=self._container.resolve(TransportOpsUnitOfWork),
-        )
+        # Deliberately `uow.student_assignments.list_all()`, not `StudentAssignmentApplicationService.
+        # list_student_assignments` — since the Pagination/Filtering/Sorting phase, that method is
+        # offset-paginated (a page, never "every assignment"); this worker needs the true unscoped
+        # set to filter by `vehicle_id` client-side (see class docstring). `list_all()` returns
+        # domain `StudentAssignment` entities: `.status` is a `(str, Enum)`, comparable directly
+        # against a plain string; `.vehicle_id` is a `VehicleId | None` value object, so it is
+        # stringified before comparison rather than compared to the raw `vehicle_id` parameter.
+        assignments_uow = self._container.resolve(TransportOpsUnitOfWork)
+        async with assignments_uow:
+            assignments = await assignments_uow.student_assignments.list_all()
         active_student_ids = {
-            a.student_id
+            str(a.student_id)
             for a in assignments
-            if a.status == "active" and a.vehicle_id == vehicle_id
+            if a.status == "active"
+            and a.vehicle_id is not None
+            and str(a.vehicle_id) == vehicle_id
         }
         if not active_student_ids:
             return

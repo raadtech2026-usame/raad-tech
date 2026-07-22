@@ -13,6 +13,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.value_objects import OrganizationId, RegionId
 
@@ -51,6 +57,20 @@ class OrganizationRepository(ABC):
         this codebase), consistency chosen over selectively fixing only these new ones."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Organization]:
+        """Backs `GET /organizations`'s paginated/filtered/sorted contract (API Contracts §7/
+        §8). `core.pagination` is framework-free (no SQLAlchemy/FastAPI), so referencing its
+        types here does not pull infra/transport concerns into the domain layer."""
+        raise NotImplementedError
+
 
 class RegionRepository(ABC):
     @abstractmethod
@@ -72,6 +92,18 @@ class RegionRepository(ABC):
         """Backs `GET /regions` (API Contracts §4.1) — same Backend Stabilization phase
         addition and same unscoped-`list_all` posture as `OrganizationRepository.list_all`
         above."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Region]:
+        """Backs `GET /regions`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
         raise NotImplementedError
 
 

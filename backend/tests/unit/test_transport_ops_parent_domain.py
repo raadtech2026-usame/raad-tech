@@ -11,6 +11,7 @@ import unittest
 from datetime import datetime, timezone
 
 from raad.core.errors.exceptions import DomainError
+from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.domain.entities import Parent
 from raad.modules.transport_ops.domain.repositories import ParentRepository
@@ -371,6 +372,27 @@ class ParentRepositoryInterfaceTests(unittest.TestCase):
 
             async def list_all(self) -> list[Parent]:
                 return list(self._parents.values())
+
+            async def list_page(
+                self,
+                page_request: OffsetPageRequest,
+                *,
+                sort: list[SortSpec],
+                filters: list[FilterCondition],
+                search: str | None,
+            ) -> OffsetPage[Parent]:
+                # Interface-shape satisfaction only (Tier 2 pagination phase's `list_page`
+                # addition to `ParentRepository`) - full filter/sort/paginate behavior is
+                # covered by `test_transport_ops_parent_application.py`'s own dedicated tests.
+                items = list(self._parents.values())
+                start = page_request.offset
+                end = start + page_request.page_size
+                return OffsetPage(
+                    data=items[start:end],
+                    total=len(items),
+                    page=page_request.page,
+                    page_size=page_request.page_size,
+                )
 
         repo = InMemoryParentRepository()
         parent = make_parent()

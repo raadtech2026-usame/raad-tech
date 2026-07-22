@@ -41,7 +41,6 @@ from raad.modules.organization.application.services import OrganizationApplicati
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
-    StudentAssignmentApplicationService,
     StudentParentApplicationService,
     TripApplicationService,
 )
@@ -81,12 +80,29 @@ class _TripDTO:
     vehicle_id: str
 
 
-class FakeStudentAssignmentService:
+class _FakeStudentAssignmentRepo:
     def __init__(self, assignments: list[_AssignmentDTO]) -> None:
         self._assignments = assignments
 
-    async def list_student_assignments(self, query, *, uow):
+    async def list_all(self):
         return list(self._assignments)
+
+
+class FakeTransportOpsUnitOfWork:
+    """Since the Pagination/Filtering/Sorting phase, `_NotificationFanOut.notify_vehicle_
+    watchers` reads `student_assignments.list_all()` directly off `TransportOpsUnitOfWork`
+    (not through `StudentAssignmentApplicationService.list_student_assignments`, which is now
+    offset-paginated) — this fake stands in for that UoW, supporting the same `async with uow:`
+    shape every real `UnitOfWork` implementation does."""
+
+    def __init__(self, assignments: list[_AssignmentDTO]) -> None:
+        self.student_assignments = _FakeStudentAssignmentRepo(assignments)
+
+    async def __aenter__(self) -> "FakeTransportOpsUnitOfWork":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
 
 
 class FakeStudentParentService:
@@ -155,9 +171,6 @@ def make_container(
 ) -> tuple[Container, RecordingNotificationService]:
     container = Container()
     container.bind_singleton(
-        StudentAssignmentApplicationService, FakeStudentAssignmentService(assignments)
-    )
-    container.bind_singleton(
         StudentParentApplicationService, FakeStudentParentService(links_by_student)
     )
     container.bind_singleton(ParentApplicationService, FakeParentService(parents_by_id))
@@ -170,15 +183,12 @@ def make_container(
     if trip_vehicle_id is not None:
         container.bind_singleton(TripApplicationService, FakeTripService(trip_vehicle_id))
 
-    # UoW types are resolved but never actually used by the fakes above (they don't open
-    # `async with uow:` themselves) — bound to inert sentinels only so `container.resolve`
-    # doesn't raise `LookupError`.
-    for uow_type in (
-        TransportOpsUnitOfWork,
-        OrganizationUnitOfWork,
-        BillingUnitOfWork,
-        NotificationsUnitOfWork,
-    ):
+    # `TransportOpsUnitOfWork` actually IS used now — `notify_vehicle_watchers` opens it
+    # directly to read `student_assignments.list_all()` (see that method's own docstring).
+    # The other three UoW types are resolved but never actually opened by the fakes above —
+    # bound to inert sentinels only so `container.resolve` doesn't raise `LookupError`.
+    container.bind_singleton(TransportOpsUnitOfWork, FakeTransportOpsUnitOfWork(assignments))
+    for uow_type in (OrganizationUnitOfWork, BillingUnitOfWork, NotificationsUnitOfWork):
         container.bind_singleton(uow_type, object())
 
     return container, notification_service

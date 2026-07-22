@@ -32,6 +32,7 @@ from datetime import date, datetime, timedelta
 
 from raad.core.errors.exceptions import DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import OffsetPage
 from raad.core.time.clock import Clock
 from raad.modules.billing.application.commands import (
     ActivatePlanCommand,
@@ -193,10 +194,26 @@ class BillingApplicationService:
 
     async def list_plans(
         self, query: ListPlansQuery, *, uow: BillingUnitOfWork
-    ) -> list[PlanDTO]:
+    ) -> OffsetPage[PlanDTO]:
+        """Backs `GET /billing/plans` (API Contracts §4.7/§7/§8) - pagination/filtering/sorting
+        added under the Pagination/Filtering/Sorting phase, on top of the Backend Stabilization
+        phase's original `list_all`-backed addition (still used by `list_plans`'s own sibling
+        use-cases that need every plan unfiltered, e.g. `renew_parent_subscription`'s
+        `ensure_plan_exists` precondition). Mirrors `organization.application.services.
+        OrganizationApplicationService.list_organizations`'s identical shape."""
         async with uow:
-            plans = await uow.plans.list_all()
-            return [plan_to_dto(plan) for plan in plans]
+            page = await uow.plans.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[plan_to_dto(plan) for plan in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     @staticmethod
     async def _get_plan_or_raise(uow: BillingUnitOfWork, plan_id: str) -> Plan:
@@ -340,10 +357,22 @@ class BillingApplicationService:
 
     async def list_subscriptions(
         self, query: ListSubscriptionsQuery, *, uow: BillingUnitOfWork
-    ) -> list[SubscriptionDTO]:
+    ) -> OffsetPage[SubscriptionDTO]:
+        """Backs `GET /billing/subscriptions` (API Contracts §4.7/§7/§8) - pagination/
+        filtering/sorting added under the Pagination/Filtering/Sorting phase."""
         async with uow:
-            subscriptions = await uow.subscriptions.list_all()
-            return [subscription_to_dto(s) for s in subscriptions]
+            page = await uow.subscriptions.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[subscription_to_dto(s) for s in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     async def get_active_subscription_for_subscriber(
         self, subscriber_type: str, subscriber_id: str, *, uow: BillingUnitOfWork
@@ -408,10 +437,22 @@ class BillingApplicationService:
 
     async def list_invoices(
         self, query: ListInvoicesQuery, *, uow: BillingUnitOfWork
-    ) -> list[InvoiceDTO]:
+    ) -> OffsetPage[InvoiceDTO]:
+        """Backs `GET /billing/invoices` (API Contracts §4.7/§7/§8) - pagination/filtering/
+        sorting added under the Pagination/Filtering/Sorting phase."""
         async with uow:
-            invoices = await uow.invoices.list_all()
-            return [invoice_to_dto(invoice) for invoice in invoices]
+            page = await uow.invoices.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[invoice_to_dto(invoice) for invoice in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     # --- Payment ---------------------------------------------------------------------------
 

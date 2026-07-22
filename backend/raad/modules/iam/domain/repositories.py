@@ -15,6 +15,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.tenancy.principal import Role
 from raad.modules.iam.domain.entities import RefreshToken, User
 from raad.modules.iam.domain.value_objects import (
@@ -58,6 +64,18 @@ class UserRepository(ABC):
         didn't exist yet; ADR-0005 resolves that blocker. Not itself scope-filtered yet — the
         same system-wide, already-flagged gap every other `list_all()` in this codebase
         carries."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[User]:
+        """Backs `GET /users`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
         raise NotImplementedError
 
 

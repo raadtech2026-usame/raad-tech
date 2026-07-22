@@ -43,9 +43,10 @@ verbatim. `active_trip_for_vehicle` backs the one-active-trip-per-vehicle guard
 (`application/validators.py`'s `ensure_vehicle_has_no_active_trip`), mirroring
 `fleet_device.domain.repositories.DeviceAssignmentRepository.active_for_vehicle`'s identical
 role for its own one-active-device-per-vehicle invariant. `list_for_route` carries no
-pagination — `core/pagination` is still an empty module (no limit/offset/cursor convention
-exists to reuse), the same reasoning `application/queries.py`'s `ListStudentsQuery` docstring
-already gives for deferring pagination entirely.
+pagination of its own — it is a small, bounded per-route collection, not a general listing
+surface, the same reasoning `StudentParentRepository.list_by_student`/`list_by_parent` (below)
+apply to their own scoped collections; `ListTripsQuery`'s own top-level listing *is* now
+paginated (Tier 2 pagination phase — see `list_page` below).
 
 **Phase 13 addition: `StudentAssignmentRepository`.** No LLD-given contract skeleton exists for
 this repository (unlike `TripRepository`/`DeviceAssignmentRepository`, which LLD §7.2 gives
@@ -54,12 +55,34 @@ precedent: both aggregates have a single-column surrogate id and a documented "o
 Y" invariant. `active_assignment_for_student` backs the one-active-assignment-per-student guard
 (`application/validators.py`'s `ensure_student_has_no_active_assignment`), the identical role
 `active_trip_for_vehicle` plays for `Trip`.
+
+**Tier 2 pagination phase addition: `list_page` on `StudentRepository`/`ParentRepository`/
+`DriverRepository`/`RouteRepository`/`TripRepository`/`StudentAssignmentRepository`.** Backs
+`GET /students`/`/parents`/`/drivers`/`/routes`/`/trips`/`/student-assignments`'s paginated/
+filterable/sortable contract (API Contracts §7/§8), applying the same `core.pagination`
+(`OffsetPage`/`OffsetPageRequest`/`SortSpec`/`FilterCondition`) shape `iam.domain.repositories.
+UserRepository.list_page`/`organization.domain.repositories.OrganizationRepository.list_page`
+already establish — `core/pagination` is no longer the empty module earlier phases of this file
+described; that gap is now closed. `list_all` remains alongside `list_page` on every one of
+these six repositories (unlike `iam`/`organization`, which only ever had `list_page` layered on
+top of an already-existing `list_all`, this module's own six `list_all` methods keep serving
+their existing non-paginated callers unchanged — no caller of `list_all` was migrated to
+`list_page` this phase). `StudentParentRepository` carries neither `list_page` nor a
+`ListStudentParentsQuery` — its two "list X for Y" methods (`list_by_student`/`list_by_parent`)
+are relationship-scoped-to-one-parent, small, out of this phase's scope (see the six routes this
+phase actually touches, `api/routers.py`'s module docstring).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
@@ -101,6 +124,19 @@ class StudentRepository(ABC):
         tenant — see module docstring."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Student]:
+        """Backs `GET /students`'s paginated/filtered/sorted contract (API Contracts §7/§8) —
+        Tier 2 pagination phase addition, see module docstring."""
+        raise NotImplementedError
+
 
 class ParentRepository(ABC):
     """`parents` has no module-owned *uniqueness* constraint beyond its primary key (Database
@@ -130,6 +166,19 @@ class ParentRepository(ABC):
     async def list_all(self) -> list[Parent]:
         """Backs `ListParentsQuery` (Phase 10.6). Already implicitly scoped to the caller's
         tenant — see module docstring."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Parent]:
+        """Backs `GET /parents`'s paginated/filtered/sorted contract (API Contracts §7/§8) —
+        Tier 2 pagination phase addition, see module docstring."""
         raise NotImplementedError
 
 
@@ -191,6 +240,19 @@ class DriverRepository(ABC):
         tenant — see module docstring."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Driver]:
+        """Backs `GET /drivers`'s paginated/filtered/sorted contract (API Contracts §7/§8) —
+        Tier 2 pagination phase addition, see module docstring."""
+        raise NotImplementedError
+
 
 class RouteRepository(ABC):
     """`Route` owns its `Stop` children (`entities.py`'s Phase 11 addition) — `get`/`add`
@@ -217,6 +279,19 @@ class RouteRepository(ABC):
     async def list_all(self) -> list[Route]:
         """Backs `ListRoutesQuery` (Phase 11). Already implicitly scoped to the caller's
         tenant — see module docstring."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Route]:
+        """Backs `GET /routes`'s paginated/filtered/sorted contract (API Contracts §7/§8) —
+        Tier 2 pagination phase addition, see module docstring."""
         raise NotImplementedError
 
 
@@ -252,6 +327,21 @@ class TripRepository(ABC):
         addition for why."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Trip]:
+        """Backs `GET /trips`'s paginated/filtered/sorted contract (API Contracts §7/§8) —
+        Tier 2 pagination phase addition, see module docstring. Distinct from `list_for_route`
+        above, which stays unpaginated (a small, bounded per-route collection, not this
+        top-level listing surface)."""
+        raise NotImplementedError
+
 
 class StudentAssignmentRepository(ABC):
     """No LLD-given contract skeleton — see module docstring's Phase 13 addition."""
@@ -280,4 +370,17 @@ class StudentAssignmentRepository(ABC):
         """The currently `ACTIVE` assignment for a student, or None. Backs the
         one-active-assignment-per-student guard (safety-critical/CR-1-relevant invariant,
         `.claude/rules/testing.md` #3)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[StudentAssignment]:
+        """Backs `GET /student-assignments`'s paginated/filtered/sorted contract (API
+        Contracts §7/§8) — Tier 2 pagination phase addition, see module docstring."""
         raise NotImplementedError

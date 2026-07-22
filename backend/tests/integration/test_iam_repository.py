@@ -26,8 +26,10 @@ from sqlalchemy import text
 from raad.core.audit.writer import AuditWriter
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
+from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.time.clock import SystemClock
 from raad.core.tenancy.principal import Role
 from raad.modules.iam.domain.entities import RefreshToken, User
@@ -268,6 +270,91 @@ class RefreshTokenRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(fetched)
         self.assertFalse(fetched.is_expired(clock=self.clock))
         self.assertFalse(fetched.is_revoked)
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class UserPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemyUserRepository.list_page` against real SQL, including the `role`
+    filter's case `transform` (`infra/repositories.py`): `UserResponse.role`/`Role.value` is
+    upper-case (what a client would naturally filter by), the stored column is lower-case
+    (`infra/mappers.py`'s module docstring) — this is the one live-DB proof that round-trips
+    through the actual asymmetry rather than a same-casing in-memory fake."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_ids:
+                await conn.execute(
+                    text("DELETE FROM users WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyIamUnitOfWork:
+        return SqlAlchemyIamUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed(self, *, full_name: str, role: Role) -> None:
+        async with self._new_uow() as uow:
+            user = User.invite(
+                id=UserId(self.id_generator.new_id()),
+                organization_id=None,
+                role=role,
+                email=Email(f"{full_name.lower().replace(' ', '.')}-{self.tag}@example.com"),
+                phone=None,
+                full_name=full_name,
+                clock=self.clock,
+            )
+            uow.users.add(user)
+            uow.record_events(user.pull_domain_events())
+            await uow.commit()
+            self._created_ids.append(str(user.id))
+
+    async def test_list_page_filters_by_role_case_insensitively_via_transform(self) -> None:
+        await self._seed(full_name=f"Founder User {self.tag}", role=Role.FOUNDER)
+        await self._seed(full_name=f"Support User {self.tag}", role=Role.SUPPORT_STAFF)
+
+        async with self._new_uow() as uow:
+            page = await uow.users.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[FilterCondition(field="role", op="eq", value="FOUNDER")],
+                search=self.tag,
+            )
+        matching = [u for u in page.data if self.tag in u.full_name]
+        self.assertTrue(all(u.role == Role.FOUNDER for u in matching))
+        self.assertIn(f"Founder User {self.tag}", [u.full_name for u in matching])
+
+    async def test_list_page_search_matches_full_name_substring(self) -> None:
+        await self._seed(full_name=f"Searchable Person {self.tag}", role=Role.FOUNDER)
+
+        async with self._new_uow() as uow:
+            page = await uow.users.list_page(
+                OffsetPageRequest(), sort=[], filters=[], search=f"searchable person {self.tag}"
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].full_name, f"Searchable Person {self.tag}")
+
+    async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.users.list_page(
+                    OffsetPageRequest(),
+                    sort=[],
+                    filters=[FilterCondition(field="password_hash", op="eq", value="x")],
+                    search=None,
+                )
 
 
 if __name__ == "__main__":

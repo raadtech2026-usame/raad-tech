@@ -19,12 +19,24 @@ from __future__ import annotations
 
 from typing import Awaitable, AsyncIterator, Callable
 
-from fastapi import Depends, Request
+from fastapi import Depends, Query, Request
 
 from raad.core.config.settings import Settings, get_settings
 from raad.core.db.unit_of_work import UnitOfWork
 from raad.core.di.container import Container
 from raad.core.errors.exceptions import AuthenticationError, AuthorizationError
+from raad.core.pagination import (
+    DEFAULT_LIMIT,
+    DEFAULT_PAGE_SIZE,
+    MAX_LIMIT,
+    MAX_PAGE_SIZE,
+    CursorPageRequest,
+    FilterCondition,
+    OffsetPageRequest,
+    SortSpec,
+    parse_filters,
+    parse_sort,
+)
 from raad.core.security.permissions import Permission, PermissionEvaluator
 from raad.core.tenancy.principal import Principal
 from raad.core.tenancy.resolver import ScopeResolver
@@ -100,3 +112,47 @@ def require_permission(
         return principal
 
     return _dependency
+
+
+def get_offset_page_request(
+    page: int = Query(1, ge=1, description="1-indexed page number (§7)."),
+    page_size: int = Query(
+        DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page."
+    ),
+) -> OffsetPageRequest:
+    """`?page=1&page_size=25` (API Contracts §7) — the "admin tables where total counts
+    matter" pagination mode, used by every plain resource list endpoint."""
+    return OffsetPageRequest(page=page, page_size=page_size)
+
+
+def get_cursor_page_request(
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT, description="Items per page."),
+    cursor: str | None = Query(
+        None, description="Opaque cursor from a previous response's page.next_cursor."
+    ),
+) -> CursorPageRequest:
+    """`?limit=50&cursor=<opaque>` (API Contracts §7) — used only by the two routes §4.4/§4.6
+    mark "(paginated)": `GET /tracking/trips/{id}/positions` and `GET /notifications`."""
+    return CursorPageRequest(limit=limit, cursor=cursor)
+
+
+def get_sort_params(
+    sort: str | None = Query(
+        None, description="Comma-separated sort keys; prefix with - for descending (§8)."
+    ),
+) -> list[SortSpec]:
+    return parse_sort(sort)
+
+
+def get_filter_conditions(request: Request) -> list[FilterCondition]:
+    """`?filter[field]=value` / `?filter[field][op]=value` (§8) — reads the raw query string
+    directly (not a `Query(...)` param) since bracket-notation keys aren't a fixed, named
+    parameter FastAPI can declare ahead of time. Whitelisting against a resource's actual
+    allowed fields happens at the repository layer (`core/db/repository.py`), never here."""
+    return parse_filters(list(request.query_params.multi_items()))
+
+
+def get_search_query(
+    q: str | None = Query(None, description="Full-text search term (§8)."),
+) -> str | None:
+    return q

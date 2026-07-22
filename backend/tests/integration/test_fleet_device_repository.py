@@ -28,8 +28,10 @@ from sqlalchemy import text
 from raad.core.audit.writer import AuditWriter
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
+from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.time.clock import SystemClock
 from raad.modules.fleet_device.domain.entities import Device, Vehicle
 from raad.modules.fleet_device.domain.value_objects import (
@@ -205,6 +207,253 @@ class VehicleAndDeviceRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase)
             all_devices = await uow.devices.list_all()
 
         self.assertIn(str(device.id), {str(d.id) for d in all_devices})
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class VehiclePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemyVehicleRepository.list_page` (`core/db/repository.py`'s generic
+    engine, `fleet_device`'s own whitelist) against real SQL — offset/limit, `ILIKE` search,
+    whitelisted filter/sort, `func.count()` over the same filtered predicate — mirroring
+    `test_organization_repository.py`'s `OrganizationPaginationRepositoryTests` exactly."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_vehicle_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_vehicle_ids:
+                await conn.execute(
+                    text("DELETE FROM vehicles WHERE id = ANY(:ids)"),
+                    {"ids": self._created_vehicle_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyFleetDeviceUnitOfWork:
+        return SqlAlchemyFleetDeviceUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed(
+        self, *, plate_no: str, organization_id: str, under_maintenance: bool = False
+    ) -> None:
+        async with self._new_uow() as uow:
+            vehicle = Vehicle.register(
+                id=VehicleId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                plate_no=plate_no,
+                clock=self.clock,
+            )
+            if under_maintenance:
+                vehicle.mark_under_maintenance(clock=self.clock)
+            uow.vehicles.add(vehicle)
+            uow.record_events(vehicle.pull_domain_events())
+            await uow.commit()
+            self._created_vehicle_ids.append(str(vehicle.id))
+
+    async def test_list_page_paginates_and_reports_total(self) -> None:
+        org_id = self.id_generator.new_id()
+        for i in range(3):
+            await self._seed(plate_no=f"Page-{self.tag}-{i}", organization_id=org_id)
+
+        async with self._new_uow() as uow:
+            page = await uow.vehicles.list_page(
+                OffsetPageRequest(page=1, page_size=2),
+                sort=[SortSpec(field="plate_no")],
+                filters=[FilterCondition(field="organization_id", op="eq", value=org_id)],
+                search=None,
+            )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+    async def test_list_page_filters_by_status(self) -> None:
+        org_id = self.id_generator.new_id()
+        await self._seed(plate_no=f"Active-{self.tag}", organization_id=org_id)
+        await self._seed(
+            plate_no=f"Maint-{self.tag}",
+            organization_id=org_id,
+            under_maintenance=True,
+        )
+
+        async with self._new_uow() as uow:
+            page = await uow.vehicles.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(field="organization_id", op="eq", value=org_id),
+                    FilterCondition(field="status", op="eq", value="maintenance"),
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].plate_no, f"Maint-{self.tag}")
+
+    async def test_list_page_search_matches_plate_no_substring(self) -> None:
+        org_id = self.id_generator.new_id()
+        await self._seed(plate_no=f"Findable-{self.tag}", organization_id=org_id)
+        await self._seed(plate_no=f"Other-{self.tag}", organization_id=org_id)
+
+        async with self._new_uow() as uow:
+            page = await uow.vehicles.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[FilterCondition(field="organization_id", op="eq", value=org_id)],
+                search="findable",
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].plate_no, f"Findable-{self.tag}")
+
+    async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.vehicles.list_page(
+                    OffsetPageRequest(),
+                    sort=[],
+                    filters=[FilterCondition(field="id", op="eq", value="x")],
+                    search=None,
+                )
+
+    async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.vehicles.list_page(
+                    OffsetPageRequest(),
+                    sort=[SortSpec(field="capacity")],
+                    filters=[],
+                    search=None,
+                )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class DevicePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemyDeviceRepository.list_page` against real SQL — mirrors
+    `VehiclePaginationRepositoryTests` above. `sim_msisdn` is deliberately never used as a
+    filter/sort field here — it is PII and not in the repository's whitelist
+    (`infra/repositories.py`'s own comment)."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_device_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_device_ids:
+                await conn.execute(
+                    text("DELETE FROM devices WHERE id = ANY(:ids)"),
+                    {"ids": self._created_device_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyFleetDeviceUnitOfWork:
+        return SqlAlchemyFleetDeviceUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed(
+        self, *, terminal_id: str, organization_id: str, activated: bool = False
+    ) -> None:
+        async with self._new_uow() as uow:
+            device = Device.register(
+                id=DeviceId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                terminal_id=TerminalId(terminal_id),
+                clock=self.clock,
+            )
+            if activated:
+                device.activate(clock=self.clock)
+            uow.devices.add(device)
+            uow.record_events(device.pull_domain_events())
+            await uow.commit()
+            self._created_device_ids.append(str(device.id))
+
+    async def test_list_page_paginates_and_reports_total(self) -> None:
+        org_id = self.id_generator.new_id()
+        for i in range(3):
+            await self._seed(
+                terminal_id=f"Page-{self.tag}-{i}", organization_id=org_id
+            )
+
+        async with self._new_uow() as uow:
+            page = await uow.devices.list_page(
+                OffsetPageRequest(page=1, page_size=2),
+                sort=[SortSpec(field="terminal_id")],
+                filters=[FilterCondition(field="organization_id", op="eq", value=org_id)],
+                search=None,
+            )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+    async def test_list_page_filters_by_lifecycle_state(self) -> None:
+        org_id = self.id_generator.new_id()
+        await self._seed(
+            terminal_id=f"Activated-{self.tag}", organization_id=org_id, activated=True
+        )
+        await self._seed(terminal_id=f"Registered-{self.tag}", organization_id=org_id)
+
+        async with self._new_uow() as uow:
+            page = await uow.devices.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(field="organization_id", op="eq", value=org_id),
+                    FilterCondition(
+                        field="lifecycle_state", op="eq", value="activated"
+                    ),
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].terminal_id, TerminalId(f"Activated-{self.tag}"))
+
+    async def test_list_page_search_matches_terminal_id_substring(self) -> None:
+        org_id = self.id_generator.new_id()
+        await self._seed(terminal_id=f"Findable-{self.tag}", organization_id=org_id)
+        await self._seed(terminal_id=f"Other-{self.tag}", organization_id=org_id)
+
+        async with self._new_uow() as uow:
+            page = await uow.devices.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[FilterCondition(field="organization_id", op="eq", value=org_id)],
+                search="findable",
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(str(page.data[0].terminal_id), f"Findable-{self.tag}")
+
+    async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        """`sim_msisdn` is PII and deliberately excluded from the filterable whitelist."""
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.devices.list_page(
+                    OffsetPageRequest(),
+                    sort=[],
+                    filters=[FilterCondition(field="sim_msisdn", op="eq", value="x")],
+                    search=None,
+                )
+
+    async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.devices.list_page(
+                    OffsetPageRequest(),
+                    sort=[SortSpec(field="sim_msisdn")],
+                    filters=[],
+                    search=None,
+                )
 
 
 if __name__ == "__main__":

@@ -4,16 +4,20 @@ Mirrors `billing.application.queries`'s single-DTO-per-aggregate convention.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.modules.platform_audit.domain.entities import AuditEntry, SystemSetting
 
 
 @dataclass(frozen=True)
 class ListAuditEntriesQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -52,7 +56,10 @@ class GetSystemSettingQuery:
 
 @dataclass(frozen=True)
 class ListSystemSettingsQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,12 @@ from datetime import datetime, timezone
 
 from raad.core.errors.exceptions import ConflictError, NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.organization.application.commands import (
@@ -27,6 +33,8 @@ from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.application.queries import (
     GetOrganizationByIdQuery,
     GetRegionByIdQuery,
+    ListOrganizationsQuery,
+    ListRegionsQuery,
 )
 from raad.modules.organization.application.services import (
     OrganizationApplicationService,
@@ -68,6 +76,64 @@ class SequentialIdGenerator(IdGenerator):
         return f"{self._PREFIX}{self._counter:06d}"
 
 
+def _field_text(item: object, field_name: str) -> str:
+    value = getattr(item, field_name)
+    value = getattr(value, "value", value)
+    return "" if value is None else str(value)
+
+
+def _matches_filter(item: object, condition: FilterCondition) -> bool:
+    text = _field_text(item, condition.field)
+    if condition.op == "eq":
+        return text == condition.value
+    if condition.op == "in":
+        return text in {part.strip() for part in condition.value.split(",")}
+    if condition.op == "gte":
+        return text >= condition.value
+    if condition.op == "lte":
+        return text <= condition.value
+    if condition.op == "gt":
+        return text > condition.value
+    if condition.op == "lt":
+        return text < condition.value
+    return True
+
+
+def _paginate_in_memory(
+    items: list,
+    page_request: OffsetPageRequest,
+    *,
+    sort: list[SortSpec],
+    filters: list[FilterCondition],
+    search: str | None,
+    search_field: str = "name",
+) -> OffsetPage:
+    """Shared in-memory equivalent of `SqlAlchemyRepositoryBase.list_page` (`core/db/
+    repository.py`), for fake repositories that can't run real SQL — duplicated per module's
+    own test file rather than a shared test helper, mirroring this codebase's own established
+    "duplicated per module" precedent (e.g. domain-event buffering)."""
+    for condition in filters:
+        items = [item for item in items if _matches_filter(item, condition)]
+    if search:
+        items = [
+            item
+            for item in items
+            if search.lower() in _field_text(item, search_field).lower()
+        ]
+    for spec in reversed(sort):
+        items = sorted(
+            items, key=lambda item: _field_text(item, spec.field), reverse=spec.descending
+        )
+    if not sort:
+        items = sorted(items, key=lambda item: str(item.id))
+    total = len(items)
+    start = page_request.offset
+    end = start + page_request.page_size
+    return OffsetPage(
+        data=items[start:end], total=total, page=page_request.page, page_size=page_request.page_size
+    )
+
+
 class InMemoryOrganizationRepository(OrganizationRepository):
     def __init__(self) -> None:
         self.by_id: dict[str, Organization] = {}
@@ -89,6 +155,22 @@ class InMemoryOrganizationRepository(OrganizationRepository):
 
     async def list_all(self) -> list[Organization]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Organization]:
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
 
 
 class InMemoryScopeAssignmentRepository(ScopeAssignmentRepository):
@@ -141,6 +223,22 @@ class InMemoryRegionRepository(RegionRepository):
 
     async def list_all(self) -> list[Region]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Region]:
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
 
 
 class FakeOrganizationUnitOfWork(OrganizationUnitOfWork):
@@ -393,6 +491,117 @@ class RegionApplicationTests(unittest.IsolatedAsyncioTestCase):
             await region_service.get_region_by_id(
                 GetRegionByIdQuery(region_id=NON_EXISTENT_ULID), uow=uow
             )
+
+
+class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_organizations_paginates_and_reports_total(self) -> None:
+        org_service, region_service, uow = make_services()
+        region_id = await _seed_region(region_service, uow)
+        for i in range(3):
+            await org_service.register_organization(
+                RegisterOrganizationCommand(
+                    name=f"School {i}",
+                    org_type=OrgType.SCHOOL,
+                    region_id=region_id,
+                    billing_model=BillingModel.ORGANIZATION_PAYS,
+                    parent_org_id=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await org_service.list_organizations(
+            ListOrganizationsQuery(page_request=OffsetPageRequest(page=1, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(page.page, 1)
+        self.assertEqual(page.page_size, 2)
+        self.assertEqual(len(page.data), 2)
+
+        second_page = await org_service.list_organizations(
+            ListOrganizationsQuery(page_request=OffsetPageRequest(page=2, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(len(second_page.data), 1)
+
+    async def test_list_organizations_filters_by_billing_model(self) -> None:
+        org_service, region_service, uow = make_services()
+        region_id = await _seed_region(region_service, uow)
+        await org_service.register_organization(
+            RegisterOrganizationCommand(
+                name="Org Pays",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                parent_org_id=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await org_service.register_organization(
+            RegisterOrganizationCommand(
+                name="Parent Pays",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.PARENT_PAYS,
+                parent_org_id=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        page = await org_service.list_organizations(
+            ListOrganizationsQuery(
+                page_request=OffsetPageRequest(),
+                filters=[
+                    FilterCondition(field="billing_model", op="eq", value="parent_pays")
+                ],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].name, "Parent Pays")
+
+    async def test_list_organizations_sorts_descending_by_name(self) -> None:
+        org_service, region_service, uow = make_services()
+        region_id = await _seed_region(region_service, uow)
+        for name in ("Alpha", "Beta", "Gamma"):
+            await org_service.register_organization(
+                RegisterOrganizationCommand(
+                    name=name,
+                    org_type=OrgType.SCHOOL,
+                    region_id=region_id,
+                    billing_model=BillingModel.ORGANIZATION_PAYS,
+                    parent_org_id=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await org_service.list_organizations(
+            ListOrganizationsQuery(
+                page_request=OffsetPageRequest(),
+                sort=[SortSpec(field="name", descending=True)],
+            ),
+            uow=uow,
+        )
+        self.assertEqual([o.name for o in page.data], ["Gamma", "Beta", "Alpha"])
+
+    async def test_list_regions_paginates(self) -> None:
+        _org_service, region_service, uow = make_services()
+        for name in ("East Africa", "West Africa"):
+            await region_service.create_region(
+                CreateRegionCommand(name=name, geographic_scope=None, actor=make_actor()),
+                uow=uow,
+            )
+
+        page = await region_service.list_regions(
+            ListRegionsQuery(page_request=OffsetPageRequest(page=1, page_size=1)),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 2)
+        self.assertEqual(len(page.data), 1)
 
 
 if __name__ == "__main__":

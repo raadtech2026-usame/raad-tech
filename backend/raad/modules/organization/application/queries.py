@@ -6,9 +6,14 @@ API/infra layer, so neither ever depends on the other's internal shape. Mirrors
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.modules.organization.domain.entities import Organization, Region
 
 
@@ -19,7 +24,10 @@ class GetOrganizationByIdQuery:
 
 @dataclass(frozen=True)
 class ListOrganizationsQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -29,7 +37,10 @@ class GetRegionByIdQuery:
 
 @dataclass(frozen=True)
 class ListRegionsQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)

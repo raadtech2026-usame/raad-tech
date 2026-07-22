@@ -16,6 +16,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.modules.billing.domain.entities import (
     Invoice,
     Payment,
@@ -51,6 +57,23 @@ class PlanRepository(ABC):
         `list_all` in this codebase, this one is not even implicitly org-scoped."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Plan]:
+        """Backs `GET /billing/plans`'s paginated/filtered/sorted contract (API Contracts §7/
+        §8), added under the Pagination/Filtering/Sorting phase. `core.pagination` is
+        framework-free (no SQLAlchemy/FastAPI), so referencing its types here does not pull
+        infra/transport concerns into the domain layer — mirrors
+        `organization.domain.repositories.OrganizationRepository.list_page`'s identical
+        reasoning."""
+        raise NotImplementedError
+
 
 class SubscriptionRepository(ABC):
     @abstractmethod
@@ -65,6 +88,19 @@ class SubscriptionRepository(ABC):
     async def list_all(self) -> list[Subscription]:
         """Backs `ListSubscriptionsQuery` (API Contracts §4.7's documented
         `GET /billing/subscriptions`). Already implicitly scoped to the caller's tenant."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Subscription]:
+        """Backs `GET /billing/subscriptions`'s paginated/filtered/sorted contract (API
+        Contracts §7/§8), added under the Pagination/Filtering/Sorting phase."""
         raise NotImplementedError
 
     @abstractmethod
@@ -94,6 +130,19 @@ class InvoiceRepository(ABC):
     async def list_all(self) -> list[Invoice]:
         """Backs `ListInvoicesQuery` (API Contracts §4.7's documented
         `GET /billing/invoices`). Already implicitly scoped to the caller's tenant."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Invoice]:
+        """Backs `GET /billing/invoices`'s paginated/filtered/sorted contract (API Contracts
+        §7/§8), added under the Pagination/Filtering/Sorting phase."""
         raise NotImplementedError
 
 

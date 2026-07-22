@@ -5,9 +5,10 @@ layer, so neither ever depends on the other's internal shape.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.modules.iam.domain.entities import User
 
 
@@ -18,7 +19,10 @@ class GetUserByIdQuery:
 
 @dataclass(frozen=True)
 class ListUsersQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)

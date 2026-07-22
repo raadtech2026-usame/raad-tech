@@ -192,9 +192,17 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, status
 
 from raad.core.errors.exceptions import AuthorizationError, ValidationError
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal, Role
-from raad.interfaces.http.deps import require_permission
+from raad.interfaces.http.deps import (
+    get_filter_conditions,
+    get_offset_page_request,
+    get_search_query,
+    get_sort_params,
+    require_permission,
+)
+from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
 from raad.modules.transport_ops.api.deps import (
     get_driver_service,
     get_parent_service,
@@ -536,15 +544,15 @@ async def enroll_student(
 
 @students_router.get(
     "",
-    response_model=list[StudentSummaryResponse],
+    response_model=OffsetPageResponse[StudentSummaryResponse],
     status_code=status.HTTP_200_OK,
     summary="List students",
     description=(
         "Org Admin (API Contracts §4.3). Not yet tenant-scoped — see this module's own "
-        "docstring and `infra/repositories.py`'s (Phase 10.3): `list_all` uses an "
+        "docstring and `infra/repositories.py`'s (Phase 10.3): `list_page` uses an "
         "unrestricted `TenantRegionScope` pending a system-wide `ScopeResolver` binding. "
-        "Authorization resolves against the real seeded RBAC permission matrix — see "
-        "`enroll_student`'s note."
+        "Paginated/filterable/sortable per §7/§8. Authorization resolves against the real "
+        "seeded RBAC permission matrix — see `enroll_student`'s note."
     ),
 )
 async def list_students(
@@ -553,9 +561,18 @@ async def list_students(
     ),
     student_service: StudentApplicationService = Depends(get_student_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
-) -> list[StudentSummaryResponse]:
-    students = await student_service.list_students(ListStudentsQuery(), uow=uow)
-    return [_student_summary_dto_to_response(student) for student in students]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[StudentSummaryResponse]:
+    page = await student_service.list_students(
+        ListStudentsQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _student_summary_dto_to_response)
 
 
 @students_router.get(
@@ -702,14 +719,14 @@ async def register_parent(
 
 @parents_router.get(
     "",
-    response_model=list[ParentSummaryResponse],
+    response_model=OffsetPageResponse[ParentSummaryResponse],
     status_code=status.HTTP_200_OK,
     summary="List parents",
     description=(
         "Org Admin (API Contracts §4.3). Not yet tenant-scoped — same inherited caveat as "
         "`list_students`; see this module's own docstring and `infra/repositories.py`'s "
-        "(Phase 10.3). Authorization resolves against the real seeded RBAC permission "
-        "matrix."
+        "(Phase 10.3). Paginated/filterable/sortable per §7/§8. Authorization resolves "
+        "against the real seeded RBAC permission matrix."
     ),
 )
 async def list_parents(
@@ -718,9 +735,18 @@ async def list_parents(
     ),
     parent_service: ParentApplicationService = Depends(get_parent_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
-) -> list[ParentSummaryResponse]:
-    parents = await parent_service.list_parents(ListParentsQuery(), uow=uow)
-    return [_parent_summary_dto_to_response(parent) for parent in parents]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[ParentSummaryResponse]:
+    page = await parent_service.list_parents(
+        ListParentsQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _parent_summary_dto_to_response)
 
 
 @parents_router.get(
@@ -964,14 +990,14 @@ async def register_driver(
 
 @drivers_router.get(
     "",
-    response_model=list[DriverSummaryResponse],
+    response_model=OffsetPageResponse[DriverSummaryResponse],
     status_code=status.HTTP_200_OK,
     summary="List drivers",
     description=(
         "Org Admin. No documented API Contracts route (Phase 10.8, see this module's own "
         "docstring). Not yet tenant-scoped — same inherited caveat as `list_students`/"
-        "`list_parents`. Authorization resolves against the real seeded RBAC permission "
-        "matrix."
+        "`list_parents`. Paginated/filterable/sortable per §7/§8. Authorization resolves "
+        "against the real seeded RBAC permission matrix."
     ),
 )
 async def list_drivers(
@@ -980,9 +1006,18 @@ async def list_drivers(
     ),
     driver_service: DriverApplicationService = Depends(get_driver_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
-) -> list[DriverSummaryResponse]:
-    drivers = await driver_service.list_drivers(ListDriversQuery(), uow=uow)
-    return [_driver_summary_dto_to_response(driver) for driver in drivers]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[DriverSummaryResponse]:
+    page = await driver_service.list_drivers(
+        ListDriversQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _driver_summary_dto_to_response)
 
 
 @drivers_router.get(
@@ -1102,13 +1137,14 @@ async def create_route(
 
 @routes_router.get(
     "",
-    response_model=list[RouteSummaryResponse],
+    response_model=OffsetPageResponse[RouteSummaryResponse],
     status_code=status.HTTP_200_OK,
     summary="List routes",
     description=(
         "Org Admin (API Contracts §4.3 line 125). Not yet tenant-scoped — same inherited "
-        "caveat as `list_students`/`list_parents`/`list_drivers`. Authorization resolves "
-        "against the real seeded RBAC permission matrix."
+        "caveat as `list_students`/`list_parents`/`list_drivers`. Paginated/filterable/"
+        "sortable per §7/§8. Authorization resolves against the real seeded RBAC permission "
+        "matrix."
     ),
 )
 async def list_routes(
@@ -1117,9 +1153,18 @@ async def list_routes(
     ),
     route_service: RouteApplicationService = Depends(get_route_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
-) -> list[RouteSummaryResponse]:
-    routes = await route_service.list_routes(ListRoutesQuery(), uow=uow)
-    return [_route_summary_dto_to_response(route) for route in routes]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[RouteSummaryResponse]:
+    page = await route_service.list_routes(
+        ListRoutesQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _route_summary_dto_to_response)
 
 
 @routes_router.get(
@@ -1307,13 +1352,16 @@ async def schedule_trip(
 
 @trips_router.get(
     "",
-    response_model=list[TripSummaryResponse],
+    response_model=OffsetPageResponse[TripSummaryResponse],
     status_code=status.HTTP_200_OK,
     summary="List trips",
     description=(
         "Org Admin (API Contracts §4.3 line 129). Not yet tenant-scoped — same inherited "
-        "caveat as `list_students`/`list_parents`/`list_drivers`/`list_routes`. Authorization "
-        "resolves against the real seeded RBAC permission matrix."
+        "caveat as `list_students`/`list_parents`/`list_drivers`/`list_routes`. Paginated/"
+        "filterable/sortable per §7/§8 — `Trip` is API Contracts §8's own filtering example "
+        "resource (`filter[trip_type][in]=morning,afternoon`, "
+        "`filter[scheduled_date][gte]=...`). Authorization resolves against the real seeded "
+        "RBAC permission matrix."
     ),
 )
 async def list_trips(
@@ -1322,9 +1370,18 @@ async def list_trips(
     ),
     trip_service: TripApplicationService = Depends(get_trip_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
-) -> list[TripSummaryResponse]:
-    trips = await trip_service.list_trips(ListTripsQuery(), uow=uow)
-    return [_trip_summary_dto_to_response(trip) for trip in trips]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[TripSummaryResponse]:
+    page = await trip_service.list_trips(
+        ListTripsQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _trip_summary_dto_to_response)
 
 
 @trips_router.get(
@@ -1518,13 +1575,13 @@ async def assign_student_to_route(
 
 @student_assignments_router.get(
     "",
-    response_model=list[StudentAssignmentSummaryResponse],
+    response_model=OffsetPageResponse[StudentAssignmentSummaryResponse],
     status_code=status.HTTP_200_OK,
     summary="List student assignments",
     description=(
         "Org Admin (API Contracts §4.3 line 127). Not yet tenant-scoped — same inherited "
-        "caveat as `list_students`/`list_trips`. Authorization resolves against the real "
-        "seeded RBAC permission matrix."
+        "caveat as `list_students`/`list_trips`. Paginated/filterable/sortable per §7/§8. "
+        "Authorization resolves against the real seeded RBAC permission matrix."
     ),
 )
 async def list_student_assignments(
@@ -1535,14 +1592,18 @@ async def list_student_assignments(
         get_student_assignment_service
     ),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
-) -> list[StudentAssignmentSummaryResponse]:
-    assignments = await student_assignment_service.list_student_assignments(
-        ListStudentAssignmentsQuery(), uow=uow
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[StudentAssignmentSummaryResponse]:
+    page = await student_assignment_service.list_student_assignments(
+        ListStudentAssignmentsQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
     )
-    return [
-        _student_assignment_summary_dto_to_response(assignment)
-        for assignment in assignments
-    ]
+    return to_offset_page_response(page, _student_assignment_summary_dto_to_response)
 
 
 @student_assignments_router.get(

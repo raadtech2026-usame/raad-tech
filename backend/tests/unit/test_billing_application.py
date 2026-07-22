@@ -20,6 +20,12 @@ from datetime import date, datetime, timezone
 
 from raad.core.errors.exceptions import DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.billing.application.commands import (
@@ -108,6 +114,65 @@ class SequentialIdGenerator(IdGenerator):
         return f"{self._PREFIX}{self._counter:06d}"
 
 
+def _field_text(item: object, field_name: str) -> str:
+    value = getattr(item, field_name)
+    value = getattr(value, "value", value)
+    return "" if value is None else str(value)
+
+
+def _matches_filter(item: object, condition: FilterCondition) -> bool:
+    text = _field_text(item, condition.field)
+    if condition.op == "eq":
+        return text == condition.value
+    if condition.op == "in":
+        return text in {part.strip() for part in condition.value.split(",")}
+    if condition.op == "gte":
+        return text >= condition.value
+    if condition.op == "lte":
+        return text <= condition.value
+    if condition.op == "gt":
+        return text > condition.value
+    if condition.op == "lt":
+        return text < condition.value
+    return True
+
+
+def _paginate_in_memory(
+    items: list,
+    page_request: OffsetPageRequest,
+    *,
+    sort: list[SortSpec],
+    filters: list[FilterCondition],
+    search: str | None,
+    search_field: str = "name",
+) -> OffsetPage:
+    """Shared in-memory equivalent of `SqlAlchemyRepositoryBase.list_page` (`core/db/
+    repository.py`), for fake repositories that can't run real SQL — duplicated from
+    `test_organization_application.py`'s identical helper, mirroring this codebase's own
+    established "duplicated per module's own test file" precedent (e.g. domain-event
+    buffering)."""
+    for condition in filters:
+        items = [item for item in items if _matches_filter(item, condition)]
+    if search:
+        items = [
+            item
+            for item in items
+            if search.lower() in _field_text(item, search_field).lower()
+        ]
+    for spec in reversed(sort):
+        items = sorted(
+            items, key=lambda item: _field_text(item, spec.field), reverse=spec.descending
+        )
+    if not sort:
+        items = sorted(items, key=lambda item: str(item.id))
+    total = len(items)
+    start = page_request.offset
+    end = start + page_request.page_size
+    return OffsetPage(
+        data=items[start:end], total=total, page=page_request.page, page_size=page_request.page_size
+    )
+
+
 def make_actor(org_id: str = VALID_ORG_ULID) -> Principal:
     return Principal(user_id="admin-1", role=Role.ORG_ADMIN, org_id=org_id)
 
@@ -125,6 +190,22 @@ class InMemoryPlanRepository(PlanRepository):
     async def list_all(self) -> list[Plan]:
         return list(self.by_id.values())
 
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Plan]:
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+
 
 class InMemorySubscriptionRepository(SubscriptionRepository):
     def __init__(self) -> None:
@@ -138,6 +219,22 @@ class InMemorySubscriptionRepository(SubscriptionRepository):
 
     async def list_all(self) -> list[Subscription]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Subscription]:
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
 
     async def get_active_by_subscriber(
         self, subscriber_type: SubscriberType, subscriber_id: SubscriberId
@@ -166,6 +263,23 @@ class InMemoryInvoiceRepository(InvoiceRepository):
 
     async def list_all(self) -> list[Invoice]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Invoice]:
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+            search_field="number",
+        )
 
 
 class InMemoryPaymentRepository(PaymentRepository):
@@ -323,8 +437,11 @@ class PlanApplicationTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        plans = await service.list_plans(ListPlansQuery(), uow=uow)
-        self.assertEqual(len(plans), 1)
+        page = await service.list_plans(
+            ListPlansQuery(page_request=OffsetPageRequest()), uow=uow
+        )
+        self.assertEqual(len(page.data), 1)
+        self.assertEqual(page.total, 1)
 
 
 class SubscriptionApplicationTests(unittest.IsolatedAsyncioTestCase):
@@ -451,8 +568,11 @@ class SubscriptionApplicationTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        subscriptions = await service.list_subscriptions(ListSubscriptionsQuery(), uow=uow)
-        self.assertEqual(len(subscriptions), 1)
+        page = await service.list_subscriptions(
+            ListSubscriptionsQuery(page_request=OffsetPageRequest()), uow=uow
+        )
+        self.assertEqual(len(page.data), 1)
+        self.assertEqual(page.total, 1)
 
 
 class InvoiceApplicationTests(unittest.IsolatedAsyncioTestCase):
@@ -1135,6 +1255,374 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
             timeout_minutes=30, uow=uow
         )
         self.assertEqual(expired_count, 0)
+
+
+class PlanPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """`GET /billing/plans` pagination/filtering/sorting (API Contracts §7/§8) — mirrors
+    `test_organization_application.py`'s `OrganizationPaginationApplicationTests` exactly."""
+
+    async def test_list_plans_paginates_and_reports_total(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        for i in range(3):
+            await service.create_plan(
+                CreatePlanCommand(
+                    name=f"Plan {i}",
+                    billing_scope="organization",
+                    amount=10.00 + i,
+                    currency="USD",
+                    billing_cycle="monthly",
+                    vehicle_limit=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await service.list_plans(
+            ListPlansQuery(page_request=OffsetPageRequest(page=1, page_size=2)), uow=uow
+        )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(page.page, 1)
+        self.assertEqual(page.page_size, 2)
+        self.assertEqual(len(page.data), 2)
+
+        second_page = await service.list_plans(
+            ListPlansQuery(page_request=OffsetPageRequest(page=2, page_size=2)), uow=uow
+        )
+        self.assertEqual(len(second_page.data), 1)
+
+    async def test_list_plans_filters_by_billing_scope(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        await service.create_plan(
+            CreatePlanCommand(
+                name="Org Plan",
+                billing_scope="organization",
+                amount=50.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.create_plan(
+            CreatePlanCommand(
+                name="Parent Plan",
+                billing_scope="parent",
+                amount=10.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        page = await service.list_plans(
+            ListPlansQuery(
+                page_request=OffsetPageRequest(),
+                filters=[FilterCondition(field="billing_scope", op="eq", value="parent")],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].name, "Parent Plan")
+
+    async def test_list_plans_sorts_descending_by_name(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        for name in ("Alpha", "Beta", "Gamma"):
+            await service.create_plan(
+                CreatePlanCommand(
+                    name=name,
+                    billing_scope="organization",
+                    amount=10.00,
+                    currency="USD",
+                    billing_cycle="monthly",
+                    vehicle_limit=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await service.list_plans(
+            ListPlansQuery(
+                page_request=OffsetPageRequest(),
+                sort=[SortSpec(field="name", descending=True)],
+            ),
+            uow=uow,
+        )
+        self.assertEqual([p.name for p in page.data], ["Gamma", "Beta", "Alpha"])
+
+
+class SubscriptionPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """`GET /billing/subscriptions` pagination/filtering/sorting (API Contracts §7/§8)."""
+
+    async def _make_plan(self, service: BillingApplicationService, uow) -> str:
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Parent Plan",
+                billing_scope="parent",
+                amount=10.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        return plan.id
+
+    async def test_list_subscriptions_paginates_and_reports_total(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        plan_id = await self._make_plan(service, uow)
+        for i in range(3):
+            await service.renew_parent_subscription(
+                RenewParentSubscriptionCommand(
+                    organization_id=VALID_ORG_ULID,
+                    parent_id=f"parent-page-{i}",
+                    plan_id=plan_id,
+                    msisdn="+2526000000",
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await service.list_subscriptions(
+            ListSubscriptionsQuery(page_request=OffsetPageRequest(page=1, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+        second_page = await service.list_subscriptions(
+            ListSubscriptionsQuery(page_request=OffsetPageRequest(page=2, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(len(second_page.data), 1)
+
+    async def test_list_subscriptions_filters_by_status(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        plan_id = await self._make_plan(service, uow)
+        first = await service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-filter-1",
+                plan_id=plan_id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-filter-2",
+                plan_id=plan_id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.suspend_subscription(
+            SuspendSubscriptionCommand(
+                subscription_id=first.subscription_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        page = await service.list_subscriptions(
+            ListSubscriptionsQuery(
+                page_request=OffsetPageRequest(),
+                filters=[FilterCondition(field="status", op="eq", value="suspended")],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].id, first.subscription_id)
+
+    async def test_list_subscriptions_sorts_ascending_by_status(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        plan_id = await self._make_plan(service, uow)
+        first = await service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-sort-1",
+                plan_id=plan_id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        second = await service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-sort-2",
+                plan_id=plan_id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-sort-3",
+                plan_id=plan_id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.suspend_subscription(
+            SuspendSubscriptionCommand(
+                subscription_id=first.subscription_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        await service.cancel_subscription(
+            CancelSubscriptionCommand(
+                subscription_id=second.subscription_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        # third subscription is left "trial" - alphabetically: cancelled < suspended < trial.
+
+        page = await service.list_subscriptions(
+            ListSubscriptionsQuery(
+                page_request=OffsetPageRequest(),
+                sort=[SortSpec(field="status", descending=False)],
+            ),
+            uow=uow,
+        )
+        self.assertEqual([s.status for s in page.data], ["cancelled", "suspended", "trial"])
+
+
+class InvoicePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """`GET /billing/invoices` pagination/filtering/sorting (API Contracts §7/§8). Sort test
+    uses `status`, not `amount` - `_field_text`'s generic string-based comparison (this file's
+    in-memory `list_page` equivalent) does not sort a `Money` value object numerically, so a
+    string-typed field is the only one that reliably matches real Postgres numeric-column
+    ordering behavior here."""
+
+    async def _make_subscription(
+        self, service: BillingApplicationService, uow
+    ) -> tuple[str, str]:
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Org Plan",
+                billing_scope="organization",
+                amount=100.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        renewal = await service.renew_parent_subscription(
+            RenewParentSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                parent_id="parent-invoice-page",
+                plan_id=plan.id,
+                msisdn="+2526000000",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        return plan.id, renewal.subscription_id
+
+    async def test_list_invoices_paginates_and_reports_total(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        _plan_id, subscription_id = await self._make_subscription(service, uow)
+        # renew_parent_subscription already issued one invoice - issue two more for a total of 3.
+        for i in range(2):
+            await service.issue_invoice(
+                IssueInvoiceCommand(
+                    organization_id=VALID_ORG_ULID,
+                    subscription_id=subscription_id,
+                    amount=100.00,
+                    currency="USD",
+                    period_start=date(2026, 8 + i, 1),
+                    period_end=date(2026, 8 + i, 28),
+                    due_at=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await service.list_invoices(
+            ListInvoicesQuery(page_request=OffsetPageRequest(page=1, page_size=2)), uow=uow
+        )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+    async def test_list_invoices_filters_by_status(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        _plan_id, subscription_id = await self._make_subscription(service, uow)
+        second = await service.issue_invoice(
+            IssueInvoiceCommand(
+                organization_id=VALID_ORG_ULID,
+                subscription_id=subscription_id,
+                amount=50.00,
+                currency="USD",
+                period_start=date(2026, 9, 1),
+                period_end=date(2026, 9, 28),
+                due_at=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.void_invoice(
+            VoidInvoiceCommand(invoice_id=second.id, actor=make_actor()), uow=uow
+        )
+
+        page = await service.list_invoices(
+            ListInvoicesQuery(
+                page_request=OffsetPageRequest(),
+                filters=[FilterCondition(field="status", op="eq", value="void")],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].id, second.id)
+
+    async def test_list_invoices_sorts_descending_by_status(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        _plan_id, subscription_id = await self._make_subscription(service, uow)
+        second = await service.issue_invoice(
+            IssueInvoiceCommand(
+                organization_id=VALID_ORG_ULID,
+                subscription_id=subscription_id,
+                amount=50.00,
+                currency="USD",
+                period_start=date(2026, 9, 1),
+                period_end=date(2026, 9, 28),
+                due_at=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.void_invoice(
+            VoidInvoiceCommand(invoice_id=second.id, actor=make_actor()), uow=uow
+        )
+        # renewal's own invoice stays "issued"; `second` is now "void" - descending: void > issued.
+
+        page = await service.list_invoices(
+            ListInvoicesQuery(
+                page_request=OffsetPageRequest(),
+                sort=[SortSpec(field="status", descending=True)],
+            ),
+            uow=uow,
+        )
+        self.assertEqual([inv.status for inv in page.data], ["void", "issued"])
 
 
 if __name__ == "__main__":

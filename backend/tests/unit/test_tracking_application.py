@@ -13,8 +13,15 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from raad.core.errors.exceptions import DomainError
+from raad.core.errors.exceptions import DomainError, ValidationError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import (
+    CursorPage,
+    CursorPageRequest,
+    FilterCondition,
+    decode_cursor,
+    encode_cursor,
+)
 from raad.core.time.clock import Clock
 from raad.modules.tracking.application.commands import (
     EvaluateGeofenceCommand,
@@ -91,6 +98,58 @@ class InMemoryVehiclePositionRepository(VehiclePositionRepository):
             p for p in self.by_id.values() if str(p.vehicle_id) == str(vehicle_id)
         ]
         return sorted(matches, key=lambda p: p.event_time)
+
+    async def list_for_trip_page(
+        self,
+        trip_id: TripId,
+        cursor_request: CursorPageRequest,
+        *,
+        filters: list[FilterCondition],
+    ) -> CursorPage[VehiclePosition]:
+        """In-memory cursor-pagination fake — mirrors `SqlAlchemyVehiclePositionRepository.
+        list_for_trip_page`'s contract: `trip_id` mandatory-ANDed, ascending `(event_time,
+        id)` keyset, `filters` whitelisted to `vehicle_id`/`is_backfill`/`trip_id`."""
+        matches = [
+            p
+            for p in self.by_id.values()
+            if p.trip_id is not None and str(p.trip_id) == str(trip_id)
+        ]
+        for condition in filters:
+            if condition.field == "vehicle_id":
+                matches = [p for p in matches if str(p.vehicle_id) == condition.value]
+            elif condition.field == "is_backfill":
+                wanted = condition.value.strip().lower() in {"1", "true", "yes"}
+                matches = [p for p in matches if p.is_backfill == wanted]
+            elif condition.field == "trip_id":
+                matches = [p for p in matches if str(p.trip_id) == condition.value]
+            else:
+                raise ValidationError(
+                    f"Field {condition.field!r} is not filterable on this resource.",
+                    details={"field": condition.field},
+                )
+
+        matches.sort(key=lambda p: (p.event_time, str(p.id)))
+
+        if cursor_request.cursor is not None:
+            cursor_event_time_raw, cursor_id = decode_cursor(cursor_request.cursor)
+            cursor_key = (datetime.fromisoformat(cursor_event_time_raw), cursor_id)
+            matches = [
+                p for p in matches if (p.event_time, str(p.id)) > cursor_key
+            ]
+
+        page_rows = matches[: cursor_request.limit]
+        has_more = len(matches) > cursor_request.limit
+        next_cursor = None
+        if has_more and page_rows:
+            last = page_rows[-1]
+            next_cursor = encode_cursor(last.event_time.isoformat(), str(last.id))
+
+        return CursorPage(
+            data=page_rows,
+            limit=cursor_request.limit,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
     def add(self, position: VehiclePosition) -> None:
         self.by_id[str(position.id)] = position
@@ -248,11 +307,11 @@ class RecordVehiclePositionTests(unittest.IsolatedAsyncioTestCase):
             _position_command(base + timedelta(minutes=10)), uow=uow
         )
 
-        history = await service.get_vehicle_position_history(
+        page = await service.get_vehicle_position_history(
             GetVehiclePositionHistoryQuery(trip_id=VALID_TRIP_ULID), uow=uow
         )
-        self.assertEqual(len(history), 3)
-        event_times = [p.event_time for p in history]
+        self.assertEqual(len(page.data), 3)
+        event_times = [p.event_time for p in page.data]
         self.assertEqual(event_times, sorted(event_times))
         self.assertEqual(
             event_times[0], base
@@ -260,11 +319,116 @@ class RecordVehiclePositionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_history_for_unknown_trip_returns_empty_list(self) -> None:
         service, uow = make_service()
-        history = await service.get_vehicle_position_history(
+        page = await service.get_vehicle_position_history(
             GetVehiclePositionHistoryQuery(trip_id="01J8Z3K9G6X8YV5T4N2R7QW3ZZ"),
             uow=uow,
         )
-        self.assertEqual(history, [])
+        self.assertEqual(page.data, [])
+        self.assertFalse(page.has_more)
+        self.assertIsNone(page.next_cursor)
+
+    async def test_history_page_reports_has_more_and_next_cursor(self) -> None:
+        """Regression: `CursorPage.has_more`/`next_cursor` reflect the true remaining count,
+        not just "this page came back non-empty"."""
+        service, uow = make_service()
+        base = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        for i in range(3):
+            await service.record_vehicle_position(
+                _position_command(base + timedelta(minutes=i)), uow=uow
+            )
+
+        page = await service.get_vehicle_position_history(
+            GetVehiclePositionHistoryQuery(
+                trip_id=VALID_TRIP_ULID,
+                cursor_request=CursorPageRequest(limit=2),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(len(page.data), 2)
+        self.assertTrue(page.has_more)
+        self.assertIsNotNone(page.next_cursor)
+        self.assertEqual(
+            [p.event_time for p in page.data], [base, base + timedelta(minutes=1)]
+        )
+
+    async def test_history_following_next_cursor_returns_remaining_slice_no_overlap(
+        self,
+    ) -> None:
+        service, uow = make_service()
+        base = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        for i in range(3):
+            await service.record_vehicle_position(
+                _position_command(base + timedelta(minutes=i)), uow=uow
+            )
+
+        first_page = await service.get_vehicle_position_history(
+            GetVehiclePositionHistoryQuery(
+                trip_id=VALID_TRIP_ULID,
+                cursor_request=CursorPageRequest(limit=2),
+            ),
+            uow=uow,
+        )
+        second_page = await service.get_vehicle_position_history(
+            GetVehiclePositionHistoryQuery(
+                trip_id=VALID_TRIP_ULID,
+                cursor_request=CursorPageRequest(
+                    limit=2, cursor=first_page.next_cursor
+                ),
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(len(second_page.data), 1)
+        self.assertFalse(second_page.has_more)
+        self.assertIsNone(second_page.next_cursor)
+        first_ids = {p.id for p in first_page.data}
+        second_ids = {p.id for p in second_page.data}
+        self.assertEqual(first_ids & second_ids, set())
+        self.assertEqual(second_page.data[0].event_time, base + timedelta(minutes=2))
+
+    async def test_history_filters_by_vehicle_id(self) -> None:
+        service, uow = make_service()
+        base = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        other_vehicle_ulid = "01J8Z3K9G6X8YV5T4N2R7QW3XV"
+        await service.record_vehicle_position(_position_command(base), uow=uow)
+        await service.record_vehicle_position(
+            _position_command(
+                base + timedelta(minutes=1), vehicle_id=other_vehicle_ulid
+            ),
+            uow=uow,
+        )
+
+        page = await service.get_vehicle_position_history(
+            GetVehiclePositionHistoryQuery(
+                trip_id=VALID_TRIP_ULID,
+                filters=[
+                    FilterCondition(
+                        field="vehicle_id", op="eq", value=VALID_VEHICLE_ULID
+                    )
+                ],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(len(page.data), 1)
+        self.assertEqual(page.data[0].vehicle_id, VALID_VEHICLE_ULID)
+
+    async def test_history_unwhitelisted_filter_field_raises_validation_error(
+        self,
+    ) -> None:
+        service, uow = make_service()
+        await service.record_vehicle_position(
+            _position_command(datetime(2026, 1, 1, tzinfo=timezone.utc)), uow=uow
+        )
+        with self.assertRaises(ValidationError):
+            await service.get_vehicle_position_history(
+                GetVehiclePositionHistoryQuery(
+                    trip_id=VALID_TRIP_ULID,
+                    filters=[
+                        FilterCondition(field="latitude", op="eq", value="2.0")
+                    ],
+                ),
+                uow=uow,
+            )
 
 
 class EvaluateGeofenceApplicationTests(unittest.TestCase):

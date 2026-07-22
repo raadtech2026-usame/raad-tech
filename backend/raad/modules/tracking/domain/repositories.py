@@ -30,6 +30,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 
+from raad.core.pagination import CursorPage, CursorPageRequest, FilterCondition
 from raad.modules.tracking.domain.entities import GeofenceCrossing, VehiclePosition
 from raad.modules.tracking.domain.value_objects import (
     GeofenceCrossingId,
@@ -52,6 +53,24 @@ class VehiclePositionRepository(ABC):
         `ix_vehicle_positions__trip_time (trip_id, event_time)` — including backfilled points,
         re-ordered by their original timestamp rather than ingest order, per
         `.claude/rules/jt808.md` #3)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_trip_page(
+        self,
+        trip_id: TripId,
+        cursor_request: CursorPageRequest,
+        *,
+        filters: list[FilterCondition],
+    ) -> CursorPage[VehiclePosition]:
+        """Cursor-paginated variant of `list_for_trip` above (Pagination/Filtering/Sorting
+        phase) — backs `GET /tracking/trips/{id}/positions`'s now-implemented "(paginated)"
+        API Contracts §4.4 marking, over the same `(event_time, id)` keyset `list_for_trip`
+        already orders by ascending. `trip_id` is a mandatory, always-ANDed filter here rather
+        than a client-suppliable one — narrowing-only per API Contracts §8, so a client can
+        never use `filters` to escape the path parameter's own trip. `list_for_trip` itself is
+        left in place, unpaginated, for any other caller that genuinely wants the full history
+        list."""
         raise NotImplementedError
 
     @abstractmethod

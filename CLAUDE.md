@@ -72,9 +72,11 @@ genuinely remains (`PaymentProviderPort`/`VideoProviderPort`/`ReportRendererPort
 (`.github/workflows/backend-pipeline.yml`) and a contract test suite (`tests/contract/`) are
 both now implemented, closing what was previously the largest item on this list. A **Final
 Backend Completion phase** subsequently closed seven confirmed RBAC/error-code/ownership/test-
-coverage/audit-column gaps and added CORS support — see "Known gaps" below for the full list —
-leaving pagination/filtering/sorting and the two WebSocket routes as the largest remaining,
-deliberately-deferred items before this backend is fully frontend/mobile-ready.
+coverage/audit-column gaps and added CORS support. A **Pagination/Filtering/Sorting phase**
+then closed the other Tier-2 item that Final Backend Completion phase had deliberately deferred
+— see "Known gaps" below for the full list — leaving the two WebSocket routes
+(`/ws/tracking`/`/ws/notifications`) as the largest remaining, deliberately-deferred item before
+this backend is fully frontend/mobile-ready.
 
 ### Tech stack (decided)
 
@@ -356,9 +358,10 @@ backend/
 ### Known gaps (tracked, not hidden)
 
 - **Final Backend Completion phase** closed seven confirmed bugs/gaps surfaced by a fresh
-  documentation-vs-code audit, plus CORS (the one Tier-2 item selected for this phase; pagination/
-  filtering/sorting and `/ws/tracking`/`/ws/notifications` remain deliberately deferred, flagged
-  below, not attempted): (1) **4 endpoints were unreachable by every role, including Founder** —
+  documentation-vs-code audit, plus CORS (the one Tier-2 item selected for this phase;
+  pagination/filtering/sorting — closed by the subsequent Pagination/Filtering/Sorting phase,
+  its own entry immediately below — and `/ws/tracking`/`/ws/notifications` remained deliberately
+  deferred, not attempted this phase): (1) **4 endpoints were unreachable by every role, including Founder** —
   `GET /admin/audit`/`GET /admin/settings` required `admin.audit.list`/`admin.settings.list`, and
   `POST /video/live`/`POST /video/playback` required `video.sessions.create`, none of which the
   seeded `role_permissions` matrix (migration `5437a5d1651b`) actually grants; router-side
@@ -395,6 +398,47 @@ backend/
   fixed with each module's own pre-existing `_naive`/`_to_naive_utc` helper) — superseding this
   file's earlier "no live PostgreSQL reachable in this sandbox" note for `tracking`'s Redis port;
   that Redis-specific claim itself was not re-verified and may still hold.
+- **Pagination/Filtering/Sorting phase** closed the other Tier-2 item Final Backend Completion
+  phase deliberately deferred (API Contracts §7/§8), across every module. New framework-free
+  primitives (`core/pagination/__init__.py`: `OffsetPageRequest`/`OffsetPage`,
+  `CursorPageRequest`/`CursorPage`, `SortSpec`/`FilterCondition`, `parse_sort`/`parse_filters`,
+  `encode_cursor`/`decode_cursor`), a generic repository-layer implementation
+  (`core/db/repository.py`'s `SqlAlchemyRepositoryBase.list_page`/`list_cursor_page`/
+  `FilterField`, enforcing a per-resource filter/sort/search whitelist — never an arbitrary
+  client-supplied column), and FastAPI-facing wiring (`interfaces/http/deps.py`'s four new
+  `Depends`, `interfaces/http/pagination.py`'s `OffsetPageResponse`/`CursorPageResponse`) back
+  every list endpoint in the API. **Offset pagination** (`?page&page_size`,
+  `?filter[field]=value`, `?sort=field`, `?q=`) now backs `GET /users`, `GET /organizations`,
+  `GET /regions`, `GET /vehicles`, `GET /devices`, `GET /students`, `GET /parents`,
+  `GET /drivers`, `GET /routes`, `GET /trips`, `GET /student-assignments`, `GET /billing/plans`,
+  `GET /billing/subscriptions`, `GET /billing/invoices`, `GET /admin/audit`, and
+  `GET /admin/settings` — every plain resource list this codebase has, per `core/pagination`'s
+  own "offered for admin tables where total counts matter" framing. **Cursor pagination**
+  (`?limit&cursor`) now backs the two routes API Contracts §4.4/§4.6 explicitly mark
+  "(paginated)" with that framing in mind: `GET /tracking/trips/{id}/positions` (over the
+  pre-existing `event_time` ascending keyset) and `GET /notifications` (over `created_at`
+  descending, newest-first — a flagged interpretive choice, no document specifies ordering).
+  Whitelists are uniformly scoped to columns already exposed on each resource's own list
+  response, never a wider column set. Three real issues surfaced and were resolved, not silently
+  papered over: (1) `platform_audit`'s `SystemSettingModel` has no `id` column (its PK is `key`)
+  — `SqlAlchemyRepositoryBase.list_page`'s empty-sort fallback (`order_by(model.id.asc())`)
+  would have raised `AttributeError` for this one aggregate alone; guarded by defaulting to
+  `[SortSpec(field="key")]` in `PlatformAuditApplicationService.list_system_settings`, the one
+  and only place that guard is needed. (2) `notifications`' `Notification.status` is a
+  domain-derived `@property` computed from `read_at`, never a persisted `NotificationModel`
+  column (Database Design §7.5 has no `status` column at all) — an initial whitelist draft
+  included it anyway, which would have turned every `filter[status]=...` request into an
+  unhandled `AttributeError` (500) instead of the standard `ValidationError`; caught in review
+  and excluded from the whitelist before landing. (3) Wiring cursor pagination into
+  `list_student_assignments` (`transport_ops`) meant it could no longer serve the Notification
+  Worker's own `notify_vehicle_watchers` recipient-resolution read, which genuinely needs every
+  active assignment, not one page of them — `notifications/events/subscribers.py` now reads
+  `TransportOpsUnitOfWork.student_assignments.list_all()` directly instead (untouched by this
+  phase, still fully unbounded), the one file this phase touched outside its own
+  pagination/filtering/sorting concern. As with every `list_all()`/`list_page()` in this
+  codebase, none of the above is itself `ScopeResolver`-filtered yet — the same
+  system-wide, pre-existing, already-flagged gap below, now inherited by `list_page`/
+  `list_cursor_page` too, not newly introduced by this phase.
 - `tests/architecture/` has ten automated boundary-gate tests (domain purity, layer dependency
   direction, module boundaries, API-layer boundaries) enforcing Backend LLD §2.3 across all ten
   completed modules — rule 7 (static proxy) was extended with an explicit `raad.core.*`-origin
@@ -469,10 +513,13 @@ backend/
   `ScopeAssignmentApplicationService`'s own grant/revoke methods are reachable at the application
   layer only, the same "use-case exists, no approved endpoint yet" posture as
   `Route.remove_stop`/`Trip.interrupt` (ADR-0004/0005).
-- No module's own `list_all()` repository method is filtered by the now-real `ScopeResolver` —
-  every one still applies an unrestricted `TenantRegionScope(organization_ids=None)` internally,
-  a system-wide gap predating ADR-0005 that ADR-0005 made a real resolver *available* for but did
-  not retrofit onto every existing list endpoint (a separate, larger, cross-cutting change).
+- No module's own `list_all()`/`list_page()`/`list_cursor_page()`-backed repository method is
+  filtered by the now-real `ScopeResolver` — every one still applies an unrestricted
+  `TenantRegionScope(organization_ids=None)` internally, a system-wide gap predating ADR-0005
+  that ADR-0005 made a real resolver *available* for but did not retrofit onto every existing
+  list endpoint (a separate, larger, cross-cutting change); the Pagination/Filtering/Sorting
+  phase's own `list_page`/`list_cursor_page` additions inherit this exact gap rather than
+  introducing a new one.
 - **Real, unresolved documentation gap** (Reporting, Phase 17): Phase 2 Enterprise Architecture
   §2/§10.1 names a `ReportDefinition` domain concept as a documented pairing with `ReportRun`,
   but Database Design (the schema authority) never gives it a table, and no API route manages

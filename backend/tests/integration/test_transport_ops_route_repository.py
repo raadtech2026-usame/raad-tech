@@ -27,9 +27,11 @@ from sqlalchemy import text
 
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
+from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.time.clock import SystemClock
 from raad.modules.transport_ops.domain.entities import Route
 from raad.modules.transport_ops.domain.value_objects import (
@@ -319,6 +321,135 @@ class RouteRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
                 uow.record_events(duplicate.pull_domain_events())
                 await uow.commit()
                 self._created_route_ids.append(str(duplicate.id))
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class RoutePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemyRepositoryBase.list_page` (`core/db/repository.py`) against real
+    SQL, via `SqlAlchemyRouteRepository`'s own whitelist — mirrors
+    `OrganizationPaginationRepositoryTests`'s own shape exactly (Tier 2 pagination phase)."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_route_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_route_ids:
+                await conn.execute(
+                    text("DELETE FROM stops WHERE route_id = ANY(:ids)"),
+                    {"ids": self._created_route_ids},
+                )
+                await conn.execute(
+                    text("DELETE FROM routes WHERE id = ANY(:ids)"),
+                    {"ids": self._created_route_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyTransportOpsUnitOfWork:
+        return SqlAlchemyTransportOpsUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed(self, *, name: str, organization_id: str) -> Route:
+        async with self._new_uow() as uow:
+            route = Route.create(
+                id=RouteId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                name=name,
+                clock=self.clock,
+            )
+            uow.routes.add(route)
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            self._created_route_ids.append(str(route.id))
+            return route
+
+    async def test_list_page_paginates_and_reports_total(self) -> None:
+        org_id = self.id_generator.new_id()
+        for i in range(3):
+            await self._seed(name=f"Page Route {self.tag} {i}", organization_id=org_id)
+
+        async with self._new_uow() as uow:
+            page = await uow.routes.list_page(
+                OffsetPageRequest(page=1, page_size=2),
+                sort=[SortSpec(field="name")],
+                filters=[],
+                search=f"Page Route {self.tag}",
+            )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+    async def test_list_page_filters_by_status(self) -> None:
+        org_id = self.id_generator.new_id()
+        active = await self._seed(
+            name=f"Active Route {self.tag}", organization_id=org_id
+        )
+        disabled = await self._seed(
+            name=f"Disabled Route {self.tag}", organization_id=org_id
+        )
+        async with self._new_uow() as uow:
+            loaded = await uow.routes.get(disabled.id)
+            loaded.disable(clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            page = await uow.routes.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[FilterCondition(field="status", op="eq", value="inactive")],
+                search=self.tag,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].name, f"Disabled Route {self.tag}")
+        self.assertNotEqual(str(page.data[0].id), str(active.id))
+
+    async def test_list_page_sorts_descending_by_name(self) -> None:
+        org_id = self.id_generator.new_id()
+        for suffix in ("Alpha", "Beta", "Gamma"):
+            await self._seed(name=f"{suffix}-{self.tag}", organization_id=org_id)
+
+        async with self._new_uow() as uow:
+            page = await uow.routes.list_page(
+                OffsetPageRequest(),
+                sort=[SortSpec(field="name", descending=True)],
+                filters=[],
+                search=self.tag,
+            )
+        self.assertEqual(
+            [r.name for r in page.data],
+            [f"Gamma-{self.tag}", f"Beta-{self.tag}", f"Alpha-{self.tag}"],
+        )
+
+    async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.routes.list_page(
+                    OffsetPageRequest(),
+                    sort=[],
+                    filters=[
+                        FilterCondition(field="organization_id", op="eq", value="x")
+                    ],
+                    search=None,
+                )
+
+    async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.routes.list_page(
+                    OffsetPageRequest(),
+                    sort=[SortSpec(field="id")],
+                    filters=[],
+                    search=None,
+                )
 
 
 if __name__ == "__main__":

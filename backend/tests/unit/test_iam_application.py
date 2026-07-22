@@ -24,6 +24,12 @@ from raad.core.errors.exceptions import (
     NotFoundError,
 )
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.security.password_hashing import Pbkdf2PasswordHasher
 from raad.core.security.password_policy import PasswordPolicy
 from raad.core.security.tokens import JwtTokenService
@@ -41,7 +47,11 @@ from raad.modules.iam.application.commands import (
     RefreshAccessTokenCommand,
 )
 from raad.modules.iam.application.ports import IamUnitOfWork
-from raad.modules.iam.application.queries import GetUserByIdQuery, UserDTO
+from raad.modules.iam.application.queries import (
+    GetUserByIdQuery,
+    ListUsersQuery,
+    UserDTO,
+)
 from raad.modules.iam.application.services import (
     AuthApplicationService,
     UserApplicationService,
@@ -103,6 +113,56 @@ class InMemoryUserRepository(UserRepository):
 
     async def list_all(self) -> list[User]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[User]:
+        items = list(self.by_id.values())
+        for condition in filters:
+            items = [
+                item
+                for item in items
+                if _field_text(getattr(item, condition.field, None)) == condition.value
+                or (
+                    condition.op == "in"
+                    and _field_text(getattr(item, condition.field, None))
+                    in {p.strip() for p in condition.value.split(",")}
+                )
+            ]
+        if search:
+            items = [
+                item
+                for item in items
+                if search.lower() in item.full_name.lower()
+            ]
+        if sort:
+            for spec in reversed(sort):
+                items = sorted(
+                    items,
+                    key=lambda item: _field_text(getattr(item, spec.field, None)),
+                    reverse=spec.descending,
+                )
+        else:
+            items = sorted(items, key=lambda item: str(item.id))
+        total = len(items)
+        start = page_request.offset
+        end = start + page_request.page_size
+        return OffsetPage(
+            data=items[start:end],
+            total=total,
+            page=page_request.page,
+            page_size=page_request.page_size,
+        )
+
+
+def _field_text(value: object) -> str:
+    value = getattr(value, "value", value)
+    return "" if value is None else str(value)
 
 
 class InMemoryRefreshTokenRepository(RefreshTokenRepository):
@@ -722,6 +782,64 @@ class LogoutTests(unittest.IsolatedAsyncioTestCase):
         await service.logout(
             LogoutCommand(refresh_token="unknown-token"), uow=uow
         )  # no raise
+
+
+class ListUsersPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_users_paginates_and_reports_total(self) -> None:
+        service, uow = make_user_service()
+        for i in range(3):
+            await service.invite_user(
+                InviteUserCommand(
+                    organization_id=None,
+                    role=Role.FOUNDER,
+                    email=f"user{i}@example.com",
+                    phone=None,
+                    full_name=f"User {i}",
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await service.list_users(
+            ListUsersQuery(page_request=OffsetPageRequest(page=1, page_size=2)), uow=uow
+        )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+    async def test_list_users_filters_by_role(self) -> None:
+        service, uow = make_user_service()
+        await service.invite_user(
+            InviteUserCommand(
+                organization_id=None,
+                role=Role.FOUNDER,
+                email="founder@example.com",
+                phone=None,
+                full_name="Founder One",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.invite_user(
+            InviteUserCommand(
+                organization_id=VALID_ORG_ULID,
+                role=Role.ORG_ADMIN,
+                email="admin@example.com",
+                phone=None,
+                full_name="Admin One",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        page = await service.list_users(
+            ListUsersQuery(
+                page_request=OffsetPageRequest(),
+                filters=[FilterCondition(field="role", op="eq", value="FOUNDER")],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].full_name, "Founder One")
 
 
 if __name__ == "__main__":

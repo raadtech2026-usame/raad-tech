@@ -33,8 +33,10 @@ from sqlalchemy import text
 from raad.core.audit.writer import AuditWriter
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
+from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
+from raad.core.pagination import CursorPageRequest, FilterCondition
 from raad.core.time.clock import SystemClock
 from raad.modules.tracking.domain.entities import GeofenceCrossing, VehiclePosition
 from raad.modules.tracking.domain.value_objects import (
@@ -261,6 +263,149 @@ class VehiclePositionAndGeofenceCrossingRepositoryTests(unittest.IsolatedAsyncio
 
         self.assertIsNotNone(latest)
         self.assertEqual(str(latest.id), str(second.id))
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class VehiclePositionPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemyVehiclePositionRepository.list_for_trip_page`
+    (Pagination/Filtering/Sorting phase) against real SQL — the cursor-pagination analogue of
+    `OrganizationPaginationRepositoryTests`/`UserPaginationRepositoryTests` (offset mode).
+    Every test seeds its own trip's positions with distinct, ascending `event_time`s and
+    cleans them up in `asyncTearDown`, mirroring this file's other test class."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_position_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_position_ids:
+                await conn.execute(
+                    text("DELETE FROM vehicle_positions WHERE id = ANY(:ids)"),
+                    {"ids": self._created_position_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyTrackingUnitOfWork:
+        return SqlAlchemyTrackingUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed_positions(
+        self, *, trip_id: str, vehicle_id: str, count: int, start_offset: int = 0
+    ) -> list[str]:
+        """Seeds `count` positions on `trip_id`/`vehicle_id`, each one second apart and
+        strictly ascending in `event_time`, returning their ids in that same ascending order."""
+        base = self.clock.now()
+        ids: list[str] = []
+        async with self._new_uow() as uow:
+            for i in range(count):
+                position = VehiclePosition.record(
+                    id=VehiclePositionId(self.id_generator.new_id()),
+                    organization_id=OrganizationId(self.id_generator.new_id()),
+                    vehicle_id=VehicleId(vehicle_id),
+                    device_id=DeviceId(self.id_generator.new_id()),
+                    trip_id=TripId(trip_id),
+                    position=GeoPoint(latitude=2.0, longitude=45.0),
+                    event_time=base + timedelta(seconds=start_offset + i),
+                    clock=self.clock,
+                )
+                uow.vehicle_positions.add(position)
+                self._created_position_ids.append(str(position.id))
+                ids.append(str(position.id))
+            await uow.commit()
+        return ids
+
+    async def test_list_for_trip_page_small_limit_reports_has_more_and_next_cursor(
+        self,
+    ) -> None:
+        trip_id = self.id_generator.new_id()
+        vehicle_id = self.id_generator.new_id()
+        await self._seed_positions(trip_id=trip_id, vehicle_id=vehicle_id, count=5)
+
+        async with self._new_uow() as uow:
+            page = await uow.vehicle_positions.list_for_trip_page(
+                TripId(trip_id), CursorPageRequest(limit=2), filters=[]
+            )
+
+        self.assertEqual(len(page.data), 2)
+        self.assertTrue(page.has_more)
+        self.assertIsNotNone(page.next_cursor)
+
+    async def test_list_for_trip_page_following_cursor_yields_all_rows_ascending_no_duplicates(
+        self,
+    ) -> None:
+        trip_id = self.id_generator.new_id()
+        vehicle_id = self.id_generator.new_id()
+        expected_ids = await self._seed_positions(
+            trip_id=trip_id, vehicle_id=vehicle_id, count=5
+        )
+
+        collected: list = []
+        cursor: str | None = None
+        async with self._new_uow() as uow:
+            while True:
+                page = await uow.vehicle_positions.list_for_trip_page(
+                    TripId(trip_id),
+                    CursorPageRequest(limit=2, cursor=cursor),
+                    filters=[],
+                )
+                collected.extend(page.data)
+                if not page.has_more:
+                    break
+                cursor = page.next_cursor
+
+        self.assertEqual(len(collected), 5)
+        collected_ids = [str(p.id) for p in collected]
+        self.assertEqual(len(set(collected_ids)), 5)  # no duplicates
+        self.assertEqual(collected_ids, expected_ids)  # ascending event_time order
+        event_times = [p.event_time for p in collected]
+        self.assertEqual(event_times, sorted(event_times))
+
+    async def test_list_for_trip_page_filters_by_vehicle_id(self) -> None:
+        trip_id = self.id_generator.new_id()
+        vehicle_a = self.id_generator.new_id()
+        vehicle_b = self.id_generator.new_id()
+        await self._seed_positions(
+            trip_id=trip_id, vehicle_id=vehicle_a, count=2
+        )
+        await self._seed_positions(
+            trip_id=trip_id, vehicle_id=vehicle_b, count=3, start_offset=100
+        )
+
+        async with self._new_uow() as uow:
+            page = await uow.vehicle_positions.list_for_trip_page(
+                TripId(trip_id),
+                CursorPageRequest(limit=10),
+                filters=[
+                    FilterCondition(field="vehicle_id", op="eq", value=vehicle_b)
+                ],
+            )
+
+        self.assertEqual(len(page.data), 3)
+        self.assertTrue(all(str(p.vehicle_id) == vehicle_b for p in page.data))
+
+    async def test_list_for_trip_page_rejects_unwhitelisted_filter_field(self) -> None:
+        trip_id = self.id_generator.new_id()
+        vehicle_id = self.id_generator.new_id()
+        await self._seed_positions(trip_id=trip_id, vehicle_id=vehicle_id, count=1)
+
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.vehicle_positions.list_for_trip_page(
+                    TripId(trip_id),
+                    CursorPageRequest(),
+                    filters=[
+                        FilterCondition(field="latitude", op="eq", value="2.0")
+                    ],
+                )
 
 
 if __name__ == "__main__":

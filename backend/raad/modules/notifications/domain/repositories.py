@@ -3,19 +3,23 @@ Framework-free — no SQLAlchemy/FastAPI/Pydantic. No LLD-given contract skeleto
 either aggregate (unlike `TripRepository`) — each mirrors the closest already-completed
 precedent in `billing.domain.repositories`.
 
-`NotificationRepository.list_for_recipient` backs `GET /notifications`'s documented "own in-app
-notifications" scoping (API Contracts §4.6) — filtering by `recipient_user_id`, not by
-`organization_id`/`TenantRegionScope` (a personal list, not a tenant-scoped admin list, unlike
-every list endpoint in every other module so far). `DeviceTokenRepository.get_by_token` backs
-the documented `ux_device_tokens__token` uniqueness (Database Design §7.6) as an application-
-level defense-in-depth check, mirroring `PaymentRepository.get_by_idempotency_key`'s identical
-shape.
+`NotificationRepository.list_for_recipient` backs the personal "own in-app notifications"
+scoping (API Contracts §4.6) — filtering by `recipient_user_id`, not by `organization_id`/
+`TenantRegionScope` (a personal list, not a tenant-scoped admin list, unlike every list endpoint
+in every other module so far). It is unpaginated and kept only as the pre-existing, still-valid
+finder for any non-HTTP caller that wants the full set; `GET /notifications` itself now calls
+`list_for_recipient_page` (below), added in the Pagination/Filtering/Sorting phase once
+`core/pagination`/`SqlAlchemyRepositoryBase.list_cursor_page` landed. `DeviceTokenRepository.
+get_by_token` backs the documented `ux_device_tokens__token` uniqueness (Database Design §7.6)
+as an application-level defense-in-depth check, mirroring `PaymentRepository.
+get_by_idempotency_key`'s identical shape.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from raad.core.pagination import CursorPage, CursorPageRequest, FilterCondition
 from raad.modules.notifications.domain.entities import DeviceToken, Notification
 from raad.modules.notifications.domain.value_objects import (
     DeviceTokenId,
@@ -42,10 +46,27 @@ class NotificationRepository(ABC):
 
     @abstractmethod
     async def list_for_recipient(self, recipient_user_id: UserId) -> list[Notification]:
+        """Unpaginated finder over the caller's own notifications — kept for any non-HTTP
+        caller that wants the full set. `GET /notifications` itself calls
+        `list_for_recipient_page` instead (below)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_recipient_page(
+        self,
+        recipient_user_id: UserId,
+        cursor_request: CursorPageRequest,
+        *,
+        filters: list[FilterCondition],
+    ) -> CursorPage[Notification]:
         """Backs `GET /notifications` (API Contracts §4.6: "own in-app notifications
-        (paginated)"). No pagination parameters — `core/pagination` is empty, the same
-        pre-existing, module-wide gap `transport_ops.application.queries.ListStudentsQuery`
-        already flags, not a new one."""
+        (paginated)") — cursor pagination (§7: "stable under inserts, efficient on time-ordered
+        data like positions/notifications") over `created_at`, most-recent-first. No document
+        specifies ordering explicitly; newest-first is this method's own deliberate,
+        interpretive choice, matching the standard notification-inbox convention. The caller's
+        own `recipient_user_id` scoping is enforced unconditionally by the implementation, not
+        left to `filters` — a client-supplied `filters` list can only narrow the result set
+        further, never widen or escape it (API Contracts §8)."""
         raise NotImplementedError
 
 

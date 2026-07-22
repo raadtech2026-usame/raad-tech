@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import OffsetPage
 from raad.core.time.clock import Clock
 from raad.modules.organization.application.commands import (
     ActivateRegionCommand,
@@ -133,13 +134,24 @@ class OrganizationApplicationService:
 
     async def list_organizations(
         self, query: ListOrganizationsQuery, *, uow: OrganizationUnitOfWork
-    ) -> list[OrganizationDTO]:
-        """Backs `GET /organizations` (API Contracts §4.1) — Backend Stabilization phase
-        addition, see `domain/repositories.py`'s `OrganizationRepository.list_all` docstring
-        for why this was previously deferred and what unblocked it."""
+    ) -> OffsetPage[OrganizationDTO]:
+        """Backs `GET /organizations` (API Contracts §4.1/§7/§8) — pagination/filtering/
+        sorting added under the Tier 2 pagination phase, on top of the Backend Stabilization
+        phase's original `list_all`-backed addition (still used by other callers, e.g. the
+        Founder-bootstrap CLI's own precondition check via `uow.users.list_all()` in `iam`)."""
         async with uow:
-            organizations = await uow.organizations.list_all()
-            return [organization_to_dto(o) for o in organizations]
+            page = await uow.organizations.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[organization_to_dto(o) for o in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     @staticmethod
     async def _get_organization_or_raise(
@@ -206,11 +218,21 @@ class RegionApplicationService:
 
     async def list_regions(
         self, query: ListRegionsQuery, *, uow: OrganizationUnitOfWork
-    ) -> list[RegionDTO]:
-        """Backs `GET /regions` (API Contracts §4.1) — Backend Stabilization phase addition."""
+    ) -> OffsetPage[RegionDTO]:
+        """Backs `GET /regions` (API Contracts §4.1/§7/§8)."""
         async with uow:
-            regions = await uow.regions.list_all()
-            return [region_to_dto(r) for r in regions]
+            page = await uow.regions.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[region_to_dto(r) for r in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     @staticmethod
     async def _get_region_or_raise(

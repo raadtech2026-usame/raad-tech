@@ -19,6 +19,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.modules.fleet_device.domain.entities import (
     Device,
     DeviceAssignment,
@@ -60,6 +66,18 @@ class VehicleRepository(ABC):
         carries."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Vehicle]:
+        """Backs `GET /vehicles`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
+        raise NotImplementedError
+
 
 class DeviceRepository(ABC):
     @abstractmethod
@@ -81,6 +99,18 @@ class DeviceRepository(ABC):
     async def list_all(self) -> list[Device]:
         """Backs `GET /devices` (API Contracts §4.2) — same Backend Stabilization phase
         addition and same unscoped-`list_all` posture as `VehicleRepository.list_all` above."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Device]:
+        """Backs `GET /devices`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
         raise NotImplementedError
 
 

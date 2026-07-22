@@ -16,12 +16,19 @@ from datetime import datetime, timezone
 
 from raad.core.errors.exceptions import ConflictError, NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.fleet_device.application.commands import (
     ActivateDeviceCommand,
     ActivateVehicleCommand,
     AssignDeviceToVehicleCommand,
+    MarkVehicleUnderMaintenanceCommand,
     ReassignDeviceCommand,
     RegisterCameraCommand,
     RegisterDeviceCommand,
@@ -31,7 +38,11 @@ from raad.modules.fleet_device.application.commands import (
     UnassignDeviceCommand,
 )
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
-from raad.modules.fleet_device.application.queries import GetDeviceByIdQuery
+from raad.modules.fleet_device.application.queries import (
+    GetDeviceByIdQuery,
+    ListDevicesQuery,
+    ListVehiclesQuery,
+)
 from raad.modules.fleet_device.application.services import (
     DeviceApplicationService,
     VehicleApplicationService,
@@ -73,6 +84,64 @@ class SequentialIdGenerator(IdGenerator):
         return f"{self._PREFIX}{self._counter:06d}"
 
 
+def _field_text(item: object, field_name: str) -> str:
+    value = getattr(item, field_name)
+    value = getattr(value, "value", value)
+    return "" if value is None else str(value)
+
+
+def _matches_filter(item: object, condition: FilterCondition) -> bool:
+    text = _field_text(item, condition.field)
+    if condition.op == "eq":
+        return text == condition.value
+    if condition.op == "in":
+        return text in {part.strip() for part in condition.value.split(",")}
+    if condition.op == "gte":
+        return text >= condition.value
+    if condition.op == "lte":
+        return text <= condition.value
+    if condition.op == "gt":
+        return text > condition.value
+    if condition.op == "lt":
+        return text < condition.value
+    return True
+
+
+def _paginate_in_memory(
+    items: list,
+    page_request: OffsetPageRequest,
+    *,
+    sort: list[SortSpec],
+    filters: list[FilterCondition],
+    search: str | None,
+    search_field: str = "plate_no",
+) -> OffsetPage:
+    """Shared in-memory equivalent of `SqlAlchemyRepositoryBase.list_page` (`core/db/
+    repository.py`), for fake repositories that can't run real SQL — duplicated per module's
+    own test file rather than a shared test helper, mirroring `test_organization_application.
+    py`'s own established "duplicated per module" precedent."""
+    for condition in filters:
+        items = [item for item in items if _matches_filter(item, condition)]
+    if search:
+        items = [
+            item
+            for item in items
+            if search.lower() in _field_text(item, search_field).lower()
+        ]
+    for spec in reversed(sort):
+        items = sorted(
+            items, key=lambda item: _field_text(item, spec.field), reverse=spec.descending
+        )
+    if not sort:
+        items = sorted(items, key=lambda item: str(item.id))
+    total = len(items)
+    start = page_request.offset
+    end = start + page_request.page_size
+    return OffsetPage(
+        data=items[start:end], total=total, page=page_request.page, page_size=page_request.page_size
+    )
+
+
 class InMemoryVehicleRepository(VehicleRepository):
     def __init__(self) -> None:
         self.by_id: dict[str, Vehicle] = {}
@@ -91,6 +160,23 @@ class InMemoryVehicleRepository(VehicleRepository):
 
     async def list_all(self) -> list[Vehicle]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Vehicle]:
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+            search_field="plate_no",
+        )
 
 
 class InMemoryDeviceRepository(DeviceRepository):
@@ -111,6 +197,23 @@ class InMemoryDeviceRepository(DeviceRepository):
 
     async def list_all(self) -> list[Device]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Device]:
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+            search_field="terminal_id",
+        )
 
 
 class InMemoryDeviceAssignmentRepository(DeviceAssignmentRepository):
@@ -556,6 +659,152 @@ class DeviceAssignmentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(dto.cameras), 1)
         self.assertEqual(dto.cameras[0].label, "dashcam")
+
+
+class VehiclePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_vehicles_paginates_and_reports_total(self) -> None:
+        vehicle_service, _device_service, uow = make_services()
+        for i in range(3):
+            await _register_vehicle(vehicle_service, uow, plate_no=f"PLATE-{i}")
+
+        page = await vehicle_service.list_vehicles(
+            ListVehiclesQuery(page_request=OffsetPageRequest(page=1, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(page.page, 1)
+        self.assertEqual(page.page_size, 2)
+        self.assertEqual(len(page.data), 2)
+
+        second_page = await vehicle_service.list_vehicles(
+            ListVehiclesQuery(page_request=OffsetPageRequest(page=2, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(len(second_page.data), 1)
+
+    async def test_list_vehicles_filters_by_status(self) -> None:
+        vehicle_service, _device_service, uow = make_services()
+        active_id = await _register_vehicle(vehicle_service, uow, plate_no="ACTIVE-1")
+        maintenance_id = await _register_vehicle(
+            vehicle_service, uow, plate_no="MAINT-1"
+        )
+        await vehicle_service.mark_vehicle_under_maintenance(
+            MarkVehicleUnderMaintenanceCommand(
+                vehicle_id=maintenance_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        page = await vehicle_service.list_vehicles(
+            ListVehiclesQuery(
+                page_request=OffsetPageRequest(),
+                filters=[FilterCondition(field="status", op="eq", value="active")],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].id, active_id)
+
+    async def test_list_vehicles_sorts_descending_by_plate_no(self) -> None:
+        vehicle_service, _device_service, uow = make_services()
+        for plate_no in ("Alpha", "Beta", "Gamma"):
+            await _register_vehicle(vehicle_service, uow, plate_no=plate_no)
+
+        page = await vehicle_service.list_vehicles(
+            ListVehiclesQuery(
+                page_request=OffsetPageRequest(),
+                sort=[SortSpec(field="plate_no", descending=True)],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(
+            [v.plate_no for v in page.data], ["Gamma", "Beta", "Alpha"]
+        )
+
+
+class DevicePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_devices_paginates_and_reports_total(self) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        for i in range(3):
+            await device_service.register_device(
+                RegisterDeviceCommand(
+                    organization_id=VALID_ORG_ULID,
+                    terminal_id=f"TERM-{i}",
+                    model=None,
+                    vendor=None,
+                    sim_msisdn=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await device_service.list_devices(
+            ListDevicesQuery(page_request=OffsetPageRequest(page=1, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+        second_page = await device_service.list_devices(
+            ListDevicesQuery(page_request=OffsetPageRequest(page=2, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(len(second_page.data), 1)
+
+    async def test_list_devices_filters_by_lifecycle_state(self) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        activated_id = await _register_activated_device(
+            device_service, uow, terminal_id="TERM-ACTIVATED"
+        )
+        await device_service.register_device(
+            RegisterDeviceCommand(
+                organization_id=VALID_ORG_ULID,
+                terminal_id="TERM-REGISTERED",
+                model=None,
+                vendor=None,
+                sim_msisdn=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        page = await device_service.list_devices(
+            ListDevicesQuery(
+                page_request=OffsetPageRequest(),
+                filters=[
+                    FilterCondition(field="lifecycle_state", op="eq", value="activated")
+                ],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].id, activated_id)
+
+    async def test_list_devices_sorts_descending_by_terminal_id(self) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        for terminal_id in ("Alpha", "Beta", "Gamma"):
+            await device_service.register_device(
+                RegisterDeviceCommand(
+                    organization_id=VALID_ORG_ULID,
+                    terminal_id=terminal_id,
+                    model=None,
+                    vendor=None,
+                    sim_msisdn=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await device_service.list_devices(
+            ListDevicesQuery(
+                page_request=OffsetPageRequest(),
+                sort=[SortSpec(field="terminal_id", descending=True)],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(
+            [d.terminal_id for d in page.data], ["Gamma", "Beta", "Alpha"]
+        )
 
 
 class DeviceLifecycleApplicationTests(unittest.IsolatedAsyncioTestCase):

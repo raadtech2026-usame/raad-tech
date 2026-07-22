@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import CursorPage
 from raad.core.time.clock import Clock
 from raad.modules.notifications.application.commands import (
     CreateNotificationCommand,
@@ -113,12 +114,19 @@ class NotificationApplicationService:
 
     async def list_notifications_for_recipient(
         self, query: ListNotificationsForRecipientQuery, *, uow: NotificationsUnitOfWork
-    ) -> list[NotificationDTO]:
+    ) -> CursorPage[NotificationDTO]:
         async with uow:
-            notifications = await uow.notifications.list_for_recipient(
-                UserId(query.recipient_user_id)
+            page = await uow.notifications.list_for_recipient_page(
+                UserId(query.recipient_user_id),
+                query.cursor_request,
+                filters=query.filters,
             )
-            return [notification_to_dto(n) for n in notifications]
+            return CursorPage(
+                data=[notification_to_dto(n) for n in page.data],
+                limit=page.limit,
+                next_cursor=page.next_cursor,
+                has_more=page.has_more,
+            )
 
     # --- DeviceToken ---------------------------------------------------------------------
 

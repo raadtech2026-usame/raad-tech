@@ -27,9 +27,11 @@ from sqlalchemy import text
 
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
+from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.time.clock import SystemClock
 from raad.modules.billing.domain.entities import Invoice, Payment, Plan, Subscription, TransportFee
 from raad.modules.billing.domain.value_objects import (
@@ -379,6 +381,463 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(fetched)
         self.assertEqual(fetched.status.value, "due")
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class PlanPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemyPlanRepository.list_page` (`core/db/repository.py`'s `list_page`)
+    against real SQL — mirrors `test_organization_repository.py`'s
+    `OrganizationPaginationRepositoryTests` structure. `PlanModel` has no `organization_id`
+    (`infra/models.py`'s own docstring), so — unlike `Invoice`/`Subscription` below — no parent
+    row needs seeding first; isolation from other concurrently-running tests/seed data is via
+    `search`/`self.tag` (a random per-run marker) rather than a tenant/parent filter, since no
+    tenant column exists to filter by at all.
+    """
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_plan_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_plan_ids:
+                await conn.execute(
+                    text("DELETE FROM plans WHERE id = ANY(:ids)"),
+                    {"ids": self._created_plan_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyBillingUnitOfWork:
+        return SqlAlchemyBillingUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed_plan(
+        self, *, name: str, billing_scope: BillingScope = BillingScope.ORGANIZATION
+    ) -> PlanId:
+        async with self._new_uow() as uow:
+            plan = Plan.create(
+                id=PlanId(self.id_generator.new_id()),
+                name=name,
+                billing_scope=billing_scope,
+                price=Money(15.00, "USD"),
+                billing_cycle=BillingCycle.MONTHLY,
+                clock=self.clock,
+            )
+            uow.plans.add(plan)
+            uow.record_events(plan.pull_domain_events())
+            await uow.commit()
+            self._created_plan_ids.append(str(plan.id))
+            return plan.id
+
+    async def test_list_page_paginates_and_reports_total(self) -> None:
+        for i in range(3):
+            await self._seed_plan(name=f"Page Plan {self.tag} {i}")
+
+        async with self._new_uow() as uow:
+            page = await uow.plans.list_page(
+                OffsetPageRequest(page=1, page_size=2),
+                sort=[SortSpec(field="name")],
+                filters=[],
+                search=f"Page Plan {self.tag}",
+            )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+    async def test_list_page_filters_by_billing_scope(self) -> None:
+        await self._seed_plan(
+            name=f"Org Plan {self.tag}", billing_scope=BillingScope.ORGANIZATION
+        )
+        await self._seed_plan(
+            name=f"Parent Plan {self.tag}", billing_scope=BillingScope.PARENT
+        )
+
+        async with self._new_uow() as uow:
+            page = await uow.plans.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[FilterCondition(field="billing_scope", op="eq", value="parent")],
+                search=self.tag,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].name, f"Parent Plan {self.tag}")
+
+    async def test_list_page_search_matches_name_substring(self) -> None:
+        await self._seed_plan(name=f"Findable-{self.tag}")
+        await self._seed_plan(name=f"Other-{self.tag}")
+
+        async with self._new_uow() as uow:
+            page = await uow.plans.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[],
+                search=f"findable-{self.tag}",
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].name, f"Findable-{self.tag}")
+
+    async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.plans.list_page(
+                    OffsetPageRequest(),
+                    sort=[],
+                    filters=[FilterCondition(field="vehicle_limit", op="eq", value="5")],
+                    search=None,
+                )
+
+    async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.plans.list_page(
+                    OffsetPageRequest(),
+                    sort=[SortSpec(field="id")],
+                    filters=[],
+                    search=None,
+                )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class SubscriptionPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemySubscriptionRepository.list_page` against real SQL. Isolates each
+    test's rows by filtering on `subscriber_id` (each seeded with a `self.tag`-unique value) -
+    the same "filter on a value only this test's own rows can have" isolation
+    `InvoicePaginationRepositoryTests` uses via `subscription_id` below.
+    `SqlAlchemySubscriptionRepository.searchable_fields` is empty (`infra/repositories.py`), so
+    no search test exists here, matching that deliberate no-search-field posture."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_subscription_ids: list[str] = []
+        self._created_plan_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_subscription_ids:
+                await conn.execute(
+                    text("DELETE FROM subscriptions WHERE id = ANY(:ids)"),
+                    {"ids": self._created_subscription_ids},
+                )
+            if self._created_plan_ids:
+                await conn.execute(
+                    text("DELETE FROM plans WHERE id = ANY(:ids)"),
+                    {"ids": self._created_plan_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyBillingUnitOfWork:
+        return SqlAlchemyBillingUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed_plan(self) -> PlanId:
+        async with self._new_uow() as uow:
+            plan = Plan.create(
+                id=PlanId(self.id_generator.new_id()),
+                name=f"Subscription Page Plan {self.tag}",
+                billing_scope=BillingScope.PARENT,
+                price=Money(15.00, "USD"),
+                billing_cycle=BillingCycle.MONTHLY,
+                clock=self.clock,
+            )
+            uow.plans.add(plan)
+            uow.record_events(plan.pull_domain_events())
+            await uow.commit()
+            self._created_plan_ids.append(str(plan.id))
+            return plan.id
+
+    async def _seed_subscription(
+        self, plan_id: PlanId, *, subscriber_suffix: str
+    ) -> Subscription:
+        async with self._new_uow() as uow:
+            subscription = Subscription.open(
+                id=SubscriptionId(self.id_generator.new_id()),
+                organization_id=OrganizationId(self.id_generator.new_id()),
+                subscriber_type=SubscriberType.PARENT,
+                subscriber_id=SubscriberId(f"{self.tag}-{subscriber_suffix}"),
+                plan_id=plan_id,
+                clock=self.clock,
+            )
+            uow.subscriptions.add(subscription)
+            uow.record_events(subscription.pull_domain_events())
+            await uow.commit()
+            self._created_subscription_ids.append(str(subscription.id))
+            return subscription
+
+    async def test_list_page_paginates_and_reports_total(self) -> None:
+        plan_id = await self._seed_plan()
+        for i in range(3):
+            await self._seed_subscription(plan_id, subscriber_suffix=f"p-{i}")
+
+        async with self._new_uow() as uow:
+            page = await uow.subscriptions.list_page(
+                OffsetPageRequest(page=1, page_size=2),
+                sort=[SortSpec(field="created_at")],
+                filters=[
+                    FilterCondition(
+                        field="subscriber_id",
+                        op="in",
+                        value=",".join(
+                            f"{self.tag}-p-{i}" for i in range(3)
+                        ),
+                    )
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+    async def test_list_page_filters_by_status(self) -> None:
+        plan_id = await self._seed_plan()
+        active = await self._seed_subscription(plan_id, subscriber_suffix="active")
+        suspended = await self._seed_subscription(plan_id, subscriber_suffix="suspended")
+
+        async with self._new_uow() as uow:
+            loaded = await uow.subscriptions.get(suspended.id)
+            loaded.suspend(clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            page = await uow.subscriptions.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(
+                        field="subscriber_id",
+                        op="in",
+                        value=",".join(
+                            [
+                                f"{self.tag}-active",
+                                f"{self.tag}-suspended",
+                            ]
+                        ),
+                    ),
+                    FilterCondition(field="status", op="eq", value="suspended"),
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(str(page.data[0].id), str(suspended.id))
+        self.assertIsNotNone(active)
+
+    async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.subscriptions.list_page(
+                    OffsetPageRequest(),
+                    sort=[],
+                    filters=[FilterCondition(field="organization_id", op="eq", value="x")],
+                    search=None,
+                )
+
+    async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.subscriptions.list_page(
+                    OffsetPageRequest(),
+                    sort=[SortSpec(field="id")],
+                    filters=[],
+                    search=None,
+                )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class InvoicePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemyInvoiceRepository.list_page` against real SQL. Isolates each test's
+    rows by filtering on its own freshly-created `subscription_id` (never shared across tests) -
+    safer than relying on `self.tag` alone for a `billing`-wide, no-tenant-scope query, the same
+    reasoning `SubscriptionPaginationRepositoryTests` applies via `subscriber_id`.
+    """
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_invoice_ids: list[str] = []
+        self._created_subscription_ids: list[str] = []
+        self._created_plan_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_invoice_ids:
+                await conn.execute(
+                    text("DELETE FROM invoices WHERE id = ANY(:ids)"),
+                    {"ids": self._created_invoice_ids},
+                )
+            if self._created_subscription_ids:
+                await conn.execute(
+                    text("DELETE FROM subscriptions WHERE id = ANY(:ids)"),
+                    {"ids": self._created_subscription_ids},
+                )
+            if self._created_plan_ids:
+                await conn.execute(
+                    text("DELETE FROM plans WHERE id = ANY(:ids)"),
+                    {"ids": self._created_plan_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyBillingUnitOfWork:
+        return SqlAlchemyBillingUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed_plan(self) -> PlanId:
+        async with self._new_uow() as uow:
+            plan = Plan.create(
+                id=PlanId(self.id_generator.new_id()),
+                name=f"Invoice Page Plan {self.tag}",
+                billing_scope=BillingScope.PARENT,
+                price=Money(15.00, "USD"),
+                billing_cycle=BillingCycle.MONTHLY,
+                clock=self.clock,
+            )
+            uow.plans.add(plan)
+            uow.record_events(plan.pull_domain_events())
+            await uow.commit()
+            self._created_plan_ids.append(str(plan.id))
+            return plan.id
+
+    async def _seed_subscription(self, plan_id: PlanId) -> SubscriptionId:
+        async with self._new_uow() as uow:
+            subscription = Subscription.open(
+                id=SubscriptionId(self.id_generator.new_id()),
+                organization_id=OrganizationId(self.id_generator.new_id()),
+                subscriber_type=SubscriberType.PARENT,
+                subscriber_id=SubscriberId(self.id_generator.new_id()),
+                plan_id=plan_id,
+                clock=self.clock,
+            )
+            uow.subscriptions.add(subscription)
+            uow.record_events(subscription.pull_domain_events())
+            await uow.commit()
+            self._created_subscription_ids.append(str(subscription.id))
+            return subscription.id
+
+    async def _seed_invoice(
+        self,
+        subscription_id: SubscriptionId,
+        *,
+        amount: float = 15.00,
+        period_start: date = date(2026, 7, 1),
+        period_end: date = date(2026, 7, 31),
+    ) -> Invoice:
+        async with self._new_uow() as uow:
+            invoice = Invoice.issue(
+                id=InvoiceId(self.id_generator.new_id()),
+                organization_id=OrganizationId(self.id_generator.new_id()),
+                subscription_id=subscription_id,
+                amount=Money(amount, "USD"),
+                period_start=period_start,
+                period_end=period_end,
+                due_at=None,
+                clock=self.clock,
+            )
+            uow.invoices.add(invoice)
+            uow.record_events(invoice.pull_domain_events())
+            await uow.commit()
+            self._created_invoice_ids.append(str(invoice.id))
+            return invoice
+
+    async def test_list_page_paginates_and_reports_total(self) -> None:
+        plan_id = await self._seed_plan()
+        subscription_id = await self._seed_subscription(plan_id)
+        for i in range(3):
+            await self._seed_invoice(subscription_id, amount=10.00 + i)
+
+        async with self._new_uow() as uow:
+            page = await uow.invoices.list_page(
+                OffsetPageRequest(page=1, page_size=2),
+                sort=[SortSpec(field="created_at")],
+                filters=[
+                    FilterCondition(
+                        field="subscription_id", op="eq", value=str(subscription_id)
+                    )
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+    async def test_list_page_filters_by_status(self) -> None:
+        plan_id = await self._seed_plan()
+        subscription_id = await self._seed_subscription(plan_id)
+        await self._seed_invoice(subscription_id)
+        voided = await self._seed_invoice(subscription_id)
+
+        async with self._new_uow() as uow:
+            loaded = await uow.invoices.get(voided.id)
+            loaded.void(clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            page = await uow.invoices.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(
+                        field="subscription_id", op="eq", value=str(subscription_id)
+                    ),
+                    FilterCondition(field="status", op="eq", value="void"),
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(str(page.data[0].id), str(voided.id))
+
+    async def test_list_page_search_matches_number_substring(self) -> None:
+        plan_id = await self._seed_plan()
+        subscription_id = await self._seed_subscription(plan_id)
+        invoice = await self._seed_invoice(subscription_id)
+
+        async with self._new_uow() as uow:
+            page = await uow.invoices.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[],
+                search=invoice.number[:12],
+            )
+        self.assertIn(str(invoice.id), {str(i.id) for i in page.data})
+
+    async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.invoices.list_page(
+                    OffsetPageRequest(),
+                    sort=[],
+                    filters=[FilterCondition(field="organization_id", op="eq", value="x")],
+                    search=None,
+                )
+
+    async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.invoices.list_page(
+                    OffsetPageRequest(),
+                    sort=[SortSpec(field="id")],
+                    filters=[],
+                    search=None,
+                )
 
 
 if __name__ == "__main__":

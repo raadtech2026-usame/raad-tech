@@ -9,10 +9,11 @@ child collections.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from raad.core.pagination import CursorPageRequest, FilterCondition
 from raad.modules.notifications.domain.entities import DeviceToken, Notification
 
 
@@ -33,10 +34,17 @@ class GetNotificationByIdQuery:
 
 @dataclass(frozen=True)
 class ListNotificationsForRecipientQuery:
-    """No filter/pagination parameters — `core/pagination` is empty, the same pre-existing,
-    module-wide gap `transport_ops.application.queries.ListStudentsQuery` already flags."""
+    """Carries cursor pagination (`cursor_request`) and a client-supplied, whitelist-checked
+    filter list (`filters`) — added in the Pagination/Filtering/Sorting phase once
+    `core/pagination`/`SqlAlchemyRepositoryBase.list_cursor_page` landed, closing what this
+    docstring used to describe as the same pre-existing, module-wide gap
+    `transport_ops.application.queries.ListStudentsQuery` once flagged. `filters` can only
+    narrow the caller's own `recipient_user_id` scope, never widen it — see
+    `domain/repositories.py`'s `list_for_recipient_page` docstring."""
 
     recipient_user_id: str
+    cursor_request: CursorPageRequest = field(default_factory=CursorPageRequest)
+    filters: list[FilterCondition] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

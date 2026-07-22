@@ -11,9 +11,10 @@ degrading the read-model.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.modules.fleet_device.domain.entities import (
     Camera,
     Device,
@@ -29,7 +30,10 @@ class GetVehicleByIdQuery:
 
 @dataclass(frozen=True)
 class ListVehiclesQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -39,7 +43,10 @@ class GetDeviceByIdQuery:
 
 @dataclass(frozen=True)
 class ListDevicesQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)

@@ -31,6 +31,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import CursorPage
 from raad.core.time.clock import Clock
 from raad.modules.tracking.application.commands import (
     EvaluateGeofenceCommand,
@@ -231,10 +232,20 @@ class TrackingApplicationService:
 
     async def get_vehicle_position_history(
         self, query: GetVehiclePositionHistoryQuery, *, uow: TrackingUnitOfWork
-    ) -> list[VehiclePositionDTO]:
+    ) -> CursorPage[VehiclePositionDTO]:
+        """Cursor-paginated (Pagination/Filtering/Sorting phase) — see `GetVehiclePositionHistoryQuery`'s
+        own docstring. `list_for_trip` (unpaginated) stays available on the repository
+        interface for any other caller; this method is this route's own entry point."""
         async with uow:
-            positions = await uow.vehicle_positions.list_for_trip(TripId(query.trip_id))
-            return [vehicle_position_to_dto(position) for position in positions]
+            page = await uow.vehicle_positions.list_for_trip_page(
+                TripId(query.trip_id), query.cursor_request, filters=query.filters
+            )
+            return CursorPage(
+                data=[vehicle_position_to_dto(position) for position in page.data],
+                limit=page.limit,
+                next_cursor=page.next_cursor,
+                has_more=page.has_more,
+            )
 
     async def prune_position_history(
         self, retention_days: int, *, uow: TrackingUnitOfWork

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from raad.core.errors.exceptions import ConflictError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
@@ -93,6 +94,67 @@ class SequentialIdGenerator(IdGenerator):
         return f"{self._PREFIX}{self._counter:06d}"
 
 
+def _field_text(item: object, field_name: str) -> str:
+    value = getattr(item, field_name)
+    value = getattr(value, "value", value)
+    return "" if value is None else str(value)
+
+
+def _matches_filter(item: object, condition: FilterCondition) -> bool:
+    text = _field_text(item, condition.field)
+    if condition.op == "eq":
+        return text == condition.value
+    if condition.op == "in":
+        return text in {part.strip() for part in condition.value.split(",")}
+    if condition.op == "gte":
+        return text >= condition.value
+    if condition.op == "lte":
+        return text <= condition.value
+    if condition.op == "gt":
+        return text > condition.value
+    if condition.op == "lt":
+        return text < condition.value
+    return True
+
+
+def _paginate_in_memory(
+    items: list,
+    page_request: OffsetPageRequest,
+    *,
+    sort: list[SortSpec],
+    filters: list[FilterCondition],
+    search: str | None,
+    search_field: str = "status",
+) -> OffsetPage:
+    """Shared in-memory equivalent of `SqlAlchemyRepositoryBase.list_page` (`core/db/
+    repository.py`), for fake repositories that can't run real SQL — duplicated per module's
+    own test file rather than a shared test helper, mirroring
+    `test_organization_application.py`'s own established "duplicated per module" precedent.
+    `StudentAssignment` has no `searchable_fields` whitelist (`infra/repositories.py`'s Tier 2
+    pagination phase addition) — `search_field`/`search` are accepted for shape-parity with
+    every other module's identical helper but are never exercised by this file's own tests."""
+    for condition in filters:
+        items = [item for item in items if _matches_filter(item, condition)]
+    if search:
+        items = [
+            item
+            for item in items
+            if search.lower() in _field_text(item, search_field).lower()
+        ]
+    for spec in reversed(sort):
+        items = sorted(
+            items, key=lambda item: _field_text(item, spec.field), reverse=spec.descending
+        )
+    if not sort:
+        items = sorted(items, key=lambda item: str(item.id))
+    total = len(items)
+    start = page_request.offset
+    end = start + page_request.page_size
+    return OffsetPage(
+        data=items[start:end], total=total, page=page_request.page, page_size=page_request.page_size
+    )
+
+
 class InMemoryStudentAssignmentRepository(StudentAssignmentRepository):
     def __init__(self) -> None:
         self.by_id: dict[str, StudentAssignment] = {}
@@ -107,6 +169,22 @@ class InMemoryStudentAssignmentRepository(StudentAssignmentRepository):
 
     async def list_all(self) -> list[StudentAssignment]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[StudentAssignment]:
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
 
     async def active_assignment_for_student(
         self, student_id: StudentId
@@ -135,6 +213,27 @@ class InMemoryStudentRepository(StudentRepository):
     async def list_all(self) -> list[Student]:
         return list(self.by_id.values())
 
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Student]:
+        # Not this file's own listing focus (see `test_transport_ops_student_application.py`
+        # for `Student`'s dedicated pagination tests) - only implemented here because
+        # `StudentRepository` is an ABC `StudentAssignmentApplicationService`'s tests must
+        # still construct.
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+            search_field="full_name",
+        )
+
 
 class InMemoryRouteRepository(RouteRepository):
     def __init__(self) -> None:
@@ -151,6 +250,27 @@ class InMemoryRouteRepository(RouteRepository):
 
     async def list_all(self) -> list[Route]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Route]:
+        # Not this file's own listing focus (see `test_transport_ops_route_application.py`
+        # for `Route`'s dedicated pagination tests) - only implemented here because
+        # `RouteRepository` is an ABC `StudentAssignmentApplicationService`'s tests must still
+        # construct.
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+            search_field="name",
+        )
 
 
 class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
@@ -477,11 +597,91 @@ class StudentAssignmentStatusOrchestrationTests(unittest.IsolatedAsyncioTestCase
     async def test_list_student_assignments_returns_summary_dtos(self) -> None:
         service, uow = make_service()
         await self._active_assignment_dto(service, uow)
-        results = await service.list_student_assignments(
-            ListStudentAssignmentsQuery(), uow=uow
+        page = await service.list_student_assignments(
+            ListStudentAssignmentsQuery(page_request=OffsetPageRequest()), uow=uow
         )
-        self.assertEqual(len(results), 1)
-        self.assertIsInstance(results[0], StudentAssignmentSummaryDTO)
+        self.assertEqual(len(page.data), 1)
+        self.assertIsInstance(page.data[0], StudentAssignmentSummaryDTO)
+
+
+class StudentAssignmentApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_student_assignments_paginates_and_reports_total(self) -> None:
+        service, uow = make_service()
+        seed_student_and_route(uow)
+        await service.assign_student_to_route(make_assign_command(), uow=uow)
+        await service.remove_student_assignment(
+            RemoveStudentAssignmentCommand(
+                student_assignment_id=(
+                    await service.list_student_assignments(
+                        ListStudentAssignmentsQuery(page_request=OffsetPageRequest()),
+                        uow=uow,
+                    )
+                ).data[0].id,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.assign_student_to_route(make_assign_command(), uow=uow)
+
+        page = await service.list_student_assignments(
+            ListStudentAssignmentsQuery(page_request=OffsetPageRequest(page=1, page_size=1)),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 2)
+        self.assertEqual(page.page, 1)
+        self.assertEqual(page.page_size, 1)
+        self.assertEqual(len(page.data), 1)
+
+        second_page = await service.list_student_assignments(
+            ListStudentAssignmentsQuery(page_request=OffsetPageRequest(page=2, page_size=1)),
+            uow=uow,
+        )
+        self.assertEqual(len(second_page.data), 1)
+
+    async def test_list_student_assignments_filters_by_status(self) -> None:
+        service, uow = make_service()
+        seed_student_and_route(uow)
+        active = await service.assign_student_to_route(make_assign_command(), uow=uow)
+        await service.remove_student_assignment(
+            RemoveStudentAssignmentCommand(
+                student_assignment_id=active.id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        page = await service.list_student_assignments(
+            ListStudentAssignmentsQuery(
+                page_request=OffsetPageRequest(),
+                filters=[FilterCondition(field="status", op="eq", value="removed")],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].id, active.id)
+        self.assertEqual(page.data[0].status, "removed")
+
+    async def test_list_student_assignments_sorts_by_status(self) -> None:
+        service, uow = make_service()
+        seed_student_and_route(uow)
+        first = await service.assign_student_to_route(make_assign_command(), uow=uow)
+        await service.remove_student_assignment(
+            RemoveStudentAssignmentCommand(
+                student_assignment_id=first.id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        second = await service.assign_student_to_route(make_assign_command(), uow=uow)
+
+        page = await service.list_student_assignments(
+            ListStudentAssignmentsQuery(
+                page_request=OffsetPageRequest(),
+                sort=[SortSpec(field="status", descending=False)],
+            ),
+            uow=uow,
+        )
+        # "active" < "removed" alphabetically - ascending sort puts the active one first.
+        self.assertEqual([dto.status for dto in page.data], ["active", "removed"])
+        self.assertEqual(page.data[0].id, second.id)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import OffsetPage
 from raad.core.time.clock import Clock
 from raad.modules.fleet_device.application.commands import (
     ActivateDeviceCommand,
@@ -143,13 +144,25 @@ class VehicleApplicationService:
 
     async def list_vehicles(
         self, query: ListVehiclesQuery, *, uow: FleetDeviceUnitOfWork
-    ) -> list[VehicleDTO]:
-        """Backs `GET /vehicles` (API Contracts §4.2) — Backend Stabilization phase addition,
-        see `domain/repositories.py`'s `VehicleRepository.list_all` docstring for why this was
-        previously deferred and what unblocked it."""
+    ) -> OffsetPage[VehicleDTO]:
+        """Backs `GET /vehicles`'s paginated/filtered/sorted contract (API Contracts §4.2/§7/
+        §8) — pagination/filtering/sorting added under the Tier 2 pagination phase, on top of
+        the Backend Stabilization phase's original `list_all`-backed addition (see `domain/
+        repositories.py`'s `VehicleRepository.list_all` docstring for why that was previously
+        deferred and what unblocked it)."""
         async with uow:
-            vehicles = await uow.vehicles.list_all()
-            return [vehicle_to_dto(v) for v in vehicles]
+            page = await uow.vehicles.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[vehicle_to_dto(v) for v in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     @staticmethod
     async def _get_vehicle_or_raise(
@@ -273,11 +286,22 @@ class DeviceApplicationService:
 
     async def list_devices(
         self, query: ListDevicesQuery, *, uow: FleetDeviceUnitOfWork
-    ) -> list[DeviceDTO]:
-        """Backs `GET /devices` (API Contracts §4.2) — Backend Stabilization phase addition."""
+    ) -> OffsetPage[DeviceDTO]:
+        """Backs `GET /devices`'s paginated/filtered/sorted contract (API Contracts §4.2/§7/
+        §8)."""
         async with uow:
-            devices = await uow.devices.list_all()
-            return [device_to_dto(d) for d in devices]
+            page = await uow.devices.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[device_to_dto(d) for d in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     # --- Device ↔ Vehicle assignment ----------------------------------------------------
 

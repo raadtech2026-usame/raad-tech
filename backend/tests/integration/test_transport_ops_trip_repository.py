@@ -27,9 +27,11 @@ from sqlalchemy import text
 
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
+from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.time.clock import SystemClock
 from raad.modules.transport_ops.domain.entities import Driver, Route, Trip
 from raad.modules.transport_ops.domain.value_objects import (
@@ -255,6 +257,236 @@ class TripRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(trips_for_route), 1)
         self.assertEqual(str(trips_for_route[0].id), str(trip.id))
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class TripPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemyRepositoryBase.list_page` (`core/db/repository.py`) against real
+    SQL, via `SqlAlchemyTripRepository`'s own whitelist — mirrors
+    `OrganizationPaginationRepositoryTests`'s own shape exactly (Tier 2 pagination phase).
+    `Trip` is API Contracts §8's own filtering example resource
+    (`filter[trip_type][in]=...`, `filter[scheduled_date][gte]=...`)."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_trip_ids: list[str] = []
+        self._created_driver_ids: list[str] = []
+        self._created_route_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_trip_ids:
+                await conn.execute(
+                    text("DELETE FROM trips WHERE id = ANY(:ids)"),
+                    {"ids": self._created_trip_ids},
+                )
+            if self._created_driver_ids:
+                await conn.execute(
+                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    {"ids": self._created_driver_ids},
+                )
+            if self._created_route_ids:
+                await conn.execute(
+                    text("DELETE FROM routes WHERE id = ANY(:ids)"),
+                    {"ids": self._created_route_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyTransportOpsUnitOfWork:
+        return SqlAlchemyTransportOpsUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed_driver_and_route(self, org_id: str) -> tuple[DriverId, RouteId]:
+        async with self._new_uow() as uow:
+            driver = Driver.register(
+                id=DriverId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                user_id=UserId(self.id_generator.new_id()),
+                license_no=f"LIC-{self.tag}",
+                clock=self.clock,
+            )
+            route = Route.create(
+                id=RouteId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                name=f"Route {self.tag}",
+                clock=self.clock,
+            )
+            uow.drivers.add(driver)
+            uow.routes.add(route)
+            uow.record_events(driver.pull_domain_events())
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            self._created_driver_ids.append(str(driver.id))
+            self._created_route_ids.append(str(route.id))
+            return driver.id, route.id
+
+    async def _seed_trip(
+        self,
+        *,
+        org_id: str,
+        driver_id: DriverId,
+        route_id: RouteId,
+        trip_type: TripType,
+        scheduled_date: date,
+    ) -> Trip:
+        async with self._new_uow() as uow:
+            trip = Trip.schedule(
+                id=TripId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                vehicle_id=VehicleId(self.id_generator.new_id()),
+                driver_id=driver_id,
+                driver_organization_id=OrganizationId(org_id),
+                route_id=route_id,
+                route_organization_id=OrganizationId(org_id),
+                trip_type=trip_type,
+                scheduled_date=scheduled_date,
+                clock=self.clock,
+            )
+            uow.trips.add(trip)
+            uow.record_events(trip.pull_domain_events())
+            await uow.commit()
+            self._created_trip_ids.append(str(trip.id))
+            return trip
+
+    async def test_list_page_paginates_and_reports_total(self) -> None:
+        org_id = self.id_generator.new_id()
+        driver_id, route_id = await self._seed_driver_and_route(org_id)
+        for _ in range(3):
+            await self._seed_trip(
+                org_id=org_id,
+                driver_id=driver_id,
+                route_id=route_id,
+                trip_type=TripType.MORNING,
+                scheduled_date=date(2026, 7, 20),
+            )
+
+        async with self._new_uow() as uow:
+            page = await uow.trips.list_page(
+                OffsetPageRequest(page=1, page_size=2),
+                sort=[SortSpec(field="scheduled_date")],
+                filters=[FilterCondition(field="route_id", op="eq", value=str(route_id))],
+                search=None,
+            )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+    async def test_list_page_filters_by_trip_type(self) -> None:
+        org_id = self.id_generator.new_id()
+        driver_id, route_id = await self._seed_driver_and_route(org_id)
+        await self._seed_trip(
+            org_id=org_id,
+            driver_id=driver_id,
+            route_id=route_id,
+            trip_type=TripType.MORNING,
+            scheduled_date=date(2026, 7, 20),
+        )
+        afternoon = await self._seed_trip(
+            org_id=org_id,
+            driver_id=driver_id,
+            route_id=route_id,
+            trip_type=TripType.AFTERNOON,
+            scheduled_date=date(2026, 7, 20),
+        )
+
+        async with self._new_uow() as uow:
+            page = await uow.trips.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(field="route_id", op="eq", value=str(route_id)),
+                    FilterCondition(field="trip_type", op="eq", value="afternoon"),
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(str(page.data[0].id), str(afternoon.id))
+
+    async def test_list_page_filters_by_scheduled_date_gte(self) -> None:
+        org_id = self.id_generator.new_id()
+        driver_id, route_id = await self._seed_driver_and_route(org_id)
+        early = await self._seed_trip(
+            org_id=org_id,
+            driver_id=driver_id,
+            route_id=route_id,
+            trip_type=TripType.MORNING,
+            scheduled_date=date(2026, 7, 18),
+        )
+        late = await self._seed_trip(
+            org_id=org_id,
+            driver_id=driver_id,
+            route_id=route_id,
+            trip_type=TripType.MORNING,
+            scheduled_date=date(2026, 7, 22),
+        )
+
+        async with self._new_uow() as uow:
+            page = await uow.trips.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(field="route_id", op="eq", value=str(route_id)),
+                    FilterCondition(
+                        field="scheduled_date", op="gte", value="2026-07-20"
+                    ),
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(str(page.data[0].id), str(late.id))
+
+    async def test_list_page_sorts_descending_by_scheduled_date(self) -> None:
+        org_id = self.id_generator.new_id()
+        driver_id, route_id = await self._seed_driver_and_route(org_id)
+        for day in (18, 19, 20):
+            await self._seed_trip(
+                org_id=org_id,
+                driver_id=driver_id,
+                route_id=route_id,
+                trip_type=TripType.MORNING,
+                scheduled_date=date(2026, 7, day),
+            )
+
+        async with self._new_uow() as uow:
+            page = await uow.trips.list_page(
+                OffsetPageRequest(),
+                sort=[SortSpec(field="scheduled_date", descending=True)],
+                filters=[FilterCondition(field="route_id", op="eq", value=str(route_id))],
+                search=None,
+            )
+        self.assertEqual(
+            [t.scheduled_date for t in page.data],
+            [date(2026, 7, 20), date(2026, 7, 19), date(2026, 7, 18)],
+        )
+
+    async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.trips.list_page(
+                    OffsetPageRequest(),
+                    sort=[],
+                    filters=[
+                        FilterCondition(field="organization_id", op="eq", value="x")
+                    ],
+                    search=None,
+                )
+
+    async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.trips.list_page(
+                    OffsetPageRequest(),
+                    sort=[SortSpec(field="id")],
+                    filters=[],
+                    search=None,
+                )
 
 
 if __name__ == "__main__":

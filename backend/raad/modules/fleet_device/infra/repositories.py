@@ -29,8 +29,14 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from raad.core.db.repository import SqlAlchemyRepositoryBase
+from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.domain.entities import (
@@ -69,6 +75,19 @@ class SqlAlchemyVehicleRepository(
 ):
     model = VehicleModel
 
+    #: Whitelist for `GET /vehicles` (§8) — limited to columns already on `VehicleResponse`.
+    filterable_fields = {
+        "organization_id": FilterField(column="organization_id"),
+        "status": FilterField(column="status"),
+    }
+    sortable_fields = {
+        "plate_no": "plate_no",
+        "status": "status",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+    }
+    searchable_fields = ("plate_no", "label")
+
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
         self._tracked: dict[str, tuple[Vehicle, VehicleModel]] = {}
@@ -95,6 +114,29 @@ class SqlAlchemyVehicleRepository(
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [self._track(row) for row in rows]  # type: ignore[misc]
 
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Vehicle]:
+        """Same unrestricted-scope posture as `list_all` above."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
+
     def flush_tracked_changes(self) -> None:
         for vehicle, model in self._tracked.values():
             vehicle_to_model(vehicle, existing=model)
@@ -116,6 +158,21 @@ class SqlAlchemyDeviceRepository(
     the relationship's cascade."""
 
     model = DeviceModel
+
+    #: Whitelist for `GET /devices` (§8) — limited to columns already on `DeviceResponse`.
+    #: `sim_msisdn` is deliberately excluded — PII, masked in logs (`application/queries.py`'s
+    #: own docstring) — never filterable/sortable/searchable.
+    filterable_fields = {
+        "organization_id": FilterField(column="organization_id"),
+        "lifecycle_state": FilterField(column="lifecycle_state"),
+    }
+    sortable_fields = {
+        "terminal_id": "terminal_id",
+        "lifecycle_state": "lifecycle_state",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+    }
+    searchable_fields = ("terminal_id", "model", "vendor")
 
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
@@ -143,6 +200,29 @@ class SqlAlchemyDeviceRepository(
         list_all` above."""
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [self._track(row) for row in rows]  # type: ignore[misc]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Device]:
+        """Same unrestricted-scope posture as `list_all` above."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
 
     def flush_tracked_changes(self) -> None:
         for device, model in self._tracked.values():

@@ -16,15 +16,32 @@ Two routes, matching API Contracts §4.8's documented table (lines 190-191):
 
 **No `/admin/integrations` route** — `domain/entities.py`'s own module docstring explains why
 `Integration` is not built this phase at all (no documented lifecycle, no API Contracts row).
+
+**Pagination/filtering/sorting (Tier 2 pagination phase) — both list routes.** `GET /admin/audit`
+and `GET /admin/settings` previously returned a bare `list[...]`; both now return
+`OffsetPageResponse[...]` (API Contracts §7/§8), mirroring `iam`'s `GET /users` and
+`organization`'s `GET /organizations`/`GET /regions` exactly. `GET /admin/settings` has one
+quirk unique to this module: `SystemSettingModel` has no `id` column at all
+(`infra/models.py`'s own docstring) — see `application/services.py`'s `list_system_settings`
+docstring for how the resulting empty-sort `AttributeError` risk is guarded, one layer below
+this router.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
-from raad.interfaces.http.deps import require_permission
+from raad.interfaces.http.deps import (
+    get_filter_conditions,
+    get_offset_page_request,
+    get_search_query,
+    get_sort_params,
+    require_permission,
+)
+from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
 from raad.modules.platform_audit.api.deps import (
     get_platform_audit_service,
     get_platform_audit_uow,
@@ -68,37 +85,62 @@ def _system_setting_dto_to_response(setting: SystemSettingDTO) -> SystemSettingR
 
 @admin_router.get(
     "/audit",
-    response_model=list[AuditEntryResponse],
+    response_model=OffsetPageResponse[AuditEntryResponse],
     status_code=status.HTTP_200_OK,
     summary="List audit entries",
     description=(
         "Founder / in-scope admin (API Contracts §4.8 line 190). Scoped, read-only. "
-        "Every row is written transactionally by another module's own commit — see ADR-0007."
+        "Every row is written transactionally by another module's own commit — see ADR-0007. "
+        "Paginated/filterable/sortable per §7/§8: `?page&page_size`, `?filter[field]=value`, "
+        "`?sort=field`."
     ),
 )
 async def list_audit_entries(
     principal: Principal = Depends(require_permission(Permission("admin.audit.read"))),
     service: PlatformAuditApplicationService = Depends(get_platform_audit_service),
     uow: PlatformAuditUnitOfWork = Depends(get_platform_audit_uow),
-) -> list[AuditEntryResponse]:
-    entries = await service.list_audit_entries(ListAuditEntriesQuery(), uow=uow)
-    return [_audit_entry_dto_to_response(entry) for entry in entries]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[AuditEntryResponse]:
+    page = await service.list_audit_entries(
+        ListAuditEntriesQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _audit_entry_dto_to_response)
 
 
 @admin_router.get(
     "/settings",
-    response_model=list[SystemSettingResponse],
+    response_model=OffsetPageResponse[SystemSettingResponse],
     status_code=status.HTTP_200_OK,
     summary="List system settings",
-    description="Founder / Org Admin (API Contracts §4.8 line 191).",
+    description=(
+        "Founder / Org Admin (API Contracts §4.8 line 191). Paginated/filterable/sortable per "
+        "§7/§8: `?page&page_size`, `?filter[field]=value`, `?sort=field`. Defaults to sorting "
+        "by `key` when no `?sort=` is given — see `application/services.py`'s "
+        "`list_system_settings` docstring for why (`SystemSettingModel` has no `id` column)."
+    ),
 )
 async def list_system_settings(
     principal: Principal = Depends(require_permission(Permission("admin.settings.read"))),
     service: PlatformAuditApplicationService = Depends(get_platform_audit_service),
     uow: PlatformAuditUnitOfWork = Depends(get_platform_audit_uow),
-) -> list[SystemSettingResponse]:
-    settings = await service.list_system_settings(ListSystemSettingsQuery(), uow=uow)
-    return [_system_setting_dto_to_response(setting) for setting in settings]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[SystemSettingResponse]:
+    page = await service.list_system_settings(
+        ListSystemSettingsQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _system_setting_dto_to_response)
 
 
 @admin_router.patch(

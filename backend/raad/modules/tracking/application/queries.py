@@ -9,6 +9,10 @@ latest` (served via `LatestPositionPort`, not `VehiclePositionRepository` — se
 trip-scoped exactly as documented (no vehicle-scoped history query is defined here, even
 though `VehiclePositionRepository.list_for_vehicle` exists, since no approved endpoint reads
 it that way — `.claude/rules/workflow.md` #8: build only approved use-cases).
+`GetVehiclePositionHistoryQuery` now also carries a `cursor_request`/`filters` pair
+(Pagination/Filtering/Sorting phase) — cursor pagination (`core.pagination.CursorPageRequest`),
+matching API Contracts §4.4's "(paginated)" marking on this exact route, defaulting to a
+plain first-page request with no filters so any existing caller need not change.
 
 `GetGeofenceCrossingsQuery` has no dedicated REST endpoint in API Contracts today — flagged,
 not silently assumed. It is included because it is an explicitly requested use case over a
@@ -25,9 +29,10 @@ why `TrackingVisibilityPolicy` (Phase 8.1) is not invoked from here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
+from raad.core.pagination import CursorPageRequest, FilterCondition
 from raad.modules.tracking.domain.entities import GeofenceCrossing, VehiclePosition
 
 
@@ -39,6 +44,8 @@ class GetCurrentVehiclePositionQuery:
 @dataclass(frozen=True)
 class GetVehiclePositionHistoryQuery:
     trip_id: str
+    cursor_request: CursorPageRequest = field(default_factory=CursorPageRequest)
+    filters: list[FilterCondition] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

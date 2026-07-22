@@ -25,11 +25,19 @@ for the "not EXPIRED/CANCELLED" reading of "active."
 
 from __future__ import annotations
 
+from datetime import date
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from raad.core.db.repository import SqlAlchemyRepositoryBase
+from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.domain.entities import (
@@ -79,6 +87,26 @@ from raad.modules.billing.infra.models import (
 class SqlAlchemyPlanRepository(SqlAlchemyRepositoryBase[PlanModel], PlanRepository):
     model = PlanModel
 
+    #: Whitelists for `GET /billing/plans` (§8) - limited to columns already exposed on
+    #: `PlanResponse` (`api/schemas.py`), never an internal-only column. `"amount"` (the wire/
+    #: DTO field name, `PlanDTO.amount`) maps to `price_amount` (`PlanModel`'s actual column) -
+    #: the identical wire-name-vs-column-name split `core.db.repository.FilterField`'s own
+    #: docstring documents (e.g. `iam`'s `role` transform), not a typo.
+    filterable_fields = {
+        "billing_scope": FilterField(column="billing_scope"),
+        "billing_cycle": FilterField(column="billing_cycle"),
+        "status": FilterField(column="status"),
+        "currency": FilterField(column="currency"),
+    }
+    sortable_fields = {
+        "name": "name",
+        "amount": "price_amount",
+        "status": "status",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+    }
+    searchable_fields = ("name",)
+
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
         self._tracked: dict[str, tuple[Plan, PlanModel]] = {}
@@ -101,6 +129,33 @@ class SqlAlchemyPlanRepository(SqlAlchemyRepositoryBase[PlanModel], PlanReposito
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [model_to_plan(row) for row in rows]
 
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Plan]:
+        """Same unscoped posture as `list_all` above - `PlanModel` has no `organization_id`, so
+        `TenantRegionScope(organization_ids=None)` is inert here (`SqlAlchemyRepositoryBase.
+        list_page`'s own `hasattr` guard), not a shortcut. Backs `GET /billing/plans`'s
+        paginated/filtered/sorted contract, mirroring `SqlAlchemyOrganizationRepository.
+        list_page`'s identical shape."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
+
     def flush_tracked_changes(self) -> None:
         for plan, model in self._tracked.values():
             plan_to_model(plan, existing=model)
@@ -118,6 +173,25 @@ class SqlAlchemySubscriptionRepository(
 ):
     model = SubscriptionModel
 
+    #: Whitelist for `GET /billing/subscriptions` (§8) - limited to columns already on
+    #: `SubscriptionResponse`. No `searchable_fields` - `subscriptions` has no free-text label
+    #: column, mirroring `SqlAlchemyRegionRepository`'s own "only opt in what actually exists"
+    #: posture rather than inventing a search target.
+    filterable_fields = {
+        "subscriber_type": FilterField(column="subscriber_type"),
+        "subscriber_id": FilterField(column="subscriber_id"),
+        "plan_id": FilterField(column="plan_id"),
+        "status": FilterField(column="status"),
+    }
+    sortable_fields = {
+        "status": "status",
+        "current_period_start": "current_period_start",
+        "current_period_end": "current_period_end",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+    }
+    searchable_fields = ()
+
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
         self._tracked: dict[str, tuple[Subscription, SubscriptionModel]] = {}
@@ -134,6 +208,31 @@ class SqlAlchemySubscriptionRepository(
     async def list_all(self) -> list[Subscription]:
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [model_to_subscription(row) for row in rows]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Subscription]:
+        """Same unrestricted-`TenantRegionScope` posture `list_all` above already carries (the
+        system-wide `ScopeResolver`-pending gap, not a `billing`-specific shortcut) - backs
+        `GET /billing/subscriptions`'s paginated/filtered/sorted contract."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
 
     async def get_active_by_subscriber(
         self, subscriber_type: SubscriberType, subscriber_id: SubscriberId
@@ -164,6 +263,28 @@ class SqlAlchemyInvoiceRepository(
 ):
     model = InvoiceModel
 
+    #: Whitelist for `GET /billing/invoices` (§8) - limited to columns already on
+    #: `InvoiceResponse`. `period_start`/`period_end` need `value_type=date` (`FilterField`'s
+    #: own docstring) since `InvoiceModel` stores them as native PostgreSQL `DATE`, not text.
+    filterable_fields = {
+        "subscription_id": FilterField(column="subscription_id"),
+        "status": FilterField(column="status"),
+        "currency": FilterField(column="currency"),
+        "period_start": FilterField(column="period_start", value_type=date),
+        "period_end": FilterField(column="period_end", value_type=date),
+    }
+    sortable_fields = {
+        "number": "number",
+        "amount": "amount",
+        "status": "status",
+        "issued_at": "issued_at",
+        "due_at": "due_at",
+        "paid_at": "paid_at",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+    }
+    searchable_fields = ("number",)
+
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
         self._tracked: dict[str, tuple[Invoice, InvoiceModel]] = {}
@@ -180,6 +301,30 @@ class SqlAlchemyInvoiceRepository(
     async def list_all(self) -> list[Invoice]:
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [model_to_invoice(row) for row in rows]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Invoice]:
+        """Same unrestricted-`TenantRegionScope` posture `list_all` above already carries -
+        backs `GET /billing/invoices`'s paginated/filtered/sorted contract."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
 
     def flush_tracked_changes(self) -> None:
         for invoice, model in self._tracked.values():

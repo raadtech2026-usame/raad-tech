@@ -39,9 +39,21 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, status
 
 from raad.core.errors.exceptions import ValidationError
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
-from raad.interfaces.http.deps import require_permission
+from raad.interfaces.http.deps import (
+    get_filter_conditions,
+    get_offset_page_request,
+    get_search_query,
+    get_sort_params,
+    require_permission,
+)
+from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
 from raad.modules.organization.api.deps import (
     get_organization_service,
     get_organization_uow,
@@ -130,12 +142,13 @@ def _region_dto_to_response(region: RegionDTO) -> RegionResponse:
 
 @organizations_router.get(
     "",
-    response_model=list[OrganizationResponse],
+    response_model=OffsetPageResponse[OrganizationResponse],
     status_code=status.HTTP_200_OK,
     summary="List organizations",
     description=(
         "Founder(all)/Reg.Mgr(region)/Support(assigned) (API Contracts §4.1). Not yet "
-        "scope-filtered — see this file's module docstring."
+        "scope-filtered — see this file's module docstring. Paginated/filterable/sortable "
+        "per §7/§8: `?page&page_size`, `?filter[field]=value`, `?sort=field`, `?q=`."
     ),
 )
 async def list_organizations(
@@ -144,9 +157,18 @@ async def list_organizations(
     ),
     org_service: OrganizationApplicationService = Depends(get_organization_service),
     uow: OrganizationUnitOfWork = Depends(get_organization_uow),
-) -> list[OrganizationResponse]:
-    organizations = await org_service.list_organizations(ListOrganizationsQuery(), uow=uow)
-    return [_organization_dto_to_response(o) for o in organizations]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[OrganizationResponse]:
+    page = await org_service.list_organizations(
+        ListOrganizationsQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _organization_dto_to_response)
 
 
 @organizations_router.post(
@@ -261,12 +283,12 @@ async def update_organization(
 
 @regions_router.get(
     "",
-    response_model=list[RegionResponse],
+    response_model=OffsetPageResponse[RegionResponse],
     status_code=status.HTTP_200_OK,
     summary="List regions",
     description=(
         "Founder (API Contracts §4.1). Not yet scope-filtered — see this file's module "
-        "docstring."
+        "docstring. Paginated/filterable/sortable per §7/§8."
     ),
 )
 async def list_regions(
@@ -275,9 +297,18 @@ async def list_regions(
     ),
     region_service: RegionApplicationService = Depends(get_region_service),
     uow: OrganizationUnitOfWork = Depends(get_organization_uow),
-) -> list[RegionResponse]:
-    regions = await region_service.list_regions(ListRegionsQuery(), uow=uow)
-    return [_region_dto_to_response(r) for r in regions]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[RegionResponse]:
+    page = await region_service.list_regions(
+        ListRegionsQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _region_dto_to_response)
 
 
 @regions_router.post(

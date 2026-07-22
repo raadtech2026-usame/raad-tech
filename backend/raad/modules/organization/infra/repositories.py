@@ -23,8 +23,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import datetime, timezone
 
-from raad.core.db.repository import SqlAlchemyRepositoryBase
+from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.domain.entities import Organization, Region
@@ -57,6 +63,23 @@ class SqlAlchemyOrganizationRepository(
     `get_by_name` lookup exists here, unlike `SqlAlchemyRegionRepository` below."""
 
     model = OrganizationModel
+
+    #: Whitelists for `GET /organizations` (§8) — limited to columns already exposed on
+    #: `OrganizationResponse` (`api/schemas.py`), never an internal-only column.
+    filterable_fields = {
+        "org_type": FilterField(column="org_type"),
+        "region_id": FilterField(column="region_id"),
+        "billing_model": FilterField(column="billing_model"),
+        "status": FilterField(column="status"),
+        "parent_org_id": FilterField(column="parent_org_id"),
+    }
+    sortable_fields = {
+        "name": "name",
+        "status": "status",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+    }
+    searchable_fields = ("name",)
 
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
@@ -91,6 +114,30 @@ class SqlAlchemyOrganizationRepository(
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [self._track(row) for row in rows]  # type: ignore[misc]
 
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Organization]:
+        """Same unscoped posture as `list_all` above — `OrganizationModel` is the tenant root,
+        so `TenantRegionScope(organization_ids=None)` is inert here, not a shortcut."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
+
     def flush_tracked_changes(self) -> None:
         for organization, model in self._tracked.values():
             organization_to_model(organization, existing=model)
@@ -107,6 +154,18 @@ class SqlAlchemyRegionRepository(
     SqlAlchemyRepositoryBase[RegionModel], RegionRepository
 ):
     model = RegionModel
+
+    #: Whitelist for `GET /regions` (§8) — limited to columns already on `RegionResponse`.
+    filterable_fields = {
+        "status": FilterField(column="status"),
+    }
+    sortable_fields = {
+        "name": "name",
+        "status": "status",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+    }
+    searchable_fields = ("name",)
 
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
@@ -134,6 +193,30 @@ class SqlAlchemyRegionRepository(
         `SqlAlchemyOrganizationRepository.list_all` above."""
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [self._track(row) for row in rows]  # type: ignore[misc]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Region]:
+        """Same inert-scope posture as `list_all` above — `RegionModel` has no
+        `organization_id`."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
 
     def flush_tracked_changes(self) -> None:
         for region, model in self._tracked.values():

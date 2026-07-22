@@ -32,6 +32,8 @@ explicit unrestricted `TenantRegionScope` — functionally identical to no filte
 so that swapping in a real per-request scope is a one-line change once `ScopeResolver` is wired
 system-wide, rather than a rewrite. Wiring that resolver is out of this phase's scope (it is a
 cross-cutting, all-modules concern, not a Student-specific one) and is not attempted here.
+The Tier 2 pagination phase's own `list_page` (see below) carries the identical unrestricted-
+`TenantRegionScope` posture — the same system-wide gap, not re-solved or re-flagged per method.
 
 **Phase 10.7 addition: `SqlAlchemyStudentParentRepository`.** Cannot reuse `SqlAlchemyRepository
 Base.get_by_id`/its identity-map keying — both assume a single `.id` column, and
@@ -66,15 +68,40 @@ analogous non-`get_by_id` finder.
 `active_assignment_for_student` issues its own direct `select()` (`status = 'active'`,
 `deleted_at IS NULL`), mirroring `active_trip_for_vehicle`'s identical shape for an analogous
 one-active-per-owner finder.
+
+**Tier 2 pagination phase addition: `list_page` on all six repositories above** (`students`/
+`parents`/`drivers`/`routes`/`trips`/`student_assignments`), backing `GET /students`/`/parents`/
+`/drivers`/`/routes`/`/trips`/`/student-assignments`'s paginated/filtered/sorted contract (API
+Contracts §7/§8). Each composes the shared `SqlAlchemyRepositoryBase.list_page` (`core/db/
+repository.py`) the identical way `organization.infra.repositories.
+SqlAlchemyOrganizationRepository.list_page`/`iam.infra.repositories.SqlAlchemyUserRepository.
+list_page` already do: an unrestricted `TenantRegionScope(organization_ids=None)` — the same
+"same unscoped posture as `list_all`" caveat every `list_all` in this file already carries, not
+a new gap — followed by re-tracking every returned row through the repository's own `_track`
+helper (so a paginated result participates in the identity-map/`flush_tracked_changes` bridge
+exactly like `get()`'s result does). Each repository's `filterable_fields`/`sortable_fields`/
+`searchable_fields` whitelist is limited to columns already exposed on that aggregate's
+*summary* DTO/response (`application/queries.py`'s `StudentSummaryDTO`/etc.) — the same
+"whitelist limited to what's already on the response" precedent `organization`'s own
+whitelists establish, never a wider column set than the list endpoint's own response shape.
+`core/pagination` is no longer the empty module earlier phases of this file described.
 """
 
 from __future__ import annotations
 
+from datetime import date
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from raad.core.db.repository import SqlAlchemyRepositoryBase
+from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.domain.entities import (
@@ -137,6 +164,16 @@ class SqlAlchemyStudentRepository(
 ):
     model = StudentModel
 
+    #: Whitelist for `GET /students` (§8) — limited to columns already on `StudentSummaryResponse`.
+    filterable_fields = {
+        "status": FilterField(column="status"),
+    }
+    sortable_fields = {
+        "full_name": "full_name",
+        "status": "status",
+    }
+    searchable_fields = ("full_name",)
+
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
         self._tracked: dict[str, tuple[Student, StudentModel]] = {}
@@ -155,6 +192,29 @@ class SqlAlchemyStudentRepository(
         `ScopeResolver` binding — not a Student-specific gap."""
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [model_to_student(row) for row in rows]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Student]:
+        """Same unrestricted-scope posture as `list_all` above."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
 
     def flush_tracked_changes(self) -> None:
         for student, model in self._tracked.values():
@@ -177,6 +237,16 @@ class SqlAlchemyParentRepository(
     `Parent`-specific one)."""
 
     model = ParentModel
+
+    #: Whitelist for `GET /parents` (§8) — limited to columns already on `ParentSummaryResponse`.
+    filterable_fields = {
+        "status": FilterField(column="status"),
+    }
+    sortable_fields = {
+        "full_name": "full_name",
+        "status": "status",
+    }
+    searchable_fields = ("full_name",)
 
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
@@ -201,6 +271,29 @@ class SqlAlchemyParentRepository(
     async def list_all(self) -> list[Parent]:
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [model_to_parent(row) for row in rows]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Parent]:
+        """Same unrestricted-scope posture as `list_all` above."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
 
     def flush_tracked_changes(self) -> None:
         for parent, model in self._tracked.values():
@@ -295,6 +388,18 @@ class SqlAlchemyDriverRepository(
 
     model = DriverModel
 
+    #: Whitelist for `GET /drivers` (§8) — limited to columns already on `DriverSummaryResponse`
+    #: (`Driver` has no `full_name` of its own — `license_no` stands in as the readable
+    #: identifying field, mirroring `application/queries.py`'s `DriverSummaryDTO` docstring).
+    filterable_fields = {
+        "status": FilterField(column="status"),
+    }
+    sortable_fields = {
+        "license_no": "license_no",
+        "status": "status",
+    }
+    searchable_fields = ("license_no",)
+
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
         self._tracked: dict[str, tuple[Driver, DriverModel]] = {}
@@ -311,6 +416,29 @@ class SqlAlchemyDriverRepository(
     async def list_all(self) -> list[Driver]:
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [model_to_driver(row) for row in rows]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Driver]:
+        """Same unrestricted-scope posture as `list_all` above."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
 
     def flush_tracked_changes(self) -> None:
         for driver, model in self._tracked.values():
@@ -331,6 +459,16 @@ class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepos
     unrestricted-`TenantRegionScope` caveat as every other `list_all` in this module."""
 
     model = RouteModel
+
+    #: Whitelist for `GET /routes` (§8) — limited to columns already on `RouteSummaryResponse`.
+    filterable_fields = {
+        "status": FilterField(column="status"),
+    }
+    sortable_fields = {
+        "name": "name",
+        "status": "status",
+    }
+    searchable_fields = ("name",)
 
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
@@ -356,6 +494,29 @@ class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepos
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [model_to_route(row) for row in rows]
 
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Route]:
+        """Same unrestricted-scope posture as `list_all` above."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
+
     def flush_tracked_changes(self) -> None:
         for route, model in self._tracked.values():
             route_to_model(route, existing=model)
@@ -375,6 +536,27 @@ class SqlAlchemyTripRepository(SqlAlchemyRepositoryBase[TripModel], TripReposito
 
     model = TripModel
 
+    #: Whitelist for `GET /trips` (§8) — limited to columns already on `TripSummaryResponse`.
+    #: `Trip` is API Contracts §8's own filtering example resource (`filter[trip_type][in]=...`,
+    #: `filter[scheduled_date][gte]=...`), so both are whitelisted here verbatim.
+    filterable_fields = {
+        "status": FilterField(column="status"),
+        "trip_type": FilterField(column="trip_type"),
+        "vehicle_id": FilterField(column="vehicle_id"),
+        "driver_id": FilterField(column="driver_id"),
+        "route_id": FilterField(column="route_id"),
+        "scheduled_date": FilterField(column="scheduled_date", value_type=date),
+    }
+    sortable_fields = {
+        "scheduled_date": "scheduled_date",
+        "status": "status",
+        "trip_type": "trip_type",
+    }
+    #: No free-text field exists on `TripSummaryResponse` — search is deliberately empty here,
+    #: matching `core.db.repository.SqlAlchemyRepositoryBase._apply_search`'s "no-op when
+    #: `searchable_fields` is empty" behavior.
+    searchable_fields: tuple[str, ...] = ()
+
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
         self._tracked: dict[str, tuple[Trip, TripModel]] = {}
@@ -391,6 +573,29 @@ class SqlAlchemyTripRepository(SqlAlchemyRepositoryBase[TripModel], TripReposito
     async def list_all(self) -> list[Trip]:
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [model_to_trip(row) for row in rows]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Trip]:
+        """Same unrestricted-scope posture as `list_all` above."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
 
     async def active_trip_for_vehicle(self, vehicle_id: VehicleId) -> Trip | None:
         statement = select(TripModel).where(
@@ -429,6 +634,18 @@ class SqlAlchemyStudentAssignmentRepository(
 
     model = StudentAssignmentModel
 
+    #: Whitelist for `GET /student-assignments` (§8) — limited to columns already on
+    #: `StudentAssignmentSummaryResponse`.
+    filterable_fields = {
+        "status": FilterField(column="status"),
+        "route_id": FilterField(column="route_id"),
+        "student_id": FilterField(column="student_id"),
+    }
+    sortable_fields = {
+        "status": "status",
+    }
+    searchable_fields: tuple[str, ...] = ()
+
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
         self._tracked: dict[str, tuple[StudentAssignment, StudentAssignmentModel]] = {}
@@ -447,6 +664,29 @@ class SqlAlchemyStudentAssignmentRepository(
     async def list_all(self) -> list[StudentAssignment]:
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [model_to_student_assignment(row) for row in rows]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[StudentAssignment]:
+        """Same unrestricted-scope posture as `list_all` above."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
 
     async def active_assignment_for_student(
         self, student_id: StudentId

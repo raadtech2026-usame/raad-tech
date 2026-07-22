@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from raad.core.errors.exceptions import DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
@@ -72,6 +73,64 @@ class SequentialIdGenerator(IdGenerator):
         return f"{self._PREFIX}{self._counter:06d}"
 
 
+def _field_text(item: object, field_name: str) -> str:
+    value = getattr(item, field_name)
+    value = getattr(value, "value", value)
+    return "" if value is None else str(value)
+
+
+def _matches_filter(item: object, condition: FilterCondition) -> bool:
+    text = _field_text(item, condition.field)
+    if condition.op == "eq":
+        return text == condition.value
+    if condition.op == "in":
+        return text in {part.strip() for part in condition.value.split(",")}
+    if condition.op == "gte":
+        return text >= condition.value
+    if condition.op == "lte":
+        return text <= condition.value
+    if condition.op == "gt":
+        return text > condition.value
+    if condition.op == "lt":
+        return text < condition.value
+    return True
+
+
+def _paginate_in_memory(
+    items: list,
+    page_request: OffsetPageRequest,
+    *,
+    sort: list[SortSpec],
+    filters: list[FilterCondition],
+    search: str | None,
+    search_field: str = "license_no",
+) -> OffsetPage:
+    """Shared in-memory equivalent of `SqlAlchemyRepositoryBase.list_page` (`core/db/
+    repository.py`), for fake repositories that can't run real SQL — duplicated per module's
+    own test file rather than a shared test helper, mirroring
+    `test_organization_application.py`'s own established "duplicated per module" precedent."""
+    for condition in filters:
+        items = [item for item in items if _matches_filter(item, condition)]
+    if search:
+        items = [
+            item
+            for item in items
+            if search.lower() in _field_text(item, search_field).lower()
+        ]
+    for spec in reversed(sort):
+        items = sorted(
+            items, key=lambda item: _field_text(item, spec.field), reverse=spec.descending
+        )
+    if not sort:
+        items = sorted(items, key=lambda item: str(item.id))
+    total = len(items)
+    start = page_request.offset
+    end = start + page_request.page_size
+    return OffsetPage(
+        data=items[start:end], total=total, page=page_request.page, page_size=page_request.page_size
+    )
+
+
 class InMemoryDriverRepository(DriverRepository):
     def __init__(self) -> None:
         self.by_id: dict[str, Driver] = {}
@@ -84,6 +143,22 @@ class InMemoryDriverRepository(DriverRepository):
 
     async def list_all(self) -> list[Driver]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Driver]:
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
 
 
 class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
@@ -400,17 +475,111 @@ class DriverApplicationServiceReadTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        results = await service.list_drivers(ListDriversQuery(), uow=uow)
-        self.assertEqual(len(results), 2)
-        self.assertTrue(all(isinstance(dto, DriverSummaryDTO) for dto in results))
+        page = await service.list_drivers(
+            ListDriversQuery(page_request=OffsetPageRequest()), uow=uow
+        )
+        self.assertEqual(len(page.data), 2)
+        self.assertTrue(all(isinstance(dto, DriverSummaryDTO) for dto in page.data))
         self.assertEqual(
-            sorted(dto.license_no for dto in results), ["Driver One", "Driver Two"]
+            sorted(dto.license_no for dto in page.data), ["Driver One", "Driver Two"]
         )
 
-    async def test_list_drivers_returns_empty_list_when_none_registered(self) -> None:
+    async def test_list_drivers_returns_empty_page_when_none_registered(self) -> None:
         service, uow = make_service()
-        results = await service.list_drivers(ListDriversQuery(), uow=uow)
-        self.assertEqual(results, [])
+        page = await service.list_drivers(
+            ListDriversQuery(page_request=OffsetPageRequest()), uow=uow
+        )
+        self.assertEqual(page.data, [])
+        self.assertEqual(page.total, 0)
+
+
+class DriverApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_drivers_paginates_and_reports_total(self) -> None:
+        service, uow = make_service()
+        for i in range(3):
+            await service.register_driver(
+                RegisterDriverCommand(
+                    organization_id=VALID_ORG_ULID,
+                    user_id=VALID_USER_ULID,
+                    license_no=f"DL-{i}",
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await service.list_drivers(
+            ListDriversQuery(page_request=OffsetPageRequest(page=1, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(page.page, 1)
+        self.assertEqual(page.page_size, 2)
+        self.assertEqual(len(page.data), 2)
+
+        second_page = await service.list_drivers(
+            ListDriversQuery(page_request=OffsetPageRequest(page=2, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(len(second_page.data), 1)
+
+    async def test_list_drivers_filters_by_status(self) -> None:
+        service, uow = make_service()
+        active = await service.register_driver(
+            RegisterDriverCommand(
+                organization_id=VALID_ORG_ULID,
+                user_id=VALID_USER_ULID,
+                license_no="ACTIVE-1",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        disabled = await service.register_driver(
+            RegisterDriverCommand(
+                organization_id=VALID_ORG_ULID,
+                user_id=VALID_USER_ULID,
+                license_no="DISABLED-1",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.disable_driver(
+            DisableDriverCommand(driver_id=disabled.id, actor=make_actor()), uow=uow
+        )
+
+        page = await service.list_drivers(
+            ListDriversQuery(
+                page_request=OffsetPageRequest(),
+                filters=[FilterCondition(field="status", op="eq", value="inactive")],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].license_no, "DISABLED-1")
+        self.assertNotEqual(page.data[0].id, active.id)
+
+    async def test_list_drivers_sorts_descending_by_license_no(self) -> None:
+        service, uow = make_service()
+        for license_no in ("Alpha", "Beta", "Gamma"):
+            await service.register_driver(
+                RegisterDriverCommand(
+                    organization_id=VALID_ORG_ULID,
+                    user_id=VALID_USER_ULID,
+                    license_no=license_no,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await service.list_drivers(
+            ListDriversQuery(
+                page_request=OffsetPageRequest(),
+                sort=[SortSpec(field="license_no", descending=True)],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(
+            [dto.license_no for dto in page.data], ["Gamma", "Beta", "Alpha"]
+        )
 
 
 class RepositoryInteractionTests(unittest.IsolatedAsyncioTestCase):

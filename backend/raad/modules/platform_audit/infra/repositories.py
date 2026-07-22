@@ -21,8 +21,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.audit.writer import AuditEntryRecord
-from raad.core.db.repository import SqlAlchemyRepositoryBase
+from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.platform_audit.application.ports import PlatformAuditUnitOfWork
 from raad.modules.platform_audit.domain.entities import AuditEntry, SystemSetting
@@ -44,6 +50,24 @@ class SqlAlchemyAuditEntryRepository(
 ):
     model = AuditEntryRecord
 
+    #: Whitelist for `GET /admin/audit` (§8) — limited to columns already on `AuditEntryResponse`
+    #: (`api/schemas.py`). `metadata_json`/`ip` are deliberately excluded: the former is an
+    #: unbounded JSON blob (not a sensible equality/range filter target), the latter has no
+    #: documented filter use-case.
+    filterable_fields = {
+        "organization_id": FilterField(column="organization_id"),
+        "actor_user_id": FilterField(column="actor_user_id"),
+        "action": FilterField(column="action"),
+        "entity_type": FilterField(column="entity_type"),
+        "entity_id": FilterField(column="entity_id"),
+        "correlation_id": FilterField(column="correlation_id"),
+    }
+    sortable_fields = {
+        "created_at": "created_at",
+        "action": "action",
+    }
+    searchable_fields = ()
+
     async def get(self, entry_id: AuditEntryId) -> AuditEntry | None:
         row = await self.get_by_id(str(entry_id))
         return audit_entry_model_to_domain(row) if row is not None else None
@@ -52,11 +76,48 @@ class SqlAlchemyAuditEntryRepository(
         rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
         return [audit_entry_model_to_domain(row) for row in rows]
 
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[AuditEntry]:
+        """Same unrestricted-scope posture as `list_all` above. No `_track`/identity-map here —
+        this repository is read-only (module docstring), so rows are mapped straight through
+        `audit_entry_model_to_domain`, exactly like `get`/`list_all` already do."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[audit_entry_model_to_domain(row) for row in raw_page.data],
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
+
 
 class SqlAlchemySystemSettingRepository(
     SqlAlchemyRepositoryBase[SystemSettingModel], SystemSettingRepository
 ):
     model = SystemSettingModel
+
+    #: Whitelist for `GET /admin/settings` (§8) — limited to columns already on
+    #: `SystemSettingResponse` (`api/schemas.py`). `value_json` is excluded (unbounded JSON blob,
+    #: no sensible equality/range filter target).
+    filterable_fields = {
+        "scope": FilterField(column="scope"),
+    }
+    sortable_fields = {
+        "key": "key",
+        "scope": "scope",
+    }
+    searchable_fields = ()
 
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
@@ -76,6 +137,38 @@ class SqlAlchemySystemSettingRepository(
         statement = select(SystemSettingModel)
         result = await self._session.execute(statement)
         return [model_to_system_setting(row) for row in result.scalars().all()]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[SystemSetting]:
+        """`SystemSettingModel` has no `organization_id`/`deleted_at` either, so
+        `SqlAlchemyRepositoryBase.list_page`'s own `hasattr` guards for those already no-op
+        correctly (identical inert-scope posture `organization.infra.repositories`'s
+        `RegionModel`/`OrganizationModel.list_page` already establish) — the one real quirk is
+        the missing `id` column, and that is guarded one layer up, in
+        `PlatformAuditApplicationService.list_system_settings` (never here): this method passes
+        `sort` straight through, the same "caller's sort wins" shape every sibling repository's
+        `list_page` already has, and will raise `AttributeError` if ever called directly with an
+        empty `sort` — a deliberate non-guard, not an oversight, since guarding it twice would
+        hide a caller bug instead of surfacing it."""
+        raw_page = await super().list_page(
+            TenantRegionScope(organization_ids=None),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
 
     def flush_tracked_changes(self) -> None:
         for setting, model in self._tracked.values():

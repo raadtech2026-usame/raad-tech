@@ -27,8 +27,10 @@ from sqlalchemy import text
 from raad.core.audit.writer import AuditWriter
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
+from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.time.clock import SystemClock
 from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.value_objects import (
@@ -200,6 +202,183 @@ class RegionAndOrganizationRepositoryRoundTripTests(unittest.IsolatedAsyncioTest
         async with self._new_uow() as uow:
             result = await uow.organizations.get(OrganizationId(self.id_generator.new_id()))
         self.assertIsNone(result)
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class OrganizationPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemyRepositoryBase.list_page` (`core/db/repository.py`) against real
+    SQL, via `organization`'s own whitelists — this is the one place real Postgres behavior
+    (offset/limit, `ILIKE` search, whitelisted filter/sort, `func.count()` over the same
+    filtered predicate) is actually proven, since unit tests use in-memory fakes."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_org_ids: list[str] = []
+        self._created_region_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_org_ids:
+                await conn.execute(
+                    text("DELETE FROM organizations WHERE id = ANY(:ids)"),
+                    {"ids": self._created_org_ids},
+                )
+            if self._created_region_ids:
+                await conn.execute(
+                    text("DELETE FROM regions WHERE id = ANY(:ids)"),
+                    {"ids": self._created_region_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyOrganizationUnitOfWork:
+        return SqlAlchemyOrganizationUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed(self, *, name: str, billing_model: BillingModel, region_id: RegionId) -> None:
+        async with self._new_uow() as uow:
+            organization = Organization.register(
+                id=OrganizationId(self.id_generator.new_id()),
+                name=name,
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=billing_model,
+                clock=self.clock,
+            )
+            uow.organizations.add(organization)
+            uow.record_events(organization.pull_domain_events())
+            await uow.commit()
+            self._created_org_ids.append(str(organization.id))
+
+    async def test_list_page_paginates_and_reports_total(self) -> None:
+        async with self._new_uow() as uow:
+            region = Region.create(
+                id=RegionId(self.id_generator.new_id()),
+                name=f"Region {self.tag}",
+                clock=self.clock,
+            )
+            uow.regions.add(region)
+            uow.record_events(region.pull_domain_events())
+            await uow.commit()
+            region_id = region.id
+            self._created_region_ids.append(str(region_id))
+
+        for i in range(3):
+            await self._seed(
+                name=f"Page Org {self.tag} {i}",
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                region_id=region_id,
+            )
+
+        async with self._new_uow() as uow:
+            page = await uow.organizations.list_page(
+                OffsetPageRequest(page=1, page_size=2),
+                sort=[SortSpec(field="name")],
+                filters=[FilterCondition(field="region_id", op="eq", value=str(region_id))],
+                search=None,
+            )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+    async def test_list_page_filters_by_billing_model(self) -> None:
+        async with self._new_uow() as uow:
+            region = Region.create(
+                id=RegionId(self.id_generator.new_id()),
+                name=f"Region Filter {self.tag}",
+                clock=self.clock,
+            )
+            uow.regions.add(region)
+            uow.record_events(region.pull_domain_events())
+            await uow.commit()
+            region_id = region.id
+            self._created_region_ids.append(str(region_id))
+
+        await self._seed(
+            name=f"Org Pays {self.tag}",
+            billing_model=BillingModel.ORGANIZATION_PAYS,
+            region_id=region_id,
+        )
+        await self._seed(
+            name=f"Parent Pays {self.tag}",
+            billing_model=BillingModel.PARENT_PAYS,
+            region_id=region_id,
+        )
+
+        async with self._new_uow() as uow:
+            page = await uow.organizations.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(field="region_id", op="eq", value=str(region_id)),
+                    FilterCondition(field="billing_model", op="eq", value="parent_pays"),
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].name, f"Parent Pays {self.tag}")
+
+    async def test_list_page_search_matches_name_substring(self) -> None:
+        async with self._new_uow() as uow:
+            region = Region.create(
+                id=RegionId(self.id_generator.new_id()),
+                name=f"Region Search {self.tag}",
+                clock=self.clock,
+            )
+            uow.regions.add(region)
+            uow.record_events(region.pull_domain_events())
+            await uow.commit()
+            region_id = region.id
+            self._created_region_ids.append(str(region_id))
+
+        await self._seed(
+            name=f"Findable-{self.tag}",
+            billing_model=BillingModel.ORGANIZATION_PAYS,
+            region_id=region_id,
+        )
+        await self._seed(
+            name=f"Other-{self.tag}",
+            billing_model=BillingModel.ORGANIZATION_PAYS,
+            region_id=region_id,
+        )
+
+        async with self._new_uow() as uow:
+            page = await uow.organizations.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(field="region_id", op="eq", value=str(region_id))
+                ],
+                search="findable",
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].name, f"Findable-{self.tag}")
+
+    async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.organizations.list_page(
+                    OffsetPageRequest(),
+                    sort=[],
+                    filters=[FilterCondition(field="password_hash", op="eq", value="x")],
+                    search=None,
+                )
+
+    async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.organizations.list_page(
+                    OffsetPageRequest(),
+                    sort=[SortSpec(field="id")],
+                    filters=[],
+                    search=None,
+                )
 
 
 if __name__ == "__main__":

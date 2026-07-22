@@ -16,9 +16,14 @@ unlike its three siblings), and `TransportFee` has no HTTP route exposing it at 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.modules.billing.domain.entities import (
     Invoice,
     Payment,
@@ -35,7 +40,14 @@ class GetPlanByIdQuery:
 
 @dataclass(frozen=True)
 class ListPlansQuery:
-    pass
+    """Backs `GET /billing/plans` (API Contracts §4.7/§7/§8) - pagination/filtering/sorting
+    added under the Pagination/Filtering/Sorting phase, mirroring `organization.application.
+    queries.ListOrganizationsQuery`'s exact shape."""
+
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,7 +86,13 @@ class GetSubscriptionByIdQuery:
 
 @dataclass(frozen=True)
 class ListSubscriptionsQuery:
-    pass
+    """Backs `GET /billing/subscriptions` (API Contracts §4.7/§7/§8) - pagination/filtering/
+    sorting added under the Pagination/Filtering/Sorting phase."""
+
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,7 +133,13 @@ class GetInvoiceByIdQuery:
 
 @dataclass(frozen=True)
 class ListInvoicesQuery:
-    pass
+    """Backs `GET /billing/invoices` (API Contracts §4.7/§7/§8) - pagination/filtering/sorting
+    added under the Pagination/Filtering/Sorting phase."""
+
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)

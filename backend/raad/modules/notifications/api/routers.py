@@ -11,8 +11,17 @@ addition — no more, no less:**
 - `GET /notifications` — list (line 161, "any authenticated", "own in-app notifications
   (paginated)"). Scoped to the caller's own `recipient_user_id` (`principal.user_id`), **not**
   `organization_id`/`TenantRegionScope` — the first list endpoint in this codebase scoped by
-  personal ownership rather than tenant. Not paginated — `core/pagination` is empty, the same
-  pre-existing gap `list_students`/`list_parents`/etc. already carry.
+  personal ownership rather than tenant. **Cursor-paginated** (`?limit&cursor`, API Contracts
+  §7) as of the Pagination/Filtering/Sorting phase — the first of the two documented "(paginated)"
+  routes (alongside `GET /tracking/trips/{id}/positions`) to actually get it, closing what this
+  docstring used to describe as the same pre-existing gap `list_students`/`list_parents`/etc.
+  still carry. Supports `filter[type]=...`/`filter[trip_id]=...` (§8) — whitelisted, narrowing-only
+  on top of the caller's own mandatory `recipient_user_id` scope (`domain/repositories.py`'s
+  `list_for_recipient_page` docstring). `status` is deliberately NOT filterable — it is a
+  domain-derived property (`read_at`-based), not a persisted column, see `infra/repositories.py`'s
+  `SqlAlchemyNotificationRepository.filterable_fields` docstring. No `sort` parameter — cursor
+  mode paginates over a single fixed `(created_at, id)` keyset, newest-first, not a client-chosen
+  sort (`core/pagination`'s own module docstring).
 - `GET /notifications/{notification_id}` — get by id. Not itemized in §4.6's compact table, but
   every sibling resource in this codebase gets this uniform-CRUD route — built for the same
   reason `Trip`'s/`StudentAssignment`'s equivalent were, flagged here rather than silently
@@ -46,9 +55,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
+from raad.core.pagination import CursorPageRequest, FilterCondition
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
-from raad.interfaces.http.deps import require_permission
+from raad.interfaces.http.deps import (
+    get_cursor_page_request,
+    get_filter_conditions,
+    require_permission,
+)
+from raad.interfaces.http.pagination import CursorPageResponse, to_cursor_page_response
 from raad.modules.notifications.api.deps import (
     get_notification_service,
     get_notifications_uow,
@@ -156,29 +171,39 @@ async def revoke_device_token(
 
 @notifications_router.get(
     "",
-    response_model=list[NotificationResponse],
+    response_model=CursorPageResponse[NotificationResponse],
     status_code=status.HTTP_200_OK,
     summary="List the caller's own notifications",
     description=(
         "Any authenticated (API Contracts §4.6 line 161: \"own in-app notifications "
         "(paginated)\"). Scoped to `recipient_user_id = principal.user_id` — the first list "
-        "endpoint in this codebase scoped by personal ownership rather than tenant. Not "
-        "paginated — `core/pagination` is empty, the same pre-existing gap every other list "
-        "endpoint in this codebase already carries. Authorization resolves against the real "
-        "seeded RBAC permission matrix."
+        "endpoint in this codebase scoped by personal ownership rather than tenant. "
+        "Cursor-paginated (`?limit&cursor`, §7) as of the Pagination/Filtering/Sorting phase — "
+        "returns most-recent-first (`created_at` descending), this route's own flagged "
+        "interpretive choice (no document specifies ordering). Accepts "
+        "`filter[type]=...`/`filter[trip_id]=...` (§8), narrowing-only on top of the caller's "
+        "own mandatory scope — `status` is not filterable (domain-derived, not a persisted "
+        "column). Authorization resolves against the real seeded RBAC permission matrix."
     ),
 )
 async def list_notifications(
     principal: Principal = Depends(
         require_permission(Permission("notifications.notifications.list"))
     ),
+    cursor_request: CursorPageRequest = Depends(get_cursor_page_request),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
     notification_service: NotificationApplicationService = Depends(get_notification_service),
     uow: NotificationsUnitOfWork = Depends(get_notifications_uow),
-) -> list[NotificationResponse]:
-    notifications = await notification_service.list_notifications_for_recipient(
-        ListNotificationsForRecipientQuery(recipient_user_id=principal.user_id), uow=uow
+) -> CursorPageResponse[NotificationResponse]:
+    page = await notification_service.list_notifications_for_recipient(
+        ListNotificationsForRecipientQuery(
+            recipient_user_id=principal.user_id,
+            cursor_request=cursor_request,
+            filters=filters,
+        ),
+        uow=uow,
     )
-    return [_notification_dto_to_response(n) for n in notifications]
+    return to_cursor_page_response(page, _notification_dto_to_response)
 
 
 @notifications_router.get(

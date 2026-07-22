@@ -13,13 +13,18 @@ same "routes are contract-driven, not capability-driven" restraint `transport_op
 already applies to `Route.remove_stop`/`move_stop`/`Trip.interrupt`/`resume`.
 
 - `GET /billing/plans` — list (§4.7 line 170, "in-scope" — no role restriction documented).
+  **Paginated/filterable/sortable per §7/§8** (Pagination/Filtering/Sorting phase): `?page&
+  page_size`, `?filter[field]=value`, `?sort=field`, `?q=` — mirrors `organization`/`iam`'s
+  identical `list_page`-backed shape.
 - `GET /billing/subscriptions` — list (line 171, "Org Admin/Finance; Parent(own)"). **Not
   filtered to the caller's own subscriptions** — `list_subscriptions` calls
-  `uow.subscriptions.list_all()` unscoped (`application/services.py`); the "Parent(own)" half of
-  this row is the same unresolved `ScopeResolver`/ownership-filtering gap every other list
-  endpoint in this codebase already carries (`transport_ops.api.routers`'s own recurring
-  caveat), not a billing-specific omission.
+  `uow.subscriptions.list_page(...)` unscoped by tenant/ownership (`application/services.py`);
+  the "Parent(own)" half of this row is the same unresolved `ScopeResolver`/ownership-filtering
+  gap every other list endpoint in this codebase already carries (`transport_ops.api.routers`'s
+  own recurring caveat), not a billing-specific omission — pagination/filtering/sorting (added
+  this phase) is an orthogonal, now-resolved concern from that caveat.
 - `GET /billing/invoices` — list (line 172, same "Parent(own)" caveat as subscriptions above).
+  Same pagination/filtering/sorting addition as `/plans`/`/subscriptions` above.
 - `POST /billing/payments` — initiate (line 173, "Org Admin/Finance; Parent(own, allowed even
   when access-denied)"). Requires the `Idempotency-Key` header (API rule #6, API Contracts
   §12) — read directly here via `Header(...)`, not a body field; a missing header is a
@@ -62,9 +67,21 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, status
 
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
-from raad.interfaces.http.deps import require_permission
+from raad.interfaces.http.deps import (
+    get_filter_conditions,
+    get_offset_page_request,
+    get_search_query,
+    get_sort_params,
+    require_permission,
+)
+from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
 from raad.modules.billing.api.deps import get_billing_service, get_billing_uow
 from raad.modules.billing.api.schemas import (
     InitiatePaymentRequest,
@@ -147,33 +164,45 @@ def _payment_dto_to_response(payment: PaymentDTO) -> PaymentResponse:
 
 @billing_router.get(
     "/plans",
-    response_model=list[PlanResponse],
+    response_model=OffsetPageResponse[PlanResponse],
     status_code=status.HTTP_200_OK,
     summary="List billing plans",
     description=(
         "In-scope, no documented role restriction (API Contracts §4.7 line 170). "
-        "Authorization resolves against the real seeded RBAC permission matrix (ADR-0004)."
+        "Paginated/filterable/sortable per §7/§8: `?page&page_size`, `?filter[field]=value`, "
+        "`?sort=field`, `?q=`. Authorization resolves against the real seeded RBAC permission "
+        "matrix (ADR-0004)."
     ),
 )
 async def list_plans(
     principal: Principal = Depends(require_permission(Permission("billing.plans.list"))),
     billing_service: BillingApplicationService = Depends(get_billing_service),
     uow: BillingUnitOfWork = Depends(get_billing_uow),
-) -> list[PlanResponse]:
-    plans = await billing_service.list_plans(ListPlansQuery(), uow=uow)
-    return [_plan_dto_to_response(plan) for plan in plans]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[PlanResponse]:
+    page = await billing_service.list_plans(
+        ListPlansQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _plan_dto_to_response)
 
 
 @billing_router.get(
     "/subscriptions",
-    response_model=list[SubscriptionResponse],
+    response_model=OffsetPageResponse[SubscriptionResponse],
     status_code=status.HTTP_200_OK,
     summary="List subscriptions",
     description=(
         "Org Admin/Finance; Parent(own) (API Contracts §4.7 line 171). Not yet filtered to the "
         "caller's own subscriptions — see this file's module docstring for the inherited, "
-        "system-wide `ScopeResolver` gap. Authorization resolves against the real seeded "
-        "RBAC permission matrix."
+        "system-wide `ScopeResolver` gap. Paginated/filterable/sortable per §7/§8: `?page&"
+        "page_size`, `?filter[field]=value`, `?sort=field`. Authorization resolves against the "
+        "real seeded RBAC permission matrix."
     ),
 )
 async def list_subscriptions(
@@ -182,31 +211,48 @@ async def list_subscriptions(
     ),
     billing_service: BillingApplicationService = Depends(get_billing_service),
     uow: BillingUnitOfWork = Depends(get_billing_uow),
-) -> list[SubscriptionResponse]:
-    subscriptions = await billing_service.list_subscriptions(
-        ListSubscriptionsQuery(), uow=uow
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[SubscriptionResponse]:
+    page = await billing_service.list_subscriptions(
+        ListSubscriptionsQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
     )
-    return [_subscription_dto_to_response(s) for s in subscriptions]
+    return to_offset_page_response(page, _subscription_dto_to_response)
 
 
 @billing_router.get(
     "/invoices",
-    response_model=list[InvoiceResponse],
+    response_model=OffsetPageResponse[InvoiceResponse],
     status_code=status.HTTP_200_OK,
     summary="List invoices",
     description=(
         "Org Admin/Finance; Parent(own) (API Contracts §4.7 line 172). Same inherited "
-        "unscoped-list caveat as `list_subscriptions`. Authorization resolves against the "
-        "real seeded RBAC permission matrix."
+        "unscoped-list caveat as `list_subscriptions`. Paginated/filterable/sortable per §7/§8: "
+        "`?page&page_size`, `?filter[field]=value`, `?sort=field`, `?q=`. Authorization "
+        "resolves against the real seeded RBAC permission matrix."
     ),
 )
 async def list_invoices(
     principal: Principal = Depends(require_permission(Permission("billing.invoices.list"))),
     billing_service: BillingApplicationService = Depends(get_billing_service),
     uow: BillingUnitOfWork = Depends(get_billing_uow),
-) -> list[InvoiceResponse]:
-    invoices = await billing_service.list_invoices(ListInvoicesQuery(), uow=uow)
-    return [_invoice_dto_to_response(invoice) for invoice in invoices]
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[InvoiceResponse]:
+    page = await billing_service.list_invoices(
+        ListInvoicesQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _invoice_dto_to_response)
 
 
 @billing_router.post(

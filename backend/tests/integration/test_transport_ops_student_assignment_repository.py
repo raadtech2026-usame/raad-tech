@@ -26,9 +26,11 @@ from sqlalchemy import text
 
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
+from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.time.clock import SystemClock
 from raad.modules.transport_ops.domain.entities import Route, Student, StudentAssignment
 from raad.modules.transport_ops.domain.value_objects import (
@@ -283,6 +285,249 @@ class StudentAssignmentRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase
 
         self.assertIsNotNone(active)
         self.assertEqual(str(active.id), str(assignment.id))
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class StudentAssignmentPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Exercises `SqlAlchemyRepositoryBase.list_page` (`core/db/repository.py`) against real
+    SQL, via `SqlAlchemyStudentAssignmentRepository`'s own whitelist — mirrors
+    `OrganizationPaginationRepositoryTests`'s own shape exactly (Tier 2 pagination phase)."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_assignment_ids: list[str] = []
+        self._created_student_ids: list[str] = []
+        self._created_route_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_assignment_ids:
+                await conn.execute(
+                    text("DELETE FROM student_assignments WHERE id = ANY(:ids)"),
+                    {"ids": self._created_assignment_ids},
+                )
+            if self._created_student_ids:
+                await conn.execute(
+                    text("DELETE FROM students WHERE id = ANY(:ids)"),
+                    {"ids": self._created_student_ids},
+                )
+            if self._created_route_ids:
+                await conn.execute(
+                    text("DELETE FROM stops WHERE route_id = ANY(:ids)"),
+                    {"ids": self._created_route_ids},
+                )
+                await conn.execute(
+                    text("DELETE FROM routes WHERE id = ANY(:ids)"),
+                    {"ids": self._created_route_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyTransportOpsUnitOfWork:
+        return SqlAlchemyTransportOpsUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _seed_student_and_route(
+        self, org_id: str
+    ) -> tuple[StudentId, RouteId, StopId, StopId]:
+        async with self._new_uow() as uow:
+            student = Student.enroll(
+                id=StudentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                full_name=f"Student {self.tag}",
+                clock=self.clock,
+            )
+            route = Route.create(
+                id=RouteId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                name=f"Route {self.tag}",
+                clock=self.clock,
+            )
+            pickup = route.add_stop(
+                id=StopId(self.id_generator.new_id()),
+                name="Pickup",
+                latitude=2.5,
+                longitude=45.3,
+                sequence_no=1,
+                clock=self.clock,
+            )
+            dropoff = route.add_stop(
+                id=StopId(self.id_generator.new_id()),
+                name="Dropoff",
+                latitude=2.6,
+                longitude=45.4,
+                sequence_no=2,
+                clock=self.clock,
+            )
+            uow.students.add(student)
+            uow.routes.add(route)
+            uow.record_events(student.pull_domain_events())
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            self._created_student_ids.append(str(student.id))
+            self._created_route_ids.append(str(route.id))
+            return student.id, route.id, pickup.id, dropoff.id
+
+    async def _seed_assignment(
+        self,
+        *,
+        org_id: str,
+        student_id: StudentId,
+        route_id: RouteId,
+        pickup_id: StopId,
+        dropoff_id: StopId,
+    ) -> StudentAssignment:
+        async with self._new_uow() as uow:
+            assignment = StudentAssignment.assign(
+                id=StudentAssignmentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                student_id=student_id,
+                student_organization_id=OrganizationId(org_id),
+                route_id=route_id,
+                route_organization_id=OrganizationId(org_id),
+                pickup_stop_id=pickup_id,
+                dropoff_stop_id=dropoff_id,
+                vehicle_id=None,
+                clock=self.clock,
+            )
+            uow.student_assignments.add(assignment)
+            uow.record_events(assignment.pull_domain_events())
+            await uow.commit()
+            self._created_assignment_ids.append(str(assignment.id))
+            return assignment
+
+    async def test_list_page_paginates_and_reports_total(self) -> None:
+        # Three separate students, each with its own org/route pair - one-active-assignment-
+        # per-student forbids stacking multiple ACTIVE assignments onto a single student, and
+        # `_seed_student_and_route`'s route name is fixed per `self.tag`, so a distinct org_id
+        # per iteration avoids colliding with `ux_routes__organization_id_name`. `student_id`
+        # `in` isolates exactly these three rows from any concurrent test data, the same role
+        # a unique `route_id` filter plays in this class's other tests.
+        student_ids: list[str] = []
+        for _ in range(3):
+            org_id = self.id_generator.new_id()
+            student_id, route_id, pickup_id, dropoff_id = await self._seed_student_and_route(
+                org_id
+            )
+            await self._seed_assignment(
+                org_id=org_id,
+                student_id=student_id,
+                route_id=route_id,
+                pickup_id=pickup_id,
+                dropoff_id=dropoff_id,
+            )
+            student_ids.append(str(student_id))
+
+        async with self._new_uow() as uow:
+            page = await uow.student_assignments.list_page(
+                OffsetPageRequest(page=1, page_size=2),
+                sort=[],
+                filters=[
+                    FilterCondition(
+                        field="student_id", op="in", value=",".join(student_ids)
+                    ),
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(len(page.data), 2)
+
+        async with self._new_uow() as uow:
+            second_page = await uow.student_assignments.list_page(
+                OffsetPageRequest(page=2, page_size=2),
+                sort=[],
+                filters=[
+                    FilterCondition(
+                        field="student_id", op="in", value=",".join(student_ids)
+                    ),
+                ],
+                search=None,
+            )
+        self.assertEqual(len(second_page.data), 1)
+
+    async def test_list_page_filters_by_route_id(self) -> None:
+        org_id = self.id_generator.new_id()
+        student_id, route_id, pickup_id, dropoff_id = await self._seed_student_and_route(
+            org_id
+        )
+        assignment = await self._seed_assignment(
+            org_id=org_id,
+            student_id=student_id,
+            route_id=route_id,
+            pickup_id=pickup_id,
+            dropoff_id=dropoff_id,
+        )
+
+        async with self._new_uow() as uow:
+            page = await uow.student_assignments.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[FilterCondition(field="route_id", op="eq", value=str(route_id))],
+                search=None,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(str(page.data[0].id), str(assignment.id))
+
+    async def test_list_page_filters_by_status(self) -> None:
+        org_id = self.id_generator.new_id()
+        student_id, route_id, pickup_id, dropoff_id = await self._seed_student_and_route(
+            org_id
+        )
+        assignment = await self._seed_assignment(
+            org_id=org_id,
+            student_id=student_id,
+            route_id=route_id,
+            pickup_id=pickup_id,
+            dropoff_id=dropoff_id,
+        )
+        async with self._new_uow() as uow:
+            loaded = await uow.student_assignments.get(assignment.id)
+            loaded.remove(clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            page = await uow.student_assignments.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(field="route_id", op="eq", value=str(route_id)),
+                    FilterCondition(field="status", op="eq", value="removed"),
+                ],
+                search=None,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(str(page.data[0].id), str(assignment.id))
+        self.assertEqual(page.data[0].status, "removed")
+
+    async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.student_assignments.list_page(
+                    OffsetPageRequest(),
+                    sort=[],
+                    filters=[
+                        FilterCondition(field="organization_id", op="eq", value="x")
+                    ],
+                    search=None,
+                )
+
+    async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
+        async with self._new_uow() as uow:
+            with self.assertRaises(ValidationError):
+                await uow.student_assignments.list_page(
+                    OffsetPageRequest(),
+                    sort=[SortSpec(field="id")],
+                    filters=[],
+                    search=None,
+                )
 
 
 if __name__ == "__main__":

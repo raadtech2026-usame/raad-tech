@@ -14,6 +14,7 @@ import unittest
 from datetime import datetime, timezone
 
 from raad.core.errors.exceptions import ConflictError, DomainError, NotFoundError
+from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
@@ -75,6 +76,28 @@ class InMemoryStudentRepository(StudentRepository):
     async def list_all(self) -> list[Student]:
         return list(self.by_id.values())
 
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Student]:
+        # Out of this file's own scope (`StudentParentApplicationService` has no listing
+        # use-case of its own) - only implemented because `StudentRepository` is an ABC this
+        # fake must fully satisfy since the Tier 2 pagination phase added `list_page` to it.
+        # See `test_transport_ops_student_application.py` for `Student`'s dedicated tests.
+        items = list(self.by_id.values())
+        start = page_request.offset
+        end = start + page_request.page_size
+        return OffsetPage(
+            data=items[start:end],
+            total=len(items),
+            page=page_request.page,
+            page_size=page_request.page_size,
+        )
+
 
 class InMemoryParentRepository(ParentRepository):
     def __init__(self) -> None:
@@ -93,6 +116,28 @@ class InMemoryParentRepository(ParentRepository):
 
     async def list_all(self) -> list[Parent]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Parent]:
+        # Out of this file's own scope (`StudentParentApplicationService` has no listing
+        # use-case of its own) - only implemented because `ParentRepository` is an ABC this
+        # fake must fully satisfy since the Tier 2 pagination phase added `list_page` to it.
+        # See `test_transport_ops_parent_application.py` for `Parent`'s dedicated tests.
+        items = list(self.by_id.values())
+        start = page_request.offset
+        end = start + page_request.page_size
+        return OffsetPage(
+            data=items[start:end],
+            total=len(items),
+            page=page_request.page,
+            page_size=page_request.page_size,
+        )
 
 
 class InMemoryStudentParentRepository(StudentParentRepository):

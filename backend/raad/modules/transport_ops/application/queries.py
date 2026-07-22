@@ -5,14 +5,25 @@ future API/infra layer, so neither ever depends on the other's internal shape. M
 fields become `.value`, timestamps (none on `Student` — see `domain/entities.py`) would stay
 native `datetime`, never `.isoformat()`-stringified at this layer.
 
-**`ListStudentsQuery` establishes a new pattern in this codebase — flagged, not silently
-copied.** No `List*Query` exists in any of `iam`/`organization`/`fleet_device`/`tracking`'s
-application layers (their only "many" reads are relationship-scoped, e.g. `GetVehiclePositionHistoryQuery(trip_id)`,
-never an unscoped "list everything in my tenant"), and `core/pagination` is an empty module — no
-limit/offset/cursor convention exists to reuse. `ListStudentsQuery` therefore carries no fields
-at all (implicitly tenant-scoped, matching `StudentRepository.list_all`'s own no-parameter
-shape); pagination is deferred to whichever later phase actually needs it, rather than inventing
-an unapproved shape now.
+**`ListStudentsQuery` established a new pattern in this codebase when first written (Phase
+10.2) — flagged then, not silently copied.** At the time, no `List*Query` existed in any of
+`iam`/`organization`/`fleet_device`/`tracking`'s application layers (their only "many" reads
+were relationship-scoped, e.g. `GetVehiclePositionHistoryQuery(trip_id)`, never an unscoped
+"list everything in my tenant"), and `core/pagination` was an empty module — no limit/offset/
+cursor convention existed yet to reuse. `ListStudentsQuery` therefore carried no fields at all;
+pagination was deferred to whichever later phase actually needed it.
+
+**That later phase is this one (Tier 2 pagination phase).** `core/pagination` is no longer
+empty — `iam.application.queries.ListUsersQuery`/`organization.application.queries.
+ListOrganizationsQuery`/`ListRegionsQuery` already established the concrete shape
+(`page_request: OffsetPageRequest`, `sort: list[SortSpec]`, `filters: list[FilterCondition]`,
+`search: str | None`), and `ListStudentsQuery`/`ListParentsQuery`/`ListDriversQuery`/
+`ListRoutesQuery`/`ListTripsQuery`/`ListStudentAssignmentsQuery` (below) now all carry that
+identical shape rather than the old empty-`pass` body the paragraph above used to describe.
+`ListParentsForStudentQuery`/`ListStudentsForParentQuery`/`ListStopsForRouteQuery` (this
+module's three relationship-/child-scoped-to-one-parent reads) are deliberately **not**
+paginated this phase — out of scope, per the task's own explicit boundary (small,
+scoped-to-one-parent collections, not top-level resource lists).
 
 **`StudentSummaryDTO` also establishes a new pattern — flagged.** No module in this codebase has
 a "summary" vs. "full" DTO distinction; every aggregate has exactly one DTO shape. Built here
@@ -52,9 +63,10 @@ one-off here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
+from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
@@ -74,7 +86,10 @@ class GetStudentByIdQuery:
 
 @dataclass(frozen=True)
 class ListStudentsQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,7 +140,10 @@ class GetParentByIdQuery:
 
 @dataclass(frozen=True)
 class ListParentsQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -263,7 +281,10 @@ class GetDriverByIdQuery:
 
 @dataclass(frozen=True)
 class ListDriversQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -319,7 +340,10 @@ class GetRouteByIdQuery:
 
 @dataclass(frozen=True)
 class ListRoutesQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -397,7 +421,10 @@ class GetTripByIdQuery:
 
 @dataclass(frozen=True)
 class ListTripsQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -470,7 +497,10 @@ class GetStudentAssignmentByIdQuery:
 
 @dataclass(frozen=True)
 class ListStudentAssignmentsQuery:
-    pass
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)

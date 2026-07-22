@@ -19,6 +19,7 @@ import hashlib
 
 from raad.core.errors.exceptions import AuthenticationError, NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import OffsetPage
 from raad.core.security.claims import TokenType
 from raad.core.tenancy.principal import Role
 from raad.core.security.password_hashing import PasswordHasher
@@ -179,13 +180,21 @@ class UserApplicationService:
 
     async def list_users(
         self, query: ListUsersQuery, *, uow: IamUnitOfWork
-    ) -> list[UserDTO]:
-        """Backs `GET /users` (API Contracts §4.1) — Backend Stabilization phase addition, see
-        `domain/repositories.py`'s `UserRepository.list_all` docstring for why this was
-        previously deferred and what unblocked it."""
+    ) -> OffsetPage[UserDTO]:
+        """Backs `GET /users` (API Contracts §4.1/§7/§8)."""
         async with uow:
-            users = await uow.users.list_all()
-            return [user_to_dto(u) for u in users]
+            page = await uow.users.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[user_to_dto(u) for u in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     @staticmethod
     async def _get_user_or_raise(uow: IamUnitOfWork, user_id: str) -> User:

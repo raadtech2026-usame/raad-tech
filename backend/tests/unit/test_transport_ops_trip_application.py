@@ -17,6 +17,7 @@ from datetime import date, datetime, timezone
 
 from raad.core.errors.exceptions import ConflictError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
@@ -89,6 +90,67 @@ class SequentialIdGenerator(IdGenerator):
         return f"{self._PREFIX}{self._counter:06d}"
 
 
+def _field_text(item: object, field_name: str) -> str:
+    value = getattr(item, field_name)
+    value = getattr(value, "value", value)
+    return "" if value is None else str(value)
+
+
+def _matches_filter(item: object, condition: FilterCondition) -> bool:
+    text = _field_text(item, condition.field)
+    if condition.op == "eq":
+        return text == condition.value
+    if condition.op == "in":
+        return text in {part.strip() for part in condition.value.split(",")}
+    if condition.op == "gte":
+        return text >= condition.value
+    if condition.op == "lte":
+        return text <= condition.value
+    if condition.op == "gt":
+        return text > condition.value
+    if condition.op == "lt":
+        return text < condition.value
+    return True
+
+
+def _paginate_in_memory(
+    items: list,
+    page_request: OffsetPageRequest,
+    *,
+    sort: list[SortSpec],
+    filters: list[FilterCondition],
+    search: str | None,
+    search_field: str = "scheduled_date",
+) -> OffsetPage:
+    """Shared in-memory equivalent of `SqlAlchemyRepositoryBase.list_page` (`core/db/
+    repository.py`), for fake repositories that can't run real SQL — duplicated per module's
+    own test file rather than a shared test helper, mirroring
+    `test_organization_application.py`'s own established "duplicated per module" precedent.
+    `Trip` has no `searchable_fields` whitelist (`infra/repositories.py`'s Tier 2 pagination
+    phase addition) — `search_field`/`search` are accepted for shape-parity with every other
+    module's identical helper but are never exercised by this file's own tests."""
+    for condition in filters:
+        items = [item for item in items if _matches_filter(item, condition)]
+    if search:
+        items = [
+            item
+            for item in items
+            if search.lower() in _field_text(item, search_field).lower()
+        ]
+    for spec in reversed(sort):
+        items = sorted(
+            items, key=lambda item: _field_text(item, spec.field), reverse=spec.descending
+        )
+    if not sort:
+        items = sorted(items, key=lambda item: str(item.id))
+    total = len(items)
+    start = page_request.offset
+    end = start + page_request.page_size
+    return OffsetPage(
+        data=items[start:end], total=total, page=page_request.page, page_size=page_request.page_size
+    )
+
+
 class InMemoryTripRepository(TripRepository):
     def __init__(self) -> None:
         self.by_id: dict[str, Trip] = {}
@@ -101,6 +163,22 @@ class InMemoryTripRepository(TripRepository):
 
     async def list_all(self) -> list[Trip]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Trip]:
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
 
     async def active_trip_for_vehicle(self, vehicle_id: VehicleId) -> Trip | None:
         return next(
@@ -132,6 +210,26 @@ class InMemoryDriverRepository(DriverRepository):
     async def list_all(self) -> list[Driver]:
         return list(self.by_id.values())
 
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Driver]:
+        # Not this file's own listing focus (see `test_transport_ops_driver_application.py`
+        # for `Driver`'s dedicated pagination tests) - only implemented here because
+        # `DriverRepository` is an ABC `TripApplicationService`'s tests must still construct.
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+            search_field="license_no",
+        )
+
 
 class InMemoryRouteRepository(RouteRepository):
     def __init__(self) -> None:
@@ -148,6 +246,26 @@ class InMemoryRouteRepository(RouteRepository):
 
     async def list_all(self) -> list[Route]:
         return list(self.by_id.values())
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Route]:
+        # Not this file's own listing focus (see `test_transport_ops_route_application.py`
+        # for `Route`'s dedicated pagination tests) - only implemented here because
+        # `RouteRepository` is an ABC `TripApplicationService`'s tests must still construct.
+        return _paginate_in_memory(
+            list(self.by_id.values()),
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+            search_field="name",
+        )
 
 
 class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
@@ -543,9 +661,114 @@ class TripLifecycleOrchestrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_trips_returns_summary_dtos(self) -> None:
         service, uow = make_service()
         await self._scheduled_trip_dto(service, uow)
-        results = await service.list_trips(ListTripsQuery(), uow=uow)
-        self.assertEqual(len(results), 1)
-        self.assertIsInstance(results[0], TripSummaryDTO)
+        page = await service.list_trips(
+            ListTripsQuery(page_request=OffsetPageRequest()), uow=uow
+        )
+        self.assertEqual(len(page.data), 1)
+        self.assertIsInstance(page.data[0], TripSummaryDTO)
+
+
+class TripApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_trips_paginates_and_reports_total(self) -> None:
+        service, uow = make_service()
+        seed_driver_and_route(uow)
+        for i in range(3):
+            await service.schedule_trip(
+                ScheduleTripCommand(
+                    organization_id=VALID_ORG_ULID,
+                    vehicle_id=f"01J8Z3K9G6X8YV5T4N2R7QW3V{i}",
+                    driver_id=VALID_DRIVER_ULID,
+                    route_id=VALID_ROUTE_ULID,
+                    trip_type="morning",
+                    scheduled_date=date(2026, 7, 20),
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await service.list_trips(
+            ListTripsQuery(page_request=OffsetPageRequest(page=1, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 3)
+        self.assertEqual(page.page, 1)
+        self.assertEqual(page.page_size, 2)
+        self.assertEqual(len(page.data), 2)
+
+        second_page = await service.list_trips(
+            ListTripsQuery(page_request=OffsetPageRequest(page=2, page_size=2)),
+            uow=uow,
+        )
+        self.assertEqual(len(second_page.data), 1)
+
+    async def test_list_trips_filters_by_trip_type(self) -> None:
+        service, uow = make_service()
+        seed_driver_and_route(uow)
+        await service.schedule_trip(
+            ScheduleTripCommand(
+                organization_id=VALID_ORG_ULID,
+                vehicle_id="01J8Z3K9G6X8YV5T4N2R7QW3VM",
+                driver_id=VALID_DRIVER_ULID,
+                route_id=VALID_ROUTE_ULID,
+                trip_type="morning",
+                scheduled_date=date(2026, 7, 20),
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        afternoon = await service.schedule_trip(
+            ScheduleTripCommand(
+                organization_id=VALID_ORG_ULID,
+                vehicle_id="01J8Z3K9G6X8YV5T4N2R7QW3VA",
+                driver_id=VALID_DRIVER_ULID,
+                route_id=VALID_ROUTE_ULID,
+                trip_type="afternoon",
+                scheduled_date=date(2026, 7, 20),
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        page = await service.list_trips(
+            ListTripsQuery(
+                page_request=OffsetPageRequest(),
+                filters=[
+                    FilterCondition(field="trip_type", op="eq", value="afternoon")
+                ],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(page.data[0].id, afternoon.id)
+
+    async def test_list_trips_sorts_descending_by_scheduled_date(self) -> None:
+        service, uow = make_service()
+        seed_driver_and_route(uow)
+        for i, day in enumerate((18, 19, 20)):
+            await service.schedule_trip(
+                ScheduleTripCommand(
+                    organization_id=VALID_ORG_ULID,
+                    vehicle_id=f"01J8Z3K9G6X8YV5T4N2R7QW3W{i}",
+                    driver_id=VALID_DRIVER_ULID,
+                    route_id=VALID_ROUTE_ULID,
+                    trip_type="morning",
+                    scheduled_date=date(2026, 7, day),
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        page = await service.list_trips(
+            ListTripsQuery(
+                page_request=OffsetPageRequest(),
+                sort=[SortSpec(field="scheduled_date", descending=True)],
+            ),
+            uow=uow,
+        )
+        self.assertEqual(
+            [dto.scheduled_date for dto in page.data],
+            [date(2026, 7, 20), date(2026, 7, 19), date(2026, 7, 18)],
+        )
 
 
 if __name__ == "__main__":

@@ -18,6 +18,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from raad.core.pagination import (
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.modules.platform_audit.domain.entities import AuditEntry, SystemSetting
 from raad.modules.platform_audit.domain.value_objects import AuditEntryId, SystemSettingKey
 
@@ -35,6 +41,20 @@ class AuditEntryRepository(ABC):
         other module's own `list_all` already uses, including the Founder-unrestricted case."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[AuditEntry]:
+        """Backs `GET /admin/audit`'s paginated/filtered/sorted contract (API Contracts §7/§8).
+        Still read-only, like every other method on this repository (module docstring) — a
+        `list_page` read method doesn't conflict with the "deliberately no `add`" rule above."""
+        raise NotImplementedError
+
 
 class SystemSettingRepository(ABC):
     @abstractmethod
@@ -49,4 +69,21 @@ class SystemSettingRepository(ABC):
     @abstractmethod
     async def list_all(self) -> list[SystemSetting]:
         """Backs `ListSystemSettingsQuery` (`GET /admin/settings`, API Contracts §4.8)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[SystemSetting]:
+        """Backs `GET /admin/settings`'s paginated/filtered/sorted contract (API Contracts
+        §7/§8). Callers must never pass an empty `sort` here — `SystemSettingModel` has no `id`
+        column (`infra/models.py`'s own docstring), so `SqlAlchemyRepositoryBase.list_page`'s
+        empty-sort fallback (`.order_by(self.model.id.asc())`) would raise `AttributeError`;
+        `PlatformAuditApplicationService.list_system_settings` is the one place that guards
+        this, defaulting to `[SortSpec(field="key")]`."""
         raise NotImplementedError

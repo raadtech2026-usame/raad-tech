@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from raad.core.pagination import OffsetPage, SortSpec
 from raad.core.time.clock import Clock
 from raad.modules.platform_audit.application.commands import SetSystemSettingCommand
 from raad.modules.platform_audit.application.ports import PlatformAuditUnitOfWork
@@ -29,13 +30,24 @@ class PlatformAuditApplicationService:
 
     async def list_audit_entries(
         self, query: ListAuditEntriesQuery, *, uow: PlatformAuditUnitOfWork
-    ) -> list[AuditEntryDTO]:
-        """`GET /admin/audit` (API Contracts §4.8: "Founder / in-scope admin | audit log
-        (scoped, read-only)"). Tenant/region scoping is applied at the infra layer
-        (`domain/repositories.py`'s `AuditEntryRepository.list_all` docstring)."""
+    ) -> OffsetPage[AuditEntryDTO]:
+        """`GET /admin/audit` (API Contracts §4.8/§7/§8: "Founder / in-scope admin | audit log
+        (scoped, read-only)", paginated/filterable/sortable). Tenant/region scoping is applied
+        at the infra layer (`domain/repositories.py`'s `AuditEntryRepository.list_page`
+        docstring)."""
         async with uow:
-            entries = await uow.audit_entries.list_all()
-            return [audit_entry_to_dto(entry) for entry in entries]
+            page = await uow.audit_entries.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[audit_entry_to_dto(entry) for entry in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     # --- SystemSetting -----------------------------------------------------------------------
 
@@ -74,7 +86,25 @@ class PlatformAuditApplicationService:
 
     async def list_system_settings(
         self, query: ListSystemSettingsQuery, *, uow: PlatformAuditUnitOfWork
-    ) -> list[SystemSettingDTO]:
+    ) -> OffsetPage[SystemSettingDTO]:
+        """`GET /admin/settings` (API Contracts §4.8/§7/§8). Defaults an empty `query.sort` to
+        `[SortSpec(field="key")]` before ever calling the repository — `SystemSettingModel` has
+        no `id` column (`infra/models.py`'s own docstring), so
+        `SqlAlchemyRepositoryBase.list_page`'s own empty-sort fallback
+        (`.order_by(self.model.id.asc())`) would raise `AttributeError` for this aggregate
+        alone, unlike every other model in this codebase. This is the one and only place that
+        guard is applied."""
         async with uow:
-            settings = await uow.system_settings.list_all()
-            return [system_setting_to_dto(setting) for setting in settings]
+            sort = query.sort or [SortSpec(field="key")]
+            page = await uow.system_settings.list_page(
+                query.page_request,
+                sort=sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[system_setting_to_dto(setting) for setting in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )

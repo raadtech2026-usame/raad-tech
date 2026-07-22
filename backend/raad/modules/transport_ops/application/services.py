@@ -80,6 +80,7 @@ from __future__ import annotations
 
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import OffsetPage
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
     ActivateDriverCommand,
@@ -293,10 +294,21 @@ class StudentApplicationService:
 
     async def list_students(
         self, query: ListStudentsQuery, *, uow: TransportOpsUnitOfWork
-    ) -> list[StudentSummaryDTO]:
+    ) -> OffsetPage[StudentSummaryDTO]:
+        """Backs `GET /students`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
         async with uow:
-            students = await uow.students.list_all()
-            return [student_to_summary_dto(student) for student in students]
+            page = await uow.students.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[student_to_summary_dto(student) for student in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     @staticmethod
     async def _get_student_or_raise(
@@ -390,10 +402,21 @@ class ParentApplicationService:
 
     async def list_parents(
         self, query: ListParentsQuery, *, uow: TransportOpsUnitOfWork
-    ) -> list[ParentSummaryDTO]:
+    ) -> OffsetPage[ParentSummaryDTO]:
+        """Backs `GET /parents`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
         async with uow:
-            parents = await uow.parents.list_all()
-            return [parent_to_summary_dto(parent) for parent in parents]
+            page = await uow.parents.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[parent_to_summary_dto(parent) for parent in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     @staticmethod
     async def _get_parent_or_raise(
@@ -555,10 +578,21 @@ class DriverApplicationService:
 
     async def list_drivers(
         self, query: ListDriversQuery, *, uow: TransportOpsUnitOfWork
-    ) -> list[DriverSummaryDTO]:
+    ) -> OffsetPage[DriverSummaryDTO]:
+        """Backs `GET /drivers`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
         async with uow:
-            drivers = await uow.drivers.list_all()
-            return [driver_to_summary_dto(driver) for driver in drivers]
+            page = await uow.drivers.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[driver_to_summary_dto(driver) for driver in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     @staticmethod
     async def _get_driver_or_raise(
@@ -693,10 +727,21 @@ class RouteApplicationService:
 
     async def list_routes(
         self, query: ListRoutesQuery, *, uow: TransportOpsUnitOfWork
-    ) -> list[RouteSummaryDTO]:
+    ) -> OffsetPage[RouteSummaryDTO]:
+        """Backs `GET /routes`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
         async with uow:
-            routes = await uow.routes.list_all()
-            return [route_to_summary_dto(route) for route in routes]
+            page = await uow.routes.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[route_to_summary_dto(route) for route in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     async def list_stops_for_route(
         self, query: ListStopsForRouteQuery, *, uow: TransportOpsUnitOfWork
@@ -823,10 +868,21 @@ class TripApplicationService:
 
     async def list_trips(
         self, query: ListTripsQuery, *, uow: TransportOpsUnitOfWork
-    ) -> list[TripSummaryDTO]:
+    ) -> OffsetPage[TripSummaryDTO]:
+        """Backs `GET /trips`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
         async with uow:
-            trips = await uow.trips.list_all()
-            return [trip_to_summary_dto(trip) for trip in trips]
+            page = await uow.trips.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[trip_to_summary_dto(trip) for trip in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     @staticmethod
     async def _get_trip_or_raise(uow: TransportOpsUnitOfWork, trip_id: str) -> Trip:
@@ -939,13 +995,25 @@ class StudentAssignmentApplicationService:
 
     async def list_student_assignments(
         self, query: ListStudentAssignmentsQuery, *, uow: TransportOpsUnitOfWork
-    ) -> list[StudentAssignmentSummaryDTO]:
+    ) -> OffsetPage[StudentAssignmentSummaryDTO]:
+        """Backs `GET /student-assignments`'s paginated/filtered/sorted contract (API
+        Contracts §7/§8)."""
         async with uow:
-            assignments = await uow.student_assignments.list_all()
-            return [
-                student_assignment_to_summary_dto(assignment)
-                for assignment in assignments
-            ]
+            page = await uow.student_assignments.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[
+                    student_assignment_to_summary_dto(assignment)
+                    for assignment in page.data
+                ],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     async def get_active_assignment_for_student(
         self, student_id: str, *, uow: TransportOpsUnitOfWork
