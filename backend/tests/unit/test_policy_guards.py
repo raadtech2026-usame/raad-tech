@@ -36,13 +36,17 @@ from raad.core.tenancy.scope import TenantRegionScope
 from raad.interfaces.http import policy_guards
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.fleet_device.application.services import VehicleApplicationService
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.application.services import OrganizationApplicationService
+from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
     StudentAssignmentApplicationService,
     StudentParentApplicationService,
+    TripApplicationService,
 )
 
 ORG_ID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
@@ -123,6 +127,59 @@ class FakeScopeResolver(ScopeResolver):
         return self._scope
 
 
+@dataclass(frozen=True)
+class _VehicleDTO:
+    organization_id: str
+
+
+@dataclass(frozen=True)
+class _PositionDTO:
+    trip_id: str | None
+
+
+@dataclass(frozen=True)
+class _TripStatusDTO:
+    status: str
+
+
+class FakeVehicleService:
+    def __init__(self, vehicles_by_id: dict[str, _VehicleDTO]) -> None:
+        self._by_id = vehicles_by_id
+
+    async def get_vehicle_by_id(self, query, *, uow):
+        vehicle = self._by_id.get(query.vehicle_id)
+        if vehicle is None:
+            raise NotFoundError(f"Vehicle {query.vehicle_id} not found.")
+        return vehicle
+
+
+class FakeTrackingService:
+    def __init__(
+        self, position_by_vehicle: dict[str, _PositionDTO | None] | None = None
+    ) -> None:
+        self._by_vehicle = position_by_vehicle or {}
+
+    async def get_current_vehicle_position(self, query):
+        return self._by_vehicle.get(query.vehicle_id)
+
+
+class RedisUnboundTrackingService:
+    """Mirrors `TrackingApplicationService.get_current_vehicle_position`'s real behavior when
+    no `LatestPositionPort` is bound at all — raises `NotImplementedError`, never returns a
+    fake position."""
+
+    async def get_current_vehicle_position(self, query):
+        raise NotImplementedError("No LatestPositionPort is bound.")
+
+
+class FakeTripService:
+    def __init__(self, trip_by_id: dict[str, _TripStatusDTO] | None = None) -> None:
+        self._by_id = trip_by_id or {}
+
+    async def get_trip_by_id(self, query, *, uow):
+        return self._by_id[query.trip_id]
+
+
 def make_container(
     *,
     parent_id: str = "parent-1",
@@ -132,6 +189,10 @@ def make_container(
     billing_model: str = "organization_pays",
     subscription: _SubscriptionDTO | None = None,
     scope: TenantRegionScope = TenantRegionScope(organization_ids=frozenset({ORG_ID})),
+    vehicles: dict[str, _VehicleDTO] | None = None,
+    positions: dict[str, _PositionDTO | None] | None = None,
+    trips: dict[str, _TripStatusDTO] | None = None,
+    tracking_service: object | None = None,
 ) -> Container:
     container = Container()
     container.bind_singleton(
@@ -151,11 +212,17 @@ def make_container(
     container.bind_singleton(OrganizationApplicationService, FakeOrganizationService(billing_model))
     container.bind_singleton(BillingApplicationService, FakeBillingService(subscription))
     container.bind_singleton(ScopeResolver, FakeScopeResolver(scope))
+    container.bind_singleton(VehicleApplicationService, FakeVehicleService(vehicles or {}))
+    container.bind_singleton(
+        TrackingApplicationService, tracking_service or FakeTrackingService(positions)
+    )
+    container.bind_singleton(TripApplicationService, FakeTripService(trips))
 
     for uow_type in (
         TransportOpsUnitOfWork,
         OrganizationUnitOfWork,
         BillingUnitOfWork,
+        FleetDeviceUnitOfWork,
     ):
         container.bind_singleton(uow_type, object())
 
@@ -461,6 +528,80 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
             await policy_guards.enforce_d5(
                 principal=PARENT, device_organization_id=ORG_ID, container=container
             )
+
+
+class ResolveVehicleTrackingContextTests(unittest.IsolatedAsyncioTestCase):
+    """`resolve_vehicle_tracking_context` — built for `/ws/tracking`'s subscribe flow
+    (WebSocket phase), which must resolve `(organization_id, is_trip_active)` even before any
+    position has ever arrived for a vehicle, unlike `GET /tracking/vehicles/{id}/latest`."""
+
+    async def test_unknown_vehicle_returns_none(self) -> None:
+        container = make_container(vehicles={})
+        result = await policy_guards.resolve_vehicle_tracking_context(
+            vehicle_id="veh-1", container=container
+        )
+        self.assertIsNone(result)
+
+    async def test_vehicle_with_no_cached_position_resolves_org_id_with_inactive_trip(
+        self,
+    ) -> None:
+        """No live position yet (fresh vehicle, or Redis simply hasn't seen one) — `is_trip_
+        active` degrades to `False`, the conservative direction, not a crash."""
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)}, positions={}
+        )
+        result = await policy_guards.resolve_vehicle_tracking_context(
+            vehicle_id="veh-1", container=container
+        )
+        self.assertEqual(result, (ORG_ID, False))
+
+    async def test_no_latest_position_port_bound_degrades_to_inactive_trip_not_a_crash(
+        self,
+    ) -> None:
+        """Mirrors `GET /tracking/vehicles/{id}/latest`'s own documented "no LatestPositionPort
+        bound -> NotImplementedError" case — but this helper must not let that propagate and
+        abort a subscribe attempt; it degrades to `is_trip_active=False` instead (never the
+        permissive direction for a Parent caller)."""
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            tracking_service=RedisUnboundTrackingService(),
+        )
+        result = await policy_guards.resolve_vehicle_tracking_context(
+            vehicle_id="veh-1", container=container
+        )
+        self.assertEqual(result, (ORG_ID, False))
+
+    async def test_position_with_in_progress_trip_resolves_is_trip_active_true(self) -> None:
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            positions={"veh-1": _PositionDTO(trip_id="trip-1")},
+            trips={"trip-1": _TripStatusDTO(status="in_progress")},
+        )
+        result = await policy_guards.resolve_vehicle_tracking_context(
+            vehicle_id="veh-1", container=container
+        )
+        self.assertEqual(result, (ORG_ID, True))
+
+    async def test_position_with_completed_trip_resolves_is_trip_active_false(self) -> None:
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            positions={"veh-1": _PositionDTO(trip_id="trip-1")},
+            trips={"trip-1": _TripStatusDTO(status="completed")},
+        )
+        result = await policy_guards.resolve_vehicle_tracking_context(
+            vehicle_id="veh-1", container=container
+        )
+        self.assertEqual(result, (ORG_ID, False))
+
+    async def test_position_with_no_trip_id_resolves_is_trip_active_false(self) -> None:
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            positions={"veh-1": _PositionDTO(trip_id=None)},
+        )
+        result = await policy_guards.resolve_vehicle_tracking_context(
+            vehicle_id="veh-1", container=container
+        )
+        self.assertEqual(result, (ORG_ID, False))
 
 
 if __name__ == "__main__":

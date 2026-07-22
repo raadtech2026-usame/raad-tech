@@ -136,9 +136,12 @@ DOCUMENTED_BUT_NOT_IMPLEMENTED: list[tuple[str, str, str]] = [
 ]
 
 # WebSocket routes (API Contracts §4.4/§4.6) are not REST/OpenAPI-schema routes in the same
-# sense — deliberately excluded from the schema-based check above, not silently ignored. Both
-# are already documented as deferred (broker/Notification-Worker-adjacent realtime fan-out,
-# CLAUDE.md's own "Known gaps").
+# sense — `app.openapi()` (this suite's only inspection mechanism, see module docstring) has no
+# representation for a `websocket()` route at all, so `_actual_routes()` can never see
+# `/ws/tracking`/`/ws/notifications` regardless of whether they're wired. Both are now
+# implemented (`interfaces/http/ws.py`, the WebSocket phase) — this list's name predates that
+# and is now a schema-limitation exclusion, not a "not built yet" one; kept for the docstring
+# trail rather than silently renamed.
 WS_ROUTES_DEFERRED = ["/ws/tracking", "/ws/notifications"]
 
 # Built but not in API Contracts' literal table — each already flagged in its own module's

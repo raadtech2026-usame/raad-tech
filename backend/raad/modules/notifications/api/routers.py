@@ -1,6 +1,8 @@
 """HTTP surface of the `notifications` module (C7). Mounted at `/api/v1/notifications`; the
-realtime `/ws/notifications` WebSocket endpoint lives in `api/ws.py` (Backend LLD §16.1, §1) —
-still a docstring-only scaffold this phase, see that file for why. Thin controllers only
+realtime `/ws/notifications` WebSocket endpoint lives in `api/ws.py` (Backend LLD §16.1, §1,
+API Contracts §11.1/§11.3) — implemented as of the WebSocket phase, aggregated separately by
+`interfaces/http/ws.py` (a distinct `APIRouter` of `websocket()` routes, not this file's
+`get`/`post`/etc. ones). Thin controllers only
 (Backend LLD §16.2): parse the request DTO, call exactly one `NotificationApplicationService`
 method, return the response DTO — every error already maps to the standard `ErrorEnvelope` via
 the global exception handlers. Mirrors `billing.api.routers`'s shape.

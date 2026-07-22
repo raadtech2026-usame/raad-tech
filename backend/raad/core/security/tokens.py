@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 from raad.core.security.claims import TokenClaims, TokenType
 from raad.core.security.exceptions import InvalidTokenError, TokenExpiredError
-from raad.core.tenancy.principal import Role
+from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 
 _SUPPORTED_ALGORITHM = "HS256"
@@ -186,3 +186,37 @@ class JwtTokenService(TokenService):
         signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
         signature = hmac.new(self._secret_key, signing_input, hashlib.sha256).digest()
         return f"{header_b64}.{payload_b64}.{_b64url_encode(signature)}"
+
+
+def resolve_principal_from_access_token(
+    token_service: TokenService, raw_token: str
+) -> Principal | None:
+    """The single source of truth for "given a raw bearer token string, who is the caller?" —
+    both `interfaces/http/middleware.SecurityContextMiddleware` (HTTP requests) and
+    `interfaces/http/realtime`'s WebSocket auth (`/ws/tracking`, `/ws/notifications`) call this
+    exact function rather than each re-implementing "decode + build a Principal." WebSocket
+    connections need their own call site for this because Starlette's `BaseHTTPMiddleware` —
+    what `SecurityContextMiddleware` is built on — only wraps ASGI `http` scope, never
+    `websocket` scope (it passes non-http scopes straight through), so no middleware ever runs
+    for a WebSocket connection; the verification *logic* is still shared, only the transport
+    entry point differs. Returns `None` on any invalid/expired/wrong-type token — mirrors
+    `SecurityContextMiddleware`'s own "a bad token just means unauthenticated, not a raised
+    exception" contract, letting each caller decide what "unauthenticated" means for its own
+    transport (a 401 for HTTP; a policy close code for WebSocket).
+
+    Catches `Exception` broadly, not just `TokenService.decode`'s own two documented failure
+    types — an ASGI-level smoke test of the WebSocket auth path caught a related class of bug
+    (an uncaught exception reaching a transport that can't safely handle it, see
+    `modules/tracking/api/ws.handle_subscribe`'s own docstring for the analogous fix there) and
+    review surfaced this same risk here: `JwtTokenService.decode` only wraps the base64/JSON/
+    signature-parsing steps in `InvalidTokenError`, not `payload["exp"]`/`Role(payload["role"])`/
+    `payload["jti"]` — a signature-valid-but-differently-shaped payload (e.g. a version-skew
+    rollout scenario, an older/newer claims shape sharing a signing key) would raise `KeyError`/
+    `ValueError` uncaught. This function's own contract is "a bad token means unauthenticated,
+    never a raised exception" — honored here for any failure mode, not just the two named ones.
+    """
+    try:
+        claims = token_service.decode(raw_token, expected_type=TokenType.ACCESS)
+    except Exception:
+        return None
+    return Principal(user_id=claims.subject, role=claims.role, org_id=claims.org_id)

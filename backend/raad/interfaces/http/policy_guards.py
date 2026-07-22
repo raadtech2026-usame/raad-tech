@@ -40,12 +40,21 @@ from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.application.queries import GetOrganizationByIdQuery
 from raad.modules.organization.application.services import OrganizationApplicationService
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.fleet_device.application.queries import GetVehicleByIdQuery
+from raad.modules.fleet_device.application.services import VehicleApplicationService
+from raad.modules.tracking.application.queries import GetCurrentVehiclePositionQuery
+from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
-from raad.modules.transport_ops.application.queries import ListStudentsForParentQuery
+from raad.modules.transport_ops.application.queries import (
+    GetTripByIdQuery,
+    ListStudentsForParentQuery,
+)
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
     StudentAssignmentApplicationService,
     StudentParentApplicationService,
+    TripApplicationService,
 )
 from raad.modules.tracking.domain.policies import TrackingVisibilityPolicy
 
@@ -275,3 +284,56 @@ async def enforce_d5(
     )
     if not decision.allowed:
         raise VideoForbiddenError("Video access denied.")
+
+
+async def resolve_vehicle_tracking_context(
+    *, vehicle_id: str, container: Container
+) -> tuple[str, bool] | None:
+    """Resolves `(organization_id, is_trip_active)` for a vehicle — the two inputs
+    `resolve_tracking_decision` needs beyond `principal`/`vehicle_id` itself. Built for
+    `/ws/tracking`'s subscribe flow (`modules/tracking/api/ws.py`), which — unlike `GET
+    /tracking/vehicles/{id}/latest` — must resolve these even before any position has ever
+    arrived for the vehicle (a client may legitimately subscribe pre-emptively), so
+    `organization_id` comes from the `Vehicle` aggregate itself (`fleet_device`, always
+    available once the vehicle is registered), not from a cached position's own
+    `organization_id` field the way that REST route reads it. Returns `None` if the vehicle
+    doesn't exist at all (caller should treat as `NotFoundError`, not `AuthorizationError` —
+    this codebase's established 404-over-403 posture).
+
+    `is_trip_active` still uses the same latest-position-derived resolution `GET /tracking/
+    vehicles/{id}/latest` already established (no approved application-service query exposes
+    "the active trip for this vehicle" any more directly — `TripRepository.
+    active_trip_for_vehicle` is a repository-internal method backing a validator, not a public
+    read; adding a new query ahead of an approved use-case would be inventing one,
+    `.claude/rules/workflow.md` #8). If no `LatestPositionPort` is bound at all (no
+    `RAAD_REDIS__URL` configured) or no position has been cached yet, `is_trip_active` degrades
+    to `False` — the conservative direction for a Parent caller (no D4 safety-override, falls
+    through to CR-1's normal subscription gate), never the permissive one, so this degradation
+    is safe, not a hole."""
+    fleet_device_uow = container.resolve(FleetDeviceUnitOfWork)
+    vehicle_service = container.resolve(VehicleApplicationService)
+    try:
+        vehicle = await vehicle_service.get_vehicle_by_id(
+            GetVehicleByIdQuery(vehicle_id=vehicle_id), uow=fleet_device_uow
+        )
+    except NotFoundError:
+        return None
+
+    is_trip_active = False
+    tracking_service = container.resolve(TrackingApplicationService)
+    try:
+        position = await tracking_service.get_current_vehicle_position(
+            GetCurrentVehiclePositionQuery(vehicle_id=vehicle_id)
+        )
+    except NotImplementedError:
+        position = None  # No LatestPositionPort bound - degrade to "not on an active trip."
+
+    if position is not None and position.trip_id is not None:
+        trip_service = container.resolve(TripApplicationService)
+        transport_ops_uow = container.resolve(TransportOpsUnitOfWork)
+        trip = await trip_service.get_trip_by_id(
+            GetTripByIdQuery(trip_id=position.trip_id), uow=transport_ops_uow
+        )
+        is_trip_active = trip.status == "in_progress"
+
+    return vehicle.organization_id, is_trip_active

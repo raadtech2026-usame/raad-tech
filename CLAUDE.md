@@ -67,16 +67,16 @@ schema, as of the Backend Stabilization phase (ADR-0004 through ADR-0008). Cross
 authorization (RBAC permission matrix, tenant/region `ScopeResolver`, CR-1/D5 policy enforcement),
 the `audit_entries` write architecture, the Redis Streams event broker, both background workers,
 and three scheduled jobs are likewise implemented and verified — see "Known gaps" below for what
-genuinely remains (`PaymentProviderPort`/`VideoProviderPort`/`ReportRendererPort` adapters,
-`/ws/tracking`/`/ws/notifications`, load tests). A real CI/CD gate
-(`.github/workflows/backend-pipeline.yml`) and a contract test suite (`tests/contract/`) are
-both now implemented, closing what was previously the largest item on this list. A **Final
-Backend Completion phase** subsequently closed seven confirmed RBAC/error-code/ownership/test-
-coverage/audit-column gaps and added CORS support. A **Pagination/Filtering/Sorting phase**
-then closed the other Tier-2 item that Final Backend Completion phase had deliberately deferred
-— see "Known gaps" below for the full list — leaving the two WebSocket routes
-(`/ws/tracking`/`/ws/notifications`) as the largest remaining, deliberately-deferred item before
-this backend is fully frontend/mobile-ready.
+genuinely remains (`PaymentProviderPort`/`VideoProviderPort`/`ReportRendererPort` adapters, load
+tests). A real CI/CD gate (`.github/workflows/backend-pipeline.yml`) and a contract test suite
+(`tests/contract/`) are both now implemented, closing what was previously the largest item on
+this list. A **Final Backend Completion phase** subsequently closed seven confirmed RBAC/
+error-code/ownership/test-coverage/audit-column gaps and added CORS support. A **Pagination/
+Filtering/Sorting phase** then closed the other Tier-2 item that Final Backend Completion phase
+had deliberately deferred. A **WebSocket phase** then implemented `/ws/tracking`/
+`/ws/notifications` (API Contracts §11) — see "Known gaps" below for the full list — leaving
+`PaymentProviderPort`/`VideoProviderPort`/`ReportRendererPort` adapters and load tests as the
+largest remaining items before this backend is fully frontend/mobile-ready.
 
 ### Tech stack (decided)
 
@@ -203,10 +203,9 @@ Each of the ten below has a full `api / application / domain / infra / events` s
   elsewhere. Four routes exposed, matching API Contracts §4.6 exactly (`GET /notifications`,
   `GET /notifications/{id}` — uniform-CRUD addition, `POST /notifications/{id}/read`,
   `POST /notifications/tokens`, `DELETE /notifications/tokens/{id}`); `/ws/notifications` is
-  **not wired** — mirrors `/ws/tracking`'s identical, already-established deferral
-  (`interfaces/http/api_v1.py`'s own module docstring), since both the broker and the
-  Notification Worker itself (event consumption, recipient resolution) are out of this phase's
-  scope. `GET /notifications` and `GET /notifications/{id}` are scoped by personal ownership
+  now wired (the WebSocket phase, `modules/notifications/api/ws.py`) — see that phase's own
+  Known Gaps entry for the full design. `GET /notifications` and `GET /notifications/{id}` are
+  scoped by personal ownership
   (`recipient_user_id = principal.user_id`), not tenant — the first list/get endpoints in this
   codebase scoped that way; a non-owner request raises `NotFoundError` (404), not
   `AuthorizationError`, generalizing Backend LLD §14.3's "404-over-403 avoids confirming
@@ -359,9 +358,9 @@ backend/
 
 - **Final Backend Completion phase** closed seven confirmed bugs/gaps surfaced by a fresh
   documentation-vs-code audit, plus CORS (the one Tier-2 item selected for this phase;
-  pagination/filtering/sorting — closed by the subsequent Pagination/Filtering/Sorting phase,
-  its own entry immediately below — and `/ws/tracking`/`/ws/notifications` remained deliberately
-  deferred, not attempted this phase): (1) **4 endpoints were unreachable by every role, including Founder** —
+  pagination/filtering/sorting and `/ws/tracking`/`/ws/notifications` remained deliberately
+  deferred, not attempted this phase — see the Pagination/Filtering/Sorting phase and the
+  WebSocket phase, both below, for how each was subsequently closed): (1) **4 endpoints were unreachable by every role, including Founder** —
   `GET /admin/audit`/`GET /admin/settings` required `admin.audit.list`/`admin.settings.list`, and
   `POST /video/live`/`POST /video/playback` required `video.sessions.create`, none of which the
   seeded `role_permissions` matrix (migration `5437a5d1651b`) actually grants; router-side
@@ -439,6 +438,72 @@ backend/
   codebase, none of the above is itself `ScopeResolver`-filtered yet — the same
   system-wide, pre-existing, already-flagged gap below, now inherited by `list_page`/
   `list_cursor_page` too, not newly introduced by this phase.
+- **WebSocket phase** implemented `/ws/tracking`/`/ws/notifications` (API Contracts §11),
+  closing the last item the Final Backend Completion phase had deferred. Both channels
+  authenticate via the **same** JWT verification `SecurityContextMiddleware` uses for REST —
+  factored out as `core.security.tokens.resolve_principal_from_access_token`, since
+  Starlette's `BaseHTTPMiddleware` (what that middleware is built on) never runs for a
+  WebSocket ASGI scope at all, so the entry point necessarily differs even though the
+  verification logic is one shared function. Per API Contracts §11.1, the client's first frame
+  after connecting must be `{"type":"auth","token":"<jwt>"}` (the "first auth frame" option,
+  not a subprotocol); an invalid/missing/timed-out auth closes with a private-use WebSocket
+  code (`interfaces/http/realtime.WsCloseCode`: 4400/4401/4403, chosen to mirror this API's own
+  400/401/403 HTTP semantics). **Realtime delivery reuses the existing Redis Streams broker
+  (ADR-0008)**, not a new mechanism: each channel gets its own `RedisStreamsBrokerConsumer`
+  (`ws-tracking`/`ws-notifications` consumer groups, distinct from `core/di/bootstrap.py`'s own
+  `notification-worker` group), run as an in-process `BrokerFanOutWorker` (a
+  `core.workers.base.Worker`, the identical lifecycle/health/error-isolation shape
+  `NotificationWorker` already establishes) started from `main.py`'s own `lifespan` — necessary
+  because the Notification Worker itself runs in a wholly separate OS process
+  (`interfaces/workers/bootstrap.py`) that cannot push onto a WebSocket the API process holds
+  open; only Redis is shared between them. `interfaces/http/realtime.ConnectionManager` is an
+  in-memory, per-process registry (each connection tracked with the `Principal` that
+  authenticated it) — correct for the single-API-process shape this environment actually runs,
+  flagged (mirroring `core.workers.idempotency.InMemoryIdempotencyStore`'s identical caveat) as
+  needing a Redis Pub/Sub-backed adapter behind the same interface if a future deployment scales
+  to multiple API instances. `/ws/tracking` subscribe authorization reuses `interfaces/http/
+  policy_guards.resolve_tracking_decision` verbatim (the same `TrackingVisibilityPolicy`
+  composition the REST tracking routes already enforce), via a new `resolve_vehicle_tracking_
+  context` helper in that same file (needed because, unlike the REST routes, a subscribe must
+  resolve `organization_id` from the `Vehicle` aggregate itself, not a cached position, since a
+  client may subscribe before any position has ever arrived). **Live position push
+  re-authorizes on every send, not just at subscribe time** — the mechanism `/ws/tracking`
+  actually uses to satisfy API Contracts §11.2's "closed server-side immediately on a CR-1
+  revoking event": `SubscriptionExpired`/`StudentAssignmentRemoved`/`StudentTransferred`/
+  `StudentGraduated`/`StudentDisabled` (the real, shipped CR-1-revocation events) carry no
+  `vehicle_id` in their payload at all (`StudentAssignmentRemoved` etc. carry only
+  `{actor_id}`), and resolving one back to the specific vehicle(s) it affects would need a
+  translation this codebase doesn't have — the same already-flagged `student.assignment_
+  changed`-vs-four-separate-events gap `notifications/domain/events.py` documents. Rather than
+  inventing that resolution, every position forward re-runs `resolve_tracking_decision` fresh
+  against current DB state, dropping and closing a now-unauthorized subscriber on the very next
+  event for that vehicle — the same safety property (no unauthorized frame ever delivered),
+  reusing existing policy code, without the translation layer. Only `TripEnded` (a single,
+  certain, already-`vehicle_id`-bearing event) gets the literal, immediate `subscription_closed`
+  frame + close the API Contract describes; `access_revoked`/`assignment_inactive`/
+  `subscription_expired` as *explicit* close reasons are not wired this phase — flagged, not
+  silently invented around. `/ws/notifications` does **not** re-check CR-1 at all — it is
+  already enforced upstream, at `Notification` creation time, by the (separate-process)
+  Notification Worker, so a denied parent's `Notification` row is simply never created; this
+  channel only checks personal ownership (`recipient_user_id == principal.user_id`), mirroring
+  `GET /notifications`'s identical scoping. One real bug was found and fixed via an ASGI-level
+  smoke test (`TestClient`/`httpx` is not an approved dependency in this codebase, so an actual
+  WebSocket handshake couldn't be driven through the normal test suite — this smoke test drove
+  the real `FastAPI` app through raw ASGI scope/queues instead, as a one-off manual verification):
+  a malformed, non-ULID `vehicle_id` in a subscribe frame raised `DomainError` uncaught out of
+  `handle_subscribe`, which FastAPI's HTTP-only global exception handler cannot safely convert
+  to a response on an *already-accepted* WebSocket — fixed by catching `Exception` (not just
+  `AppError`; an unbound-port `LookupError` carries the identical risk) at that boundary,
+  logging loudly and closing cleanly instead, mirroring `core.workers.base.Worker._tick`'s own
+  "one failure is logged, never left to crash the surrounding loop" principle. Comprehensive
+  unit tests cover the shared token resolver, `ConnectionManager`/`BrokerFanOutWorker`/
+  `authenticate_connection`, both channels' subscribe/fan-out/lifecycle logic (fake-`WebSocket`/
+  fake-`Container` doubles, the same convention `test_policy_guards.py`/`test_notification_
+  subscribers.py` already establish), and `resolve_vehicle_tracking_context`; a live-Redis
+  integration test (`tests/integration/test_realtime_broker_fanout.py`) proves two distinct
+  consumer groups each receive their own copy of a published event — skipped in this sandbox
+  (no broker reachable, the same pre-existing gap every Redis-dependent test here already
+  carries) but ready to run unmodified once one is configured.
 - `tests/architecture/` has ten automated boundary-gate tests (domain purity, layer dependency
   direction, module boundaries, API-layer boundaries) enforcing Backend LLD §2.3 across all ten
   completed modules — rule 7 (static proxy) was extended with an explicit `raad.core.*`-origin
@@ -470,9 +535,10 @@ backend/
   follow). `SqlOutboxPublisher` needed zero changes — it already depended only on the abstract
   `BrokerPort`. `core.workers.scheduler.LockPort` (`RedisLockPort`) and `core.workers.dlq.
   DeadLetterQueue` (`RedisDeadLetterQueue`) are likewise now concrete, sharing the broker's own
-  Redis connection. `/ws/tracking`/`/ws/notifications` remain unwired — realtime WebSocket
-  fan-out is a distinct capability from the broker/worker plumbing this phase completes, out of
-  scope here.
+  Redis connection. Realtime WebSocket fan-out (`/ws/tracking`/`/ws/notifications`) was a
+  distinct capability from this phase's own broker/worker plumbing, deferred at the time —
+  see the WebSocket phase's own entry below for how it was subsequently built on top of this
+  exact broker.
 - **Notification Worker built** (`interfaces/workers/notification_worker.py` + `modules/
   notifications/events/subscribers.py`): consumes the broker (only started when a
   `BrokerConsumer` is bound), dispatches via `core.events.processor.EventProcessorRegistry` to

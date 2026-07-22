@@ -1,7 +1,9 @@
 """HTTP surface of the `tracking` module (C5) — Phase 8.4. `tracking_router` mounts at
 `/api/v1/tracking` (`interfaces/http/api_v1.py`); the realtime `/ws/tracking` WebSocket
 endpoint (API Contracts §11.2) has its own session/subscription lifecycle entirely unlike a
-REST route and is out of this phase's scope — `api/ws.py` is not touched here.
+REST route and now lives in `api/ws.py` (the WebSocket phase) — aggregated separately by
+`interfaces/http/ws.py`, not this file, since it is a distinct FastAPI `APIRouter` (a
+`websocket()` route, not `get`/`post`/etc.) with its own auth/subscribe/broadcast lifecycle.
 
 Thin controllers only (Backend LLD §16.2): parse the request, call exactly one
 application-service method, return the response DTO. No business logic, no repository/

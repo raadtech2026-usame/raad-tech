@@ -95,6 +95,16 @@ class CorsSettings(BaseModel):
     allowed_origins: list[str] = ["http://localhost:3000"]
 
 
+class WebSocketSettings(BaseModel):
+    """`/ws/tracking`/`/ws/notifications` tuning (API Contracts §11.1). Its own sub-config
+    group (LLD §12.1's "one sub-config group per concern"), separate from `WorkerSettings`
+    below even though the realtime fan-out consumers are themselves `core.workers.base.Worker`
+    instances — this group is protocol/connection tuning (how long to wait for the documented
+    "first auth frame" before closing), not background-job-polling tuning."""
+
+    auth_frame_timeout_seconds: float = 10.0
+
+
 class ObservabilitySettings(BaseModel):
     log_level: str = "INFO"
     log_format: str = "json"
@@ -131,6 +141,11 @@ class WorkerSettings(BaseModel):
     subscription_sweep_interval_seconds: float = 3600.0
     payment_reconciliation_timeout_minutes: int = 30
     payment_reconciliation_interval_seconds: float = 600.0
+    # WebSocket phase: the two realtime fan-out consumers (interfaces/http/realtime.py) are
+    # themselves core.workers.base.Worker instances, hosted in-process with the API (Backend
+    # LLD §11.1) rather than the separate workers/bootstrap.py process — same tick-interval
+    # tuning shape as every other worker above.
+    realtime_fanout_interval_seconds: float = 1.0
 
 
 class Settings(BaseSettings):
@@ -155,6 +170,7 @@ class Settings(BaseSettings):
     maps: MapSettings = MapSettings()
     device_plane: DevicePlaneSettings = DevicePlaneSettings()
     cors: CorsSettings = CorsSettings()
+    websocket: WebSocketSettings = WebSocketSettings()
     observability: ObservabilitySettings = ObservabilitySettings()
     feature_flags: FeatureFlags = FeatureFlags()
     workers: WorkerSettings = WorkerSettings()

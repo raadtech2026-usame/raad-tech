@@ -104,6 +104,6 @@ api_router.include_router(
     admin_router, prefix="/admin", tags=["admin"]
 )  # platform_audit (C10)
 
-# WebSocket endpoints (/ws/tracking, /ws/notifications) are wired separately in
-# interfaces/http/ws.py once the tracking/notifications modules have realtime handlers
-# (Backend LLD §16.2) — not added in this phase.
+# WebSocket endpoints (/ws/tracking, /ws/notifications, Backend LLD §16.2) are wired
+# separately in interfaces/http/ws.py, mounted directly on the app (not this router) since
+# they live outside /api/v1 — see that file's own module docstring for why.
