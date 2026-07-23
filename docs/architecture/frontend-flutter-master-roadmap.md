@@ -64,6 +64,11 @@ one dedicated shared-architecture section, and a decision log of exactly six thi
 your explicit sign-off before their dependent phase can start. Everything else in this document
 is mine to execute without further check-ins, per your instruction.
 
+**Update, 2026-07-23:** a third parallel engineering track now exists alongside React and
+Flutter — an independent **Backend Integration** workstream (§4A) closing the JT808 device-plane
+gaps §2.2 below identifies, tracked as its own set of sub-phases (B1–B3) rather than folded into
+the React sequence. See §4A for the full phasing decision and reasoning.
+
 ---
 
 ## 2. Current State Assessment
@@ -109,6 +114,11 @@ event) well before the device-plane bridge is complete. The map UI itself is not
 missing bridge — only _real_ bus data is. I will build F7 to be honest about this (a visible
 "no live data source connected" state, never a fake moving dot), matching this codebase's own
 "fail loudly / stay honest" discipline throughout the backend.
+
+**Update, 2026-07-23:** this gap is now tracked as its own workstream — see §4A (Backend
+Integration Track), specifically B1 (JT808 Provisioning Bridge) and B2 (Live Tracking Pipeline).
+It runs in parallel with F5/F6, not before or after either, and is one of F7's two independent
+gates (the other being the map-provider decision immediately below in §3.9).
 
 ### 2.3 Frontend foundation — what already exists
 
@@ -288,6 +298,11 @@ exactly a "paid external service must be selected" trigger you named yourself:
 
 I am not choosing one of these for you. This blocks Phase F7 only — every other phase proceeds
 regardless.
+
+**Update, 2026-07-23 — F7 has a second, independent gate.** Beyond this provider decision, §4A's
+B1 + B2 (the JT808 provisioning bridge and live tracking pipeline) must also reach a working state
+before F7 can show real data. The two gates are unrelated — one a vendor/product choice, one an
+engineering integration task — and can be resolved in parallel; see §4A for the full reasoning.
 
 ### 3.10 Shared cross-platform contract strategy — **architectural decision, needs your confirmation**
 
@@ -485,6 +500,10 @@ Complexity / Risks / Why-it's-ordered-here.
   data), geofence display.
 - **Dependencies:** F0, F3 (vehicles), F5 (routes/stops), F6 (trips) for context; the map
   provider decision (§3.9); honest handling of §2.2's "no live data source connected yet" state.
+  **Updated 2026-07-23:** also gated on §4A's Backend Integration Track — specifically B1 (JT808
+  Provisioning Bridge) and B2 (Live Tracking Pipeline) reaching a working state, so this UI has a
+  real data source rather than only synthetic/manual test events. This gate runs in parallel with
+  F5/F6, not sequentially before F7, and is independent of the map-provider decision above.
 - **Deliverables:** `features/live-monitoring/` — a `MapProvider` abstraction (interface first,
   concrete adapter second, matching the backend's own Ports & Adapters discipline exactly) so
   swapping providers later never touches feature code; live marker updates via the existing
@@ -633,6 +652,176 @@ Complexity / Risks / Why-it's-ordered-here.
   cross-deployable phase (backend + frontend + mobile + the two device-plane services all need
   a hosting decision eventually). Flagged in §9.
 - **Why last among React phases:** No point gating CI on features that don't exist yet.
+
+---
+
+## 4A. Backend Integration Track — JT808 Device-Plane Bridge (Parallel Workstream)
+
+**Numbered "4A," not inserted as a renumbered §5.** This section sits between §4 and §5 in the
+document but is deliberately not a subsection of the React roadmap — renumbering every subsequent
+section (§5–§12) to fit it into strict sequence would touch dozens of this document's own existing
+`§N` cross-references for no real benefit. "4A" makes its peer (not child) relationship to §4/§5
+explicit while leaving every citation elsewhere in this document valid.
+
+**Decided 2026-07-23 (see §11 Decision Log item 7).** The platform runs **three parallel
+engineering tracks**, not two: Frontend (§4, React), **Backend Integration (this section)**, and
+Mobile (§5, Flutter). This is the same reasoning that already lets Flutter proceed alongside React
+(§7's parallelization map): the work in this section has **zero dependency on any React feature
+phase**, because the backend bounded contexts it touches (`fleet_device`, `tracking`) are already
+complete end-to-end (see CLAUDE.md's own "Repository Status"). This track closes device-plane
+_integration_ gaps that CLAUDE.md and the JT808 Technical Design (Phase 3.4) already flagged — it
+is not new business logic, and it does not belong inside the React phase sequence.
+
+**This track is explicitly _not_ sequenced before or after F5/F6.** F5 (Drivers, Routes & Stops)
+and F6 (Trips & Student Assignments) are frontend CRUD against already-built, already-tested
+backend endpoints — nothing in this track blocks them, and nothing in F5/F6 blocks this track. It
+runs **concurrently** with both, starting now.
+
+**Phase F7 (Live Monitoring & Maps) has two independent gates, not one:**
+
+1. The map-provider decision (§3.9) — a vendor/product choice, unchanged by this update.
+2. **This track's B1 + B2 reaching a working state** — an engineering integration task, newly
+   tracked here.
+
+Neither gate depends on the other; both must clear before F7 can show a real, moving bus rather
+than its own honestly-labeled "no live data source connected" state (§2.2). Resolving both in
+parallel, on separate tracks, gets F7 to a real demo fastest — the same reasoning §2.2 already
+applied to justify building F7 against synthetic data rather than waiting.
+
+**B3 (Video Integration) is grouped into this same track for organizational reasons only** — both
+B1/B2 and B3 are device-plane integration work — but B3 does **not** gate F7. It gates F10 (Video,
+§4) exactly the way B1/B2 gate F7. This distinction is kept explicit below rather than implying B3
+blocks live tracking, which it does not.
+
+---
+
+### B1 — JT808 Provisioning Bridge
+
+- **Objective:** A physical device registered through the dashboard can actually authenticate
+  against the JT808 service. This closes the single largest gap this codebase's own device-plane
+  analysis surfaced: `DeviceProvisioningPort`'s only bound implementation today,
+  `NullDeviceProvisioningPort`, is deliberately fail-closed — every registration/authentication
+  attempt currently fails, regardless of what's in the `devices` table.
+- **Scope:**
+  - **Device authentication (auth secret):** expose `devices.auth_key_hash` through
+    `RegisterDeviceRequest`/the registration form. It exists in the domain and DB schema
+    (Database Design §5.2) but is set by no API path today.
+  - **`DeviceProvisioningPort` implementation:** a real adapter answering
+    `authorize_registration`/`verify_auth_code`, replacing the fail-closed Null default.
+  - **Device registry synchronization:** the read-model/event feed JT808 needs to resolve
+    `terminal_id → device/vehicle/organization` locally, **without** a forbidden synchronous
+    cross-service DB read (ADR-808-4; `.claude/rules/architecture.md` #3) — most likely a local
+    projection kept current by consuming `fleet_device`'s own already-emitted
+    `DeviceRegistered`/`DeviceActivated`/`DeviceAssignedToVehicle` domain events.
+  - **Redis session management:** JT808's `DeviceSessionRegistry` is in-memory, single-node only
+    today; `.claude/rules/jt808.md` #4 requires Redis as the authoritative, cross-shard session
+    store this device-plane service needs for real horizontal scale.
+- **Dependencies:** None from the React or Flutter tracks. Depends only on already-complete
+  backend work (`fleet_device`'s domain events; ADR-0008's Redis Streams instance being reachable
+  from the JT808 deployable).
+- **Deliverables:** A bound, real `DeviceProvisioningPort` adapter; a local device-registry
+  projection inside `services/jt808/`; a Redis-backed `DeviceSessionRegistry`; the exposed
+  auth-secret field, end to end (form → API → domain → DB).
+- **Exit criteria:** A device registered in the dashboard, with its auth secret set, can complete
+  `0x0100`/`0x0102` registration and authentication against a running JT808 instance and reach
+  `Online` state — proven against a real or simulated terminal, not unit tests alone.
+- **Testing:** Unit tests for the new provisioning adapter and registry projection, matching
+  `services/jt808/tests/`'s existing conventions; an integration test driving a simulated terminal
+  through register → authenticate → online, the device-plane equivalent of this codebase's own
+  `test_realtime_broker_fanout.py` precedent.
+- **Complexity:** M.
+- **Risks:** The device-registry-synchronization design (event-consumption vs. a cached
+  projection) is the one genuinely open technical question here — flagged, not pre-decided, since
+  ADR-808-4 names the requirement without specifying the exact mechanism.
+
+### B2 — Live Tracking Pipeline
+
+- **Objective:** A real, authenticated device's GPS reports become both a persisted history row
+  and a live map update. This closes the second gap the same analysis surfaced: JT808's own event
+  publisher is `LoggingEventPublisher` (a log-only stub), and the Business API's own
+  `tracking/events/subscribers.py` is empty.
+- **Scope:**
+  - **Event publishing:** a durable local outbox in `services/jt808/` (ADR-808-2) plus an
+    approved broker client, replacing `LoggingEventPublisher`, so `device.position_reported`/
+    `device.online`/`device.offline`/alarm events are actually delivered, not merely logged.
+  - **Redis Streams integration:** publishing onto the **same** Redis Streams instance the
+    Business API already uses (ADR-0008), reusing existing infrastructure rather than standing up
+    a second broker. Approving a broker-client dependency for the JT808 deployable specifically is
+    still a `.claude/rules/workflow.md` #1/#2 checkpoint even though the Business API already has
+    precedent — a new deployable's own dependency manifest, not an automatic inheritance.
+  - **Tracking consumer:** implementing `tracking/events/subscribers.py` to consume
+    `DevicePositionReported` and call `TrackingApplicationService.record_vehicle_position`.
+    **A field-name mismatch must be reconciled here, not discovered later:** JT808's
+    `DevicePositionReported` dataclass uses `latitude`/`longitude`; the already-built
+    `/ws/tracking` handler reads a broker payload using `lat`/`lng` per the documented wire
+    contract. Nothing today reconciles these two.
+  - **Latest position cache:** JT808 writing `vehicle:{id}:last` directly to Redis (ADR-808-6) —
+    a separate write path from the broker publish above, needed for
+    `GET /tracking/vehicles/{id}/latest`'s instant reads (e.g. the map's initial center-on-load,
+    before any WebSocket event has arrived).
+  - **Vehicle position persistence:** the already-built, already-tested `vehicle_positions`
+    table/repository simply starts receiving real rows once the consumer above exists — no
+    schema or repository work is needed here, only the consumer that calls it.
+- **Dependencies:** B1 (a device must be able to authenticate before it can report positions).
+  `/ws/tracking`'s own consumer side (the `ws-tracking` `BrokerFanOutWorker`) is **already built**
+  and needs no changes — it starts receiving real frames the moment this phase's publish side
+  lands.
+- **Deliverables:** JT808 outbox + broker client; `tracking/events/subscribers.py` implemented;
+  JT808's direct `vehicle:{id}:last` Redis write; the `latitude/longitude` ↔ `lat/lng`
+  reconciliation resolved at the one boundary that needs it.
+- **Exit criteria:** A simulated or real terminal's `0x0200` location report results in: a
+  persisted `vehicle_positions` row, an updated `vehicle:{id}:last` Redis key, and a live frame
+  delivered to a subscribed `/ws/tracking` client — proven end-to-end, not stage-by-stage only.
+- **Testing:** Unit tests per new component (outbox, consumer); an end-to-end integration test
+  simulating a terminal's position report through to a WebSocket frame, extending
+  `tests/integration/test_realtime_broker_fanout.py`'s existing pattern rather than inventing a
+  new one.
+- **Complexity:** M.
+- **Risks:** None structural — every consuming component on the Business API side (`/ws/
+  tracking`, `vehicle_positions`) already exists and is tested; the risk is entirely in getting
+  the publish side (JT808 outbox/broker) correctly durable, the same reliability bar
+  `SqlOutboxPublisher` already meets on the Business API side.
+
+### B3 — Video Integration
+
+- **Objective:** Close the device-plane half of Video (C6) that F10 (§4, React) cannot itself
+  close — F10 is scoped deliberately thin (session-control UI only, no player) precisely because
+  `VideoProviderPort` has no bound adapter today. This phase is where that adapter is built.
+- **Scope:**
+  - **MDVR vendor API integration:** a bound `VideoProviderPort` adapter — matching the
+    already-chosen architecture exactly (CLAUDE.md: "native JT1078 is explicitly not
+    implemented... built around a `VideoProviderPort` abstraction (MVP: a hardware/vendor video
+    API)"). This is Decision Log item 3 (§11) actually being executed, not a new decision.
+  - **Camera management:** an HTTP route for `RegisterCameraCommand` — already implemented at the
+    application layer, with **no approved endpoint** yet (flagged in
+    `modules/fleet_device/api/routers.py`'s own module docstring). This phase closes that gap.
+  - **Live video streaming integration:** wiring the vendor adapter's actual stream
+    negotiation/token issuance behind the three existing routes (`POST /video/live`, `/playback`,
+    `/sessions/{id}/stop`), which already enforce D5 via `enforce_d5`/`VideoAccessPolicy` — this
+    phase supplies the provider behind that gate; it does not touch the gate itself.
+  - **Video session management:** largely **already built** — `VideoSession`
+    (`request_live`/`request_playback`/`activate`/`end`/`fail`) is a complete, tested aggregate.
+    Listed here for completeness, not because new domain work is expected.
+  - **Video player integration:** this is F10's own frontend scope (§4), **not** new backend
+    work — flagged explicitly here rather than silently duplicated, since building a real player
+    only becomes meaningful once this phase's vendor adapter exists. B3 unblocks F10's follow-up
+    player work; it does not replace it.
+- **Dependencies:** None on B1/B2 or F5–F7 — Video is its own bounded context, genuinely
+  independent of the live-tracking half of this track. Bundled into the same parallel workstream
+  only because both are device-plane integration work, not because one needs the other.
+- **Deliverables:** A bound `VideoProviderPort` adapter; a camera-registration HTTP route (exact
+  path per whatever API Contracts eventually documents — none exists today, see `fleet_device`'s
+  own flagged gap); live stream tokens flowing through the existing, unchanged D5-gated routes.
+- **Exit criteria:** An Org Admin's `POST /video/live` call returns a real, playable stream
+  reference from the bound vendor adapter — not `NotImplementedError`.
+- **Testing:** Unit tests for the new adapter (mocked vendor API). D5 enforcement is **not**
+  retested here — `enforce_d5`/`VideoAccessPolicy` already have coverage and this phase doesn't
+  touch them.
+- **Complexity:** L — gated on an actual vendor contract/API, the same real-world procurement
+  dependency F10 already names as its own biggest risk.
+- **Risks:** **Hard-gated on the same vendor decision Decision Log item 3 already names** — this
+  sub-phase cannot start in earnest before that choice is made, unlike B1/B2, which have no such
+  external blocker. Do not schedule B3 assuming the same start date as B1/B2.
 
 ---
 
@@ -790,6 +979,9 @@ real trips); §3.1's token extraction before M0.
 - F8 (Notifications) can run alongside F3–F6 entirely — it's personal-ownership-scoped, not
   tenant-data-dependent.
 - F9 (Billing) has no hard dependency on F3–F7 either, beyond F1.
+- **§4A's Backend Integration Track (B1/B2/B3) — added 2026-07-23.** Runs alongside F3–F6 with
+  zero shared dependency in either direction, the same way F8/F9 do. Not sequenced before or
+  after F5/F6; see §4A for the full reasoning.
 
 **Can run in parallel once its specific prerequisite lands, not waiting for the full sequence:**
 
@@ -801,9 +993,17 @@ real trips); §3.1's token extraction before M0.
   that's a risk-reduction argument, not a hard technical dependency — if you want maximum speed
   over maximum risk-reduction, M2 could start as soon as M0 is done.
 
+**Three parallel tracks overall, as of 2026-07-23:** Frontend (React, §4), Backend Integration
+(§4A), and Mobile (Flutter, §5) proceed concurrently once each track's own prerequisites are met
+(F0 for React; nothing for §4A; §3.1/§6's token set for Flutter). F7 is the one point in the
+roadmap where two of these three tracks' outputs (React's map UI and Backend Integration's B1/B2)
+must both be ready before the feature is real — see F7's own entry and §4A for the full
+dependency shape.
+
 **Hard-gated on your decisions, not on engineering sequencing:** F7 (map provider), F10 (video
 vendor), §3.10 (contract-codegen approach) — these three can sit idle without blocking anything
-else in the roadmap.
+else in the roadmap. §4A's B3 (Video Integration) is additionally gated on the same F10 video
+vendor decision — flagged in B3's own entry rather than repeated here.
 
 ---
 
@@ -865,8 +1065,12 @@ Genuinely cross-deployable, not just frontend/mobile:
 ## 11. Decision Log — What Needs Your Sign-Off
 
 1. **UI/UX design assets** (§0) — share exports/Figma link/screenshots/style guide.
-2. **Map provider** (§3.9) — Mapbox / Google Maps / MapLibre+free-tiles, or another option.
+2. **Map provider** (§3.9) — Mapbox / Google Maps / MapLibre+free-tiles, or another option. F7 has
+   a second, independent gate as of item 7 below (§4A's B1/B2) — resolving this item alone is not
+   sufficient to unblock F7's real-data state.
 3. **Video vendor / `VideoProviderPort` adapter** (F10, backend-side, blocks F10's real build).
+   Executed by §4A's B3 (Video Integration) once decided — B3 cannot start in earnest before this
+   item is resolved.
 4. **Shared cross-platform contract strategy** (§3.10/§6) — OpenAPI-driven codegen, or continue
    hand-maintained typed DTOs per platform.
 5. **Deployment/hosting target** (§9) — the largest, most permanent decision in the whole
@@ -874,6 +1078,12 @@ Genuinely cross-deployable, not just frontend/mobile:
    built out and the shape of the answer is more concrete.
 6. **Error-tracking/visual-regression paid tooling** (§3.8/§9) — optional; explicitly not
    assumed either way.
+7. **JT808 backend-integration phasing** (§4A) — **RESOLVED, 2026-07-23.** Tracked as an
+   independent, parallel Backend Integration workstream (B1–B3), explicitly not sequenced before
+   or after F5/F6, targeted for completion (B1/B2) alongside F7 rather than gating it sequentially.
+   This is the only item in this log that is now closed rather than open — recorded here so the
+   decision and its reasoning stay part of the official plan rather than living only in
+   conversation history.
 
 Everything else in this document — RHF+Zod, TanStack Table, MSW, Playwright, Riverpod,
 `flutter_secure_storage`, the entire phase sequence and every phase's internal scope — I
