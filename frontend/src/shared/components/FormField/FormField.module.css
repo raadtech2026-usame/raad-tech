@@ -1,0 +1,22 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-secondary);
+}
+
+.hint {
+  font-size: var(--text-2xs);
+  color: var(--color-text-faint);
+}
+
+.error {
+  font-size: var(--text-2xs);
+  color: var(--color-danger-text);
+  font-weight: var(--font-weight-semibold);
+}

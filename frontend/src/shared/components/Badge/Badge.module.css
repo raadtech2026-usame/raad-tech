@@ -1,0 +1,66 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-body);
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-2xs);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.outlined {
+  border: 1px solid transparent;
+  padding: 6px 12px;
+  font-size: var(--text-xs);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.pulsing {
+  animation: raad-blink 1.4s infinite;
+}
+
+.success {
+  color: var(--color-success-text);
+  background: var(--color-success-tint);
+  border-color: var(--color-success-border);
+}
+
+.warning {
+  color: var(--color-warning-text);
+  background: var(--color-warning-tint);
+  border-color: var(--color-warning-border);
+}
+
+.danger {
+  color: var(--color-danger-text);
+  background: var(--color-danger-tint);
+  border-color: var(--color-danger-border);
+}
+
+.info {
+  color: var(--color-info-text);
+  background: var(--color-info-tint);
+  border-color: var(--color-info-border);
+}
+
+.neutral {
+  color: var(--color-neutral-text);
+  background: var(--color-neutral-tint);
+  border-color: var(--color-neutral-border);
+}
+
+.purple {
+  color: var(--color-purple);
+  background: var(--color-purple-tint);
+  border-color: var(--color-purple-border);
+}

@@ -57,10 +57,32 @@ never `localStorage`/`sessionStorage`/a cookie (`.claude/rules/frontend.md` #5).
 loses the session by design; `shared/api/client.ts` auto-retries once after a token refresh on a
 401 before giving up.
 
+## Design system
+
+The approved visual design (`docs/architecture/RAAD Console (Standalone).html` +
+`docs/architecture/logo-raad.png`) has been extracted into `src/styles/tokens.css` (colors,
+typography, spacing, radii, shadows) and a reusable component library in `shared/components/`
+(`Button`, `Badge`, `Card`, `Avatar`, `DataTable`, `DetailDrawer`, `Toast`, etc.) — not a 1:1 HTML
+port. See CLAUDE.md's "Frontend Implementation Status" section for the full extraction
+methodology and the specific, flagged departures from the raw mockup (accessibility fixes,
+loading/empty states the mockup never depicted, a rationalized spacing/type scale).
+
+## Two dashboards
+
+RAAD ships a **Platform Dashboard** (`/platform/*` — Founder, Regional Manager, Support Staff,
+Finance Staff; manages every organization, including provisioning new ones) and an **Organization
+Dashboard** (`/org/*` — Org Admin only; scoped to their own organization). Driver and Parent have
+no web dashboard at all (mobile-only roles) — see `shared/auth/dashboard.ts` and
+`app/layout/navConfig.ts`.
+
 ## Status
 
-**Foundational app shell implemented**: build tooling, routing, the `RouteGuard` role-based guard,
-login flow (`POST /auth/login` end-to-end), the REST client (typed error envelope, auth-header
-injection, 401-refresh-retry), and the generic WebSocket hook. No feature module
-(`features/*`) has real UI yet — each lands as its own phase. 16 tests passing
-(`npm run test`); `npm run build` produces a working production bundle.
+**Phase F0 (design system + app shell) complete**: build tooling, routing (including the
+two-dashboard redirect-by-role flow above), the `RouteGuard` role-based guard, login flow
+(`POST /auth/login` end-to-end, now branded), the REST client (typed error envelope, auth-header
+injection, 401-refresh-retry), the generic WebSocket hook, and the full design-system component
+library + app shell (`Sidebar`/`TopBar`/`AppShell`). No feature module (`features/*`) has real
+data-fetching UI yet — every nav item routes to a real page: the built feature, or an honest
+`PlaceholderPage` until its own roadmap phase lands (see
+`docs/architecture/frontend-flutter-master-roadmap.md`). 42 tests passing (`npm run test`);
+`npm run build` produces a working production bundle.

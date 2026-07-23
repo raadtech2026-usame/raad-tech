@@ -1,0 +1,29 @@
+.mark {
+  display: block;
+  object-fit: contain;
+}
+
+.withWordmark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wordmark {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+}
+
+.name {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-extrabold);
+  font-size: var(--text-2xl);
+}
+
+.tagline {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.14em;
+  font-weight: var(--font-weight-bold);
+  margin-top: 2px;
+}

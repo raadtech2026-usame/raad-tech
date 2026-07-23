@@ -1,0 +1,21 @@
+.grid {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.welcomeCard {
+  padding: var(--space-6);
+}
+
+.welcomeTitle {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-extrabold);
+  font-size: var(--text-3xl);
+}
+
+.welcomeBody {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  margin-top: var(--space-2);
+  max-width: 560px;
+}

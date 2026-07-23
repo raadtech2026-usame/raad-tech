@@ -602,3 +602,93 @@ backend/
 
 This section must be kept current as further bounded contexts are completed — update it rather
 than letting it drift, the same discipline this rewrite itself was triggered by.
+
+## Frontend Implementation Status
+
+The React web dashboard (`frontend/`) is being built against a master implementation roadmap —
+`docs/architecture/frontend-flutter-master-roadmap.md` — derived from this backend, the ten
+bounded contexts above, and an approved UI/UX design (below). That roadmap's phases (F0–F13 for
+React, M0–M5 for Flutter) are the authority on sequencing; this section tracks what has actually
+landed, the same discipline the backend sections above already follow.
+
+### Design source
+
+The approved visual design lives at `docs/architecture/RAAD Console (Standalone).html` (a
+self-contained interactive mockup covering every module — dashboard, org/fleet/people/ops tables,
+live tracking, live video, notifications, reports, settings, billing, plus Parent/Driver mobile
+app screens) and `docs/architecture/logo-raad.png` (the RAAD mark: a shield containing a location
+pin, brand blue `#1E63FF` / brand green `#2FBF4F`). Per this phase's own explicit instruction,
+the mockup was **extracted into a design system, not converted 1:1** — every component was
+rebuilt as reusable React, with three deliberate, flagged departures from the raw mockup (never
+silent): (1) the mockup's ad-hoc per-element pixel values (spacing, font sizes) were rationalized
+into one consistent scale (`frontend/src/styles/tokens.css`); (2) its smallest label text
+(9.5–10px) was raised to an 11px floor for legibility; (3) several interactive elements in the
+mockup had no real accessibility semantics at all (the settings toggle was a plain non-interactive
+`<div>`, the drawer had no dialog role/Escape handling) — rebuilt with real ARIA roles/keyboard
+support rather than copied as-is. The mockup also depicts zero loading states and zero
+empty/zero-result states anywhere (every table shows fixed sample rows) — `Skeleton` and
+`EmptyState` components were added because every real network-backed view needs both, not
+because the design specified them.
+
+### Two-dashboard architecture
+
+RAAD ships two distinct dashboards, not one app with a role switcher (the mockup's own "tap role
+to switch view" affordance was a demo convenience, not a real product behavior — a `Principal` has
+exactly one role per session, so no production UI cycles between them):
+
+- **Platform Dashboard** (`/platform/*`) — Founder, Regional Manager, Support Staff, Finance
+  Staff. Manages the whole platform across every organization, tenant provisioning included
+  (`/platform/organizations` is where new organizations — and their Org Admin accounts — are
+  created). Scoped server-side by RBAC + `ScopeResolver`, not by the frontend.
+- **Organization Dashboard** (`/org/*`) — Org Admin only. Shows only that Org Admin's own
+  organization (`organization_id` scoping enforced server-side); has no "Organizations" nav item
+  at all, since creating tenants isn't this role's job.
+- Driver and Parent have **no web dashboard** — both are mobile-only roles
+  (`.claude/rules/flutter.md` #1). If either reaches the web login, `MobileOnlyPage` shows a
+  clear "use the RAAD mobile app" message instead of a broken or empty shell.
+
+This mapping lives in `shared/auth/dashboard.ts` (`getDashboardType`/`getDashboardHomePath`) and
+drives the post-login redirect ("authenticate once, land on the correct dashboard") plus
+`router.tsx`'s two `RouteGuard`-gated route subtrees. Per-role nav trees live in
+`app/layout/navConfig.ts` (`platformNav`/`organizationNav`, filtered by `getNavForRole`) — one
+real, flagged deviation from a literal per-role reading of the mockup: **Live Video is absent
+from every platform role's nav**, not just hidden from Parents, because `.claude/rules/api.md` #2
+documents `/video` as "Org-Admin only," not "Org-Admin plus RAAD staff." Finance Staff's nav is
+additionally pruned to Dashboard/Organizations/Billing/Reports per their documented "billing
+scope only" access (`.claude/rules/security.md` #3) — this is presentation only, matching
+`.claude/rules/frontend.md` #2; the backend's own RBAC matrix remains the real gate regardless of
+what this nav shows or hides.
+
+### Phase F0 — Design System & Cross-Cutting Infrastructure (complete)
+
+Delivered per the roadmap's own F0 scope: design tokens (`styles/tokens.css`, `styles/global.css`
+— colors/typography/spacing/radii/shadows/motion, extracted and rationalized from the approved
+mockup; dark-mode CSS-variable mechanism is in place but not populated, since the approved design
+specifies only one settings *toggle* for a dark theme with no corresponding palette anywhere —
+flagged, not invented); a reusable component library (`shared/components/`: `Button`, `Badge`,
+`Card`, `Avatar`, `IconButton`, `LiveIndicator`, `Input`, `Select`, `Toggle`, `FormField`,
+`DataTable`/`FilterChips`/`Pagination`/cell helpers, `DetailDrawer`, `EmptyState`, `Skeleton`,
+`Toast`, `Logo`, `LoadingScreen`); the app shell (`app/layout/`: `Sidebar`, `TopBar`, `AppShell`,
+`navConfig`, `PageHeaderContext` — a small store each feature page calls via `usePageHeader(title,
+subtitle)` instead of `AppShell` needing to know every route's copy in advance); the two-dashboard
+routing above; a rebuilt, branded `LoginPage`; and `PlaceholderPage` (every nav item routes to a
+real page — the built feature or an honest "being built next" state — never a dead link or 404).
+The RAAD logo is wired into the sidebar, login page, browser favicon, and a branded
+`LoadingScreen`. The dashboard home page deliberately shows **no fleet/trip/rider KPI numbers**
+yet, even though the mockup depicts fixed sample figures ("48 trips today") — no aggregate summary
+endpoint exists on the backend to back them, and fabricating numbers here would break this
+project's own "fail loudly, don't fake it" posture; the real KPI grid lands with its own feature
+phase.
+
+New dependencies this phase, each mapping to one F0 need with no substitute already in the repo:
+`lucide-react` (the approved design's icon set is Lucide's exact kebab-case names —
+`data-lucide="building-2"` etc. — used verbatim, so this is the only choice that doesn't mean
+redrawing 50+ icons by hand), `@fontsource/manrope`/`sora`/`jetbrains-mono` (self-hosted versions
+of the design's three exact typefaces — an improvement over the mockup's own Google Fonts CDN
+calls: no third-party runtime request, works offline), `@tanstack/react-table` (headless table
+logic backing `DataTable`; sorting/pagination stay server-driven per API Contracts §7/§8 — this
+table never sorts client-side), `clsx` (conditional className composition).
+
+Not built this phase (by design — F0 is tokens/shell/primitives only, not features): any real
+data-fetching. Every non-dashboard nav route renders `PlaceholderPage` until its own roadmap phase
+(F1 onward) lands.

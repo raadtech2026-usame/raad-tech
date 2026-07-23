@@ -1,0 +1,25 @@
+.shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--color-bg-canvas);
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 24px 60px;
+}
+
+@media (max-width: 900px) {
+  .content {
+    padding: 16px 16px 40px;
+  }
+}

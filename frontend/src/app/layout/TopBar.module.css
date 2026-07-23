@@ -1,0 +1,112 @@
+.topbar {
+  height: var(--topbar-height);
+  flex: 0 0 auto;
+  background: var(--color-bg-surface);
+  border-bottom: 1px solid var(--color-border-default);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0 22px;
+  z-index: var(--z-header);
+}
+
+.titleBlock {
+  min-width: 0;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-extrabold);
+  font-size: var(--text-2xl);
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.subtitle {
+  font-size: var(--text-2xs);
+  color: var(--color-text-faint);
+  margin-top: 2px;
+}
+
+.search {
+  flex: 1;
+  max-width: 340px;
+  margin-left: var(--space-2);
+}
+
+.actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.accountMenu {
+  position: relative;
+}
+
+.accountTrigger {
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 0;
+}
+
+.dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  min-width: 200px;
+  z-index: var(--z-dropdown);
+  overflow: hidden;
+}
+
+.dropdownHeader {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.dropdownName {
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.dropdownRole {
+  font-size: var(--text-2xs);
+  color: var(--color-text-faint);
+  margin-top: 1px;
+}
+
+.dropdownItem {
+  width: 100%;
+  text-align: left;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-danger-text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dropdownItem:hover {
+  background: var(--color-danger-tint);
+}
+
+@media (max-width: 900px) {
+  .search {
+    display: none;
+  }
+}

@@ -1,0 +1,99 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.chip {
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-bold);
+  padding: 7px 13px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  background: none;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.chip:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.neutral {
+  color: var(--color-text-secondary);
+  background: var(--color-neutral-tint);
+  border-color: var(--color-neutral-border);
+}
+
+.success {
+  color: var(--color-success-text);
+  background: var(--color-success-tint);
+  border-color: var(--color-success-border);
+}
+
+.warning {
+  color: var(--color-warning-text);
+  background: var(--color-warning-tint);
+  border-color: var(--color-warning-border);
+}
+
+.danger {
+  color: var(--color-danger-text);
+  background: var(--color-danger-tint);
+  border-color: var(--color-danger-border);
+}
+
+.info {
+  color: var(--color-info-text);
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-default);
+}
+
+.purple {
+  color: var(--color-purple);
+  background: var(--color-purple-tint);
+  border-color: var(--color-purple-border);
+}
+
+.active.neutral {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-input);
+}
+
+.active.success,
+.active.warning,
+.active.danger,
+.active.info,
+.active.purple {
+  color: #fff;
+}
+
+.active.success {
+  background: var(--color-success);
+  border-color: var(--color-success);
+}
+
+.active.warning {
+  background: var(--color-warning);
+  border-color: var(--color-warning);
+}
+
+.active.danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.active.info {
+  background: var(--color-brand-primary);
+  border-color: var(--color-brand-primary);
+}
+
+.active.purple {
+  background: var(--color-purple);
+  border-color: var(--color-purple);
+}

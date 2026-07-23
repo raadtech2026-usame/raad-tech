@@ -16,7 +16,13 @@
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",
     "@tanstack/react-query": "^5.62.0",
-    "zustand": "^5.0.2"
+    "@tanstack/react-table": "^8.20.5",
+    "zustand": "^5.0.2",
+    "lucide-react": "^0.468.0",
+    "clsx": "^2.1.1",
+    "@fontsource/manrope": "^5.1.0",
+    "@fontsource/sora": "^5.1.0",
+    "@fontsource/jetbrains-mono": "^5.1.1"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.6.3",

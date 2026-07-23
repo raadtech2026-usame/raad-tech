@@ -1,0 +1,74 @@
+/*
+ * A real <input type="checkbox"> under the hood, styled as a switch — not the approved design's
+ * literal implementation (a plain non-interactive `<div>` with a hardcoded thumb position and no
+ * ARIA role at all). Keyboard operability and screen-reader semantics come free this way instead
+ * of being hand-rolled; visual result matches the approved track/thumb look exactly.
+ */
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+}
+
+.wrap:has(.input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 25px;
+  border-radius: var(--radius-full);
+  background: var(--color-border-input);
+  transition: background var(--transition-base);
+}
+
+.input:checked + .track {
+  background: var(--color-success);
+}
+
+.input:focus-visible + .track {
+  box-shadow: var(--shadow-focus);
+}
+
+.thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+  transition: transform var(--transition-base);
+}
+
+.input:checked + .track .thumb {
+  transform: translateX(19px);
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+}
+
+.label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.description {
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}

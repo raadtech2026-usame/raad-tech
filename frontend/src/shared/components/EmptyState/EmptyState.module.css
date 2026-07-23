@@ -1,0 +1,39 @@
+/*
+ * Not present anywhere in the approved design (every table/list mockup shows fixed sample rows,
+ * never a zero-results state) — added because every real data-fetching table needs one; a blank
+ * white card reading nothing is a worse experience than this design ever intended to ship.
+ */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--space-3);
+  padding: var(--space-8) var(--space-5);
+  color: var(--color-text-muted);
+}
+
+.icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-lg);
+  color: var(--color-text-primary);
+}
+
+.description {
+  font-size: var(--text-sm);
+  color: var(--color-text-faint);
+  max-width: 340px;
+}
