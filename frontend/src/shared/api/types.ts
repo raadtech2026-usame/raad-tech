@@ -51,6 +51,32 @@ export interface CursorPage<T> {
   page: { limit: number; nextCursor: string | null; hasMore: boolean };
 }
 
+/** Wire shape of `interfaces/http/pagination.py`'s `OffsetPageResponse`/`OffsetPageMeta` —
+ * `page_size` stays snake_case on the wire (FastAPI/Pydantic serializes field names verbatim,
+ * no camelCase alias), unlike `OffsetPage<T>` above which is this app's post-mapping shape.
+ * Every feature's own list-response wire DTO extends `OffsetPageWire<TWire>` and converts
+ * through `toOffsetPage` below — one implementation, not one per feature. */
+export interface OffsetPageMetaWire {
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface OffsetPageWire<TWire> {
+  data: TWire[];
+  page: OffsetPageMetaWire;
+}
+
+export function toOffsetPage<TWire, TApp>(
+  wire: OffsetPageWire<TWire>,
+  mapper: (item: TWire) => TApp,
+): OffsetPage<TApp> {
+  return {
+    data: wire.data.map(mapper),
+    page: { total: wire.page.total, page: wire.page.page, pageSize: wire.page.page_size },
+  };
+}
+
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
