@@ -1,0 +1,23 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.coordRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.footerActions {
+  display: flex;
+  gap: var(--space-3);
+  margin-left: auto;
+}
+
+@media (max-width: 560px) {
+  .coordRow {
+    grid-template-columns: 1fr;
+  }
+}
