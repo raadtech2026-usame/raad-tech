@@ -16,7 +16,21 @@ vi.mock("./api", () => ({
   listOrganizationsForPicker: vi.fn(),
 }));
 
+// `StudentAssignmentSection`/`AssignStudentForm` (Phase F6) are rendered inside this page's own
+// detail drawer now — mocked here the same way every other cross-module dependency of this test
+// file already is, defaulting `findActiveAssignmentForStudent` to `null` so the section settles
+// into its honest "No active route assignment" state without any test needing to care about it.
+vi.mock("../student-assignments/api", () => ({
+  findActiveAssignmentForStudent: vi.fn(),
+  getRouteWithStops: vi.fn(),
+  listRoutesForPicker: vi.fn(),
+  listVehiclesForPicker: vi.fn(),
+  assignStudentToRoute: vi.fn(),
+  endStudentAssignment: vi.fn(),
+}));
+
 import * as api from "./api";
+import * as assignmentApi from "../student-assignments/api";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { StudentsPage } from "./StudentsPage";
 
@@ -76,6 +90,12 @@ describe("StudentsPage", () => {
     vi.mocked(api.listOrganizationsForPicker)
       .mockReset()
       .mockResolvedValue([{ id: "01ARZ3NDEKTSV4RRFFQ69G5FBW", name: "Green Valley School" }]);
+    vi.mocked(assignmentApi.findActiveAssignmentForStudent).mockReset().mockResolvedValue(null);
+    vi.mocked(assignmentApi.getRouteWithStops).mockReset();
+    vi.mocked(assignmentApi.listRoutesForPicker).mockReset().mockResolvedValue([]);
+    vi.mocked(assignmentApi.listVehiclesForPicker).mockReset().mockResolvedValue([]);
+    vi.mocked(assignmentApi.assignStudentToRoute).mockReset();
+    vi.mocked(assignmentApi.endStudentAssignment).mockReset();
   });
 
   it("renders skeleton state while loading, then the fetched students (name + status only)", async () => {
@@ -173,6 +193,21 @@ describe("StudentsPage", () => {
     await waitFor(() =>
       expect(api.updateStudentStatus).toHaveBeenCalledWith(STUDENT_SUMMARY.id, "graduated"),
     );
+  });
+
+  it("shows the CR-1 gate's current state and lets a founder assign a student with no active route", async () => {
+    vi.mocked(api.listStudents).mockResolvedValue(pageOf([STUDENT_SUMMARY], 1));
+    vi.mocked(assignmentApi.findActiveAssignmentForStudent).mockResolvedValue(null);
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Amina Hassan")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Amina Hassan"));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("No active route assignment.")).toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Assign to route" }));
+    expect(await screen.findByText("Assign Amina Hassan to a route")).toBeInTheDocument();
   });
 
   it("hides the New Student action, Add guardian action, and status actions for a read-only role", async () => {

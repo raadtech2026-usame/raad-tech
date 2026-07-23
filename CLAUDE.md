@@ -712,3 +712,106 @@ table never sorts client-side), `clsx` (conditional className composition).
 Not built this phase (by design — F0 is tokens/shell/primitives only, not features): any real
 data-fetching. Every non-dashboard nav route renders `PlaceholderPage` until its own roadmap phase
 (F1 onward) lands.
+
+### Phases F1–F5 and the Device Domain Overhaul (complete) — retroactive catch-up
+
+This section had drifted out of date (`documentation.md` #3): F1 through F5 and the frontend half
+of the Device Domain Overhaul were all implemented, but never recorded here. Reconstructed below
+from each shipped phase's own in-code docstrings (`app/router.tsx`'s `PLATFORM_BUILT_ROUTES`/
+`ORGANIZATION_BUILT_ROUTES` and `app/layout/navConfig.ts`, both verified against the current
+repository, not memory) rather than left to drift further — kept intentionally more compact than
+F0's/F6's own entries since it's a catch-up, not a live phase record.
+
+- **F1 — Organization & Region Management (C2):** `features/organizations/OrganizationsPage.tsx`
+  at `/platform/organizations` (list/detail/create/status-transition, Founder can create, Org
+  Admin's own `/org` dashboard has no Organizations nav entry at all per the two-dashboard split).
+- **F2 — User & Access Management (IAM, C1):** `features/admin/users/UsersPage.tsx` at
+  `/platform/users` — reachable only by roles holding an `iam.users.*` permission
+  (`founder`/`regional_manager`/`support_staff`); `org_admin`'s own `/org/users` stays
+  `PlaceholderPage` since `org_admin` holds no `iam.users.*` grant at all in the seeded matrix.
+- **F3 — Fleet & Device Management (C3):** `features/fleet-devices/vehicles/VehiclesPage.tsx` and
+  `.../devices/DevicesPage.tsx`, originally mounted at both `/platform/*` and `/org/*` (one shared
+  component pair per entity, not a duplicate per dashboard) — see the Device Domain Overhaul entry
+  below for how `/org/devices` was subsequently removed.
+- **F4 — Transport Operations, Part A (Students/Parents/Linking, C4):**
+  `features/transport-ops/students/StudentsPage.tsx` and `.../parents/ParentsPage.tsx`, the same
+  shared-component-across-both-dashboards pattern, including the students↔parents linking UI
+  ("Guardians" section on the student detail drawer).
+- **F5 — Transport Operations, Part B (Drivers/Routes & Stops, C4):**
+  `features/transport-ops/drivers/DriversPage.tsx` and `.../routes/RoutesPage.tsx` — the route
+  detail drawer can add stops (`POST /routes/{id}/stops`) but deliberately cannot reorder or
+  remove one, with a visible caption explaining why: no HTTP route exists for
+  `Route.move_stop`/`remove_stop` yet (backend's own flagged gap).
+- **Device Domain Overhaul (frontend half):** added `features/organizations/regions/
+  RegionsPage.tsx` at `/platform/regions` (Founder-only nav entry — only `founder` holds
+  `organization.regions.create`/`.update`); and, matching the backend's RBAC correction that
+  `org_admin` now holds zero `fleet_device.devices.*` permissions, **removed** `/org/devices`
+  entirely — `VehiclesPage`'s own "Tracking" drawer section (`tracking_status.last_seen_at` only,
+  no device identifier) is now the *only* device-derived data an Org Admin session can reach,
+  matching the backend's identical posture.
+
+### Phase F6 — Transport Operations, Part C: Trips & Student Assignments (C4) (complete)
+
+Completes `transport_ops`'s last two aggregates on the frontend, per the roadmap's own
+per-aggregate split of this bounded context (F4 Students/Parents → F5 Drivers/Routes → F6 Trips/
+StudentAssignment).
+
+**Trips** — `features/transport-ops/trips/`: `TripsPage.tsx` (list/detail, filterable by status
+and trip type via two `FilterChips` rows, no search box since `SqlAlchemyTripRepository` whitelists
+no searchable fields), `ScheduleTripForm.tsx` (`POST /trips`), `ChangeTripDriverForm.tsx`
+(`PATCH /trips/{id}/driver`, a distinct explicit action on the drawer, mirroring
+`AssignDeviceForm.tsx`'s precedent), and start/end actions (`POST /trips/{id}/start`/`/end`) gated
+by `TripStatus` on the detail drawer's footer. Mounted at `/platform/trips` and `/org/trips` (one
+shared `TripsPage` component, matching every prior phase's two-dashboard posture) — both nav
+entries already existed in `navConfig.ts` as `PlaceholderPage`s from F0 onward and are now real.
+`canManage` (`founder`/`org_admin`) is a presentation hint only; `driver` holds `.start`/`.end` too
+but has no web dashboard at all (`.claude/rules/flutter.md` #1), so no ownership-check UI logic
+is needed here — Org Admin/Founder's grant is the seeded matrix's intentional admin-override.
+
+**A real, discovered backend whitelist gap, not silently worked around:** `Vehicle`'s own
+repository (`fleet_device`) does whitelist `organization_id` as a filter, but
+`SqlAlchemyDriverRepository`/`SqlAlchemyRouteRepository` (`transport_ops`) whitelist only `status`
+— attempting `filter[organization_id]=...` against `/drivers` or `/routes` raises the backend's own
+`ValidationError` ("Field 'organization_id' is not filterable on this resource"), and neither
+summary response even carries `organization_id` to filter by client-side. `ScheduleTripForm`'s
+vehicle picker is therefore organization-scoped (real backend support); its driver and route
+pickers are deliberately global, with a hint explaining a cross-organization pick will be rejected
+server-side — the backend's actual `Trip.schedule` `DomainError` is the real safety net, surfaced
+verbatim via a toast, not a client-side filter that can't be built honestly. `TripsPage`'s own
+vehicle/driver/route *name* lookups for its list table reuse the same picker functions with no
+organization filter (`""`, which `buildOffsetListQuery` omits entirely), capped at the first 100
+rows each — the same best-effort limitation `RoutesPage`'s/`StudentsPage`'s own
+`organizationNameById` lookups already accept.
+
+**Student Assignment — "the CR-1 access gate" — deliberately has no dedicated nav page or route
+at all.** The approved design mockup (`docs/architecture/RAAD Console (Standalone).html`) shows no
+"Student Assignments" screen — its own Student Management table already carries `Route`/`Stop`
+columns directly on the student row — and `navConfig.ts` has never had a nav entry for it either.
+Built instead as `features/transport-ops/student-assignments/StudentAssignmentSection.tsx`, a
+second `mapSlot` section on `StudentsPage`'s own detail drawer (stacked above the existing
+"Guardians" section), plus `AssignStudentForm.tsx` (`POST /student-assignments`) — imported across
+the `students`/`student-assignments` feature-folder boundary (both under the same `transport_ops`
+bounded context), a deliberate, narrow exception to `.claude/rules/frontend.md` #1's "no
+cross-folder `api.ts` import" discipline: it's a *component* import, not a duplicated data-fetching
+read, and the roadmap itself names `student-assignments` as its own deliverable rather than code
+to inline into `students/`. Flagged in both `router.tsx`'s and `StudentsPage.tsx`'s own docstrings,
+not silently decided.
+
+Ending an assignment dispatches to one of `removed`/`transferred`/`graduated`/`disabled`
+(`POST /student-assignments/{id}/end`, the actual CR-1 revocation event) via a compact
+reason-select + button, rather than four separate buttons — a deliberate space-saving choice for
+a section nested inside an already-busy drawer. **Shows only the student's current active
+assignment, not a history list**: `StudentAssignmentSummaryResponse` carries no `assignedAt`/
+`endedAt` to order past (non-active) rows by, so a "previous assignments" list would need an N+1
+detail fetch per historical row for no clearly-scoped benefit this phase — a real, deliberate scope
+limit, flagged in `StudentAssignmentSection.tsx`'s own docstring rather than silently omitted.
+
+**Testing:** `api.test.ts` for both feature folders (wire-shape/query-string assertions, including
+explicit coverage that `listDriversForPicker`/`listRoutesForPicker` never send the unwhitelisted
+`organization_id` filter), `TripsPage.test.tsx` (loading/empty/error states, name-lookup
+resolution, start/end/change-driver flows, read-only-role gating), `ScheduleTripForm.test.tsx`/
+`ChangeTripDriverForm.test.tsx`/`AssignStudentForm.test.tsx` (org-picker branching, dependent-picker
+enabling, exact submitted payload shape, validation errors), and `StudentAssignmentSection.test.tsx`
+(the CR-1 gate's current-state display, assign/end flows, error state) — `StudentsPage.test.tsx`
+was updated to mock the new `student-assignments` module and gained one integration test proving
+the "no active assignment → Assign to route" path renders inside the existing drawer.

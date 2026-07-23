@@ -19,6 +19,7 @@ import { StudentsPage } from "../features/transport-ops/students/StudentsPage";
 import { ParentsPage } from "../features/transport-ops/parents/ParentsPage";
 import { DriversPage } from "../features/transport-ops/drivers/DriversPage";
 import { RoutesPage } from "../features/transport-ops/routes/RoutesPage";
+import { TripsPage } from "../features/transport-ops/trips/TripsPage";
 
 const PLATFORM_ROLES: Role[] = ["founder", "regional_manager", "support_staff", "finance_staff"];
 const ORGANIZATION_ROLES: Role[] = ["org_admin"];
@@ -76,9 +77,18 @@ function buildFeatureRoutes(
  *
  * Phase F5 (Transport Operations, Part B — Drivers/Routes & Stops) does the same for
  * `/platform/drivers`+`/platform/routes`: one `DriversPage`/`RoutesPage` component reused at
- * both `/platform/*` and `/org/*`. `transport_ops`'s remaining two aggregates (`Trip`/
- * `StudentAssignment`) stay `PlaceholderPage` until F6 lands (the master roadmap's deliberate
- * per-aggregate split of this bounded context).
+ * both `/platform/*` and `/org/*`.
+ *
+ * Phase F6 (Transport Operations, Part C — Trips & Student Assignments) graduates
+ * `/platform/trips`+`/org/trips` the same way: one `TripsPage` component reused at both.
+ * `StudentAssignment` — "the CR-1 gate record" — does **not** get its own nav entry or route at
+ * all: the approved design mockup (`docs/architecture/RAAD Console (Standalone).html`) shows no
+ * dedicated "Student Assignments" screen — its own Student Management table already carries
+ * `Route`/`Stop` columns directly, and `navConfig.ts` has never had a nav entry for it either.
+ * Built instead as a section on `StudentsPage`'s own detail drawer
+ * (`features/transport-ops/student-assignments/StudentAssignmentSection.tsx`), matching that
+ * precedent rather than inventing a new top-level page the design never called for — flagged
+ * here, not silently decided.
  *
  * The Device Domain Overhaul adds `/platform/regions` (`RegionsPage`, Founder-only nav entry —
  * `navConfig.ts`) and, unlike every entry above, deliberately does **not** add a
@@ -95,11 +105,12 @@ const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/parents": <ParentsPage />,
   "/platform/drivers": <DriversPage />,
   "/platform/routes": <RoutesPage />,
+  "/platform/trips": <TripsPage />,
 };
 
 /** Org Admin's own dashboard equivalent of the Fleet & Device / Transport Ops entries above —
  * see this file's own note on why these are the same page components, not separate ones. Every
- * other `organizationNav` entry (Trips, …) stays a `PlaceholderPage` until its own phase lands.
+ * other `organizationNav` entry stays a `PlaceholderPage` until its own phase lands.
  *
  * **`/org/devices` is deliberately absent** (Device Domain Overhaul architecture review) — RAAD
  * owns and manages all GPS/MDVR hardware; schools never register, configure, or even view raw
@@ -112,6 +123,7 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/parents": <ParentsPage />,
   "/org/drivers": <DriversPage />,
   "/org/routes": <RoutesPage />,
+  "/org/trips": <TripsPage />,
 };
 
 export const router = createBrowserRouter([

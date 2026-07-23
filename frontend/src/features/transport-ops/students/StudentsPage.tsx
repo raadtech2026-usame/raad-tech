@@ -20,6 +20,8 @@ import { Input } from "../../../shared/components/Input/Input";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { CreateStudentForm } from "./CreateStudentForm";
 import { LinkGuardianForm } from "./LinkGuardianForm";
+import { AssignStudentForm } from "../student-assignments/AssignStudentForm";
+import { StudentAssignmentSection } from "../student-assignments/StudentAssignmentSection";
 import {
   getStudent,
   listGuardiansForStudent,
@@ -148,10 +150,15 @@ function GuardiansSection({
  *
  * **`Student` carries no `route_id`/`stop_id`/`parent_id` field at all** — confirmed against
  * `transport_ops.domain.entities`'s own module docstring: the student↔route↔stop↔vehicle CR-1
- * gate lives entirely in the separate, not-yet-built `StudentAssignment` aggregate (Phase F6),
- * and the parent link lives in the separate `StudentParent` aggregate (this page's own
- * "Guardians" section). There is therefore nothing transport-assignment-related to show or omit
- * on this page this phase.
+ * gate lives in the separate `StudentAssignment` aggregate, and the parent link lives in the
+ * separate `StudentParent` aggregate (this page's own "Guardians" section). Phase F6 adds the
+ * former as a second `mapSlot` section, `StudentAssignmentSection` — imported from the sibling
+ * `features/transport-ops/student-assignments/` folder rather than inlined here (unlike
+ * `GuardiansSection` above), since the roadmap names it as its own deliverable and it's reused
+ * nowhere else; this is a component import across two feature folders of the *same* bounded
+ * context, not the cross-folder `api.ts` data-fetching duplication `.claude/rules/frontend.md`
+ * #1 guards against — flagged here as a deliberate, narrow exception. There is still no dedicated
+ * "Student Assignments" nav page — see `router.tsx`'s own Phase F6 note for why.
  *
  * Not yet scope-filtered server-side (CLAUDE.md's own flagged, system-wide gap), so every viewer
  * who can reach this route currently sees every student, not just their own organization's.
@@ -166,6 +173,7 @@ export function StudentsPage() {
   const [selectedStudent, setSelectedStudent] = useState<StudentSummary | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [linkGuardianOpen, setLinkGuardianOpen] = useState(false);
+  const [assignRouteOpen, setAssignRouteOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
 
   const {
@@ -346,11 +354,23 @@ export function StudentsPage() {
         }
         mapSlot={
           selectedStudent && (
-            <GuardiansSection
-              studentId={selectedStudent.id}
-              canManage={canManage}
-              onAddGuardian={() => setLinkGuardianOpen(true)}
-            />
+            <>
+              {detail ? (
+                <StudentAssignmentSection
+                  studentId={detail.id}
+                  organizationId={detail.organizationId}
+                  canManage={canManage}
+                  onAssign={() => setAssignRouteOpen(true)}
+                />
+              ) : (
+                <Skeleton height={72} />
+              )}
+              <GuardiansSection
+                studentId={selectedStudent.id}
+                canManage={canManage}
+                onAddGuardian={() => setLinkGuardianOpen(true)}
+              />
+            </>
           )
         }
         rows={
@@ -404,6 +424,14 @@ export function StudentsPage() {
         onClose={() => setLinkGuardianOpen(false)}
         studentId={selectedStudent?.id ?? null}
         studentName={selectedStudent?.fullName}
+      />
+
+      <AssignStudentForm
+        open={assignRouteOpen}
+        onClose={() => setAssignRouteOpen(false)}
+        studentId={selectedStudent?.id ?? null}
+        studentName={selectedStudent?.fullName}
+        organizationId={detail?.organizationId ?? null}
       />
     </div>
   );

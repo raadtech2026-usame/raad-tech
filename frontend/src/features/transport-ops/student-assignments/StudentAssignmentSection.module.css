@@ -1,0 +1,66 @@
+.assignment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-card);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  margin-bottom: var(--space-4);
+}
+
+.assignmentHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.assignmentTitle {
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-2xs);
+  color: var(--color-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.assignmentEmpty {
+  font-size: var(--text-base);
+  color: var(--color-text-muted);
+}
+
+.assignmentBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.assignmentRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.assignmentRoute {
+  font-weight: var(--font-weight-medium);
+  font-size: var(--text-base);
+  color: var(--color-text-secondary);
+}
+
+.assignmentMeta {
+  font-size: var(--text-2xs);
+  color: var(--color-text-muted);
+}
+
+.endRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.endRow select {
+  min-width: 160px;
+}
