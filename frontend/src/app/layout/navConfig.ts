@@ -1,6 +1,7 @@
 import {
   LayoutDashboard,
   Building2,
+  Globe,
   Truck,
   Cpu,
   UserRound,
@@ -64,6 +65,7 @@ export const platformNav: NavItem[] = [
   link("Dashboard", LayoutDashboard, "/platform"),
   header("Platform"),
   link("Organizations", Building2, "/platform/organizations"),
+  link("Regions", Globe, "/platform/regions", ["founder"]),
   header("Fleet"),
   link("Vehicles", Truck, "/platform/vehicles"),
   link("Devices", Cpu, "/platform/devices"),
@@ -88,13 +90,17 @@ export const platformNav: NavItem[] = [
 /** Org Admin only. Organizations are *created from* the platform dashboard above; this dashboard
  * shows only the signed-in Org Admin's own organization (`organization_id` scoping is enforced
  * server-side — this nav tree simply has no "Organizations" entry, since creating tenants isn't
- * this role's job at all). */
+ * this role's job at all).
+ *
+ * **No "Devices" entry either** (Device Domain Overhaul architecture review) — RAAD owns and
+ * manages all GPS/MDVR hardware; schools never register, configure, or view raw device records,
+ * not even read-only. Device-connectivity visibility is folded into `router.tsx`'s
+ * `VehiclesPage` instead (a "Tracking" drawer section carrying no device identifier). */
 export const organizationNav: NavItem[] = [
   header("Overview"),
   link("Dashboard", LayoutDashboard, "/org"),
   header("Fleet"),
   link("Vehicles", Truck, "/org/vehicles"),
-  link("Devices", Cpu, "/org/devices"),
   link("Drivers", UserRound, "/org/drivers"),
   header("People"),
   link("Students", Users, "/org/students"),

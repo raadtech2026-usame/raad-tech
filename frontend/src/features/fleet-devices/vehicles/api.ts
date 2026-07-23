@@ -9,6 +9,16 @@ import { toOffsetPage, type OffsetPage, type OffsetPageWire } from "../../../sha
  * from every other, exactly like `organization.Organization.status`. */
 export type VehicleStatus = "active" | "inactive" | "maintenance";
 
+/** The only device-derived data this frontend ever receives for a Vehicle (Device Domain
+ * Overhaul architecture review) — no `deviceId`/`terminalId`/hardware identifier of any kind,
+ * by construction (`fleet_device.application.queries.TrackingStatusDTO`'s own docstring).
+ * Deliberately `lastSeenAt` only, no derived "connected" boolean — see that same docstring for
+ * why: the only source that could answer "online right now" honestly is the JT808 service's
+ * Redis session state, which this field never reads. */
+export interface TrackingStatus {
+  lastSeenAt: string | null;
+}
+
 export interface Vehicle {
   id: string;
   organizationId: string;
@@ -18,6 +28,14 @@ export interface Vehicle {
   status: VehicleStatus;
   createdAt: string;
   updatedAt: string;
+  /** `null` on `listVehicles` (the list endpoint never populates this — avoids an N+1 device
+   * lookup per page row) and whenever no active device is assigned; populated only by
+   * `getVehicle` (`GET /vehicles/{id}`). */
+  trackingStatus: TrackingStatus | null;
+}
+
+interface TrackingStatusWire {
+  last_seen_at: string | null;
 }
 
 /** Wire shape of `fleet_device.api.schemas.VehicleResponse` — snake_case, exactly as the backend
@@ -31,6 +49,7 @@ interface VehicleWire {
   status: string;
   created_at: string;
   updated_at: string;
+  tracking_status: TrackingStatusWire | null;
 }
 
 function toVehicle(wire: VehicleWire): Vehicle {
@@ -43,6 +62,7 @@ function toVehicle(wire: VehicleWire): Vehicle {
     status: wire.status as VehicleStatus,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    trackingStatus: wire.tracking_status ? { lastSeenAt: wire.tracking_status.last_seen_at } : null,
   };
 }
 

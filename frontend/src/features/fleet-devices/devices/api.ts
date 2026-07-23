@@ -29,6 +29,9 @@ export interface Device {
   model: string | null;
   vendor: string | null;
   simMsisdn: string | null;
+  imei: string | null;
+  iccid: string | null;
+  serialNumber: string | null;
   lifecycleState: DeviceLifecycleState;
   lastSeenAt: string | null;
   createdAt: string;
@@ -54,6 +57,9 @@ interface DeviceWire {
   model: string | null;
   vendor: string | null;
   sim_msisdn: string | null;
+  imei: string | null;
+  iccid: string | null;
+  serial_number: string | null;
   lifecycle_state: string;
   last_seen_at: string | null;
   created_at: string;
@@ -69,6 +75,9 @@ function toDevice(wire: DeviceWire): Device {
     model: wire.model,
     vendor: wire.vendor,
     simMsisdn: wire.sim_msisdn,
+    imei: wire.imei,
+    iccid: wire.iccid,
+    serialNumber: wire.serial_number,
     lifecycleState: wire.lifecycle_state as DeviceLifecycleState,
     lastSeenAt: wire.last_seen_at,
     createdAt: wire.created_at,
@@ -106,12 +115,18 @@ export interface RegisterDeviceInput {
   model?: string | null;
   vendor?: string | null;
   simMsisdn?: string | null;
+  imei?: string | null;
+  iccid?: string | null;
+  serialNumber?: string | null;
 }
 
 /** `POST /devices` (`RegisterDeviceRequest`) exactly: `organization_id`, `terminal_id`, `model`,
- * `vendor`, `sim_msisdn`. Per the seeded RBAC matrix, `founder`/`org_admin`/`support_staff` all
- * hold `fleet_device.devices.create` (a wider set than `vehicles.create`, which excludes
- * `support_staff`) — `DevicesPage`'s own `canManageLifecycle` flag mirrors this. */
+ * `vendor`, `sim_msisdn`, `imei`, `iccid`, `serial_number`. Per the seeded RBAC matrix
+ * (Device Domain Overhaul architecture review, migration `22e94bc4e924`), only `founder`/
+ * `support_staff` hold `fleet_device.devices.create` — `org_admin` holds none of
+ * `fleet_device.devices.*` at all, since RAAD owns and manages all hardware and schools never
+ * register/configure devices. `RegisterDeviceWizard`'s own reachability (RAAD-staff-only route)
+ * mirrors this. */
 export async function registerDevice(input: RegisterDeviceInput): Promise<Device> {
   const wire = await apiRequest<DeviceWire>("/devices", {
     method: "POST",
@@ -121,6 +136,9 @@ export async function registerDevice(input: RegisterDeviceInput): Promise<Device
       model: input.model ?? null,
       vendor: input.vendor ?? null,
       sim_msisdn: input.simMsisdn ?? null,
+      imei: input.imei ?? null,
+      iccid: input.iccid ?? null,
+      serial_number: input.serialNumber ?? null,
     },
   });
   return toDevice(wire);

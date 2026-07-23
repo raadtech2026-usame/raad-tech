@@ -16,6 +16,7 @@ const VEHICLE_WIRE = {
   status: "active",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",
+  tracking_status: null,
 };
 
 const ORG_WIRE = {
@@ -56,6 +57,7 @@ describe("vehicles api", () => {
           status: "active",
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-02T00:00:00Z",
+          trackingStatus: null,
         },
       ],
       page: { total: 1, page: 1, pageSize: 25 },
@@ -70,6 +72,18 @@ describe("vehicles api", () => {
     expect(apiRequest).toHaveBeenCalledWith("/vehicles/01ARZ3NDEKTSV4RRFFQ69G5FAV");
     expect(result.plateNo).toBe("ABC-1234");
     expect(result.capacity).toBe(32);
+    expect(result.trackingStatus).toBeNull();
+  });
+
+  it("getVehicle maps a populated tracking_status without ever surfacing a device identifier", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      ...VEHICLE_WIRE,
+      tracking_status: { last_seen_at: "2026-01-05T10:00:00Z" },
+    });
+
+    const result = await getVehicle("01ARZ3NDEKTSV4RRFFQ69G5FAV");
+
+    expect(result.trackingStatus).toEqual({ lastSeenAt: "2026-01-05T10:00:00Z" });
   });
 
   it("registerVehicle posts the exact RegisterVehicleRequest shape", async () => {

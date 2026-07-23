@@ -1,0 +1,104 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.footerActions {
+  display: flex;
+  gap: var(--space-3);
+  margin-left: auto;
+}
+
+.steps {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.stepDot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+
+.stepDot[data-active="true"] {
+  color: var(--color-brand-primary);
+  font-weight: 600;
+}
+
+.stepDot[data-done="true"] {
+  color: var(--color-text-secondary);
+}
+
+.stepDivider {
+  flex: 1;
+  height: 1px;
+  background: var(--color-border-subtle);
+}
+
+.summaryCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-subtle);
+}
+
+.summaryRow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.summaryLabel {
+  color: var(--color-text-faint);
+}
+
+.checklist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.checklistRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.checklistError {
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+  margin-left: calc(var(--space-3) + 16px);
+}
+
+.verifyPanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.verifyPending {
+  color: var(--color-text-faint);
+}
+
+.spin {
+  animation: device-wizard-spin 0.6s linear infinite;
+}
+
+@keyframes device-wizard-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

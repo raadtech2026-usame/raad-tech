@@ -25,6 +25,9 @@ const DEVICE_WIRE = {
   model: "JT808-X200",
   vendor: "Concox",
   sim_msisdn: "+252612345678",
+  imei: null,
+  iccid: null,
+  serial_number: null,
   lifecycle_state: "activated",
   last_seen_at: null,
   created_at: "2026-01-01T00:00:00Z",
@@ -84,6 +87,9 @@ describe("devices api", () => {
           model: "JT808-X200",
           vendor: "Concox",
           simMsisdn: "+252612345678",
+          imei: null,
+          iccid: null,
+          serialNumber: null,
           lifecycleState: "activated",
           lastSeenAt: null,
           createdAt: "2026-01-01T00:00:00Z",
@@ -114,6 +120,9 @@ describe("devices api", () => {
       model: "JT808-X200",
       vendor: "Concox",
       simMsisdn: "+252612345678",
+      imei: "352389088459231",
+      iccid: "8944500XXXXXXXXXXXX",
+      serialNumber: "SN-0042",
     });
 
     expect(apiRequest).toHaveBeenCalledWith("/devices", {
@@ -124,6 +133,9 @@ describe("devices api", () => {
         model: "JT808-X200",
         vendor: "Concox",
         sim_msisdn: "+252612345678",
+        imei: "352389088459231",
+        iccid: "8944500XXXXXXXXXXXX",
+        serial_number: "SN-0042",
       },
     });
   });

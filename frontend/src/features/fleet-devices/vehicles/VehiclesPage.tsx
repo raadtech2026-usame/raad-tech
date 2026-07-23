@@ -16,8 +16,10 @@ import { EmptyState } from "../../../shared/components/EmptyState/EmptyState";
 import { Badge } from "../../../shared/components/Badge/Badge";
 import { Button } from "../../../shared/components/Button/Button";
 import { Input } from "../../../shared/components/Input/Input";
+import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { CreateVehicleForm } from "./CreateVehicleForm";
 import {
+  getVehicle,
   listOrganizationsForPicker,
   listVehicles,
   updateVehicleStatus,
@@ -26,6 +28,16 @@ import {
 } from "./api";
 import { statusLabel, statusTone } from "./labels";
 import styles from "./VehiclesPage.module.css";
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 const STATUS_FILTERS: FilterChipOption[] = [
   { id: "all", label: "All statuses", tone: "neutral" },
@@ -57,6 +69,15 @@ function formatDate(iso: string): string {
  * Not yet scope-filtered server-side (CLAUDE.md's own flagged, system-wide gap — see `./api.ts`'s
  * `listVehicles` docstring), so every viewer who can reach this route currently sees every
  * vehicle across every organization, including an Org Admin on `/org/vehicles`.
+ *
+ * **The detail drawer's "Tracking" section is this Org Admin dashboard's *only* device-derived
+ * surface** (Device Domain Overhaul architecture review — `/org/devices` no longer exists at
+ * all). `listVehicles` never populates `trackingStatus` (would mean an extra device lookup per
+ * list row); a second `GET /vehicles/{id}` fetch on row-select does, the same "list is thin,
+ * detail drawer fetches richer data" pattern `DriversPage.tsx`/`RoutesPage.tsx` already
+ * establish for their own second detail fetch. No device identifier of any kind is ever shown
+ * or fetched here — only whether a device is actively assigned and, if so, when it last
+ * reported.
  */
 export function VehiclesPage() {
   usePageHeader("Vehicles", "Buses on the platform, their status, and their assigned devices");
@@ -68,6 +89,15 @@ export function VehiclesPage() {
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
+
+  // Full-detail fetch for the drawer's "Tracking" section — see this component's own docstring
+  // for why the list row alone (`Vehicle.trackingStatus` is always `null` from `listVehicles`)
+  // can't supply it.
+  const detailQuery = useQuery({
+    queryKey: ["vehicles", "detail", selectedVehicle?.id],
+    queryFn: () => getVehicle(selectedVehicle!.id),
+    enabled: selectedVehicle !== null,
+  });
 
   const {
     rows,
@@ -273,6 +303,20 @@ export function VehiclesPage() {
                   value: organizationNameById.get(selectedVehicle.organizationId) ?? selectedVehicle.organizationId,
                 },
                 { key: "Capacity", value: selectedVehicle.capacity ?? "Not set" },
+                {
+                  key: "Tracking",
+                  value: detailQuery.isLoading ? (
+                    <Skeleton height={16} />
+                  ) : detailQuery.isError || !detailQuery.data ? (
+                    "Could not load tracking status."
+                  ) : !detailQuery.data.trackingStatus ? (
+                    "No tracking device installed"
+                  ) : detailQuery.data.trackingStatus.lastSeenAt ? (
+                    `Last seen ${formatDateTime(detailQuery.data.trackingStatus.lastSeenAt)}`
+                  ) : (
+                    "Not yet connected"
+                  ),
+                },
                 { key: "Vehicle ID", value: <MonoText>{selectedVehicle.id}</MonoText> },
                 { key: "Created", value: formatDate(selectedVehicle.createdAt) },
                 { key: "Updated", value: formatDate(selectedVehicle.updatedAt) },

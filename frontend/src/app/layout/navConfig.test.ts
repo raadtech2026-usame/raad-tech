@@ -52,6 +52,13 @@ describe("getNavForRole — platform nav", () => {
     expect(linkPaths(organizationNav)).not.toContain("/platform/organizations");
     expect(linkPaths(organizationNav).some((p) => p.includes("organizations"))).toBe(false);
   });
+
+  it("restricts Regions to founder only (Device Domain Overhaul architecture review)", () => {
+    expect(linkPaths(getNavForRole(platformNav, "founder"))).toContain("/platform/regions");
+    for (const role of ["regional_manager", "support_staff", "finance_staff"] as const) {
+      expect(linkPaths(getNavForRole(platformNav, role))).not.toContain("/platform/regions");
+    }
+  });
 });
 
 describe("getNavForRole — organization nav", () => {
@@ -64,5 +71,9 @@ describe("getNavForRole — organization nav", () => {
   it("keeps every section header present for org_admin (nothing restricted)", () => {
     const nav = getNavForRole(organizationNav, "org_admin");
     expect(headerLabels(nav)).toEqual(headerLabels(organizationNav));
+  });
+
+  it("has no 'Devices' link at all — RAAD owns and manages all hardware, schools never see it", () => {
+    expect(linkPaths(organizationNav)).not.toContain("/org/devices");
   });
 });

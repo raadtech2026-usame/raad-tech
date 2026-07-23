@@ -6,6 +6,7 @@ import type { OffsetPage } from "../../../shared/api/types";
 
 vi.mock("./api", () => ({
   listDevices: vi.fn(),
+  getDevice: vi.fn(),
   listOrganizationsForPicker: vi.fn(),
   listVehiclesForPicker: vi.fn(),
   activateDevice: vi.fn(),
@@ -29,6 +30,9 @@ const REGISTERED_DEVICE: api.Device = {
   model: "JT808-X200",
   vendor: "Concox",
   simMsisdn: "+252612345678",
+  imei: null,
+  iccid: null,
+  serialNumber: null,
   lifecycleState: "registered",
   lastSeenAt: null,
   createdAt: "2026-01-01T00:00:00Z",
@@ -170,7 +174,9 @@ describe("DevicesPage", () => {
     expect(within(dialog).queryByRole("button", { name: "Activate" })).not.toBeInTheDocument();
   });
 
-  it("lets support_staff manage lifecycle but hides the assignment actions", async () => {
+  it("lets support_staff (the RAAD technician role) manage lifecycle and assignment", async () => {
+    // Device Domain Overhaul: support_staff gained assign/reassign/unassign (migration
+    // `22e94bc4e924`) so a RAAD technician can complete device onboarding end to end.
     useAuthStore.setState({
       principal: { userId: "u1", role: "support_staff", organizationId: null, regionIds: [] },
     });
@@ -182,7 +188,7 @@ describe("DevicesPage", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("button", { name: "Suspend" })).toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: "Assign to vehicle" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Assign to vehicle" })).toBeInTheDocument();
   });
 
   it("assigns an activated device to a vehicle and shows the resulting binding in the drawer", async () => {

@@ -16,7 +16,7 @@ import { EmptyState } from "../../../shared/components/EmptyState/EmptyState";
 import { Badge } from "../../../shared/components/Badge/Badge";
 import { Button } from "../../../shared/components/Button/Button";
 import { Input } from "../../../shared/components/Input/Input";
-import { CreateDeviceForm } from "./CreateDeviceForm";
+import { RegisterDeviceWizard } from "./RegisterDeviceWizard";
 import { AssignDeviceForm, type AssignDeviceMode } from "./AssignDeviceForm";
 import {
   activateDevice,
@@ -58,19 +58,22 @@ function formatDateTime(iso: string): string {
 type LifecycleAction = "activate" | "suspend" | "reactivate" | "retire";
 
 /**
- * `/platform/devices` and `/org/devices` (API Contracts §4.2: "Org Admin / Support") — one
- * shared page component reused at both routes, mirroring `VehiclesPage`'s identical posture.
- * Per the seeded RBAC matrix (`migrations/versions/
- * 20260721_0900_5437a5d1651b_iam_create_role_permissions_table.py`): `founder`/`org_admin`/
- * `support_staff` hold `fleet_device.devices.create`/`.update`/`.activate` (`canManageLifecycle`
- * below) — a *wider* set than `fleet_device.vehicles.create`/`.update`, which excludes
- * `support_staff` entirely. `fleet_device.devices.assign`/`.reassign`/`.unassign` are a
- * *narrower* set still — only `founder`/`org_admin` hold them (`canAssign` below);
- * `support_staff` can manage a device's own lifecycle but cannot bind it to a vehicle.
- * `regional_manager` holds `.read` only (view, no actions at all); `finance_staff`/`driver`/
- * `parent` hold none of `fleet_device.devices.*`. Both flags are presentation-layer hints only
+ * `/platform/devices` only (Device Domain Overhaul architecture review) — **not** `/org/devices`
+ * anymore. RAAD owns and manages all GPS/MDVR hardware; schools never register, configure, or
+ * even view raw device records. Per the corrected RBAC matrix (migration `22e94bc4e924`):
+ * `founder`/`support_staff` hold the full `fleet_device.devices.*` set — create/update/activate
+ * (`canManageLifecycle`) and assign/reassign/unassign (`canAssign`), both identical sets now
+ * that "RAAD technician" maps to `support_staff`. `regional_manager` holds `.read` only (view,
+ * no actions); `org_admin`/`finance_staff`/`driver`/`parent` hold none of
+ * `fleet_device.devices.*` at all. Both flags are presentation-layer hints only
  * (`.claude/rules/frontend.md` #2) — the backend's own `require_permission` is the real,
- * unbypassable gate.
+ * unbypassable gate. An Org Admin's own device-connectivity visibility is served instead by
+ * `VehiclesPage`'s "Tracking" drawer section, which carries no device identifier.
+ *
+ * New device registration goes through `RegisterDeviceWizard` (register → activate → assign as
+ * one guided flow), not a plain create-modal — see that component's own docstring for the full
+ * onboarding-workflow design. `AssignDeviceForm` stays here for reassigning an *existing*
+ * device from this page's own detail drawer.
  *
  * **Camera management is deliberately not built here.** `fleet_device.api.routers`'s own module
  * docstring: "Camera registration has an application use-case but no approved endpoint — API
@@ -257,9 +260,8 @@ export function DevicesPage() {
 
   // Coarse, presentation-only role gating — see this component's own docstring for the exact
   // RBAC citation.
-  const canManageLifecycle =
-    principal?.role === "founder" || principal?.role === "org_admin" || principal?.role === "support_staff";
-  const canAssign = principal?.role === "founder" || principal?.role === "org_admin";
+  const canManageLifecycle = principal?.role === "founder" || principal?.role === "support_staff";
+  const canAssign = principal?.role === "founder" || principal?.role === "support_staff";
 
   const selectedAssignment = selectedDevice ? recentAssignments.get(selectedDevice.id) : undefined;
 
@@ -437,7 +439,7 @@ export function DevicesPage() {
         }
       />
 
-      <CreateDeviceForm open={createOpen} onClose={() => setCreateOpen(false)} />
+      <RegisterDeviceWizard open={createOpen} onClose={() => setCreateOpen(false)} />
 
       <AssignDeviceForm
         open={assignMode !== null}

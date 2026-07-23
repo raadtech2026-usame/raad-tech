@@ -6,6 +6,7 @@ import type { OffsetPage } from "../../../shared/api/types";
 
 vi.mock("./api", () => ({
   listVehicles: vi.fn(),
+  getVehicle: vi.fn(),
   listOrganizationsForPicker: vi.fn(),
   updateVehicleStatus: vi.fn(),
   registerVehicle: vi.fn(),
@@ -24,6 +25,7 @@ const VEHICLE: api.Vehicle = {
   status: "active",
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-02T00:00:00Z",
+  trackingStatus: null,
 };
 
 function pageOf<T>(data: T[], total: number): OffsetPage<T> {
@@ -49,6 +51,7 @@ describe("VehiclesPage", () => {
       error: null,
     });
     vi.mocked(api.listVehicles).mockReset();
+    vi.mocked(api.getVehicle).mockReset().mockResolvedValue(VEHICLE);
     vi.mocked(api.listOrganizationsForPicker)
       .mockReset()
       .mockResolvedValue([{ id: "01ARZ3NDEKTSV4RRFFQ69G5FBW", name: "Green Valley School" }]);
@@ -103,6 +106,46 @@ describe("VehiclesPage", () => {
     expect(within(dialog).getByText("Capacity")).toBeInTheDocument();
     expect(within(dialog).getByText("32")).toBeInTheDocument();
     expect(within(dialog).getByText(VEHICLE.id)).toBeInTheDocument();
+  });
+
+  it("shows an honest 'no tracking device' state, never a fabricated connected indicator", async () => {
+    vi.mocked(api.listVehicles).mockResolvedValue(pageOf([VEHICLE], 1));
+    vi.mocked(api.getVehicle).mockResolvedValue({ ...VEHICLE, trackingStatus: null });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("ABC-1234")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("ABC-1234"));
+
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(within(dialog).getByText("No tracking device installed")).toBeInTheDocument());
+  });
+
+  it("shows 'not yet connected' for an assigned device that has never reported", async () => {
+    vi.mocked(api.listVehicles).mockResolvedValue(pageOf([VEHICLE], 1));
+    vi.mocked(api.getVehicle).mockResolvedValue({ ...VEHICLE, trackingStatus: { lastSeenAt: null } });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("ABC-1234")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("ABC-1234"));
+
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(within(dialog).getByText("Not yet connected")).toBeInTheDocument());
+  });
+
+  it("shows the last-seen timestamp for a device that has reported, with no device identifier anywhere", async () => {
+    vi.mocked(api.listVehicles).mockResolvedValue(pageOf([VEHICLE], 1));
+    vi.mocked(api.getVehicle).mockResolvedValue({
+      ...VEHICLE,
+      trackingStatus: { lastSeenAt: "2026-01-05T10:00:00Z" },
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("ABC-1234")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("ABC-1234"));
+
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(within(dialog).getByText(/Last seen/i)).toBeInTheDocument());
+    expect(within(dialog).queryByText(/terminal/i)).not.toBeInTheDocument();
   });
 
   it("lets a founder mark an active vehicle under maintenance from the detail drawer", async () => {

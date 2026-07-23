@@ -11,6 +11,7 @@ import { useAuthStore } from "../shared/stores/authStore";
 import { getDashboardHomePath } from "../shared/auth/dashboard";
 import type { Role } from "../shared/api/types";
 import { OrganizationsPage } from "../features/organizations/OrganizationsPage";
+import { RegionsPage } from "../features/organizations/regions/RegionsPage";
 import { UsersPage } from "../features/admin/users/UsersPage";
 import { VehiclesPage } from "../features/fleet-devices/vehicles/VehiclesPage";
 import { DevicesPage } from "../features/fleet-devices/devices/DevicesPage";
@@ -77,9 +78,16 @@ function buildFeatureRoutes(
  * `/platform/drivers`+`/platform/routes`: one `DriversPage`/`RoutesPage` component reused at
  * both `/platform/*` and `/org/*`. `transport_ops`'s remaining two aggregates (`Trip`/
  * `StudentAssignment`) stay `PlaceholderPage` until F6 lands (the master roadmap's deliberate
- * per-aggregate split of this bounded context). */
+ * per-aggregate split of this bounded context).
+ *
+ * The Device Domain Overhaul adds `/platform/regions` (`RegionsPage`, Founder-only nav entry —
+ * `navConfig.ts`) and, unlike every entry above, deliberately does **not** add a
+ * `/platform/devices`/`/org/devices` pair anymore: `DevicesPage` stays `PLATFORM_BUILT_ROUTES`-
+ * only now — see `ORGANIZATION_BUILT_ROUTES`'s own note for why it was removed from the Org
+ * Admin dashboard specifically. */
 const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/organizations": <OrganizationsPage />,
+  "/platform/regions": <RegionsPage />,
   "/platform/users": <UsersPage />,
   "/platform/vehicles": <VehiclesPage />,
   "/platform/devices": <DevicesPage />,
@@ -91,10 +99,15 @@ const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
 
 /** Org Admin's own dashboard equivalent of the Fleet & Device / Transport Ops entries above —
  * see this file's own note on why these are the same page components, not separate ones. Every
- * other `organizationNav` entry (Trips, …) stays a `PlaceholderPage` until its own phase lands. */
+ * other `organizationNav` entry (Trips, …) stays a `PlaceholderPage` until its own phase lands.
+ *
+ * **`/org/devices` is deliberately absent** (Device Domain Overhaul architecture review) — RAAD
+ * owns and manages all GPS/MDVR hardware; schools never register, configure, or even view raw
+ * device records. An Org Admin's own device-connectivity visibility is served instead by
+ * `VehiclesPage`'s own "Tracking" drawer section (`fleet_device.vehicles.tracking_status`),
+ * which carries no device identifier of any kind. */
 const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/vehicles": <VehiclesPage />,
-  "/org/devices": <DevicesPage />,
   "/org/students": <StudentsPage />,
   "/org/parents": <ParentsPage />,
   "/org/drivers": <DriversPage />,
