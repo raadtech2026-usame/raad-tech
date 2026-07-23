@@ -23,6 +23,8 @@ than built.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
@@ -50,6 +52,7 @@ from raad.modules.fleet_device.application.queries import (
     GetVehicleByIdQuery,
     ListDevicesQuery,
     ListVehiclesQuery,
+    TrackingStatusDTO,
     VehicleDTO,
     assignment_to_dto,
     device_to_dto,
@@ -144,9 +147,29 @@ class VehicleApplicationService:
     async def get_vehicle_by_id(
         self, query: GetVehicleByIdQuery, *, uow: FleetDeviceUnitOfWork
     ) -> VehicleDTO:
+        """The single-record path only — see `TrackingStatusDTO`'s own docstring for why
+        `list_vehicles` deliberately leaves `tracking_status` `None` rather than joining it for
+        every row of a page (avoids an N+1 device lookup per page). This is the *only* device-
+        derived data an Org Admin session can ever reach (Device Domain Overhaul architecture
+        review): a same-module read of this module's own `device_assignments`/`devices` tables
+        (not a cross-module reach), never exposing `device_id`/`terminal_id`/any hardware
+        identifier — only whether *some* device is actively bound and reporting."""
         async with uow:
             vehicle = await self._get_vehicle_or_raise(uow, query.vehicle_id)
-            return vehicle_to_dto(vehicle)
+            dto = vehicle_to_dto(vehicle)
+
+            assignment = await uow.device_assignments.active_for_vehicle(vehicle.id)
+            if assignment is None:
+                return dto
+
+            device = await uow.devices.get(assignment.device_id)
+            if device is None:
+                return dto
+
+            return replace(
+                dto,
+                tracking_status=TrackingStatusDTO(last_seen_at=device.last_seen_at),
+            )
 
     async def list_vehicles(
         self, query: ListVehiclesQuery, *, uow: FleetDeviceUnitOfWork

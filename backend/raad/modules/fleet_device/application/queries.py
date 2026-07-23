@@ -50,6 +50,25 @@ class ListDevicesQuery:
 
 
 @dataclass(frozen=True)
+class TrackingStatusDTO:
+    """The only device-derived fact an Org Admin session may ever receive (Device Domain
+    Overhaul architecture review) — no `device_id`, `terminal_id`, or any other hardware
+    identifier, by construction. Populated only on `GetVehicleByIdQuery` (see
+    `VehicleApplicationService.get_vehicle_by_id`'s own docstring for why the paginated list
+    path deliberately leaves this `None` instead).
+
+    **Deliberately carries `last_seen_at` only, no derived `is_connected` boolean.** A device
+    that reported once and then went silent for a week would make "last_seen_at IS NOT NULL"
+    a false "connected" signal — and the only source that could answer "is it online *right
+    now*" honestly is the JT808 service's own Redis session state (Phase 3.4 §5), which this
+    query never reads. Presenting a fabricated real-time status badge from a historical DB
+    column would violate this codebase's own "fail loudly, don't fake it" posture; the frontend
+    renders "not yet connected" / "last seen <relative time>" from this raw timestamp instead."""
+
+    last_seen_at: datetime | None
+
+
+@dataclass(frozen=True)
 class VehicleDTO:
     id: str
     organization_id: str
@@ -59,6 +78,7 @@ class VehicleDTO:
     status: str
     created_at: datetime
     updated_at: datetime
+    tracking_status: TrackingStatusDTO | None = None
 
 
 @dataclass(frozen=True)

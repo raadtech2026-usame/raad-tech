@@ -40,6 +40,7 @@ from raad.modules.fleet_device.application.commands import (
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import (
     GetDeviceByIdQuery,
+    GetVehicleByIdQuery,
     ListDevicesQuery,
     ListVehiclesQuery,
 )
@@ -632,6 +633,38 @@ class DeviceAssignmentLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 uow=uow,
             )
+
+    async def test_get_vehicle_by_id_embeds_tracking_status_for_assigned_device(
+        self,
+    ) -> None:
+        """Device Domain Overhaul: `GET /vehicles/{id}` is the only device-derived data an Org
+        Admin session can reach — no `device_id`/`terminal_id`, only `last_seen_at`."""
+        vehicle_service, device_service, uow = make_services()
+        vehicle_id = await _register_vehicle(vehicle_service, uow)
+        device_id = await _register_activated_device(device_service, uow)
+        await device_service.assign_device_to_vehicle(
+            AssignDeviceToVehicleCommand(
+                device_id=device_id, vehicle_id=vehicle_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        dto = await vehicle_service.get_vehicle_by_id(
+            GetVehicleByIdQuery(vehicle_id=vehicle_id), uow=uow
+        )
+        self.assertIsNotNone(dto.tracking_status)
+        self.assertIsNone(dto.tracking_status.last_seen_at)
+
+    async def test_get_vehicle_by_id_tracking_status_is_none_without_an_assigned_device(
+        self,
+    ) -> None:
+        vehicle_service, _device_service, uow = make_services()
+        vehicle_id = await _register_vehicle(vehicle_service, uow)
+
+        dto = await vehicle_service.get_vehicle_by_id(
+            GetVehicleByIdQuery(vehicle_id=vehicle_id), uow=uow
+        )
+        self.assertIsNone(dto.tracking_status)
 
     async def test_unassign_then_reassign_the_same_device_to_a_new_vehicle_succeeds(
         self,

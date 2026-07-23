@@ -22,6 +22,15 @@ from pydantic import BaseModel
 # --- Vehicle ------------------------------------------------------------------------------
 
 
+class TrackingStatusResponse(BaseModel):
+    """The only device-derived data `VehicleResponse` ever carries (Device Domain Overhaul
+    architecture review) — no `device_id`/`terminal_id`/hardware identifier, by construction.
+    See `application/queries.TrackingStatusDTO`'s own docstring for why this is `last_seen_at`
+    only, no derived `is_connected` boolean."""
+
+    last_seen_at: datetime | None
+
+
 class VehicleResponse(BaseModel):
     id: str
     organization_id: str
@@ -31,6 +40,10 @@ class VehicleResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+    #: `None` on `GET /vehicles` (list) and whenever no active device is assigned; populated
+    #: only on `GET /vehicles/{id}` — see `VehicleApplicationService.get_vehicle_by_id`'s
+    #: docstring for why (avoids an N+1 device lookup per list page).
+    tracking_status: TrackingStatusResponse | None = None
 
 
 class RegisterVehicleRequest(BaseModel):

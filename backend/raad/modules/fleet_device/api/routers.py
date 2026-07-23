@@ -69,6 +69,7 @@ from raad.modules.fleet_device.api.schemas import (
     ReassignDeviceRequest,
     RegisterDeviceRequest,
     RegisterVehicleRequest,
+    TrackingStatusResponse,
     UpdateDeviceRequest,
     UpdateVehicleRequest,
     VehicleResponse,
@@ -116,6 +117,11 @@ def _vehicle_dto_to_response(vehicle: VehicleDTO) -> VehicleResponse:
         status=vehicle.status,
         created_at=vehicle.created_at,
         updated_at=vehicle.updated_at,
+        tracking_status=(
+            TrackingStatusResponse(last_seen_at=vehicle.tracking_status.last_seen_at)
+            if vehicle.tracking_status is not None
+            else None
+        ),
     )
 
 
