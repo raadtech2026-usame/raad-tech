@@ -109,7 +109,27 @@ Each of the ten below has a full `api / application / domain / infra / events` s
 - **Organization** — organizations, regions, tenant hierarchy, and (ADR-0005) `region_assignments`/
   `support_assignments` backing a real `ScopeResolver` (`interfaces/http/deps.get_scope` resolves
   for real now too).
-- **Fleet Device** — vehicles, devices, cameras, device↔vehicle assignment lifecycle.
+- **Fleet Device** — vehicles, devices, cameras, device↔vehicle assignment lifecycle. The
+  **Device Domain Overhaul** brought this context in line with RAAD's actual business model
+  (RAAD owns and manages all GPS/MDVR hardware; schools never register, configure, or view
+  device internals): `devices` gained `imei`/`iccid`/`serial_number` (nullable, globally unique
+  like `terminal_id`, each with its own value object and `ensure_*_available` pre-check
+  validator mirroring `ensure_terminal_id_available`'s existing pattern) for hardware-intake
+  theft/fraud/RMA workflows — a previously-flagged gap, now closed. The seeded RBAC matrix was
+  corrected (migration `22e94bc4e924`, additive on top of the already-applied `5437a5d1651b`
+  seed, never edited in place): `org_admin` now holds **zero** `fleet_device.devices.*`
+  permissions (not even `.read`) — `fleet_device.vehicles.*` stays granted, since vehicles are
+  legitimately school fleet data; `support_staff` (the operational "RAAD technician" role)
+  gained `.assign`/`.reassign`/`.unassign` to close a real onboarding gap (it already had
+  `.create`/`.update`/`.activate`). `VehicleApplicationService.get_vehicle_by_id` now embeds a
+  minimal `tracking_status` (`last_seen_at` only — deliberately no derived `is_connected`
+  boolean, since the only source that could answer "online right now" honestly is the JT808
+  service's own Redis session state, which this query never reads) via a same-module join of
+  this context's own `device_assignments`/`devices` tables — the *only* device-derived data an
+  Org Admin session can ever reach; `list_vehicles` deliberately leaves it `null` to avoid an
+  N+1 device lookup per page. `device_inventory` (a pre-tenant hardware pool) and
+  `device_status_log` (a durable online/offline transition history, Database Design §7.3)
+  remain documented-but-not-built, deliberately deferred again, not silently dropped.
 - **Tracking** — vehicle positions, geofence crossings. `LatestPositionPort` now has a concrete,
   read-only `RedisLatestPositionPort` (`tracking/infra/adapters.py`, Database Design §7.1's
   `vehicle:{id}:last` key), bound in DI whenever `RAAD_REDIS__URL` is configured (no Redis is
