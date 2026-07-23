@@ -11,6 +11,7 @@ import { useAuthStore } from "../shared/stores/authStore";
 import { getDashboardHomePath } from "../shared/auth/dashboard";
 import type { Role } from "../shared/api/types";
 import { OrganizationsPage } from "../features/organizations/OrganizationsPage";
+import { UsersPage } from "../features/admin/users/UsersPage";
 
 const PLATFORM_ROLES: Role[] = ["founder", "regional_manager", "support_staff", "finance_staff"];
 const ORGANIZATION_ROLES: Role[] = ["org_admin"];
@@ -43,12 +44,16 @@ function buildFeatureRoutes(
     }));
 }
 
-/** Phase F1 (Organization & Region Management) — the first nav destination to graduate out of
- * `PlaceholderPage`. Org Admin never sees this: `organizationNav` has no Organizations entry at
- * all (organizations are managed from the platform dashboard, not the org one), so only the
- * platform tree needs an override. */
+/** Phase F1 (Organization & Region Management) graduated `/platform/organizations` out of
+ * `PlaceholderPage`; Phase F2 (User & Access Management) now does the same for
+ * `/platform/users` (`navConfig.ts`'s "Users & Roles" entry). Org Admin never sees either route:
+ * `organizationNav` has no Organizations entry at all, and its own separate `/org/users` entry
+ * stays a `PlaceholderPage` this phase (`UsersPage.tsx`'s own docstring explains why — only
+ * `founder`/`regional_manager`/`support_staff` currently hold any `iam.users.*` permission at
+ * all, and `org_admin` holds none of them). */
 const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/organizations": <OrganizationsPage />,
+  "/platform/users": <UsersPage />,
 };
 
 export const router = createBrowserRouter([
