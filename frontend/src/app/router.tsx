@@ -14,6 +14,8 @@ import { OrganizationsPage } from "../features/organizations/OrganizationsPage";
 import { UsersPage } from "../features/admin/users/UsersPage";
 import { VehiclesPage } from "../features/fleet-devices/vehicles/VehiclesPage";
 import { DevicesPage } from "../features/fleet-devices/devices/DevicesPage";
+import { StudentsPage } from "../features/transport-ops/students/StudentsPage";
+import { ParentsPage } from "../features/transport-ops/parents/ParentsPage";
 
 const PLATFORM_ROLES: Role[] = ["founder", "regional_manager", "support_staff", "finance_staff"];
 const ORGANIZATION_ROLES: Role[] = ["org_admin"];
@@ -61,21 +63,34 @@ function buildFeatureRoutes(
  * mounts the *same* `VehiclesPage`/`DevicesPage` components at their `/org/*` nav entries —
  * exactly one shared page component per entity, not a duplicate built per dashboard, mirroring
  * how `fleet_device.api.routers` itself exposes one `GET/POST /vehicles`+`/devices` surface
- * regardless of caller, gated only by `require_permission`. */
+ * regardless of caller, gated only by `require_permission`.
+ *
+ * Phase F4 (Transport Operations, Part A — Students/Parents/Linking) graduates
+ * `/platform/students`+`/platform/parents` the same way: one `StudentsPage`/`ParentsPage`
+ * component reused at both `/platform/*` and `/org/*` (`ORGANIZATION_BUILT_ROUTES` below), since
+ * `GET/POST /students`+`/parents` (API Contracts §4.3) are likewise a single surface gated only
+ * by `require_permission`, not a platform-vs-org-specific route. `transport_ops`'s other four
+ * aggregates (`Driver`/`Route`/`Trip`/`StudentAssignment`) stay `PlaceholderPage` until their
+ * own F5/F6 phases land (the master roadmap's deliberate per-aggregate split of this bounded
+ * context). */
 const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/organizations": <OrganizationsPage />,
   "/platform/users": <UsersPage />,
   "/platform/vehicles": <VehiclesPage />,
   "/platform/devices": <DevicesPage />,
+  "/platform/students": <StudentsPage />,
+  "/platform/parents": <ParentsPage />,
 };
 
-/** Org Admin's own dashboard equivalent of the Fleet & Device entries above — see this file's
- * own note on why these are the same page components, not separate ones. Every other
- * `organizationNav` entry (Drivers, Students, Parents, Routes, Trips, …) stays a
- * `PlaceholderPage` until its own phase lands. */
+/** Org Admin's own dashboard equivalent of the Fleet & Device / Transport Ops entries above —
+ * see this file's own note on why these are the same page components, not separate ones. Every
+ * other `organizationNav` entry (Drivers, Routes, Trips, …) stays a `PlaceholderPage` until its
+ * own phase lands. */
 const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/vehicles": <VehiclesPage />,
   "/org/devices": <DevicesPage />,
+  "/org/students": <StudentsPage />,
+  "/org/parents": <ParentsPage />,
 };
 
 export const router = createBrowserRouter([
