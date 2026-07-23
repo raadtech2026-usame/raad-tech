@@ -127,6 +127,9 @@ def _device_dto_to_response(device: DeviceDTO) -> DeviceResponse:
         model=device.model,
         vendor=device.vendor,
         sim_msisdn=device.sim_msisdn,
+        imei=device.imei,
+        iccid=device.iccid,
+        serial_number=device.serial_number,
         lifecycle_state=device.lifecycle_state,
         last_seen_at=device.last_seen_at,
         created_at=device.created_at,
@@ -353,6 +356,9 @@ async def register_device(
         model=body.model,
         vendor=body.vendor,
         sim_msisdn=body.sim_msisdn,
+        imei=body.imei,
+        iccid=body.iccid,
+        serial_number=body.serial_number,
         actor=principal,
     )
     device = await device_service.register_device(command, uow=uow)

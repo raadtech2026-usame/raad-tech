@@ -67,6 +67,9 @@ class DeviceResponse(BaseModel):
     model: str | None
     vendor: str | None
     sim_msisdn: str | None
+    imei: str | None
+    iccid: str | None
+    serial_number: str | None
     lifecycle_state: str
     last_seen_at: datetime | None
     created_at: datetime
@@ -80,6 +83,9 @@ class RegisterDeviceRequest(BaseModel):
     model: str | None = None
     vendor: str | None = None
     sim_msisdn: str | None = None
+    imei: str | None = None
+    iccid: str | None = None
+    serial_number: str | None = None
 
 
 class UpdateDeviceRequest(BaseModel):

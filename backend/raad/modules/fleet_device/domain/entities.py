@@ -41,8 +41,11 @@ from raad.modules.fleet_device.domain.value_objects import (
     CameraPosition,
     DeviceId,
     DeviceLifecycleState,
+    Iccid,
+    Imei,
     Msisdn,
     OrganizationId,
+    SerialNumber,
     TerminalId,
     VehicleId,
     VehicleStatus,
@@ -245,6 +248,9 @@ class Device(_AggregateRoot):
         model: str | None,
         vendor: str | None,
         sim_msisdn: Msisdn | None,
+        imei: Imei | None,
+        iccid: Iccid | None,
+        serial_number: SerialNumber | None,
         lifecycle_state: DeviceLifecycleState,
         auth_key_hash: str | None,
         last_seen_at: datetime | None,
@@ -259,6 +265,9 @@ class Device(_AggregateRoot):
         self.model = model
         self.vendor = vendor
         self.sim_msisdn = sim_msisdn
+        self.imei = imei
+        self.iccid = iccid
+        self.serial_number = serial_number
         self.lifecycle_state = lifecycle_state
         self.auth_key_hash = auth_key_hash
         self.last_seen_at = last_seen_at
@@ -287,6 +296,9 @@ class Device(_AggregateRoot):
         model: str | None = None,
         vendor: str | None = None,
         sim_msisdn: Msisdn | None = None,
+        imei: Imei | None = None,
+        iccid: Iccid | None = None,
+        serial_number: SerialNumber | None = None,
         auth_key_hash: str | None = None,
         clock: Clock,
         actor_id: str | None = None,
@@ -300,6 +312,9 @@ class Device(_AggregateRoot):
             model=model,
             vendor=vendor,
             sim_msisdn=sim_msisdn,
+            imei=imei,
+            iccid=iccid,
+            serial_number=serial_number,
             lifecycle_state=DeviceLifecycleState.REGISTERED,
             auth_key_hash=auth_key_hash,
             last_seen_at=None,

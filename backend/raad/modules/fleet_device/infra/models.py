@@ -91,6 +91,14 @@ class DeviceModel(AuditedTableMixin, Base):
     model: Mapped[str | None] = mapped_column(VARCHAR(120), nullable=True)
     vendor: Mapped[str | None] = mapped_column(VARCHAR(120), nullable=True)
     sim_msisdn: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True)
+    # Hardware identity (Device Domain Overhaul architecture review — previously-flagged gap):
+    # RAAD technician hardware-intake fields, all nullable, all globally unique like
+    # `terminal_id` — see migration `a43c7de2fad5`.
+    imei: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True, unique=True)
+    iccid: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True, unique=True)
+    serial_number: Mapped[str | None] = mapped_column(
+        VARCHAR(64), nullable=True, unique=True
+    )
     lifecycle_state: Mapped[str] = mapped_column(
         SqlEnum(*_DEVICE_LIFECYCLE_VALUES, name="device_lifecycle_state"),
         nullable=False,

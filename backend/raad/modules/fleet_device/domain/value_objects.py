@@ -23,6 +23,9 @@ _ULID_PATTERN = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 
 _TERMINAL_ID_MAX_LENGTH = 64  # Database Design §5.2: VARCHAR(64)
 _MSISDN_MAX_LENGTH = 32  # Database Design §5.2: VARCHAR(32)
+_IMEI_LENGTH = 15  # GSMA TS.06: IMEI is always exactly 15 digits, a fixed global standard
+_ICCID_MAX_LENGTH = 32  # ICCID length varies 18-20 digits by issuer; VARCHAR(32) ceiling only
+_SERIAL_NUMBER_MAX_LENGTH = 64  # vendor-defined format, same flexibility as TerminalId
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,64 @@ class Msisdn:
         if len(self.value) <= 4:
             return "*" * len(self.value)
         return "*" * (len(self.value) - 4) + self.value[-4:]
+
+
+@dataclass(frozen=True)
+class Imei:
+    """A device modem's IMEI (Device Domain Overhaul architecture review — Database Design
+    §5.2's previously-flagged gap: theft/fraud checks, vendor support). Exactly 15 digits
+    (GSMA TS.06), unlike `TerminalId`/`Msisdn`'s deliberately vendor-flexible length — IMEI is
+    a fixed global standard, not a vendor dialect."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value:
+            raise DomainError("Imei must not be empty")
+        if len(self.value) != _IMEI_LENGTH or not self.value.isdigit():
+            raise DomainError(f"Imei must be exactly {_IMEI_LENGTH} digits: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class Iccid:
+    """A SIM card's ICCID (Device Domain Overhaul architecture review) — used to correlate a
+    SIM swap with the device it's inserted into. Length varies 18-20 digits by issuer, so only
+    a max-length ceiling is validated here, mirroring `TerminalId`'s identical vendor-format
+    flexibility."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value:
+            raise DomainError("Iccid must not be empty")
+        if len(self.value) > _ICCID_MAX_LENGTH:
+            raise DomainError(f"Iccid must be at most {_ICCID_MAX_LENGTH} characters")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class SerialNumber:
+    """Vendor-assigned hardware serial number (Device Domain Overhaul architecture review) —
+    warehouse/RMA workflow key. Opaque, vendor-defined format — same flexibility as
+    `TerminalId`."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value:
+            raise DomainError("SerialNumber must not be empty")
+        if len(self.value) > _SERIAL_NUMBER_MAX_LENGTH:
+            raise DomainError(
+                f"SerialNumber must be at most {_SERIAL_NUMBER_MAX_LENGTH} characters"
+            )
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class VehicleStatus(str, Enum):

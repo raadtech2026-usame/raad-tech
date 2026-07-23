@@ -77,6 +77,9 @@ class DeviceDTO:
     model: str | None
     vendor: str | None
     sim_msisdn: str | None
+    imei: str | None
+    iccid: str | None
+    serial_number: str | None
     lifecycle_state: str
     last_seen_at: datetime | None
     created_at: datetime
@@ -128,6 +131,11 @@ def device_to_dto(device: Device) -> DeviceDTO:
         model=device.model,
         vendor=device.vendor,
         sim_msisdn=str(device.sim_msisdn) if device.sim_msisdn is not None else None,
+        imei=str(device.imei) if device.imei is not None else None,
+        iccid=str(device.iccid) if device.iccid is not None else None,
+        serial_number=(
+            str(device.serial_number) if device.serial_number is not None else None
+        ),
         lifecycle_state=device.lifecycle_state.value,
         last_seen_at=device.last_seen_at,
         created_at=device.created_at,

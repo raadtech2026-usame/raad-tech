@@ -192,6 +192,27 @@ class InMemoryDeviceRepository(DeviceRepository):
                 return device
         return None
 
+    async def get_by_imei(self, imei) -> Device | None:
+        for device in self.by_id.values():
+            if device.imei is not None and str(device.imei) == str(imei):
+                return device
+        return None
+
+    async def get_by_iccid(self, iccid) -> Device | None:
+        for device in self.by_id.values():
+            if device.iccid is not None and str(device.iccid) == str(iccid):
+                return device
+        return None
+
+    async def get_by_serial_number(self, serial_number) -> Device | None:
+        for device in self.by_id.values():
+            if (
+                device.serial_number is not None
+                and str(device.serial_number) == str(serial_number)
+            ):
+                return device
+        return None
+
     def add(self, device: Device) -> None:
         self.by_id[str(device.id)] = device
 
@@ -316,6 +337,9 @@ async def _register_activated_device(
             model=None,
             vendor=None,
             sim_msisdn=None,
+            imei=None,
+            iccid=None,
+            serial_number=None,
             actor=make_actor(),
         ),
         uow=uow,
@@ -363,6 +387,9 @@ class RegisterDeviceTests(unittest.IsolatedAsyncioTestCase):
                 model=None,
                 vendor=None,
                 sim_msisdn=None,
+                imei=None,
+                iccid=None,
+                serial_number=None,
                 actor=make_actor(),
             ),
             uow=uow,
@@ -375,6 +402,111 @@ class RegisterDeviceTests(unittest.IsolatedAsyncioTestCase):
                     model=None,
                     vendor=None,
                     sim_msisdn=None,
+                    imei=None,
+                    iccid=None,
+                    serial_number=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+        self.assertEqual(len(uow.devices.by_id), 1)
+
+    async def test_duplicate_imei_is_rejected(self) -> None:
+        """Regression: Device Domain Overhaul's `ux_devices__imei`."""
+        _vehicle_service, device_service, uow = make_services()
+        await device_service.register_device(
+            RegisterDeviceCommand(
+                organization_id=VALID_ORG_ULID,
+                terminal_id="TERM-IMEI-A",
+                model=None,
+                vendor=None,
+                sim_msisdn=None,
+                imei="352389088459231",
+                iccid=None,
+                serial_number=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(ConflictError):
+            await device_service.register_device(
+                RegisterDeviceCommand(
+                    organization_id=VALID_ORG_ULID,
+                    terminal_id="TERM-IMEI-B",
+                    model=None,
+                    vendor=None,
+                    sim_msisdn=None,
+                    imei="352389088459231",
+                    iccid=None,
+                    serial_number=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+        self.assertEqual(len(uow.devices.by_id), 1)
+
+    async def test_duplicate_iccid_is_rejected(self) -> None:
+        """Regression: Device Domain Overhaul's `ux_devices__iccid`."""
+        _vehicle_service, device_service, uow = make_services()
+        await device_service.register_device(
+            RegisterDeviceCommand(
+                organization_id=VALID_ORG_ULID,
+                terminal_id="TERM-ICCID-A",
+                model=None,
+                vendor=None,
+                sim_msisdn=None,
+                imei=None,
+                iccid="8944500XXXXXXXXXXXX",
+                serial_number=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(ConflictError):
+            await device_service.register_device(
+                RegisterDeviceCommand(
+                    organization_id=VALID_ORG_ULID,
+                    terminal_id="TERM-ICCID-B",
+                    model=None,
+                    vendor=None,
+                    sim_msisdn=None,
+                    imei=None,
+                    iccid="8944500XXXXXXXXXXXX",
+                    serial_number=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+        self.assertEqual(len(uow.devices.by_id), 1)
+
+    async def test_duplicate_serial_number_is_rejected(self) -> None:
+        """Regression: Device Domain Overhaul's `ux_devices__serial_number`."""
+        _vehicle_service, device_service, uow = make_services()
+        await device_service.register_device(
+            RegisterDeviceCommand(
+                organization_id=VALID_ORG_ULID,
+                terminal_id="TERM-SN-A",
+                model=None,
+                vendor=None,
+                sim_msisdn=None,
+                imei=None,
+                iccid=None,
+                serial_number="SN-0042",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(ConflictError):
+            await device_service.register_device(
+                RegisterDeviceCommand(
+                    organization_id=VALID_ORG_ULID,
+                    terminal_id="TERM-SN-B",
+                    model=None,
+                    vendor=None,
+                    sim_msisdn=None,
+                    imei=None,
+                    iccid=None,
+                    serial_number="SN-0042",
                     actor=make_actor(),
                 ),
                 uow=uow,
@@ -733,6 +865,9 @@ class DevicePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
                     model=None,
                     vendor=None,
                     sim_msisdn=None,
+                    imei=None,
+                    iccid=None,
+                    serial_number=None,
                     actor=make_actor(),
                 ),
                 uow=uow,
@@ -763,6 +898,9 @@ class DevicePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
                 model=None,
                 vendor=None,
                 sim_msisdn=None,
+                imei=None,
+                iccid=None,
+                serial_number=None,
                 actor=make_actor(),
             ),
             uow=uow,
@@ -790,6 +928,9 @@ class DevicePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
                     model=None,
                     vendor=None,
                     sim_msisdn=None,
+                    imei=None,
+                    iccid=None,
+                    serial_number=None,
                     actor=make_actor(),
                 ),
                 uow=uow,

@@ -33,6 +33,9 @@ from raad.modules.fleet_device.domain.entities import (
 from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
     DeviceId,
+    Iccid,
+    Imei,
+    SerialNumber,
     TerminalId,
     VehicleId,
 )
@@ -89,6 +92,22 @@ class DeviceRepository(ABC):
         """Backs the global terminal-id uniqueness pre-check (Database Design §5.2:
         `terminal_id` is a global `UX` — "JT808 terminal/SIM identifier (global unique)").
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_imei(self, imei: Imei) -> Device | None:
+        """Backs the global IMEI uniqueness pre-check (Device Domain Overhaul architecture
+        review — `ux_devices__imei`), mirroring `get_by_terminal_id`'s identical shape."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_iccid(self, iccid: Iccid) -> Device | None:
+        """Backs the global ICCID uniqueness pre-check (`ux_devices__iccid`)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_serial_number(self, serial_number: SerialNumber) -> Device | None:
+        """Backs the global serial-number uniqueness pre-check (`ux_devices__serial_number`)."""
         raise NotImplementedError
 
     @abstractmethod

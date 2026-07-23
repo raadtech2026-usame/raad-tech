@@ -20,8 +20,11 @@ from raad.modules.fleet_device.domain.value_objects import (
     CameraPosition,
     DeviceId,
     DeviceLifecycleState,
+    Iccid,
+    Imei,
     Msisdn,
     OrganizationId,
+    SerialNumber,
     TerminalId,
     VehicleId,
     VehicleStatus,
@@ -56,6 +59,49 @@ class TerminalIdTests(unittest.TestCase):
 
     def test_accepts_valid_terminal_id(self) -> None:
         self.assertEqual(str(TerminalId("TERM-001")), "TERM-001")
+
+
+class ImeiTests(unittest.TestCase):
+    def test_rejects_empty(self) -> None:
+        with self.assertRaises(DomainError):
+            Imei("")
+
+    def test_rejects_wrong_length(self) -> None:
+        with self.assertRaises(DomainError):
+            Imei("12345")
+
+    def test_rejects_non_digits(self) -> None:
+        with self.assertRaises(DomainError):
+            Imei("35328908845923X")
+
+    def test_accepts_valid_imei(self) -> None:
+        self.assertEqual(str(Imei("352389088459231")), "352389088459231")
+
+
+class IccidTests(unittest.TestCase):
+    def test_rejects_empty(self) -> None:
+        with self.assertRaises(DomainError):
+            Iccid("")
+
+    def test_rejects_over_max_length(self) -> None:
+        with self.assertRaises(DomainError):
+            Iccid("1" * 33)
+
+    def test_accepts_valid_iccid(self) -> None:
+        self.assertEqual(str(Iccid("8944500XXXXXXXXXXXX")), "8944500XXXXXXXXXXXX")
+
+
+class SerialNumberTests(unittest.TestCase):
+    def test_rejects_empty(self) -> None:
+        with self.assertRaises(DomainError):
+            SerialNumber("")
+
+    def test_rejects_over_max_length(self) -> None:
+        with self.assertRaises(DomainError):
+            SerialNumber("x" * 65)
+
+    def test_accepts_valid_serial_number(self) -> None:
+        self.assertEqual(str(SerialNumber("SN-0042")), "SN-0042")
 
 
 class MsisdnTests(unittest.TestCase):
@@ -149,6 +195,9 @@ class DeviceLifecycleTests(unittest.TestCase):
             model=None,
             vendor=None,
             sim_msisdn=None,
+            imei=None,
+            iccid=None,
+            serial_number=None,
             lifecycle_state=lifecycle_state,
             auth_key_hash=None,
             last_seen_at=None,
@@ -260,6 +309,9 @@ class CameraRegistrationTests(unittest.TestCase):
             model=None,
             vendor=None,
             sim_msisdn=None,
+            imei=None,
+            iccid=None,
+            serial_number=None,
             lifecycle_state=DeviceLifecycleState.ACTIVATED,
             auth_key_hash=None,
             last_seen_at=None,

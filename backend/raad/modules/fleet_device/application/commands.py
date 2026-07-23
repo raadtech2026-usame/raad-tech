@@ -60,6 +60,9 @@ class RegisterDeviceCommand:
     model: str | None
     vendor: str | None
     sim_msisdn: str | None
+    imei: str | None
+    iccid: str | None
+    serial_number: str | None
     actor: Principal
 
 

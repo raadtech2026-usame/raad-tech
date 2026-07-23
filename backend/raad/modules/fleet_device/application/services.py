@@ -57,7 +57,10 @@ from raad.modules.fleet_device.application.queries import (
 )
 from raad.modules.fleet_device.application.validators import (
     ensure_device_has_no_active_assignment,
+    ensure_iccid_available,
+    ensure_imei_available,
     ensure_plate_no_available,
+    ensure_serial_number_available,
     ensure_terminal_id_available,
     ensure_vehicle_exists,
     ensure_vehicle_has_no_active_device,
@@ -68,8 +71,11 @@ from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
     CameraId,
     DeviceId,
+    Iccid,
+    Imei,
     Msisdn,
     OrganizationId,
+    SerialNumber,
     TerminalId,
     VehicleId,
 )
@@ -191,6 +197,22 @@ class DeviceApplicationService:
             terminal_id = TerminalId(command.terminal_id)
             await ensure_terminal_id_available(uow, terminal_id)
 
+            imei = Imei(command.imei) if command.imei is not None else None
+            if imei is not None:
+                await ensure_imei_available(uow, imei)
+
+            iccid = Iccid(command.iccid) if command.iccid is not None else None
+            if iccid is not None:
+                await ensure_iccid_available(uow, iccid)
+
+            serial_number = (
+                SerialNumber(command.serial_number)
+                if command.serial_number is not None
+                else None
+            )
+            if serial_number is not None:
+                await ensure_serial_number_available(uow, serial_number)
+
             device = Device.register(
                 id=DeviceId(self._id_generator.new_id()),
                 organization_id=OrganizationId(command.organization_id),
@@ -202,6 +224,9 @@ class DeviceApplicationService:
                     if command.sim_msisdn is not None
                     else None
                 ),
+                imei=imei,
+                iccid=iccid,
+                serial_number=serial_number,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )

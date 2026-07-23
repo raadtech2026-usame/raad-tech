@@ -10,6 +10,10 @@ error instead of a raw constraint-violation:
 - `ensure_plate_no_available` → `ux_vehicles__org_plate` (Database Design §5.1; per-tenant —
   tenant scoping is injected at the repository layer, `.claude/rules/backend.md` #4).
 - `ensure_terminal_id_available` → the global `UX` on `devices.terminal_id` (§5.2).
+- `ensure_imei_available` / `ensure_iccid_available` / `ensure_serial_number_available` →
+  the three global `UX`s added by the Device Domain Overhaul architecture review
+  (`ux_devices__imei`/`ux_devices__iccid`/`ux_devices__serial_number`) — same shape as
+  `ensure_terminal_id_available`, only run when the optional value is actually provided.
 - `ensure_device_has_no_active_assignment` / `ensure_vehicle_has_no_active_device` → the two
   generated-column unique indexes on `device_assignments` (§5.4). One-active-device-per-
   vehicle is a safety-critical invariant requiring explicit regression tests
@@ -25,6 +29,9 @@ from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.domain.entities import Vehicle
 from raad.modules.fleet_device.domain.value_objects import (
     DeviceId,
+    Iccid,
+    Imei,
+    SerialNumber,
     TerminalId,
     VehicleId,
 )
@@ -44,6 +51,28 @@ async def ensure_terminal_id_available(
     existing = await uow.devices.get_by_terminal_id(terminal_id)
     if existing is not None:
         raise ConflictError(f"A device with terminal id {terminal_id} already exists.")
+
+
+async def ensure_imei_available(uow: FleetDeviceUnitOfWork, imei: Imei) -> None:
+    existing = await uow.devices.get_by_imei(imei)
+    if existing is not None:
+        raise ConflictError(f"A device with IMEI {imei} already exists.")
+
+
+async def ensure_iccid_available(uow: FleetDeviceUnitOfWork, iccid: Iccid) -> None:
+    existing = await uow.devices.get_by_iccid(iccid)
+    if existing is not None:
+        raise ConflictError(f"A device with ICCID {iccid} already exists.")
+
+
+async def ensure_serial_number_available(
+    uow: FleetDeviceUnitOfWork, serial_number: SerialNumber
+) -> None:
+    existing = await uow.devices.get_by_serial_number(serial_number)
+    if existing is not None:
+        raise ConflictError(
+            f"A device with serial number {serial_number} already exists."
+        )
 
 
 async def ensure_vehicle_exists(

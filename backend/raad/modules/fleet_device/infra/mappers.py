@@ -32,8 +32,11 @@ from raad.modules.fleet_device.domain.value_objects import (
     CameraPosition,
     DeviceId,
     DeviceLifecycleState,
+    Iccid,
+    Imei,
     Msisdn,
     OrganizationId,
+    SerialNumber,
     TerminalId,
     VehicleId,
     VehicleStatus,
@@ -129,6 +132,11 @@ def device_to_model(
     model.model = device.model
     model.vendor = device.vendor
     model.sim_msisdn = str(device.sim_msisdn) if device.sim_msisdn is not None else None
+    model.imei = str(device.imei) if device.imei is not None else None
+    model.iccid = str(device.iccid) if device.iccid is not None else None
+    model.serial_number = (
+        str(device.serial_number) if device.serial_number is not None else None
+    )
     model.lifecycle_state = device.lifecycle_state.value
     model.auth_key_hash = device.auth_key_hash
     model.last_seen_at = device.last_seen_at
@@ -164,6 +172,11 @@ def model_to_device(model: DeviceModel) -> Device:
         model=model.model,
         vendor=model.vendor,
         sim_msisdn=Msisdn(model.sim_msisdn) if model.sim_msisdn is not None else None,
+        imei=Imei(model.imei) if model.imei is not None else None,
+        iccid=Iccid(model.iccid) if model.iccid is not None else None,
+        serial_number=(
+            SerialNumber(model.serial_number) if model.serial_number is not None else None
+        ),
         lifecycle_state=DeviceLifecycleState(model.lifecycle_state),
         auth_key_hash=model.auth_key_hash,
         last_seen_at=model.last_seen_at,

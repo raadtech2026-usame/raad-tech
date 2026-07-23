@@ -52,6 +52,9 @@ from raad.modules.fleet_device.domain.repositories import (
 from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
     DeviceId,
+    Iccid,
+    Imei,
+    SerialNumber,
     TerminalId,
     VehicleId,
 )
@@ -185,6 +188,28 @@ class SqlAlchemyDeviceRepository(
     async def get_by_terminal_id(self, terminal_id: TerminalId) -> Device | None:
         statement = select(DeviceModel).where(
             DeviceModel.terminal_id == str(terminal_id),
+            DeviceModel.deleted_at.is_(None),
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
+
+    async def get_by_imei(self, imei: Imei) -> Device | None:
+        statement = select(DeviceModel).where(
+            DeviceModel.imei == str(imei), DeviceModel.deleted_at.is_(None)
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
+
+    async def get_by_iccid(self, iccid: Iccid) -> Device | None:
+        statement = select(DeviceModel).where(
+            DeviceModel.iccid == str(iccid), DeviceModel.deleted_at.is_(None)
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
+
+    async def get_by_serial_number(self, serial_number: SerialNumber) -> Device | None:
+        statement = select(DeviceModel).where(
+            DeviceModel.serial_number == str(serial_number),
             DeviceModel.deleted_at.is_(None),
         )
         result = await self._session.execute(statement)
