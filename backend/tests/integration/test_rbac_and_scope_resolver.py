@@ -103,6 +103,47 @@ class IamPermissionEvaluatorRoundTripTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(result)
 
+    async def test_seeded_matrix_denies_org_admin_device_management(self) -> None:
+        """Regression: Device Domain Overhaul (migration `22e94bc4e924`) — RAAD owns all
+        hardware, so `org_admin` (a school's own admin) must hold zero `fleet_device.devices.*`
+        permissions, not even read. `fleet_device.vehicles.*` stays granted (vehicles are
+        legitimately school fleet data)."""
+        evaluator = self._evaluator()
+        principal = Principal(user_id="u1", role=Role.ORG_ADMIN, org_id="org1")
+        for permission in (
+            "fleet_device.devices.create",
+            "fleet_device.devices.read",
+            "fleet_device.devices.update",
+            "fleet_device.devices.activate",
+            "fleet_device.devices.assign",
+            "fleet_device.devices.reassign",
+            "fleet_device.devices.unassign",
+        ):
+            with self.subTest(permission=permission):
+                result = await evaluator.has_permission(principal, Permission(permission))
+                self.assertFalse(result)
+        result = await evaluator.has_permission(
+            principal, Permission("fleet_device.vehicles.read")
+        )
+        self.assertTrue(result)
+
+    async def test_seeded_matrix_grants_support_staff_device_assignment(self) -> None:
+        """Regression: Device Domain Overhaul (migration `22e94bc4e924`) — `support_staff` (the
+        operational "RAAD technician" role) must be able to complete a device-to-vehicle
+        onboarding end to end, including assign/reassign/unassign, not just create/activate."""
+        evaluator = self._evaluator()
+        principal = Principal(user_id="u1", role=Role.SUPPORT_STAFF, org_id="org1")
+        for permission in (
+            "fleet_device.devices.create",
+            "fleet_device.devices.activate",
+            "fleet_device.devices.assign",
+            "fleet_device.devices.reassign",
+            "fleet_device.devices.unassign",
+        ):
+            with self.subTest(permission=permission):
+                result = await evaluator.has_permission(principal, Permission(permission))
+                self.assertTrue(result)
+
     async def test_grant_then_revoke_round_trips(self) -> None:
         evaluator = self._evaluator()
         test_permission = f"test.custom.permission.{self.tag}"
