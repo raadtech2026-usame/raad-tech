@@ -137,7 +137,14 @@ def device_registered(
     vendor: str | None,
     occurred_at: datetime,
     actor_id: str | None,
+    serial_number: str | None = None,
 ) -> DomainEvent:
+    """`serial_number` (additive, default `None` so any other call site stays source-compatible)
+    was added alongside the already-present `terminal_id` for a device-plane consumer that keys
+    on this vendor's own device-identity string rather than a JT/T-808-style terminal id — see
+    `docs/architecture/adr/0009-mdvr-vendor-protocol-device-plane.md`'s "Consequences" section:
+    a local device-registry projection resolving `serial_number -> {device_id, vehicle_id,
+    organization_id}` needs this field on the event, and it was missing until this change."""
     return _new_event(
         event_type="DeviceRegistered",
         aggregate_type="Device",
@@ -146,6 +153,7 @@ def device_registered(
         occurred_at=occurred_at,
         payload={
             "terminal_id": terminal_id,
+            "serial_number": serial_number,
             "model": model,
             "vendor": vendor,
             "actor_id": actor_id,

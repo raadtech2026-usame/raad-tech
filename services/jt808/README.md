@@ -209,3 +209,65 @@ item above), the Redis-backed active-trip read-model `trip_id` resolution depend
 processing beyond raw `alarm_flags` passthrough, Redis-backed session state, cross-shard command
 routing, and business-initiated command downlink (§12 — distinct from this phase's protocol-level
 automatic acks).
+
+## LSZ MDVR vendor protocol stack (ADR-0009; roadmap tracks B1/B2)
+
+**The procured hardware does not speak JT/T 808** — `docs/vendor/HARDWARE_ANALYSIS.md` §2
+confirms it against this deployable's own JT/T 808-2013 parser (above), which cannot decode a
+single frame the actual hardware sends. `docs/architecture/adr/
+0009-mdvr-vendor-protocol-device-plane.md` records the resulting decision: this deployable gains
+a second, parallel protocol stack, `src/vendors/lsz_mdvr/`, terminating the vendor's own
+proprietary ASCII/binary protocol directly — the JT/T 808 stack above is kept exactly as
+documented, untouched, dormant, for a possible future genuinely-compliant vendor.
+
+```
+src/vendors/lsz_mdvr/
+├── protocol/     # $$dc...# ASCII framing/parsing/encoding, GPS D°M′S″ -> decimal-degree ACL
+│                 # (protocol/location_status.py — cross-validated against real-world Shenzhen
+│                 # coordinates in two independent worked examples, see its own module docstring)
+│                 #                                                  [implemented]
+├── dispatcher/   # Keyword-keyed (not message-ID-keyed) registry/dispatcher, mirroring
+│                 # src/dispatcher/'s shape exactly                  [implemented]
+├── handlers/     # Registration (V101 -> C100, binds DeviceSession directly - no separate
+│                 # auth message exists for this vendor), Heartbeat (V109 -> C501, promotes
+│                 # AUTHENTICATED -> ONLINE), Position (V114 -> DevicePositionReported, reusing
+│                 # src/events/ unchanged)                            [implemented]
+└── server.py     # MdvrServer composition root, reusing src/connection/ and src/session/
+                  # UNCHANGED (the one shared-file change: Connection/ConnectionManager gained
+                  # an injectable frame decoder, defaulting to the existing FrameBuffer - every
+                  # existing JT/T 808 test is unaffected, verified)    [implemented]
+```
+
+**Provisioning is deliberately simpler than the JT/T 808 stack's, not incomplete** — this
+vendor's protocol has no authentication step or credential at all (`docs/vendor/
+HARDWARE_ANALYSIS.md` §11); `MdvrDeviceProvisioningPort.authorize_registration` is a
+serial-number allow-list, full stop. `InMemoryMdvrDeviceProvisioningPort` is an explicitly-interim,
+directly-testable stand-in — the real, broker-driven device-registry projection (consuming
+`fleet_device`'s `DeviceRegistered`/`DeviceActivated`/`DeviceAssignedToVehicle` events, per the
+roadmap's revised B1) needs a Redis client dependency for this deployable that has been proposed
+but not yet approved (see `pyproject.toml`'s own comment) — tracked, not silently substituted.
+
+**Position ingestion publishes the real, unmodified `DevicePositionReported` event** via the same
+`EventPublisher` port the JT/T 808 stack uses, defaulting to the same `LoggingEventPublisher`
+until a real broker publisher is wired (same dependency-approval gate as above). The Business
+API's own consumer half is already built and tested (`backend/raad/modules/tracking/events/
+subscribers.py`'s `DevicePositionReportedProcessor`) and needs no further change once the
+producer side lands.
+
+**Tested:** 49 unit/integration tests (`tests/test_mdvr_*.py`) against the vendor documents' own
+real worked examples (device `00007`), covering framing, parsing, GPS normalization, encoding,
+each handler in isolation, the dispatcher, and a full-stack real-socket integration test
+(register -> heartbeat -> position, plus rejection/unauthenticated-drop paths). All 226 pre-existing
+JT/T 808 tests continue to pass unmodified.
+
+**Not yet implemented:** the media-channel protocol (live video/file transfer/firmware upgrade —
+roadmap track B3, a distinct vendor-protocol surface, `docs/vendor/HARDWARE_ANALYSIS.md` §6/§9);
+a real outbox + Redis Streams `EventPublisher`/`BrokerPort` implementation for this deployable
+(dependency proposed, not yet approved); the broker-driven device-registry projection; a Redis-
+backed `DeviceSessionRegistry` for this stack (`.claude/rules/jt808.md` #4, currently in-memory,
+same posture the JT/T 808 stack's own Phase 9.2 already accepted); the vendor's own
+"center-initiated, unprompted C501 every 6s" heartbeat behavior (this stack only acknowledges a
+device's own `V109`, see `handlers/heartbeat_handler.py`'s own module docstring); and the vendor's
+alarm-message family (`docs/vendor/HARDWARE_ANALYSIS.md` §8) — no RAAD bounded context has a
+documented home for raw device-hardware alarms yet (`docs/vendor/HARDWARE_INTEGRATION_PLAN.md`
+§10).

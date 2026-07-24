@@ -330,6 +330,7 @@ class Device(_AggregateRoot):
                 vendor=vendor,
                 occurred_at=clock.now(),
                 actor_id=actor_id,
+                serial_number=str(serial_number) if serial_number is not None else None,
             )
         )
         return device

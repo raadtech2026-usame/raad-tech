@@ -214,6 +214,31 @@ class DeviceLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(device.lifecycle_state, DeviceLifecycleState.REGISTERED)
 
+    def test_register_event_payload_carries_serial_number_when_given(self) -> None:
+        """Regression (ADR-0009): a device-plane serial-number-keyed registry projection needs
+        this field on `DeviceRegistered` alongside `terminal_id` - it was missing until this
+        additive change."""
+        device = Device.register(
+            id=DeviceId(VALID_DEVICE_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            terminal_id=TerminalId("TERM-001"),
+            serial_number=SerialNumber("SN-00007"),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        event = device.pull_domain_events()[0]
+        self.assertEqual(event.payload["serial_number"], "SN-00007")
+        self.assertEqual(event.payload["terminal_id"], "TERM-001")
+
+    def test_register_event_payload_serial_number_defaults_to_none(self) -> None:
+        device = Device.register(
+            id=DeviceId(VALID_DEVICE_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            terminal_id=TerminalId("TERM-001"),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        event = device.pull_domain_events()[0]
+        self.assertIsNone(event.payload["serial_number"])
+
     def test_registered_to_activated_is_legal(self) -> None:
         device = self.make_device(DeviceLifecycleState.REGISTERED)
         device.activate(clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)))

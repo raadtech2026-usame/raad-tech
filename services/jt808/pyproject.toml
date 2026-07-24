@@ -8,6 +8,19 @@
 # later phase genuinely needs one (e.g. a Redis client for session state,
 # `.claude/rules/jt808.md` #4).
 #
+# PROPOSED, NOT YET APPROVED (roadmap tracks B1/B2, ADR-0009): `redis` (the same `redis-py`/
+# `redis.asyncio` client already approved for the Business API, Backend Stabilization phase /
+# ADR-0008) would let this deployable's `src/vendors/lsz_mdvr/` stack (1) publish
+# `DevicePositionReported` onto the shared `raad:events` Redis Stream instead of only logging it
+# (`LoggingEventPublisher`), so the Business API's already-built `tracking/events/subscribers.
+# DevicePositionReportedProcessor` actually receives events; (2) back `DeviceSessionRegistry`
+# with Redis instead of in-memory state (`.claude/rules/jt808.md` #4); (3) consume
+# `fleet_device`'s `DeviceRegistered`/`DeviceActivated`/`DeviceAssignedToVehicle` events to
+# populate a real device-registry projection, replacing `InMemoryMdvrDeviceProvisioningPort`.
+# No new dependency has been installed here — per `.claude/rules/workflow.md` #1/#2 this needs
+# explicit go-ahead first, a checkpoint that applies to this deployable's own manifest
+# independently of the Business API already using the same package.
+#
 # Dependency management tool (Poetry/PDM/plain pip) is not yet decided by approved
 # documentation — this file uses the PEP 621 format, installable with plain
 # `pip install -e .` regardless of that later choice, the same stance `backend/pyproject.toml`

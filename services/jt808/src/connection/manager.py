@@ -20,6 +20,15 @@ direct access to a `Connection` object.
 **Phase 9.4 addition:** `send_to_connection()` — the same "public entry point, no direct
 `Connection` access" pattern, used by the Message Dispatcher (`dispatcher/dispatcher.py`) to
 send automatic-acknowledgment frames back to whichever connection a message arrived on.
+
+**`frame_buffer_factory` (ADR-0009 addition):** mirrors `Connection`'s own new injectable
+`frame_buffer` parameter one level up — a zero-arg callable invoked once per newly accepted
+connection to produce that connection's own frame-decoder instance (a `FrameBuffer` is stateful
+per-connection, so a *factory*, not a shared instance, is what needs threading through here).
+Defaults to `None`, which leaves every existing connection's `Connection` construction exactly as
+before (JT/T 808's own `FrameBuffer`, built internally). A vendor-specific server composition root
+(`vendors/lsz_mdvr/server.py`) passes its own factory to get its own frame decoder per connection,
+without duplicating this class.
 """
 
 from __future__ import annotations
@@ -57,6 +66,7 @@ class ConnectionManager:
         sweep_interval_seconds: float,
         on_frame: FrameHandler | None = None,
         on_connection_closed: Callable[[str], Awaitable[None]] | None = None,
+        frame_buffer_factory: Callable[[], object] | None = None,
     ) -> None:
         self._sessions = session_registry
         self._read_chunk_size = read_chunk_size
@@ -65,6 +75,7 @@ class ConnectionManager:
         self._sweep_interval_seconds = sweep_interval_seconds
         self._on_frame = on_frame or _default_on_frame
         self._on_connection_closed = on_connection_closed
+        self._frame_buffer_factory = frame_buffer_factory
         self._connections: dict[str, Connection] = {}
         self._sweep_task: asyncio.Task | None = None
 
@@ -86,6 +97,9 @@ class ConnectionManager:
             on_frame=self._on_frame,
             on_activity=session.touch,
             on_close=self._handle_connection_closed,
+            frame_buffer=(
+                self._frame_buffer_factory() if self._frame_buffer_factory else None
+            ),
         )
         self._connections[connection_id] = connection
         self._sessions.add(session)

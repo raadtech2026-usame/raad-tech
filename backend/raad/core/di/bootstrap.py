@@ -70,6 +70,7 @@ from raad.modules.tracking.application.ports import (
     TrackingUnitOfWork,
 )
 from raad.modules.tracking.application.services import TrackingApplicationService
+from raad.modules.tracking.events.subscribers import register_tracking_processors
 from raad.modules.tracking.infra.adapters import RedisLatestPositionPort
 from raad.modules.tracking.infra.repositories import SqlAlchemyTrackingUnitOfWork
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
@@ -373,6 +374,12 @@ def build_container(settings: Settings) -> Container:
         register_notification_processors(
             container.resolve(EventProcessorRegistry), container
         )
+
+        # Same registry, roadmap track B2's consumer half (ADR-0009): persists
+        # `DevicePositionReported` events published by the device-plane service - see
+        # `modules/tracking/events/subscribers.py`'s own module docstring for the wire-envelope
+        # contract and for why the producer side isn't wired yet either.
+        register_tracking_processors(container.resolve(EventProcessorRegistry), container)
 
     # TokenService needs a non-empty signing secret. In `dev`/`staging` without one configured
     # (e.g. no .env populated yet) it is left unbound — same "fail loudly, don't fake it"
