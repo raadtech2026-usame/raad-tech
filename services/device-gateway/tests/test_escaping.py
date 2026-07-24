@@ -10,8 +10,8 @@ test feeds to `unescape()`, expecting the original content back.
 
 import unittest
 
-from src.protocol.escaping import unescape
-from src.protocol.exceptions import UnescapeError
+from src.vendors.jt808.protocol.escaping import unescape
+from src.vendors.jt808.protocol.exceptions import UnescapeError
 
 
 class UnescapeTests(unittest.TestCase):

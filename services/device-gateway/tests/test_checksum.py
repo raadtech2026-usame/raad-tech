@@ -2,7 +2,7 @@
 
 import unittest
 
-from src.protocol.checksum import compute_checksum, verify_checksum
+from src.vendors.jt808.protocol.checksum import compute_checksum, verify_checksum
 
 
 class ChecksumTests(unittest.TestCase):

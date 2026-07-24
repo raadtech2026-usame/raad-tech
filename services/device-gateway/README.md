@@ -1,273 +1,202 @@
-# JT808 TCP Server
+# Device Gateway
 
-Terminates persistent TCP connections from bus terminals, parses JT/T 808 messages, maintains device
-sessions, normalizes telemetry into domain events, and relays platform commands down to devices.
-Independently deployable — the Business API never opens a device socket.
+The single entry point for every GPS/MDVR device-plane vendor integration — renamed from
+`services/jt808/` once it grew a second vendor's protocol adapter alongside the original JT/T 808
+code (ADR-0010: `docs/architecture/adr/0010-device-gateway-multi-vendor-architecture.md`).
+Terminates persistent TCP connections from bus terminals, parses whichever vendor protocol that
+connection actually speaks, maintains device sessions, and normalizes telemetry into domain
+events the Business API consumes — never the reverse; the Business API never opens a device
+socket (`.claude/rules/architecture.md` #2).
 
 Source of truth: `docs/business/RAAD_Phase3.4_JT808_Technical_Design_v1.md`,
-`docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §5.1, and — for wire-level packet
-structure specifically (Phase 9.3 onward) — the primary JT/T 808-2013 standard
-(`JTT808-2013.pdf`, repo root; Chinese-language; 2013 edition only, no JT/T 808-2019
-compatibility attempted).
+`docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §5.1, `docs/vendor/
+HARDWARE_ANALYSIS.md`/`HARDWARE_INTEGRATION_PLAN.md` (the actually-procured hardware), and
+`docs/architecture/adr/0009-mdvr-vendor-protocol-device-plane.md`/`0010-device-gateway-multi-
+vendor-architecture.md` (the resulting architecture decisions).
 
-**Language/runtime: Python (asyncio)**, confirmed with the user for Phase 9.1 (no approved
-document names one — see git history for the confirmation). `pyproject.toml` declares zero
-third-party dependencies; the transport layer uses only the standard library.
+**Language/runtime: Python (asyncio).** `pyproject.toml` now declares one dependency, `redis>=5.0`
+(device-gateway Redis integration, approved — see that file's own comment for exactly what it
+backs); everything else remains standard library only.
 
-## Structure (logical components — see `.claude/rules/jt808.md`)
+## Structure
 
 ```
 src/
-├── connection/   # TCP Acceptor / Connection Manager               [Phase 9.1: implemented]
-├── protocol/     # Packet Parser / Framer + vendor Anti-Corruption Layer
-│                 #   - frame boundary detection (0x7e)              [Phase 9.1: implemented]
-│                 #   - unescape/checksum/header parsing/reassembly  [Phase 9.3: implemented]
-│                 #   - message-specific body field decoding (0x0100/0x0102/0x0200/0x0704 only,
-│                 #     in src/handlers/ — see below)                [partial, Phases 9.5-9.6]
-│                 #   - vendor ACL (dialect normalization)             [not yet implemented]
-├── dispatcher/   # Packet Dispatcher — routes by message_id to handlers  [Phase 9.4: implemented]
-├── handlers/     # Message Handlers: register, auth, heartbeat, location,
-│                 # bulk/backfill location, alarm, command-ack
-│                 #   - registration (0x0100 -> 0x8100) and authentication (0x0102 -> 0x8001):
-│                 #     real protocol behavior, session binding, reject/fail + close
-│                 #     [Phase 9.5: implemented, in src/handlers/]
-│                 #   - location (0x0200) and bulk/backfill location (0x0704): body parsing,
-│                 #     device/vehicle/org resolution, DevicePositionReported publishing
-│                 #     [Phase 9.6: implemented, in src/handlers/]
-│                 #   - placeholder (no-op, logs only) for the remaining 4 named message IDs
-│                 #     [Phase 9.4: implemented, in src/dispatcher/placeholder_handler.py]
-│                 #   - real business logic for heartbeat/alarm/command-ack/logout
-│                 #                                                  [not yet implemented]
-├── session/      # Session Manager
-│                 #   - transport-level ConnectionSession, keyed by connection_id
-│                 #     [Phase 9.1: implemented, in-memory only]
-│                 #   - device-level DeviceSession, keyed by terminal_id, bound after auth;
-│                 #     duplicate-terminal supersede (ADR-808-8); expiration; online/offline
-│                 #     lifecycle (AUTHENTICATED/ONLINE/OFFLINE only - no IDLE/BACKFILLING/
-│                 #     REGISTERED, which need packet parsing this phase doesn't have)
-│                 #     [Phase 9.2: implemented, in-memory only]
-│                 #   - node_id / cross-shard command routing / Redis backing store /
-│                 #     AUTHENTICATED -> ONLINE `touch()` trigger (still nothing calls it —
-│                 #     Phase 9.6's Location handler deliberately does not, see Status below)
-│                 #                                                  [not yet implemented]
-├── commands/     # Command Executor — downlink (real-time A/V request, playback, config, text)
-│                 #                                                  [not yet implemented]
-└── events/       # Event Publisher: DevicePositionReported shape + EventPublisher port +
-│                 # LoggingEventPublisher default (no real outbox/broker — none approved yet)
-│                 #                                                  [Phase 9.6: implemented]
-store/            # Local persistent store: outbox, device_session, raw_frame_audit, command_log
-│                 #                                                  [not yet implemented]
+├── adapter.py     # DeviceProtocolAdapter — the common interface every vendor implements
+│                  # (name, start, stop, bound_port, session_count, device_session_count)
+├── gateway.py     # DeviceGateway — the actual process entrypoint. Starts every configured
+│                  # adapter under one shared signal handler; wires the shared EventPublisher/
+│                  # device-registry projection when a broker is configured (Redis integration)
+├── broker_config.py  # DEVICE_GATEWAY_BROKER_URL — this deployable's own, independent broker
+│                  # setting (mirrors ADR-0008's broker.url/redis.url independence)
+├── connection/    # TCP Acceptor / Connection Manager — vendor-agnostic; each vendor injects
+│                  # its own frame_buffer/frame_buffer_factory (no more hardcoded JT/T 808
+│                  # default — ADR-0010's fix for a real latent bug, see that ADR's own §5)
+├── session/       # DeviceSession/DeviceSessionRegistry/DeviceSessionManager — vendor-agnostic,
+│                  # in-memory by default; RedisDeviceSessionRegistry (Redis integration) is a
+│                  # real, tested, standalone Redis-backed alternative, not yet wired in as the
+│                  # default (see its own module docstring for exactly why and what wiring it in
+│                  # would additionally require)
+├── events/        # DevicePositionReported/DeviceOnline/DeviceOffline/DeviceAlarmRaised (all
+│                  # real dataclasses) + EventPublisher port. LoggingEventPublisher (default,
+│                  # no broker configured) and RedisEventPublisher (Redis integration — publishes
+│                  # onto the same raad:events Redis Stream, ADR-0008, the Business API's own
+│                  # tracking.events.subscribers.DevicePositionReportedProcessor already reads)
+├── registry/      # DeviceRegistryProjection (read-model of fleet_device devices) +
+│                  # RedisDeviceRegistryConsumer (keeps it current off raad:events) — Redis
+│                  # integration; backs the real, non-interim LSZ provisioning port
+└── vendors/
+    ├── jt808/      # JT/T 808-2013 — real, tested (Phases 9.1-9.6 below). Dormant: not the
+    │               # currently-integrated hardware (docs/vendor/HARDWARE_ANALYSIS.md §2), kept
+    │               # for a possible future genuinely-compliant vendor.
+    ├── lsz/        # Shenzhen Tianyou "LSZ" MDVR — the actually-procured hardware's real
+    │               # proprietary protocol (ADR-0009). Implemented: registration/heartbeat/
+    │               # position (B1/B2 below). Not implemented: the media-channel protocol
+    │               # (live video/file transfer/firmware upgrade — roadmap track B3).
+    ├── teltonika/  # Structural placeholder only — no hardware procured, no vendor docs, no
+    ├── queclink/   # code invented ahead of either (see each package's own __init__.py).
+    └── ruptela/
 ```
 
 ## Key rule
 
-JT808 never writes Business API tables directly — it only publishes domain events
+This deployable never writes Business API tables directly — it only publishes domain events
 (`DevicePositionReported`, `DeviceOnline`, `DeviceOffline`, `DeviceAlarmRaised`, command-result
 events) consumed by the Business API. See `.claude/rules/jt808.md`.
 
-## Status
+## Status — device-gateway architecture (ADR-0010)
 
-**Phase 9.1 (Transport Layer): implemented.** TCP server bootstrap (`src/server.py`), async
-connection accept/read/write loops and lifecycle (`src/connection/`), JT808 frame boundary
-detection — delimiter-only, no unescaping/checksum/field parsing (`src/protocol/framing.py`),
-an in-memory, connection-scoped session registry (`src/session/`), and idle-timeout
-infrastructure (framework only — tracks "bytes received recently," not JT808 heartbeat
-semantics). Verified with a real TCP server, real socket clients, and mocked frames
-(`tests/`).
+**`DeviceProtocolAdapter`/`DeviceGateway`: implemented.** Both `vendors.jt808.server.Jt808Server`
+and `vendors.lsz.server.MdvrServer` implement the common interface; `DeviceGateway` starts/stops
+both under one shared signal handler and injects one shared `EventPublisher` into each. Adding a
+new vendor means implementing this interface under a new `vendors/<name>/` package — no change to
+`gateway.py`'s own orchestration logic.
+
+**Redis integration: implemented.** `RedisEventPublisher` publishes all four event types onto the
+shared `raad:events` Redis Stream, wire-compatible with the Business API's own consumer (verified
+with a one-off cross-deployable decode-and-process check, not a permanent test — see ADR-0010 §6
+for why this stays a documented contract rather than shared code). `DeviceRegistryProjection` +
+`RedisDeviceRegistryConsumer` keep a read-model of `fleet_device` devices current off the same
+stream, backing `vendors.lsz.handlers.provisioning_port.ProjectionBackedMdvrProvisioningPort` —
+the real, non-interim LSZ device allow-list, replacing `InMemoryMdvrDeviceProvisioningPort` as
+`DeviceGateway`'s actual default whenever `DEVICE_GATEWAY_BROKER_URL` (or an injected
+`redis_client`) is configured. Without one, every adapter falls back to exactly its pre-Redis
+default (`LoggingEventPublisher`, `NullMdvrDeviceProvisioningPort`) — nothing about the
+unconfigured path changed.
+
+**`RedisDeviceSessionRegistry`: implemented, not yet wired in as the default.** A real, fully
+tested Redis-backed session store (`.claude/rules/jt808.md` #4) — see its own module docstring for
+exactly why swapping it in for `DeviceSessionManager`'s in-memory default needs a separate,
+mechanical (but wide-reaching) async-interface migration, not undertaken this phase since no
+multi-node deployment exists yet to need it.
+
+**Not yet implemented:** a producer for `DeviceAlarmRaised` (the event/publish machinery is ready;
+no vendor adapter has a real alarm handler yet — see each vendor's own status below); the
+media-channel protocol for any vendor (roadmap track B3); `teltonika`/`queclink`/`ruptela` (no
+hardware/docs exist for any of the three).
+
+---
+
+## `vendors/jt808/` — JT/T 808-2013 status
+
+Moved verbatim from this deployable's original top-level `src/` (only import paths changed) —
+every phase below was built and verified before the rename/reorganization and is unaffected by it.
+
+**Phase 9.1 (Transport Layer): implemented.** TCP server bootstrap (`server.py`), async
+connection accept/read/write loops and lifecycle (shared `connection/`), JT/T 808 frame boundary
+detection (`protocol/framing.py`), an in-memory, connection-scoped session registry (shared
+`session/`), and idle-timeout infrastructure. Verified with a real TCP server, real socket
+clients, and mocked frames (`tests/`).
 
 **Phase 9.2 (Session Management): implemented.** `DeviceSession`/`DeviceSessionRegistry`/
-`DeviceSessionManager` (`src/session/device_session*.py`) — terminal-identity-keyed sessions
-bound after authentication (`create()`, called by a future `AuthHandler`, not built yet),
-duplicate-terminal supersede (ADR-808-8: newest authenticated connection wins), reconnect,
-expiration (framework only, no protocol-level heartbeat), and online/offline lifecycle. A
-documented conflict between Phase 3.4 §21.1's sequence diagram and both approved state-machine
-diagrams (Phase 3.4 §3, Phase 2 §21.1) over exactly when a session becomes `Online` was
-resolved with the user before implementing (see `device_session_manager.py`'s module
-docstring). Verified with real TCP clients wired through the real `Jt808Server` (`tests/`).
+`DeviceSessionManager` (shared `session/`) — terminal-identity-keyed sessions bound after
+authentication, duplicate-terminal supersede (ADR-808-8), reconnect, expiration, and
+online/offline lifecycle. Verified with real TCP clients wired through the real `Jt808Server`.
 
-**Phase 9.3 (Packet Parser): implemented.** `src/protocol/escaping.py` (unescape, verified
-against the primary spec's own worked example), `checksum.py` (XOR verification), `header.py`
-(fixed 12-byte header + optional 4-byte subpackage block, BCD terminal-phone decode,
-body-attributes bit layout), `reassembly.py` (multi-part message reassembly, bounded +
-timeout-evicted), `message.py` (`InboundMessage`), `parser.py` (`PacketParser`, orchestrating
-all of the above in the spec-mandated unescape -> verify checksum -> parse order). Produces an
-untyped `body: bytes` — message-specific body decoding stays out of scope (§8 Handlers, a
-later phase). Encrypted bodies (RSA, body-attributes bit 10) are tagged via `encryption_
-method`, never decrypted. Wired into `server.py`'s `on_frame` (replacing Phase 9.1's log-only
-default): malformed/checksum-fail frames are logged and dropped, never crashing the
-connection. Verified against the primary JT/T 808-2013 spec text directly (extracted via
-PyMuPDF after the default `pdftotext` silently produced zero readable Chinese characters — a
-failure caught, not missed) and with real TCP clients sending genuinely hand-framed packets to
-a live server (`tests/`, plus a manual script exercising escaping, checksum failure resilience,
-and cross-frame subpackage reassembly).
+**Phase 9.3 (Packet Parser): implemented.** `protocol/escaping.py`/`checksum.py`/`header.py`/
+`reassembly.py`/`message.py`/`parser.py` — unescape → verify checksum → parse, per the spec's own
+mandated order. Verified against the primary JT/T 808-2013 spec text directly and with real TCP
+clients sending hand-framed packets to a live server.
 
-**Phase 9.4 (Message Dispatcher): implemented.** `src/dispatcher/dispatcher.py`'s
-`MessageDispatcher` routes a decoded `InboundMessage` (Phase 9.3's `PacketParser` output) to
-the handler registered for its `message_id` (`registry.py`'s `HandlerRegistry`), or to
-`unknown_handler.UnknownMessageHandler` if none is registered — JT808 Technical Design §7's
-documented behavior: unknown message IDs get a real, wire-encoded `0x8001` "not supported"
-general response (§8.2), never silently dropped. Exactly 8 named message IDs are registered
-(`message_ids.py`, each cross-checked against its own primary-spec section), all bound to a
-single reusable `PlaceholderMessageHandler` — no business logic, logs receipt only, sends no
-response (a documented, user-confirmed scope decision: extending the "unknown -> not
-supported" behavior to known-but-unimplemented message IDs was considered and deliberately not
-done). A handler exception is caught and reported (`on_handler_error`), never crashing the
-connection. Added the encode-side mirror of Phase 9.3's decoder (`protocol/encoder.py`,
-`escaping.escape`, `header.encode_bcd_phone`) and two minimal additions to Phase 9.1's
-`ConnectionManager` (`send_to_connection`, alongside the existing `close_connection`) — both
-needed for the dispatcher to actually send the automatic acknowledgment. Verified with real TCP
-clients sending genuinely hand-framed packets through the full TCP -> Transport -> Codec ->
-Dispatcher stack against a live server, confirming each of the 8 message IDs reaches its own
-correctly-named handler (`tests/`, plus a manual script).
+**Phase 9.4 (Message Dispatcher): implemented.** `dispatcher/dispatcher.py`'s `MessageDispatcher`
+routes a decoded `InboundMessage` by `message_id` to its registered handler, or to
+`UnknownMessageHandler` (a real, wire-encoded `0x8001` "not supported" response). Verified with
+real TCP clients through the full stack against a live server.
 
-**Phase 9.5 (Authentication & Registration): implemented.** `src/handlers/registration_handler.py`
-(`TerminalRegistrationHandler`, `0x0100 -> 0x8100`) and `authentication_handler.py`
-(`TerminalAuthenticationHandler`, `0x0102 -> 0x8001`) — the first *real* message handlers in
-this service, JT808 Technical Design §4/§8 and JT/T 808-2013 §8.5/§8.6/§8.8. Both depend only
-on an injected `DeviceProvisioningPort` (`handlers/provisioning_port.py`) — a ports/interfaces
-seam, per the task's explicit "if future persistence is required, use ports/interfaces only";
-no concrete implementation exists yet (no Database, no Fleet Device integration, no Redis), so
-`server.py`'s composition root binds the fail-closed `NullDeviceProvisioningPort` by default
-(every registration/auth rejected until a real port is wired). A flagged, unresolved conflict
-between JT808 Technical Design §4 (reads as: a static, pre-provisioned device secret) and the
-primary JT/T 808-2013 spec (reads as: a platform-issued code, minted at registration and echoed
-back at auth) was surfaced and confirmed with the user before implementing — resolved by
-keeping the port's `auth_code` semantically opaque rather than committing to either reading
-(see `provisioning_port.py`'s module docstring for both sources verbatim). On successful
-authentication, `TerminalAuthenticationHandler` binds a `DeviceSession` via Phase 9.2's
-`DeviceSessionManager.create()` (in `AUTHENTICATED` state); it deliberately does **not** call
-`touch()` — promotion to `ONLINE` is reserved for a future Heartbeat/Location handler, per the
-Phase 9.2-established state-machine reading, reconfirmed with the user for this phase.
-Duplicate/repeated authentication needed no new logic — Phase 9.2's `create()` already
-implements ADR-808-8 supersede (different connection) and safe idempotent replace (same
-connection). Rejection/failure follow JT808 Technical Design §4's "reject + audit + close":
-the dispatcher sends the response, then closes the connection (`HandlerResult.
-close_connection_after`, a minimal Phase 9.4 dispatcher addition). Verified with 32 new unit
-and full-stack integration tests (registration/auth encoding, handler behavior against a fake
-provisioning port, real TCP clients against a live `Jt808Server`) plus a manual verification
-script covering Register -> Authenticate -> Heartbeat-ready state, ADR-808-8 supersede, and
-clean shutdown with zero leaked tasks.
+**Phase 9.5 (Authentication & Registration): implemented.** `handlers/registration_handler.py`/
+`authentication_handler.py` — `0x0100 -> 0x8100`, `0x0102 -> 0x8001`. Depend only on an injected
+`DeviceProvisioningPort`; defaults to the fail-closed `NullDeviceProvisioningPort` (every
+registration/auth rejected until a real port is wired — none exists for this dormant vendor).
+Verified with 32 unit/integration tests.
 
-**Phase 9.6 (Position Pipeline): implemented.** `src/handlers/location_handler.py`
-(`LocationHandler`, `0x0200`) and `bulk_location_handler.py` (`BulkLocationHandler`, `0x0704`) —
-the integration point between this service and the completed Tracking bounded context. Parse
-the position body (`handlers/position_body.py`: JT/T 808-2013 §8.18 Table 23's fixed 28-byte
-layout — alarm flags, status bits, hemisphere-signed lat/lng, altitude, speed unit conversion
-1/10 km/h → whole km/h, heading, BCD GMT+8 time → UTC; `handlers/bulk_position_body.py`: §8.49
-Table 76/77's item-count-driven batch format, each item sharing `0x0200`'s body format),
-resolve the reporting terminal's `device_id`/`vehicle_id`/`organization_id` from its already-
-bound `DeviceSession` (Phase 9.2/9.5), and publish one `DevicePositionReported` event per
-position via the injected `EventPublisher` port (`events/publisher_port.py`) — `is_backfill=
-False` for `0x0200`, `True` for every item in a `0x0704` batch (Technical Design §10's uniform
-backfill classification for the whole message, not a per-item split on the primary spec's
-`position_data_type` byte — see `bulk_position_body.py`'s module docstring). Batch items publish
-sequentially (`await`ed in turn, never `asyncio.gather`) to preserve wire order.
+**Phase 9.6 (Position Pipeline): implemented.** `handlers/location_handler.py`/
+`bulk_location_handler.py` — `0x0200`/`0x0704`, publishing `DevicePositionReported` via the
+injected `EventPublisher`, never calling into `tracking` directly. Verified with 64 unit/
+integration tests.
 
-**Flagged and resolved before implementing:** the task's own literal wording ("Position handlers
-must communicate only through `TrackingApplicationService`") directly conflicted with every
-approved architecture document (`.claude/rules/architecture.md` #3, `.claude/rules/jt808.md` #1,
-JT808 Technical Design, Backend LLD §10.3, `docs/architecture/adr/0001-*`), which unanimously
-require the device plane to reach the business plane only via published domain events over a
-broker, never a synchronous in-process call. Confirmed with the user in favor of the approved
-architecture: **neither handler imports `tracking` or calls `TrackingApplicationService`** —
-they publish `DevicePositionReported` (`events/device_position_reported.py`, field-shape-
-identical to `RecordVehiclePositionCommand`/`RecordBackfillPositionCommand` by design) and stop.
-Geofence evaluation is consequently **not** triggered by this phase either — Tracking's own
-`evaluate_geofence` isn't even auto-invoked by its own `record_vehicle_position`; JT808 Technical
-Design §21.2 places persist-then-evaluate inside a not-yet-built Business API-side consumer of
-this event, not inside JT808. `trip_id` is always `None` (§10: no Redis-backed active-trip
-read-model exists yet — documented as the correct fallback, not a bug). No real broker/outbox
-exists either (none approved anywhere in this repo yet); `event_publisher` defaults to
-`LoggingEventPublisher`, a structured-log-only stand-in, mirroring `NullDeviceProvisioningPort`'s
-"framework only, no crash" stance from Phase 9.5. **Authenticated session required**: a `0x0200`/
-`0x0704` from a terminal with no bound `DeviceSession` (or one missing any of the three resolved
-identity fields) is logged at WARNING (audited) and dropped, without closing the connection. No
-wire response is sent for either message — JT808 Technical Design §8's Handler table documents
-no `0x8001` ack for either, and the primary spec's only response mention (per-alarm-bit,
-optional) is notification/business-response territory this phase's scope excludes. Verified with
-64 new unit and full-stack integration tests (position/batch body parsing incl. hemisphere signs,
-unit conversion, malformed/truncated rejection; handler-level tests against a recording publisher
-fake covering the task's full verification list; real-TCP integration tests) plus a manual
-verification script covering authenticate → single position → batch backfill → malformed packet
-→ unauthenticated drop → clean shutdown with zero leaked tasks.
+**Open item, still not resolved:** no handler in this stack calls `DeviceSessionManager.touch()`
+— real heartbeat business logic (`0x0002`) remains a `PlaceholderMessageHandler` no-op, so
+`AUTHENTICATED -> ONLINE` (and therefore `DeviceOnline`) never actually fires for this vendor
+today. Left as-is: this vendor is dormant (not the currently-integrated hardware), so building a
+real heartbeat handler has no operational value until a genuinely JT/T-808-compliant vendor is
+procured.
 
-**Open item flagged, not resolved this phase (kept in scope discipline):** Phase 9.5's own
-docstring anticipated "a future Heartbeat/Location handler" triggering the `AUTHENTICATED ->
-ONLINE` transition (`DeviceSessionManager.touch()`), but this phase's task instructions list
-neither "device online transition" nor a `touch()` call among what to implement — `LocationHandler`
-therefore does not call `touch()`, and nothing in this codebase yet does. A future phase should
-decide explicitly whether `LocationHandler` (live only, never `BulkLocationHandler` — backfilled
-data must never drive live/online state, `.claude/rules/jt808.md` #3) is the right trigger, or
-whether that stays exclusively a Heartbeat handler's job.
+**Not yet implemented:** message-specific body decoding for the remaining 4 named message IDs,
+real business logic for heartbeat/alarm/command-ack/logout, a concrete `DeviceProvisioningPort`
+implementation, Redis-backed session state for this vendor specifically (the shared
+`RedisDeviceSessionRegistry` exists and could back it once wired in — see the top-level Status
+section), and business-initiated command downlink.
 
-**Not yet implemented** (see `src/handlers/`, `src/commands/`, `src/events/`, `store/` above):
-message-specific body field decoding and the vendor Anti-Corruption Layer for the remaining 4
-message IDs, real business logic for heartbeat/alarm/command-ack/logout, a concrete
-`DeviceProvisioningPort` implementation (real credential/device-lookup logic), a real outbox +
-broker `EventPublisher` implementation, the `AUTHENTICATED -> ONLINE` transition trigger (open
-item above), the Redis-backed active-trip read-model `trip_id` resolution depends on, alarm
-processing beyond raw `alarm_flags` passthrough, Redis-backed session state, cross-shard command
-routing, and business-initiated command downlink (§12 — distinct from this phase's protocol-level
-automatic acks).
+---
 
-## LSZ MDVR vendor protocol stack (ADR-0009; roadmap tracks B1/B2)
+## `vendors/lsz/` — LSZ MDVR status (roadmap tracks B1/B2/B3)
 
-**The procured hardware does not speak JT/T 808** — `docs/vendor/HARDWARE_ANALYSIS.md` §2
-confirms it against this deployable's own JT/T 808-2013 parser (above), which cannot decode a
-single frame the actual hardware sends. `docs/architecture/adr/
-0009-mdvr-vendor-protocol-device-plane.md` records the resulting decision: this deployable gains
-a second, parallel protocol stack, `src/vendors/lsz_mdvr/`, terminating the vendor's own
-proprietary ASCII/binary protocol directly — the JT/T 808 stack above is kept exactly as
-documented, untouched, dormant, for a possible future genuinely-compliant vendor.
+The actually-procured hardware's real protocol (ADR-0009) — an ASCII/binary vendor protocol,
+confirmed unrelated to JT/T 808/1078 (`docs/vendor/HARDWARE_ANALYSIS.md` §2). Folder renamed
+`vendors/lsz_mdvr/` → `vendors/lsz/` (ADR-0010) — internal class names keep their `Mdvr` prefix
+(naming the hardware category, distinct from `lsz`, the vendor brand the folder is keyed on).
 
-```
-src/vendors/lsz_mdvr/
-├── protocol/     # $$dc...# ASCII framing/parsing/encoding, GPS D°M′S″ -> decimal-degree ACL
-│                 # (protocol/location_status.py — cross-validated against real-world Shenzhen
-│                 # coordinates in two independent worked examples, see its own module docstring)
-│                 #                                                  [implemented]
-├── dispatcher/   # Keyword-keyed (not message-ID-keyed) registry/dispatcher, mirroring
-│                 # src/dispatcher/'s shape exactly                  [implemented]
-├── handlers/     # Registration (V101 -> C100, binds DeviceSession directly - no separate
-│                 # auth message exists for this vendor), Heartbeat (V109 -> C501, promotes
-│                 # AUTHENTICATED -> ONLINE), Position (V114 -> DevicePositionReported, reusing
-│                 # src/events/ unchanged)                            [implemented]
-└── server.py     # MdvrServer composition root, reusing src/connection/ and src/session/
-                  # UNCHANGED (the one shared-file change: Connection/ConnectionManager gained
-                  # an injectable frame decoder, defaulting to the existing FrameBuffer - every
-                  # existing JT/T 808 test is unaffected, verified)    [implemented]
-```
+**Signaling protocol (B1/B2): implemented.** `protocol/` — `$$dc...#` ASCII framing/parsing/
+encoding, and a GPS D°M′S″-to-decimal-degree Anti-Corruption Layer (`location_status.py`,
+cross-validated against real-world Shenzhen coordinates in two independent vendor worked
+examples). `dispatcher/` — keyword-keyed (not message-ID-keyed) registry/dispatcher, mirroring
+`vendors/jt808/dispatcher/`'s shape. `handlers/` — registration (`V101 -> C100`, binds the
+`DeviceSession` directly since this protocol has no separate authentication message), heartbeat
+(`V109 -> C501`, promotes `AUTHENTICATED -> ONLINE`, now genuinely publishing `DeviceOnline` — see
+below), position (`V114 -> DevicePositionReported`, reusing the shared `events/` unchanged).
+`server.py` (`MdvrServer`) — reuses shared `connection/`/`session/` unchanged, implements
+`DeviceProtocolAdapter`.
 
-**Provisioning is deliberately simpler than the JT/T 808 stack's, not incomplete** — this
-vendor's protocol has no authentication step or credential at all (`docs/vendor/
-HARDWARE_ANALYSIS.md` §11); `MdvrDeviceProvisioningPort.authorize_registration` is a
-serial-number allow-list, full stop. `InMemoryMdvrDeviceProvisioningPort` is an explicitly-interim,
-directly-testable stand-in — the real, broker-driven device-registry projection (consuming
-`fleet_device`'s `DeviceRegistered`/`DeviceActivated`/`DeviceAssignedToVehicle` events, per the
-roadmap's revised B1) needs a Redis client dependency for this deployable that has been proposed
-but not yet approved (see `pyproject.toml`'s own comment) — tracked, not silently substituted.
+**Device provisioning: real, non-interim implementation now wired (Redis integration).**
+`ProjectionBackedMdvrProvisioningPort` resolves a device serial number against the shared
+`DeviceRegistryProjection`, itself kept current by `RedisDeviceRegistryConsumer` off
+`fleet_device`'s own domain events — replacing `InMemoryMdvrDeviceProvisioningPort` as
+`DeviceGateway`'s actual default whenever a broker is configured. Still, deliberately, a
+serial-number allow-list only: this vendor's protocol has no cryptographic authentication step at
+all (`docs/vendor/HARDWARE_ANALYSIS.md` §11) — the missing assurance is a network-layer
+compensating-control gap (`.claude/rules/security.md` #9), not solved by the registry.
 
-**Position ingestion publishes the real, unmodified `DevicePositionReported` event** via the same
-`EventPublisher` port the JT/T 808 stack uses, defaulting to the same `LoggingEventPublisher`
-until a real broker publisher is wired (same dependency-approval gate as above). The Business
-API's own consumer half is already built and tested (`backend/raad/modules/tracking/events/
-subscribers.py`'s `DevicePositionReportedProcessor`) and needs no further change once the
-producer side lands.
+**Event publishing: real, non-interim implementation now wired (Redis integration).** Position
+reports publish `DevicePositionReported`; the first heartbeat after registration now genuinely
+publishes `DeviceOnline` (previously only logged); a dropped/expired/closed connection genuinely
+publishes `DeviceOffline` with its close reason — all via the shared `RedisEventPublisher` when a
+broker is configured, `LoggingEventPublisher` otherwise. The Business API's own consumer half
+(`backend/raad/modules/tracking/events/subscribers.py`'s `DevicePositionReportedProcessor`) needs
+no further change and was proven, end to end, against this publisher's actual output.
 
-**Tested:** 49 unit/integration tests (`tests/test_mdvr_*.py`) against the vendor documents' own
-real worked examples (device `00007`), covering framing, parsing, GPS normalization, encoding,
-each handler in isolation, the dispatcher, and a full-stack real-socket integration test
-(register -> heartbeat -> position, plus rejection/unauthenticated-drop paths). All 226 pre-existing
-JT/T 808 tests continue to pass unmodified.
+**Tested:** 323 device-gateway tests total (up from 226 pre-LSZ), covering framing, parsing, GPS
+normalization, encoding, each handler in isolation, the dispatcher, `DeviceGateway`'s multi-adapter
+wiring (both with and without a broker configured), the Redis-backed event publisher/registry
+projection/registry consumer/session registry, and full-stack real-socket integration tests
+(register → heartbeat → position, `DeviceOnline`/`DeviceOffline` publish timing, rejection/
+unauthenticated-drop paths, and a regression test for a real bug ADR-0010 found and fixed: an
+oversized unterminated LSZ frame previously raised uncaught out of the read loop instead of
+closing the connection, because `Connection` only caught JT/T 808's own `FrameTooLargeError`
+subclass). All pre-existing JT/T 808 tests continue to pass unmodified.
 
 **Not yet implemented:** the media-channel protocol (live video/file transfer/firmware upgrade —
-roadmap track B3, a distinct vendor-protocol surface, `docs/vendor/HARDWARE_ANALYSIS.md` §6/§9);
-a real outbox + Redis Streams `EventPublisher`/`BrokerPort` implementation for this deployable
-(dependency proposed, not yet approved); the broker-driven device-registry projection; a Redis-
-backed `DeviceSessionRegistry` for this stack (`.claude/rules/jt808.md` #4, currently in-memory,
-same posture the JT/T 808 stack's own Phase 9.2 already accepted); the vendor's own
-"center-initiated, unprompted C501 every 6s" heartbeat behavior (this stack only acknowledges a
-device's own `V109`, see `handlers/heartbeat_handler.py`'s own module docstring); and the vendor's
-alarm-message family (`docs/vendor/HARDWARE_ANALYSIS.md` §8) — no RAAD bounded context has a
-documented home for raw device-hardware alarms yet (`docs/vendor/HARDWARE_INTEGRATION_PLAN.md`
-§10).
+roadmap track B3, `docs/vendor/HARDWARE_ANALYSIS.md` §6/§9); the vendor's own "center-initiated,
+unprompted `C501` every 6s" heartbeat behavior (this stack only acknowledges a device's own
+`V109`); a producer for `DeviceAlarmRaised` (no RAAD bounded context has a documented home for raw
+device-hardware alarms yet, `docs/vendor/HARDWARE_INTEGRATION_PLAN.md` §10); wiring
+`RedisDeviceSessionRegistry` as this vendor's actual session store (see top-level Status section).

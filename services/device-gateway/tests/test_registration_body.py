@@ -4,8 +4,8 @@ decoding, null-padding stripping, GBK vehicle identifier, and the too-short-body
 
 import unittest
 
-from src.handlers.registration_body import parse_registration_request
-from src.protocol.exceptions import MalformedFrameError
+from src.vendors.jt808.handlers.registration_body import parse_registration_request
+from src.vendors.jt808.protocol.exceptions import MalformedFrameError
 
 
 def _fixed_body(

@@ -7,8 +7,8 @@ already applies to JT/T 808's binary layout.
 import unittest
 from datetime import datetime, timezone
 
-from src.vendors.lsz_mdvr.protocol.exceptions import MdvrMalformedMessageError
-from src.vendors.lsz_mdvr.protocol.parser import parse_frame
+from src.vendors.lsz.protocol.exceptions import MdvrMalformedMessageError
+from src.vendors.lsz.protocol.parser import parse_frame
 
 _RECEIVED_AT = datetime(2026, 7, 24, tzinfo=timezone.utc)
 

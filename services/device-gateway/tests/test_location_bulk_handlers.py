@@ -11,12 +11,12 @@ required.
 import unittest
 from datetime import datetime, timezone
 
-from src.dispatcher.handler import HandlerContext
+from src.vendors.jt808.dispatcher.handler import HandlerContext
 from src.events.device_position_reported import DevicePositionReported
-from src.handlers.bulk_location_handler import BulkLocationHandler
-from src.handlers.location_handler import LocationHandler
-from src.protocol.exceptions import MalformedFrameError
-from src.protocol.message import InboundMessage
+from src.vendors.jt808.handlers.bulk_location_handler import BulkLocationHandler
+from src.vendors.jt808.handlers.location_handler import LocationHandler
+from src.vendors.jt808.protocol.exceptions import MalformedFrameError
+from src.vendors.jt808.protocol.message import InboundMessage
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
 from tests.test_position_body import _build_body

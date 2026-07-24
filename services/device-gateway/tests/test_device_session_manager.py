@@ -53,10 +53,13 @@ class FirstLoginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_first_touch_promotes_to_online(self) -> None:
         online_calls = []
-        manager, _, _ = make_manager(on_device_online=lambda s: online_calls.append(s))
+        async def _on_online(s):
+            online_calls.append(s)
+
+        manager, _, _ = make_manager(on_device_online=_on_online)
         session = await manager.create(connection_id="conn-1", terminal_id="TERM-1")
 
-        manager.touch("TERM-1")
+        await manager.touch("TERM-1")
 
         self.assertEqual(session.state, DeviceConnectivityState.ONLINE)
         self.assertEqual(len(online_calls), 1)
@@ -64,12 +67,15 @@ class FirstLoginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_second_touch_does_not_refire_online(self) -> None:
         online_calls = []
-        manager, _, _ = make_manager(on_device_online=lambda s: online_calls.append(s))
+        async def _on_online(s):
+            online_calls.append(s)
+
+        manager, _, _ = make_manager(on_device_online=_on_online)
         await manager.create(connection_id="conn-1", terminal_id="TERM-1")
 
-        manager.touch("TERM-1")
-        manager.touch("TERM-1")
-        manager.touch("TERM-1")
+        await manager.touch("TERM-1")
+        await manager.touch("TERM-1")
+        await manager.touch("TERM-1")
 
         self.assertEqual(len(online_calls), 1)
 
@@ -78,12 +84,12 @@ class FirstLoginTests(unittest.IsolatedAsyncioTestCase):
         session = await manager.create(connection_id="conn-1", terminal_id="TERM-1")
         before = session.last_seen_at
         await asyncio.sleep(0.05)
-        manager.touch("TERM-1")
+        await manager.touch("TERM-1")
         self.assertGreater(session.last_seen_at, before)
 
     async def test_touch_unknown_terminal_is_a_noop(self) -> None:
         manager, _, _ = make_manager()
-        manager.touch("does-not-exist")  # must not raise
+        await manager.touch("does-not-exist")  # must not raise
 
     async def test_resolve_returns_session(self) -> None:
         manager, _, _ = make_manager()
@@ -177,9 +183,11 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
 class DisconnectCleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_handle_connection_closed_closes_bound_session(self) -> None:
         offline_calls = []
-        manager, registry, _ = make_manager(
-            on_device_offline=lambda s, reason: offline_calls.append((s, reason))
-        )
+
+        async def _on_offline(s, reason):
+            offline_calls.append((s, reason))
+
+        manager, registry, _ = make_manager(on_device_offline=_on_offline)
         session = await manager.create(connection_id="conn-1", terminal_id="TERM-1")
 
         await manager.handle_connection_closed("conn-1")
@@ -211,9 +219,11 @@ class DisconnectCleanupTests(unittest.IsolatedAsyncioTestCase):
 class HeartbeatTimeoutTests(unittest.IsolatedAsyncioTestCase):
     async def test_sweep_expires_stale_sessions(self) -> None:
         offline_calls = []
-        manager, registry, _ = make_manager(
-            on_device_offline=lambda s, reason: offline_calls.append((s, reason))
-        )
+
+        async def _on_offline(s, reason):
+            offline_calls.append((s, reason))
+
+        manager, registry, _ = make_manager(on_device_offline=_on_offline)
         await manager.create(connection_id="conn-1", terminal_id="TERM-1")
 
         await asyncio.sleep(0.1)
@@ -236,7 +246,7 @@ class HeartbeatTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         for _ in range(4):
             await asyncio.sleep(0.03)
-            manager.touch("TERM-1")
+            await manager.touch("TERM-1")
             await manager._sweep_once(timeout_seconds=0.1)
 
         self.assertEqual(len(registry), 1)  # kept alive by repeated touches

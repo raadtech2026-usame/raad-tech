@@ -4,8 +4,8 @@ mapping, auth-code-present-only-on-success, and echoed original serial number.
 
 import unittest
 
-from src.handlers.provisioning_port import RegistrationResult
-from src.handlers.registration_response import build_registration_response_body
+from src.vendors.jt808.handlers.provisioning_port import RegistrationResult
+from src.vendors.jt808.handlers.registration_response import build_registration_response_body
 
 
 class RegistrationResponseEncodingTests(unittest.TestCase):

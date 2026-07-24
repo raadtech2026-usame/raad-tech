@@ -3,7 +3,7 @@
 import os
 import unittest
 
-from src.config import ServerConfig
+from src.vendors.jt808.config import ServerConfig
 
 
 class ServerConfigTests(unittest.TestCase):

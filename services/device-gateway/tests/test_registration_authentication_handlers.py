@@ -12,19 +12,19 @@ import asyncio
 import unittest
 from datetime import datetime, timezone
 
-from src.dispatcher.general_response import RESULT_FAILURE, RESULT_SUCCESS
-from src.dispatcher.handler import HandlerContext
-from src.handlers.authentication_handler import TerminalAuthenticationHandler
-from src.handlers.provisioning_port import (
+from src.vendors.jt808.dispatcher.general_response import RESULT_FAILURE, RESULT_SUCCESS
+from src.vendors.jt808.dispatcher.handler import HandlerContext
+from src.vendors.jt808.handlers.authentication_handler import TerminalAuthenticationHandler
+from src.vendors.jt808.handlers.provisioning_port import (
     AuthenticationResult,
     DeviceProvisioningPort,
     RegistrationAuthorization,
     RegistrationResult,
 )
-from src.handlers.registration_handler import TerminalRegistrationHandler
-from src.handlers.registration_response import REGISTRATION_RESPONSE_MESSAGE_ID
-from src.protocol.exceptions import MalformedFrameError
-from src.protocol.message import InboundMessage
+from src.vendors.jt808.handlers.registration_handler import TerminalRegistrationHandler
+from src.vendors.jt808.handlers.registration_response import REGISTRATION_RESPONSE_MESSAGE_ID
+from src.vendors.jt808.protocol.exceptions import MalformedFrameError
+from src.vendors.jt808.protocol.message import InboundMessage
 from src.session.device_session import DeviceConnectivityState
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry

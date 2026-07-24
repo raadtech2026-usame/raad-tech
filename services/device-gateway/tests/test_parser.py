@@ -6,10 +6,10 @@ independent reference logic, not by reusing the modules under test.
 import unittest
 from datetime import datetime, timezone
 
-from src.protocol.checksum import compute_checksum
-from src.protocol.escaping import ESCAPE_MARKER
-from src.protocol.exceptions import ChecksumError, MalformedFrameError
-from src.protocol.parser import PacketParser
+from src.vendors.jt808.protocol.checksum import compute_checksum
+from src.vendors.jt808.protocol.escaping import ESCAPE_MARKER
+from src.vendors.jt808.protocol.exceptions import ChecksumError, MalformedFrameError
+from src.vendors.jt808.protocol.parser import PacketParser
 from tests.test_header import bcd_phone
 
 

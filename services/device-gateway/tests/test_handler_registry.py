@@ -2,9 +2,9 @@
 
 import unittest
 
-from src.dispatcher.exceptions import DuplicateHandlerError
-from src.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
-from src.dispatcher.registry import HandlerRegistry
+from src.vendors.jt808.dispatcher.exceptions import DuplicateHandlerError
+from src.vendors.jt808.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
+from src.vendors.jt808.dispatcher.registry import HandlerRegistry
 
 
 class _StubHandler(MessageHandler):

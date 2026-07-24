@@ -21,14 +21,14 @@ direct access to a `Connection` object.
 `Connection` access" pattern, used by the Message Dispatcher (`dispatcher/dispatcher.py`) to
 send automatic-acknowledgment frames back to whichever connection a message arrived on.
 
-**`frame_buffer_factory` (ADR-0009 addition):** mirrors `Connection`'s own new injectable
-`frame_buffer` parameter one level up — a zero-arg callable invoked once per newly accepted
-connection to produce that connection's own frame-decoder instance (a `FrameBuffer` is stateful
-per-connection, so a *factory*, not a shared instance, is what needs threading through here).
-Defaults to `None`, which leaves every existing connection's `Connection` construction exactly as
-before (JT/T 808's own `FrameBuffer`, built internally). A vendor-specific server composition root
-(`vendors/lsz_mdvr/server.py`) passes its own factory to get its own frame decoder per connection,
-without duplicating this class.
+**`frame_buffer_factory` (device-gateway multi-vendor architecture) is a required constructor
+parameter** — mirrors `Connection`'s own required `frame_buffer` parameter one level up: a
+zero-arg callable invoked once per newly accepted connection to produce that connection's own
+frame-decoder instance (a frame buffer is stateful per-connection, so a *factory*, not a shared
+instance, is what needs threading through here). Every vendor's own server composition root
+(`vendors/<name>/server.py`) supplies its own factory (already fully configured via closure with
+whatever frame-size ceiling that vendor needs) — this manager holds no `max_frame_size` concept
+of its own at all, exactly like `Connection` no longer does.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from src.logging_setup import get_logger, log_with_fields
 from src.session.registry import SessionRegistry
 from src.session.session import ConnectionSession
 
-logger = get_logger("jt808.connection_manager")
+logger = get_logger("device_gateway.connection_manager")
 
 FrameHandler = Callable[[str, bytes], Awaitable[None]]
 
@@ -61,16 +61,14 @@ class ConnectionManager:
         *,
         session_registry: SessionRegistry,
         read_chunk_size: int,
-        max_frame_size: int,
         idle_timeout_seconds: float,
         sweep_interval_seconds: float,
+        frame_buffer_factory: Callable[[], object],
         on_frame: FrameHandler | None = None,
         on_connection_closed: Callable[[str], Awaitable[None]] | None = None,
-        frame_buffer_factory: Callable[[], object] | None = None,
     ) -> None:
         self._sessions = session_registry
         self._read_chunk_size = read_chunk_size
-        self._max_frame_size = max_frame_size
         self._idle_timeout_seconds = idle_timeout_seconds
         self._sweep_interval_seconds = sweep_interval_seconds
         self._on_frame = on_frame or _default_on_frame
@@ -93,13 +91,10 @@ class ConnectionManager:
             reader=reader,
             writer=writer,
             read_chunk_size=self._read_chunk_size,
-            max_frame_size=self._max_frame_size,
             on_frame=self._on_frame,
             on_activity=session.touch,
             on_close=self._handle_connection_closed,
-            frame_buffer=(
-                self._frame_buffer_factory() if self._frame_buffer_factory else None
-            ),
+            frame_buffer=self._frame_buffer_factory(),
         )
         self._connections[connection_id] = connection
         self._sessions.add(session)

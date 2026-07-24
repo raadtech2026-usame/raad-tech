@@ -5,8 +5,8 @@ format, plus malformed/truncated-batch rejection.
 
 import unittest
 
-from src.handlers.bulk_position_body import parse_bulk_position_report
-from src.protocol.exceptions import MalformedFrameError
+from src.vendors.jt808.handlers.bulk_position_body import parse_bulk_position_report
+from src.vendors.jt808.protocol.exceptions import MalformedFrameError
 from tests.test_position_body import _build_body
 
 

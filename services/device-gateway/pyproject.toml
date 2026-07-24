@@ -1,25 +1,26 @@
-# JT808 TCP Transport Service — package configuration.
+# Device Gateway — package configuration (device-gateway multi-vendor architecture, formerly
+# `raad-jt808-service`; see `docs/architecture/adr/0010-device-gateway-multi-vendor-architecture.md`).
 #
 # Independent deployable (`.claude/rules/architecture.md` #2) — no dependency on
-# `backend/raad` and vice versa. Phase 9.1 (Transport Layer) uses only the Python standard
-# library (`asyncio` for the TCP server/event loop, `dataclasses`/`logging`/`enum` for
-# everything else) — zero third-party dependencies, so no new-dependency approval is needed
-# this phase (`.claude/rules/workflow.md` #1/#2). Add a dependencies list here only when a
-# later phase genuinely needs one (e.g. a Redis client for session state,
-# `.claude/rules/jt808.md` #4).
+# `backend/raad` and vice versa. Phases 9.1-9.6 used only the Python standard library
+# (`asyncio`/`dataclasses`/`logging`/`enum`) — zero third-party dependencies through the initial
+# JT/T 808 build-out and the subsequent LSZ MDVR vendor adapter (B1/B2).
 #
-# PROPOSED, NOT YET APPROVED (roadmap tracks B1/B2, ADR-0009): `redis` (the same `redis-py`/
+# APPROVED (device-gateway Redis integration, user-confirmed): `redis` (the same `redis-py`/
 # `redis.asyncio` client already approved for the Business API, Backend Stabilization phase /
-# ADR-0008) would let this deployable's `src/vendors/lsz_mdvr/` stack (1) publish
-# `DevicePositionReported` onto the shared `raad:events` Redis Stream instead of only logging it
-# (`LoggingEventPublisher`), so the Business API's already-built `tracking/events/subscribers.
-# DevicePositionReportedProcessor` actually receives events; (2) back `DeviceSessionRegistry`
-# with Redis instead of in-memory state (`.claude/rules/jt808.md` #4); (3) consume
-# `fleet_device`'s `DeviceRegistered`/`DeviceActivated`/`DeviceAssignedToVehicle` events to
-# populate a real device-registry projection, replacing `InMemoryMdvrDeviceProvisioningPort`.
-# No new dependency has been installed here — per `.claude/rules/workflow.md` #1/#2 this needs
-# explicit go-ahead first, a checkpoint that applies to this deployable's own manifest
-# independently of the Business API already using the same package.
+# ADR-0008) — same version pin as `backend/pyproject.toml` for consistency, though the two
+# deployables' dependency manifests remain fully independent (`.claude/rules/workflow.md` #1/#2:
+# approval for one deployable is not automatic approval for another). Backs:
+# (1) `RedisEventPublisher` — publishes `DevicePositionReported`/`DeviceOnline`/`DeviceOffline`/
+#     `DeviceAlarmRaised` onto the shared `raad:events` Redis Stream (ADR-0008) every vendor
+#     adapter uses identically, so the Business API's `tracking/events/subscribers.
+#     DevicePositionReportedProcessor` (and any future consumer of the other three) receives them.
+# (2) `RedisDeviceRegistryProjection` — replaces the interim in-memory allow-lists
+#     (`NullDeviceProvisioningPort`/`InMemoryMdvrDeviceProvisioningPort`) with a real projection
+#     consuming `fleet_device`'s own `DeviceRegistered`/`DeviceActivated`/`DeviceSuspended`/
+#     `DeviceAssignedToVehicle`/`DeviceUnassignedFromVehicle` events off the same broker.
+# (3) `RedisDeviceSessionRegistry` — Redis-backed `DeviceSessionRegistry` (`.claude/rules/
+#     jt808.md` #4's "session state lives in Redis"), replacing the in-memory default.
 #
 # Dependency management tool (Poetry/PDM/plain pip) is not yet decided by approved
 # documentation — this file uses the PEP 621 format, installable with plain
@@ -27,11 +28,13 @@
 # takes.
 
 [project]
-name = "raad-jt808-service"
-version = "0.1.0"
-description = "RAAD Platform — JT808 device-plane TCP transport service"
+name = "raad-device-gateway-service"
+version = "0.2.0"
+description = "RAAD Platform — multi-vendor device-plane gateway (JT/T 808, LSZ MDVR, ...)"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "redis>=5.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

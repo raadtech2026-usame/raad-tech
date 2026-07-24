@@ -10,14 +10,14 @@ import asyncio
 import unittest
 from datetime import datetime, timezone
 
-from src.config import ServerConfig
-from src.dispatcher import message_ids
-from src.dispatcher.handler import HandlerResult
-from src.protocol.checksum import compute_checksum
-from src.protocol.escaping import escape
-from src.protocol.header import encode_bcd_phone
-from src.protocol.parser import PacketParser
-from src.server import Jt808Server
+from src.vendors.jt808.config import ServerConfig
+from src.vendors.jt808.dispatcher import message_ids
+from src.vendors.jt808.dispatcher.handler import HandlerResult
+from src.vendors.jt808.protocol.checksum import compute_checksum
+from src.vendors.jt808.protocol.escaping import escape
+from src.vendors.jt808.protocol.header import encode_bcd_phone
+from src.vendors.jt808.protocol.parser import PacketParser
+from src.vendors.jt808.server import Jt808Server
 
 
 def build_wire_frame(

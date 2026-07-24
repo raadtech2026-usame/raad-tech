@@ -6,8 +6,8 @@ whole km/h), heading passthrough, and BCD GMT+8 time -> UTC conversion.
 import unittest
 from datetime import datetime, timezone
 
-from src.handlers.position_body import parse_position_report_body
-from src.protocol.exceptions import MalformedFrameError
+from src.vendors.jt808.handlers.position_body import parse_position_report_body
+from src.vendors.jt808.protocol.exceptions import MalformedFrameError
 
 
 def _bcd_byte(tens: int, ones: int) -> int:

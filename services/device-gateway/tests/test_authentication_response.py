@@ -4,7 +4,7 @@ Phase 9.5; JT/T 808-2013 §8.2 Table 5): echoed serial/message-id and the succes
 
 import unittest
 
-from src.dispatcher.general_response import (
+from src.vendors.jt808.dispatcher.general_response import (
     RESULT_FAILURE,
     RESULT_SUCCESS,
     build_general_response_body,

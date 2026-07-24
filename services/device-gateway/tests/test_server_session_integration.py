@@ -9,8 +9,8 @@ superseding a duplicate terminal closes the old socket), not to simulate the JT8
 import asyncio
 import unittest
 
-from src.config import ServerConfig
-from src.server import Jt808Server
+from src.vendors.jt808.config import ServerConfig
+from src.vendors.jt808.server import Jt808Server
 
 
 class ServerSessionIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -143,7 +143,7 @@ class ServerSessionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.server.device_sessions.create(
             connection_id=connection_id, terminal_id="TERM-LEAK-CHECK"
         )
-        self.server.device_sessions.touch("TERM-LEAK-CHECK")
+        await self.server.device_sessions.touch("TERM-LEAK-CHECK")
         writer.close()
         await writer.wait_closed()
         await asyncio.sleep(0.1)

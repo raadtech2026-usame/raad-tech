@@ -21,18 +21,25 @@ literal ordering — consistent with the draft's "`DeviceOnline`/`DeviceOffline`
   no node identity concept exists yet. `resolve()` here (this class's `get`) returns the
   `DeviceSession` itself, which already carries every field except `node_id`.
 - Redis as the backing store (`.claude/rules/jt808.md` #4) — `DeviceSessionRegistry` is
-  in-memory, matching Phase 9.1's identical, already-accepted stance.
-- Actually emitting `DeviceOnline`/`DeviceOffline` **domain events** (over an outbox/broker) —
-  that needs `src/events/` (not built) and is arguably business-adjacent publishing this
-  phase's "no business logic" boundary excludes. `on_device_online`/`on_device_offline`/
-  `on_session_superseded` are injected callbacks, defaulting to log-only, exactly mirroring
-  `connection/manager.py`'s `_default_on_frame` pattern — a later phase wires a real event
-  publisher here without changing this class.
+  in-memory, matching Phase 9.1's identical, already-accepted stance (superseded for the
+  device-gateway's actual production posture by `RedisDeviceSessionRegistry`, see
+  `docs/architecture/adr/0010-device-gateway-multi-vendor-architecture.md` — this in-memory
+  registry remains the default for tests and any deployment without Redis configured).
 - Credential/token verification (`.claude/rules/jt808.md` #5's "unauthenticated devices
   rejected") — `create()` assumes the caller (a future `AuthHandler`) already verified the
   auth token; this class does zero verification of its own, per the task's explicit split
   between "bind after successful authentication" (this phase) and "authentication packet
   handling" (not this phase).
+
+**`on_device_online`/`on_device_offline` are now awaitable** (device-gateway Redis integration):
+originally sync, log-only callbacks — `touch()`/`close()` now `await` them, so a composition root
+can wire a callback that both logs (unchanged) *and* publishes a real `DeviceOnline`/
+`DeviceOffline` event via `EventPublisher`, without this class itself importing anything from
+`src/events/` (it still only ever calls an injected callback, exactly the `connection/manager.py`
+`_default_on_frame` pattern this module always followed — only the callback's *type* changed, from
+sync to awaitable). `on_session_superseded` stays synchronous — superseding a duplicate terminal
+is a connectivity-bookkeeping fact, not one of the four domain events this refactor's own scope
+names.
 """
 
 from __future__ import annotations
@@ -45,19 +52,19 @@ from src.logging_setup import get_logger, log_with_fields
 from src.session.device_session import DeviceConnectivityState, DeviceSession
 from src.session.device_session_registry import DeviceSessionRegistry
 
-logger = get_logger("jt808.device_session_manager")
+logger = get_logger("device_gateway.device_session_manager")
 
-OnDeviceOnline = Callable[[DeviceSession], None]
-OnDeviceOffline = Callable[[DeviceSession, str], None]
+OnDeviceOnline = Callable[[DeviceSession], Awaitable[None]]
+OnDeviceOffline = Callable[[DeviceSession, str], Awaitable[None]]
 OnSessionSuperseded = Callable[[DeviceSession, DeviceSession], None]
 CloseConnection = Callable[[str, str], Awaitable[None]]
 
 
-def _default_on_device_online(session: DeviceSession) -> None:
+async def _default_on_device_online(session: DeviceSession) -> None:
     log_with_fields(logger, 20, "device_online", terminal_id=session.terminal_id)
 
 
-def _default_on_device_offline(session: DeviceSession, reason: str) -> None:
+async def _default_on_device_offline(session: DeviceSession, reason: str) -> None:
     log_with_fields(
         logger, 20, "device_offline", terminal_id=session.terminal_id, reason=reason
     )
@@ -131,18 +138,19 @@ class DeviceSessionManager:
 
         return session
 
-    def touch(self, terminal_id: str) -> None:
+    async def touch(self, terminal_id: str) -> None:
         """Phase 3.4 §5's `touch(terminal_id, at)` — "heartbeat/location updates last_seen".
-        No message parsing happens here (Phase 9.2 scope); a future heartbeat/location
-        handler calls this once it exists. The first call after `create()` promotes
-        `AUTHENTICATED -> ONLINE` — see module docstring's resolved conflict."""
+        No message parsing happens here (Phase 9.2 scope); a heartbeat/location handler calls
+        this. The first call after `create()` promotes `AUTHENTICATED -> ONLINE` — see module
+        docstring's resolved conflict. `async` (device-gateway Redis integration) so the
+        `on_device_online` callback can actually publish an event, not just log one."""
         session = self._registry.get(terminal_id)
         if session is None:
             return
         session.touch()
         if session.state == DeviceConnectivityState.AUTHENTICATED:
             session.mark_online()
-            self._on_device_online(session)
+            await self._on_device_online(session)
 
     def resolve(self, terminal_id: str) -> DeviceSession | None:
         """Phase 3.4 §5's `resolve(terminal_id) -> {...}` — returns the `DeviceSession`
@@ -159,7 +167,7 @@ class DeviceSessionManager:
             return
         session.mark_offline()
         self._registry.remove_if_current(terminal_id, session)
-        self._on_device_offline(session, reason)
+        await self._on_device_offline(session, reason)
 
     async def handle_connection_closed(self, connection_id: str) -> None:
         """Bridges a dropped transport connection (`connection/manager.py`'s

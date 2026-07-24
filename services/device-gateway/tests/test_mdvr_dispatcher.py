@@ -8,15 +8,15 @@ from datetime import datetime, timezone
 
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
-from src.vendors.lsz_mdvr.dispatcher.dispatcher import MdvrMessageDispatcher
-from src.vendors.lsz_mdvr.dispatcher.handler import (
+from src.vendors.lsz.dispatcher.dispatcher import MdvrMessageDispatcher
+from src.vendors.lsz.dispatcher.handler import (
     MdvrHandlerContext,
     MdvrHandlerResult,
     MdvrMessageHandler,
 )
-from src.vendors.lsz_mdvr.dispatcher.registry import MdvrHandlerRegistry
-from src.vendors.lsz_mdvr.protocol.message import MdvrInboundMessage
-from src.vendors.lsz_mdvr.protocol.parser import parse_frame
+from src.vendors.lsz.dispatcher.registry import MdvrHandlerRegistry
+from src.vendors.lsz.protocol.message import MdvrInboundMessage
+from src.vendors.lsz.protocol.parser import parse_frame
 
 
 def _make_message(keyword: str = "V109") -> MdvrInboundMessage:

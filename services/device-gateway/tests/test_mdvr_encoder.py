@@ -3,8 +3,8 @@
 import unittest
 from datetime import datetime, timezone
 
-from src.vendors.lsz_mdvr.protocol.encoder import build_frame, format_sent_at
-from src.vendors.lsz_mdvr.protocol.parser import parse_frame
+from src.vendors.lsz.protocol.encoder import build_frame, format_sent_at
+from src.vendors.lsz.protocol.parser import parse_frame
 
 
 class FormatSentAtTests(unittest.TestCase):

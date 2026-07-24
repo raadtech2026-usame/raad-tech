@@ -6,8 +6,8 @@ bodies — no field parsing exists yet in this phase, so bodies are arbitrary by
 import asyncio
 import unittest
 
-from src.config import ServerConfig
-from src.server import Jt808Server
+from src.vendors.jt808.config import ServerConfig
+from src.vendors.jt808.server import Jt808Server
 
 
 class ServerIntegrationTests(unittest.IsolatedAsyncioTestCase):

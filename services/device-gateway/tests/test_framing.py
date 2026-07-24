@@ -4,7 +4,7 @@ itself flags dev tooling as "not yet decided by approved documentation")."""
 
 import unittest
 
-from src.protocol.framing import FrameBuffer, FrameTooLargeError
+from src.vendors.jt808.protocol.framing import FrameBuffer, FrameTooLargeError
 
 
 class FrameBufferTests(unittest.TestCase):

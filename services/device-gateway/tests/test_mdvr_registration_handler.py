@@ -8,14 +8,14 @@ from datetime import datetime, timezone
 
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
-from src.vendors.lsz_mdvr.dispatcher.handler import MdvrHandlerContext
-from src.vendors.lsz_mdvr.handlers.provisioning_port import (
+from src.vendors.lsz.dispatcher.handler import MdvrHandlerContext
+from src.vendors.lsz.handlers.provisioning_port import (
     MdvrDeviceProvisioningPort,
     MdvrRegistrationAuthorization,
     MdvrRegistrationResult,
 )
-from src.vendors.lsz_mdvr.handlers.registration_handler import MdvrRegistrationHandler
-from src.vendors.lsz_mdvr.protocol.message import MdvrInboundMessage
+from src.vendors.lsz.handlers.registration_handler import MdvrRegistrationHandler
+from src.vendors.lsz.protocol.message import MdvrInboundMessage
 
 
 def _make_message(

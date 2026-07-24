@@ -10,19 +10,19 @@ import asyncio
 import unittest
 from datetime import datetime, timezone
 
-from src.config import ServerConfig
-from src.handlers.provisioning_port import (
+from src.vendors.jt808.config import ServerConfig
+from src.vendors.jt808.handlers.provisioning_port import (
     AuthenticationResult,
     DeviceProvisioningPort,
     RegistrationAuthorization,
     RegistrationResult,
 )
-from src.protocol.checksum import compute_checksum
-from src.protocol.escaping import escape
-from src.protocol.header import encode_bcd_phone
-from src.protocol.parser import PacketParser
-from src.protocol.strings import encode_gbk_string
-from src.server import Jt808Server
+from src.vendors.jt808.protocol.checksum import compute_checksum
+from src.vendors.jt808.protocol.escaping import escape
+from src.vendors.jt808.protocol.header import encode_bcd_phone
+from src.vendors.jt808.protocol.parser import PacketParser
+from src.vendors.jt808.protocol.strings import encode_gbk_string
+from src.vendors.jt808.server import Jt808Server
 
 TERMINAL_PHONE = "013800138000"
 AUTH_CODE = "GRANTED-CODE-1"

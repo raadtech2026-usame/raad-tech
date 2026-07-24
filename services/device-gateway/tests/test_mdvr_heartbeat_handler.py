@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from src.session.device_session import DeviceConnectivityState
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
-from src.vendors.lsz_mdvr.dispatcher.handler import MdvrHandlerContext
-from src.vendors.lsz_mdvr.handlers.heartbeat_handler import MdvrHeartbeatHandler
-from src.vendors.lsz_mdvr.protocol.message import MdvrInboundMessage
+from src.vendors.lsz.dispatcher.handler import MdvrHandlerContext
+from src.vendors.lsz.handlers.heartbeat_handler import MdvrHeartbeatHandler
+from src.vendors.lsz.protocol.message import MdvrInboundMessage
 
 
 def _make_message(*, device_serial_number: str = "00007") -> MdvrInboundMessage:

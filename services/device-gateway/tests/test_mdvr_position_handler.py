@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 from src.events.device_position_reported import DevicePositionReported
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
-from src.vendors.lsz_mdvr.dispatcher.handler import MdvrHandlerContext
-from src.vendors.lsz_mdvr.handlers.position_handler import MdvrPositionHandler
-from src.vendors.lsz_mdvr.protocol.message import MdvrInboundMessage
+from src.vendors.lsz.dispatcher.handler import MdvrHandlerContext
+from src.vendors.lsz.handlers.position_handler import MdvrPositionHandler
+from src.vendors.lsz.protocol.message import MdvrInboundMessage
 
 _LOCATION_STATUS_FIELDS = [
     "A0010",

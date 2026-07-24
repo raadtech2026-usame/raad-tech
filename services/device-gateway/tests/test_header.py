@@ -2,8 +2,8 @@
 
 import unittest
 
-from src.protocol.exceptions import MalformedFrameError
-from src.protocol.header import parse_header
+from src.vendors.jt808.protocol.exceptions import MalformedFrameError
+from src.vendors.jt808.protocol.header import parse_header
 
 
 def bcd_phone(digits: str) -> bytes:

@@ -6,15 +6,15 @@ import asyncio
 import unittest
 from datetime import datetime, timezone
 
-from src.dispatcher.dispatcher import MessageDispatcher
-from src.dispatcher.general_response import (
+from src.vendors.jt808.dispatcher.dispatcher import MessageDispatcher
+from src.vendors.jt808.dispatcher.general_response import (
     GENERAL_RESPONSE_MESSAGE_ID,
     RESULT_NOT_SUPPORTED,
 )
-from src.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
-from src.dispatcher.registry import HandlerRegistry
-from src.dispatcher.unknown_handler import UnknownMessageHandler
-from src.protocol.message import InboundMessage
+from src.vendors.jt808.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
+from src.vendors.jt808.dispatcher.registry import HandlerRegistry
+from src.vendors.jt808.dispatcher.unknown_handler import UnknownMessageHandler
+from src.vendors.jt808.protocol.message import InboundMessage
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
 
@@ -142,7 +142,7 @@ class UnknownMessageDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frame[-1], 0x7E)
 
     async def test_unknown_message_response_decodes_to_not_supported(self) -> None:
-        from src.protocol.parser import PacketParser
+        from src.vendors.jt808.protocol.parser import PacketParser
 
         dispatcher, _, sender = make_dispatcher()
         await dispatcher.dispatch("conn-1", make_message(0x9999, serial_no=42))
@@ -244,7 +244,7 @@ class ResponsePropagationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sender.sent, [])
 
     async def test_outbound_serial_number_increments_across_responses(self) -> None:
-        from src.protocol.parser import PacketParser
+        from src.vendors.jt808.protocol.parser import PacketParser
 
         dispatcher, _, sender = make_dispatcher()  # unknown handler always responds
         await dispatcher.dispatch("conn-1", make_message(0x9998, serial_no=1))
@@ -289,7 +289,7 @@ class ConcurrentDispatchTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        from src.protocol.parser import PacketParser
+        from src.vendors.jt808.protocol.parser import PacketParser
 
         parser = PacketParser()
         serials = [
@@ -301,7 +301,7 @@ class ConcurrentDispatchTests(unittest.IsolatedAsyncioTestCase):
         header_serials = []
         for _, frame in sender.sent:
             unescaped_minus_delims = frame[1:-1]
-            from src.protocol.escaping import unescape
+            from src.vendors.jt808.protocol.escaping import unescape
 
             unescaped = unescape(unescaped_minus_delims)
             header_serials.append(int.from_bytes(unescaped[10:12], "big"))

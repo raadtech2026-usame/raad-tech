@@ -2,8 +2,8 @@
 
 import unittest
 
-from src.protocol.exceptions import ReassemblyOverflowError
-from src.protocol.reassembly import MessageReassembler
+from src.vendors.jt808.protocol.exceptions import ReassemblyOverflowError
+from src.vendors.jt808.protocol.reassembly import MessageReassembler
 
 
 class MessageReassemblerTests(unittest.TestCase):

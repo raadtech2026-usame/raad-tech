@@ -3,8 +3,8 @@
 
 import unittest
 
-from src.vendors.lsz_mdvr.protocol.exceptions import MdvrFrameTooLargeError
-from src.vendors.lsz_mdvr.protocol.framing import MdvrFrameBuffer
+from src.vendors.lsz.protocol.exceptions import MdvrFrameTooLargeError
+from src.vendors.lsz.protocol.framing import MdvrFrameBuffer
 
 
 class MdvrFrameBufferTests(unittest.TestCase):

@@ -12,14 +12,19 @@ Dispatcher plugs in here without changing this class. `on_activity` and `on_clos
 likewise injected so lifecycle bookkeeping lives in `session/`/`connection/manager.py`, not
 duplicated here.
 
-**`frame_buffer` (ADR-0009 addition):** this class always constructed its own concrete
+**`frame_buffer` (device-gateway multi-vendor architecture) is a required constructor
+parameter, not a JT/T-808-flavored default.** This class used to construct its own concrete
 `protocol.framing.FrameBuffer` internally — the one place its own "protocol-agnostic by
 construction" claim above didn't quite hold, discovered when a second, non-JT/T-808 vendor
-protocol (`vendors/lsz_mdvr/`, different frame delimiter entirely) needed to reuse this same
-transport/lifecycle engine. Fixed the same way `on_frame`/`on_activity`/`on_close` already are:
-an injectable constructor parameter, defaulting to the existing `FrameBuffer` so every existing
-caller/test is byte-for-byte unaffected. Any object with a `feed(data: bytes) -> list[bytes]`
-method (duck-typed, matching `FrameBuffer`'s own public shape exactly) can be passed instead.
+protocol needed to reuse this same transport/lifecycle engine. A temporary fix made the parameter
+optional, defaulting to JT/T 808's own `FrameBuffer` — but that still left this shared,
+vendor-agnostic module importing one specific vendor's protocol package as its fallback, exactly
+the coupling the multi-vendor `vendors/<name>/` architecture exists to avoid. Now every caller
+(each vendor's own composition root) must supply its own frame decoder explicitly — this module
+has no import of, or reference to, any specific vendor's protocol package at all. Any object with
+a `feed(data: bytes) -> list[bytes]` method (duck-typed) works; `raise`d "frame too large"
+conditions must be (a subclass of) `connection.errors.FrameTooLargeError`, the one shared type
+this class's read loop catches, regardless of which vendor's decoder raised it.
 
 `on_close` is `async` (Phase 9.2 addition): `ConnectionManager`'s own handler needs no `await`,
 but Phase 9.2's `DeviceSessionManager.handle_connection_closed` — bridging a dropped transport
@@ -34,10 +39,10 @@ from __future__ import annotations
 import asyncio
 from typing import Awaitable, Callable
 
+from src.connection.errors import FrameTooLargeError
 from src.logging_setup import get_logger, log_with_fields
-from src.protocol.framing import FrameBuffer, FrameTooLargeError
 
-logger = get_logger("jt808.connection")
+logger = get_logger("device_gateway.connection")
 
 FrameHandler = Callable[[str, bytes], Awaitable[None]]
 
@@ -50,22 +55,17 @@ class Connection:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         read_chunk_size: int,
-        max_frame_size: int,
         on_frame: FrameHandler,
         on_activity: Callable[[], None],
         on_close: Callable[[str], Awaitable[None]],
-        frame_buffer: object | None = None,
+        frame_buffer: object,
     ) -> None:
         self.connection_id = connection_id
         self._remote_address = writer.get_extra_info("peername")
         self._reader = reader
         self._writer = writer
         self._read_chunk_size = read_chunk_size
-        self._frame_buffer = (
-            frame_buffer
-            if frame_buffer is not None
-            else FrameBuffer(max_frame_size=max_frame_size)
-        )
+        self._frame_buffer = frame_buffer
         self._on_frame = on_frame
         self._on_activity = on_activity
         self._on_close = on_close

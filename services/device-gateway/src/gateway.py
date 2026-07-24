@@ -1,0 +1,175 @@
+"""`DeviceGateway` — the single process entrypoint for every device-plane vendor adapter
+(device-gateway multi-vendor architecture, `docs/architecture/adr/
+0010-device-gateway-multi-vendor-architecture.md`). Starts and stops each configured
+`DeviceProtocolAdapter` (currently `vendors.jt808.server.Jt808Server` and `vendors.lsz.server.
+MdvrServer`) under one shared signal handler, so operating this deployable no longer means
+picking one vendor's own `server.py`/`main()` — this is the module that actually gets run.
+
+**Adding a new vendor never touches this file's own orchestration logic** — only the list built
+in `_build_adapters()` grows by one line, constructing that vendor's own adapter class (itself
+implementing `src.adapter.DeviceProtocolAdapter`) with whatever config/ports it needs. Every
+adapter receives the *same* `EventPublisher` instance (so `DevicePositionReported`/`DeviceOnline`/
+`DeviceOffline`/`DeviceAlarmRaised` from every vendor flow through one shared publish mechanism,
+per this refactor's own "vendor-agnostic event bus" requirement) — the Business Plane consuming
+those events downstream has no way to tell, and no need to know, which vendor adapter published
+any given one.
+
+**Redis wiring (device-gateway Redis integration) — conditional on `BrokerConfig`, the same
+"fail loudly, don't fake it" pattern the Business API's own `core/di/bootstrap.py` already
+applies to every broker-dependent binding:** when a broker URL is configured (or a `redis_client`
+is injected directly, the seam tests use), this gateway constructs one shared `RedisEventPublisher`
+(passed to every adapter) and one shared `DeviceRegistryProjection` fed by a
+`RedisDeviceRegistryConsumer` background task, wiring the LSZ adapter's real
+`ProjectionBackedMdvrProvisioningPort` in place of the interim in-memory allow-list. Without a
+broker configured, every adapter falls back to exactly what it already defaulted to
+(`LoggingEventPublisher`, `NullMdvrDeviceProvisioningPort`) — nothing about the unconfigured path
+changes.
+
+Each adapter's own `serve_forever()` remains for standalone single-adapter use (its own tests, or
+running just one adapter in isolation) — this composition root calls `start()`/`stop()` on each
+adapter directly instead, since letting every adapter install its own `SIGINT`/`SIGTERM` handler
+would conflict once more than one runs in the same process (`src/adapter.py`'s own docstring).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import signal
+
+from redis.asyncio import Redis
+
+from src.adapter import DeviceProtocolAdapter
+from src.broker_config import BrokerConfig
+from src.events.publisher_port import EventPublisher, LoggingEventPublisher
+from src.events.redis_event_publisher import RedisEventPublisher
+from src.logging_setup import configure_logging, get_logger, log_with_fields
+from src.registry.device_registry_projection import DeviceRegistryProjection
+from src.registry.redis_device_registry_consumer import RedisDeviceRegistryConsumer
+from src.vendors.jt808.config import ServerConfig as Jt808Config
+from src.vendors.jt808.server import Jt808Server
+from src.vendors.lsz.config import MdvrServerConfig as LszConfig
+from src.vendors.lsz.handlers.provisioning_port import ProjectionBackedMdvrProvisioningPort
+from src.vendors.lsz.server import MdvrServer
+
+logger = get_logger("device_gateway.gateway")
+
+
+class DeviceGateway:
+    def __init__(
+        self,
+        *,
+        event_publisher: EventPublisher | None = None,
+        jt808_config: Jt808Config | None = None,
+        lsz_config: LszConfig | None = None,
+        broker_config: BrokerConfig | None = None,
+        redis_client: Redis | None = None,
+    ) -> None:
+        self._broker_config = broker_config or BrokerConfig.from_env()
+        self._redis_client = redis_client or self._build_redis_client()
+
+        self._registry_projection: DeviceRegistryProjection | None = None
+        self._registry_consumer: RedisDeviceRegistryConsumer | None = None
+        self._registry_consumer_task: asyncio.Task | None = None
+
+        self._event_publisher = event_publisher or self._build_event_publisher()
+        lsz_provisioning = self._build_lsz_provisioning()
+
+        self._adapters: list[DeviceProtocolAdapter] = [
+            Jt808Server(jt808_config, event_publisher=self._event_publisher),
+            MdvrServer(
+                lsz_config,
+                device_provisioning=lsz_provisioning,
+                event_publisher=self._event_publisher,
+            ),
+        ]
+
+    def _build_redis_client(self) -> Redis | None:
+        if not self._broker_config.url:
+            return None
+        return Redis.from_url(self._broker_config.url, decode_responses=True)
+
+    def _build_event_publisher(self) -> EventPublisher:
+        if self._redis_client is not None:
+            return RedisEventPublisher(self._redis_client)
+        return LoggingEventPublisher()
+
+    def _build_lsz_provisioning(self):
+        if self._redis_client is None:
+            return None  # MdvrServer falls back to its own NullMdvrDeviceProvisioningPort default
+        self._registry_projection = DeviceRegistryProjection()
+        self._registry_consumer = RedisDeviceRegistryConsumer(
+            self._redis_client, projection=self._registry_projection
+        )
+        return ProjectionBackedMdvrProvisioningPort(self._registry_projection)
+
+    @property
+    def adapters(self) -> tuple[DeviceProtocolAdapter, ...]:
+        return tuple(self._adapters)
+
+    @property
+    def registry_projection(self) -> DeviceRegistryProjection | None:
+        """`None` unless a broker is configured — see class docstring."""
+        return self._registry_projection
+
+    def adapter(self, name: str) -> DeviceProtocolAdapter:
+        for adapter in self._adapters:
+            if adapter.name == name:
+                return adapter
+        raise LookupError(f"No adapter registered under name {name!r}.")
+
+    async def start(self) -> None:
+        for adapter in self._adapters:
+            await adapter.start()
+            log_with_fields(
+                logger,
+                20,
+                "adapter_started",
+                adapter=adapter.name,
+                bound_port=adapter.bound_port,
+            )
+        if self._registry_consumer is not None:
+            self._registry_consumer_task = asyncio.create_task(
+                self._registry_consumer.run_forever()
+            )
+            log_with_fields(logger, 20, "device_registry_consumer_started")
+
+    async def stop(self) -> None:
+        if self._registry_consumer_task is not None:
+            self._registry_consumer_task.cancel()
+            try:
+                await self._registry_consumer_task
+            except asyncio.CancelledError:
+                pass
+            self._registry_consumer_task = None
+            log_with_fields(logger, 20, "device_registry_consumer_stopped")
+        for adapter in self._adapters:
+            await adapter.stop()
+            log_with_fields(logger, 20, "adapter_stopped", adapter=adapter.name)
+
+    async def serve_forever(self) -> None:
+        await self.start()
+        loop = asyncio.get_running_loop()
+        stop_event = asyncio.Event()
+
+        def _handle_signal() -> None:
+            stop_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _handle_signal)
+            except NotImplementedError:
+                pass  # Windows: add_signal_handler isn't supported for these signals
+
+        await stop_event.wait()
+        await self.stop()
+
+
+async def main() -> None:
+    configure_logging(level=logging.INFO)
+    gateway = DeviceGateway()
+    await gateway.serve_forever()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

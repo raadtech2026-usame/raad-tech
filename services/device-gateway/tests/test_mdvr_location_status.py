@@ -4,8 +4,8 @@ see `location_status.py`'s own module docstring for the full derivation."""
 
 import unittest
 
-from src.vendors.lsz_mdvr.protocol.exceptions import MdvrMalformedMessageError
-from src.vendors.lsz_mdvr.protocol.location_status import parse_location_status
+from src.vendors.lsz.protocol.exceptions import MdvrMalformedMessageError
+from src.vendors.lsz.protocol.location_status import parse_location_status
 
 # The 18 location-and-status tokens from the V114 worked example in test_mdvr_parser.py.
 _TOKENS = [

@@ -2,10 +2,10 @@
 
 import unittest
 
-from src.protocol.encoder import build_frame
-from src.protocol.exceptions import MalformedFrameError
-from src.protocol.header import encode_bcd_phone
-from src.protocol.parser import PacketParser
+from src.vendors.jt808.protocol.encoder import build_frame
+from src.vendors.jt808.protocol.exceptions import MalformedFrameError
+from src.vendors.jt808.protocol.header import encode_bcd_phone
+from src.vendors.jt808.protocol.parser import PacketParser
 from datetime import datetime, timezone
 
 
@@ -52,7 +52,7 @@ class BuildFrameTests(unittest.TestCase):
             )
 
     def test_encode_bcd_phone_round_trips_with_decode(self) -> None:
-        from src.protocol.header import parse_header
+        from src.vendors.jt808.protocol.header import parse_header
 
         encoded = encode_bcd_phone("013800138000")
         header_bytes = (
