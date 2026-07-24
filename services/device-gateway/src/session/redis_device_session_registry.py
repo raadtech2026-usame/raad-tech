@@ -30,6 +30,16 @@ floats faithfully (so a *single* process's own restart-recovery round-trips corr
 multi-process expiry-sweep correctness would additionally require converting `DeviceSession`'s
 timestamps to wall-clock time throughout `session/device_session.py`/`device_session_manager.py`
 — a separate change, also not undertaken here, flagged rather than silently assumed solved.
+
+**Requires a `decode_responses=True` client** (verified against `redis.asyncio.Redis`'s actual
+method signatures, redis-py 8.0.1) — `_deserialize` calls `json.loads(raw)` on whatever `get()`
+returns; a client without `decode_responses=True` would hand back `bytes`, which `json.loads`
+(Python 3.6+) actually accepts transparently, so this specific path would still work either way —
+but `smembers()` in `all()` would return a `set` of `bytes` terminal ids, and this class's own
+`_session_key`/`_connection_index_key` f-string helpers would then embed a `bytes` repr (e.g.
+`"device_session:b'TERM-1'"`) instead of the real key, silently breaking every lookup. Always
+construct with `decode_responses=True` (`gateway.DeviceGateway._build_redis_client()` already
+does).
 """
 
 from __future__ import annotations

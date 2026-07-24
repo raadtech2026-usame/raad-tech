@@ -20,7 +20,13 @@
 #     consuming `fleet_device`'s own `DeviceRegistered`/`DeviceActivated`/`DeviceSuspended`/
 #     `DeviceAssignedToVehicle`/`DeviceUnassignedFromVehicle` events off the same broker.
 # (3) `RedisDeviceSessionRegistry` — Redis-backed `DeviceSessionRegistry` (`.claude/rules/
-#     jt808.md` #4's "session state lives in Redis"), replacing the in-memory default.
+#     jt808.md` #4's "session state lives in Redis"). Built and fully tested standalone; NOT
+#     wired in as `DeviceSessionManager`'s default (see that class's own module docstring for
+#     why swapping it in needs a separate async-interface migration, deferred until a genuine
+#     multi-node deployment actually needs it).
+#
+# All three items above are implemented as of ADR-0010; this comment records what the
+# dependency backs, not a still-pending plan.
 #
 # Dependency management tool (Poetry/PDM/plain pip) is not yet decided by approved
 # documentation — this file uses the PEP 621 format, installable with plain

@@ -21,6 +21,12 @@ a missed or misapplied registry update is self-healing: the next relevant event 
 device (or a process restart re-reading from the group's last-acked position) corrects it, and
 nothing here is business-critical the way a lost notification or payment event would be. Kept
 deliberately simpler than the Business API's consumer for exactly that reason.
+
+**Requires a `decode_responses=True` client** (verified against `redis.asyncio.Redis`'s actual
+method signatures, redis-py 8.0.1) — `_process_one` indexes `fields["data"]` with a `str` key and
+`json.loads`s a `str` value; a client without `decode_responses=True` would hand back `bytes` for
+both the field name and value, and `fields["data"]` would raise `KeyError` (the real key would be
+`b"data"`, not `"data"`). `gateway.DeviceGateway._build_redis_client()` already sets this.
 """
 
 from __future__ import annotations

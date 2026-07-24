@@ -28,6 +28,14 @@ precedent dictated it:**
 
 `event_id` is a fresh UUID4 per publish — this deployable has no ULID generator of its own, and
 none is needed (`DomainEvent.event_id` carries no format requirement any known consumer enforces).
+
+**Requires a `decode_responses=True` client** (verified against `redis.asyncio.Redis`'s actual
+method signatures, redis-py 8.0.1) — this class passes plain `str` values to `xadd`; a client
+constructed without `decode_responses=True` would still *accept* them (redis-py encodes `str`
+values on write regardless), but would return `bytes` on any subsequent *read* of the same keys by
+other components sharing the connection (e.g. `RedisDeviceRegistryConsumer` reading this same
+stream). `gateway.DeviceGateway._build_redis_client()` already sets this; any other caller
+constructing a client directly for this class must do the same.
 """
 
 from __future__ import annotations
