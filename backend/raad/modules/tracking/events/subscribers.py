@@ -1,33 +1,56 @@
 """Tracking event subscribers — closes the consumer half of roadmap track B2 (`docs/architecture/
 frontend-flutter-master-roadmap.md` §4A). Consumes `DevicePositionReported` (published by the
-device-plane service, `services/jt808/src/vendors/lsz_mdvr/` per ADR-0009) and persists it via
-`TrackingApplicationService.record_vehicle_position`/`record_backfill_position` — the exact
-"Business API-side tracking consumer" `services/jt808/src/handlers/location_handler.py`'s own
-module docstring already names as a later phase's job, and `docs/vendor/
-HARDWARE_INTEGRATION_PLAN.md` §12's "Required refactoring" step 3.
+device-plane service, `services/device-gateway/src/vendors/lsz/` per ADR-0009/ADR-0010 — this
+docstring previously referenced the pre-rename `services/jt808/src/vendors/lsz_mdvr/` path,
+corrected below) and persists it via `TrackingApplicationService.record_vehicle_position`/
+`record_backfill_position` — the exact "Business API-side tracking consumer"
+`services/device-gateway/src/vendors/lsz/handlers/position_handler.py`'s own module docstring
+already names as a later phase's job, and `docs/vendor/HARDWARE_INTEGRATION_PLAN.md` §12's
+"Required refactoring" step 3.
 
-**Wire envelope this subscriber expects** (the contract the device-plane service's own publish
-side must satisfy once it exists — see "Not yet wired" below): a `core.events.base.DomainEvent`
-with `event_type="DevicePositionReported"`, `aggregate_type="Vehicle"`, `aggregate_id=vehicle_id`,
-`org_id=organization_id`, and a `payload` carrying every field of `services/jt808/src/vendors/
-lsz_mdvr/../events/device_position_reported.DevicePositionReported` by the same names
-(`vehicle_id`, `device_id`, `terminal_id`, `trip_id`, `latitude`, `longitude`, `speed_kph`,
-`heading_deg`, `alarm_flags`, `event_time` as an ISO-8601 string, `is_backfill`) — deliberately
-the same field set `RecordVehiclePositionCommand`/`RecordBackfillPositionCommand` already expect,
-so this processor does no renaming or unit conversion of its own, mirroring the device-plane
-event's own module docstring ("a future Business API-side consumer can build one of those
-commands from this event with no field renaming or unit conversion of its own").
+**Wire envelope this subscriber expects:** a `core.events.base.DomainEvent` with
+`event_type="DevicePositionReported"`, `aggregate_type="Vehicle"`, `aggregate_id=vehicle_id`,
+`org_id=organization_id`, and a `payload` carrying every field of `services/device-gateway/src/
+events/device_position_reported.DevicePositionReported` by the same names (`vehicle_id`,
+`device_id`, `terminal_id`, `trip_id`, `latitude`, `longitude`, `speed_kph`, `heading_deg`,
+`alarm_flags`, `event_time` as an ISO-8601 string, `is_backfill`) — deliberately the same field set
+`RecordVehiclePositionCommand`/`RecordBackfillPositionCommand` already expect, so this processor
+does no renaming or unit conversion of its own, mirroring the device-plane event's own module
+docstring ("a future Business API-side consumer can build one of those commands from this event
+with no field renaming or unit conversion of its own").
 
-**Not yet wired to a real broker consumer.** `core/di/bootstrap.py` registers this module's
-processor onto the shared `EventProcessorRegistry` whenever a broker is configured (the same
-`if settings.broker.url:` guard every other broker-dependent binding in that file already uses),
-exactly like `notifications/events/subscribers.py`'s `register_notification_processors`. What is
-genuinely **not yet built** is the *producer* side: the device-plane service's own `EventPublisher`
-still defaults to `LoggingEventPublisher` (log-only) because publishing onto the shared `raad:
-events` Redis Stream from a second, separate deployable needs its own Redis client dependency
-approval for `services/jt808/pyproject.toml` (`.claude/rules/workflow.md` #1/#2 — proposed, not
-yet approved, see that `pyproject.toml`'s own comment). This processor is real, tested, and ready
-to receive events the moment that producer-side dependency is approved and wired — it is not
+**Now live-verified, end-to-end, against a real Redis and a real Postgres (ADR-0012 follow-up
+verification pass).** This paragraph previously said the producer-side Redis dependency was
+"proposed, not yet approved" and that the whole path was "not yet wired to a real broker
+consumer" — both stale as of this correction: `services/device-gateway/pyproject.toml` marks
+`redis>=5.0` **APPROVED** (user-confirmed), `RedisEventPublisher` is wired into
+`vendors/lsz/server.py`, and `core/di/bootstrap.py` binds this module's `DevicePositionReportedProcessor`
+onto the same `notification-worker` consumer group `NotificationWorker` already ticks (a single
+shared `EventProcessorRegistry`, not a dedicated tracking worker). A real LSZ registration+position
+frame, sent over a real TCP socket through a real `MdvrServer` → `RedisEventPublisher` → `raad:
+events` Stream → this exact processor → a real `TrackingApplicationService` → a real, committed
+`vehicle_positions` row was proven in this pass (`services/device-gateway/scripts/
+verify_redis_e2e.py`, plus a direct processor invocation against a live Postgres instance).
+**A real bug was found and fixed during this same pass**, not just a missing-infrastructure
+gap: `position_handler.py` was passing the vendor's raw, out-of-spec `heading_deg`/`alarm_flags`
+values straight through to `RecordVehiclePositionCommand` without range-checking them first, so
+`tracking.domain.value_objects.HeadingDegrees`/`AlarmFlags` correctly rejected them with a
+`DomainError` — silently failing *every* real position event from this vendor forever (both of
+the vendor's own documented worked examples fall outside the valid ranges, so this was not a rare
+edge case). Fixed at the source (`position_handler.py`'s own range-clamp, see its module
+docstring) — this file needed no change, since the bug was in what the producer sent, not in how
+this processor consumes it.
+
+**Still not proven "live at rest"**, distinct from the above: the standing worker process
+(`python -m raad.interfaces.workers.bootstrap`, the same consumer group) has a large pre-existing
+`outbox` backlog from prior, unrelated integration-test runs (700+ historical domain events,
+newly draining now that a broker is reachable for the first time) — a running worker will reach
+and correctly process new live position events once it works through that backlog, but this was
+proven directly (a single processor invocation against the newest published event, not by
+observing the standing worker specifically clear that backlog and reach it live). Also still
+genuinely unbuilt: `vehicle:{id}:last`'s direct Redis cache write (B2's own scope,
+`GET /tracking/vehicles/{id}/latest`'s instant-read source) — no code in `services/device-gateway`
+writes this key yet; grepped for and confirmed absent in this same pass. This processor is not
 gated on anything in this codebase changing further.
 
 **Idempotency:** `record_vehicle_position`/`record_backfill_position` each insert a new

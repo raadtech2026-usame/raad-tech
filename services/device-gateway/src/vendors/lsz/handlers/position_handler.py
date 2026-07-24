@@ -23,6 +23,29 @@ validated" caveat for these specific fields) — `DevicePositionReported` declar
 which *does* make them optional), so a concrete value is required here; `0` is a safe, inert
 default for telemetry fields this handler cannot yet confirm, never a fabricated non-zero reading.
 
+**Bug found and fixed (ADR-0012 live-verification pass):** "uncertain" above was only being
+treated as "parsed to `None`" — a value that parsed to a concrete but out-of-range int (e.g. this
+vendor's own "ground course" worked examples, which `protocol.location_status` already documents
+as falling far outside 0-360 in both cases) flowed straight through unchecked. The Business API's
+`tracking` domain correctly rejects an out-of-range `HeadingDegrees`/`AlarmFlags` with a
+`DomainError`, which silently failed *every* position event forever (retried indefinitely, never
+persisted, never dead-lettered within any short observation window) — not a rare edge case, since
+both of this vendor's own documented worked examples hit it. `_clamp_heading`/`_clamp_alarm_flags`
+below now range-check before publishing, so "uncertain" actually means what this docstring already
+claimed it meant.
+
+**`alarm_flags` needs its own caveat, distinct from `heading_deg`.** Heading is cosmetic (map
+display only); defaulting it to `0` on an out-of-range read has no safety consequence. Alarm flags
+are safety-relevant (`jt808.md`: SOS/overspeed/fatigue/low-power/GPS-fault/video-loss taxonomy),
+and this vendor sends a raw 16-hex-char (64-bit) opaque bitfield where the Business API's
+`AlarmFlags` expects an *already-normalized*, JT/T-808-taxonomy 32-bit value (Database Design
+§7.1: `alarm_flags INT`) — no one has written that bit-mapping yet (`protocol.location_status`'s
+own docstring already flags this as out of scope for its ACL step). `0` here means **"unmapped/
+unknown," not a verified "no alarms" reading** — accepted as the least-bad interim default
+(user-confirmed) only because nothing in this codebase yet triggers any safety action off this
+field; a real per-bit ACL mapping from Hardware Analysis §5 is still required before `alarm_flags`
+can be trusted for anything safety-relevant.
+
 **No wire response is sent** — the vendor document names no acknowledgment for `V114` in either
 of its two worked examples (`docs/vendor/HARDWARE_ANALYSIS.md` §9's Commands table), matching the
 parent package's own `LocationHandler`'s identical "no ack for a position report" precedent.
@@ -48,6 +71,27 @@ from src.vendors.lsz.protocol.message import MdvrInboundMessage
 from src.vendors.lsz.protocol.time_format import parse_sent_at
 
 logger = get_logger("mdvr.handlers.position")
+
+# Mirrors `raad.modules.tracking.domain.value_objects` exactly (`_HEADING_MAX_EXCLUSIVE`,
+# `_INT_MAX`) — duplicated, not imported, since this deployable never depends on `backend/raad`
+# (`.claude/rules/architecture.md` #2). Keep in sync if either bound ever changes there.
+_HEADING_MAX_EXCLUSIVE = 360
+_ALARM_FLAGS_MAX = 2_147_483_647
+
+
+def _clamp_heading(raw: int | None) -> int:
+    """`0` when missing or outside `[0, 360)` — see module docstring's "Bug found and fixed" note."""
+    if raw is None or not (0 <= raw < _HEADING_MAX_EXCLUSIVE):
+        return 0
+    return raw
+
+
+def _clamp_alarm_flags(raw: int | None) -> int:
+    """`0` ("unmapped/unknown", not a verified no-alarms reading) when missing or outside the
+    domain's normalized 32-bit range — see module docstring's `alarm_flags` caveat."""
+    if raw is None or not (0 <= raw <= _ALARM_FLAGS_MAX):
+        return 0
+    return raw
 
 
 class MdvrPositionHandler(MdvrMessageHandler):
@@ -84,12 +128,8 @@ class MdvrPositionHandler(MdvrMessageHandler):
             latitude=location.latitude,
             longitude=location.longitude,
             speed_kph=round(location.ground_speed_kph) if location.ground_speed_kph else 0,
-            heading_deg=location.heading_deg if location.heading_deg is not None else 0,
-            alarm_flags=(
-                location.component_status_alarm
-                if location.component_status_alarm is not None
-                else 0
-            ),
+            heading_deg=_clamp_heading(location.heading_deg),
+            alarm_flags=_clamp_alarm_flags(location.component_status_alarm),
             event_time=parse_sent_at(message.sent_at_raw),
             is_backfill=False,
             received_at=datetime.now(timezone.utc),

@@ -1,13 +1,22 @@
 # ADR-0012: Development Redis Environment
 
 ## Status
-Accepted. Configuration complete and reviewed. **Live verification is incomplete** — this
-environment has no working Docker Engine, WSL, or native Windows Redis build (confirmed, not
-assumed — see Verification below), so the actual "start the container, run traffic through it"
-step named in this ADR's own triggering request could not be executed here. The provided
-Docker Compose file, env var wiring, and end-to-end test script are all real deliverables usable
-the moment Docker (or any reachable Redis 5+ instance) exists in an environment that has one —
-this ADR documents exactly that boundary rather than reporting a live check that didn't happen.
+Accepted. **Live verification complete, 2026-07-24 (follow-up pass).** Docker Desktop, WSL2, and
+`redis:7-alpine` (`raad-redis-dev`) are now genuinely reachable in this environment — re-confirmed
+directly this session (`docker ps`, a real healthy container), superseding this ADR's original
+"confirmed absent" Verification section below, which is kept for the historical record rather than
+silently deleted. `services/device-gateway/scripts/verify_redis_e2e.py` was run and passed. Beyond
+that script's own scope, this pass went further and proved the *consumer* half live too — a real
+Postgres `vehicle_positions` row, not just a decoded in-memory event — and found and fixed a real
+bug along the way (see Verification below for both). One genuine caveat survives this pass, not
+resolved by it: the initial claim that reached this ADR's author ("Business API Processing: PASS",
+"End-to-End Verification: PASS", among others) was asserted, not accompanied by evidence, and did
+not hold up under independent check at the time it was made — the actual state at that moment was
+that every real position event was silently failing forever on a domain-layer validation error
+(see Verification). That gap is what this follow-up pass closed; it is recorded here so the
+distinction between "asserted" and "independently verified" stays part of this ADR's own history,
+matching this codebase's own "fail loudly, don't fake it, and don't let a status claim outrun the
+evidence for it" discipline.
 
 ## Context
 ADR-0008 (Redis Streams event broker) and ADR-0010 (device-gateway Redis integration) both wired
@@ -104,31 +113,74 @@ without asking first.
 ## Consequences
 - The Compose file, both `.env.example` templates, and the verification script are all genuinely
   usable right now, in any environment with Docker (or a directly reachable Redis 5+ instance) —
-  nothing here is blocked on this sandbox's own limitation; only the act of *running* them here is.
-- **F7 readiness is therefore partial, honestly**: Mapbox (ADR-0011) is fully resolved with no
-  outstanding blocker. The Redis dev environment is fully *specified* but not yet *proven live* in
-  this sandbox — the "operational" bar the triggering request set. See the final infrastructure
-  readiness report (delivered alongside this ADR) for the explicit go/no-go and the three ways to
-  unblock it.
-- `backend/.env`'s `RAAD_REDIS__URL`/`RAAD_BROKER__URL` are now set to a URL that is **not
-  currently reachable in this sandbox** — starting the backend here today will make DI attempt a
-  real connection and fail at first use (a connection error at call time), not silently fall back,
-  since `settings.redis.url`/`settings.broker.url` being non-empty is exactly the signal
-  `core/di/bootstrap.py` uses to bind the real adapter instead of leaving it unbound. This is the
-  correct "fail loudly" behavior, not a bug — it will resolve itself the moment a real Redis is
-  reachable at that URL, requiring no code or config change.
+  and, as of the 2026-07-24 follow-up pass, actually running in this one.
+- **F7 readiness, updated 2026-07-24: both of F7's independent gates are now cleared.** Mapbox
+  (ADR-0011) was already fully resolved. This ADR's own Redis dev environment is now live-proven,
+  not just specified — real LSZ frame → Redis → Business API → persisted `vehicle_positions` row,
+  end to end, with one real bug found and fixed along the way (see Verification). F7 (Live
+  Monitoring & Maps) can proceed against this real pipeline rather than only synthetic/manual
+  events — with the two residual, narrower gaps named in Verification (standing-worker backlog
+  catch-up not directly observed; `vehicle:{id}:last` cache write still unbuilt) carried forward
+  honestly rather than implied closed.
+- `backend/.env`'s `RAAD_REDIS__URL`/`RAAD_BROKER__URL` point at a URL that is now genuinely
+  reachable in this environment — DI binds the real Redis-backed adapters (`RedisLatestPositionPort`,
+  the Streams broker, `RedisLockPort`, `RedisDeadLetterQueue`) rather than leaving them unbound.
 
 ## Verification
+
+### Original pass (superseded, kept for history)
 - **Confirmed absent, this sandbox, this session:** no `docker`/`docker-compose` binary on `PATH`;
   `docker info` fails; no Docker Desktop install directory; no Windows Docker service; `wsl.exe`
   exists but WSL itself reports "not installed"; `winget search` fails on a non-interactive
   Microsoft Store terms prompt; no `redis-server`/`memurai` binary, no `choco`/`scoop`. Every check
-  above was actually run in this session, not inferred.
+  above was actually run in that session, not inferred.
 - **Not yet run:** `services/device-gateway/scripts/verify_redis_e2e.py` against a live Redis —
-  blocked on the above. Will be run and this ADR updated with a real pass/fail the first time a
-  reachable Redis exists in an environment this agent has access to.
-- Existing fake-client test suites (ADR-0008/ADR-0010) continue to pass unmodified — this ADR adds
-  configuration and a script, not a change to any tested production code path.
+  blocked on the above.
+
+### Follow-up pass, 2026-07-24 — live, independently re-verified
+- **Docker/WSL2/Redis:** `docker ps` shows `raad-redis-dev` (`redis:7-alpine`) up and healthy on
+  `6379`, matching this ADR's own Compose service exactly.
+- **Producer side:** `verify_redis_e2e.py` run twice — first run reproduced a real, then-latent bug
+  (below); second run, after the fix, printed `PASS`.
+- **A real bug was found, not just a missing-infrastructure gap.** The first `raad:events` entry
+  this pass inspected (`DevicePositionReported`, `heading_deg: 1521000`, `alarm_flags:
+  3940653985813379`) was never consumed successfully — `redis_streams.py`'s own failure path
+  swallows the exception message, so a dedicated diagnostic script (calling
+  `DevicePositionReportedProcessor.process()` directly against the real container) was used to
+  surface it: `raad.core.errors.exceptions.DomainError: HeadingDegrees must be in [0, 360):
+  1521000`. Root cause: `services/device-gateway/src/vendors/lsz/handlers/position_handler.py`
+  only substituted its documented `0` default when a field parsed to `None`, never when it parsed
+  to a concrete but out-of-range value — and this vendor's own worked examples (per
+  `protocol.location_status`'s own pre-existing docstring) are out of range in **both** of its
+  documented cases, so this was not an edge case, it was the norm. Fixed with an explicit range
+  clamp (`_clamp_heading`/`_clamp_alarm_flags`); `alarm_flags`'s clamp is explicitly flagged as
+  "unmapped/unknown," not a verified no-alarms reading, since that field is safety-relevant and no
+  real per-bit ACL mapping exists yet (Hardware Analysis §5) — user-confirmed as the interim
+  default. Regression-tested (`tests/test_mdvr_position_handler.py`, using this exact vendor
+  worked example); full device-gateway suite re-run clean, 323/323.
+- **Consumer side, proven against a real Postgres, not a fake:** after the fix, a fresh
+  `verify_redis_e2e.py` run's published event was picked up by a direct invocation of the real
+  `DevicePositionReportedProcessor` (built via the real `core.di.bootstrap.build_container`, no
+  fake `TrackingUnitOfWork`) and confirmed committed: `SELECT * FROM vehicle_positions WHERE
+  vehicle_id = 'vehicle-e2e-verify'` returned exactly one row, `heading_deg=0, alarm_flags=0`,
+  lat/lng matching the sent frame.
+- **`backend/raad/modules/tracking/events/subscribers.py`'s own module docstring was stale** —
+  claimed the producer-side Redis dependency was "proposed, not yet approved" and the whole path
+  "not yet wired," both incorrect by the time of this pass (`services/device-gateway/pyproject.
+toml` already marked `redis>=5.0` **APPROVED**). Corrected in place, along with a leftover
+  pre-rename `services/jt808/src/vendors/lsz_mdvr/` path reference (should read
+  `services/device-gateway/src/vendors/lsz/`).
+- **Two things this pass explicitly did *not* prove, flagged rather than implied:** (1) the
+  *standing* worker process (`python -m raad.interfaces.workers.bootstrap`) reaching a live
+  position event on its own — it shares its consumer group with a large pre-existing `outbox`
+  backlog (700+ historical domain events from prior, unrelated integration-test runs, draining for
+  the first time now that a broker is reachable) that it must work through first; the persistence
+  proof above used a direct processor invocation, not an observed catch-up. (2) `vehicle:{id}:
+last`'s direct Redis cache write (B2's own scope, backing `GET /tracking/vehicles/{id}/latest`'s
+  instant read) — grepped for in `services/device-gateway/src`, confirmed **absent**; still
+  genuinely unbuilt.
+- Existing fake-client test suites (ADR-0008/ADR-0010) continue to pass unmodified — this pass
+  fixed one production code path (`position_handler.py`) and one stale docstring, nothing else.
 
 ## References
 - `docs/architecture/adr/0008-redis-streams-event-broker.md`

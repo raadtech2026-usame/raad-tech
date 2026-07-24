@@ -97,6 +97,14 @@ class MdvrPositionHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             event.event_time, datetime(2018, 9, 3, 13, 59, 49, tzinfo=timezone.utc)
         )
+        # Regression test for the ADR-0012 live-verification bug: this exact worked example's
+        # raw "ground course" (1521000) and raw 64-bit alarm bitfield (0x000E00010101D383) both
+        # fall outside the Business API tracking domain's HeadingDegrees ([0,360)) / AlarmFlags
+        # (32-bit) ranges. Previously these flowed through unclamped and the domain's own
+        # DomainError silently failed every position event from this vendor, forever. Both must
+        # come through as the documented "uncertain -> 0" default, not the raw out-of-range value.
+        self.assertEqual(event.heading_deg, 0)
+        self.assertEqual(event.alarm_flags, 0)
 
     async def test_position_report_from_unauthenticated_device_is_dropped_not_crashed(
         self,

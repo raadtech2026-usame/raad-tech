@@ -875,8 +875,19 @@ architecture always assumed. `services/device-gateway/scripts/verify_redis_e2e.p
 committed (not one-off) end-to-end check: a real LSZ registration+position frame over a real
 socket, through a real `RedisEventPublisher`, decoded back by the Business API's own real
 `_fields_to_event`/`DevicePositionReportedProcessor` — reusable the moment a reachable Redis
-exists. **Live verification status:** see `docs/architecture/adr/
-0012-development-redis-environment.md` for exactly what was and was not possible to verify in this
-sandbox (no Docker Engine, WSL, or native Redis build is reachable here — confirmed, not assumed,
-including the specific checks run) and what running the provided compose file plus that script
-yourself would additionally prove.
+exists. **Live verification status, updated 2026-07-24 (follow-up pass):** Docker Desktop, WSL2,
+and Redis are now genuinely reachable in this environment and were independently re-confirmed, not
+just asserted — see `docs/architecture/adr/0012-development-redis-environment.md`'s Verification
+section for the full record. That pass surfaced a real, previously-undetected bug, not just a
+missing-infrastructure gap: `verify_redis_e2e.py`'s own PASS only ever proved wiring shape, not
+persistence, and `services/device-gateway/src/vendors/lsz/handlers/position_handler.py` was
+passing this vendor's out-of-range `heading_deg`/`alarm_flags` straight through instead of
+clamping them as its own docstring already claimed — silently failing *every* real position event
+forever via a `tracking.domain` `DomainError` (both of the vendor's own documented worked examples
+trigger it, so this was not a rare edge case). Fixed and regression-tested; a real Postgres
+`vehicle_positions` row was then independently confirmed, end to end. Two narrower gaps remain,
+tracked honestly rather than implied closed: the *standing* worker process reaching a live event
+on its own was not directly observed (it shares a consumer group with a large pre-existing
+`outbox` backlog it must drain first); and `vehicle:{id}:last`'s direct Redis cache write (backing
+`GET /tracking/vehicles/{id}/latest`'s instant read) is confirmed still unbuilt anywhere in
+`services/device-gateway`.
