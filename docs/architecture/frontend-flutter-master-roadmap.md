@@ -285,6 +285,18 @@ need to wait.
 - No visual regression tool (Chromatic/Percy) proposed yet — both are paid services; flagged in
   the Decision Log as optional, not assumed.
 
+### 3.9 Map provider — **Resolved 2026-07-24: Mapbox GL JS (ADR-0011)**
+
+User-confirmed. Frontend integration points (the `MapProvider` abstraction + `MapboxMapProvider`
+implementation, `mapbox-gl` dependency, `VITE_MAPBOX_ACCESS_TOKEN`) are prepared — see ADR-0011
+for the full record. **F7 itself (the live-monitoring pages/vehicle markers/WebSocket wiring) is
+not yet built** — this resolves the map-provider gate only, one of F7's two independent gates (the
+other, §4A's B1/B2, is also now complete — ADR-0009/ADR-0010). The original comparison this
+decision was made against is kept below for the historical record.
+
+<details>
+<summary>Original comparison (pre-decision)</summary>
+
 ### 3.9 Map provider — **stop, this needs your decision**
 
 `frontend.md` #6 and Project Brief §11.8 both require the map to stay a pluggable provider
@@ -305,6 +317,8 @@ regardless.
 B1 + B2 (the JT808 provisioning bridge and live tracking pipeline) must also reach a working state
 before F7 can show real data. The two gates are unrelated — one a vendor/product choice, one an
 engineering integration task — and can be resolved in parallel; see §4A for the full reasoning.
+
+</details>
 
 ### 3.10 Shared cross-platform contract strategy — **architectural decision, needs your confirmation**
 

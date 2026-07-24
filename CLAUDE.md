@@ -848,3 +848,30 @@ enabling, exact submitted payload shape, validation errors), and `StudentAssignm
 (the CR-1 gate's current-state display, assign/end flows, error state) — `StudentsPage.test.tsx`
 was updated to mock the new `student-assignments` module and gained one integration test proving
 the "no active assignment → Assign to route" path renders inside the existing drawer.
+
+### Map provider decision + F7 infrastructure prep (ADR-0011)
+
+The roadmap's §3.9 map-provider decision (the last item blocking Phase F7 alongside §4A's B1/B2,
+both now complete per ADR-0009/ADR-0010) is resolved: **Mapbox GL JS**, user-confirmed. This phase
+prepared F7's frontend integration points without building F7 itself: `frontend/src/shared/map/`
+(`MapProvider.ts` — the pluggable interface `.claude/rules/frontend.md` #6 requires; `providers/
+MapboxMapProvider.ts` — the concrete implementation; `MapView.tsx` — a thin provider-selecting
+React wrapper), the new `mapbox-gl`/`@types/mapbox-gl` dependencies, and `VITE_MAPBOX_ACCESS_TOKEN`
+(`frontend/.env.example`, read through `config/env.ts`'s existing single-point-of-truth pattern).
+No backend changes were needed — `tracking`'s existing REST/WebSocket contracts already expose
+plain decimal-degree `lat`/`lng`, exactly what Mapbox (or any provider) consumes directly. `/live-
+monitoring`'s own nav route remains `PlaceholderPage` — F7's actual vehicle-marker/WebSocket-driven
+UI is separate, not-yet-started work.
+
+### Development Redis environment (ADR-0008/ADR-0010 made runnable)
+
+`docker/docker-compose.yml`'s long-placeholder `redis:` service is now a real definition
+(`redis:7-alpine`, AOF persistence, healthcheck) — the first concrete service filled into that
+file. `backend/.env.example`'s `RAAD_BROKER__URL`/`RAAD_REDIS__URL` and a new `services/
+device-gateway/.env.example`'s `DEVICE_GATEWAY_BROKER_URL` all point at it by convention
+(`redis://localhost:6379/0`), so the Business API's own broker (ADR-0008) and the Device Gateway's
+event bus/registry projection (ADR-0010) can share one local Redis instance exactly like the
+architecture always assumed. **Live verification status:** see `docs/architecture/adr/
+0012-development-redis-environment.md` for exactly what was and was not possible to verify in this
+sandbox (no Docker Engine is installed here — confirmed, not assumed) and what running the
+provided compose file yourself would additionally prove.
