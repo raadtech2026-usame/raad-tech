@@ -1,14 +1,40 @@
 # RAAD Platform — base Docker Compose service definitions.
-# Structural placeholder only. Per docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md §11,
-# MVP deployables are: Business API, Workers, JT808 TCP Server, JT1078 Video Server, plus
-# PostgreSQL (ADR-0002, superseding the original MySQL choice), Redis, and an event broker.
-# Service definitions intentionally not filled in yet.
+# Per docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md §11, MVP deployables are:
+# Business API, Workers, JT808 TCP Server, JT1078 Video Server, plus PostgreSQL (ADR-0002),
+# Redis, and an event broker.
+#
+# `redis` below is the first of these actually filled in (F7 infrastructure prep) — it backs
+# BOTH `RAAD_REDIS__URL` (tracking's RedisLatestPositionPort, Backend Stabilization phase) and
+# `RAAD_BROKER__URL`/`DEVICE_GATEWAY_BROKER_URL` (Redis Streams event broker, ADR-0008/ADR-0010)
+# as the SAME instance — ADR-0008 already documents `redis.url`/`broker.url` as independently
+# configurable settings that usually coincide in an MVP deployment; there is no separate
+# `broker:` service to define. Every other service below has no Dockerfile yet (business-api,
+# worker, device-gateway, jt1078-server, postgres) and stays a placeholder — filling those in is
+# separate, larger work, not part of this phase's "get a live Redis for F7" scope.
 
-# services:
-#   business-api:
-#   worker:
-#   jt808-server:
-#   jt1078-server:
-#   postgres:
-#   redis:
-#   broker:
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: raad-redis-dev
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    # Streams (ADR-0008) survive a container restart via AOF persistence — dev convenience only,
+    # not a durability guarantee; this is a local dev environment, not a backup strategy.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - raad_redis_dev_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+# business-api:
+# worker:
+# device-gateway:
+# jt1078-server:
+# postgres:
+
+volumes:
+  raad_redis_dev_data:

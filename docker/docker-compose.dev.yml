@@ -1,1 +1,9 @@
-# RAAD Platform — local development overrides. Placeholder only.
+# RAAD Platform — local development overrides.
+#
+# No overrides needed yet: `docker-compose.yml`'s `redis` service (ADR-0012) already targets dev
+# use as-is (AOF persistence for restart-survival, a healthcheck, host port 6379) — there is no
+# prod-only tightening to relax here until `postgres`/`business-api`/`worker`/`device-gateway`/
+# `jt1078-server` gain their own service definitions and Dockerfiles (separate, larger work).
+#
+# Run with:
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d

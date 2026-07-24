@@ -871,7 +871,12 @@ file. `backend/.env.example`'s `RAAD_BROKER__URL`/`RAAD_REDIS__URL` and a new `s
 device-gateway/.env.example`'s `DEVICE_GATEWAY_BROKER_URL` all point at it by convention
 (`redis://localhost:6379/0`), so the Business API's own broker (ADR-0008) and the Device Gateway's
 event bus/registry projection (ADR-0010) can share one local Redis instance exactly like the
-architecture always assumed. **Live verification status:** see `docs/architecture/adr/
+architecture always assumed. `services/device-gateway/scripts/verify_redis_e2e.py` is a new,
+committed (not one-off) end-to-end check: a real LSZ registration+position frame over a real
+socket, through a real `RedisEventPublisher`, decoded back by the Business API's own real
+`_fields_to_event`/`DevicePositionReportedProcessor` — reusable the moment a reachable Redis
+exists. **Live verification status:** see `docs/architecture/adr/
 0012-development-redis-environment.md` for exactly what was and was not possible to verify in this
-sandbox (no Docker Engine is installed here — confirmed, not assumed) and what running the
-provided compose file yourself would additionally prove.
+sandbox (no Docker Engine, WSL, or native Redis build is reachable here — confirmed, not assumed,
+including the specific checks run) and what running the provided compose file plus that script
+yourself would additionally prove.

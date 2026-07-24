@@ -56,7 +56,31 @@ src/
     ├── teltonika/  # Structural placeholder only — no hardware procured, no vendor docs, no
     ├── queclink/   # code invented ahead of either (see each package's own __init__.py).
     └── ruptela/
+scripts/
+└── verify_redis_e2e.py  # ADR-0012: real LSZ device -> real Redis -> real backend decode,
+                          # against a genuinely reachable redis-server (no fake client) — the
+                          # committed, reusable version of ADR-0010 §6's one-off check
 ```
+
+## Local dev environment (ADR-0012)
+
+`.env.example` documents `DEVICE_GATEWAY_BROKER_URL` — this deployable has no dotenv loader
+(`broker_config.py` reads bare `os.environ`), so export it into your shell rather than expecting
+a `.env` file to be picked up automatically. Bring up Redis via `docker/docker-compose.yml`
+(`redis` service, `docker compose -f docker/docker-compose.yml up -d`), then:
+
+```bash
+export DEVICE_GATEWAY_BROKER_URL=redis://localhost:6379/0
+python scripts/verify_redis_e2e.py
+```
+
+A clean `PASS` proves this deployable's `RedisEventPublisher` output is decodable by the real
+Business API `raad.core.events.redis_streams._fields_to_event` and
+`tracking.events.subscribers.DevicePositionReportedProcessor`, over an actually-reachable Redis —
+not just against the fake client every other test in this repo already uses. See ADR-0012 for
+what this script does and does not verify, and for this environment's own current status (no
+Docker/WSL/native Redis reachable here, confirmed — the script fails cleanly at its Redis PING
+step rather than silently skipping).
 
 ## Key rule
 
