@@ -657,6 +657,22 @@ Complexity / Risks / Why-it's-ordered-here.
 
 ## 4A. Backend Integration Track — JT808 Device-Plane Bridge (Parallel Workstream)
 
+**Update, 2026-07-24 — real hardware analysis changes what B1/B2 actually build, not their
+objectives.** `docs/vendor/HARDWARE_ANALYSIS.md` and `docs/architecture/adr/
+0009-mdvr-vendor-protocol-device-plane.md` establish that the actually-procured MDVR hardware
+(Shenzhen Tianyou / "LSZ", `LSZ-C5804DG-Q-F`) is not JT/T 808/1078-compliant — it speaks its own
+proprietary protocol. B1 and B2 below are **retitled in spirit, not in objective**: "a physical
+device can authenticate" (B1) and "a device's GPS reports become a persisted row and a live map
+update" (B2) still stand exactly as written; what changes is that both are now implemented against
+`services/jt808/src/vendors/lsz_mdvr/` (a new, parallel protocol/dispatcher/handlers stack inside
+the same `services/jt808/` deployable, per ADR-0009 — the existing JT/T 808 code is kept, dormant,
+untouched) rather than literal JT/T 808 message IDs/framing. Every architectural property B1/B2
+were already designed around — event-only communication with the business plane, the
+`DevicePositionReported` event shape, Redis-backed session state, the outbox/broker publish
+pattern — is unchanged. Where this update revises a specific sub-bullet below with real
+consequence (the auth-key/credential assumption `DeviceProvisioningPort.verify_auth_code` made,
+which this hardware cannot satisfy), it is flagged inline rather than silently reinterpreted.
+
 **Numbered "4A," not inserted as a renumbered §5.** This section sits between §4 and §5 in the
 document but is deliberately not a subsection of the React roadmap — renumbering every subsequent
 section (§5–§12) to fit it into strict sequence would touch dozens of this document's own existing
@@ -703,16 +719,27 @@ blocks live tracking, which it does not.
   `NullDeviceProvisioningPort`, is deliberately fail-closed — every registration/authentication
   attempt currently fails, regardless of what's in the `devices` table.
 - **Scope:**
-  - **Device authentication (auth secret):** expose `devices.auth_key_hash` through
-    `RegisterDeviceRequest`/the registration form. It exists in the domain and DB schema
-    (Database Design §5.2) but is set by no API path today.
-  - **`DeviceProvisioningPort` implementation:** a real adapter answering
-    `authorize_registration`/`verify_auth_code`, replacing the fail-closed Null default.
-  - **Device registry synchronization:** the read-model/event feed JT808 needs to resolve
-    `terminal_id → device/vehicle/organization` locally, **without** a forbidden synchronous
-    cross-service DB read (ADR-808-4; `.claude/rules/architecture.md` #3) — most likely a local
-    projection kept current by consuming `fleet_device`'s own already-emitted
-    `DeviceRegistered`/`DeviceActivated`/`DeviceAssignedToVehicle` domain events.
+  - **Device authentication (auth secret) — revised, 2026-07-24:** `devices.auth_key_hash`/
+    `DeviceProvisioningPort.verify_auth_code` assumed a credential the actual procured hardware's
+    protocol does not have at all (`docs/vendor/HARDWARE_ANALYSIS.md` §11: no cryptographic
+    auth mechanism of any kind — registration trust is serial-number-allowlist only). The
+    vendor-specific provisioning port (`vendors/lsz_mdvr/handlers/provisioning_port.py`)
+    authorizes by serial number only; the missing cryptographic assurance is a real, accepted,
+    flagged gap pending a network-layer compensating control (`.claude/rules/security.md` #9),
+    not silently closed. `auth_key_hash` stays in the schema, unused by this vendor's bridge, for
+    a future JT/T-808-compliant vendor that can actually satisfy it.
+  - **`DeviceProvisioningPort` implementation:** a real adapter answering `authorize_registration`
+    only (this vendor's single-step registration has no separate authentication message to
+    verify a code against, unlike JT/T 808's `0x0100`/`0x0102` split) — replacing the fail-closed
+    Null default.
+  - **Device registry synchronization:** the read-model/event feed the device-plane service needs
+    to resolve `serial_number → device/vehicle/organization` locally, **without** a forbidden
+    synchronous cross-service DB read (`.claude/rules/architecture.md` #3) — a local projection
+    kept current by consuming `fleet_device`'s own already-emitted `DeviceRegistered`/
+    `DeviceActivated`/`DeviceAssignedToVehicle` domain events. **A real, previously-unflagged gap
+    surfaced while implementing this:** `device_registered`'s event payload carries `terminal_id`
+    but not `serial_number` — the field this vendor's protocol actually keys on — so the event
+    needs a small, additive payload field added before this projection can be populated from it.
   - **Redis session management:** JT808's `DeviceSessionRegistry` is in-memory, single-node only
     today; `.claude/rules/jt808.md` #4 requires Redis as the authoritative, cross-shard session
     store this device-plane service needs for real horizontal scale.

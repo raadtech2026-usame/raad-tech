@@ -13,6 +13,7 @@ that single purpose.
 ## Product Scope
 
 ### In scope (this is what RAAD does)
+
 - Real-time GPS tracking of school buses
 - Live video streaming from onboard bus cameras (JT1078)
 - GPS/vehicle terminal communication (JT808)
@@ -23,8 +24,10 @@ that single purpose.
 - Student transportation (linking students to routes/buses, boarding/alighting tracking)
 
 ### Explicitly out of scope
+
 RAAD is **not** a school ERP. Do not add, extend toward, or casually suggest features from these domains,
 even if a request seems adjacent:
+
 - Classroom/school attendance tracking
 - General school ERP functionality
 - Payroll
@@ -48,7 +51,29 @@ you'll see across GPS ingestion, video, and device-communication code:
 
 Treat these two protocols as first-class architectural concerns: most "real-time tracking" and
 "live video" features in this codebase are ultimately about correctly implementing, parsing, or
-relaying JT808/JT1078 traffic between bus terminals and the platform.
+relaying JT808/JT1078 traffic between bus terminals and the platform — for a device-plane vendor
+that is genuinely JT/T 808/1078-compliant. **The first procured hardware vendor is not** — see the
+note immediately below before assuming either protocol applies to the actual current integration.
+
+**Real hardware vendor decision (ADR-0009).** `docs/vendor/HARDWARE_ANALYSIS.md` (tracing only to
+the vendor's own documentation, `mdvrdocs/`) found that the actually-procured MDVR hardware
+(Shenzhen Tianyou Security Technology Co., Ltd, brand "LSZ", model `LSZ-C5804DG-Q-F`) does not
+implement JT/T 808 or JT/T 1078 at all — it speaks its own proprietary ASCII/binary protocol
+(different framing, different message-identity scheme, no checksum/escaping, a different media
+transport), confirmed against the codebase itself: `services/jt808/`'s existing, tested Phase
+9.1–9.6 JT/T 808-2013 parser cannot parse a single frame this hardware sends.
+`docs/architecture/adr/0009-mdvr-vendor-protocol-device-plane.md` records the resulting decision
+(Option A of `docs/vendor/HARDWARE_INTEGRATION_PLAN.md`'s Decision Point 1): RAAD terminates this
+vendor's protocol directly, in the same device-plane deployable (`services/jt808/`), via a new,
+parallel `src/vendors/lsz_mdvr/` protocol/dispatcher/handlers stack — not a patched JT/T 808
+"dialect," and not by integrating through the vendor's own separate CMS server product. The
+existing JT/T 808 implementation is kept, untouched, dormant, for a possible future
+genuinely-compliant vendor; the architectural principles below (separate plane, event-only
+communication with the business plane, same `DevicePositionReported`/`DeviceOnline`/
+`DeviceOffline`/`DeviceAlarmRaised` event contract) apply identically regardless of which protocol
+stack is active. `.claude/rules/jt808.md`/`.claude/rules/jt1078.md` remain this architecture's
+*target* framing for device-plane work in general; they no longer describe the currently-integrated
+hardware specifically — see ADR-0009 for the full reasoning.
 
 ## Domain Vocabulary
 
@@ -125,7 +150,7 @@ Each of the ten below has a full `api / application / domain / infra / events` s
   minimal `tracking_status` (`last_seen_at` only — deliberately no derived `is_connected`
   boolean, since the only source that could answer "online right now" honestly is the JT808
   service's own Redis session state, which this query never reads) via a same-module join of
-  this context's own `device_assignments`/`devices` tables — the *only* device-derived data an
+  this context's own `device_assignments`/`devices` tables — the _only_ device-derived data an
   Org Admin session can ever reach; `list_vehicles` deliberately leaves it `null` to avoid an
   N+1 device lookup per page. `device_inventory` (a pre-tenant hardware pool) and
   `device_status_log` (a durable online/offline transition history, Database Design §7.3)
@@ -139,7 +164,7 @@ Each of the ten below has a full `api / application / domain / infra / events` s
   key's writer — `TrackingApplicationService.record_vehicle_position` persists history only,
   deliberately never also writing Redis. Both routes now enforce `TrackingVisibilityPolicy`
   (`.claude/rules/security.md` #4's four-dimension predicate) via `interfaces/http/policy_guards.
-  resolve_tracking_decision` — ADR-0006 resolves the D4-vs-CR-1 documentation conflict this
+resolve_tracking_decision` — ADR-0006 resolves the D4-vs-CR-1 documentation conflict this
   required (safety-over-billing wins for genuinely live position during an active trip; trip
   history stays fully CR-1-gated).
 - **Transport Operations** — `Student` (enroll/update/activate/disable/graduate/transfer),
@@ -248,8 +273,8 @@ Each of the ten below has a full `api / application / domain / infra / events` s
   `ReportDefinition` (Phase 2 §2's conceptual pairing with `ReportRun`) is **not built** — no
   `report_definitions` table exists anywhere in Database Design (the schema authority), no API
   route manages one; flagged as a real Phase-2-vs-Phase-3.2 gap, not silently resolved. `Report
-  Type` is modeled as an opaque, non-empty, length-validated string over `report_runs.
-  definition_key` rather than a closed enum — Database Design §8.6 gives that column no
+Type` is modeled as an opaque, non-empty, length-validated string over `report_runs.
+definition_key` rather than a closed enum — Database Design §8.6 gives that column no
   `ENUM(...)` notation (unlike `status`, which does get one), and neither Project Brief §5.8's
   two prose categories ("Student Transport Reports", "Transport Payment Reports") nor any other
   document gives exact wire-format values; inventing a closed set was avoided. Two routes
@@ -283,7 +308,7 @@ Each of the ten below has a full `api / application / domain / infra / events` s
   `TransportFee`'s "use-case exists, no endpoint" precedent, which at least has documented CRUD
   semantics), flagged in `domain/entities.py`'s own docstring. **`AuditEntry` is never created
   through this module** — see ADR-0007: `audit_entries` is a shared-kernel table (like `outbox`),
-  written transactionally by every *other* module's own `UnitOfWork.commit()` via
+  written transactionally by every _other_ module's own `UnitOfWork.commit()` via
   `core.audit.writer.AuditWriter`, with zero changes to any of those modules' own source files.
   `platform_audit` is purely the read side.
 
@@ -309,7 +334,7 @@ Audit, via this codebase's own automated `tests/architecture/` gate suite), not 
   outbox-write-then-session-commit.
 - **Domain events + transactional outbox + transactional audit trail:** every state change
   buffers `DomainEvent`s on the aggregate; the application service records them onto the UoW;
-  `commit()` writes them to the `outbox` table **and** the `audit_entries` table, in the *same*
+  `commit()` writes them to the `outbox` table **and** the `audit_entries` table, in the _same_
   transaction as the business rows (`core/events/outbox.py`, `core/audit/writer.py` — ADR-0007)
   — no event without a committed change, no committed change silently missing its event or its
   audit row. Both are shared-kernel tables owned by no bounded context, mirroring each other
@@ -358,16 +383,16 @@ backend/
 - **Chain:** a single linear Alembic chain, one or more revisions per completed bounded context
   (`transport_ops` has several — one per aggregate), in build order:
   `iam → organization → fleet_device → tracking → transport_ops (student → parent →
-  student_parents → driver → route → trip → student_assignment) → billing → notifications →
-  reporting → iam (role_permissions, ADR-0004) → organization (region/support_assignments,
-  ADR-0005) → video → core (audit_entries, ADR-0007) → platform_audit (system_settings)` (head).
+student_parents → driver → route → trip → student_assignment) → billing → notifications →
+reporting → iam (role_permissions, ADR-0004) → organization (region/support_assignments,
+ADR-0005) → video → core (audit_entries, ADR-0007) → platform_audit (system_settings)` (head).
   No branches. Two revisions (`role_permissions`, `audit_entries`) are owned by `core`/shared
   infrastructure rather than a single bounded context's own aggregate build-out — flagged in
   their own migration files' docstrings, not silently folded into an unrelated module's chain
   entry.
 - **Verified zero drift:** `alembic check` reports "No new upgrade operations detected." against
   the live schema; the full chain has been round-tripped (`upgrade head → downgrade → upgrade
-  head`) with no orphaned objects. Every migration that introduces a PostgreSQL native `ENUM`
+head`) with no orphaned objects. Every migration that introduces a PostgreSQL native `ENUM`
   type includes an explicit `DROP TYPE` in its `downgrade()` — `alembic revision --autogenerate`
   does not emit this itself, and omitting it breaks re-upgrade after a downgrade.
 - `migrations/env.py` imports `infra/models` from all ten modules plus `core.audit.writer`
@@ -394,13 +419,13 @@ backend/
   their own, a gap `routers.py`'s own docstring had correctly flagged as deferred back when RBAC
   itself was still pending; now resolved via `_ensure_driver_owns_trip` (a no-op for Org Admin,
   whose blanket transport_ops grant is an intentional admin-override). (4) `PrincipalResponse.
-  region_ids` was hardcoded to `[]` despite `ScopeResolver` being real since ADR-0005 — now
+region_ids` was hardcoded to `[]` despite `ScopeResolver` being real since ADR-0005 — now
   resolved via `effective_org_scope` on login/refresh. (5) ~45 router docstrings across 7 modules
   still claimed `require_permission` "currently raises `NotImplementedError`" — stale since
   ADR-0004, and surfaced verbatim in the generated `/docs` Swagger UI; corrected. (6)
   `interfaces/http/policy_guards.py` — this codebase's own description of itself as "the CR-1/D5
   enforcement point... never bypassable" — had zero test coverage; `tests/unit/
-  test_policy_guards.py` (23 tests) now covers the `safety_override` reconciliation, ownership
+test_policy_guards.py` (23 tests) now covers the `safety_override` reconciliation, ownership
   resolution, and both policy-decision compositions directly, using the same fake-`Container`
   pattern `test_notification_subscribers.py` established. (7) **`created_at`/`updated_at` now
   ship on every aggregate's response** across all ten modules (Organization/Region, Vehicle/
@@ -482,9 +507,9 @@ backend/
   flagged (mirroring `core.workers.idempotency.InMemoryIdempotencyStore`'s identical caveat) as
   needing a Redis Pub/Sub-backed adapter behind the same interface if a future deployment scales
   to multiple API instances. `/ws/tracking` subscribe authorization reuses `interfaces/http/
-  policy_guards.resolve_tracking_decision` verbatim (the same `TrackingVisibilityPolicy`
+policy_guards.resolve_tracking_decision` verbatim (the same `TrackingVisibilityPolicy`
   composition the REST tracking routes already enforce), via a new `resolve_vehicle_tracking_
-  context` helper in that same file (needed because, unlike the REST routes, a subscribe must
+context` helper in that same file (needed because, unlike the REST routes, a subscribe must
   resolve `organization_id` from the `Vehicle` aggregate itself, not a cached position, since a
   client may subscribe before any position has ever arrived). **Live position push
   re-authorizes on every send, not just at subscribe time** — the mechanism `/ws/tracking`
@@ -494,14 +519,14 @@ backend/
   `vehicle_id` in their payload at all (`StudentAssignmentRemoved` etc. carry only
   `{actor_id}`), and resolving one back to the specific vehicle(s) it affects would need a
   translation this codebase doesn't have — the same already-flagged `student.assignment_
-  changed`-vs-four-separate-events gap `notifications/domain/events.py` documents. Rather than
+changed`-vs-four-separate-events gap `notifications/domain/events.py` documents. Rather than
   inventing that resolution, every position forward re-runs `resolve_tracking_decision` fresh
   against current DB state, dropping and closing a now-unauthorized subscriber on the very next
   event for that vehicle — the same safety property (no unauthorized frame ever delivered),
   reusing existing policy code, without the translation layer. Only `TripEnded` (a single,
   certain, already-`vehicle_id`-bearing event) gets the literal, immediate `subscription_closed`
   frame + close the API Contract describes; `access_revoked`/`assignment_inactive`/
-  `subscription_expired` as *explicit* close reasons are not wired this phase — flagged, not
+  `subscription_expired` as _explicit_ close reasons are not wired this phase — flagged, not
   silently invented around. `/ws/notifications` does **not** re-check CR-1 at all — it is
   already enforced upstream, at `Notification` creation time, by the (separate-process)
   Notification Worker, so a denied parent's `Notification` row is simply never created; this
@@ -512,14 +537,14 @@ backend/
   the real `FastAPI` app through raw ASGI scope/queues instead, as a one-off manual verification):
   a malformed, non-ULID `vehicle_id` in a subscribe frame raised `DomainError` uncaught out of
   `handle_subscribe`, which FastAPI's HTTP-only global exception handler cannot safely convert
-  to a response on an *already-accepted* WebSocket — fixed by catching `Exception` (not just
+  to a response on an _already-accepted_ WebSocket — fixed by catching `Exception` (not just
   `AppError`; an unbound-port `LookupError` carries the identical risk) at that boundary,
   logging loudly and closing cleanly instead, mirroring `core.workers.base.Worker._tick`'s own
   "one failure is logged, never left to crash the surrounding loop" principle. Comprehensive
   unit tests cover the shared token resolver, `ConnectionManager`/`BrokerFanOutWorker`/
   `authenticate_connection`, both channels' subscribe/fan-out/lifecycle logic (fake-`WebSocket`/
   fake-`Container` doubles, the same convention `test_policy_guards.py`/`test_notification_
-  subscribers.py` already establish), and `resolve_vehicle_tracking_context`; a live-Redis
+subscribers.py` already establish), and `resolve_vehicle_tracking_context`; a live-Redis
   integration test (`tests/integration/test_realtime_broker_fanout.py`) proves two distinct
   consumer groups each receive their own copy of a published event — skipped in this sandbox
   (no broker reachable, the same pre-existing gap every Redis-dependent test here already
@@ -554,18 +579,18 @@ backend/
   so it stays unbound here — same "fail loudly, don't fake it" policy `db.url`/`redis.url`
   follow). `SqlOutboxPublisher` needed zero changes — it already depended only on the abstract
   `BrokerPort`. `core.workers.scheduler.LockPort` (`RedisLockPort`) and `core.workers.dlq.
-  DeadLetterQueue` (`RedisDeadLetterQueue`) are likewise now concrete, sharing the broker's own
+DeadLetterQueue` (`RedisDeadLetterQueue`) are likewise now concrete, sharing the broker's own
   Redis connection. Realtime WebSocket fan-out (`/ws/tracking`/`/ws/notifications`) was a
   distinct capability from this phase's own broker/worker plumbing, deferred at the time —
   see the WebSocket phase's own entry below for how it was subsequently built on top of this
   exact broker.
 - **Notification Worker built** (`interfaces/workers/notification_worker.py` + `modules/
-  notifications/events/subscribers.py`): consumes the broker (only started when a
+notifications/events/subscribers.py`): consumes the broker (only started when a
   `BrokerConsumer` is bound), dispatches via `core.events.processor.EventProcessorRegistry` to
   four D1-catalog processors (`trip_started`/`trip_completed`/`approaching_stop`/`arrived_org`),
   resolving recipients via `transport_ops`'s own already-existing application services and
   gating each one through `SubscriptionAccessPolicy` (CR-1) before calling `Notification.
-  create()` — the enforcement point `notifications/domain/policies.py`'s own docstring had
+create()` — the enforcement point `notifications/domain/policies.py`'s own docstring had
   named as "the not-yet-built Notification Worker"'s job. `subscription`/`system` notification
   types are **not** auto-triggered from any event — no document names which billing/system
   event(s) should produce one, flagged rather than invented.
@@ -578,7 +603,7 @@ backend/
 - **Three scheduled jobs registered** (`interfaces/workers/bootstrap.py`), guarded by
   `RedisLockPort` whenever a broker is configured: `prune_vehicle_positions` (new
   `TrackingApplicationService.prune_position_history` + `VehiclePositionRepository.
-  delete_before` — a plain bulk `DELETE`, not `PARTITION BY RANGE` + partition-drop, since
+delete_before` — a plain bulk `DELETE`, not `PARTITION BY RANGE` + partition-drop, since
   `vehicle_positions` isn't actually partitioned yet, `.claude/rules/database.md` #6's own
   literal mechanism deferred separately), `sweep_expired_subscriptions` and
   `reconcile_expired_payments` (new `BillingApplicationService` methods, both bulk-scan
@@ -602,7 +627,7 @@ backend/
 - No module's own `list_all()`/`list_page()`/`list_cursor_page()`-backed repository method is
   filtered by the now-real `ScopeResolver` — every one still applies an unrestricted
   `TenantRegionScope(organization_ids=None)` internally, a system-wide gap predating ADR-0005
-  that ADR-0005 made a real resolver *available* for but did not retrofit onto every existing
+  that ADR-0005 made a real resolver _available_ for but did not retrofit onto every existing
   list endpoint (a separate, larger, cross-cutting change); the Pagination/Filtering/Sorting
   phase's own `list_page`/`list_cursor_page` additions inherit this exact gap rather than
   introducing a new one.
@@ -684,7 +709,7 @@ what this nav shows or hides.
 Delivered per the roadmap's own F0 scope: design tokens (`styles/tokens.css`, `styles/global.css`
 — colors/typography/spacing/radii/shadows/motion, extracted and rationalized from the approved
 mockup; dark-mode CSS-variable mechanism is in place but not populated, since the approved design
-specifies only one settings *toggle* for a dark theme with no corresponding palette anywhere —
+specifies only one settings _toggle_ for a dark theme with no corresponding palette anywhere —
 flagged, not invented); a reusable component library (`shared/components/`: `Button`, `Badge`,
 `Card`, `Avatar`, `IconButton`, `LiveIndicator`, `Input`, `Select`, `Toggle`, `FormField`,
 `DataTable`/`FilterChips`/`Pagination`/cell helpers, `DetailDrawer`, `EmptyState`, `Skeleton`,
@@ -743,11 +768,11 @@ F0's/F6's own entries since it's a catch-up, not a live phase record.
   remove one, with a visible caption explaining why: no HTTP route exists for
   `Route.move_stop`/`remove_stop` yet (backend's own flagged gap).
 - **Device Domain Overhaul (frontend half):** added `features/organizations/regions/
-  RegionsPage.tsx` at `/platform/regions` (Founder-only nav entry — only `founder` holds
+RegionsPage.tsx` at `/platform/regions` (Founder-only nav entry — only `founder` holds
   `organization.regions.create`/`.update`); and, matching the backend's RBAC correction that
   `org_admin` now holds zero `fleet_device.devices.*` permissions, **removed** `/org/devices`
   entirely — `VehiclesPage`'s own "Tracking" drawer section (`tracking_status.last_seen_at` only,
-  no device identifier) is now the *only* device-derived data an Org Admin session can reach,
+  no device identifier) is now the _only_ device-derived data an Org Admin session can reach,
   matching the backend's identical posture.
 
 ### Phase F6 — Transport Operations, Part C: Trips & Student Assignments (C4) (complete)
@@ -778,7 +803,7 @@ vehicle picker is therefore organization-scoped (real backend support); its driv
 pickers are deliberately global, with a hint explaining a cross-organization pick will be rejected
 server-side — the backend's actual `Trip.schedule` `DomainError` is the real safety net, surfaced
 verbatim via a toast, not a client-side filter that can't be built honestly. `TripsPage`'s own
-vehicle/driver/route *name* lookups for its list table reuse the same picker functions with no
+vehicle/driver/route _name_ lookups for its list table reuse the same picker functions with no
 organization filter (`""`, which `buildOffsetListQuery` omits entirely), capped at the first 100
 rows each — the same best-effort limitation `RoutesPage`'s/`StudentsPage`'s own
 `organizationNameById` lookups already accept.
@@ -792,7 +817,7 @@ second `mapSlot` section on `StudentsPage`'s own detail drawer (stacked above th
 "Guardians" section), plus `AssignStudentForm.tsx` (`POST /student-assignments`) — imported across
 the `students`/`student-assignments` feature-folder boundary (both under the same `transport_ops`
 bounded context), a deliberate, narrow exception to `.claude/rules/frontend.md` #1's "no
-cross-folder `api.ts` import" discipline: it's a *component* import, not a duplicated data-fetching
+cross-folder `api.ts` import" discipline: it's a _component_ import, not a duplicated data-fetching
 read, and the roadmap itself names `student-assignments` as its own deliverable rather than code
 to inline into `students/`. Flagged in both `router.tsx`'s and `StudentsPage.tsx`'s own docstrings,
 not silently decided.
