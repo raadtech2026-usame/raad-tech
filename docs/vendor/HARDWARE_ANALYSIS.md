@@ -71,10 +71,12 @@ directly contradicting a JT808/JT1078 assumption:
   is not JT/T 1078's PS/RTP-style media packet format.
 
 Confirmation this is a genuine mismatch, not a documentation gap on RAAD's side: `services/jt808/`
-in this repository already implements the **real** JT/T 808-2013 standard (binary header parsing,
-`0x7e` escaping, XOR checksum, BCD terminal-phone decoding, message IDs `0x0100`/`0x0102`/`0x0200`/
-`0x0704`/etc. — see `services/jt808/README.md`'s own Phase 9.1–9.6 status). None of that parser
-would recognize a single byte this vendor's hardware actually sends.
+(renamed `services/device-gateway/`, reorganized into `src/vendors/{jt808,lsz}/` — ADR-0010,
+written after this document) in this repository already implements the **real** JT/T 808-2013
+standard (binary header parsing, `0x7e` escaping, XOR checksum, BCD terminal-phone decoding,
+message IDs `0x0100`/`0x0102`/`0x0200`/`0x0704`/etc. — see `services/device-gateway/README.md`'s
+own Phase 9.1–9.6 status). None of that parser would recognize a single byte this vendor's
+hardware actually sends.
 
 **No JT808 features and no JT1078 features are documented for this hardware** — see the next two
 sections, which record that finding rather than fabricate a feature list to fill the expected

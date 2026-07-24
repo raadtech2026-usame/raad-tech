@@ -5,7 +5,9 @@ Derived from `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md`.
 1. **Modular monolith for business logic.** All business logic lives in one deployable
    (`backend/`), organized into strict internal modules aligned to bounded contexts. Do not create
    new independently-deployed business services without an ADR.
-2. **Device connectivity is a separate plane.** JT808 (`services/jt808/`) and JT1078
+2. **Device connectivity is a separate plane.** The device gateway (`services/device-gateway/`,
+   renamed from `services/jt808/` per ADR-0010 once it grew a second vendor protocol adapter —
+   see `src/vendors/{jt808,lsz,...}/` and `src/adapter.DeviceProtocolAdapter`) and JT1078
    (`services/jt1078/`) are independent deployables. FastAPI never terminates a device socket.
 3. **Event-driven backbone.** The device plane communicates with the business plane exclusively
    through asynchronous domain events over the broker — never direct DB writes, never synchronous

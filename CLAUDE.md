@@ -55,25 +55,33 @@ relaying JT808/JT1078 traffic between bus terminals and the platform — for a d
 that is genuinely JT/T 808/1078-compliant. **The first procured hardware vendor is not** — see the
 note immediately below before assuming either protocol applies to the actual current integration.
 
-**Real hardware vendor decision (ADR-0009).** `docs/vendor/HARDWARE_ANALYSIS.md` (tracing only to
-the vendor's own documentation, `mdvrdocs/`) found that the actually-procured MDVR hardware
-(Shenzhen Tianyou Security Technology Co., Ltd, brand "LSZ", model `LSZ-C5804DG-Q-F`) does not
-implement JT/T 808 or JT/T 1078 at all — it speaks its own proprietary ASCII/binary protocol
-(different framing, different message-identity scheme, no checksum/escaping, a different media
-transport), confirmed against the codebase itself: `services/jt808/`'s existing, tested Phase
-9.1–9.6 JT/T 808-2013 parser cannot parse a single frame this hardware sends.
-`docs/architecture/adr/0009-mdvr-vendor-protocol-device-plane.md` records the resulting decision
-(Option A of `docs/vendor/HARDWARE_INTEGRATION_PLAN.md`'s Decision Point 1): RAAD terminates this
-vendor's protocol directly, in the same device-plane deployable (`services/jt808/`), via a new,
-parallel `src/vendors/lsz_mdvr/` protocol/dispatcher/handlers stack — not a patched JT/T 808
-"dialect," and not by integrating through the vendor's own separate CMS server product. The
-existing JT/T 808 implementation is kept, untouched, dormant, for a possible future
-genuinely-compliant vendor; the architectural principles below (separate plane, event-only
-communication with the business plane, same `DevicePositionReported`/`DeviceOnline`/
-`DeviceOffline`/`DeviceAlarmRaised` event contract) apply identically regardless of which protocol
-stack is active. `.claude/rules/jt808.md`/`.claude/rules/jt1078.md` remain this architecture's
-*target* framing for device-plane work in general; they no longer describe the currently-integrated
-hardware specifically — see ADR-0009 for the full reasoning.
+**Real hardware vendor decision (ADR-0009), device gateway rename (ADR-0010).**
+`docs/vendor/HARDWARE_ANALYSIS.md` (tracing only to the vendor's own documentation, `mdvrdocs/`)
+found that the actually-procured MDVR hardware (Shenzhen Tianyou Security Technology Co., Ltd,
+brand "LSZ", model `LSZ-C5804DG-Q-F`) does not implement JT/T 808 or JT/T 1078 at all — it speaks
+its own proprietary ASCII/binary protocol (different framing, different message-identity scheme,
+no checksum/escaping, a different media transport), confirmed against the codebase itself: the
+device-plane deployable's existing, tested Phase 9.1–9.6 JT/T 808-2013 parser cannot parse a
+single frame this hardware sends. `docs/architecture/adr/0009-mdvr-vendor-protocol-device-plane.md`
+records the resulting decision (Option A of `docs/vendor/HARDWARE_INTEGRATION_PLAN.md`'s Decision
+Point 1): RAAD terminates this vendor's protocol directly, in the same device-plane deployable, via
+a new, parallel protocol/dispatcher/handlers stack — not a patched JT/T 808 "dialect," and not by
+integrating through the vendor's own separate CMS server product. **That deployable was
+subsequently renamed `services/jt808/` → `services/device-gateway/` and reorganized into
+`src/vendors/{jt808,lsz,teltonika,queclink,ruptela}/` behind a common `DeviceProtocolAdapter`
+interface (ADR-0010)** — the "device gateway," a single multi-vendor entry point for every
+GPS/MDVR integration, not a JT808-specific service; `teltonika`/`queclink`/`ruptela` are
+structural placeholders only (no hardware procured, no vendor docs, no code invented ahead of
+either). ADR-0010 also wires a real Redis-backed event bus (`RedisEventPublisher`, shared by every
+vendor adapter) and a broker-driven device registry projection, replacing the interim in-memory
+stand-ins ADR-0009 had explicitly deferred. The existing JT/T 808 implementation
+(`src/vendors/jt808/`) is kept, untouched, dormant, for a possible future genuinely-compliant
+vendor; the architectural principles below (separate plane, event-only communication with the
+business plane, same `DevicePositionReported`/`DeviceOnline`/`DeviceOffline`/`DeviceAlarmRaised`
+event contract, now all real, published events per ADR-0010) apply identically regardless of
+which vendor adapter is active. `.claude/rules/jt808.md`/`.claude/rules/jt1078.md` remain this
+architecture's *target* framing for device-plane work in general; they no longer describe the
+currently-integrated hardware specifically — see ADR-0009/ADR-0010 for the full reasoning.
 
 ## Domain Vocabulary
 

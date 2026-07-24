@@ -7,6 +7,15 @@ Domains" section and in `.claude/rules/jt808.md`/`.claude/rules/jt1078.md` for t
 procured hardware only — see Consequences below for exactly what those documents still govern
 and what they no longer describe correctly.
 
+**Extended by ADR-0010** (device-gateway multi-vendor architecture + Redis integration): the
+deployable this ADR calls `services/jt808/` throughout was subsequently renamed
+`services/device-gateway/`, and the vendor-specific code this ADR places directly under `src/`
+now lives under `src/vendors/jt808/`/`src/vendors/lsz/` (folder renamed from `lsz_mdvr`) — every
+file-path reference below is historical, describing the structure *as decided at the time*, not
+the current layout. This ADR's actual decision (terminate the vendor protocol directly, in the
+same deployable, event-contract-compatible with the rest of the platform) is unchanged and still
+in effect; only the paths moved.
+
 ## Context
 `docs/vendor/HARDWARE_ANALYSIS.md` establishes, tracing only to the vendor's own documentation
 (`mdvrdocs/`), that the procured hardware (Shenzhen Tianyou Security Technology Co., Ltd, brand

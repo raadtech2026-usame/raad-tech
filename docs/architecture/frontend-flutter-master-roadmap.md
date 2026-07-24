@@ -42,7 +42,8 @@ RAAD's backend is feature-complete against its approved documents across all ten
 contexts, including realtime WebSocket delivery (see
 `docs/architecture/backend-production-readiness-report.md`). The frontend has a working,
 tested app shell (Vite/React/TypeScript, routing, auth, REST client, WebSocket hook) and zero
-feature UI. Flutter is an empty structural scaffold. A device-plane service (`services/jt808/`)
+feature UI. Flutter is an empty structural scaffold. A device-plane service (`services/jt808/`,
+renamed `services/device-gateway/` per ADR-0010 — see §4A's own update note)
 is **far more built than the backend's own documentation implied** — transport, session
 management, protocol parsing, dispatch, auth/registration, and the full position-ingestion
 pipeline are implemented and tested; only the broker wiring and a Business-API-side consumer
@@ -83,7 +84,8 @@ flowing end-to-end, no bound payment provider. The second of those needs updatin
 
 ### 2.2 The JT808 device plane is substantially built — a correction to my own prior assessment
 
-`services/jt808/` (a separate deployable per `architecture.md` #2) has real, tested
+`services/jt808/` (renamed `services/device-gateway/` per ADR-0010 — a separate deployable per
+`architecture.md` #2) has real, tested
 implementations of: TCP transport, connection lifecycle, JT/T 808-2013 frame
 parsing/escaping/checksum/reassembly, message dispatch, terminal registration & authentication
 (with session binding), and — critically — the **position ingestion pipeline**
@@ -656,6 +658,15 @@ Complexity / Risks / Why-it's-ordered-here.
 ---
 
 ## 4A. Backend Integration Track — JT808 Device-Plane Bridge (Parallel Workstream)
+
+**Update, 2026-07-24 (later same day) — device gateway multi-vendor rename (ADR-0010).** B1/B2
+are now complete (registration/heartbeat/position for the LSZ adapter, Redis-backed event
+publishing, a broker-driven device-registry projection) — see `services/device-gateway/README.md`
+for the full status. The deployable named `services/jt808/` throughout the note immediately below
+was renamed `services/device-gateway/` and reorganized into `src/vendors/{jt808,lsz,teltonika,
+queclink,ruptela}/` behind a common `DeviceProtocolAdapter` interface, once it grew a second
+vendor's protocol adapter alongside the original JT/T 808 code — every `services/jt808/` path
+reference below is historical (accurate when written, immediately before the rename), not current.
 
 **Update, 2026-07-24 — real hardware analysis changes what B1/B2 actually build, not their
 objectives.** `docs/vendor/HARDWARE_ANALYSIS.md` and `docs/architecture/adr/

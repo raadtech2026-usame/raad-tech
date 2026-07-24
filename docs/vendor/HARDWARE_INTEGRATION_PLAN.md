@@ -1,6 +1,11 @@
 # Hardware Integration Plan — MDVR (Shenzhen Tianyou / "LSZ") vs. RAAD Architecture
 
-**Status:** Planning/analysis only. No implementation code has been written against this document.
+**Status:** Planning/analysis only when written. **Since implemented** — Decision Point 1 below
+was resolved as ADR-0009, and the device-plane deployable this document calls `services/jt808/`
+throughout was subsequently renamed `services/device-gateway/` and reorganized into
+`src/vendors/{jt808,lsz,...}/` (ADR-0010). Every `services/jt808/` path reference below is
+historical (accurate when this document was written, before either ADR), not current — see
+ADR-0009/ADR-0010 for what was actually built.
 **Depends on:** `docs/vendor/HARDWARE_ANALYSIS.md` (read that first — every finding below traces
 back to a specific section there).
 
