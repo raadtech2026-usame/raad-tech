@@ -3,7 +3,17 @@
 ## Status
 Accepted. Implemented this session — see Verification below for what was actually run and
 confirmed against a live Docker Desktop/WSL2 environment (already confirmed reachable per
-ADR-0012), not just asserted.
+ADR-0012), not just asserted. **Follow-up pass (same day): a fresh-deployment login gap was
+reported** (`docker compose down -v` → `up --build` → the web login rejects any credentials,
+`401 UNAUTHENTICATED`) — root-caused, not a bug in the stack itself: `migrate` only applies
+schema, and this project deliberately does not auto-seed a default account (a pre-existing,
+already-implemented decision, `backend/raad/interfaces/cli/bootstrap_founder.py` +
+`docs/runbooks/founder-bootstrap.md`, commit `8cdfc31`, predating this ADR). The actual gap was
+this ADR's own omission: `docker/README.md` never mentioned that CLI because it was never
+discovered while writing the original Docker stack. Closed by documenting the exact
+`docker compose exec` invocation in `docker/README.md`'s new "First login" section — no code
+changed. See the "Follow-up: Founder bootstrap" entry under Verification below for the full,
+live-reproduced record.
 
 ## Context
 `docker/docker-compose.yml` defined only `redis` (ADR-0012); every other service and all five
@@ -142,6 +152,46 @@ recorded honestly rather than asserted, per this repo's own ADR-0012 precedent.
   actually reads, and passing a matching value instead of a triple-cast — the full frontend test
   suite (50 files / 306 tests) and the `prod` Docker build both pass after the fix.
 
+### Follow-up: Founder bootstrap wiring (same day)
+Reported symptom: all 7 containers healthy, migrations applied, but `POST /api/v1/auth/login`
+returns `401` for every credential on a freshly-created deployment, and the login page appeared
+to suggest `founder@raadtech.example` would work. Investigated rather than patched around:
+
+- **Confirmed there is no auto-seed anywhere.** `grep`'d every migration for `INSERT`: only
+  `role_permissions` (permission *grants* for the `founder` role name, ADR-0004) and
+  `organization`'s starter regions — never a `users` row. No other script creates one either
+  (`scripts/db/seed.sh` is an empty placeholder).
+- **Confirmed a bootstrap path already exists and is not stale.** `backend/raad/interfaces/cli/
+  bootstrap_founder.py` (git history: commit `8cdfc31`, well before ADR-0009) — its own module
+  docstring already gives the "why manual, not auto-seed or an HTTP endpoint" reasoning quoted in
+  Status above. Its three `UserApplicationService` calls (`invite_user`/`change_password`/
+  `activate_user`) and `IamUnitOfWork.users.list_all()` guard were checked against the current
+  `iam` module and still match exactly — not bit-rotted.
+- **Checked the "misleading placeholder" claim directly against the source, not assumed true.**
+  `frontend/src/app/LoginPage.tsx`'s two `Input` fields carry no `placeholder` prop at all, and a
+  repo-wide case-insensitive search for `founder@raadtech` and `raadtech.example` (including the
+  approved design mockup HTML) returned zero matches anywhere. Reported back rather than
+  "fixed": there was nothing in the actual running UI to remove.
+- **Live reproduction, this environment:** `docker compose down -v` → `up -d --build` (fresh
+  Postgres/Redis volumes) → `POST /api/v1/auth/login` → `401 {"error":{"code":
+  "UNAUTHENTICATED",...}}`, confirming the report exactly.
+- **Fix applied and live-verified:**
+  `docker compose exec -e RAAD_BOOTSTRAP_FOUNDER_EMAIL=... -e RAAD_BOOTSTRAP_FOUNDER_PASSWORD=...
+  backend python -m raad.interfaces.cli.bootstrap_founder --full-name "..."` → `Founder account
+  created and activated`; the same `/auth/login` call that returned `401` moments earlier now
+  returns `200` with a real `access_token`/`refresh_token`/`principal` (`role: "founder"`).
+  Re-running the identical bootstrap command a second time correctly refused (`Refusing to
+  bootstrap: 1 user(s) already exist`, exit 1) — the idempotency/no-duplicate-users guarantee
+  holds under a real repeated invocation, not just by reading the code.
+- **No code changed.** The fix is entirely documentation: `docker/README.md` gained a "First
+  login — bootstrapping the Founder account" section with the exact command (the bootstrap
+  email/password are passed as ad hoc `docker compose exec -e` flags, deliberately kept out of
+  `docker-compose.yml`'s persistent `environment:` block and out of `docker/.env` — a one-time-use
+  password has no reason to sit in a container's environment indefinitely); `docker/.env.example`
+  gained a comment pointing to it. `CLAUDE.md`'s IAM bullet also gained one sentence — the
+  bootstrap CLI/runbook existed before this session but was never recorded there, a genuine,
+  separate, pre-existing documentation gap surfaced by this investigation, not caused by it.
+
 ## Post-fix state
 - `docker/docker-compose.yml`: `frontend`/`nginx` healthchecks target `127.0.0.1`, not
   `localhost`.
@@ -149,6 +199,10 @@ recorded honestly rather than asserted, per this repo's own ADR-0012 precedent.
   `postgres`/`redis`/`backend`/`frontend`.
 - `frontend/src/shared/map/providers/MapboxMapProvider.test.ts`: the one-line mock-typing fix
   above (test file only — no production frontend code changed).
+- `docker/README.md`: new "First login — bootstrapping the Founder account" section.
+- `docker/.env.example`: a comment documenting (not defaulting) `RAAD_BOOTSTRAP_FOUNDER_EMAIL`/
+  `RAAD_BOOTSTRAP_FOUNDER_PASSWORD`.
+- `CLAUDE.md`: IAM bounded-context bullet now mentions `bootstrap_founder.py`/the runbook.
 
 ## References
 - `docs/architecture/adr/0008-redis-streams-event-broker.md`
@@ -157,3 +211,4 @@ recorded honestly rather than asserted, per this repo's own ADR-0012 precedent.
 - `docs/architecture/adr/0012-development-redis-environment.md`
 - `docker/README.md`, `docker/docker-compose.yml`, `docker/docker-compose.dev.yml`,
   `docker/docker-compose.prod.yml`, `docker/.env.example`
+- `backend/raad/interfaces/cli/bootstrap_founder.py`, `docs/runbooks/founder-bootstrap.md`

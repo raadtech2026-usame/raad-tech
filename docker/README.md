@@ -79,6 +79,36 @@ health checks at `/health*`. `postgres`/`redis`/`backend` also publish their own
 (`docker compose ps` for the exact mapping) for direct debugging; `docker-compose.prod.yml`
 un-publishes all of them except `nginx`.
 
+## First login — bootstrapping the Founder account
+
+`migrate` only applies schema (Alembic) — it never creates a user. A fresh `up` therefore leaves
+`users` genuinely empty by design, not by omission: this project deliberately does **not**
+auto-seed a default account. `backend/raad/interfaces/cli/bootstrap_founder.py`'s own module
+docstring gives the reasoning (also recorded in ADR-0013's own follow-up Verification entry) — a
+migration-seeded row would be a fixed, version-controlled credential (the hardcoded-backdoor
+shape this is required *not* to be), and an HTTP "create the first user" endpoint would have to be
+reachable without authentication, a new public attack surface with no equivalent anywhere else in
+this API. Instead, run the existing bootstrap CLI once, behind your own deployment's access
+boundary, against the running `backend` container:
+
+```bash
+docker compose -f docker/docker-compose.yml exec \
+  -e RAAD_BOOTSTRAP_FOUNDER_EMAIL="founder@yourorg.example" \
+  -e RAAD_BOOTSTRAP_FOUNDER_PASSWORD="<a strong password of your own choosing>" \
+  backend python -m raad.interfaces.cli.bootstrap_founder --full-name "Your Name"
+```
+
+These two `-e` flags are deliberately not part of `docker-compose.yml`'s own `environment:` block
+or `docker/.env` — nothing this codebase treats as a password sits in a persistent container
+environment 24/7 for a step meant to run exactly once. The command refuses to run (no rows
+touched) if `users` already has any row at all, so it's safe to keep this command around; it will
+only ever succeed on a genuinely fresh database. Full operator guide, including troubleshooting an
+interrupted bootstrap: `docs/runbooks/founder-bootstrap.md`.
+
+The web login form (`frontend/src/app/LoginPage.tsx`) has no placeholder/example credentials on
+either field — there is nothing to type until you've run the command above with an email/password
+of your own choosing.
+
 ## Status
 
 Implemented (ADR-0013). Not yet covered: TLS termination at the Nginx gateway (no domain/cert

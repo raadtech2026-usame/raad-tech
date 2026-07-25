@@ -138,7 +138,17 @@ Each of the ten below has a full `api / application / domain / infra / events` s
 - **IAM** — users, auth (JWT), and (as of the Backend Stabilization phase) a real, seeded RBAC
   permission matrix (`role_permissions` table, Database Design §4.4; ADR-0004) —
   `require_permission` resolves for real on every route via `IamPermissionEvaluator`, no longer a
-  guaranteed-`NotImplementedError` placeholder.
+  guaranteed-`NotImplementedError` placeholder. **`users` starts empty on every fresh deployment,
+  deliberately** — no migration or seed script creates an account (`role_permissions` seeds
+  permission *grants* for the `founder` role, never an actual row), since every documented way to
+  create a `User` (`POST /users`) itself requires an already-authenticated in-scope admin caller.
+  `interfaces/cli/bootstrap_founder.py` (entry point: `python -m
+  raad.interfaces.cli.bootstrap_founder`) closes that gap as a one-time, operator-invoked CLI —
+  not a migration-seeded row (a fixed, version-controlled credential) and not an HTTP endpoint
+  (would need to be reachable unauthenticated, a new public attack surface) — see
+  `docs/runbooks/founder-bootstrap.md` for the full guide and ADR-0013's own follow-up entry for
+  how this surfaced (a fresh Docker deployment had no documented way to invoke it until that
+  ADR's `docker/README.md` was corrected).
 - **Organization** — organizations, regions, tenant hierarchy, and (ADR-0005) `region_assignments`/
   `support_assignments` backing a real `ScopeResolver` (`interfaces/http/deps.get_scope` resolves
   for real now too).
