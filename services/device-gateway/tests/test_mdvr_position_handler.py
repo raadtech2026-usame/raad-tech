@@ -4,10 +4,12 @@ using the same real device-00007 worked example `test_mdvr_parser.py`/`test_mdvr
 py` already validate.
 """
 
+import time
 import unittest
 from datetime import datetime, timezone
 
 from src.events.device_position_reported import DevicePositionReported
+from src.session.device_session import DeviceConnectivityState
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
 from src.vendors.lsz.dispatcher.handler import MdvrHandlerContext
@@ -136,6 +138,40 @@ class MdvrPositionHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(result.response_keyword)
         self.assertFalse(result.close_connection_after)
+
+    async def test_position_report_promotes_authenticated_session_to_online(self) -> None:
+        """Regression test for the heartbeat/position `touch()` asymmetry
+        (`docs/architecture/post-f7-production-readiness-roadmap.md` A1): previously only
+        `MdvrHeartbeatHandler` called `touch()`, so a device sending only `V114` position
+        reports (no `V109` heartbeats) was never promoted out of `AUTHENTICATED`."""
+        publisher = RecordingEventPublisher()
+        handler = MdvrPositionHandler(publisher)
+        context = await self._authenticated_context()
+        session = context.device_sessions.resolve("00007")
+        assert session is not None
+        self.assertEqual(session.state, DeviceConnectivityState.AUTHENTICATED)
+
+        await handler.handle(_make_message(), context)
+
+        self.assertEqual(session.state, DeviceConnectivityState.ONLINE)
+
+    async def test_position_only_device_survives_a_sweep_cycle(self) -> None:
+        """A device sending only position reports (no heartbeats) must not be swept
+        `session_expired` while actively transmitting — the exact bug this handler's `touch()`
+        call fixes. Simulates a session that would already be past the sweep's timeout, then
+        proves a single position report is enough to keep it alive across `_sweep_once`."""
+        publisher = RecordingEventPublisher()
+        handler = MdvrPositionHandler(publisher)
+        context = await self._authenticated_context()
+        session = context.device_sessions.resolve("00007")
+        assert session is not None
+        session.last_seen_at = time.monotonic() - 1000  # already "expired" absent a fresh touch
+
+        await handler.handle(_make_message(), context)
+        await context.device_sessions._sweep_once(timeout_seconds=5.0)
+
+        self.assertIsNotNone(context.device_sessions.resolve("00007"))
+        self.assertEqual(session.state, DeviceConnectivityState.ONLINE)
 
 
 if __name__ == "__main__":

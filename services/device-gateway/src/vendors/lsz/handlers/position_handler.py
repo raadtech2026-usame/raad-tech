@@ -52,6 +52,16 @@ parent package's own `LocationHandler`'s identical "no ack for a position report
 
 **`trip_id` is always `None`** — same fallback and same reasoning as the parent package's
 `LocationHandler`: no active-trip Redis read-model exists in this deployable.
+
+**Calls `touch()` on every accepted position, not just on `V109` heartbeats (bug fix,
+`docs/architecture/post-f7-production-readiness-roadmap.md` A1).** Previously only
+`MdvrHeartbeatHandler` called `touch()` — a device sending only `V114` position reports (a
+plausible firmware configuration; nothing in the vendor documentation guarantees both message
+types are always sent) was never promoted `AUTHENTICATED -> ONLINE`, and would eventually be swept
+`session_expired` by the idle-timeout sweep *while actively transmitting GPS*. `touch()` is safe to
+call unconditionally here: it is a no-op on an unknown `terminal_id` (mirrors
+`MdvrHeartbeatHandler`'s own already-established "safe no-op" precedent), and this handler already
+requires a resolved session before reaching this point, so the call always targets a real one.
 """
 
 from __future__ import annotations
@@ -116,6 +126,8 @@ class MdvrPositionHandler(MdvrMessageHandler):
                 device_serial_number=message.device_serial_number,
             )
             return MdvrHandlerResult.no_response()
+
+        await context.device_sessions.touch(message.device_serial_number)
 
         location, _remainder = parse_location_status(message.fields)
 
