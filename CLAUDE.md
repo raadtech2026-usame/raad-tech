@@ -869,23 +869,9 @@ MapboxMapProvider.ts` — the concrete implementation; `MapView.tsx` — a thin 
 React wrapper), the new `mapbox-gl`/`@types/mapbox-gl` dependencies, and `VITE_MAPBOX_ACCESS_TOKEN`
 (`frontend/.env.example`, read through `config/env.ts`'s existing single-point-of-truth pattern).
 No backend changes were needed — `tracking`'s existing REST/WebSocket contracts already expose
-plain decimal-degree `lat`/`lng`, exactly what Mapbox (or any provider) consumes directly. The
-"Live Tracking" nav entries (`/platform/tracking`, `/org/tracking` — not `/live-monitoring`, which
-is only a feature-folder name; that folder holds a single empty `.gitkeep`, no page) both remain
-`PlaceholderPage` — F7's actual vehicle-marker/WebSocket-driven UI is separate, not-yet-started
-work.
-
-**Before starting F7, read `docs/architecture/device-onboarding-readiness-audit.md`.** A full,
-code-verified (not documentation-inferred) audit of the entire device-onboarding lifecycle —
-registration through GPS, live tracking, video, events, notifications, and persistence — found
-several gaps beyond F7's own scope that a real device-onboarding demo would also need: no writer
-for the Redis `vehicle:{id}:last` key anywhere (neither this backend nor the device-gateway), the
-geofence pipeline (domain events, table, two of four notification triggers) fully coded but never
-actually invoked from the live position-ingestion path, and `DeviceOnline`/`DeviceOffline` being
-published by the device-gateway but never consumed by this backend (`devices.last_seen_at` stays
-NULL forever as a result). F7 itself (map + WebSocket UI) can proceed independently of all of
-these — they gate "a real device's activity is fully visible end to end," not F7's own frontend
-integration work — but they're worth sequencing deliberately rather than discovering mid-F7.
+plain decimal-degree `lat`/`lng`, exactly what Mapbox (or any provider) consumes directly. This
+phase itself left both "Live Tracking" nav entries (`/platform/tracking`, `/org/tracking`) on
+`PlaceholderPage` — F7 (below) is what actually built the page.
 
 ### Development Redis environment (ADR-0008/ADR-0010 made runnable)
 
@@ -915,3 +901,45 @@ on its own was not directly observed (it shares a consumer group with a large pr
 `outbox` backlog it must drain first); and `vehicle:{id}:last`'s direct Redis cache write (backing
 `GET /tracking/vehicles/{id}/latest`'s instant read) is confirmed still unbuilt anywhere in
 `services/device-gateway`.
+
+### Device onboarding readiness audit (docs/architecture/device-onboarding-readiness-audit.md)
+
+A full, code-verified (not documentation-inferred) audit of the entire device-onboarding
+lifecycle — registration through GPS, live tracking, video, events, notifications, and
+persistence — run immediately before Phase F7 below. Confirmed registration and GPS→Postgres
+ingestion genuinely work end to end; found several gaps beyond F7's own frontend scope: no writer
+for the Redis `vehicle:{id}:last` key anywhere (neither this backend nor the device-gateway), the
+geofence pipeline (domain events, table, two of four notification triggers) fully coded but never
+actually invoked from the live position-ingestion path, `DeviceOnline`/`DeviceOffline` published
+by the device-gateway but never consumed by this backend (`devices.last_seen_at` stays NULL
+forever as a result), and no implementation anywhere of boarding/alighting/overspeed/SOS/ignition.
+See that document's own "Missing pieces" checklist for the full, severity-ordered list. F7 itself
+proceeded independently of all of these, per the audit's own conclusion — none of them gate F7's
+own WebSocket/map integration work, only "a real device's activity is fully visible end to end."
+
+### Phase F7 — Live Monitoring & Maps (complete)
+
+`/platform/tracking` and `/org/tracking` are real now — `features/live-monitoring/`
+(`LiveTrackingPage.tsx`, one shared component across both dashboards, matching every prior
+phase's two-dashboard pattern; `api.ts`). Deliberately the roadmap's "per-vehicle detail view"
+half, not an always-every-vehicle-live fleet map: `/ws/tracking` supports exactly one active
+vehicle subscription per connection (`tracking/api/ws.py`'s own documented simplification), so
+this page is a vehicle picker plus one live map, with `useWebSocketChannel("/ws/tracking", ...)`
+sending the one subscribe frame it ever needs whenever the connection is `open` and a vehicle is
+selected (also correctly re-subscribes after any auto-reconnect, and re-subscribes to a new
+vehicle by sending a fresh frame on the same connection — the backend replaces the prior
+subscription itself, no client-side unsubscribe needed). Each `position` frame calls
+`MapProvider.updateMarker` (`addMarker` for the first one) — the "hot path for live tracking"
+`MapProvider`'s own interface docstring already named. Honest by construction, not just by
+intent: since the device onboarding readiness audit (above) confirmed nothing currently writes
+`vehicle:{id}:last`, the REST snapshot 404s in most environments — the page shows an explicit "No
+live position data" state rather than a fabricated marker, exactly matching the roadmap's own F7
+exit criteria; the live WS path still works immediately and independently the moment a real
+position event exists. A vehicle's in-progress trip (if any) gets a static route-line + stop-point
+overlay (reusing F5's route/stop data) — context only, not live geofence *crossing* events, since
+the audit confirmed those are never actually generated anywhere in this codebase today. No ETA
+anywhere — no backend capability exists for one (roadmap §2.5), omitted rather than stubbed.
+Explicitly out of scope this phase, flagged rather than silently dropped: simultaneous
+multi-vehicle live markers on one map (would need either N parallel WebSocket connections or a
+backend protocol change, neither attempted) and trip position history/playback
+(`GET /tracking/trips/{id}/positions`, a distinct scrubber-style feature, not "live" monitoring).
