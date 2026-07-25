@@ -77,6 +77,65 @@ describe("RegisterDeviceWizard", () => {
     expect(screen.queryByRole("combobox", { name: "Organization" })).not.toBeInTheDocument();
   });
 
+  // Regression test for a focus-stealing bug: FormDrawer's focus-management effect used to
+  // depend on `onClose`, which this wizard's own `handleClose` (non-memoized) plus its unscoped
+  // `watch()` recreate on every keystroke, re-firing the effect and yanking focus to the drawer's
+  // close button after every single character. Fixed in FormDrawer.tsx/DetailDrawer.tsx (see
+  // their own test files for the isolated, component-level reproduction) — this test proves the
+  // fix holds for the real, full wizard, across every hardware-step field.
+  it("keeps focus in each hardware field while typing continuously, character by character", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+
+    const fields: Array<[placeholder: string, value: string]> = [
+      ["e.g. 013800000001", "013800000099"],
+      ["e.g. JT808-X200", "JT808-X200"],
+      ["e.g. Concox", "Concox"],
+      ["e.g. +252612345678", "+252612345678"],
+      ["e.g. 352389088459231", "352389088459231"],
+      ["e.g. 8944500XXXXXXXXXXXX", "8944500123456789012"],
+      ["e.g. SN-0042", "SN-0042"],
+    ];
+
+    for (const [placeholder, value] of fields) {
+      const input = screen.getByPlaceholderText(placeholder);
+      await user.click(input);
+      await user.type(input, value);
+      expect(input).toHaveFocus();
+      expect(input).toHaveValue(value);
+    }
+  });
+
+  it("supports Backspace, Delete, arrow-key repositioning, paste, and Tab like a normal input", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+
+    const terminalId = screen.getByPlaceholderText("e.g. 013800000001");
+    await user.click(terminalId);
+    await user.type(terminalId, "0138000999");
+    expect(terminalId).toHaveValue("0138000999");
+
+    await user.type(terminalId, "{Backspace}{Backspace}");
+    expect(terminalId).toHaveValue("01380009");
+    expect(terminalId).toHaveFocus();
+
+    await user.type(terminalId, "{ArrowLeft}{Delete}");
+    expect(terminalId).toHaveValue("0138000");
+    expect(terminalId).toHaveFocus();
+
+    // Mouse-driven select-all, then paste over the selection (a real browser's "select then
+    // type/paste to replace" flow).
+    await user.tripleClick(terminalId);
+    await user.paste("013800000001");
+    expect(terminalId).toHaveValue("013800000001");
+    expect(terminalId).toHaveFocus();
+
+    // Tab moves focus to the next field in document order, not somewhere the drawer decided on
+    // its own.
+    await user.tab();
+    expect(screen.getByPlaceholderText("e.g. JT808-X200")).toHaveFocus();
+  });
+
   it("runs register, activate, and assign in order and reaches the honest verify step", async () => {
     vi.mocked(api.registerDevice).mockResolvedValue(DEVICE);
     vi.mocked(api.activateDevice).mockResolvedValue({ ...DEVICE, lifecycleState: "activated" });

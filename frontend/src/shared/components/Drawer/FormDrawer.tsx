@@ -37,6 +37,13 @@ export function FormDrawer({
 }: FormDrawerProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
+  // Holds the latest `onClose` without making it a dependency of the effect below. Callers
+  // routinely pass an inline `onClose={() => ...}` (a new function identity every render) — if
+  // that identity were a dependency, any parent re-render while the drawer is open (e.g. a form
+  // inside it re-rendering on every keystroke) would re-run the effect and re-focus the close
+  // button below, stealing focus from whatever field the user was actively typing in.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) {
@@ -47,7 +54,7 @@ export function FormDrawer({
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        onClose();
+        onCloseRef.current();
       }
     }
     document.addEventListener("keydown", handleKeyDown);
@@ -55,7 +62,9 @@ export function FormDrawer({
       document.removeEventListener("keydown", handleKeyDown);
       previouslyFocused.current?.focus();
     };
-  }, [open, onClose]);
+    // Intentionally only `open`: this effect's job is "run once per open transition" (initial
+    // focus + Escape listener), not "run whenever any prop changes" — see onCloseRef above.
+  }, [open]);
 
   if (!open) {
     return null;
