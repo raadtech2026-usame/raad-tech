@@ -1,14 +1,18 @@
 """End-to-end verification: LSZ MDVR device -> Redis (`raad:events`) -> Business API decode
-(ADR-0012, `docs/architecture/adr/0012-development-redis-environment.md`).
+(ADR-0012, `docs/architecture/adr/0012-development-redis-environment.md`); and (roadmap A2,
+`docs/architecture/post-f7-production-readiness-roadmap.md`) LSZ MDVR device -> Redis
+(`vehicle:{id}:last`) -> Business API `RedisLatestPositionPort.get_latest`.
 
 Drives a real `MdvrServer` over a real loopback TCP socket with the same worked LSZ registration/
 position frames `tests/test_mdvr_server_integration.py` already validates, through a real
-`RedisEventPublisher` against a real, reachable Redis (no fake/in-memory client anywhere in this
-script — that is the entire point: existing unit tests already prove the code against a fake
-client, this script proves the same code against a real `redis-server`). The published Stream
-entry is then decoded with the Business API's own real `raad.core.events.redis_streams.
-_fields_to_event` and run through its own real `DevicePositionReportedProcessor`, proving the full
-cross-deployable wire contract, not just "some bytes landed in Redis."
+`RedisEventPublisher`/`RedisLatestPositionWriter` against a real, reachable Redis (no fake/
+in-memory client anywhere in this script — that is the entire point: existing unit tests already
+prove the code against a fake client, this script proves the same code against a real
+`redis-server`). The published Stream entry is then decoded with the Business API's own real
+`raad.core.events.redis_streams._fields_to_event` and run through its own real
+`DevicePositionReportedProcessor`; the `vehicle:{id}:last` key is read back through the Business
+API's own real `RedisLatestPositionPort.get_latest` — proving the full cross-deployable wire
+contract for both paths, not just "some bytes landed in Redis."
 
 **Deliberate, scoped exception to `.claude/rules/architecture.md` #2** ("no dependency between
 `backend/raad` and this deployable, even in tests"): this script imports backend code directly,
@@ -53,6 +57,9 @@ for _path in (_DEVICE_GATEWAY_ROOT, _BACKEND_ROOT):
 from redis.asyncio import Redis  # noqa: E402
 
 from src.events.redis_event_publisher import RedisEventPublisher  # noqa: E402
+from src.latest_position.redis_latest_position_writer import (  # noqa: E402
+    RedisLatestPositionWriter,
+)
 from src.vendors.lsz.config import MdvrServerConfig  # noqa: E402
 from src.vendors.lsz.handlers.provisioning_port import (  # noqa: E402
     InMemoryMdvrDeviceProvisioningPort,
@@ -61,6 +68,8 @@ from src.vendors.lsz.server import MdvrServer  # noqa: E402
 
 from raad.core.di.container import Container  # noqa: E402
 from raad.core.events.redis_streams import DEFAULT_STREAM_NAME, _fields_to_event  # noqa: E402
+from raad.core.ids.generator import UlidGenerator  # noqa: E402
+from raad.core.time.clock import SystemClock  # noqa: E402
 from raad.modules.tracking.application.commands import (  # noqa: E402
     RecordVehiclePositionCommand,
 )
@@ -69,6 +78,8 @@ from raad.modules.tracking.application.services import TrackingApplicationServic
 from raad.modules.tracking.events.subscribers import (  # noqa: E402
     DevicePositionReportedProcessor,
 )
+from raad.modules.tracking.infra.adapters import RedisLatestPositionPort  # noqa: E402
+from raad.modules.tracking.domain.value_objects import VehicleId  # noqa: E402
 
 _DEVICE_SERIAL_NUMBER = "00007"
 _ORG_ID = "org-e2e-verify"
@@ -122,7 +133,10 @@ async def run(redis_url: str) -> bool:
         return False
     print("      Redis reachable (PING succeeded).")
 
-    print("[2/6] Starting a real MdvrServer wired to a real RedisEventPublisher ...")
+    print(
+        "[2/7] Starting a real MdvrServer wired to a real RedisEventPublisher + "
+        "RedisLatestPositionWriter ..."
+    )
     provisioning = InMemoryMdvrDeviceProvisioningPort()
     provisioning.register_known_device(
         device_serial_number=_DEVICE_SERIAL_NUMBER,
@@ -131,10 +145,12 @@ async def run(redis_url: str) -> bool:
         organization_id=_ORG_ID,
     )
     publisher = RedisEventPublisher(redis_client)
+    latest_position_writer = RedisLatestPositionWriter(redis_client)
     server = MdvrServer(
         MdvrServerConfig(host="127.0.0.1", port=0),
         device_provisioning=provisioning,
         event_publisher=publisher,
+        latest_position_writer=latest_position_writer,
     )
     await server.start()
 
@@ -144,13 +160,13 @@ async def run(redis_url: str) -> bool:
         last_id = entries[0][0]
 
     try:
-        print("[3/6] Sending a real LSZ registration frame over a real TCP socket ...")
+        print("[3/7] Sending a real LSZ registration frame over a real TCP socket ...")
         reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
         writer.write(_REGISTRATION_FRAME)
         await writer.drain()
         await asyncio.wait_for(reader.read(256), timeout=2.0)  # discard C100 ack
 
-        print("[4/6] Sending a real LSZ position (V114) frame ...")
+        print("[4/7] Sending a real LSZ position (V114) frame ...")
         writer.write(_POSITION_FRAME)
         await writer.drain()
         await asyncio.sleep(0.2)  # let the async dispatch/publish complete
@@ -163,7 +179,7 @@ async def run(redis_url: str) -> bool:
     finally:
         await server.stop()
 
-    print(f"[5/6] Reading back {DEFAULT_STREAM_NAME!r} from Redis and decoding it ...")
+    print(f"[5/7] Reading back {DEFAULT_STREAM_NAME!r} from Redis and decoding it ...")
     raw_entries = await redis_client.xrange(DEFAULT_STREAM_NAME, min=f"({last_id}", count=50)
     matching = None
     for _entry_id, fields in raw_entries:
@@ -190,13 +206,45 @@ async def run(redis_url: str) -> bool:
         f"aggregate_id={matching.aggregate_id!r} org_id={matching.org_id!r}"
     )
 
-    print("[6/6] Running the decoded event through the real DevicePositionReportedProcessor ...")
+    print("[6/7] Running the decoded event through the real DevicePositionReportedProcessor ...")
     container = Container()
     service = _RecordingTrackingService()
     container.bind_singleton(TrackingApplicationService, service)
     container.bind_singleton(TrackingUnitOfWork, _FakeUnitOfWork())
     processor = DevicePositionReportedProcessor(container)
     await processor.process(matching)
+
+    print(
+        "[7/7] Reading back vehicle:{id}:last through the real "
+        "RedisLatestPositionPort.get_latest ..."
+    )
+    latest_position_port = RedisLatestPositionPort(
+        redis_client, clock=SystemClock(), id_generator=UlidGenerator()
+    )
+    latest = await latest_position_port.get_latest(VehicleId(_VEHICLE_ID))
+    if latest is None:
+        print(
+            f"FAIL: RedisLatestPositionPort.get_latest returned None for vehicle "
+            f"{_VEHICLE_ID!r} - vehicle:{{id}}:last was never written, or was written in a "
+            f"shape this adapter could not parse."
+        )
+        await redis_client.aclose()
+        return False
+    if (
+        str(latest.vehicle_id) != _VEHICLE_ID
+        or str(latest.organization_id) != _ORG_ID
+        or str(latest.device_id) != _DEVICE_ID
+        or abs(latest.position.latitude - 22.672803) > 1e-4
+        or abs(latest.position.longitude - 114.059395) > 1e-4
+    ):
+        print(f"FAIL: vehicle:{{id}}:last decoded to an unexpected snapshot: {latest!r}")
+        await redis_client.aclose()
+        return False
+    print(
+        "      RedisLatestPositionPort.get_latest matches the sent frame: "
+        f"vehicle_id={latest.vehicle_id!r} lat={latest.position.latitude} "
+        f"lng={latest.position.longitude}"
+    )
 
     await redis_client.aclose()
 

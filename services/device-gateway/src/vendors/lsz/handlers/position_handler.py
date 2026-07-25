@@ -62,6 +62,14 @@ types are always sent) was never promoted `AUTHENTICATED -> ONLINE`, and would e
 call unconditionally here: it is a no-op on an unknown `terminal_id` (mirrors
 `MdvrHeartbeatHandler`'s own already-established "safe no-op" precedent), and this handler already
 requires a resolved session before reaching this point, so the call always targets a real one.
+
+**Writes the `vehicle:{id}:last` Redis snapshot before publishing (roadmap A2).** Per JT808
+Technical Design §21.2's own sequence-diagram ordering (`SET vehicle:{id}:last` before
+`device.position_reported`), already cited by `RedisLatestPositionPort`'s own docstring on the
+Business API side as this deployable's job — see `src/latest_position/writer_port.py`'s module
+docstring for the full ownership rationale. `latest_position_writer` defaults to
+`LoggingLatestPositionWriter` (degrades to a log line, never an exception) when no Redis is
+configured, mirroring `event_publisher`'s own `LoggingEventPublisher` default below.
 """
 
 from __future__ import annotations
@@ -70,6 +78,7 @@ from datetime import datetime, timezone
 
 from src.events.device_position_reported import DevicePositionReported
 from src.events.publisher_port import EventPublisher
+from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
 from src.logging_setup import get_logger, log_with_fields
 from src.vendors.lsz.dispatcher.handler import (
     MdvrHandlerContext,
@@ -105,8 +114,14 @@ def _clamp_alarm_flags(raw: int | None) -> int:
 
 
 class MdvrPositionHandler(MdvrMessageHandler):
-    def __init__(self, event_publisher: EventPublisher) -> None:
+    def __init__(
+        self,
+        event_publisher: EventPublisher,
+        *,
+        latest_position_writer: LatestPositionWriter | None = None,
+    ) -> None:
         self._event_publisher = event_publisher
+        self._latest_position_writer = latest_position_writer or LoggingLatestPositionWriter()
 
     async def handle(
         self, message: MdvrInboundMessage, context: MdvrHandlerContext
@@ -146,6 +161,7 @@ class MdvrPositionHandler(MdvrMessageHandler):
             is_backfill=False,
             received_at=datetime.now(timezone.utc),
         )
+        await self._latest_position_writer.write(event)
         await self._event_publisher.publish(event)
 
         log_with_fields(

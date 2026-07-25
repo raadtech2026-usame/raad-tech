@@ -9,6 +9,7 @@ import unittest
 from datetime import datetime, timezone
 
 from src.events.device_position_reported import DevicePositionReported
+from src.latest_position.writer_port import LatestPositionWriter
 from src.session.device_session import DeviceConnectivityState
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
@@ -54,11 +55,25 @@ def _make_message(
 
 
 class RecordingEventPublisher:
-    def __init__(self) -> None:
+    def __init__(self, *, call_log: list[str] | None = None) -> None:
         self.published: list[DevicePositionReported] = []
+        self._call_log = call_log
 
     async def publish(self, event: DevicePositionReported) -> None:
         self.published.append(event)
+        if self._call_log is not None:
+            self._call_log.append("publish")
+
+
+class RecordingLatestPositionWriter(LatestPositionWriter):
+    def __init__(self, *, call_log: list[str] | None = None) -> None:
+        self.written: list[DevicePositionReported] = []
+        self._call_log = call_log
+
+    async def write(self, event: DevicePositionReported) -> None:
+        self.written.append(event)
+        if self._call_log is not None:
+            self._call_log.append("write")
 
 
 class MdvrPositionHandlerTests(unittest.IsolatedAsyncioTestCase):
@@ -172,6 +187,34 @@ class MdvrPositionHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(context.device_sessions.resolve("00007"))
         self.assertEqual(session.state, DeviceConnectivityState.ONLINE)
+
+    async def test_writes_the_latest_position_snapshot_before_publishing(self) -> None:
+        """Roadmap A2: `vehicle:{id}:last` must be written, and per JT808 Technical Design
+        §21.2's own sequence-diagram ordering, before the `DevicePositionReported` broker
+        publish — not merely somewhere in the same call."""
+        call_log: list[str] = []
+        publisher = RecordingEventPublisher(call_log=call_log)
+        writer = RecordingLatestPositionWriter(call_log=call_log)
+        handler = MdvrPositionHandler(publisher, latest_position_writer=writer)
+        context = await self._authenticated_context()
+
+        await handler.handle(_make_message(), context)
+
+        self.assertEqual(len(writer.written), 1)
+        self.assertEqual(writer.written[0].vehicle_id, "vehicle-1")
+        self.assertEqual(call_log, ["write", "publish"])
+
+    async def test_defaults_to_a_safe_no_op_writer_when_none_is_given(self) -> None:
+        """Mirrors `event_publisher`'s own `LoggingEventPublisher` default — no Redis configured
+        must never crash position ingestion."""
+        publisher = RecordingEventPublisher()
+        handler = MdvrPositionHandler(publisher)
+        context = await self._authenticated_context()
+
+        result = await handler.handle(_make_message(), context)
+
+        self.assertIsNone(result.response_keyword)
+        self.assertEqual(len(publisher.published), 1)
 
 
 if __name__ == "__main__":

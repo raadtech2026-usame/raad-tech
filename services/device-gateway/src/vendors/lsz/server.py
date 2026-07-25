@@ -31,6 +31,7 @@ from src.connection.manager import ConnectionManager
 from src.events.device_offline import DeviceOffline
 from src.events.device_online import DeviceOnline
 from src.events.publisher_port import EventPublisher, LoggingEventPublisher
+from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.session.device_session import DeviceSession
 from src.session.device_session_manager import DeviceSessionManager
@@ -64,10 +65,12 @@ class MdvrServer(DeviceProtocolAdapter):
         *,
         device_provisioning: MdvrDeviceProvisioningPort | None = None,
         event_publisher: EventPublisher | None = None,
+        latest_position_writer: LatestPositionWriter | None = None,
     ) -> None:
         self._config = config or MdvrServerConfig.from_env()
         self._device_provisioning = device_provisioning or NullMdvrDeviceProvisioningPort()
         self._event_publisher = event_publisher or LoggingEventPublisher()
+        self._latest_position_writer = latest_position_writer or LoggingLatestPositionWriter()
         self._sessions = SessionRegistry()
         self._device_session_registry = DeviceSessionRegistry()
         self._device_sessions = DeviceSessionManager(
@@ -83,7 +86,11 @@ class MdvrServer(DeviceProtocolAdapter):
         )
         self._handler_registry.register(_HEARTBEAT_KEYWORD, MdvrHeartbeatHandler())
         self._handler_registry.register(
-            _POSITION_REPORT_KEYWORD, MdvrPositionHandler(self._event_publisher)
+            _POSITION_REPORT_KEYWORD,
+            MdvrPositionHandler(
+                self._event_publisher,
+                latest_position_writer=self._latest_position_writer,
+            ),
         )
         self._dispatcher = MdvrMessageDispatcher(
             registry=self._handler_registry,

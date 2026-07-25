@@ -43,6 +43,8 @@ from src.adapter import DeviceProtocolAdapter
 from src.broker_config import BrokerConfig
 from src.events.publisher_port import EventPublisher, LoggingEventPublisher
 from src.events.redis_event_publisher import RedisEventPublisher
+from src.latest_position.redis_latest_position_writer import RedisLatestPositionWriter
+from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.registry.device_registry_projection import DeviceRegistryProjection
 from src.registry.redis_device_registry_consumer import RedisDeviceRegistryConsumer
@@ -73,6 +75,7 @@ class DeviceGateway:
         self._registry_consumer_task: asyncio.Task | None = None
 
         self._event_publisher = event_publisher or self._build_event_publisher()
+        self._latest_position_writer = self._build_latest_position_writer()
         lsz_provisioning = self._build_lsz_provisioning()
 
         self._adapters: list[DeviceProtocolAdapter] = [
@@ -81,6 +84,7 @@ class DeviceGateway:
                 lsz_config,
                 device_provisioning=lsz_provisioning,
                 event_publisher=self._event_publisher,
+                latest_position_writer=self._latest_position_writer,
             ),
         ]
 
@@ -93,6 +97,15 @@ class DeviceGateway:
         if self._redis_client is not None:
             return RedisEventPublisher(self._redis_client)
         return LoggingEventPublisher()
+
+    def _build_latest_position_writer(self) -> LatestPositionWriter:
+        """`vehicle:{id}:last` snapshot writer (roadmap A2) — same shared Redis client and same
+        conditional-on-broker-config pattern as `_build_event_publisher` above. Only wired into
+        `MdvrServer` (the LSZ adapter, the currently-integrated hardware) — `Jt808Server` stays
+        untouched per CLAUDE.md's "kept, untouched, dormant" posture for the JT/T 808 code."""
+        if self._redis_client is not None:
+            return RedisLatestPositionWriter(self._redis_client)
+        return LoggingLatestPositionWriter()
 
     def _build_lsz_provisioning(self):
         if self._redis_client is None:
