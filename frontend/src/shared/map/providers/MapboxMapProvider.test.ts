@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const onceHandlers = new Map<string, () => void>();
+// The real "error" handler (MapboxMapProvider.mount) reads `event.error` — the mock's handler
+// type reflects that shape rather than the zero-arg `() => void` "load" handler actually needs,
+// so the simulated error event below can be passed without a cast.
+const onceHandlers = new Map<string, (event?: { error?: unknown }) => void>();
 
 const mapInstance = {
-  once: vi.fn((event: string, handler: () => void) => {
+  once: vi.fn((event: string, handler: (event?: { error?: unknown }) => void) => {
     onceHandlers.set(event, handler);
   }),
   remove: vi.fn(),
@@ -84,7 +87,7 @@ describe("MapboxMapProvider", () => {
       accessToken: "test-token",
     });
     const boom = new Error("boom");
-    onceHandlers.get("error")?.(boom as unknown as undefined as never);
+    onceHandlers.get("error")?.({ error: boom });
     await expect(mountPromise).rejects.toThrow();
   });
 
