@@ -1,0 +1,68 @@
+.page {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: var(--space-5);
+  height: calc(100vh - 160px);
+  min-height: 480px;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  overflow-y: auto;
+}
+
+.statusPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.statusRow {
+  display: flex;
+  align-items: center;
+}
+
+.disconnected {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+
+.lastUpdate {
+  font-size: var(--text-2xs);
+  color: var(--color-text-faint);
+}
+
+.mapCard {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mapArea {
+  position: relative;
+  flex: 1;
+}
+
+.map {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-surface);
+  pointer-events: none;
+}

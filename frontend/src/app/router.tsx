@@ -20,6 +20,7 @@ import { ParentsPage } from "../features/transport-ops/parents/ParentsPage";
 import { DriversPage } from "../features/transport-ops/drivers/DriversPage";
 import { RoutesPage } from "../features/transport-ops/routes/RoutesPage";
 import { TripsPage } from "../features/transport-ops/trips/TripsPage";
+import { LiveTrackingPage } from "../features/live-monitoring/LiveTrackingPage";
 
 const PLATFORM_ROLES: Role[] = ["founder", "regional_manager", "support_staff", "finance_staff"];
 const ORGANIZATION_ROLES: Role[] = ["org_admin"];
@@ -106,6 +107,7 @@ const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/drivers": <DriversPage />,
   "/platform/routes": <RoutesPage />,
   "/platform/trips": <TripsPage />,
+  "/platform/tracking": <LiveTrackingPage />,
 };
 
 /** Org Admin's own dashboard equivalent of the Fleet & Device / Transport Ops entries above —
@@ -124,6 +126,7 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/drivers": <DriversPage />,
   "/org/routes": <RoutesPage />,
   "/org/trips": <TripsPage />,
+  "/org/tracking": <LiveTrackingPage />,
 };
 
 export const router = createBrowserRouter([
