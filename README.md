@@ -26,7 +26,7 @@ Do not implement features by guessing. All structure and future implementation m
 | `backend/` | FastAPI modular-monolith Business API (`raad_business_api`). |
 | `frontend/` | React + TypeScript web dashboard (RAAD staff + Organization Admins). |
 | `mobile/` | Flutter mobile app (Parent + Driver roles, single codebase). |
-| `services/jt808/` | JT808 TCP server — GPS/telematics device connectivity plane. |
+| `services/device-gateway/` | Multi-vendor device-plane gateway (JT/T 808 + LSZ MDVR, ADR-0010) — GPS/telematics device connectivity plane. |
 | `services/jt1078/` | JT1078 video server — live/playback media relay (Org Admin only). |
 | `shared/` | Cross-service shared contracts (event schemas, API contracts, shared constants). |
 | `infrastructure/` | NGINX, Redis, MySQL, monitoring, logging, deployment, and backup configuration. |

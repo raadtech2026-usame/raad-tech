@@ -1,1 +1,50 @@
-# RAAD Platform — production overrides. Placeholder only.
+# RAAD Platform — production overrides (ADR-0013: docs/architecture/adr/
+# 0013-platform-dockerization.md), for the VPS deployment. Same images, same services, same
+# topology as docker-compose.yml — this file only: (1) builds `frontend` as a static bundle
+# instead of running the Vite dev server, (2) points the Nginx gateway at prod.conf instead of
+# dev.conf, and (3) stops publishing host ports for anything other than `nginx` (the one
+# service meant to be reachable from outside the Docker network).
+#
+# Real secrets (a real `RAAD_AUTH__JWT_SECRET_KEY`, real `POSTGRES_PASSWORD`, etc.) come from a
+# real `docker/.env` on the VPS host — never committed, same shape as `docker/.env.example` — so
+# no `environment:` overrides are needed here at all: docker-compose.yml's own
+# `${VAR:-dev-default}` substitutions resolve to the VPS's real values automatically. Set
+# `RAAD_ENVIRONMENT=prod` in that `.env` too — `Settings.validate_on_startup()` then refuses to
+# start `backend`/`worker` without a real `RAAD_AUTH__JWT_SECRET_KEY`, the same fail-loud check
+# this repo already applies everywhere else.
+#
+# TLS is explicitly out of scope this phase — no domain name or certificate material was
+# supplied. `infrastructure/nginx/conf.d/prod.conf` stays plain HTTP; see that file's own
+# comment for where to add a `listen 443 ssl` block once a real domain/cert exists.
+#
+# Run with:
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml up -d --build
+#
+# `ports: !reset []` below, not plain `ports: []` — Compose's default merge for `ports:` is
+# additive (override entries are merged with the base's, not replacing them), confirmed against
+# this Compose version (v5.3.1: a plain `[]` override left the base's published ports intact,
+# ADR-0013's own Verification). `!reset` is the Compose Specification's explicit "clear this
+# field" merge-control tag — actually drops the key, verified via `docker compose config`.
+
+services:
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  backend:
+    ports: !reset []
+
+  frontend:
+    build:
+      target: prod
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost/api/v1}
+        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost}
+        VITE_MAPBOX_ACCESS_TOKEN: ${VITE_MAPBOX_ACCESS_TOKEN:-}
+    ports: !reset []
+
+  nginx:
+    volumes:
+      - ../infrastructure/nginx/conf.d/prod.conf:/etc/nginx/conf.d/default.conf:ro

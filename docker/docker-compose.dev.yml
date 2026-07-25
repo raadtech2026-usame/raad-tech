@@ -1,9 +1,38 @@
-# RAAD Platform — local development overrides.
-#
-# No overrides needed yet: `docker-compose.yml`'s `redis` service (ADR-0012) already targets dev
-# use as-is (AOF persistence for restart-survival, a healthcheck, host port 6379) — there is no
-# prod-only tightening to relax here until `postgres`/`business-api`/`worker`/`device-gateway`/
-# `jt1078-server` gain their own service definitions and Dockerfiles (separate, larger work).
+# RAAD Platform — local development overrides (ADR-0013: docs/architecture/adr/
+# 0013-platform-dockerization.md). Layers hot-reload/DX conveniences on top of
+# docker-compose.yml's already-complete base stack — nothing here is required for the dev stack
+# to run, only to iterate on it without rebuilding an image per source change.
 #
 # Run with:
-#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d --build
+
+services:
+  migrate:
+    volumes:
+      - ../backend:/app
+
+  backend:
+    command: ["uvicorn", "raad.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ../backend:/app
+
+  worker:
+    # No process-level auto-reload (unlike uvicorn's --reload above) — bind-mounting source still
+    # means picking up a code change is `docker compose restart worker`, not a full image rebuild.
+    volumes:
+      - ../backend:/app
+
+  device-gateway:
+    volumes:
+      - ../services/device-gateway:/app
+
+  frontend:
+    volumes:
+      - ../frontend:/app
+      # Anonymous volume over node_modules: without this, the bind mount above would shadow the
+      # image's own Linux-built node_modules with whatever (or nothing) exists in the host's
+      # frontend/node_modules — a real problem on Windows, where several packages (esbuild, etc.)
+      # ship platform-specific native binaries. Docker populates this anonymous volume from the
+      # image's own /app/node_modules on first mount, so `npm ci`'s output from the `deps` stage
+      # is what actually runs.
+      - /app/node_modules
