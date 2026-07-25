@@ -190,6 +190,41 @@ class VehicleAndDeviceRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase)
         self.assertEqual(str(fetched.terminal_id), f"TERM-{self.tag}")
         self.assertEqual(fetched.lifecycle_state, DeviceLifecycleState.REGISTERED)
 
+    async def test_record_last_seen_persists_without_a_second_add(self) -> None:
+        """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A3, at the
+        repository layer: `Device.record_last_seen` (a state-sync-only mutator, no domain event)
+        followed by `commit()` — no `add()` call — must still persist, the identical
+        identity-map proof `test_vehicle_mutation_after_get_persists_without_a_second_add`
+        already establishes for `Vehicle.deactivate`."""
+        async with self._new_uow() as uow:
+            device = Device.register(
+                id=DeviceId(self.id_generator.new_id()),
+                organization_id=OrganizationId(self.id_generator.new_id()),
+                terminal_id=TerminalId(f"SEEN-{self.tag}"),
+                clock=self.clock,
+            )
+            uow.devices.add(device)
+            uow.record_events(device.pull_domain_events())
+            await uow.commit()
+            device_id = device.id
+            self._created_device_ids.append(str(device_id))
+
+        # Deliberately tz-aware, matching the real caller (`event.occurred_at`, parsed from an
+        # ISO-8601 string, `.claude/rules/database.md` #1 UTC convention) - proves the mapper's
+        # own `_naive()` guard (this test's real regression target: `last_seen_at` had no writer
+        # anywhere before this phase, so this tz-aware-into-naive-column mismatch was latent).
+        seen_at = self.clock.now().replace(microsecond=0)
+        async with self._new_uow() as uow:
+            loaded = await uow.devices.get(device_id)
+            self.assertIsNone(loaded.last_seen_at)
+            loaded.record_last_seen(seen_at)
+            await uow.commit()  # no uow.devices.add(loaded) - must still persist
+
+        async with self._new_uow() as uow:
+            refetched = await uow.devices.get(device_id)
+
+        self.assertEqual(refetched.last_seen_at, seen_at.replace(tzinfo=None))
+
     async def test_device_list_all_includes_newly_added_device(self) -> None:
         async with self._new_uow() as uow:
             device = Device.register(

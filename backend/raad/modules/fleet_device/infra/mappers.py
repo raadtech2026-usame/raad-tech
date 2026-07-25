@@ -139,7 +139,11 @@ def device_to_model(
     )
     model.lifecycle_state = device.lifecycle_state.value
     model.auth_key_hash = device.auth_key_hash
-    model.last_seen_at = device.last_seen_at
+    # `_naive` (roadmap A3 bug fix): `last_seen_at` had no writer anywhere before
+    # `Device.record_last_seen` - this tz-aware-into-naive-column mismatch was always latent,
+    # the same class of bug `created_at`/`updated_at` below already guard against, just never
+    # triggered because nothing ever set this column to a real (tz-aware `Clock.now()`) value.
+    model.last_seen_at = _naive(device.last_seen_at)
     model.created_at = _naive(device.created_at)
     model.updated_at = _naive(device.updated_at)
 

@@ -429,6 +429,21 @@ class Device(_AggregateRoot):
         self.lifecycle_state = DeviceLifecycleState.ACTIVATED
         self.updated_at = clock.now()
 
+    def record_last_seen(self, seen_at: datetime) -> None:
+        """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A3: the
+        durable mirror of device-gateway connectivity state this class's own module docstring
+        already names (lines 23-27) — "written by an event consumer... not a domain behavior of
+        `Device`". Deliberately breaks from every other mutator on this class: no lifecycle
+        check, no `updated_at` bump, no recorded `DomainEvent`. `updated_at` stays reserved for
+        this aggregate's own business-state changes (activate/suspend/assign/...); a
+        `DeviceOnline`/`DeviceOffline` event arrives far more frequently than any of those and
+        is connectivity telemetry, not a business modification — bumping `updated_at` on every
+        heartbeat would make that column meaningless as "last business change". Callable
+        regardless of `lifecycle_state` (Phase 2 §19.3: a device can be `Assigned` and
+        connectivity-`Offline` simultaneously, and a stray/decommissioned terminal's event still
+        updates this durable record even mid-`Suspended`)."""
+        self.last_seen_at = seen_at
+
     def register_camera(
         self,
         *,

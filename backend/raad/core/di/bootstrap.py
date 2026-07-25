@@ -52,6 +52,7 @@ from raad.modules.fleet_device.application.services import (
     DeviceApplicationService,
     VehicleApplicationService,
 )
+from raad.modules.fleet_device.events.subscribers import register_fleet_device_processors
 from raad.modules.fleet_device.infra.repositories import (
     SqlAlchemyFleetDeviceUnitOfWork,
 )
@@ -380,6 +381,12 @@ def build_container(settings: Settings) -> Container:
         # `modules/tracking/events/subscribers.py`'s own module docstring for the wire-envelope
         # contract and for why the producer side isn't wired yet either.
         register_tracking_processors(container.resolve(EventProcessorRegistry), container)
+
+        # Same registry, post-F7 production readiness roadmap item A3: persists
+        # `DeviceOnline`/`DeviceOffline` (published by the device-plane service since ADR-0010,
+        # never consumed anywhere on this backend before now) onto `devices.last_seen_at` - see
+        # `modules/fleet_device/events/subscribers.py`'s own module docstring.
+        register_fleet_device_processors(container.resolve(EventProcessorRegistry), container)
 
     # TokenService needs a non-empty signing secret. In `dev`/`staging` without one configured
     # (e.g. no .env populated yet) it is left unbound — same "fail loudly, don't fake it"

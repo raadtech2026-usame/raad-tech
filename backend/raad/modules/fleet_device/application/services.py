@@ -29,6 +29,7 @@ from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
 from raad.core.time.clock import Clock
+from raad.core.logging.setup import get_logger
 from raad.modules.fleet_device.application.commands import (
     ActivateDeviceCommand,
     ActivateVehicleCommand,
@@ -37,6 +38,7 @@ from raad.modules.fleet_device.application.commands import (
     MarkVehicleUnderMaintenanceCommand,
     ReactivateDeviceCommand,
     ReassignDeviceCommand,
+    RecordDeviceSeenCommand,
     RegisterCameraCommand,
     RegisterDeviceCommand,
     RegisterVehicleCommand,
@@ -82,6 +84,8 @@ from raad.modules.fleet_device.domain.value_objects import (
     TerminalId,
     VehicleId,
 )
+
+logger = get_logger("raad.fleet_device.application")
 
 
 class VehicleApplicationService:
@@ -307,6 +311,28 @@ class DeviceApplicationService:
             uow.record_events(device.pull_domain_events())
             await uow.commit()
             return device_to_dto(device)
+
+    async def record_device_seen(
+        self, command: RecordDeviceSeenCommand, *, uow: FleetDeviceUnitOfWork
+    ) -> None:
+        """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A3 — the
+        application-layer entry point `events/subscribers.py`'s `DeviceOnline`/`DeviceOffline`
+        processors call. **No-ops (logs, doesn't raise) for an unknown `device_id`** — unlike
+        every other method here, which raises `NotFoundError` for a caller that named a specific
+        device it expected to exist, a connectivity event for a terminal this backend never
+        registered (a stray, decommissioned, or not-yet-provisioned device still reaching the
+        device-gateway) is a real, expected occurrence, not an error. Returns `None`, not a DTO
+        — no HTTP route calls this; there is nothing for a caller to do with the result."""
+        async with uow:
+            device = await uow.devices.get(DeviceId(command.device_id))
+            if device is None:
+                logger.info(
+                    "device_seen_event_for_unknown_device",
+                    extra={"device_id": command.device_id},
+                )
+                return
+            device.record_last_seen(command.seen_at)
+            await uow.commit()
 
     async def register_camera(
         self, command: RegisterCameraCommand, *, uow: FleetDeviceUnitOfWork

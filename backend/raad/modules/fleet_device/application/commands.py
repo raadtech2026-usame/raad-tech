@@ -16,6 +16,7 @@ designed, rather than inventing one here.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from raad.core.tenancy.principal import Principal
 from raad.modules.fleet_device.domain.value_objects import CameraPosition
@@ -96,6 +97,18 @@ class RegisterCameraCommand:
     channel_no: int
     position: CameraPosition
     label: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RecordDeviceSeenCommand:
+    """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A3 — the
+    device-gateway's `DeviceOnline`/`DeviceOffline` connectivity events, consumed by
+    `events/subscribers.py`. `actor` follows `notifications/events/subscribers.py`'s own
+    already-established `SYSTEM_PRINCIPAL` precedent for a broker-driven, non-HTTP caller."""
+
+    device_id: str
+    seen_at: datetime
     actor: Principal
 
 

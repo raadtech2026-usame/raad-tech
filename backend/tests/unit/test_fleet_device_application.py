@@ -30,6 +30,7 @@ from raad.modules.fleet_device.application.commands import (
     AssignDeviceToVehicleCommand,
     MarkVehicleUnderMaintenanceCommand,
     ReassignDeviceCommand,
+    RecordDeviceSeenCommand,
     RegisterCameraCommand,
     RegisterDeviceCommand,
     RegisterVehicleCommand,
@@ -997,6 +998,56 @@ class DeviceLifecycleApplicationTests(unittest.IsolatedAsyncioTestCase):
                 ActivateDeviceCommand(device_id=NON_EXISTENT_ULID, actor=make_actor()),
                 uow=uow,
             )
+
+
+class RecordDeviceSeenTests(unittest.IsolatedAsyncioTestCase):
+    """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A3."""
+
+    async def test_updates_last_seen_at_and_commits(self) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+        seen_at = datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+        commit_count_before = uow.commit_count
+
+        result = await device_service.record_device_seen(
+            RecordDeviceSeenCommand(device_id=device_id, seen_at=seen_at, actor=make_actor()),
+            uow=uow,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(uow.devices.by_id[device_id].last_seen_at, seen_at)
+        self.assertEqual(uow.commit_count, commit_count_before + 1)
+
+    async def test_unknown_device_id_is_a_safe_no_op_not_an_error(self) -> None:
+        """A connectivity event for a terminal this backend never registered (stray/
+        decommissioned/not-yet-provisioned device) must not raise - unlike every other
+        `_or_raise`-backed method on this service."""
+        _vehicle_service, device_service, uow = make_services()
+        seen_at = datetime(2026, 7, 25, tzinfo=timezone.utc)
+
+        await device_service.record_device_seen(
+            RecordDeviceSeenCommand(
+                device_id=NON_EXISTENT_ULID, seen_at=seen_at, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(uow.commit_count, 0)
+
+    async def test_does_not_change_lifecycle_state(self) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+
+        await device_service.record_device_seen(
+            RecordDeviceSeenCommand(
+                device_id=device_id,
+                seen_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(uow.devices.by_id[device_id].lifecycle_state.value, "activated")
 
 
 if __name__ == "__main__":

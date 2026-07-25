@@ -312,6 +312,37 @@ class DeviceLifecycleTests(unittest.TestCase):
         device.mark_assigned(clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)))
         self.assertEqual(device.lifecycle_state, DeviceLifecycleState.ASSIGNED)
 
+    # --- record_last_seen (roadmap A3) --------------------------------------------------
+
+    def test_record_last_seen_sets_last_seen_at(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        seen_at = datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+        device.record_last_seen(seen_at)
+        self.assertEqual(device.last_seen_at, seen_at)
+
+    def test_record_last_seen_emits_no_domain_event(self) -> None:
+        """Deliberately breaks from every other mutator on this class - connectivity telemetry
+        is not a business-state change (see the method's own docstring)."""
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.record_last_seen(datetime(2026, 7, 25, tzinfo=timezone.utc))
+        self.assertEqual(device.pull_domain_events(), [])
+
+    def test_record_last_seen_does_not_bump_updated_at(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        original_updated_at = device.updated_at
+        device.record_last_seen(datetime(2026, 7, 25, tzinfo=timezone.utc))
+        self.assertEqual(device.updated_at, original_updated_at)
+
+    def test_record_last_seen_works_regardless_of_lifecycle_state(self) -> None:
+        """Phase 2 §19.3: a device can be Assigned/Suspended (business) and Offline
+        (connectivity) simultaneously - this durable mirror updates regardless."""
+        for state in DeviceLifecycleState:
+            with self.subTest(state=state):
+                device = self.make_device(state)
+                seen_at = datetime(2026, 7, 25, tzinfo=timezone.utc)
+                device.record_last_seen(seen_at)
+                self.assertEqual(device.last_seen_at, seen_at)
+
     def test_mark_assigned_emits_no_event(self) -> None:
         """Regression: the assignment fact is emitted once, by DeviceAssignment.open - not
         duplicated here."""
