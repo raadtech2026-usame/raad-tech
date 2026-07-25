@@ -80,7 +80,7 @@ vendor; the architectural principles below (separate plane, event-only communica
 business plane, same `DevicePositionReported`/`DeviceOnline`/`DeviceOffline`/`DeviceAlarmRaised`
 event contract, now all real, published events per ADR-0010) apply identically regardless of
 which vendor adapter is active. `.claude/rules/jt808.md`/`.claude/rules/jt1078.md` remain this
-architecture's *target* framing for device-plane work in general; they no longer describe the
+architecture's _target_ framing for device-plane work in general; they no longer describe the
 currently-integrated hardware specifically — see ADR-0009/ADR-0010 for the full reasoning.
 
 ## Domain Vocabulary
@@ -140,10 +140,10 @@ Each of the ten below has a full `api / application / domain / infra / events` s
   `require_permission` resolves for real on every route via `IamPermissionEvaluator`, no longer a
   guaranteed-`NotImplementedError` placeholder. **`users` starts empty on every fresh deployment,
   deliberately** — no migration or seed script creates an account (`role_permissions` seeds
-  permission *grants* for the `founder` role, never an actual row), since every documented way to
+  permission _grants_ for the `founder` role, never an actual row), since every documented way to
   create a `User` (`POST /users`) itself requires an already-authenticated in-scope admin caller.
   `interfaces/cli/bootstrap_founder.py` (entry point: `python -m
-  raad.interfaces.cli.bootstrap_founder`) closes that gap as a one-time, operator-invoked CLI —
+raad.interfaces.cli.bootstrap_founder`) closes that gap as a one-time, operator-invoked CLI —
   not a migration-seeded row (a fixed, version-controlled credential) and not an HTTP endpoint
   (would need to be reachable unauthenticated, a new public attack surface) — see
   `docs/runbooks/founder-bootstrap.md` for the full guide and ADR-0013's own follow-up entry for
@@ -815,13 +815,13 @@ is needed here — Org Admin/Founder's grant is the seeded matrix's intentional 
 repository (`fleet_device`) does whitelist `organization_id` as a filter, but
 `SqlAlchemyDriverRepository`/`SqlAlchemyRouteRepository` (`transport_ops`) whitelist only `status`
 — attempting `filter[organization_id]=...` against `/drivers` or `/routes` raises the backend's own
-`ValidationError` ("Field 'organization_id' is not filterable on this resource"), and neither
+`ValidationError` ("Field 'organization*id' is not filterable on this resource"), and neither
 summary response even carries `organization_id` to filter by client-side. `ScheduleTripForm`'s
 vehicle picker is therefore organization-scoped (real backend support); its driver and route
 pickers are deliberately global, with a hint explaining a cross-organization pick will be rejected
 server-side — the backend's actual `Trip.schedule` `DomainError` is the real safety net, surfaced
 verbatim via a toast, not a client-side filter that can't be built honestly. `TripsPage`'s own
-vehicle/driver/route _name_ lookups for its list table reuse the same picker functions with no
+vehicle/driver/route \_name* lookups for its list table reuse the same picker functions with no
 organization filter (`""`, which `buildOffsetListQuery` omits entirely), capped at the first 100
 rows each — the same best-effort limitation `RoutesPage`'s/`StudentsPage`'s own
 `organizationNameById` lookups already accept.
@@ -869,9 +869,23 @@ MapboxMapProvider.ts` — the concrete implementation; `MapView.tsx` — a thin 
 React wrapper), the new `mapbox-gl`/`@types/mapbox-gl` dependencies, and `VITE_MAPBOX_ACCESS_TOKEN`
 (`frontend/.env.example`, read through `config/env.ts`'s existing single-point-of-truth pattern).
 No backend changes were needed — `tracking`'s existing REST/WebSocket contracts already expose
-plain decimal-degree `lat`/`lng`, exactly what Mapbox (or any provider) consumes directly. `/live-
-monitoring`'s own nav route remains `PlaceholderPage` — F7's actual vehicle-marker/WebSocket-driven
-UI is separate, not-yet-started work.
+plain decimal-degree `lat`/`lng`, exactly what Mapbox (or any provider) consumes directly. The
+"Live Tracking" nav entries (`/platform/tracking`, `/org/tracking` — not `/live-monitoring`, which
+is only a feature-folder name; that folder holds a single empty `.gitkeep`, no page) both remain
+`PlaceholderPage` — F7's actual vehicle-marker/WebSocket-driven UI is separate, not-yet-started
+work.
+
+**Before starting F7, read `docs/architecture/device-onboarding-readiness-audit.md`.** A full,
+code-verified (not documentation-inferred) audit of the entire device-onboarding lifecycle —
+registration through GPS, live tracking, video, events, notifications, and persistence — found
+several gaps beyond F7's own scope that a real device-onboarding demo would also need: no writer
+for the Redis `vehicle:{id}:last` key anywhere (neither this backend nor the device-gateway), the
+geofence pipeline (domain events, table, two of four notification triggers) fully coded but never
+actually invoked from the live position-ingestion path, and `DeviceOnline`/`DeviceOffline` being
+published by the device-gateway but never consumed by this backend (`devices.last_seen_at` stays
+NULL forever as a result). F7 itself (map + WebSocket UI) can proceed independently of all of
+these — they gate "a real device's activity is fully visible end to end," not F7's own frontend
+integration work — but they're worth sequencing deliberately rather than discovering mid-F7.
 
 ### Development Redis environment (ADR-0008/ADR-0010 made runnable)
 
@@ -892,11 +906,11 @@ section for the full record. That pass surfaced a real, previously-undetected bu
 missing-infrastructure gap: `verify_redis_e2e.py`'s own PASS only ever proved wiring shape, not
 persistence, and `services/device-gateway/src/vendors/lsz/handlers/position_handler.py` was
 passing this vendor's out-of-range `heading_deg`/`alarm_flags` straight through instead of
-clamping them as its own docstring already claimed — silently failing *every* real position event
+clamping them as its own docstring already claimed — silently failing _every_ real position event
 forever via a `tracking.domain` `DomainError` (both of the vendor's own documented worked examples
 trigger it, so this was not a rare edge case). Fixed and regression-tested; a real Postgres
 `vehicle_positions` row was then independently confirmed, end to end. Two narrower gaps remain,
-tracked honestly rather than implied closed: the *standing* worker process reaching a live event
+tracked honestly rather than implied closed: the _standing_ worker process reaching a live event
 on its own was not directly observed (it shares a consumer group with a large pre-existing
 `outbox` backlog it must drain first); and `vehicle:{id}:last`'s direct Redis cache write (backing
 `GET /tracking/vehicles/{id}/latest`'s instant read) is confirmed still unbuilt anywhere in

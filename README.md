@@ -21,21 +21,21 @@ Do not implement features by guessing. All structure and future implementation m
 
 ## Repository Layout
 
-| Path | Purpose |
-|---|---|
-| `backend/` | FastAPI modular-monolith Business API (`raad_business_api`). |
-| `frontend/` | React + TypeScript web dashboard (RAAD staff + Organization Admins). |
-| `mobile/` | Flutter mobile app (Parent + Driver roles, single codebase). |
+| Path                       | Purpose                                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `backend/`                 | FastAPI modular-monolith Business API (`raad_business_api`).                                                  |
+| `frontend/`                | React + TypeScript web dashboard (RAAD staff + Organization Admins).                                          |
+| `mobile/`                  | Flutter mobile app (Parent + Driver roles, single codebase).                                                  |
 | `services/device-gateway/` | Multi-vendor device-plane gateway (JT/T 808 + LSZ MDVR, ADR-0010) — GPS/telematics device connectivity plane. |
-| `services/jt1078/` | JT1078 video server — live/playback media relay (Org Admin only). |
-| `shared/` | Cross-service shared contracts (event schemas, API contracts, shared constants). |
-| `infrastructure/` | NGINX, Redis, MySQL, monitoring, logging, deployment, and backup configuration. |
-| `docker/` | Dockerfiles and Docker Compose orchestration for local/dev/prod environments. |
-| `ci-cd/` | CI/CD pipeline definitions per deployable. |
-| `scripts/` | Developer and operational scripts (DB migration/seed, bootstrap, CI helpers). |
-| `testing/` | Cross-service testing: end-to-end, load, and shared fixtures. |
-| `docs/` | Business documentation, architecture records, generated API docs, runbooks. |
-| `.claude/` | Claude Code development environment: agents, rules, skills, commands, templates. |
+| `services/jt1078/`         | JT1078 video server — live/playback media relay (Org Admin only).                                             |
+| `shared/`                  | Cross-service shared contracts (event schemas, API contracts, shared constants).                              |
+| `infrastructure/`          | NGINX, Redis, MySQL, monitoring, logging, deployment, and backup configuration.                               |
+| `docker/`                  | Dockerfiles and Docker Compose orchestration for local/dev/prod environments.                                 |
+| `ci-cd/`                   | CI/CD pipeline definitions per deployable.                                                                    |
+| `scripts/`                 | Developer and operational scripts (DB migration/seed, bootstrap, CI helpers).                                 |
+| `testing/`                 | Cross-service testing: end-to-end, load, and shared fixtures.                                                 |
+| `docs/`                    | Business documentation, architecture records, generated API docs, runbooks.                                   |
+| `.claude/`                 | Claude Code development environment: agents, rules, skills, commands, templates.                              |
 
 ## Engineering Guardrails
 

@@ -1,6 +1,7 @@
 # ADR-0013: Platform Dockerization
 
 ## Status
+
 Accepted. Implemented this session — see Verification below for what was actually run and
 confirmed against a live Docker Desktop/WSL2 environment (already confirmed reachable per
 ADR-0012), not just asserted. **Follow-up pass (same day): a fresh-deployment login gap was
@@ -16,6 +17,7 @@ changed. See the "Follow-up: Founder bootstrap" entry under Verification below f
 live-reproduced record.
 
 ## Context
+
 `docker/docker-compose.yml` defined only `redis` (ADR-0012); every other service and all five
 Dockerfiles named in `docker/README.md`'s original placeholder listing were unfilled. The user
 asked for the whole dev-relevant platform — Frontend, Backend, PostgreSQL, Device Gateway, Redis,
@@ -26,6 +28,7 @@ Docker Compose" decision, not revisited here, only finally implemented).
 ## Decision
 
 ### 1. A `worker` container, beyond the six named services
+
 `interfaces/workers/bootstrap.py` (`python -m raad.interfaces.workers.bootstrap`) is the real,
 already-built process the Notification Worker, Report Worker, outbox relay, and the three
 scheduled jobs (retention/subscription-sweep/payment-reconciliation) all run under — a separate
@@ -36,12 +39,14 @@ service, reusing `backend.Dockerfile` verbatim with only `command:` differing �
 new image, no `worker.Dockerfile`.
 
 ### 2. A `migrate` one-off job
+
 `alembic upgrade head`, then exits (`restart: "no"`), gating `backend`/`worker` startup via
 `depends_on: condition: service_completed_successfully`. Not a platform service — exists so two
 containers never race each other applying migrations, and so schema state is deterministic on
 every `up`.
 
 ### 3. Two-layer Nginx/Frontend, confirmed with the user over the single-layer alternative
+
 `frontend` serves itself: dev = Vite dev server (`--host 0.0.0.0`, HMR intact); prod = its own
 `nginx:1.27-alpine` stage (`docker/frontend.Dockerfile`'s multi-stage `build` → `prod`) serving
 the compiled bundle. The outer `nginx` service's only job is reverse-proxying `/api`, `/ws`,
@@ -53,6 +58,7 @@ of one, but each Dockerfile/config stays legible on its own — no "a named volu
 content on first mount" behavior for a reader to already know about.
 
 ### 4. One base Compose file, dev/prod override layers
+
 `docker-compose.yml` alone starts a complete, working dev stack — `docker compose -f
 docker/docker-compose.yml up -d --build`. `docker-compose.dev.yml` layers bind-mounted source +
 `uvicorn --reload` for hot iteration (optional — the base file runs correctly without it).
@@ -66,6 +72,7 @@ fail-loud check if a real `RAAD_AUTH__JWT_SECRET_KEY` was never set — no new s
 invented, just wired through Compose.
 
 ### 5. Base images
+
 `python:3.11-slim` (backend/worker/migrate/device-gateway — matches
 `.github/workflows/backend-pipeline.yml`'s own `actions/setup-python@v5` pin exactly),
 `node:20-alpine` (frontend dev/build stages), `postgres:16-alpine` (major version matches that
@@ -73,6 +80,7 @@ same CI workflow's Postgres service container), `redis:7-alpine` (unchanged from
 `nginx:1.27-alpine` (gateway + frontend's prod stage).
 
 ### 6. `services/jt1078/` excluded
+
 Still a structural scaffold with no approved language/runtime (`services/jt1078/README.md`) —
 nothing to containerize. Matches the six services the user actually named; not a gap introduced
 by this ADR.
@@ -80,12 +88,14 @@ by this ADR.
 ## Options Considered
 
 ### Skip the `worker` container, ship exactly the six named services (rejected)
+
 Would leave notifications, report rendering, the outbox relay, and every scheduled job silently
 inert in the dockerized environment with no error or signal that anything was missing — a correct
 literal reading of the request, but not a working platform. Raised explicitly with the user via
 `AskUserQuestion` rather than decided unilaterally either way; user chose to include it.
 
 ### `env_file:` pointing at `backend/.env`/`services/device-gateway/.env` (rejected)
+
 Those two files already exist and are documented for running each deployable directly, without
 Docker. Pointing Compose at them too would mean keeping two copies of the same values in sync (one
 for "run it directly," one for "run it in Docker") with no mechanism enforcing agreement between
@@ -93,6 +103,7 @@ them. `docker/.env` is the single source Compose reads from instead; each deploy
 `.env.example` is left untouched, still valid for its own non-Docker workflow.
 
 ## Consequences
+
 - `docker compose -f docker/docker-compose.yml [-f docker/docker-compose.dev.yml] up -d --build`
   is a genuine one-command start for the full dev stack (Postgres, Redis, migrations, the Business
   API, the worker process, the Device Gateway, the frontend, and the Nginx gateway fronting all of
@@ -107,11 +118,12 @@ them. `docker/.env` is the single source Compose reads from instead; each deploy
   rewritten to explain each rename/merge/exclusion rather than silently dropping the old names.
 
 ## Verification
+
 All run live against Docker Desktop/WSL2 (Docker 29.6.2, Compose v5.3.1) in this environment —
 recorded honestly rather than asserted, per this repo's own ADR-0012 precedent.
 
 - **Config validity:** `docker compose -f docker-compose.yml -f docker-compose.dev.yml config
-  --quiet` and the equivalent `-prod.yml` merge both exit 0.
+--quiet` and the equivalent `-prod.yml` merge both exit 0.
 - **Dev stack, full `up -d --build`:** all 8 services reached running state; `migrate` exited 0
   (schema at head); `postgres`/`redis`/`backend`/`frontend`/`nginx`/`device-gateway` all reached
   Docker `healthy`; `worker` has no HTTP surface to heartbeat, confirmed running and processing
@@ -136,7 +148,7 @@ recorded honestly rather than asserted, per this repo's own ADR-0012 precedent.
 - **A second real bug, in `docker-compose.prod.yml` itself:** `ports: []` does not clear a
   service's published ports under this Compose version — `ports:` merges additively across `-f`
   layers by default, so the base file's ports survived unchanged. Confirmed via `docker compose
-  config` showing `published: "8000"` still present for `backend` after the override. Fixed with
+config` showing `published: "8000"` still present for `backend` after the override. Fixed with
   the Compose Specification's explicit `!reset` merge-control tag (`ports: !reset []`); re-checked
   afterward — only `device-gateway` (`7808`/`7809`, deliberately still public: real bus hardware
   connects to it directly, not through `nginx`) and `nginx` (`80`) remain published in the prod
@@ -153,16 +165,17 @@ recorded honestly rather than asserted, per this repo's own ADR-0012 precedent.
   suite (50 files / 306 tests) and the `prod` Docker build both pass after the fix.
 
 ### Follow-up: Founder bootstrap wiring (same day)
+
 Reported symptom: all 7 containers healthy, migrations applied, but `POST /api/v1/auth/login`
 returns `401` for every credential on a freshly-created deployment, and the login page appeared
 to suggest `founder@raadtech.example` would work. Investigated rather than patched around:
 
 - **Confirmed there is no auto-seed anywhere.** `grep`'d every migration for `INSERT`: only
-  `role_permissions` (permission *grants* for the `founder` role name, ADR-0004) and
+  `role_permissions` (permission _grants_ for the `founder` role name, ADR-0004) and
   `organization`'s starter regions — never a `users` row. No other script creates one either
   (`scripts/db/seed.sh` is an empty placeholder).
 - **Confirmed a bootstrap path already exists and is not stale.** `backend/raad/interfaces/cli/
-  bootstrap_founder.py` (git history: commit `8cdfc31`, well before ADR-0009) — its own module
+bootstrap_founder.py` (git history: commit `8cdfc31`, well before ADR-0009) — its own module
   docstring already gives the "why manual, not auto-seed or an HTTP endpoint" reasoning quoted in
   Status above. Its three `UserApplicationService` calls (`invite_user`/`change_password`/
   `activate_user`) and `IamUnitOfWork.users.list_all()` guard were checked against the current
@@ -174,14 +187,14 @@ to suggest `founder@raadtech.example` would work. Investigated rather than patch
   "fixed": there was nothing in the actual running UI to remove.
 - **Live reproduction, this environment:** `docker compose down -v` → `up -d --build` (fresh
   Postgres/Redis volumes) → `POST /api/v1/auth/login` → `401 {"error":{"code":
-  "UNAUTHENTICATED",...}}`, confirming the report exactly.
+"UNAUTHENTICATED",...}}`, confirming the report exactly.
 - **Fix applied and live-verified:**
   `docker compose exec -e RAAD_BOOTSTRAP_FOUNDER_EMAIL=... -e RAAD_BOOTSTRAP_FOUNDER_PASSWORD=...
-  backend python -m raad.interfaces.cli.bootstrap_founder --full-name "..."` → `Founder account
-  created and activated`; the same `/auth/login` call that returned `401` moments earlier now
+backend python -m raad.interfaces.cli.bootstrap_founder --full-name "..."` → `Founder account
+created and activated`; the same `/auth/login` call that returned `401` moments earlier now
   returns `200` with a real `access_token`/`refresh_token`/`principal` (`role: "founder"`).
   Re-running the identical bootstrap command a second time correctly refused (`Refusing to
-  bootstrap: 1 user(s) already exist`, exit 1) — the idempotency/no-duplicate-users guarantee
+bootstrap: 1 user(s) already exist`, exit 1) — the idempotency/no-duplicate-users guarantee
   holds under a real repeated invocation, not just by reading the code.
 - **No code changed.** The fix is entirely documentation: `docker/README.md` gained a "First
   login — bootstrapping the Founder account" section with the exact command (the bootstrap
@@ -193,6 +206,7 @@ to suggest `founder@raadtech.example` would work. Investigated rather than patch
   separate, pre-existing documentation gap surfaced by this investigation, not caused by it.
 
 ## Post-fix state
+
 - `docker/docker-compose.yml`: `frontend`/`nginx` healthchecks target `127.0.0.1`, not
   `localhost`.
 - `docker/docker-compose.prod.yml`: `ports: !reset []` (not `ports: []`) on
@@ -205,6 +219,7 @@ to suggest `founder@raadtech.example` would work. Investigated rather than patch
 - `CLAUDE.md`: IAM bounded-context bullet now mentions `bootstrap_founder.py`/the runbook.
 
 ## References
+
 - `docs/architecture/adr/0008-redis-streams-event-broker.md`
 - `docs/architecture/adr/0009-mdvr-vendor-protocol-device-plane.md`
 - `docs/architecture/adr/0010-device-gateway-multi-vendor-architecture.md`
