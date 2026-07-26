@@ -52,6 +52,9 @@ def organization_to_model(
     model.status = organization.status.value
     model.created_at = _naive(organization.created_at)
     model.updated_at = _naive(organization.updated_at)
+    model.latitude = organization.latitude
+    model.longitude = organization.longitude
+    model.geofence_radius_m = organization.geofence_radius_m
     return model
 
 
@@ -68,6 +71,9 @@ def model_to_organization(model: OrganizationModel) -> Organization:
         status=OrganizationStatus(model.status),
         created_at=model.created_at,
         updated_at=model.updated_at,
+        latitude=model.latitude,
+        longitude=model.longitude,
+        geofence_radius_m=model.geofence_radius_m,
     )
 
 

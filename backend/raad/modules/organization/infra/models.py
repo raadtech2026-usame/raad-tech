@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CHAR, VARCHAR, DateTime, ForeignKey
+from sqlalchemy import CHAR, DECIMAL, VARCHAR, DateTime, ForeignKey, Integer
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -73,6 +73,17 @@ class OrganizationModel(AuditedTableMixin, Base):
         nullable=False,
         index=True,
     )
+    # ADR-0014: organization geofence center + radius, added post-hoc for Phase A item A5
+    # ("arrived at organization" evaluation) — see domain/entities.py's own module docstring.
+    # asdecimal=False -> Python float, matching transport_ops.infra.models.StopModel's
+    # identical DECIMAL(9,6) lat/long columns exactly.
+    latitude: Mapped[float | None] = mapped_column(
+        DECIMAL(9, 6, asdecimal=False), nullable=True
+    )
+    longitude: Mapped[float | None] = mapped_column(
+        DECIMAL(9, 6, asdecimal=False), nullable=True
+    )
+    geofence_radius_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class RegionAssignmentModel(Base):

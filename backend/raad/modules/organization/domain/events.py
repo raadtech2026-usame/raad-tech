@@ -106,6 +106,32 @@ def organization_deactivated(
     )
 
 
+def organization_geofence_updated(
+    *,
+    organization_id: str,
+    latitude: float,
+    longitude: float,
+    radius_m: int,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """ADR-0014 — no approved document names this event; the same "config change gets an
+    event" pattern every other `Organization` mutator here already follows."""
+    return _new_event(
+        event_type="OrganizationGeofenceUpdated",
+        aggregate_type="Organization",
+        aggregate_id=organization_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "latitude": latitude,
+            "longitude": longitude,
+            "radius_m": radius_m,
+            "actor_id": actor_id,
+        },
+    )
+
+
 def region_created(
     *,
     region_id: str,

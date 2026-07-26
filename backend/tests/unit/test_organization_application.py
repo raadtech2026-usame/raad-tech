@@ -10,7 +10,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
-from raad.core.errors.exceptions import ConflictError, NotFoundError
+from raad.core.errors.exceptions import ConflictError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import (
     FilterCondition,
@@ -28,6 +28,7 @@ from raad.modules.organization.application.commands import (
     ReactivateOrganizationCommand,
     RegisterOrganizationCommand,
     SuspendOrganizationCommand,
+    UpdateOrganizationGeofenceCommand,
 )
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.application.queries import (
@@ -440,6 +441,89 @@ class OrganizationStatusTransitionApplicationTests(unittest.IsolatedAsyncioTestC
             GetOrganizationByIdQuery(organization_id=org_id), uow=uow
         )
         self.assertEqual(dto.id, org_id)
+
+
+class UpdateOrganizationGeofenceApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0014: `OrganizationApplicationService.update_organization_geofence` — reachable at
+    the application layer only, no approved HTTP route yet (see `UpdateOrganizationGeofenceCommand`'s
+    own docstring). A newly-registered organization has no geofence configured until this is
+    called (`OrganizationDTO.latitude`/`longitude`/`geofence_radius_m` all `None`)."""
+
+    async def _registered_org_id(self, org_service, region_service, uow) -> str:
+        region_id = await _seed_region(region_service, uow)
+        dto = await org_service.register_organization(
+            RegisterOrganizationCommand(
+                name="Sunrise School",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                parent_org_id=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        uow.recorded_events.clear()
+        return dto.id
+
+    async def test_newly_registered_organization_has_no_geofence(self) -> None:
+        org_service, region_service, uow = make_services()
+        org_id = await self._registered_org_id(org_service, region_service, uow)
+        dto = await org_service.get_organization_by_id(
+            GetOrganizationByIdQuery(organization_id=org_id), uow=uow
+        )
+        self.assertIsNone(dto.latitude)
+        self.assertIsNone(dto.longitude)
+        self.assertIsNone(dto.geofence_radius_m)
+
+    async def test_update_organization_geofence_sets_all_three_fields(self) -> None:
+        org_service, region_service, uow = make_services()
+        org_id = await self._registered_org_id(org_service, region_service, uow)
+
+        dto = await org_service.update_organization_geofence(
+            UpdateOrganizationGeofenceCommand(
+                organization_id=org_id,
+                latitude=1.234567,
+                longitude=36.789012,
+                radius_m=300,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(dto.latitude, 1.234567)
+        self.assertEqual(dto.longitude, 36.789012)
+        self.assertEqual(dto.geofence_radius_m, 300)
+        self.assertEqual(uow.recorded_events[0].event_type, "OrganizationGeofenceUpdated")
+
+    async def test_update_organization_geofence_on_missing_organization_raises_not_found(
+        self,
+    ) -> None:
+        org_service, _region_service, uow = make_services()
+        with self.assertRaises(NotFoundError):
+            await org_service.update_organization_geofence(
+                UpdateOrganizationGeofenceCommand(
+                    organization_id=NON_EXISTENT_ULID,
+                    latitude=1.0,
+                    longitude=1.0,
+                    radius_m=200,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+    async def test_update_organization_geofence_rejects_invalid_radius(self) -> None:
+        org_service, region_service, uow = make_services()
+        org_id = await self._registered_org_id(org_service, region_service, uow)
+        with self.assertRaises(DomainError):
+            await org_service.update_organization_geofence(
+                UpdateOrganizationGeofenceCommand(
+                    organization_id=org_id,
+                    latitude=1.0,
+                    longitude=1.0,
+                    radius_m=0,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
 
 
 class RegionApplicationTests(unittest.IsolatedAsyncioTestCase):

@@ -54,6 +54,9 @@ class OrganizationDTO:
     status: str
     created_at: datetime
     updated_at: datetime
+    latitude: float | None
+    longitude: float | None
+    geofence_radius_m: int | None
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,9 @@ def organization_to_dto(organization: Organization) -> OrganizationDTO:
         status=organization.status.value,
         created_at=organization.created_at,
         updated_at=organization.updated_at,
+        latitude=organization.latitude,
+        longitude=organization.longitude,
+        geofence_radius_m=organization.geofence_radius_m,
     )
 
 

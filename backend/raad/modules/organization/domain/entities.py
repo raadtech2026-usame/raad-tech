@@ -12,6 +12,20 @@ conflict with `.claude/rules/jt1078.md` #1 ("not a configurable setting") if tak
 §4.6's module ownership isn't settled by the API contract rule (which routes only
 `/organizations` + `/regions` to this module). Both need an explicit design decision before
 implementation, not an invented one here.
+
+**`latitude`/`longitude`/`geofence_radius_m` (added post-hoc, ADR-0014).** Phase 2 §22.1 names
+an "organization geofence" for `VehicleArrivedAtOrganization` evaluation, but the originally
+approved Database Design §4.2 gives `organizations` no geographic location at all — this gap
+was found while implementing the post-F7 roadmap's item A5 (live geofence evaluation) and
+confirmed with the user before adding columns; see ADR-0014 for the full record. All three
+fields are optional (an organization that hasn't configured its location yet simply has no
+organization-geofence evaluation performed for it — `tracking`'s evaluator treats this as "not
+configured," never a zero-island fallback) and are set together or not at all via
+`set_geofence`, never at `register()` time — no approved document gives this a creation-time
+field, and requiring an Org Admin to know exact coordinates at registration would be a UX
+regression on an already-approved flow. **No approved HTTP route exists yet** for `set_geofence`
+— reachable at the application layer only, the same posture
+`ScopeAssignmentApplicationService`'s grant/revoke methods already establish.
 """
 
 from __future__ import annotations
@@ -30,6 +44,39 @@ from raad.modules.organization.domain.value_objects import (
     RegionId,
     RegionStatus,
 )
+
+_MIN_LATITUDE = -90.0
+_MAX_LATITUDE = 90.0
+_MIN_LONGITUDE = -180.0
+_MAX_LONGITUDE = 180.0
+
+
+def _validate_geofence(
+    *, latitude: float | None, longitude: float | None, radius_m: int | None
+) -> None:
+    """All three fields are set together or not at all — a geofence with a center but no
+    radius (or vice versa) could never be evaluated, so a partial configuration is rejected
+    rather than silently half-accepted."""
+    values = (latitude, longitude, radius_m)
+    if all(value is None for value in values):
+        return
+    if any(value is None for value in values):
+        raise DomainError(
+            "Organization geofence latitude/longitude/geofence_radius_m must be set "
+            "together, or not at all."
+        )
+    if not (_MIN_LATITUDE <= latitude <= _MAX_LATITUDE):
+        raise DomainError(
+            f"Organization latitude must be between {_MIN_LATITUDE} and {_MAX_LATITUDE}: "
+            f"{latitude}"
+        )
+    if not (_MIN_LONGITUDE <= longitude <= _MAX_LONGITUDE):
+        raise DomainError(
+            f"Organization longitude must be between {_MIN_LONGITUDE} and "
+            f"{_MAX_LONGITUDE}: {longitude}"
+        )
+    if radius_m <= 0:
+        raise DomainError(f"Organization geofence_radius_m must be positive: {radius_m}")
 
 
 class _AggregateRoot:
@@ -74,10 +121,16 @@ class Organization(_AggregateRoot):
         status: OrganizationStatus,
         created_at: datetime,
         updated_at: datetime,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        geofence_radius_m: int | None = None,
     ) -> None:
         super().__init__()
         if not name:
             raise DomainError("Organization name must not be empty")
+        _validate_geofence(
+            latitude=latitude, longitude=longitude, radius_m=geofence_radius_m
+        )
         self.id = id
         self.name = name
         self.org_type = org_type
@@ -87,6 +140,9 @@ class Organization(_AggregateRoot):
         self.status = status
         self.created_at = created_at
         self.updated_at = updated_at
+        self.latitude = latitude
+        self.longitude = longitude
+        self.geofence_radius_m = geofence_radius_m
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Organization) and self.id == other.id
@@ -171,6 +227,33 @@ class Organization(_AggregateRoot):
         self._record(
             org_events.organization_deactivated(
                 organization_id=str(self.id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def set_geofence(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        radius_m: int,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Configures this organization's geofence center + radius (ADR-0014) — see module
+        docstring for why this exists post-hoc and is set-together-or-not-at-all."""
+        _validate_geofence(latitude=latitude, longitude=longitude, radius_m=radius_m)
+        self.latitude = latitude
+        self.longitude = longitude
+        self.geofence_radius_m = radius_m
+        self.updated_at = clock.now()
+        self._record(
+            org_events.organization_geofence_updated(
+                organization_id=str(self.id),
+                latitude=latitude,
+                longitude=longitude,
+                radius_m=radius_m,
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )

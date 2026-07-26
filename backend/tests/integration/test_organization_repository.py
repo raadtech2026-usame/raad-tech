@@ -177,6 +177,44 @@ class RegionAndOrganizationRepositoryRoundTripTests(unittest.IsolatedAsyncioTest
 
         self.assertEqual(refetched.status, OrganizationStatus.SUSPENDED)
 
+    async def test_geofence_round_trips_through_the_real_decimal_columns(self) -> None:
+        """ADR-0014: `latitude`/`longitude`/`geofence_radius_m` are `DECIMAL(9,6,
+        asdecimal=False)`/`Integer` (`infra/models.py`) - proves the real Postgres columns give
+        back plain Python `float`/`int`, not `decimal.Decimal`, matching `transport_ops.
+        StopModel`'s identical precedent this migration was modeled on."""
+        region_id = await self._create_committed_region()
+        async with self._new_uow() as uow:
+            organization = Organization.register(
+                id=OrganizationId(self.id_generator.new_id()),
+                name=f"Geofenced Org {self.tag}",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                clock=self.clock,
+            )
+            uow.organizations.add(organization)
+            uow.record_events(organization.pull_domain_events())
+            await uow.commit()
+            org_id = organization.id
+            self._created_org_ids.append(str(org_id))
+
+        async with self._new_uow() as uow:
+            loaded = await uow.organizations.get(org_id)
+            loaded.set_geofence(
+                latitude=1.234567, longitude=36.789012, radius_m=300, clock=self.clock
+            )
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            refetched = await uow.organizations.get(org_id)
+
+        self.assertEqual(refetched.latitude, 1.234567)
+        self.assertEqual(refetched.longitude, 36.789012)
+        self.assertEqual(refetched.geofence_radius_m, 300)
+        self.assertIsInstance(refetched.latitude, float)
+        self.assertIsInstance(refetched.geofence_radius_m, int)
+
     async def test_organization_list_all_includes_newly_added_organization(self) -> None:
         region_id = await self._create_committed_region()
         async with self._new_uow() as uow:

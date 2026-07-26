@@ -44,6 +44,19 @@ class DeactivateOrganizationCommand:
 
 
 @dataclass(frozen=True)
+class UpdateOrganizationGeofenceCommand:
+    """ADR-0014. No approved HTTP route exists yet — reachable at the application layer only,
+    the same posture `GrantRegionAssignmentCommand`/`GrantSupportAssignmentCommand` already
+    establish below."""
+
+    organization_id: str
+    latitude: float
+    longitude: float
+    radius_m: int
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class CreateRegionCommand:
     name: str
     geographic_scope: str | None

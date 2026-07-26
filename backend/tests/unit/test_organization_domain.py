@@ -181,6 +181,78 @@ class OrganizationStatusTransitionTests(unittest.TestCase):
         self.assertEqual(org.status, OrganizationStatus.ACTIVE)
 
 
+class OrganizationGeofenceTests(unittest.TestCase):
+    """ADR-0014: `latitude`/`longitude`/`geofence_radius_m`, added post-hoc for the post-F7
+    roadmap's item A5 (live geofence evaluation) — `organizations` originally had no
+    geographic location column at all."""
+
+    def make_org(self, **overrides) -> Organization:
+        kwargs = dict(
+            id=OrganizationId(VALID_ORG_ULID),
+            name="Sunrise School",
+            org_type=OrgType.SCHOOL,
+            parent_org_id=None,
+            region_id=RegionId(VALID_REGION_ULID),
+            billing_model=BillingModel.ORGANIZATION_PAYS,
+            status=OrganizationStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        kwargs.update(overrides)
+        return Organization(**kwargs)
+
+    def test_geofence_fields_default_to_none(self) -> None:
+        org = self.make_org()
+        self.assertIsNone(org.latitude)
+        self.assertIsNone(org.longitude)
+        self.assertIsNone(org.geofence_radius_m)
+
+    def test_constructing_with_a_partial_geofence_raises(self) -> None:
+        with self.assertRaises(DomainError):
+            self.make_org(latitude=1.0, longitude=None, geofence_radius_m=200)
+
+    def test_constructing_with_out_of_range_latitude_raises(self) -> None:
+        with self.assertRaises(DomainError):
+            self.make_org(latitude=91.0, longitude=1.0, geofence_radius_m=200)
+
+    def test_constructing_with_non_positive_radius_raises(self) -> None:
+        with self.assertRaises(DomainError):
+            self.make_org(latitude=1.0, longitude=1.0, geofence_radius_m=0)
+
+    def test_constructing_with_full_geofence_succeeds(self) -> None:
+        org = self.make_org(latitude=1.234567, longitude=36.789012, geofence_radius_m=300)
+        self.assertEqual(org.latitude, 1.234567)
+        self.assertEqual(org.geofence_radius_m, 300)
+
+    def test_set_geofence_configures_all_three_fields_and_records_event(self) -> None:
+        org = self.make_org()
+        org.set_geofence(
+            latitude=1.234567,
+            longitude=36.789012,
+            radius_m=300,
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(org.latitude, 1.234567)
+        self.assertEqual(org.longitude, 36.789012)
+        self.assertEqual(org.geofence_radius_m, 300)
+        self.assertEqual(org.updated_at, datetime(2026, 1, 2, tzinfo=timezone.utc))
+        events = org.pull_domain_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "OrganizationGeofenceUpdated")
+        self.assertEqual(events[0].payload["radius_m"], 300)
+
+    def test_set_geofence_rejects_an_invalid_radius(self) -> None:
+        org = self.make_org()
+        with self.assertRaises(DomainError):
+            org.set_geofence(
+                latitude=1.0,
+                longitude=1.0,
+                radius_m=-5,
+                clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+            )
+        self.assertEqual(org.pull_domain_events(), [])
+
+
 class RegionInvariantTests(unittest.TestCase):
     def test_rejects_empty_name(self) -> None:
         with self.assertRaises(DomainError):
