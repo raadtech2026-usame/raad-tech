@@ -5,7 +5,13 @@ was resolved as ADR-0009, and the device-plane deployable this document calls `s
 throughout was subsequently renamed `services/device-gateway/` and reorganized into
 `src/vendors/{jt808,lsz,...}/` (ADR-0010). Every `services/jt808/` path reference below is
 historical (accurate when this document was written, before either ADR), not current — see
-ADR-0009/ADR-0010 for what was actually built.
+ADR-0009/ADR-0010 for what was actually built. **Conflict #3 (§11) / Required Refactoring item 5
+(§12) — the device authentication gap — is also since resolved**, as `docs/architecture/adr/
+0015-device-plane-authentication-trust-model.md`: device identity + secure credential (never
+network-layer controls) is the primary trust model platform-wide; this vendor's own gap is closed
+by strict identity resolution (already the real, non-interim `ProjectionBackedMdvrProvisioningPort`),
+accepted and flagged as identity-only, not by the "network-layer compensating control" this
+document originally anticipated.
 **Depends on:** `docs/vendor/HARDWARE_ANALYSIS.md` (read that first — every finding below traces
 back to a specific section there).
 
@@ -295,9 +301,12 @@ design before any code, per `.claude/rules/workflow.md` #8:
    "vendor dialect" `jt808.md` #2's ACL pattern was designed to absorb.
 3. **`security.md` #9 and `jt808.md` #5 require device authentication and rejection of
    unauthenticated devices; this hardware's protocol provides no cryptographic mechanism to do
-   either** (Hardware Analysis §11). Only network-layer compensating controls (mutual TLS, IP
-   allow-listing, DMZ isolation — all already named in `security.md` #9 as generic compensating
-   controls) can close this gap; none is designed yet.
+   either** (Hardware Analysis §11). **Resolved by ADR-0015** (see this document's own Status
+   header): not by a network-layer control (mutual TLS, IP allow-listing, DMZ isolation — RAAD's
+   device fleet runs over dynamic-IP public cellular by default, so none of these can reliably
+   identify a device in the first place), but by strict **identity** resolution — already the
+   real, non-interim `ProjectionBackedMdvrProvisioningPort` — accepted and explicitly flagged as
+   identity-only, not a fabricated credential.
 4. **The master roadmap's planned B1 (JT808 Provisioning Bridge) scope — specifically exposing
    `devices.auth_key_hash` and implementing `DeviceProvisioningPort.verify_auth_code`** — assumes a
    credential/secret this hardware's protocol does not have. B1 needs to be **redesigned**, not
@@ -329,8 +338,11 @@ In dependency order:
    inconsistency (Hardware Analysis §5) and the pre-existing `latitude/longitude`-vs-`lat/lng`
    naming mismatch the roadmap's B2 phase already flagged.
 5. **Redesign B1's provisioning-bridge scope** to drop the unsupported auth-key/verify-auth-code
-   assumption, substituting an explicit network-layer compensating-control design (likely its own
-   ADR, given `security.md` #9 already anticipates exactly this class of gap generically).
+   assumption. **Done, per ADR-0015**: not a network-layer compensating-control design as
+   originally anticipated here, but an explicit identity-primary trust model
+   (`ProjectionBackedMdvrProvisioningPort`'s existing serial-number resolution, accepted and
+   flagged as identity-only) — network-layer controls are demoted to optional, deployment-specific
+   defense-in-depth, since RAAD's device fleet has no static-IP/private-APN assumption to build on.
 6. **Design the `VideoProviderPort` adapter** concretely against this vendor's media-channel
    protocol (Option A) — genuinely unblocked by this analysis, a positive outcome — accounting for
    the mutual-exclusivity constraint's cross-cutting effect on `jt1078.md` #4's concurrency-ceiling

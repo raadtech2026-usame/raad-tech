@@ -7,11 +7,18 @@ submitted device serial number is already present in the center's own database")
 therefore no `verify_auth_code` method here at all — `authorize_registration` is the entire
 contract, deciding accept/reject by serial-number allow-list only.
 
-**This is an accepted, flagged security gap, not silently closed** — `docs/architecture/adr/
-0009-mdvr-vendor-protocol-device-plane.md`'s Consequences section records it explicitly: the
-missing cryptographic assurance must be closed at the network layer (mutual TLS / IP allow-listing
-/ DMZ isolation, `.claude/rules/security.md` #9), not invented here as a fake credential this
-hardware doesn't actually support.
+**This is an accepted, flagged security gap, not silently closed — and, per ADR-0015, it is not
+"closed at the network layer" either.** `docs/architecture/adr/
+0009-mdvr-vendor-protocol-device-plane.md`'s Consequences section originally framed this as a gap
+that "must be closed at the network layer (mutual TLS / IP allow-listing / DMZ isolation)"; ADR-0015
+(`docs/architecture/adr/0015-device-plane-authentication-trust-model.md`) supersedes that framing —
+RAAD's device fleet runs over ordinary dynamic-IP public cellular by default, so an IP/network-layer
+control cannot reliably identify a specific device in the first place, and is never assumed present.
+The actual, accepted control is `authorize_registration`'s own **identity** check below (serial
+number must resolve to an active, vehicle-assigned device in the real device-registry projection) —
+flagged as identity-only, deliberately *not* a "secure device credential" in the cryptographic
+sense `.claude/rules/security.md` #9 now describes as primary, since this hardware's firmware has
+no credential mechanism to verify at all. No fake credential is invented here to paper over that.
 
 **No real device-registry projection is implemented in this phase.** The roadmap's revised B1 asks
 for a local projection kept current by consuming `fleet_device`'s `DeviceRegistered`/

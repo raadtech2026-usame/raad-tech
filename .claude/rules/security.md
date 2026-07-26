@@ -19,8 +19,20 @@ Derived from `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §12 an
    database and backups.
 8. **Every important action is audit-logged**, append-only, tamper-evident, and itself
    permission-gated to view.
-9. **Device-plane compensating controls required** given JT808/JT1078's weak native security: device
-   auth keys, IP/APN allow-listing where supported, DMZ isolation, heartbeat/traffic anomaly
-   detection.
+9. **Device-plane trust model: identity + secure credential is primary; network-layer controls are
+   optional defense-in-depth only (ADR-0015).** Do not assume a stable/static device IP or a
+   private APN — RAAD's device fleet runs over ordinary public cellular data by default, where IPs
+   are dynamic and carrier-NAT'd. The mandatory control is verifying device identity (terminal ID/
+   IMEI) plus a secure device credential wherever the vendor's protocol supports one (JT/T 808's
+   `auth_key_hash`/auth-code exchange is the reference implementation — never bypassable, never
+   IP-dependent). IP/APN allow-listing, mutual TLS at the network layer, and DMZ isolation may be
+   layered on **only** for a specific deployment that genuinely has a private APN or static device
+   IPs (a carrier-level arrangement) — they are never a required baseline and never a substitute
+   for a missing credential. Heartbeat/traffic anomaly detection remains a useful, independent
+   compensating signal regardless of topology. Where a vendor's protocol has no credential
+   mechanism at all (see `.claude/rules/jt808.md`'s LSZ note), this is an accepted, explicitly
+   flagged gap — closed by the strongest identity check the protocol actually supports, never by
+   inventing a credential the hardware doesn't have or by leaning on network-layer controls that
+   don't hold for a dynamic-IP fleet.
 10. **Payment callbacks are untrusted input** until signature/secret-verified; unverified callbacks
     are rejected and audited.
