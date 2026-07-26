@@ -67,12 +67,16 @@ from raad.modules.organization.infra.repositories import (
     SqlAlchemyOrganizationUnitOfWork,
 )
 from raad.modules.tracking.application.ports import (
+    GeofenceStatePort,
     LatestPositionPort,
     TrackingUnitOfWork,
 )
 from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.tracking.events.subscribers import register_tracking_processors
-from raad.modules.tracking.infra.adapters import RedisLatestPositionPort
+from raad.modules.tracking.infra.adapters import (
+    RedisGeofenceStatePort,
+    RedisLatestPositionPort,
+)
 from raad.modules.tracking.infra.repositories import SqlAlchemyTrackingUnitOfWork
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
@@ -328,6 +332,12 @@ def build_container(settings: Settings) -> Container:
                 clock=container.resolve(Clock),
                 id_generator=container.resolve(IdGenerator),
             ),
+        )
+        # GeofenceStatePort (post-F7 roadmap item A5; ADR-0014) - reuses the same Redis client
+        # as LatestPositionPort above rather than opening a second connection, the same
+        # "reuse, don't duplicate" convention the device-gateway's own Redis wiring follows.
+        container.bind_singleton(
+            GeofenceStatePort, RedisGeofenceStatePort(latest_position_redis_client)
         )
 
     # TrackingApplicationService is always constructible — `latest_position_port` is optional

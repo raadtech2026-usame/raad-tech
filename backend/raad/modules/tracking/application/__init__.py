@@ -14,6 +14,8 @@ from raad.modules.tracking.application.commands import (
     RecordVehiclePositionCommand,
 )
 from raad.modules.tracking.application.ports import (
+    GeofenceHysteresisState,
+    GeofenceStatePort,
     LatestPositionPort,
     TrackingUnitOfWork,
 )
@@ -31,6 +33,8 @@ __all__ = [
     "EvaluateGeofenceCommand",
     "GeofenceCrossingDTO",
     "GeofenceEvaluationResultDTO",
+    "GeofenceHysteresisState",
+    "GeofenceStatePort",
     "GetCurrentVehiclePositionQuery",
     "GetGeofenceCrossingsQuery",
     "GetVehiclePositionHistoryQuery",

@@ -85,24 +85,106 @@ at the buffered position's own `event_time`. No historical trip-lookup capabilit
 this correctly for backfill, so it is left unresolved rather than resolved wrong — the same
 "backfilled points are excluded" carve-out Phase 2 §22.2 already establishes for geofence
 evaluation, applied here to trip attribution instead.
+
+**Live geofence evaluation (post-F7 roadmap item A5; ADR-0014).** For a live position with a
+resolved trip, this processor also evaluates Phase 2 §22's stop/organization geofences and
+records any crossings via `TrackingApplicationService.record_geofence_crossing` — the wiring
+that finally invokes `GeofenceEvaluationService`'s previously-built-but-never-called primitives
+and the two notification triggers (`VehicleApproachingStopNotifier`/
+`VehicleArrivedAtOrganizationNotifier`) that have been dormant since they were built. Evaluation
+never runs for a backfilled position (Phase 2 §22.2: "backfilled points are excluded to prevent
+false historical triggers") or when no active trip was resolved (the evaluator is explicitly
+trip-scoped).
+
+Two real config gaps were found while scoping this (see ADR-0014 for the full record, both
+resolved by direct user decision rather than invented): neither `stops` nor any other approved
+table gives "approaching" its own radius/ETA threshold distinct from the stop's single
+`geofence_radius_m` (used here for "approaching" via `_APPROACH_RADIUS_MULTIPLIER`, a flagged
+stand-in, not a new config column), and `organizations` originally had no geographic location at
+all (closed by adding `latitude`/`longitude`/`geofence_radius_m` columns, ADR-0014). An
+organization or stop with no radius configured gets no evaluation performed against it, ever —
+never a hardcoded fallback distance.
+
+**Hysteresis + sequence + cooldown state lives in Redis** (`GeofenceStatePort`,
+`application/ports.py`), one `GeofenceHysteresisState` per trip: which single stop is currently
+being approached/entered (Phase 2 §22.3: "'approaching' fires for the *next* assigned stop in
+route order, not stops already passed" — evaluated one stop at a time, never the whole
+remaining list), the previous-position inside/outside reading for that stop's approach/arrival
+radii and the organization's own radius (feeding `GeofenceEvaluationService.detect_transition`'s
+flip-detection, which already prevents re-firing while continuously inside a radius), and a
+per-(event-type, stop-or-org) `last_fired_at` timestamp. `_EVENT_COOLDOWN_SECONDS` (a flagged
+120s default, ADR-0014) additionally suppresses re-firing the same event within that window —
+approximating §22.3's "minimum dwell"/"cooldown" intent without implementing literal
+N-consecutive-reading debounce, which no document specifies the parameters of. Advancing past a
+stop (its arrival-radius `EXITED` transition) happens regardless of whether that specific
+`EXITED` event was itself cooldown-suppressed — the vehicle has genuinely left the radius either
+way, so the evaluator must move on to the next stop.
+
+**Best-effort, isolated from the position write that already succeeded above:** geofence
+evaluation is wrapped so a failure here (a missing route, an unbound `GeofenceStatePort` when no
+Redis is configured, anything else) is logged and swallowed, never propagated — the same "one
+failure is logged, never left to crash the surrounding loop" principle
+`interfaces/http/realtime.handle_subscribe` already established (WebSocket phase). The
+already-committed `VehiclePosition` row is unaffected either way.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from raad.core.di.container import Container
 from raad.core.events.base import DomainEvent
 from raad.core.events.processor import EventProcessor, EventProcessorRegistry
+from raad.core.time.clock import Clock
+from raad.modules.organization.application.ports import OrganizationUnitOfWork
+from raad.modules.organization.application.queries import (
+    GetOrganizationByIdQuery,
+    OrganizationDTO,
+)
+from raad.modules.organization.application.services import OrganizationApplicationService
 from raad.modules.tracking.application.commands import (
     RecordBackfillPositionCommand,
+    RecordGeofenceCrossingCommand,
     RecordVehiclePositionCommand,
 )
-from raad.modules.tracking.application.ports import TrackingUnitOfWork
+from raad.modules.tracking.application.ports import (
+    GeofenceHysteresisState,
+    GeofenceStatePort,
+    TrackingUnitOfWork,
+)
 from raad.modules.tracking.application.services import TrackingApplicationService
+from raad.modules.tracking.domain.services import GeofenceEvaluationService
+from raad.modules.tracking.domain.value_objects import (
+    GeofenceEventType,
+    GeofenceTransition,
+    GeoPoint,
+    TripId,
+)
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
-from raad.modules.transport_ops.application.queries import GetActiveTripForVehicleQuery
-from raad.modules.transport_ops.application.services import TripApplicationService
+from raad.modules.transport_ops.application.queries import (
+    GetActiveTripForVehicleQuery,
+    GetRouteByIdQuery,
+    RouteDTO,
+    StopDTO,
+    TripDTO,
+)
+from raad.modules.transport_ops.application.services import (
+    RouteApplicationService,
+    TripApplicationService,
+)
+
+_logger = logging.getLogger(__name__)
+
+# ADR-0014: no approved document specifies an "approaching" radius/ETA threshold distinct from
+# a stop's own arrival radius (`geofence_radius_m`) - a flagged multiplier stands in, per the
+# user's own explicit instruction to choose and document a concrete rule rather than add a new
+# config column for it.
+_APPROACH_RADIUS_MULTIPLIER = 3
+
+# ADR-0014: Phase 2 §22.3 asks for a "cooldown... duplicate suppression window per (trip, stop,
+# event-type)" but specifies no duration - a flagged fixed window.
+_EVENT_COOLDOWN_SECONDS = 120
 
 
 class DevicePositionReportedProcessor(EventProcessor):
@@ -136,7 +218,7 @@ class DevicePositionReportedProcessor(EventProcessor):
                 uow=uow,
             )
         else:
-            trip_id = await self._resolve_active_trip_id(payload["vehicle_id"])
+            trip = await self._resolve_active_trip(payload["vehicle_id"])
             await service.record_vehicle_position(
                 RecordVehiclePositionCommand(
                     organization_id=organization_id,
@@ -145,28 +227,274 @@ class DevicePositionReportedProcessor(EventProcessor):
                     latitude=payload["latitude"],
                     longitude=payload["longitude"],
                     event_time=event_time,
-                    trip_id=trip_id,
+                    trip_id=trip.id if trip is not None else None,
                     speed_kph=payload.get("speed_kph"),
                     heading_deg=payload.get("heading_deg"),
                     alarm_flags=payload.get("alarm_flags"),
                 ),
                 uow=uow,
             )
+            if trip is not None:
+                await self._evaluate_geofence(
+                    organization_id=organization_id,
+                    trip=trip,
+                    latitude=payload["latitude"],
+                    longitude=payload["longitude"],
+                )
 
-    async def _resolve_active_trip_id(self, vehicle_id: str) -> str | None:
+    async def _resolve_active_trip(self, vehicle_id: str) -> TripDTO | None:
         trip_service = self._container.resolve(TripApplicationService)
         transport_ops_uow = self._container.resolve(TransportOpsUnitOfWork)
-        trip = await trip_service.get_active_trip_for_vehicle(
+        return await trip_service.get_active_trip_for_vehicle(
             GetActiveTripForVehicleQuery(vehicle_id=vehicle_id), uow=transport_ops_uow
         )
-        return trip.id if trip is not None else None
+
+    async def _evaluate_geofence(
+        self, *, organization_id: str, trip: TripDTO, latitude: float, longitude: float
+    ) -> None:
+        """See module docstring — best-effort, never raises. No-ops entirely when
+        `GeofenceStatePort` is unbound (no `RAAD_REDIS__URL` configured), the same posture
+        `TrackingApplicationService.get_current_vehicle_position` already establishes for its
+        own optional Redis dependency."""
+        try:
+            geofence_state_port = self._container.resolve(GeofenceStatePort)
+        except LookupError:
+            return
+
+        try:
+            await self._do_evaluate_geofence(
+                organization_id=organization_id,
+                trip=trip,
+                position=GeoPoint(latitude=latitude, longitude=longitude),
+                geofence_state_port=geofence_state_port,
+            )
+        except Exception:
+            _logger.exception(
+                "Geofence evaluation failed for trip %s - the position was already recorded; "
+                "no crossing events were emitted for this position.",
+                trip.id,
+            )
+
+    async def _do_evaluate_geofence(
+        self,
+        *,
+        organization_id: str,
+        trip: TripDTO,
+        position: GeoPoint,
+        geofence_state_port: GeofenceStatePort,
+    ) -> None:
+        clock = self._container.resolve(Clock)
+        now = clock.now()
+        trip_id = TripId(trip.id)
+        state = await geofence_state_port.get_state(trip_id) or GeofenceHysteresisState()
+
+        route_service = self._container.resolve(RouteApplicationService)
+        transport_ops_uow = self._container.resolve(TransportOpsUnitOfWork)
+        route = await route_service.get_route_by_id(
+            GetRouteByIdQuery(route_id=trip.route_id), uow=transport_ops_uow
+        )
+
+        org_service = self._container.resolve(OrganizationApplicationService)
+        organization_uow = self._container.resolve(OrganizationUnitOfWork)
+        organization = await org_service.get_organization_by_id(
+            GetOrganizationByIdQuery(organization_id=organization_id), uow=organization_uow
+        )
+
+        crossings = _evaluate_stop_geofence(
+            state=state, route=route, position=position, now=now
+        )
+        crossings.extend(
+            _evaluate_org_geofence(
+                state=state, organization=organization, position=position, now=now
+            )
+        )
+
+        if crossings:
+            tracking_service = self._container.resolve(TrackingApplicationService)
+            tracking_uow = self._container.resolve(TrackingUnitOfWork)
+            for crossing_event_type, stop_id in crossings:
+                await tracking_service.record_geofence_crossing(
+                    RecordGeofenceCrossingCommand(
+                        organization_id=organization_id,
+                        trip_id=trip.id,
+                        event_type=crossing_event_type,
+                        stop_id=stop_id,
+                    ),
+                    uow=tracking_uow,
+                )
+
+        await geofence_state_port.save_state(trip_id, state)
 
 
 def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def register_tracking_processors(registry: EventProcessorRegistry, container: Container) -> None:
+def _cooldown_key(event_type: GeofenceEventType, stop_id: str | None) -> str:
+    """Namespaced per (event-type, stop-or-org) — without this, `EXITED` firing for stop N's
+    cooldown would incorrectly suppress `EXITED` firing for stop N+1 (or the organization
+    geofence) within the same window, since both share the same `GeofenceEventType`."""
+    return f"{event_type.value}:{stop_id or 'org'}"
+
+
+def _cooldown_elapsed(
+    last_fired_at: dict[str, str],
+    event_type: GeofenceEventType,
+    stop_id: str | None,
+    *,
+    now: datetime,
+) -> bool:
+    raw = last_fired_at.get(_cooldown_key(event_type, stop_id))
+    if raw is None:
+        return True
+    return (now - datetime.fromisoformat(raw)).total_seconds() >= _EVENT_COOLDOWN_SECONDS
+
+
+def _mark_fired(
+    last_fired_at: dict[str, str],
+    event_type: GeofenceEventType,
+    stop_id: str | None,
+    *,
+    now: datetime,
+) -> None:
+    last_fired_at[_cooldown_key(event_type, stop_id)] = now.isoformat()
+
+
+def _next_stop_after(ordered_stops: list[StopDTO], current: StopDTO) -> StopDTO | None:
+    for stop in ordered_stops:
+        if stop.sequence_no > current.sequence_no:
+            return stop
+    return None
+
+
+def _evaluate_stop_geofence(
+    *,
+    state: GeofenceHysteresisState,
+    route: RouteDTO,
+    position: GeoPoint,
+    now: datetime,
+) -> list[tuple[GeofenceEventType, str | None]]:
+    """Mutates `state` in place (target/flags/cooldown timestamps); returns the crossings to
+    record. See module docstring for the one-stop-at-a-time sequence-awareness design."""
+    crossings: list[tuple[GeofenceEventType, str | None]] = []
+    if state.stops_exhausted:
+        return crossings
+
+    ordered_stops = sorted(route.stops, key=lambda stop: stop.sequence_no)
+    if not ordered_stops:
+        state.stops_exhausted = True
+        return crossings
+
+    if state.stop_target_id is None:
+        target = ordered_stops[0]
+    else:
+        target = next(
+            (stop for stop in ordered_stops if stop.id == state.stop_target_id), None
+        )
+        if target is None:
+            # The previously-targeted stop no longer exists on this route (edited/removed
+            # mid-trip) - fall back to the first stop rather than getting permanently stuck.
+            target = ordered_stops[0]
+
+    if target.geofence_radius_m is None:
+        # ADR-0014: a stop with no configured radius is invisible to the evaluator entirely -
+        # never advanced past, never given a hardcoded fallback radius.
+        state.stop_target_id = target.id
+        return crossings
+
+    center = GeoPoint(latitude=target.latitude, longitude=target.longitude)
+    approach_radius_m = target.geofence_radius_m * _APPROACH_RADIUS_MULTIPLIER
+
+    is_inside_approach = GeofenceEvaluationService.is_within_radius(
+        position=position, center=center, radius_m=approach_radius_m
+    )
+    approach_transition = GeofenceEvaluationService.detect_transition(
+        was_inside=state.stop_is_inside_approach, is_inside=is_inside_approach
+    )
+    state.stop_is_inside_approach = is_inside_approach
+    if approach_transition == GeofenceTransition.ENTERED and _cooldown_elapsed(
+        state.last_fired_at, GeofenceEventType.APPROACHING_STOP, target.id, now=now
+    ):
+        crossings.append((GeofenceEventType.APPROACHING_STOP, target.id))
+        _mark_fired(state.last_fired_at, GeofenceEventType.APPROACHING_STOP, target.id, now=now)
+
+    is_inside_arrival = GeofenceEvaluationService.is_within_radius(
+        position=position, center=center, radius_m=target.geofence_radius_m
+    )
+    arrival_transition = GeofenceEvaluationService.detect_transition(
+        was_inside=state.stop_is_inside_arrival, is_inside=is_inside_arrival
+    )
+    state.stop_is_inside_arrival = is_inside_arrival
+    if arrival_transition == GeofenceTransition.ENTERED:
+        if _cooldown_elapsed(
+            state.last_fired_at, GeofenceEventType.ENTERED_STOP, target.id, now=now
+        ):
+            crossings.append((GeofenceEventType.ENTERED_STOP, target.id))
+            _mark_fired(
+                state.last_fired_at, GeofenceEventType.ENTERED_STOP, target.id, now=now
+            )
+        state.stop_target_id = target.id
+    elif arrival_transition == GeofenceTransition.EXITED:
+        if _cooldown_elapsed(state.last_fired_at, GeofenceEventType.EXITED, target.id, now=now):
+            crossings.append((GeofenceEventType.EXITED, target.id))
+            _mark_fired(state.last_fired_at, GeofenceEventType.EXITED, target.id, now=now)
+        # Sequence advancement happens regardless of the EXITED event's own cooldown outcome
+        # above - the vehicle has genuinely left this stop's radius either way, so evaluation
+        # must move on to the next stop (module docstring).
+        next_stop = _next_stop_after(ordered_stops, target)
+        state.stop_target_id = next_stop.id if next_stop is not None else None
+        state.stops_exhausted = next_stop is None
+        state.stop_is_inside_arrival = False
+        state.stop_is_inside_approach = False
+    else:
+        state.stop_target_id = target.id
+
+    return crossings
+
+
+def _evaluate_org_geofence(
+    *,
+    state: GeofenceHysteresisState,
+    organization: OrganizationDTO,
+    position: GeoPoint,
+    now: datetime,
+) -> list[tuple[GeofenceEventType, str | None]]:
+    crossings: list[tuple[GeofenceEventType, str | None]] = []
+    if (
+        organization.latitude is None
+        or organization.longitude is None
+        or organization.geofence_radius_m is None
+    ):
+        # ADR-0014: an organization that hasn't configured its geofence yet gets no
+        # organization-geofence evaluation performed for it, ever - never a zero-island
+        # fallback.
+        return crossings
+
+    center = GeoPoint(latitude=organization.latitude, longitude=organization.longitude)
+    is_inside = GeofenceEvaluationService.is_within_radius(
+        position=position, center=center, radius_m=organization.geofence_radius_m
+    )
+    transition = GeofenceEvaluationService.detect_transition(
+        was_inside=state.org_is_inside, is_inside=is_inside
+    )
+    state.org_is_inside = is_inside
+    if transition == GeofenceTransition.ENTERED and _cooldown_elapsed(
+        state.last_fired_at, GeofenceEventType.ARRIVED_ORG, None, now=now
+    ):
+        crossings.append((GeofenceEventType.ARRIVED_ORG, None))
+        _mark_fired(state.last_fired_at, GeofenceEventType.ARRIVED_ORG, None, now=now)
+    elif transition == GeofenceTransition.EXITED and _cooldown_elapsed(
+        state.last_fired_at, GeofenceEventType.EXITED, None, now=now
+    ):
+        crossings.append((GeofenceEventType.EXITED, None))
+        _mark_fired(state.last_fired_at, GeofenceEventType.EXITED, None, now=now)
+
+    return crossings
+
+
+def register_tracking_processors(
+    registry: EventProcessorRegistry, container: Container
+) -> None:
     """Called from `core/di/bootstrap.py` when wiring a broker consumer — mirrors `notifications
     .events.subscribers.register_notification_processors`'s identical shape exactly."""
     registry.register(DevicePositionReportedProcessor(container))

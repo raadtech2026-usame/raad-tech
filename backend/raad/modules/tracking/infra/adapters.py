@@ -41,7 +41,11 @@ from redis.asyncio import Redis
 
 from raad.core.ids.generator import IdGenerator
 from raad.core.time.clock import Clock
-from raad.modules.tracking.application.ports import LatestPositionPort
+from raad.modules.tracking.application.ports import (
+    GeofenceHysteresisState,
+    GeofenceStatePort,
+    LatestPositionPort,
+)
 from raad.modules.tracking.domain.entities import VehiclePosition
 from raad.modules.tracking.domain.value_objects import (
     AlarmFlags,
@@ -105,3 +109,51 @@ def _parse_event_time(value: object) -> datetime:
     if isinstance(value, (int, float)):
         return datetime.fromtimestamp(value, tz=None)
     return datetime.fromisoformat(str(value))
+
+
+# ADR-0014 / post-F7 roadmap item A5: a completed (or abandoned) trip's hysteresis state has no
+# explicit clear-on-`TripEnded` hook (that would need `tracking` to consume `transport_ops`
+# events, a new subscription this phase doesn't add) - a 24h TTL bounds it instead, comfortably
+# longer than any real school trip while still not accumulating forever.
+_GEOFENCE_STATE_TTL_SECONDS = 24 * 60 * 60
+
+
+def _geofence_key(trip_id: TripId) -> str:
+    return f"trip:{trip_id}:geofence"
+
+
+class RedisGeofenceStatePort(GeofenceStatePort):
+    """See `application.ports.GeofenceStatePort`'s own docstring. Read-write, unlike
+    `RedisLatestPositionPort` above — this evaluator is the sole writer of this key."""
+
+    def __init__(self, redis_client: Redis) -> None:
+        self._redis = redis_client
+
+    async def get_state(self, trip_id: TripId) -> GeofenceHysteresisState | None:
+        raw = await self._redis.get(_geofence_key(trip_id))
+        if raw is None:
+            return None
+        payload = json.loads(raw)
+        return GeofenceHysteresisState(
+            stop_target_id=payload.get("stop_target_id"),
+            stops_exhausted=bool(payload.get("stops_exhausted", False)),
+            stop_is_inside_arrival=bool(payload.get("stop_is_inside_arrival", False)),
+            stop_is_inside_approach=bool(payload.get("stop_is_inside_approach", False)),
+            org_is_inside=bool(payload.get("org_is_inside", False)),
+            last_fired_at=dict(payload.get("last_fired_at", {})),
+        )
+
+    async def save_state(self, trip_id: TripId, state: GeofenceHysteresisState) -> None:
+        payload = {
+            "stop_target_id": state.stop_target_id,
+            "stops_exhausted": state.stops_exhausted,
+            "stop_is_inside_arrival": state.stop_is_inside_arrival,
+            "stop_is_inside_approach": state.stop_is_inside_approach,
+            "org_is_inside": state.org_is_inside,
+            "last_fired_at": state.last_fired_at,
+        }
+        await self._redis.set(
+            _geofence_key(trip_id),
+            json.dumps(payload),
+            ex=_GEOFENCE_STATE_TTL_SECONDS,
+        )
