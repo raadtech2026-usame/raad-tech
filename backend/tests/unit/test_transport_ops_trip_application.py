@@ -30,6 +30,7 @@ from raad.modules.transport_ops.application.commands import (
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
+    GetActiveTripForVehicleQuery,
     GetTripByIdQuery,
     ListTripsQuery,
     TripDTO,
@@ -657,6 +658,42 @@ class TripLifecycleOrchestrationTests(unittest.IsolatedAsyncioTestCase):
             await service.get_trip_by_id(
                 GetTripByIdQuery(trip_id=NON_EXISTENT_TRIP_ID), uow=uow
             )
+
+    async def test_get_active_trip_for_vehicle_returns_the_in_progress_trip(self) -> None:
+        """Roadmap A4: the exact lookup `tracking.events.subscribers.
+        DevicePositionReportedProcessor` calls to resolve a live position's `trip_id`."""
+        service, uow = make_service()
+        trip = await self._scheduled_trip_dto(service, uow)
+        await service.start_trip(
+            StartTripCommand(trip_id=trip.id, actor=make_actor()), uow=uow
+        )
+
+        dto = await service.get_active_trip_for_vehicle(
+            GetActiveTripForVehicleQuery(vehicle_id=VALID_VEHICLE_ULID), uow=uow
+        )
+
+        self.assertIsNotNone(dto)
+        self.assertEqual(dto.id, trip.id)
+        self.assertEqual(dto.status, "in_progress")
+
+    async def test_get_active_trip_for_vehicle_returns_none_when_only_scheduled(self) -> None:
+        """A `SCHEDULED` (not yet `IN_PROGRESS`) trip is not "active" for this query - matches
+        `TripRepository.active_trip_for_vehicle`'s own documented `IN_PROGRESS`-only contract."""
+        service, uow = make_service()
+        await self._scheduled_trip_dto(service, uow)
+
+        dto = await service.get_active_trip_for_vehicle(
+            GetActiveTripForVehicleQuery(vehicle_id=VALID_VEHICLE_ULID), uow=uow
+        )
+
+        self.assertIsNone(dto)
+
+    async def test_get_active_trip_for_vehicle_returns_none_for_unknown_vehicle(self) -> None:
+        service, uow = make_service()
+        dto = await service.get_active_trip_for_vehicle(
+            GetActiveTripForVehicleQuery(vehicle_id="01J8Z3K9G6X8YV5T4N2R7QW3ZZ"), uow=uow
+        )
+        self.assertIsNone(dto)
 
     async def test_list_trips_returns_summary_dtos(self) -> None:
         service, uow = make_service()

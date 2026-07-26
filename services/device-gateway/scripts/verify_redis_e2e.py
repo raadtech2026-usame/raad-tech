@@ -80,6 +80,8 @@ from raad.modules.tracking.events.subscribers import (  # noqa: E402
 )
 from raad.modules.tracking.infra.adapters import RedisLatestPositionPort  # noqa: E402
 from raad.modules.tracking.domain.value_objects import VehicleId  # noqa: E402
+from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork  # noqa: E402
+from raad.modules.transport_ops.application.services import TripApplicationService  # noqa: E402
 
 _DEVICE_SERIAL_NUMBER = "00007"
 _ORG_ID = "org-e2e-verify"
@@ -112,6 +114,16 @@ class _RecordingTrackingService:
 
     async def record_backfill_position(self, command, *, uow):
         raise AssertionError("The verification position frame is not backfill-flagged.")
+
+
+class _NoActiveTripService:
+    """Roadmap A4: `DevicePositionReportedProcessor` now resolves the active trip via
+    `TripApplicationService` on every live position - mirrors `test_tracking_subscribers.py`'s
+    own `_FakeTripApplicationService` default (no active trip), keeping this script's own
+    dependency Redis alone, not also a live Postgres (module docstring)."""
+
+    async def get_active_trip_for_vehicle(self, query, *, uow):
+        return None
 
 
 async def _check_redis_reachable(redis_client: Redis) -> None:
@@ -211,6 +223,8 @@ async def run(redis_url: str) -> bool:
     service = _RecordingTrackingService()
     container.bind_singleton(TrackingApplicationService, service)
     container.bind_singleton(TrackingUnitOfWork, _FakeUnitOfWork())
+    container.bind_singleton(TripApplicationService, _NoActiveTripService())
+    container.bind_singleton(TransportOpsUnitOfWork, _FakeUnitOfWork())
     processor = DevicePositionReportedProcessor(container)
     await processor.process(matching)
 

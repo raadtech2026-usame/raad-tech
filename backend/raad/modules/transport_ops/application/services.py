@@ -122,6 +122,7 @@ from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
     DriverDTO,
     DriverSummaryDTO,
+    GetActiveTripForVehicleQuery,
     GetDriverByIdQuery,
     GetParentByIdQuery,
     GetRouteByIdQuery,
@@ -865,6 +866,19 @@ class TripApplicationService:
         async with uow:
             trip = await self._get_trip_or_raise(uow, query.trip_id)
             return trip_to_dto(trip)
+
+    async def get_active_trip_for_vehicle(
+        self, query: GetActiveTripForVehicleQuery, *, uow: TransportOpsUnitOfWork
+    ) -> TripDTO | None:
+        """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A4 — no
+        approved HTTP route (nothing in API Contracts documents this as its own endpoint), the
+        same "use-case exists, no approved endpoint yet" posture `interrupt_trip`/`resume_trip`
+        already establish. Read-only pass-through to the same `TripRepository.
+        active_trip_for_vehicle` the one-active-trip-per-vehicle guard already uses (module
+        docstring) — reusing an existing repository capability, not adding a new one."""
+        async with uow:
+            trip = await uow.trips.active_trip_for_vehicle(VehicleId(query.vehicle_id))
+            return trip_to_dto(trip) if trip is not None else None
 
     async def list_trips(
         self, query: ListTripsQuery, *, uow: TransportOpsUnitOfWork

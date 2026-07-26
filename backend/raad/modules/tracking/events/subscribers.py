@@ -59,6 +59,32 @@ event (at-least-once delivery, Backend LLD §10.3) produces a harmless duplicate
 a domain-rule violation or a crash. No de-duplication key exists for this event type in the
 current schema; accepted as-is, matching `vehicle_positions`' own append-only, high-frequency,
 retention-pruned design (`.claude/rules/database.md` #6) — a duplicate row ages out with the rest.
+
+**Active-trip resolution (`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A
+item A4).** Every device-plane vendor adapter today publishes `DevicePositionReported` with
+`trip_id=None` — confirmed for LSZ (`services/device-gateway/src/vendors/lsz/handlers/
+position_handler.py`'s own docstring: "no active-trip Redis read-model exists in this
+deployable... the Business API's consumer resolves/repairs it", `device_position_reported.py`).
+**This processor is that consumer.** For a live (non-backfill) position, `trip_id` is resolved
+fresh, on every event, via `transport_ops`'s own `TripApplicationService.
+get_active_trip_for_vehicle` — a cross-module *application-service* call (`.claude/rules/
+backend.md` #3: never a direct repository/DB read into another module's tables) — and that
+resolved value is used **unconditionally**, not merely as a fallback when the payload's own
+`trip_id` is absent: the device plane has no visibility into `transport_ops`'s trip state at all
+(by architecture, `.claude/rules/architecture.md` #2/#3), so a backend-resolved value is always
+more authoritative than anything a vendor adapter could have attached. This closes a real,
+previously-silent gap the audit itself did not spell out to its actual consequence: without it,
+`GET /tracking/trips/{id}/positions` returns an empty page for every trip a real device ever
+drives, forever, since no real position was ever persisted with a non-null `trip_id`.
+
+**Backfilled positions are deliberately exempted from this resolution** — `payload.get("trip_id")`
+is used as-is (today, always `None`, since no vendor adapter publishes backfill events yet).
+Resolving "the vehicle's *currently* active trip" for a late-arriving, past-dated position would
+misattribute it: the currently active trip (if any) is very likely not the trip that was active
+at the buffered position's own `event_time`. No historical trip-lookup capability exists to do
+this correctly for backfill, so it is left unresolved rather than resolved wrong — the same
+"backfilled points are excluded" carve-out Phase 2 §22.2 already establishes for geofence
+evaluation, applied here to trip attribution instead.
 """
 
 from __future__ import annotations
@@ -74,6 +100,9 @@ from raad.modules.tracking.application.commands import (
 )
 from raad.modules.tracking.application.ports import TrackingUnitOfWork
 from raad.modules.tracking.application.services import TrackingApplicationService
+from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
+from raad.modules.transport_ops.application.queries import GetActiveTripForVehicleQuery
+from raad.modules.transport_ops.application.services import TripApplicationService
 
 
 class DevicePositionReportedProcessor(EventProcessor):
@@ -107,6 +136,7 @@ class DevicePositionReportedProcessor(EventProcessor):
                 uow=uow,
             )
         else:
+            trip_id = await self._resolve_active_trip_id(payload["vehicle_id"])
             await service.record_vehicle_position(
                 RecordVehiclePositionCommand(
                     organization_id=organization_id,
@@ -115,13 +145,21 @@ class DevicePositionReportedProcessor(EventProcessor):
                     latitude=payload["latitude"],
                     longitude=payload["longitude"],
                     event_time=event_time,
-                    trip_id=payload.get("trip_id"),
+                    trip_id=trip_id,
                     speed_kph=payload.get("speed_kph"),
                     heading_deg=payload.get("heading_deg"),
                     alarm_flags=payload.get("alarm_flags"),
                 ),
                 uow=uow,
             )
+
+    async def _resolve_active_trip_id(self, vehicle_id: str) -> str | None:
+        trip_service = self._container.resolve(TripApplicationService)
+        transport_ops_uow = self._container.resolve(TransportOpsUnitOfWork)
+        trip = await trip_service.get_active_trip_for_vehicle(
+            GetActiveTripForVehicleQuery(vehicle_id=vehicle_id), uow=transport_ops_uow
+        )
+        return trip.id if trip is not None else None
 
 
 def _parse_iso(value: str) -> datetime:

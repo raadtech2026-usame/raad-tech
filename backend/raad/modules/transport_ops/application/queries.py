@@ -420,6 +420,17 @@ class GetTripByIdQuery:
 
 
 @dataclass(frozen=True)
+class GetActiveTripForVehicleQuery:
+    """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A4 — the
+    application-layer entry point `tracking.events.subscribers.DevicePositionReportedProcessor`
+    calls to resolve a live position's `trip_id`, going through this module's own application
+    service rather than reaching `TripRepository.active_trip_for_vehicle` directly
+    (`.claude/rules/backend.md` #3: no cross-module DB reads)."""
+
+    vehicle_id: str
+
+
+@dataclass(frozen=True)
 class ListTripsQuery:
     page_request: OffsetPageRequest
     sort: list[SortSpec] = field(default_factory=list)
