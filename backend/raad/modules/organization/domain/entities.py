@@ -26,6 +26,23 @@ field, and requiring an Org Admin to know exact coordinates at registration woul
 regression on an already-approved flow. **No approved HTTP route exists yet** for `set_geofence`
 — reachable at the application layer only, the same posture
 `ScopeAssignmentApplicationService`'s grant/revoke methods already establish.
+
+**`approaching_distance_m` (ADR-0014 amendment).** Replaces the temporary
+`_APPROACH_RADIUS_MULTIPLIER` stand-in `tracking/events/subscribers.py` previously used
+(`stop.geofence_radius_m * 3`) with a real, organization-level configurable value: how far (in
+meters) from a stop's own center `APPROACHING_STOP` fires, independent of that stop's arrival
+radius. Unlike the geofence trio above, this is **never `None`** — every organization has some
+approaching distance, defaulting to `_DEFAULT_APPROACHING_DISTANCE_M` (300m, the user's own
+chosen default) at `register()` time, changed only via `set_approaching_distance_m`. Deliberately
+its own setter/event rather than folded into `set_geofence` — this value governs *stop*-approach
+evaluation (route-scoped), completely orthogonal to the organization's own arrival geofence
+(location-scoped); the two happen to share a table for the same reason `org_settings` was never
+built as a separate one (Database Design §4.7, deferred). **Designed for a future per-stop
+override**: this is the org-level *default* a stop's own evaluation falls back to — a later
+phase could add a nullable `stops.approaching_distance_m` that takes precedence when set, with no
+change needed to this method's own shape, only to the resolution point in
+`tracking/events/subscribers.py`. **No approved HTTP route exists yet** — same posture as
+`set_geofence`.
 """
 
 from __future__ import annotations
@@ -49,6 +66,18 @@ _MIN_LATITUDE = -90.0
 _MAX_LATITUDE = 90.0
 _MIN_LONGITUDE = -180.0
 _MAX_LONGITUDE = 180.0
+
+# ADR-0014 amendment: the org-level default for "approaching stop" evaluation, replacing the
+# previously-hardcoded _APPROACH_RADIUS_MULTIPLIER (tracking/events/subscribers.py) - the user's
+# own chosen default, not invented here.
+_DEFAULT_APPROACHING_DISTANCE_M = 300
+
+
+def _validate_approaching_distance(value: int) -> None:
+    if value <= 0:
+        raise DomainError(
+            f"Organization approaching_distance_m must be positive: {value}"
+        )
 
 
 def _validate_geofence(
@@ -124,6 +153,7 @@ class Organization(_AggregateRoot):
         latitude: float | None = None,
         longitude: float | None = None,
         geofence_radius_m: int | None = None,
+        approaching_distance_m: int = _DEFAULT_APPROACHING_DISTANCE_M,
     ) -> None:
         super().__init__()
         if not name:
@@ -131,6 +161,7 @@ class Organization(_AggregateRoot):
         _validate_geofence(
             latitude=latitude, longitude=longitude, radius_m=geofence_radius_m
         )
+        _validate_approaching_distance(approaching_distance_m)
         self.id = id
         self.name = name
         self.org_type = org_type
@@ -143,6 +174,7 @@ class Organization(_AggregateRoot):
         self.latitude = latitude
         self.longitude = longitude
         self.geofence_radius_m = geofence_radius_m
+        self.approaching_distance_m = approaching_distance_m
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Organization) and self.id == other.id
@@ -254,6 +286,27 @@ class Organization(_AggregateRoot):
                 latitude=latitude,
                 longitude=longitude,
                 radius_m=radius_m,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def set_approaching_distance_m(
+        self,
+        *,
+        approaching_distance_m: int,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Configures this organization's stop-approaching distance (ADR-0014 amendment) —
+        see module docstring for why this is a distinct setter/event from `set_geofence`."""
+        _validate_approaching_distance(approaching_distance_m)
+        self.approaching_distance_m = approaching_distance_m
+        self.updated_at = clock.now()
+        self._record(
+            org_events.organization_approaching_distance_updated(
+                organization_id=str(self.id),
+                approaching_distance_m=approaching_distance_m,
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )

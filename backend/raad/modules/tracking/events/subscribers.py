@@ -96,14 +96,22 @@ never runs for a backfilled position (Phase 2 §22.2: "backfilled points are exc
 false historical triggers") or when no active trip was resolved (the evaluator is explicitly
 trip-scoped).
 
-Two real config gaps were found while scoping this (see ADR-0014 for the full record, both
-resolved by direct user decision rather than invented): neither `stops` nor any other approved
-table gives "approaching" its own radius/ETA threshold distinct from the stop's single
-`geofence_radius_m` (used here for "approaching" via `_APPROACH_RADIUS_MULTIPLIER`, a flagged
-stand-in, not a new config column), and `organizations` originally had no geographic location at
-all (closed by adding `latitude`/`longitude`/`geofence_radius_m` columns, ADR-0014). An
-organization or stop with no radius configured gets no evaluation performed against it, ever —
-never a hardcoded fallback distance.
+Two real config gaps were found while scoping this (see ADR-0014 for the full record). The
+"approaching" radius gap is now closed for real (ADR-0014 amendment): `organizations.
+approaching_distance_m` (an organization-level, non-nullable, user-configurable meters value,
+default 300m) is used directly as the absolute "approaching" radius for every stop on that
+organization's routes — replacing the originally-temporary `_APPROACH_RADIUS_MULTIPLIER` stand-in
+(`stop.geofence_radius_m * 3`) this module previously used. The approach radius is therefore now
+fully decoupled from a stop's own arrival radius (`stop.geofence_radius_m`), which continues to
+govern `ENTERED_STOP`/`EXITED` only. Designed for a future per-stop override: a later phase could
+add a nullable `stops.approaching_distance_m` that takes precedence over the organization default
+when set, with the resolution point isolated to `_evaluate_stop_geofence` below. `organizations`
+originally had no geographic location at all either (closed by adding `latitude`/`longitude`/
+`geofence_radius_m` columns, ADR-0014, unrelated to `approaching_distance_m` — that trio governs
+the organization's own "arrived at organization" evaluation, not stop-approach). A stop with no
+`geofence_radius_m` configured gets no evaluation performed against it at all, ever — never a
+hardcoded fallback distance; an organization's own arrival geofence follows the identical rule for
+its own three (still-nullable) fields.
 
 **Hysteresis + sequence + cooldown state lives in Redis** (`GeofenceStatePort`,
 `application/ports.py`), one `GeofenceHysteresisState` per trip: which single stop is currently
@@ -175,12 +183,6 @@ from raad.modules.transport_ops.application.services import (
 )
 
 _logger = logging.getLogger(__name__)
-
-# ADR-0014: no approved document specifies an "approaching" radius/ETA threshold distinct from
-# a stop's own arrival radius (`geofence_radius_m`) - a flagged multiplier stands in, per the
-# user's own explicit instruction to choose and document a concrete rule rather than add a new
-# config column for it.
-_APPROACH_RADIUS_MULTIPLIER = 3
 
 # ADR-0014: Phase 2 §22.3 asks for a "cooldown... duplicate suppression window per (trip, stop,
 # event-type)" but specifies no duration - a flagged fixed window.
@@ -301,7 +303,7 @@ class DevicePositionReportedProcessor(EventProcessor):
         )
 
         crossings = _evaluate_stop_geofence(
-            state=state, route=route, position=position, now=now
+            state=state, route=route, organization=organization, position=position, now=now
         )
         crossings.extend(
             _evaluate_org_geofence(
@@ -371,6 +373,7 @@ def _evaluate_stop_geofence(
     *,
     state: GeofenceHysteresisState,
     route: RouteDTO,
+    organization: OrganizationDTO,
     position: GeoPoint,
     now: datetime,
 ) -> list[tuple[GeofenceEventType, str | None]]:
@@ -403,7 +406,10 @@ def _evaluate_stop_geofence(
         return crossings
 
     center = GeoPoint(latitude=target.latitude, longitude=target.longitude)
-    approach_radius_m = target.geofence_radius_m * _APPROACH_RADIUS_MULTIPLIER
+    # ADR-0014 amendment: an absolute, organization-configurable distance - no longer derived
+    # from the stop's own arrival radius. See module docstring for the future per-stop-override
+    # design this is left open for.
+    approach_radius_m = organization.approaching_distance_m
 
     is_inside_approach = GeofenceEvaluationService.is_within_radius(
         position=position, center=center, radius_m=approach_radius_m

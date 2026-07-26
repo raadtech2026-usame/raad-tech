@@ -98,3 +98,71 @@ simplification, not the only possible interpretation.
 - `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §22 (Geofence Event Architecture)
 - `docs/business/RAAD_Phase3.2_Database_Design_v1.md` §4.2 (`organizations`), §4.7 (`org_settings`)
 - Migration `backend/migrations/versions/20260726_1700_a53375e74c3a_organization_add_geofence_columns.py`
+
+## Amendment (2026-07-26): Organization-level configurable approaching distance
+
+**Status:** Accepted (direct user decision), superseding this ADR's original Decision §1 only.
+Decision §2 (organization geofence columns) and §3 (cooldown window) are unchanged.
+
+### Context
+Decision §1 above flagged the `3x` approach-radius multiplier as "easily reconfigurable... not
+load-bearing architecture" and explicitly anticipated exactly this follow-up: "revisiting either
+later (e.g., if Phase 2 §22.1's 'configurable per organization/route' is ever formally implemented
+via a real config column) requires no change to the evaluation algorithm's shape, only where the
+numbers come from." The user has now made that call directly: Phase 2 §22.1's "configurable per
+organization/route" language is implemented at the **organization** level this phase (not
+per-route/per-stop yet — see below), with a default of 300m.
+
+### Decision
+`organizations` gains a fourth geofence-related column, `approaching_distance_m` — migration
+`b6f2a19d3e7c`. Unlike `latitude`/`longitude`/`geofence_radius_m` (Decision §2, still nullable —
+an organization opts in to its own "arrived at organization" evaluation), `approaching_distance_m`
+is **`NOT NULL`, defaulting to 300m** (`Organization._DEFAULT_APPROACHING_DISTANCE_M`, set at
+`register()` time and backfilled onto existing rows via the migration's server default): every
+organization has *some* approaching distance, since it governs "approaching stop" evaluation for
+every stop on every one of that organization's routes, not an opt-in location fact the way the
+organization's own arrival geofence is.
+
+`tracking/events/subscribers.py`'s `_evaluate_stop_geofence` now reads
+`organization.approaching_distance_m` directly as the absolute "approaching" radius, in place of
+`stop.geofence_radius_m * _APPROACH_RADIUS_MULTIPLIER` — the approach radius is therefore fully
+decoupled from any specific stop's own arrival radius. Configuring it is
+`Organization.set_approaching_distance_m` (its own setter/event,
+`OrganizationApproachingDistanceUpdated` — deliberately not folded into `set_geofence`, since it
+governs a route-scoped concern orthogonal to the organization's location-scoped arrival geofence),
+reachable via `OrganizationApplicationService.update_organization_approaching_distance` —
+application layer only, **no approved HTTP route this phase**, the same posture `set_geofence`
+already established.
+
+**Designed for a future per-stop override, not built this phase**: the organization-level value
+is a *default* a stop's own evaluation falls back to. A later phase could add a nullable
+`stops.approaching_distance_m` that takes precedence over the organization default when set —
+`_evaluate_stop_geofence`'s own resolution point (`approach_radius_m = organization.
+approaching_distance_m`) is the one place such a change would land; nothing else in the evaluation
+algorithm's shape would need to change, exactly as this ADR's original Consequences section
+anticipated.
+
+### Consequences
+- `organizations` gains one new `NOT NULL` column (server-default-backfilled to 300 on existing
+  rows) and one new domain event (`OrganizationApproachingDistanceUpdated`).
+- The approach radius for a given stop is no longer proportional to that stop's own arrival
+  radius — a stop with a small arrival radius (e.g. 20m, a tight driveway) and a stop with a large
+  one (e.g. 150m, an open lot) now trigger `APPROACHING_STOP` at the *same* distance (the
+  organization's configured default) rather than at 3x/60x their own respective radii. No document
+  specifies whether approach distance should scale with a stop's own radius; decoupling them was
+  the user's own explicit instruction, not an invented interpretation.
+- No UI/HTTP route exists yet to set this value — reachable only via direct application-layer/
+  test code, the same tracked, deliberate gap `set_geofence` already carries.
+
+### Verification
+- `tests/unit/test_organization_domain.py` — `set_approaching_distance_m` invariants (positive-
+  value validation, default value, event emission).
+- `tests/unit/test_organization_application.py` — `update_organization_approaching_distance`
+  service orchestration.
+- `tests/unit/test_tracking_subscribers.py::GeofenceEvaluationTests` — proves the approach radius
+  now comes from the organization's own configured value, independent of the stop's arrival
+  radius.
+- `alembic upgrade head` / `downgrade -1` / `upgrade head` round-tripped clean.
+
+### References (amendment)
+- Migration `backend/migrations/versions/20260726_1800_b6f2a19d3e7c_organization_add_approaching_distance.py`

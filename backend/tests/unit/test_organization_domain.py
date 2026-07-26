@@ -253,6 +253,60 @@ class OrganizationGeofenceTests(unittest.TestCase):
         self.assertEqual(org.pull_domain_events(), [])
 
 
+class OrganizationApproachingDistanceTests(unittest.TestCase):
+    """ADR-0014 amendment: `approaching_distance_m` replaces the previously-hardcoded
+    `_APPROACH_RADIUS_MULTIPLIER` stand-in with a real, organization-configurable value."""
+
+    def make_org(self, **overrides) -> Organization:
+        kwargs = dict(
+            id=OrganizationId(VALID_ORG_ULID),
+            name="Sunrise School",
+            org_type=OrgType.SCHOOL,
+            parent_org_id=None,
+            region_id=RegionId(VALID_REGION_ULID),
+            billing_model=BillingModel.ORGANIZATION_PAYS,
+            status=OrganizationStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        kwargs.update(overrides)
+        return Organization(**kwargs)
+
+    def test_defaults_to_300_meters(self) -> None:
+        org = self.make_org()
+        self.assertEqual(org.approaching_distance_m, 300)
+
+    def test_constructing_with_a_non_positive_value_raises(self) -> None:
+        with self.assertRaises(DomainError):
+            self.make_org(approaching_distance_m=0)
+
+    def test_constructing_with_a_custom_value_succeeds(self) -> None:
+        org = self.make_org(approaching_distance_m=500)
+        self.assertEqual(org.approaching_distance_m, 500)
+
+    def test_set_approaching_distance_m_updates_value_and_records_event(self) -> None:
+        org = self.make_org()
+        org.set_approaching_distance_m(
+            approaching_distance_m=250,
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(org.approaching_distance_m, 250)
+        self.assertEqual(org.updated_at, datetime(2026, 1, 2, tzinfo=timezone.utc))
+        events = org.pull_domain_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "OrganizationApproachingDistanceUpdated")
+        self.assertEqual(events[0].payload["approaching_distance_m"], 250)
+
+    def test_set_approaching_distance_m_rejects_a_non_positive_value(self) -> None:
+        org = self.make_org()
+        with self.assertRaises(DomainError):
+            org.set_approaching_distance_m(
+                approaching_distance_m=-10,
+                clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+            )
+        self.assertEqual(org.pull_domain_events(), [])
+
+
 class RegionInvariantTests(unittest.TestCase):
     def test_rejects_empty_name(self) -> None:
         with self.assertRaises(DomainError):

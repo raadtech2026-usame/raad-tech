@@ -57,6 +57,16 @@ class UpdateOrganizationGeofenceCommand:
 
 
 @dataclass(frozen=True)
+class UpdateOrganizationApproachingDistanceCommand:
+    """ADR-0014 amendment. No approved HTTP route exists yet — same posture as
+    `UpdateOrganizationGeofenceCommand` above."""
+
+    organization_id: str
+    approaching_distance_m: int
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class CreateRegionCommand:
     name: str
     geographic_scope: str | None

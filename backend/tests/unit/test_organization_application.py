@@ -28,6 +28,7 @@ from raad.modules.organization.application.commands import (
     ReactivateOrganizationCommand,
     RegisterOrganizationCommand,
     SuspendOrganizationCommand,
+    UpdateOrganizationApproachingDistanceCommand,
     UpdateOrganizationGeofenceCommand,
 )
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
@@ -520,6 +521,80 @@ class UpdateOrganizationGeofenceApplicationTests(unittest.IsolatedAsyncioTestCas
                     latitude=1.0,
                     longitude=1.0,
                     radius_m=0,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+
+class UpdateOrganizationApproachingDistanceApplicationTests(
+    unittest.IsolatedAsyncioTestCase
+):
+    """ADR-0014 amendment: `OrganizationApplicationService.
+    update_organization_approaching_distance` — reachable at the application layer only, no
+    approved HTTP route yet. A newly-registered organization defaults to 300m."""
+
+    async def _registered_org_id(self, org_service, region_service, uow) -> str:
+        region_id = await _seed_region(region_service, uow)
+        dto = await org_service.register_organization(
+            RegisterOrganizationCommand(
+                name="Sunrise School",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                parent_org_id=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        uow.recorded_events.clear()
+        return dto.id
+
+    async def test_newly_registered_organization_defaults_to_300_meters(self) -> None:
+        org_service, region_service, uow = make_services()
+        org_id = await self._registered_org_id(org_service, region_service, uow)
+        dto = await org_service.get_organization_by_id(
+            GetOrganizationByIdQuery(organization_id=org_id), uow=uow
+        )
+        self.assertEqual(dto.approaching_distance_m, 300)
+
+    async def test_update_sets_the_new_value(self) -> None:
+        org_service, region_service, uow = make_services()
+        org_id = await self._registered_org_id(org_service, region_service, uow)
+
+        dto = await org_service.update_organization_approaching_distance(
+            UpdateOrganizationApproachingDistanceCommand(
+                organization_id=org_id,
+                approaching_distance_m=250,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(dto.approaching_distance_m, 250)
+        self.assertEqual(
+            uow.recorded_events[0].event_type, "OrganizationApproachingDistanceUpdated"
+        )
+
+    async def test_update_on_missing_organization_raises_not_found(self) -> None:
+        org_service, _region_service, uow = make_services()
+        with self.assertRaises(NotFoundError):
+            await org_service.update_organization_approaching_distance(
+                UpdateOrganizationApproachingDistanceCommand(
+                    organization_id=NON_EXISTENT_ULID,
+                    approaching_distance_m=250,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+    async def test_update_rejects_a_non_positive_value(self) -> None:
+        org_service, region_service, uow = make_services()
+        org_id = await self._registered_org_id(org_service, region_service, uow)
+        with self.assertRaises(DomainError):
+            await org_service.update_organization_approaching_distance(
+                UpdateOrganizationApproachingDistanceCommand(
+                    organization_id=org_id,
+                    approaching_distance_m=0,
                     actor=make_actor(),
                 ),
                 uow=uow,

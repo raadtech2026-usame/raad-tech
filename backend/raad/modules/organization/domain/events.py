@@ -132,6 +132,30 @@ def organization_geofence_updated(
     )
 
 
+def organization_approaching_distance_updated(
+    *,
+    organization_id: str,
+    approaching_distance_m: int,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """ADR-0014 amendment — replaces the previously-hardcoded `_APPROACH_RADIUS_MULTIPLIER`
+    stand-in with a real, organization-configurable value. Distinct from
+    `organization_geofence_updated`: this governs stop-approach evaluation, not the
+    organization's own arrival geofence."""
+    return _new_event(
+        event_type="OrganizationApproachingDistanceUpdated",
+        aggregate_type="Organization",
+        aggregate_id=organization_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "approaching_distance_m": approaching_distance_m,
+            "actor_id": actor_id,
+        },
+    )
+
+
 def region_created(
     *,
     region_id: str,

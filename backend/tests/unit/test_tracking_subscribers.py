@@ -307,8 +307,10 @@ class DevicePositionReportedProcessorTests(unittest.IsolatedAsyncioTestCase):
 TRIP_ID_1 = "01J8Z3K9G6X8YV5T4N2R7QW3TR"
 
 # 1 degree of latitude at the equator is ~111,320m; ~0.0018 degrees is ~200m - deliberately
-# between a 100m arrival radius and its 3x=300m approach radius, so a position placed there is
-# inside the approach radius but outside the arrival radius.
+# between a 100m stop arrival radius and the organization's default 300m approach radius
+# (ADR-0014 amendment: `organization.approaching_distance_m`, no longer derived from the stop's
+# own radius), so a position placed there is inside the approach radius but outside the arrival
+# radius.
 _APPROACH_ONLY_LATITUDE_OFFSET = 0.0018
 _FAR_AWAY_LATITUDE_OFFSET = 1.0  # ~111km - clearly outside any radius used in these tests
 
@@ -385,6 +387,7 @@ def _make_organization(
     latitude: float | None = None,
     longitude: float | None = None,
     geofence_radius_m: int | None = None,
+    approaching_distance_m: int = 300,
 ) -> OrganizationDTO:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     return OrganizationDTO(
@@ -400,6 +403,7 @@ def _make_organization(
         latitude=latitude,
         longitude=longitude,
         geofence_radius_m=geofence_radius_m,
+        approaching_distance_m=approaching_distance_m,
     )
 
 
@@ -475,6 +479,30 @@ class GeofenceEvaluationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [c.event_type for c in tracking_service.recorded_crossings],
             [GeofenceEventType.APPROACHING_STOP, GeofenceEventType.ENTERED_STOP],
+        )
+
+    async def test_approach_radius_is_the_organization_default_not_a_multiple_of_stop_radius(
+        self,
+    ) -> None:
+        """ADR-0014 amendment: a stop with a small arrival radius (20m) still triggers
+        APPROACHING_STOP at the organization's configured 300m default, not 20*3=60m - proving
+        the approach radius no longer derives from the stop's own radius at all."""
+        stop = _make_stop(id="stop-1", sequence_no=1, geofence_radius_m=20)
+        route = _make_route([stop])
+        organization = _make_organization(approaching_distance_m=300)
+        clock = _MutableClock(datetime(2026, 7, 26, 9, 0, 0, tzinfo=timezone.utc))
+        processor, tracking_service, _state_port = self._make_processor(
+            route=route, organization=organization, clock=clock
+        )
+
+        # ~200m offset: well outside a 20*3=60m multiplier-derived radius (the old behavior),
+        # but inside the organization's actual 300m configured approach distance.
+        await processor.process(
+            _make_position_event(latitude=_APPROACH_ONLY_LATITUDE_OFFSET)
+        )
+        self.assertEqual(
+            [c.event_type for c in tracking_service.recorded_crossings],
+            [GeofenceEventType.APPROACHING_STOP],
         )
 
     async def test_exiting_a_stop_fires_exited_and_advances_to_the_next_stop(self) -> None:

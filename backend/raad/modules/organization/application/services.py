@@ -29,6 +29,7 @@ from raad.modules.organization.application.commands import (
     RevokeRegionAssignmentCommand,
     RevokeSupportAssignmentCommand,
     SuspendOrganizationCommand,
+    UpdateOrganizationApproachingDistanceCommand,
     UpdateOrganizationGeofenceCommand,
 )
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
@@ -137,6 +138,27 @@ class OrganizationApplicationService:
                 latitude=command.latitude,
                 longitude=command.longitude,
                 radius_m=command.radius_m,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(organization.pull_domain_events())
+            await uow.commit()
+            return organization_to_dto(organization)
+
+    async def update_organization_approaching_distance(
+        self,
+        command: UpdateOrganizationApproachingDistanceCommand,
+        *,
+        uow: OrganizationUnitOfWork,
+    ) -> OrganizationDTO:
+        """ADR-0014 amendment. No approved HTTP route yet — see
+        `UpdateOrganizationApproachingDistanceCommand`'s own docstring."""
+        async with uow:
+            organization = await self._get_organization_or_raise(
+                uow, command.organization_id
+            )
+            organization.set_approaching_distance_m(
+                approaching_distance_m=command.approaching_distance_m,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )

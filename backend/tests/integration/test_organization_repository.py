@@ -215,6 +215,44 @@ class RegionAndOrganizationRepositoryRoundTripTests(unittest.IsolatedAsyncioTest
         self.assertIsInstance(refetched.latitude, float)
         self.assertIsInstance(refetched.geofence_radius_m, int)
 
+    async def test_approaching_distance_defaults_to_300_and_round_trips_an_update(
+        self,
+    ) -> None:
+        """ADR-0014 amendment: `approaching_distance_m` is `NOT NULL Integer` - a freshly
+        registered organization already has 300 persisted (the domain layer's own default,
+        not a database-level fallback assumption), and `set_approaching_distance_m` round-trips
+        a changed value through the real column."""
+        region_id = await self._create_committed_region()
+        async with self._new_uow() as uow:
+            organization = Organization.register(
+                id=OrganizationId(self.id_generator.new_id()),
+                name=f"Approach Distance Org {self.tag}",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                clock=self.clock,
+            )
+            uow.organizations.add(organization)
+            uow.record_events(organization.pull_domain_events())
+            await uow.commit()
+            org_id = organization.id
+            self._created_org_ids.append(str(org_id))
+
+        async with self._new_uow() as uow:
+            refetched = await uow.organizations.get(org_id)
+        self.assertEqual(refetched.approaching_distance_m, 300)
+        self.assertIsInstance(refetched.approaching_distance_m, int)
+
+        async with self._new_uow() as uow:
+            loaded = await uow.organizations.get(org_id)
+            loaded.set_approaching_distance_m(approaching_distance_m=250, clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            refetched = await uow.organizations.get(org_id)
+        self.assertEqual(refetched.approaching_distance_m, 250)
+
     async def test_organization_list_all_includes_newly_added_organization(self) -> None:
         region_id = await self._create_committed_region()
         async with self._new_uow() as uow:

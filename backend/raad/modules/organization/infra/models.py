@@ -84,6 +84,11 @@ class OrganizationModel(AuditedTableMixin, Base):
         DECIMAL(9, 6, asdecimal=False), nullable=True
     )
     geofence_radius_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ADR-0014 amendment: org-level default for "approaching stop" evaluation, replacing the
+    # previously-hardcoded _APPROACH_RADIUS_MULTIPLIER (tracking/events/subscribers.py). Not
+    # nullable - every organization has some approaching distance (defaults to 300m at the
+    # domain layer, `Organization._DEFAULT_APPROACHING_DISTANCE_M`).
+    approaching_distance_m: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class RegionAssignmentModel(Base):

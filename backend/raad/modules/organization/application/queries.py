@@ -57,6 +57,7 @@ class OrganizationDTO:
     latitude: float | None
     longitude: float | None
     geofence_radius_m: int | None
+    approaching_distance_m: int
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,7 @@ def organization_to_dto(organization: Organization) -> OrganizationDTO:
         latitude=organization.latitude,
         longitude=organization.longitude,
         geofence_radius_m=organization.geofence_radius_m,
+        approaching_distance_m=organization.approaching_distance_m,
     )
 
 

@@ -55,6 +55,7 @@ def organization_to_model(
     model.latitude = organization.latitude
     model.longitude = organization.longitude
     model.geofence_radius_m = organization.geofence_radius_m
+    model.approaching_distance_m = organization.approaching_distance_m
     return model
 
 
@@ -74,6 +75,7 @@ def model_to_organization(model: OrganizationModel) -> Organization:
         latitude=model.latitude,
         longitude=model.longitude,
         geofence_radius_m=model.geofence_radius_m,
+        approaching_distance_m=model.approaching_distance_m,
     )
 
 
