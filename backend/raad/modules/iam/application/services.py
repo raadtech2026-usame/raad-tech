@@ -16,8 +16,15 @@ ports (`Clock`, `IdGenerator`, `TokenService`, `PasswordHasher`, `PasswordPolicy
 from __future__ import annotations
 
 import hashlib
+import secrets
+import string
 
-from raad.core.errors.exceptions import AuthenticationError, NotFoundError
+from raad.core.errors.exceptions import (
+    AuthenticationError,
+    AuthorizationError,
+    NotFoundError,
+    ValidationError,
+)
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
 from raad.core.security.claims import TokenType
@@ -29,6 +36,7 @@ from raad.core.time.clock import Clock
 from raad.modules.iam.application.commands import (
     ActivateUserCommand,
     ChangePasswordCommand,
+    CreateUserWithTemporaryPasswordCommand,
     DisableMfaCommand,
     DisableUserCommand,
     EnableMfaCommand,
@@ -70,6 +78,60 @@ def _hash_refresh_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
+_ORG_ADMIN_CREATABLE_ROLES = frozenset({Role.ORG_ADMIN, Role.DRIVER, Role.PARENT})
+_TEMPORARY_PASSWORD_ALPHABET = string.ascii_letters + string.digits + "!@#$%^&*-_"
+_TEMPORARY_PASSWORD_LENGTH = 16
+_TEMPORARY_PASSWORD_MAX_ATTEMPTS = 20
+
+
+def _enforce_creation_scope(
+    *, actor: "object", role: Role, organization_id: str | None
+) -> None:
+    """ADR-0017/ADR-0003 Extension: the only new authorization restriction this realignment
+    introduces on user creation. Applies **only** to an `org_admin` actor — every other actor
+    role (`founder`/`regional_manager`/`support_staff`/`finance_staff`) keeps its existing,
+    unrestricted invite latitude exactly as before (no approved document restricts it, and this
+    codebase does not invent restrictions no document asks for). An `org_admin` may create only
+    `org_admin`/`driver`/`parent` — never a platform-staff role — and only within their own
+    `organization_id`, mirroring `.claude/rules/security.md` #2's defense-in-depth: this check
+    is independent of, and in addition to, the `iam.users.create` RBAC grant itself."""
+    from raad.core.tenancy.principal import Principal  # local import avoids a cycle risk
+
+    assert isinstance(actor, Principal)
+    if actor.role is not Role.ORG_ADMIN:
+        return
+    if role not in _ORG_ADMIN_CREATABLE_ROLES:
+        raise AuthorizationError(
+            f"org_admin may not create a user with role={role.value}."
+        )
+    if organization_id != actor.org_id:
+        raise AuthorizationError(
+            "org_admin may only create users within their own organization."
+        )
+
+
+def _generate_temporary_password(policy: PasswordPolicy) -> str:
+    """Reuses `PasswordPolicy.validate` itself as the single source of truth for what counts as
+    valid, rather than duplicating its rules here — a random high-entropy candidate is generated
+    and checked against the caller's actual configured policy, retried a bounded number of times
+    (astronomically unlikely to ever need more than one or two attempts at this length/alphabet
+    against any policy this codebase's `PasswordPolicySettings` can express)."""
+    for _ in range(_TEMPORARY_PASSWORD_MAX_ATTEMPTS):
+        candidate = "".join(
+            secrets.choice(_TEMPORARY_PASSWORD_ALPHABET)
+            for _ in range(_TEMPORARY_PASSWORD_LENGTH)
+        )
+        try:
+            policy.validate(candidate)
+        except ValidationError:
+            continue
+        return candidate
+    raise RuntimeError(
+        "Unable to generate a policy-compliant temporary password after "
+        f"{_TEMPORARY_PASSWORD_MAX_ATTEMPTS} attempts."
+    )
+
+
 class UserApplicationService:
     """User lifecycle use-cases: invite, activate, disable, change password, enable/disable
     MFA, and the `GetUserByIdQuery` read path."""
@@ -90,6 +152,11 @@ class UserApplicationService:
     async def invite_user(
         self, command: InviteUserCommand, *, uow: IamUnitOfWork
     ) -> UserDTO:
+        _enforce_creation_scope(
+            actor=command.actor,
+            role=command.role,
+            organization_id=command.organization_id,
+        )
         async with uow:
             email = Email(command.email) if command.email else None
             phone = PhoneNumber(command.phone) if command.phone else None
@@ -116,6 +183,56 @@ class UserApplicationService:
             uow.record_events(user.pull_domain_events())
             await uow.commit()
             return user_to_dto(user)
+
+    async def create_user_with_temporary_password(
+        self,
+        command: CreateUserWithTemporaryPasswordCommand,
+        *,
+        uow: IamUnitOfWork,
+    ) -> tuple[UserDTO, str]:
+        """ADR-0017/ADR-0003 Extension: creates a `User` that's immediately usable — `invite`
+        (status=`invited`, no password) then, in the same transaction, sets a generated
+        temporary password and activates it. Returns the plaintext temporary password
+        alongside the DTO — the **only** place it is ever available; it is never persisted or
+        retrievable again after this call returns."""
+        _enforce_creation_scope(
+            actor=command.actor,
+            role=command.role,
+            organization_id=command.organization_id,
+        )
+        async with uow:
+            email = Email(command.email) if command.email else None
+            phone = PhoneNumber(command.phone) if command.phone else None
+            if email is not None:
+                await ensure_email_available(uow, email)
+            if phone is not None:
+                await ensure_phone_available(uow, phone)
+
+            user = User.invite(
+                id=UserId(self._id_generator.new_id()),
+                organization_id=(
+                    OrganizationId(command.organization_id)
+                    if command.organization_id
+                    else None
+                ),
+                role=command.role,
+                email=email,
+                phone=phone,
+                full_name=command.full_name,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            temporary_password = _generate_temporary_password(self._password_policy)
+            user.set_temporary_password_hash(
+                self._password_hasher.hash(temporary_password),
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            user.activate(clock=self._clock, actor_id=command.actor.user_id)
+            uow.users.add(user)
+            uow.record_events(user.pull_domain_events())
+            await uow.commit()
+            return user_to_dto(user), temporary_password
 
     async def activate_user(
         self, command: ActivateUserCommand, *, uow: IamUnitOfWork

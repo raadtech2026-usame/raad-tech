@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from raad.core.errors.exceptions import (
     AuthenticationError,
+    AuthorizationError,
     ConflictError,
     DomainError,
     NotFoundError,
@@ -38,6 +39,7 @@ from raad.core.time.clock import Clock
 from raad.modules.iam.application.commands import (
     ActivateUserCommand,
     ChangePasswordCommand,
+    CreateUserWithTemporaryPasswordCommand,
     DisableMfaCommand,
     DisableUserCommand,
     EnableMfaCommand,
@@ -840,6 +842,177 @@ class ListUsersPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(page.total, 1)
         self.assertEqual(page.data[0].full_name, "Founder One")
+
+
+def make_org_admin_actor(org_id: str = VALID_ORG_ULID) -> Principal:
+    return Principal(user_id="org-admin-1", role=Role.ORG_ADMIN, org_id=org_id)
+
+
+class CreateUserWithTemporaryPasswordTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0017/ADR-0003 Extension: `UserApplicationService.
+    create_user_with_temporary_password` — the primitive both new cross-context provisioning
+    ports (organization onboarding, Parent/Driver registration) call."""
+
+    async def test_creates_an_active_user_with_forced_password_change(self) -> None:
+        service, uow = make_user_service()
+        dto, temporary_password = await service.create_user_with_temporary_password(
+            CreateUserWithTemporaryPasswordCommand(
+                organization_id=VALID_ORG_ULID,
+                role=Role.PARENT,
+                email="parent@example.com",
+                phone=None,
+                full_name="Fatima Hassan",
+                actor=make_org_admin_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(dto.status, "active")
+        self.assertTrue(dto.is_password_change_required)
+        self.assertTrue(temporary_password)
+        self.assertEqual(uow.commit_count, 1)
+
+    async def test_temporary_password_actually_authenticates(self) -> None:
+        """The generated plaintext password must be the *real* credential — hashed and stored
+        such that logging in with it succeeds, not just a cosmetic return value."""
+        service, uow = make_user_service()
+        dto, temporary_password = await service.create_user_with_temporary_password(
+            CreateUserWithTemporaryPasswordCommand(
+                organization_id=VALID_ORG_ULID,
+                role=Role.DRIVER,
+                email="driver@example.com",
+                phone=None,
+                full_name="Ahmed Yusuf",
+                actor=make_org_admin_actor(),
+            ),
+            uow=uow,
+        )
+        stored = await uow.users.get(UserId(dto.id))
+        self.assertIsNotNone(stored)
+        hasher = Pbkdf2PasswordHasher(iterations=1_000)
+        self.assertTrue(hasher.verify(temporary_password, stored.password_hash))
+
+    async def test_records_three_events_invited_temp_password_set_activated(self) -> None:
+        service, uow = make_user_service()
+        await service.create_user_with_temporary_password(
+            CreateUserWithTemporaryPasswordCommand(
+                organization_id=VALID_ORG_ULID,
+                role=Role.PARENT,
+                email="parent2@example.com",
+                phone=None,
+                full_name="Fatima Hassan",
+                actor=make_org_admin_actor(),
+            ),
+            uow=uow,
+        )
+        event_types = [e.event_type for e in uow.recorded_events]
+        self.assertEqual(
+            event_types, ["UserInvited", "UserTemporaryPasswordSet", "UserActivated"]
+        )
+
+    async def test_org_admin_may_create_parent_driver_or_org_admin(self) -> None:
+        service, uow = make_user_service()
+        for role in (Role.PARENT, Role.DRIVER, Role.ORG_ADMIN):
+            dto, _password = await service.create_user_with_temporary_password(
+                CreateUserWithTemporaryPasswordCommand(
+                    organization_id=VALID_ORG_ULID,
+                    role=role,
+                    email=f"{role.value.lower()}@example.com",
+                    phone=None,
+                    full_name="Someone",
+                    actor=make_org_admin_actor(),
+                ),
+                uow=uow,
+            )
+            self.assertEqual(dto.role, role.value)
+
+    async def test_org_admin_cannot_create_a_platform_staff_role(self) -> None:
+        service, uow = make_user_service()
+        with self.assertRaises(AuthorizationError):
+            await service.create_user_with_temporary_password(
+                CreateUserWithTemporaryPasswordCommand(
+                    organization_id=VALID_ORG_ULID,
+                    role=Role.SUPPORT_STAFF,
+                    email="staff@example.com",
+                    phone=None,
+                    full_name="Someone",
+                    actor=make_org_admin_actor(),
+                ),
+                uow=uow,
+            )
+        self.assertEqual(uow.commit_count, 0)
+
+    async def test_org_admin_cannot_create_a_user_for_another_organization(self) -> None:
+        service, uow = make_user_service()
+        other_org = "01J8Z3K9G6X8YV5T4N2R7QW3AA"
+        with self.assertRaises(AuthorizationError):
+            await service.create_user_with_temporary_password(
+                CreateUserWithTemporaryPasswordCommand(
+                    organization_id=other_org,
+                    role=Role.PARENT,
+                    email="parent3@example.com",
+                    phone=None,
+                    full_name="Someone",
+                    actor=make_org_admin_actor(org_id=VALID_ORG_ULID),
+                ),
+                uow=uow,
+            )
+        self.assertEqual(uow.commit_count, 0)
+
+    async def test_founder_is_unrestricted_by_the_new_org_admin_scope_check(self) -> None:
+        """`_enforce_creation_scope` applies only to an `org_admin` actor — Founder's existing,
+        unrestricted invite latitude (used for RAAD-staff account creation generally) must be
+        completely unaffected by this ADR."""
+        service, uow = make_user_service()
+        dto, _password = await service.create_user_with_temporary_password(
+            CreateUserWithTemporaryPasswordCommand(
+                organization_id=None,
+                role=Role.REGIONAL_MANAGER,
+                email="regional@example.com",
+                phone=None,
+                full_name="Someone",
+                actor=make_actor(),  # Role.FOUNDER
+            ),
+            uow=uow,
+        )
+        self.assertEqual(dto.role, "REGIONAL_MANAGER")
+
+
+class InviteUserScopeEnforcementTests(unittest.IsolatedAsyncioTestCase):
+    """The same `_enforce_creation_scope` restriction also guards the pre-existing
+    `invite_user`/`InviteUserCommand` path — an `org_admin` gaining `iam.users.create`
+    (ADR-0017's RBAC grant) must not be able to invite an out-of-scope role/organization via
+    the plain invite flow either."""
+
+    async def test_org_admin_invite_outside_own_org_is_rejected(self) -> None:
+        service, uow = make_user_service()
+        other_org = "01J8Z3K9G6X8YV5T4N2R7QW3AA"
+        with self.assertRaises(AuthorizationError):
+            await service.invite_user(
+                InviteUserCommand(
+                    organization_id=other_org,
+                    role=Role.PARENT,
+                    email="parent@example.com",
+                    phone=None,
+                    full_name="Someone",
+                    actor=make_org_admin_actor(org_id=VALID_ORG_ULID),
+                ),
+                uow=uow,
+            )
+
+    async def test_org_admin_invite_of_founder_role_is_rejected(self) -> None:
+        service, uow = make_user_service()
+        with self.assertRaises(AuthorizationError):
+            await service.invite_user(
+                InviteUserCommand(
+                    organization_id=VALID_ORG_ULID,
+                    role=Role.FOUNDER,
+                    email="wannabe-founder@example.com",
+                    phone=None,
+                    full_name="Someone",
+                    actor=make_org_admin_actor(),
+                ),
+                uow=uow,
+            )
 
 
 if __name__ == "__main__":

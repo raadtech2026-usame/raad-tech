@@ -45,6 +45,7 @@ from raad.interfaces.http.deps import (
 from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
 from raad.modules.iam.api.deps import get_auth_service, get_iam_uow, get_user_service
 from raad.modules.iam.api.schemas import (
+    ChangePasswordRequest,
     CreateUserRequest,
     LoginRequest,
     LogoutRequest,
@@ -56,6 +57,7 @@ from raad.modules.iam.api.schemas import (
 )
 from raad.modules.iam.application.commands import (
     ActivateUserCommand,
+    ChangePasswordCommand,
     DisableMfaCommand,
     DisableUserCommand,
     EnableMfaCommand,
@@ -117,6 +119,7 @@ def _auth_result_to_response(
             role=result.user.role.lower(),
             organization_id=result.user.organization_id,
             region_ids=region_ids,
+            is_password_change_required=result.user.is_password_change_required,
         ),
     )
 
@@ -134,6 +137,7 @@ def _user_dto_to_response(user: UserDTO) -> UserResponse:
         updated_at=user.updated_at,
         mfa_enabled=user.mfa_enabled,
         last_login_at=user.last_login_at,
+        is_password_change_required=user.is_password_change_required,
     )
 
 
@@ -197,6 +201,33 @@ async def logout(
 ) -> None:
     command = LogoutCommand(refresh_token=body.refresh_token)
     await auth_service.logout(command, uow=uow)
+
+
+@auth_router.post(
+    "/change-password",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Change the current principal's own password",
+    description=(
+        "Auth: bearer (new — ADR-0017). Self-service only, identified by the bearer token, "
+        "never a body-supplied `user_id`. Clears `is_password_change_required` — this is how "
+        "a Org Admin/Parent/Driver who received a one-time temporary password satisfies the "
+        "forced-change gate before doing anything else."
+    ),
+)
+async def change_password(
+    body: ChangePasswordRequest,
+    principal: Principal = Depends(get_current_user),
+    user_service: UserApplicationService = Depends(get_user_service),
+    uow: IamUnitOfWork = Depends(get_iam_uow),
+) -> UserResponse:
+    command = ChangePasswordCommand(
+        user_id=principal.user_id,
+        new_plain_password=body.new_password,
+        actor=principal,
+    )
+    user = await user_service.change_password(command, uow=uow)
+    return _user_dto_to_response(user)
 
 
 @auth_router.get(

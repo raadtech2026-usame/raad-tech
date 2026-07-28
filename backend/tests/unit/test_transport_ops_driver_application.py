@@ -1,9 +1,12 @@
-"""Application-layer tests for `transport_ops`'s `DriverApplicationService` (Phase 10.8).
-Stdlib `unittest` — no `pytest` (not an approved dependency), mirroring
-`test_transport_ops_parent_application.py`'s exact structure. Uses a fixed clock/sequential id
-generator fake and an in-memory fake `TransportOpsUnitOfWork`/`DriverRepository` — no
-SQLAlchemy, no FastAPI, no real database. Covers: command immutability, DTO mapping, service
-orchestration flow, repository interaction, and status-transition/validation error paths.
+"""Application-layer tests for `transport_ops`'s `DriverApplicationService` (Phase 10.8;
+ADR-0003 Extension accepted — Driver registration now provisions its own linked `iam.User` via
+`UserProvisioningPort`, mirroring Parent's identical treatment). Stdlib `unittest` — no
+`pytest` (not an approved dependency), mirroring `test_transport_ops_parent_application.py`'s
+exact structure. Uses a fixed clock/sequential id generator fake, an in-memory fake
+`TransportOpsUnitOfWork`/`DriverRepository`, and a fake `UserProvisioningPort` — no SQLAlchemy,
+no FastAPI, no real database, no real `iam` module. Covers: command immutability, DTO mapping,
+service orchestration flow (including the new provisioning-port call and temporary-password
+hand-off), repository interaction, and status-transition/validation error paths.
 """
 
 from __future__ import annotations
@@ -23,7 +26,10 @@ from raad.modules.transport_ops.application.commands import (
     RegisterDriverCommand,
     UpdateDriverCommand,
 )
-from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
+from raad.modules.transport_ops.application.ports import (
+    TransportOpsUnitOfWork,
+    UserProvisioningPort,
+)
 from raad.modules.transport_ops.application.queries import (
     DriverDTO,
     DriverSummaryDTO,
@@ -47,6 +53,7 @@ VALID_USER_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3ME"
 # Well-formed ULID shape but never added to any InMemoryDriverRepository in these tests -
 # exercises the NotFoundError path, distinct from DriverId's own malformed-shape DomainError.
 NON_EXISTENT_DRIVER_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
+FAKE_TEMPORARY_PASSWORD = "Fake-Temp-Pw9!"
 
 
 class FixedClock(Clock):
@@ -178,26 +185,67 @@ class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
         self.rollback_count += 1
 
 
+class FakeUserProvisioningPort(UserProvisioningPort):
+    """ADR-0003 Extension (accepted): stands in for the real `IamUserProvisioningAdapter` — see
+    `test_transport_ops_parent_application.py`'s identical fake for the full rationale."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def create_user_with_temporary_password(
+        self,
+        *,
+        organization_id: str,
+        role: Role,
+        email: str | None,
+        phone: str | None,
+        full_name: str,
+        actor: Principal,
+    ) -> tuple[str, str]:
+        self.calls.append(
+            {
+                "organization_id": organization_id,
+                "role": role,
+                "email": email,
+                "phone": phone,
+                "full_name": full_name,
+                "actor": actor,
+            }
+        )
+        return VALID_USER_ULID, FAKE_TEMPORARY_PASSWORD
+
+
 def make_actor(org_id: str = VALID_ORG_ULID) -> Principal:
     return Principal(user_id="admin-1", role=Role.ORG_ADMIN, org_id=org_id)
 
 
-def make_service() -> tuple[DriverApplicationService, FakeTransportOpsUnitOfWork]:
+def make_service() -> tuple[DriverApplicationService, FakeTransportOpsUnitOfWork, FakeUserProvisioningPort]:
     clock = FixedClock(datetime(2026, 7, 18, tzinfo=timezone.utc))
     id_generator = SequentialIdGenerator()
-    service = DriverApplicationService(clock=clock, id_generator=id_generator)
+    user_provisioning = FakeUserProvisioningPort()
+    service = DriverApplicationService(
+        clock=clock, id_generator=id_generator, user_provisioning=user_provisioning
+    )
     uow = FakeTransportOpsUnitOfWork(InMemoryDriverRepository())
-    return service, uow
+    return service, uow, user_provisioning
+
+
+def _register_command(
+    *, license_no: str = "DL-123456", full_name: str = "Ahmed Yusuf", actor: Principal | None = None
+) -> RegisterDriverCommand:
+    return RegisterDriverCommand(
+        organization_id=VALID_ORG_ULID,
+        full_name=full_name,
+        email=None,
+        phone=None,
+        license_no=license_no,
+        actor=actor or make_actor(),
+    )
 
 
 class CommandImmutabilityTests(unittest.TestCase):
     def test_register_command_is_frozen(self) -> None:
-        command = RegisterDriverCommand(
-            organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
-            license_no="DL-123456",
-            actor=make_actor(),
-        )
+        command = _register_command()
         with self.assertRaises(dataclasses.FrozenInstanceError):
             command.license_no = "Different"  # type: ignore[misc]
 
@@ -220,12 +268,7 @@ class CommandImmutabilityTests(unittest.TestCase):
 
     def test_commands_carry_the_actor_principal(self) -> None:
         actor = make_actor()
-        command = RegisterDriverCommand(
-            organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
-            license_no="DL-123456",
-            actor=actor,
-        )
+        command = _register_command(actor=actor)
         self.assertIs(command.actor, actor)
 
 
@@ -267,59 +310,54 @@ class DTOMappingTests(unittest.TestCase):
 
 class DriverApplicationServiceRegisterTests(unittest.IsolatedAsyncioTestCase):
     async def test_register_driver_adds_to_repository_and_commits(self) -> None:
-        service, uow = make_service()
-        command = RegisterDriverCommand(
-            organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
-            license_no="DL-123456",
-            actor=make_actor(),
+        service, uow, _provisioning = make_service()
+        dto, temporary_password = await service.register_driver(
+            _register_command(), uow=uow
         )
-        dto = await service.register_driver(command, uow=uow)
 
         self.assertEqual(dto.license_no, "DL-123456")
         self.assertEqual(dto.status, "active")
+        self.assertEqual(dto.user_id, VALID_USER_ULID)
+        self.assertEqual(temporary_password, FAKE_TEMPORARY_PASSWORD)
         self.assertEqual(len(uow.drivers.by_id), 1)
         self.assertIn(dto.id, uow.drivers.by_id)
         self.assertEqual(uow.commit_count, 1)
 
-    async def test_register_driver_records_domain_events(self) -> None:
-        service, uow = make_service()
-        command = RegisterDriverCommand(
-            organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
-            license_no="DL-123456",
-            actor=make_actor(),
+    async def test_register_driver_calls_user_provisioning_with_role_driver(self) -> None:
+        service, uow, provisioning = make_service()
+        actor = make_actor()
+        await service.register_driver(
+            _register_command(full_name="Ahmed Yusuf", actor=actor), uow=uow
         )
-        await service.register_driver(command, uow=uow)
+
+        self.assertEqual(len(provisioning.calls), 1)
+        call = provisioning.calls[0]
+        self.assertEqual(call["organization_id"], VALID_ORG_ULID)
+        self.assertEqual(call["role"], Role.DRIVER)
+        self.assertEqual(call["full_name"], "Ahmed Yusuf")
+        self.assertIs(call["actor"], actor)
+
+    async def test_register_driver_records_domain_events(self) -> None:
+        service, uow, _provisioning = make_service()
+        await service.register_driver(_register_command(), uow=uow)
 
         self.assertEqual(len(uow.recorded_events), 1)
         self.assertEqual(uow.recorded_events[0].event_type, "DriverRegistered")
 
     async def test_register_driver_generates_a_fresh_id_per_call(self) -> None:
-        service, uow = make_service()
-        command = RegisterDriverCommand(
-            organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
-            license_no="DL-123456",
-            actor=make_actor(),
-        )
-        first = await service.register_driver(command, uow=uow)
-        second = await service.register_driver(command, uow=uow)
+        service, uow, _provisioning = make_service()
+        command = _register_command()
+        first, _ = await service.register_driver(command, uow=uow)
+        second, _ = await service.register_driver(command, uow=uow)
         self.assertNotEqual(first.id, second.id)
         self.assertEqual(len(uow.drivers.by_id), 2)
 
     async def test_register_driver_with_invalid_license_no_raises_domain_error(
         self,
     ) -> None:
-        service, uow = make_service()
-        command = RegisterDriverCommand(
-            organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
-            license_no="",
-            actor=make_actor(),
-        )
+        service, uow, _provisioning = make_service()
         with self.assertRaises(DomainError):
-            await service.register_driver(command, uow=uow)
+            await service.register_driver(_register_command(license_no=""), uow=uow)
         self.assertEqual(uow.commit_count, 0)
 
 
@@ -327,20 +365,14 @@ class DriverApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
     async def _registered_driver_id(
         self, service: DriverApplicationService, uow
     ) -> str:
-        dto = await service.register_driver(
-            RegisterDriverCommand(
-                organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
-                license_no="DL-123456",
-                actor=make_actor(),
-            ),
-            uow=uow,
+        dto, _temporary_password = await service.register_driver(
+            _register_command(), uow=uow
         )
         uow.recorded_events.clear()  # isolate the transition's own event from registration's
         return dto.id
 
     async def test_disable_driver_changes_status(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         driver_id = await self._registered_driver_id(service, uow)
         dto = await service.disable_driver(
             DisableDriverCommand(driver_id=driver_id, actor=make_actor()), uow=uow
@@ -349,7 +381,7 @@ class DriverApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
         self.assertEqual(uow.recorded_events[-1].event_type, "DriverDisabled")
 
     async def test_activate_after_disable_returns_to_active(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         driver_id = await self._registered_driver_id(service, uow)
         await service.disable_driver(
             DisableDriverCommand(driver_id=driver_id, actor=make_actor()), uow=uow
@@ -360,7 +392,7 @@ class DriverApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
         self.assertEqual(dto.status, "active")
 
     async def test_repeated_disable_is_idempotent_no_new_event(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         driver_id = await self._registered_driver_id(service, uow)
         await service.disable_driver(
             DisableDriverCommand(driver_id=driver_id, actor=make_actor()), uow=uow
@@ -372,7 +404,7 @@ class DriverApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
         self.assertEqual(uow.recorded_events, [])  # already inactive - no-op
 
     async def test_transition_on_missing_driver_raises_not_found(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         with self.assertRaises(NotFoundError):
             await service.disable_driver(
                 DisableDriverCommand(
@@ -387,7 +419,7 @@ class DriverApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
     ) -> None:
         # DriverId's own ULID-shape validation runs before the repository lookup - a
         # malformed id is a DomainError, distinct from a well-formed but absent NotFoundError.
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         with self.assertRaises(DomainError):
             await service.disable_driver(
                 DisableDriverCommand(driver_id="not-a-ulid", actor=make_actor()),
@@ -397,15 +429,9 @@ class DriverApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
 
 class DriverApplicationServiceUpdateTests(unittest.IsolatedAsyncioTestCase):
     async def test_update_driver_changes_license_no(self) -> None:
-        service, uow = make_service()
-        registered = await service.register_driver(
-            RegisterDriverCommand(
-                organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
-                license_no="OLD-111",
-                actor=make_actor(),
-            ),
-            uow=uow,
+        service, uow, _provisioning = make_service()
+        registered, _temporary_password = await service.register_driver(
+            _register_command(license_no="OLD-111"), uow=uow
         )
         dto = await service.update_driver(
             UpdateDriverCommand(
@@ -418,7 +444,7 @@ class DriverApplicationServiceUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dto.license_no, "NEW-222")
 
     async def test_update_driver_on_missing_driver_raises_not_found(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         with self.assertRaises(NotFoundError):
             await service.update_driver(
                 UpdateDriverCommand(
@@ -432,15 +458,9 @@ class DriverApplicationServiceUpdateTests(unittest.IsolatedAsyncioTestCase):
 
 class DriverApplicationServiceReadTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_driver_by_id_returns_dto(self) -> None:
-        service, uow = make_service()
-        registered = await service.register_driver(
-            RegisterDriverCommand(
-                organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
-                license_no="DL-123456",
-                actor=make_actor(),
-            ),
-            uow=uow,
+        service, uow, _provisioning = make_service()
+        registered, _temporary_password = await service.register_driver(
+            _register_command(), uow=uow
         )
         dto = await service.get_driver_by_id(
             GetDriverByIdQuery(driver_id=registered.id), uow=uow
@@ -449,31 +469,19 @@ class DriverApplicationServiceReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dto.license_no, "DL-123456")
 
     async def test_get_driver_by_id_raises_not_found_for_missing_driver(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         with self.assertRaises(NotFoundError):
             await service.get_driver_by_id(
                 GetDriverByIdQuery(driver_id=NON_EXISTENT_DRIVER_ID), uow=uow
             )
 
     async def test_list_drivers_returns_summary_dtos_for_all_drivers(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         await service.register_driver(
-            RegisterDriverCommand(
-                organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
-                license_no="Driver One",
-                actor=make_actor(),
-            ),
-            uow=uow,
+            _register_command(license_no="Driver One"), uow=uow
         )
         await service.register_driver(
-            RegisterDriverCommand(
-                organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
-                license_no="Driver Two",
-                actor=make_actor(),
-            ),
-            uow=uow,
+            _register_command(license_no="Driver Two"), uow=uow
         )
         page = await service.list_drivers(
             ListDriversQuery(page_request=OffsetPageRequest()), uow=uow
@@ -485,7 +493,7 @@ class DriverApplicationServiceReadTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_list_drivers_returns_empty_page_when_none_registered(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         page = await service.list_drivers(
             ListDriversQuery(page_request=OffsetPageRequest()), uow=uow
         )
@@ -495,16 +503,10 @@ class DriverApplicationServiceReadTests(unittest.IsolatedAsyncioTestCase):
 
 class DriverApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_drivers_paginates_and_reports_total(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         for i in range(3):
             await service.register_driver(
-                RegisterDriverCommand(
-                    organization_id=VALID_ORG_ULID,
-                    user_id=VALID_USER_ULID,
-                    license_no=f"DL-{i}",
-                    actor=make_actor(),
-                ),
-                uow=uow,
+                _register_command(license_no=f"DL-{i}"), uow=uow
             )
 
         page = await service.list_drivers(
@@ -523,24 +525,12 @@ class DriverApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(second_page.data), 1)
 
     async def test_list_drivers_filters_by_status(self) -> None:
-        service, uow = make_service()
-        active = await service.register_driver(
-            RegisterDriverCommand(
-                organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
-                license_no="ACTIVE-1",
-                actor=make_actor(),
-            ),
-            uow=uow,
+        service, uow, _provisioning = make_service()
+        active, _tp1 = await service.register_driver(
+            _register_command(license_no="ACTIVE-1"), uow=uow
         )
-        disabled = await service.register_driver(
-            RegisterDriverCommand(
-                organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
-                license_no="DISABLED-1",
-                actor=make_actor(),
-            ),
-            uow=uow,
+        disabled, _tp2 = await service.register_driver(
+            _register_command(license_no="DISABLED-1"), uow=uow
         )
         await service.disable_driver(
             DisableDriverCommand(driver_id=disabled.id, actor=make_actor()), uow=uow
@@ -558,16 +548,10 @@ class DriverApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(page.data[0].id, active.id)
 
     async def test_list_drivers_sorts_descending_by_license_no(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         for license_no in ("Alpha", "Beta", "Gamma"):
             await service.register_driver(
-                RegisterDriverCommand(
-                    organization_id=VALID_ORG_ULID,
-                    user_id=VALID_USER_ULID,
-                    license_no=license_no,
-                    actor=make_actor(),
-                ),
-                uow=uow,
+                _register_command(license_no=license_no), uow=uow
             )
 
         page = await service.list_drivers(
@@ -585,30 +569,18 @@ class DriverApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
 class RepositoryInteractionTests(unittest.IsolatedAsyncioTestCase):
     async def test_service_never_bypasses_the_repository_to_mutate_state(self) -> None:
         # The service must go through uow.drivers.add/get - not hold its own parallel state.
-        service, uow = make_service()
-        dto = await service.register_driver(
-            RegisterDriverCommand(
-                organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
-                license_no="DL-123456",
-                actor=make_actor(),
-            ),
-            uow=uow,
+        service, uow, _provisioning = make_service()
+        dto, _temporary_password = await service.register_driver(
+            _register_command(), uow=uow
         )
         stored = await uow.drivers.get(DriverId(dto.id))
         self.assertIsNotNone(stored)
         self.assertEqual(stored.license_no, "DL-123456")
 
     async def test_uow_used_as_async_context_manager_for_every_call(self) -> None:
-        service, uow = make_service()
-        dto = await service.register_driver(
-            RegisterDriverCommand(
-                organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
-                license_no="DL-123456",
-                actor=make_actor(),
-            ),
-            uow=uow,
+        service, uow, _provisioning = make_service()
+        dto, _temporary_password = await service.register_driver(
+            _register_command(), uow=uow
         )
         fetched = await service.get_driver_by_id(
             GetDriverByIdQuery(driver_id=dto.id), uow=uow

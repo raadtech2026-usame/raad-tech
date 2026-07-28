@@ -124,9 +124,15 @@ class DisableStudentCommand:
 
 @dataclass(frozen=True)
 class RegisterParentCommand:
+    """ADR-0003 (accepted): `user_id` is no longer a caller-supplied input — the login-capable
+    `iam.User` (role=parent) this `Parent` links to is created by this service itself, via
+    `UserProvisioningPort`, from the identity fields below. `email` is new (at least one of
+    `email`/`phone` is required by `iam.User`'s own invariant); `phone` is reused as both this
+    `Parent`'s own display field and the created `User`'s login phone."""
+
     organization_id: str
-    user_id: str
     full_name: str
+    email: str | None
     phone: str | None
     actor: Principal
 
@@ -231,8 +237,15 @@ class MoveStopCommand:
 
 @dataclass(frozen=True)
 class RegisterDriverCommand:
+    """ADR-0003 (accepted): `user_id` is no longer a caller-supplied input — see
+    `RegisterParentCommand`'s identical docstring. `Driver` itself carries no `full_name` of its
+    own (unlike `Parent`), so `full_name`/`email`/`phone` here exist solely to provision the
+    linked `iam.User` (role=driver)."""
+
     organization_id: str
-    user_id: str
+    full_name: str
+    email: str | None
+    phone: str | None
     license_no: str
     actor: Principal
 

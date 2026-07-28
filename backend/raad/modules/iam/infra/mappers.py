@@ -72,6 +72,7 @@ def user_to_model(user: User, *, existing: UserModel | None = None) -> UserModel
     model.status = user.status.value
     model.mfa_enabled = user.mfa_enabled
     model.last_login_at = _naive(user.last_login_at)
+    model.is_password_change_required = user.is_password_change_required
     model.created_at = _naive(user.created_at)
     model.updated_at = _naive(user.updated_at)
     return model
@@ -93,6 +94,7 @@ def model_to_user(model: UserModel) -> User:
         password_hash=model.password_hash,
         mfa_enabled=model.mfa_enabled,
         last_login_at=model.last_login_at,
+        is_password_change_required=model.is_password_change_required,
     )
 
 

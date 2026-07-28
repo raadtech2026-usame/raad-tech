@@ -137,10 +137,23 @@ class ParentSummaryResponse(BaseModel):
 
 
 class RegisterParentRequest(BaseModel):
+    """ADR-0003 (accepted): `user_id` is no longer supplied by the caller — the login-capable
+    `iam.User` (role=parent) is provisioned by this service itself from `full_name`/`email`/
+    `phone` below (at least one of `email`/`phone` required, `iam.User`'s own invariant)."""
+
     organization_id: str
-    user_id: str
     full_name: str
+    email: str | None = None
     phone: str | None = None
+
+
+class ParentCreatedResponse(BaseModel):
+    """`POST /parents`'s actual response shape (ADR-0003/ADR-0017) — wraps the usual
+    `ParentResponse` with the generated one-time temporary password for the new linked login,
+    surfaced exactly once, here, for hand-off. Never re-derivable via `GET /parents/{id}`."""
+
+    parent: ParentResponse
+    temporary_password: str
 
 
 class UpdateParentRequest(BaseModel):
@@ -218,9 +231,23 @@ class DriverSummaryResponse(BaseModel):
 
 
 class RegisterDriverRequest(BaseModel):
+    """ADR-0003 (accepted): `user_id` is no longer supplied by the caller — see
+    `RegisterParentRequest`'s identical docstring. `Driver` itself has no `full_name` of its
+    own, so `full_name`/`email`/`phone` here exist solely to provision the linked `iam.User`
+    (role=driver)."""
+
     organization_id: str
-    user_id: str
+    full_name: str
+    email: str | None = None
+    phone: str | None = None
     license_no: str
+
+
+class DriverCreatedResponse(BaseModel):
+    """`POST /drivers`'s actual response shape — mirrors `ParentCreatedResponse` exactly."""
+
+    driver: DriverResponse
+    temporary_password: str
 
 
 class UpdateDriverRequest(BaseModel):

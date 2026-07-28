@@ -38,6 +38,7 @@ class UserDTO:
     updated_at: datetime
     mfa_enabled: bool
     last_login_at: datetime | None
+    is_password_change_required: bool
 
 
 @dataclass(frozen=True)
@@ -66,4 +67,5 @@ def user_to_dto(user: User) -> UserDTO:
         updated_at=user.updated_at,
         mfa_enabled=user.mfa_enabled,
         last_login_at=user.last_login_at,
+        is_password_change_required=user.is_password_change_required,
     )

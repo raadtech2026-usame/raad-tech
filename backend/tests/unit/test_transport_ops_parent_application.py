@@ -1,9 +1,13 @@
-"""Application-layer tests for `transport_ops`'s `ParentApplicationService` (Phase 10.6).
-Stdlib `unittest` — no `pytest` (not an approved dependency), mirroring
+"""Application-layer tests for `transport_ops`'s `ParentApplicationService` (Phase 10.6;
+ADR-0003 accepted — Parent registration now provisions its own linked `iam.User` via
+`UserProvisioningPort`, rather than taking an already-existing `user_id` as input). Stdlib
+`unittest` — no `pytest` (not an approved dependency), mirroring
 `test_transport_ops_student_application.py`'s exact structure. Uses a fixed clock/sequential id
-generator fake and an in-memory fake `TransportOpsUnitOfWork`/`ParentRepository` — no
-SQLAlchemy, no FastAPI, no real database. Covers: command immutability, DTO mapping, service
-orchestration flow, repository interaction, and status-transition/validation error paths.
+generator fake, an in-memory fake `TransportOpsUnitOfWork`/`ParentRepository`, and a fake
+`UserProvisioningPort` — no SQLAlchemy, no FastAPI, no real database, no real `iam` module.
+Covers: command immutability, DTO mapping, service orchestration flow (including the new
+provisioning-port call and temporary-password hand-off), repository interaction, and
+status-transition/validation error paths.
 """
 
 from __future__ import annotations
@@ -23,7 +27,10 @@ from raad.modules.transport_ops.application.commands import (
     RegisterParentCommand,
     UpdateParentCommand,
 )
-from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
+from raad.modules.transport_ops.application.ports import (
+    TransportOpsUnitOfWork,
+    UserProvisioningPort,
+)
 from raad.modules.transport_ops.application.queries import (
     GetParentByIdQuery,
     ListParentsQuery,
@@ -48,6 +55,7 @@ VALID_USER_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3ME"
 # Well-formed ULID shape but never added to any InMemoryParentRepository in these tests -
 # exercises the NotFoundError path, distinct from ParentId's own malformed-shape DomainError.
 NON_EXISTENT_PARENT_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
+FAKE_TEMPORARY_PASSWORD = "Fake-Temp-Pw9!"
 
 
 class FixedClock(Clock):
@@ -184,24 +192,59 @@ class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
         self.rollback_count += 1
 
 
+class FakeUserProvisioningPort(UserProvisioningPort):
+    """ADR-0003 (accepted): stands in for the real `IamUserProvisioningAdapter` — records every
+    call for assertions, always succeeds, always returns the same fixed, ULID-shaped
+    `VALID_USER_ULID` (tests here never assert on `user_id` uniqueness across calls, only that
+    the returned id is what `Parent.register` receives)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def create_user_with_temporary_password(
+        self,
+        *,
+        organization_id: str,
+        role: Role,
+        email: str | None,
+        phone: str | None,
+        full_name: str,
+        actor: Principal,
+    ) -> tuple[str, str]:
+        self.calls.append(
+            {
+                "organization_id": organization_id,
+                "role": role,
+                "email": email,
+                "phone": phone,
+                "full_name": full_name,
+                "actor": actor,
+            }
+        )
+        return VALID_USER_ULID, FAKE_TEMPORARY_PASSWORD
+
+
 def make_actor(org_id: str = VALID_ORG_ULID) -> Principal:
     return Principal(user_id="admin-1", role=Role.ORG_ADMIN, org_id=org_id)
 
 
-def make_service() -> tuple[ParentApplicationService, FakeTransportOpsUnitOfWork]:
+def make_service() -> tuple[ParentApplicationService, FakeTransportOpsUnitOfWork, FakeUserProvisioningPort]:
     clock = FixedClock(datetime(2026, 7, 17, tzinfo=timezone.utc))
     id_generator = SequentialIdGenerator()
-    service = ParentApplicationService(clock=clock, id_generator=id_generator)
+    user_provisioning = FakeUserProvisioningPort()
+    service = ParentApplicationService(
+        clock=clock, id_generator=id_generator, user_provisioning=user_provisioning
+    )
     uow = FakeTransportOpsUnitOfWork(InMemoryParentRepository())
-    return service, uow
+    return service, uow, user_provisioning
 
 
 class CommandImmutabilityTests(unittest.TestCase):
     def test_register_command_is_frozen(self) -> None:
         command = RegisterParentCommand(
             organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
             full_name="Fatima Hassan",
+            email=None,
             phone=None,
             actor=make_actor(),
         )
@@ -230,8 +273,8 @@ class CommandImmutabilityTests(unittest.TestCase):
         actor = make_actor()
         command = RegisterParentCommand(
             organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
             full_name="Fatima Hassan",
+            email=None,
             phone=None,
             actor=actor,
         )
@@ -285,28 +328,51 @@ class DTOMappingTests(unittest.TestCase):
 
 class ParentApplicationServiceRegisterTests(unittest.IsolatedAsyncioTestCase):
     async def test_register_parent_adds_to_repository_and_commits(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         command = RegisterParentCommand(
             organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
             full_name="Fatima Hassan",
+            email=None,
             phone="+252700000000",
             actor=make_actor(),
         )
-        dto = await service.register_parent(command, uow=uow)
+        dto, temporary_password = await service.register_parent(command, uow=uow)
 
         self.assertEqual(dto.full_name, "Fatima Hassan")
         self.assertEqual(dto.status, "active")
+        self.assertEqual(dto.user_id, VALID_USER_ULID)
+        self.assertEqual(temporary_password, FAKE_TEMPORARY_PASSWORD)
         self.assertEqual(len(uow.parents.by_id), 1)
         self.assertIn(dto.id, uow.parents.by_id)
         self.assertEqual(uow.commit_count, 1)
 
-    async def test_register_parent_records_domain_events(self) -> None:
-        service, uow = make_service()
+    async def test_register_parent_calls_user_provisioning_with_role_parent(self) -> None:
+        service, uow, provisioning = make_service()
+        actor = make_actor()
         command = RegisterParentCommand(
             organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
             full_name="Fatima Hassan",
+            email="fatima@example.com",
+            phone="+252700000000",
+            actor=actor,
+        )
+        await service.register_parent(command, uow=uow)
+
+        self.assertEqual(len(provisioning.calls), 1)
+        call = provisioning.calls[0]
+        self.assertEqual(call["organization_id"], VALID_ORG_ULID)
+        self.assertEqual(call["role"], Role.PARENT)
+        self.assertEqual(call["email"], "fatima@example.com")
+        self.assertEqual(call["phone"], "+252700000000")
+        self.assertEqual(call["full_name"], "Fatima Hassan")
+        self.assertIs(call["actor"], actor)
+
+    async def test_register_parent_records_domain_events(self) -> None:
+        service, uow, _provisioning = make_service()
+        command = RegisterParentCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Fatima Hassan",
+            email=None,
             phone=None,
             actor=make_actor(),
         )
@@ -316,39 +382,39 @@ class ParentApplicationServiceRegisterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(uow.recorded_events[0].event_type, "ParentRegistered")
 
     async def test_register_parent_generates_a_fresh_id_per_call(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         command = RegisterParentCommand(
             organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
             full_name="Fatima Hassan",
+            email=None,
             phone=None,
             actor=make_actor(),
         )
-        first = await service.register_parent(command, uow=uow)
-        second = await service.register_parent(command, uow=uow)
+        first, _ = await service.register_parent(command, uow=uow)
+        second, _ = await service.register_parent(command, uow=uow)
         self.assertNotEqual(first.id, second.id)
         self.assertEqual(len(uow.parents.by_id), 2)
 
     async def test_register_parent_without_phone_leaves_phone_none(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         command = RegisterParentCommand(
             organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
             full_name="Fatima Hassan",
+            email=None,
             phone=None,
             actor=make_actor(),
         )
-        dto = await service.register_parent(command, uow=uow)
+        dto, _temporary_password = await service.register_parent(command, uow=uow)
         self.assertIsNone(dto.phone)
 
     async def test_register_parent_with_invalid_phone_raises_domain_error(
         self,
     ) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         command = RegisterParentCommand(
             organization_id=VALID_ORG_ULID,
-            user_id=VALID_USER_ULID,
             full_name="Fatima Hassan",
+            email=None,
             phone="not-e164",
             actor=make_actor(),
         )
@@ -361,11 +427,11 @@ class ParentApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
     async def _registered_parent_id(
         self, service: ParentApplicationService, uow
     ) -> str:
-        dto = await service.register_parent(
+        dto, _temporary_password = await service.register_parent(
             RegisterParentCommand(
                 organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
                 full_name="Fatima Hassan",
+                email=None,
                 phone=None,
                 actor=make_actor(),
             ),
@@ -375,7 +441,7 @@ class ParentApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
         return dto.id
 
     async def test_disable_parent_changes_status(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         parent_id = await self._registered_parent_id(service, uow)
         dto = await service.disable_parent(
             DisableParentCommand(parent_id=parent_id, actor=make_actor()), uow=uow
@@ -384,7 +450,7 @@ class ParentApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
         self.assertEqual(uow.recorded_events[-1].event_type, "ParentDisabled")
 
     async def test_activate_after_disable_returns_to_active(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         parent_id = await self._registered_parent_id(service, uow)
         await service.disable_parent(
             DisableParentCommand(parent_id=parent_id, actor=make_actor()), uow=uow
@@ -395,7 +461,7 @@ class ParentApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
         self.assertEqual(dto.status, "active")
 
     async def test_repeated_disable_is_idempotent_no_new_event(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         parent_id = await self._registered_parent_id(service, uow)
         await service.disable_parent(
             DisableParentCommand(parent_id=parent_id, actor=make_actor()), uow=uow
@@ -407,7 +473,7 @@ class ParentApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
         self.assertEqual(uow.recorded_events, [])  # already inactive - no-op
 
     async def test_transition_on_missing_parent_raises_not_found(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         with self.assertRaises(NotFoundError):
             await service.disable_parent(
                 DisableParentCommand(
@@ -422,7 +488,7 @@ class ParentApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
     ) -> None:
         # ParentId's own ULID-shape validation runs before the repository lookup - a
         # malformed id is a DomainError, distinct from a well-formed but absent NotFoundError.
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         with self.assertRaises(DomainError):
             await service.disable_parent(
                 DisableParentCommand(parent_id="not-a-ulid", actor=make_actor()),
@@ -432,12 +498,12 @@ class ParentApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
 
 class ParentApplicationServiceUpdateTests(unittest.IsolatedAsyncioTestCase):
     async def test_update_parent_changes_full_name_and_phone(self) -> None:
-        service, uow = make_service()
-        registered = await service.register_parent(
+        service, uow, _provisioning = make_service()
+        registered, _temporary_password = await service.register_parent(
             RegisterParentCommand(
                 organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
                 full_name="Old Name",
+                email=None,
                 phone=None,
                 actor=make_actor(),
             ),
@@ -456,7 +522,7 @@ class ParentApplicationServiceUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dto.phone, "+252700000000")
 
     async def test_update_parent_on_missing_parent_raises_not_found(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         with self.assertRaises(NotFoundError):
             await service.update_parent(
                 UpdateParentCommand(
@@ -471,12 +537,12 @@ class ParentApplicationServiceUpdateTests(unittest.IsolatedAsyncioTestCase):
 
 class ParentApplicationServiceReadTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_parent_by_id_returns_dto(self) -> None:
-        service, uow = make_service()
-        registered = await service.register_parent(
+        service, uow, _provisioning = make_service()
+        registered, _temporary_password = await service.register_parent(
             RegisterParentCommand(
                 organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
                 full_name="Fatima Hassan",
+                email=None,
                 phone=None,
                 actor=make_actor(),
             ),
@@ -489,19 +555,19 @@ class ParentApplicationServiceReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dto.full_name, "Fatima Hassan")
 
     async def test_get_parent_by_id_raises_not_found_for_missing_parent(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         with self.assertRaises(NotFoundError):
             await service.get_parent_by_id(
                 GetParentByIdQuery(parent_id=NON_EXISTENT_PARENT_ID), uow=uow
             )
 
     async def test_list_parents_returns_summary_dtos_for_all_parents(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         await service.register_parent(
             RegisterParentCommand(
                 organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
                 full_name="Parent One",
+                email=None,
                 phone=None,
                 actor=make_actor(),
             ),
@@ -510,8 +576,8 @@ class ParentApplicationServiceReadTests(unittest.IsolatedAsyncioTestCase):
         await service.register_parent(
             RegisterParentCommand(
                 organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
                 full_name="Parent Two",
+                email=None,
                 phone=None,
                 actor=make_actor(),
             ),
@@ -527,7 +593,7 @@ class ParentApplicationServiceReadTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_list_parents_returns_empty_page_when_none_registered(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         page = await service.list_parents(
             ListParentsQuery(page_request=OffsetPageRequest()), uow=uow
         )
@@ -537,13 +603,13 @@ class ParentApplicationServiceReadTests(unittest.IsolatedAsyncioTestCase):
 
 class ParentApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_parents_paginates_and_reports_total(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         for i in range(3):
             await service.register_parent(
                 RegisterParentCommand(
                     organization_id=VALID_ORG_ULID,
-                    user_id=VALID_USER_ULID,
                     full_name=f"Parent {i}",
+                    email=None,
                     phone=None,
                     actor=make_actor(),
                 ),
@@ -566,22 +632,22 @@ class ParentApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(second_page.data), 1)
 
     async def test_list_parents_filters_by_status(self) -> None:
-        service, uow = make_service()
-        active = await service.register_parent(
+        service, uow, _provisioning = make_service()
+        active, _tp1 = await service.register_parent(
             RegisterParentCommand(
                 organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
                 full_name="Active Parent",
+                email=None,
                 phone=None,
                 actor=make_actor(),
             ),
             uow=uow,
         )
-        disabled = await service.register_parent(
+        disabled, _tp2 = await service.register_parent(
             RegisterParentCommand(
                 organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
                 full_name="Disabled Parent",
+                email=None,
                 phone=None,
                 actor=make_actor(),
             ),
@@ -603,13 +669,13 @@ class ParentApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(page.data[0].id, active.id)
 
     async def test_list_parents_sorts_descending_by_full_name(self) -> None:
-        service, uow = make_service()
+        service, uow, _provisioning = make_service()
         for name in ("Alpha", "Beta", "Gamma"):
             await service.register_parent(
                 RegisterParentCommand(
                     organization_id=VALID_ORG_ULID,
-                    user_id=VALID_USER_ULID,
                     full_name=name,
+                    email=None,
                     phone=None,
                     actor=make_actor(),
                 ),
@@ -631,12 +697,12 @@ class ParentApplicationServicePaginationTests(unittest.IsolatedAsyncioTestCase):
 class RepositoryInteractionTests(unittest.IsolatedAsyncioTestCase):
     async def test_service_never_bypasses_the_repository_to_mutate_state(self) -> None:
         # The service must go through uow.parents.add/get - not hold its own parallel state.
-        service, uow = make_service()
-        dto = await service.register_parent(
+        service, uow, _provisioning = make_service()
+        dto, _temporary_password = await service.register_parent(
             RegisterParentCommand(
                 organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
                 full_name="Fatima Hassan",
+                email=None,
                 phone=None,
                 actor=make_actor(),
             ),
@@ -647,12 +713,12 @@ class RepositoryInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.full_name, "Fatima Hassan")
 
     async def test_uow_used_as_async_context_manager_for_every_call(self) -> None:
-        service, uow = make_service()
-        dto = await service.register_parent(
+        service, uow, _provisioning = make_service()
+        dto, _temporary_password = await service.register_parent(
             RegisterParentCommand(
                 organization_id=VALID_ORG_ULID,
-                user_id=VALID_USER_ULID,
                 full_name="Fatima Hassan",
+                email=None,
                 phone=None,
                 actor=make_actor(),
             ),

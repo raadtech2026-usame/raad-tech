@@ -132,6 +132,28 @@ def user_password_changed(
     )
 
 
+def user_temporary_password_set(
+    *,
+    user_id: str,
+    organization_id: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """ADR-0017/ADR-0003 Extension: a one-time hand-off credential was generated and set,
+    requiring a forced change on next login — distinct from `UserPasswordChanged` (the user's
+    own deliberate choice) since this is admin-initiated and leaves `is_password_change_
+    required=True`. No approved document names this event; this phase's own flagged choice,
+    matching every other unnamed-event precedent in this codebase."""
+    return _new_event(
+        event_type="UserTemporaryPasswordSet",
+        aggregate_type="User",
+        aggregate_id=user_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
 def user_mfa_enabled(
     *,
     user_id: str,

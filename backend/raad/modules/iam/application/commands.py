@@ -24,6 +24,23 @@ class InviteUserCommand:
 
 
 @dataclass(frozen=True)
+class CreateUserWithTemporaryPasswordCommand:
+    """ADR-0017/ADR-0003 Extension: generates and hands off a one-time credential, rather than
+    the plain `invite`/no-password flow `InviteUserCommand` covers. Used by the two new
+    cross-context provisioning ports (`organization`'s Org Admin onboarding,
+    `transport_ops`'s Parent/Driver registration) — `iam` itself has no knowledge of either
+    caller, matching ADR-0003's "from `iam`'s perspective this is just 'create a user'"
+    framing."""
+
+    organization_id: str | None
+    role: Role
+    email: str | None
+    phone: str | None
+    full_name: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class ActivateUserCommand:
     user_id: str
     actor: Principal

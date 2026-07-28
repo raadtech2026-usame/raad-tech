@@ -78,7 +78,10 @@ from raad.modules.tracking.infra.adapters import (
     RedisLatestPositionPort,
 )
 from raad.modules.tracking.infra.repositories import SqlAlchemyTrackingUnitOfWork
-from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
+from raad.modules.transport_ops.application.ports import (
+    TransportOpsUnitOfWork,
+    UserProvisioningPort,
+)
 from raad.modules.transport_ops.application.services import (
     DriverApplicationService,
     ParentApplicationService,
@@ -88,6 +91,7 @@ from raad.modules.transport_ops.application.services import (
     StudentParentApplicationService,
     TripApplicationService,
 )
+from raad.modules.transport_ops.infra.adapters import IamUserProvisioningAdapter
 from raad.modules.transport_ops.infra.repositories import (
     SqlAlchemyTransportOpsUnitOfWork,
 )
@@ -207,28 +211,18 @@ def build_container(settings: Settings) -> Container:
             id_generator=container.resolve(IdGenerator),
         ),
     )
-    container.bind_singleton(
-        ParentApplicationService,
-        ParentApplicationService(
-            clock=container.resolve(Clock),
-            id_generator=container.resolve(IdGenerator),
-        ),
-    )
+    # ParentApplicationService/DriverApplicationService now additionally need
+    # `UserProvisioningPort` (ADR-0003, accepted) — bound further below, inside the
+    # `if settings.db.url:` block, since the concrete adapter needs a DB-backed
+    # `IamUnitOfWork` factory. Both bindings therefore moved there too; see that block for the
+    # actual `container.bind_singleton(ParentApplicationService, ...)`/`DriverApplicationService`
+    # calls.
     # StudentParentApplicationService needs no id_generator (StudentParent has no surrogate id
     # to mint, `application/services.py`'s Phase 10.7 docstring) or TokenService — always
     # constructible, same reasoning as the two services above.
     container.bind_singleton(
         StudentParentApplicationService,
         StudentParentApplicationService(clock=container.resolve(Clock)),
-    )
-    # DriverApplicationService needs no TokenService either — always constructible, same
-    # reasoning as StudentApplicationService/ParentApplicationService above.
-    container.bind_singleton(
-        DriverApplicationService,
-        DriverApplicationService(
-            clock=container.resolve(Clock),
-            id_generator=container.resolve(IdGenerator),
-        ),
     )
     # RouteApplicationService needs no TokenService either — always constructible, same
     # reasoning as the services above.
@@ -494,6 +488,35 @@ def build_container(settings: Settings) -> Container:
                 session_factory,
                 container.resolve(OutboxWriter),
                 container.resolve(AuditWriter),
+            ),
+        )
+        # UserProvisioningPort (ADR-0003, accepted) — a fresh IamUnitOfWork per call, same
+        # `uow_factory` shape as PermissionEvaluator/ScopeResolver above.
+        container.bind_singleton(
+            UserProvisioningPort,
+            IamUserProvisioningAdapter(
+                user_service=container.resolve(UserApplicationService),
+                uow_factory=lambda: container.resolve(IamUnitOfWork),
+            ),
+        )
+        # ParentApplicationService/DriverApplicationService now depend on
+        # UserProvisioningPort (just bound above), so — unlike every sibling
+        # transport_ops service — both are bound here, inside the DB-configured block, rather
+        # than unconditionally near the top of this function.
+        container.bind_singleton(
+            ParentApplicationService,
+            ParentApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
+                user_provisioning=container.resolve(UserProvisioningPort),
+            ),
+        )
+        container.bind_singleton(
+            DriverApplicationService,
+            DriverApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
+                user_provisioning=container.resolve(UserProvisioningPort),
             ),
         )
         container.bind_factory(

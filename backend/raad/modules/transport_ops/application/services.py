@@ -81,6 +81,7 @@ from __future__ import annotations
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
+from raad.core.tenancy.principal import Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
     ActivateDriverCommand,
@@ -118,7 +119,10 @@ from raad.modules.transport_ops.application.commands import (
     UpdateRouteCommand,
     UpdateStudentCommand,
 )
-from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
+from raad.modules.transport_ops.application.ports import (
+    TransportOpsUnitOfWork,
+    UserProvisioningPort,
+)
 from raad.modules.transport_ops.application.queries import (
     DriverDTO,
     DriverSummaryDTO,
@@ -325,18 +329,46 @@ class ParentApplicationService:
     """Parent lifecycle use-cases: register, update, activate, disable, and the
     `GetParentByIdQuery`/`ListParentsQuery` read paths."""
 
-    def __init__(self, *, clock: Clock, id_generator: IdGenerator) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        id_generator: IdGenerator,
+        user_provisioning: UserProvisioningPort,
+    ) -> None:
         self._clock = clock
         self._id_generator = id_generator
+        self._user_provisioning = user_provisioning
 
     async def register_parent(
         self, command: RegisterParentCommand, *, uow: TransportOpsUnitOfWork
-    ) -> ParentDTO:
+    ) -> tuple[ParentDTO, str]:
+        """ADR-0003 (accepted): provisions the login-capable `iam.User` (role=parent) first —
+        that call commits its own, independent `iam` Unit of Work and is real/durable the
+        moment it returns — then creates the `Parent` profile referencing it, committing this
+        module's own Unit of Work. Returns the generated one-time temporary password alongside
+        the DTO, for hand-off, exactly once.
+
+        Accepted, bounded gap (ADR-0003's Failure Handling): if `Parent` creation fails *after*
+        `User` creation succeeded, the `User` is left orphaned (role=parent, no linked
+        `Parent`) rather than being automatically compensated — evaluated and deliberately
+        deferred at implementation time per that ADR's own "both viable, evaluate later"
+        framing, not silently dropped."""
+        user_id, temporary_password = (
+            await self._user_provisioning.create_user_with_temporary_password(
+                organization_id=command.organization_id,
+                role=Role.PARENT,
+                email=command.email,
+                phone=command.phone,
+                full_name=command.full_name,
+                actor=command.actor,
+            )
+        )
         async with uow:
             parent = Parent.register(
                 id=ParentId(self._id_generator.new_id()),
                 organization_id=OrganizationId(command.organization_id),
-                user_id=UserId(command.user_id),
+                user_id=UserId(user_id),
                 full_name=command.full_name,
                 phone=PhoneNumber(command.phone) if command.phone else None,
                 clock=self._clock,
@@ -345,7 +377,7 @@ class ParentApplicationService:
             uow.parents.add(parent)
             uow.record_events(parent.pull_domain_events())
             await uow.commit()
-            return parent_to_dto(parent)
+            return parent_to_dto(parent), temporary_password
 
     async def update_parent(
         self, command: UpdateParentCommand, *, uow: TransportOpsUnitOfWork
@@ -515,18 +547,38 @@ class DriverApplicationService:
     exact shape — both aggregates share the identical "profile linked to an `iam.User` login,
     flat active/inactive status" structure (Database Design §6.1/§6.3)."""
 
-    def __init__(self, *, clock: Clock, id_generator: IdGenerator) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        id_generator: IdGenerator,
+        user_provisioning: UserProvisioningPort,
+    ) -> None:
         self._clock = clock
         self._id_generator = id_generator
+        self._user_provisioning = user_provisioning
 
     async def register_driver(
         self, command: RegisterDriverCommand, *, uow: TransportOpsUnitOfWork
-    ) -> DriverDTO:
+    ) -> tuple[DriverDTO, str]:
+        """ADR-0003 Extension (accepted): mirrors `ParentApplicationService.register_parent`'s
+        identical provision-then-create sequence and the same accepted, bounded orphan-`User`
+        gap on partial failure."""
+        user_id, temporary_password = (
+            await self._user_provisioning.create_user_with_temporary_password(
+                organization_id=command.organization_id,
+                role=Role.DRIVER,
+                email=command.email,
+                phone=command.phone,
+                full_name=command.full_name,
+                actor=command.actor,
+            )
+        )
         async with uow:
             driver = Driver.register(
                 id=DriverId(self._id_generator.new_id()),
                 organization_id=OrganizationId(command.organization_id),
-                user_id=UserId(command.user_id),
+                user_id=UserId(user_id),
                 license_no=command.license_no,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
@@ -534,7 +586,7 @@ class DriverApplicationService:
             uow.drivers.add(driver)
             uow.record_events(driver.pull_domain_events())
             await uow.commit()
-            return driver_to_dto(driver)
+            return driver_to_dto(driver), temporary_password
 
     async def update_driver(
         self, command: UpdateDriverCommand, *, uow: TransportOpsUnitOfWork

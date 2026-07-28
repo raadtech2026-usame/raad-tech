@@ -178,6 +178,14 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("POST", "/api/v1/drivers", "Database Design §6.1 ownership, no API Contracts row"),
     ("GET", "/api/v1/drivers/{driver_id}", "uniform-CRUD addition"),
     ("PATCH", "/api/v1/drivers/{driver_id}", "uniform-CRUD addition"),
+    # RAAD business model realignment (ADR-0017): a temporary hand-off credential (Org
+    # Admin onboarding, Parent/Driver registration) needs a self-service way to be changed,
+    # which API Contracts §2.1 (written before this ADR) never documented.
+    (
+        "POST",
+        "/api/v1/auth/change-password",
+        "ADR-0017 forced-password-change gate, no API Contracts row",
+    ),
     # Infrastructure/process health probes — outside API Contracts §1's `/api/v1` namespace
     # entirely by design (liveness/readiness checks are never versioned resource routes).
     ("GET", "/health", "process-level health probe, outside /api/v1"),

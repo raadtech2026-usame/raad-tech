@@ -76,6 +76,7 @@ class User(_AggregateRoot):
         password_hash: str | None = None,
         mfa_enabled: bool = False,
         last_login_at: datetime | None = None,
+        is_password_change_required: bool = False,
     ) -> None:
         super().__init__()
         self._validate_identity_and_scope(
@@ -93,6 +94,7 @@ class User(_AggregateRoot):
         self.password_hash = password_hash
         self.mfa_enabled = mfa_enabled
         self.last_login_at = last_login_at
+        self.is_password_change_required = is_password_change_required
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, User) and self.id == other.id
@@ -207,13 +209,38 @@ class User(_AggregateRoot):
     ) -> None:
         """Stores an already-hashed password. Hashing itself is `core.security`'s concern
         (Phase 4.3) — the domain never imports it, and never handles a plaintext password.
-        """
+        Clears `is_password_change_required` — this is the user's own deliberate password
+        choice, not a hand-off credential, so whatever forced-change gate was pending is now
+        satisfied."""
         if not new_password_hash:
             raise DomainError("password hash must not be empty")
         self.password_hash = new_password_hash
+        self.is_password_change_required = False
         self.updated_at = clock.now()
         self._record(
             iam_events.user_password_changed(
+                user_id=str(self.id),
+                organization_id=self._org_id_value(),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def set_temporary_password_hash(
+        self, new_password_hash: str, *, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """ADR-0017/ADR-0003 Extension: an admin (RAAD staff onboarding an Org Admin, or an Org
+        Admin creating a Parent/Driver account) generates and hands off a one-time credential —
+        the recipient must change it before doing anything else. Distinct from
+        `change_password_hash` precisely in that it *sets* (rather than clears)
+        `is_password_change_required`."""
+        if not new_password_hash:
+            raise DomainError("password hash must not be empty")
+        self.password_hash = new_password_hash
+        self.is_password_change_required = True
+        self.updated_at = clock.now()
+        self._record(
+            iam_events.user_temporary_password_set(
                 user_id=str(self.id),
                 organization_id=self._org_id_value(),
                 occurred_at=clock.now(),

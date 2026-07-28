@@ -218,10 +218,12 @@ from raad.modules.transport_ops.api.schemas import (
     AssignStudentToRouteRequest,
     ChangeTripDriverRequest,
     CreateRouteRequest,
+    DriverCreatedResponse,
     DriverResponse,
     DriverSummaryResponse,
     EnrollStudentRequest,
     LinkParentToStudentRequest,
+    ParentCreatedResponse,
     ParentForStudentResponse,
     ParentResponse,
     ParentSummaryResponse,
@@ -689,13 +691,15 @@ async def update_student_status(
 
 @parents_router.post(
     "",
-    response_model=ParentResponse,
+    response_model=ParentCreatedResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new parent",
     description=(
         "Org Admin (API Contracts §4.3). Authorization uses `require_permission`, resolving "
         "against the real seeded RBAC permission matrix (ADR-0004), matching "
-        "`enroll_student`'s posture."
+        "`enroll_student`'s posture. ADR-0003 (accepted): also provisions the linked "
+        "`iam.User` (role=parent) with a generated one-time temporary password, returned here "
+        "exactly once for hand-off — never re-derivable via `GET /parents/{id}`."
     ),
 )
 async def register_parent(
@@ -705,16 +709,18 @@ async def register_parent(
     ),
     parent_service: ParentApplicationService = Depends(get_parent_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
-) -> ParentResponse:
+) -> ParentCreatedResponse:
     command = RegisterParentCommand(
         organization_id=body.organization_id,
-        user_id=body.user_id,
         full_name=body.full_name,
+        email=body.email,
         phone=body.phone,
         actor=principal,
     )
-    parent = await parent_service.register_parent(command, uow=uow)
-    return _parent_dto_to_response(parent)
+    parent, temporary_password = await parent_service.register_parent(command, uow=uow)
+    return ParentCreatedResponse(
+        parent=_parent_dto_to_response(parent), temporary_password=temporary_password
+    )
 
 
 @parents_router.get(
@@ -959,7 +965,7 @@ async def list_students_for_parent(
 
 @drivers_router.post(
     "",
-    response_model=DriverResponse,
+    response_model=DriverCreatedResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new driver",
     description=(
@@ -967,7 +973,9 @@ async def list_students_for_parent(
         "docstring for the full gap: Database Design §6.1/ADR-0001 define the `drivers` table "
         "and its ownership unambiguously, but API Contracts §4.3 lists no `/drivers` resource "
         "row). Authorization uses `require_permission`, resolving against the real seeded "
-        "RBAC permission matrix (ADR-0004), matching `enroll_student`'s posture."
+        "RBAC permission matrix (ADR-0004), matching `enroll_student`'s posture. ADR-0003 "
+        "(accepted): also provisions the linked `iam.User` (role=driver) with a generated "
+        "one-time temporary password, returned here exactly once for hand-off."
     ),
 )
 async def register_driver(
@@ -977,15 +985,19 @@ async def register_driver(
     ),
     driver_service: DriverApplicationService = Depends(get_driver_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
-) -> DriverResponse:
+) -> DriverCreatedResponse:
     command = RegisterDriverCommand(
         organization_id=body.organization_id,
-        user_id=body.user_id,
+        full_name=body.full_name,
+        email=body.email,
+        phone=body.phone,
         license_no=body.license_no,
         actor=principal,
     )
-    driver = await driver_service.register_driver(command, uow=uow)
-    return _driver_dto_to_response(driver)
+    driver, temporary_password = await driver_service.register_driver(command, uow=uow)
+    return DriverCreatedResponse(
+        driver=_driver_dto_to_response(driver), temporary_password=temporary_password
+    )
 
 
 @drivers_router.get(

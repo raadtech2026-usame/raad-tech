@@ -280,6 +280,37 @@ class UserStateTransitionTests(unittest.TestCase):
         self.assertEqual(user.password_hash, "new-hash-value")
         self.assertEqual(user.pull_domain_events()[0].event_type, "UserPasswordChanged")
 
+    def test_change_password_hash_clears_password_change_required_flag(self) -> None:
+        """ADR-0017: a deliberate password choice satisfies whatever forced-change gate was
+        pending."""
+        user = self.make_user()
+        user.is_password_change_required = True
+        user.change_password_hash(
+            "new-hash-value",
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        self.assertFalse(user.is_password_change_required)
+
+    def test_set_temporary_password_hash_rejects_empty_hash(self) -> None:
+        user = self.make_user()
+        with self.assertRaises(DomainError):
+            user.set_temporary_password_hash(
+                "", clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+            )
+
+    def test_set_temporary_password_hash_sets_flag_and_records_event(self) -> None:
+        user = self.make_user()
+        self.assertFalse(user.is_password_change_required)
+        user.set_temporary_password_hash(
+            "temp-hash-value",
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(user.password_hash, "temp-hash-value")
+        self.assertTrue(user.is_password_change_required)
+        self.assertEqual(
+            user.pull_domain_events()[0].event_type, "UserTemporaryPasswordSet"
+        )
+
     def test_enable_mfa_idempotent_no_event_when_already_enabled(self) -> None:
         user = self.make_user()
         user.enable_mfa(clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)))

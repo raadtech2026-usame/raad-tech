@@ -33,6 +33,15 @@ class PrincipalResponse(BaseModel):
             "resolves to an empty list, matching that resolver's own documented formula."
         ),
     )
+    is_password_change_required: bool = Field(
+        default=False,
+        description=(
+            "ADR-0017: true when this session was issued to a user still holding a one-time "
+            "hand-off temporary password. The frontend gates every other route behind a forced "
+            "'change your password' screen until `POST /auth/change-password` clears it — a "
+            "server-enforced flag, not a client-only check (`.claude/rules/frontend.md` #2)."
+        ),
+    )
 
 
 class TokenResponse(BaseModel):
@@ -63,6 +72,7 @@ class UserResponse(BaseModel):
     updated_at: datetime
     mfa_enabled: bool
     last_login_at: datetime | None
+    is_password_change_required: bool
 
 
 class CreateUserRequest(BaseModel):
@@ -71,6 +81,16 @@ class CreateUserRequest(BaseModel):
     email: str | None = None
     phone: str | None = None
     full_name: str
+
+
+class ChangePasswordRequest(BaseModel):
+    """`POST /auth/change-password` (new — ADR-0017). Self-service only: the caller changes
+    their own password, identified by the bearer token (`Depends(get_current_user)`), never an
+    arbitrary `user_id` in the body. No prior-password verification field exists on
+    `ChangePasswordCommand`/`UserApplicationService.change_password` today — this route reuses
+    that same, already-existing application-layer capability unchanged."""
+
+    new_password: str
 
 
 class UpdateUserRequest(BaseModel):

@@ -23,7 +23,10 @@ data source like `tracking`'s Redis latest-position cache for `Student`.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+
 from raad.core.db.unit_of_work import UnitOfWork
+from raad.core.tenancy.principal import Principal, Role
 from raad.modules.transport_ops.domain.repositories import (
     DriverRepository,
     ParentRepository,
@@ -56,3 +59,29 @@ class TransportOpsUnitOfWork(UnitOfWork):
     routes: RouteRepository
     trips: TripRepository
     student_assignments: StudentAssignmentRepository
+
+
+class UserProvisioningPort(ABC):
+    """ADR-0003 (accepted): creates the login-capable `iam.User` a `Parent`/`Driver`
+    registration depends on (Database Design §6.3/§6.1 both make `user_id` a required,
+    already-valid input) — via `iam`'s own public application-service surface, never its
+    repository/ORM layer. Owned by this module (the consuming module), satisfied by
+    `infra.adapters.IamUserProvisioningAdapter`, matching every other outbound port in this
+    codebase's own "interface defined by the consumer, implemented by the provider" shape.
+
+    Returns a `(user_id, temporary_password)` pair — the plaintext temporary password is
+    surfaced to the caller (an Org Admin registering a Parent/Driver) exactly once, in the same
+    response, for hand-off; it is never persisted or retrievable again afterward."""
+
+    @abstractmethod
+    async def create_user_with_temporary_password(
+        self,
+        *,
+        organization_id: str,
+        role: Role,
+        email: str | None,
+        phone: str | None,
+        full_name: str,
+        actor: Principal,
+    ) -> tuple[str, str]:
+        raise NotImplementedError
