@@ -30,8 +30,8 @@ Domain/Application is out of scope this phase):
   + `/regions` to this module), so it needs an explicit design decision, not an invented one
   here.
 - `PATCH /organizations/{id}`'s `billing_model` field — see `UpdateOrganizationRequest`'s
-  docstring (`api/schemas.py`): the `Organization` aggregate has no `change_billing_model`
-  behavior by deliberate design (Phase 6.1), so only `status` is accepted.
+  docstring (`api/schemas.py`): `Organization` had no `change_billing_model` behavior even
+  before ADR-0016 removed the field from the aggregate entirely, so only `status` is accepted.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ from raad.modules.organization.application.services import (
     OrganizationApplicationService,
     RegionApplicationService,
 )
-from raad.modules.organization.domain.value_objects import BillingModel, OrgType
+from raad.modules.organization.domain.value_objects import OrgType
 
 organizations_router = APIRouter()
 regions_router = APIRouter()
@@ -106,15 +106,6 @@ def _parse_org_type(value: str) -> OrgType:
         ) from exc
 
 
-def _parse_billing_model(value: str) -> BillingModel:
-    try:
-        return BillingModel(value)
-    except ValueError as exc:
-        raise ValidationError(
-            f"Unknown billing_model: {value!r}", details={"field": "billing_model"}
-        ) from exc
-
-
 def _organization_dto_to_response(
     organization: OrganizationDTO,
 ) -> OrganizationResponse:
@@ -124,7 +115,6 @@ def _organization_dto_to_response(
         org_type=organization.org_type,
         parent_org_id=organization.parent_org_id,
         region_id=organization.region_id,
-        billing_model=organization.billing_model,
         status=organization.status,
         created_at=organization.created_at,
         updated_at=organization.updated_at,
@@ -200,7 +190,6 @@ async def register_organization(
         name=body.name,
         org_type=_parse_org_type(body.org_type),
         region_id=body.region_id,
-        billing_model=_parse_billing_model(body.billing_model),
         parent_org_id=body.parent_org_id,
         admin_full_name=body.admin_full_name,
         admin_email=body.admin_email,

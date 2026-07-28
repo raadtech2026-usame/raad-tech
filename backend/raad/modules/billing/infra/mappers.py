@@ -30,8 +30,6 @@ from raad.modules.billing.domain.value_objects import (
     PlanId,
     PlanStatus,
     StudentId,
-    SubscriberId,
-    SubscriberType,
     SubscriptionId,
     SubscriptionStatus,
     TransportFeeId,
@@ -91,8 +89,6 @@ def subscription_to_model(
         existing if existing is not None else SubscriptionModel(id=str(subscription.id))
     )
     model.organization_id = str(subscription.organization_id)
-    model.subscriber_type = subscription.subscriber_type.value
-    model.subscriber_id = str(subscription.subscriber_id)
     model.plan_id = str(subscription.plan_id)
     model.status = subscription.status.value
     model.current_period_start = _to_naive_utc(subscription.current_period_start)
@@ -107,8 +103,6 @@ def model_to_subscription(model: SubscriptionModel) -> Subscription:
     return Subscription(
         id=SubscriptionId(model.id),
         organization_id=OrganizationId(model.organization_id),
-        subscriber_type=SubscriberType(model.subscriber_type),
-        subscriber_id=SubscriberId(model.subscriber_id),
         plan_id=PlanId(model.plan_id),
         status=SubscriptionStatus(model.status),
         current_period_start=model.current_period_start,

@@ -396,7 +396,6 @@ def _make_organization(
         org_type="school",
         parent_org_id=None,
         region_id="region-1",
-        billing_model="organization_pays",
         status="active",
         created_at=now,
         updated_at=now,

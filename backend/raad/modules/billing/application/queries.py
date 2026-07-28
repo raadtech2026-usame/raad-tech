@@ -99,8 +99,6 @@ class ListSubscriptionsQuery:
 class SubscriptionDTO:
     id: str
     organization_id: str
-    subscriber_type: str
-    subscriber_id: str
     plan_id: str
     status: str
     current_period_start: datetime | None
@@ -114,8 +112,6 @@ def subscription_to_dto(subscription: Subscription) -> SubscriptionDTO:
     return SubscriptionDTO(
         id=str(subscription.id),
         organization_id=str(subscription.organization_id),
-        subscriber_type=subscription.subscriber_type.value,
-        subscriber_id=str(subscription.subscriber_id),
         plan_id=str(subscription.plan_id),
         status=subscription.status.value,
         current_period_start=subscription.current_period_start,

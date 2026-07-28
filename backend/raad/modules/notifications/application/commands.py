@@ -5,8 +5,8 @@ mirroring `billing.application.commands`'s exact shape.
 **`CreateNotificationCommand` has no approved HTTP route** — API Contracts §4.6 documents no
 generic `POST /notifications`; it is the application-layer entry point the future Notification
 Worker will call once event consumption/broker wiring exists (out of this phase's scope), the
-same "use-case exists, no approved endpoint yet" posture `RenewParentSubscriptionCommand`
-already establishes for `billing`.
+same "use-case exists, no approved endpoint yet" posture `billing.application.commands.
+OpenOrganizationSubscriptionCommand` already establishes.
 
 **Every other command backs a documented route 1:1** (API Contracts §4.6): `MarkNotificationRead`
 → `POST /notifications/{id}/read`; `RegisterDeviceToken` → `POST /notifications/tokens`;

@@ -6,7 +6,7 @@ migrated schema (Alembic head `addb6114f18a`), not fakes — mirroring
 
 Covers what no in-memory unit test can prove: the round trip through the real identity-map/
 `flush_tracked_changes` mechanics for all five aggregates, `SubscriptionRepository.
-get_active_by_subscriber`'s direct-`select()` correctness, and `PaymentRepository.
+get_active_by_organization`'s direct-`select()` correctness, and `PaymentRepository.
 get_by_idempotency_key`'s direct-`select()` correctness. The DB-level uniqueness proof of
 `ux_payments__idempotency_key`/`ux_payments__provider_provider_ref`/`ux_invoices__number` lives
 in `test_postgres_repository_invariants.py`, not duplicated here.
@@ -43,8 +43,6 @@ from raad.modules.billing.domain.value_objects import (
     PaymentId,
     PlanId,
     StudentId,
-    SubscriberId,
-    SubscriberType,
     SubscriptionId,
     TransportFeeId,
 )
@@ -114,7 +112,7 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         plan = Plan.create(
             id=PlanId(self.id_generator.new_id()),
             name=f"Plan {self.tag}",
-            billing_scope=BillingScope.PARENT,
+            billing_scope=BillingScope.ORGANIZATION,
             price=Money(15.00, "USD"),
             billing_cycle=BillingCycle.MONTHLY,
             clock=self.clock,
@@ -131,8 +129,6 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         subscription = Subscription.open(
             id=SubscriptionId(self.id_generator.new_id()),
             organization_id=OrganizationId(org_id),
-            subscriber_type=SubscriberType.PARENT,
-            subscriber_id=SubscriberId(self.id_generator.new_id()),
             plan_id=plan_id,
             clock=self.clock,
         )
@@ -200,15 +196,13 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(fetched.organization_id), org_id)
         self.assertEqual(fetched.status.value, "trial")
 
-    async def test_get_active_by_subscriber_finds_non_terminal_subscription(self) -> None:
+    async def test_get_active_by_organization_finds_non_terminal_subscription(self) -> None:
         org_id = self.id_generator.new_id()
         async with self._new_uow() as uow:
             plan_id = await self._seed_plan(uow)
             subscription = Subscription.open(
                 id=SubscriptionId(self.id_generator.new_id()),
                 organization_id=OrganizationId(org_id),
-                subscriber_type=SubscriberType.PARENT,
-                subscriber_id=SubscriberId(f"subscriber-{self.tag}"),
                 plan_id=plan_id,
                 clock=self.clock,
             )
@@ -218,22 +212,19 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
             self._created_subscription_ids.append(str(subscription.id))
 
         async with self._new_uow() as uow:
-            found = await uow.subscriptions.get_active_by_subscriber(
-                SubscriberType.PARENT, SubscriberId(f"subscriber-{self.tag}")
+            found = await uow.subscriptions.get_active_by_organization(
+                OrganizationId(org_id)
             )
         self.assertIsNotNone(found)
         self.assertEqual(str(found.id), str(subscription.id))
 
-    async def test_get_active_by_subscriber_excludes_cancelled(self) -> None:
+    async def test_get_active_by_organization_excludes_cancelled(self) -> None:
         org_id = self.id_generator.new_id()
-        subscriber_id = SubscriberId(f"cancelled-{self.tag}")
         async with self._new_uow() as uow:
             plan_id = await self._seed_plan(uow)
             subscription = Subscription.open(
                 id=SubscriptionId(self.id_generator.new_id()),
                 organization_id=OrganizationId(org_id),
-                subscriber_type=SubscriberType.PARENT,
-                subscriber_id=subscriber_id,
                 plan_id=plan_id,
                 clock=self.clock,
             )
@@ -244,8 +235,8 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
             self._created_subscription_ids.append(str(subscription.id))
 
         async with self._new_uow() as uow:
-            found = await uow.subscriptions.get_active_by_subscriber(
-                SubscriberType.PARENT, subscriber_id
+            found = await uow.subscriptions.get_active_by_organization(
+                OrganizationId(org_id)
             )
         self.assertIsNone(found)
 
@@ -451,23 +442,35 @@ class PlanPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.total, 3)
         self.assertEqual(len(page.data), 2)
 
-    async def test_list_page_filters_by_billing_scope(self) -> None:
-        await self._seed_plan(
-            name=f"Org Plan {self.tag}", billing_scope=BillingScope.ORGANIZATION
-        )
-        await self._seed_plan(
-            name=f"Parent Plan {self.tag}", billing_scope=BillingScope.PARENT
-        )
+    async def test_list_page_filters_by_billing_cycle(self) -> None:
+        """Replaces the former `test_list_page_filters_by_billing_scope` — ADR-0016 removed
+        `BillingScope.PARENT`, leaving `billing_scope` with exactly one value, so filtering by
+        it can no longer distinguish rows. `billing_cycle` exercises the identical whitelisted
+        filter mechanism with a field that still has multiple values."""
+        await self._seed_plan(name=f"Monthly Plan {self.tag}")
+        async with self._new_uow() as uow:
+            plan = Plan.create(
+                id=PlanId(self.id_generator.new_id()),
+                name=f"Annual Plan {self.tag}",
+                billing_scope=BillingScope.ORGANIZATION,
+                price=Money(15.00, "USD"),
+                billing_cycle=BillingCycle.ANNUAL,
+                clock=self.clock,
+            )
+            uow.plans.add(plan)
+            uow.record_events(plan.pull_domain_events())
+            await uow.commit()
+            self._created_plan_ids.append(str(plan.id))
 
         async with self._new_uow() as uow:
             page = await uow.plans.list_page(
                 OffsetPageRequest(),
                 sort=[],
-                filters=[FilterCondition(field="billing_scope", op="eq", value="parent")],
+                filters=[FilterCondition(field="billing_cycle", op="eq", value="annual")],
                 search=self.tag,
             )
         self.assertEqual(page.total, 1)
-        self.assertEqual(page.data[0].name, f"Parent Plan {self.tag}")
+        self.assertEqual(page.data[0].name, f"Annual Plan {self.tag}")
 
     async def test_list_page_search_matches_name_substring(self) -> None:
         await self._seed_plan(name=f"Findable-{self.tag}")
@@ -507,9 +510,10 @@ class PlanPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_db_available(), _SKIP_REASON)
 class SubscriptionPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
     """Exercises `SqlAlchemySubscriptionRepository.list_page` against real SQL. Isolates each
-    test's rows by filtering on `subscriber_id` (each seeded with a `self.tag`-unique value) -
-    the same "filter on a value only this test's own rows can have" isolation
-    `InvoicePaginationRepositoryTests` uses via `subscription_id` below.
+    test's rows by filtering on `organization_id` (each seeded with a `self.tag`-unique value,
+    ADR-0016: `Subscription` keys on `organization_id` alone now, replacing the former
+    `subscriber_id`-based isolation) - the same "filter on a value only this test's own rows can
+    have" isolation `InvoicePaginationRepositoryTests` uses via `subscription_id` below.
     `SqlAlchemySubscriptionRepository.searchable_fields` is empty (`infra/repositories.py`), so
     no search test exists here, matching that deliberate no-search-field posture."""
 
@@ -549,7 +553,7 @@ class SubscriptionPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
             plan = Plan.create(
                 id=PlanId(self.id_generator.new_id()),
                 name=f"Subscription Page Plan {self.tag}",
-                billing_scope=BillingScope.PARENT,
+                billing_scope=BillingScope.ORGANIZATION,
                 price=Money(15.00, "USD"),
                 billing_cycle=BillingCycle.MONTHLY,
                 clock=self.clock,
@@ -561,14 +565,12 @@ class SubscriptionPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
             return plan.id
 
     async def _seed_subscription(
-        self, plan_id: PlanId, *, subscriber_suffix: str
+        self, plan_id: PlanId, *, org_suffix: str
     ) -> Subscription:
         async with self._new_uow() as uow:
             subscription = Subscription.open(
                 id=SubscriptionId(self.id_generator.new_id()),
-                organization_id=OrganizationId(self.id_generator.new_id()),
-                subscriber_type=SubscriberType.PARENT,
-                subscriber_id=SubscriberId(f"{self.tag}-{subscriber_suffix}"),
+                organization_id=OrganizationId(f"{self.tag}-{org_suffix}"),
                 plan_id=plan_id,
                 clock=self.clock,
             )
@@ -581,7 +583,7 @@ class SubscriptionPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_page_paginates_and_reports_total(self) -> None:
         plan_id = await self._seed_plan()
         for i in range(3):
-            await self._seed_subscription(plan_id, subscriber_suffix=f"p-{i}")
+            await self._seed_subscription(plan_id, org_suffix=f"p-{i}")
 
         async with self._new_uow() as uow:
             page = await uow.subscriptions.list_page(
@@ -589,7 +591,7 @@ class SubscriptionPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 sort=[SortSpec(field="created_at")],
                 filters=[
                     FilterCondition(
-                        field="subscriber_id",
+                        field="organization_id",
                         op="in",
                         value=",".join(
                             f"{self.tag}-p-{i}" for i in range(3)
@@ -603,8 +605,8 @@ class SubscriptionPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_list_page_filters_by_status(self) -> None:
         plan_id = await self._seed_plan()
-        active = await self._seed_subscription(plan_id, subscriber_suffix="active")
-        suspended = await self._seed_subscription(plan_id, subscriber_suffix="suspended")
+        active = await self._seed_subscription(plan_id, org_suffix="active")
+        suspended = await self._seed_subscription(plan_id, org_suffix="suspended")
 
         async with self._new_uow() as uow:
             loaded = await uow.subscriptions.get(suspended.id)
@@ -618,7 +620,7 @@ class SubscriptionPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 sort=[],
                 filters=[
                     FilterCondition(
-                        field="subscriber_id",
+                        field="organization_id",
                         op="in",
                         value=",".join(
                             [
@@ -641,7 +643,9 @@ class SubscriptionPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 await uow.subscriptions.list_page(
                     OffsetPageRequest(),
                     sort=[],
-                    filters=[FilterCondition(field="organization_id", op="eq", value="x")],
+                    filters=[
+                        FilterCondition(field="current_period_start", op="eq", value="x")
+                    ],
                     search=None,
                 )
 
@@ -661,7 +665,7 @@ class InvoicePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
     """Exercises `SqlAlchemyInvoiceRepository.list_page` against real SQL. Isolates each test's
     rows by filtering on its own freshly-created `subscription_id` (never shared across tests) -
     safer than relying on `self.tag` alone for a `billing`-wide, no-tenant-scope query, the same
-    reasoning `SubscriptionPaginationRepositoryTests` applies via `subscriber_id`.
+    reasoning `SubscriptionPaginationRepositoryTests` applies via `organization_id`.
     """
 
     async def asyncSetUp(self) -> None:
@@ -706,7 +710,7 @@ class InvoicePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
             plan = Plan.create(
                 id=PlanId(self.id_generator.new_id()),
                 name=f"Invoice Page Plan {self.tag}",
-                billing_scope=BillingScope.PARENT,
+                billing_scope=BillingScope.ORGANIZATION,
                 price=Money(15.00, "USD"),
                 billing_cycle=BillingCycle.MONTHLY,
                 clock=self.clock,
@@ -722,8 +726,6 @@ class InvoicePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
             subscription = Subscription.open(
                 id=SubscriptionId(self.id_generator.new_id()),
                 organization_id=OrganizationId(self.id_generator.new_id()),
-                subscriber_type=SubscriberType.PARENT,
-                subscriber_id=SubscriberId(self.id_generator.new_id()),
                 plan_id=plan_id,
                 clock=self.clock,
             )

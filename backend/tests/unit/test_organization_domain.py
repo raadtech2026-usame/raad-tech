@@ -13,7 +13,6 @@ from raad.core.errors.exceptions import DomainError
 from raad.core.time.clock import Clock
 from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.value_objects import (
-    BillingModel,
     OrgType,
     OrganizationId,
     OrganizationStatus,
@@ -57,7 +56,6 @@ class OrganizationInvariantTests(unittest.TestCase):
             org_type=OrgType.SCHOOL,
             parent_org_id=None,
             region_id=RegionId(VALID_REGION_ULID),
-            billing_model=BillingModel.ORGANIZATION_PAYS,
             status=OrganizationStatus.ACTIVE,
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -93,7 +91,6 @@ class OrganizationRegisterTests(unittest.TestCase):
             name="Sunrise School",
             org_type=OrgType.SCHOOL,
             region_id=RegionId(VALID_REGION_ULID),
-            billing_model=BillingModel.ORGANIZATION_PAYS,
             clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
         )
         self.assertEqual(org.status, OrganizationStatus.ACTIVE)
@@ -104,7 +101,6 @@ class OrganizationRegisterTests(unittest.TestCase):
             name="Sunrise School",
             org_type=OrgType.SCHOOL,
             region_id=RegionId(VALID_REGION_ULID),
-            billing_model=BillingModel.ORGANIZATION_PAYS,
             clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
         )
         events = org.pull_domain_events()
@@ -117,7 +113,6 @@ class OrganizationRegisterTests(unittest.TestCase):
             name="Sub Campus",
             org_type=OrgType.SCHOOL,
             region_id=RegionId(VALID_REGION_ULID),
-            billing_model=BillingModel.PARENT_PAYS,
             parent_org_id=OrganizationId(VALID_PARENT_ULID),
             clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
         )
@@ -134,7 +129,6 @@ class OrganizationStatusTransitionTests(unittest.TestCase):
             org_type=OrgType.SCHOOL,
             parent_org_id=None,
             region_id=RegionId(VALID_REGION_ULID),
-            billing_model=BillingModel.ORGANIZATION_PAYS,
             status=status,
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -193,7 +187,6 @@ class OrganizationGeofenceTests(unittest.TestCase):
             org_type=OrgType.SCHOOL,
             parent_org_id=None,
             region_id=RegionId(VALID_REGION_ULID),
-            billing_model=BillingModel.ORGANIZATION_PAYS,
             status=OrganizationStatus.ACTIVE,
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -264,7 +257,6 @@ class OrganizationApproachingDistanceTests(unittest.TestCase):
             org_type=OrgType.SCHOOL,
             parent_org_id=None,
             region_id=RegionId(VALID_REGION_ULID),
-            billing_model=BillingModel.ORGANIZATION_PAYS,
             status=OrganizationStatus.ACTIVE,
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),

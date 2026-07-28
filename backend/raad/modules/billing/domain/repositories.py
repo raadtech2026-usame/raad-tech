@@ -31,10 +31,9 @@ from raad.modules.billing.domain.entities import (
 )
 from raad.modules.billing.domain.value_objects import (
     InvoiceId,
+    OrganizationId,
     PaymentId,
     PlanId,
-    SubscriberId,
-    SubscriberType,
     SubscriptionId,
     TransportFeeId,
 )
@@ -104,16 +103,18 @@ class SubscriptionRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_active_by_subscriber(
-        self, subscriber_type: SubscriberType, subscriber_id: SubscriberId
+    async def get_active_by_organization(
+        self, organization_id: OrganizationId
     ) -> Subscription | None:
-        """Not from any LLD contract skeleton — added because `RenewParentSubscriptionCommand`
-        (LLD §4.2) needs to find an existing subscription to extend rather than blindly opening
-        a duplicate every renewal, and no document states whether "active" here should include
+        """Not from any LLD contract skeleton — added because opening/renewing an organization's
+        subscription needs to find an existing one to extend rather than blindly opening a
+        duplicate every time, and no document states whether "active" here should include
         `TRIAL` — reads it as "not `EXPIRED`/`CANCELLED`" (i.e. `TRIAL`, `ACTIVE`, or
         `SUSPENDED`), the most conservative reading that still avoids creating a second row for
-        a subscriber who already has one in flight. Flagged as this phase's own interpretive
-        choice, not a documented method."""
+        an organization that already has one in flight. Flagged as this phase's own
+        interpretive choice, not a documented method. ADR-0016: renamed from the former
+        `get_active_by_subscriber(subscriber_type, subscriber_id)` now that `Subscription` keys
+        on `organization_id` alone."""
         raise NotImplementedError
 
 

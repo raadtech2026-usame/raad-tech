@@ -13,14 +13,14 @@ itself, for the identical reason `transport_ops.domain.policies`/`tracking.domai
 already give for their own modules:
 
 - Evaluating the policy needs `assignment_state` (a `transport_ops.StudentAssignment` fact) and
-  `billing_model`/`subscription_state` (an `organization`/`billing.Subscription` fact) already
-  resolved — this module's own repositories can only query its own tables
-  (`.claude/rules/backend.md` #3, no cross-module DB reads), so it has no independent way to
-  resolve those facts itself even if it wanted to.
+  `subscription_state` (a `billing.Subscription` fact, the organization's own — ADR-0016 removed
+  the former `billing_model` input) already resolved — this module's own repositories can only
+  query its own tables (`.claude/rules/backend.md` #3, no cross-module DB reads), so it has no
+  independent way to resolve those facts itself even if it wanted to.
 - Wiring `SubscriptionAccessPolicy.evaluate(...)` into an actual call site is "an
   enforcement-point concern... for a later phase" (`transport_ops.domain.policies`'s own Phase
   14 note) — specifically, the future Notification Worker's own orchestration, which would
-  resolve the three inputs from already-consumed events/read-models and decide *whether to call*
+  resolve the two inputs from already-consumed events/read-models and decide *whether to call*
   `create_notification` at all for a denied parent, rather than `create_notification` re-deriving
   the decision after the fact.
 

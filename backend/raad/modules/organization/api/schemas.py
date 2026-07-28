@@ -4,10 +4,11 @@ application layer's plain-dataclass commands/DTOs. No business logic lives here;
 that translation (`routers.py`), never the schemas themselves. Mirrors
 `iam.api.schemas`'s shape exactly.
 
-`org_type`/`billing_model`/`status` are transported as the approved lower-case snake_case
-strings (Database Design §4.1/§4.2, e.g. `"billing_model": "organization_pays"`), matching
-`organization.domain.value_objects`' enum values one-for-one — no case-folding translation is
-needed here (unlike `iam.api.schemas`'s `Role`, whose domain values are upper-case).
+`org_type`/`status` are transported as the approved lower-case snake_case strings (Database
+Design §4.1/§4.2), matching `organization.domain.value_objects`' enum values one-for-one — no
+case-folding translation is needed here (unlike `iam.api.schemas`'s `Role`, whose domain values
+are upper-case). **ADR-0016 (RAAD business model realignment) removed `billing_model` from
+every schema below** — RAAD bills Organizations only now.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ class OrganizationResponse(BaseModel):
     org_type: str
     parent_org_id: str | None
     region_id: str
-    billing_model: str
     status: str
     created_at: datetime
     updated_at: datetime
@@ -38,7 +38,6 @@ class RegisterOrganizationRequest(BaseModel):
     name: str
     org_type: str
     region_id: str
-    billing_model: str
     parent_org_id: str | None = None
     admin_full_name: str
     admin_email: str | None = None
@@ -64,12 +63,12 @@ class UpdateOrganizationRequest(BaseModel):
     field must be given.
 
     API Contracts §4.1 also lists `billing_model` as a `PATCH /organizations/{id}` input
-    (**CR-1**). That is deliberately **not** included here: `organization.domain.entities.
-    Organization`'s own docstring records that `change_billing_model` was deliberately left
-    unimplemented, since neither the Database Design nor Phase 2 §18 documents a rule for
-    changing it post-registration. Adding it would mean inventing an undocumented domain
-    transition rather than implementing an approved one — flagged rather than silently
-    built or silently dropped.
+    (**CR-1**). Never wired here even before ADR-0016 — `organization.domain.entities.
+    Organization`'s own docstring recorded that `change_billing_model` was deliberately left
+    unimplemented, since neither the Database Design nor Phase 2 §18 documented a rule for
+    changing it post-registration. ADR-0016 (RAAD business model realignment) has since removed
+    `billing_model` from the aggregate entirely — there is nothing left to change, so this is no
+    longer even a deferred field, just a historical API-Contracts-vs-implementation gap.
     """
 
     status: str | None = None

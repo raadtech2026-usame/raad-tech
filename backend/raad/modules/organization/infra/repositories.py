@@ -69,7 +69,6 @@ class SqlAlchemyOrganizationRepository(
     filterable_fields = {
         "org_type": FilterField(column="org_type"),
         "region_id": FilterField(column="region_id"),
-        "billing_model": FilterField(column="billing_model"),
         "status": FilterField(column="status"),
         "parent_org_id": FilterField(column="parent_org_id"),
     }

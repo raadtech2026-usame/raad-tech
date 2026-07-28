@@ -11,7 +11,6 @@ from datetime import datetime
 
 from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.value_objects import (
-    BillingModel,
     OrganizationId,
     OrganizationStatus,
     OrgType,
@@ -48,7 +47,6 @@ def organization_to_model(
         else None
     )
     model.region_id = str(organization.region_id)
-    model.billing_model = organization.billing_model.value
     model.status = organization.status.value
     model.created_at = _naive(organization.created_at)
     model.updated_at = _naive(organization.updated_at)
@@ -68,7 +66,6 @@ def model_to_organization(model: OrganizationModel) -> Organization:
             OrganizationId(model.parent_org_id) if model.parent_org_id else None
         ),
         region_id=RegionId(model.region_id),
-        billing_model=BillingModel(model.billing_model),
         status=OrganizationStatus(model.status),
         created_at=model.created_at,
         updated_at=model.updated_at,

@@ -124,8 +124,6 @@ def subscription_opened(
     *,
     subscription_id: str,
     organization_id: str,
-    subscriber_type: str,
-    subscriber_id: str,
     plan_id: str,
     occurred_at: datetime,
     actor_id: str | None,
@@ -137,8 +135,6 @@ def subscription_opened(
         org_id=organization_id,
         occurred_at=occurred_at,
         payload={
-            "subscriber_type": subscriber_type,
-            "subscriber_id": subscriber_id,
             "plan_id": plan_id,
             "actor_id": actor_id,
         },

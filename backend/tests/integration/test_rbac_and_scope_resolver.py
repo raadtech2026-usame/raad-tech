@@ -29,7 +29,6 @@ from raad.modules.iam.infra.adapters import IamPermissionEvaluator
 from raad.modules.iam.infra.repositories import SqlAlchemyIamUnitOfWork
 from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.value_objects import (
-    BillingModel,
     OrgType,
     OrganizationId,
     RegionId,
@@ -236,7 +235,6 @@ class OrganizationScopeResolverRoundTripTests(unittest.IsolatedAsyncioTestCase):
                 name=f"Org {self.tag}",
                 org_type=OrgType.SCHOOL,
                 region_id=region.id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 clock=self.clock,
             )
             uow.organizations.add(organization)

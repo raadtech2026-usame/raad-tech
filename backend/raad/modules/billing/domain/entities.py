@@ -81,8 +81,6 @@ from raad.modules.billing.domain.value_objects import (
     PlanId,
     PlanStatus,
     StudentId,
-    SubscriberId,
-    SubscriberType,
     SubscriptionId,
     SubscriptionStatus,
     TransportFeeId,
@@ -242,11 +240,11 @@ class Plan(_AggregateRoot):
 
 
 class Subscription(_AggregateRoot):
-    """`subscriptions` (Database Design §8.2): governs which billing model (CR-1's
-    `billing_model` input, evaluated by `core.policies.SubscriptionAccessPolicy` — never
-    reimplemented here, only the `subscription_state` fact this aggregate produces) a
-    subscriber is on. Tenant-owned (`organization_id`, even for a `PARENT` subscriber — §8.2
-    lists it as `no, ix`, i.e. required regardless of `subscriber_type`).
+    """`subscriptions` (Database Design §8.2): governs the `subscription_state` fact
+    `core.policies.SubscriptionAccessPolicy` (CR-1) consumes — never reimplemented here, only
+    produced. **ADR-0016 (RAAD business model realignment): organization-only** — the former
+    polymorphic `subscriber_type`/`subscriber_id` (organization-or-parent) is removed;
+    `organization_id` is this aggregate's sole owner, matching "RAAD bills Organizations only."
     """
 
     def __init__(
@@ -254,8 +252,6 @@ class Subscription(_AggregateRoot):
         *,
         id: SubscriptionId,
         organization_id: OrganizationId,
-        subscriber_type: SubscriberType,
-        subscriber_id: SubscriberId,
         plan_id: PlanId,
         status: SubscriptionStatus,
         current_period_start: datetime | None,
@@ -267,8 +263,6 @@ class Subscription(_AggregateRoot):
         super().__init__()
         self.id = id
         self.organization_id = organization_id
-        self.subscriber_type = subscriber_type
-        self.subscriber_id = subscriber_id
         self.plan_id = plan_id
         self.status = status
         self.current_period_start = current_period_start
@@ -289,8 +283,6 @@ class Subscription(_AggregateRoot):
         *,
         id: SubscriptionId,
         organization_id: OrganizationId,
-        subscriber_type: SubscriberType,
-        subscriber_id: SubscriberId,
         plan_id: PlanId,
         auto_renew: bool = True,
         clock: Clock,
@@ -302,8 +294,6 @@ class Subscription(_AggregateRoot):
         subscription = cls(
             id=id,
             organization_id=organization_id,
-            subscriber_type=subscriber_type,
-            subscriber_id=subscriber_id,
             plan_id=plan_id,
             status=SubscriptionStatus.TRIAL,
             current_period_start=None,
@@ -316,8 +306,6 @@ class Subscription(_AggregateRoot):
             billing_events.subscription_opened(
                 subscription_id=str(id),
                 organization_id=str(organization_id),
-                subscriber_type=subscriber_type.value,
-                subscriber_id=str(subscriber_id),
                 plan_id=str(plan_id),
                 occurred_at=clock.now(),
                 actor_id=actor_id,

@@ -8,13 +8,13 @@ the actual recipient-resolution + CR-1-gating logic real dependencies would exer
 service-boundary `_NotificationFanOut` actually depends on.
 
 Covers the safety-critical CR-1 gating this file's own module docstring documents
-(`.claude/rules/testing.md` #3: CR-1 requires explicit regression tests): `ORGANIZATION_PAYS`
-always grants, `PARENT_PAYS` with an active subscription grants, `PARENT_PAYS` with no/lapsed
-subscription withholds the notification entirely (not a raised error — CR-1 denial for a
-*notification* means "don't send it", unlike an HTTP route's 403); no active assignment for the
-vehicle means zero notifications; the same parent linked to two students on the same vehicle is
-notified once, not twice; and the two geofence `EventProcessor`s correctly resolve `vehicle_id`
-from `trip_id` first.
+(`.claude/rules/testing.md` #3: CR-1 requires explicit regression tests) as amended by ADR-0016
+(RAAD business model realignment — RAAD bills Organizations only, no more `billing_model`
+branch): an active organization subscription grants, no/lapsed subscription withholds the
+notification entirely (not a raised error — CR-1 denial for a *notification* means "don't send
+it", unlike an HTTP route's 403); no active assignment for the vehicle means zero notifications;
+the same parent linked to two students on the same vehicle is notified once, not twice; and the
+two geofence `EventProcessor`s correctly resolve `vehicle_id` from `trip_id` first.
 """
 
 from __future__ import annotations
@@ -36,8 +36,6 @@ from raad.modules.notifications.events.subscribers import (
     VehicleApproachingStopNotifier,
     _NotificationFanOut,
 )
-from raad.modules.organization.application.ports import OrganizationUnitOfWork
-from raad.modules.organization.application.services import OrganizationApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
@@ -63,11 +61,6 @@ class _ParentLinkDTO:
 @dataclass(frozen=True)
 class _ParentDTO:
     user_id: str
-
-
-@dataclass(frozen=True)
-class _OrganizationDTO:
-    billing_model: str
 
 
 @dataclass(frozen=True)
@@ -121,19 +114,11 @@ class FakeParentService:
         return self._parents_by_id[query.parent_id]
 
 
-class FakeOrganizationService:
-    def __init__(self, billing_model: str) -> None:
-        self._billing_model = billing_model
-
-    async def get_organization_by_id(self, query, *, uow):
-        return _OrganizationDTO(billing_model=self._billing_model)
-
-
 class FakeBillingService:
     def __init__(self, subscription: _SubscriptionDTO | None) -> None:
         self._subscription = subscription
 
-    async def get_active_subscription_for_subscriber(self, subscriber_type, subscriber_id, *, uow):
+    async def get_active_subscription_for_organization(self, organization_id, *, uow):
         return self._subscription
 
 
@@ -165,7 +150,6 @@ def make_container(
     assignments: list[_AssignmentDTO],
     links_by_student: dict[str, list[_ParentLinkDTO]],
     parents_by_id: dict[str, _ParentDTO],
-    billing_model: str = "organization_pays",
     subscription: _SubscriptionDTO | None = _SubscriptionDTO(status="active"),
     trip_vehicle_id: str | None = None,
 ) -> tuple[Container, RecordingNotificationService]:
@@ -174,9 +158,6 @@ def make_container(
         StudentParentApplicationService, FakeStudentParentService(links_by_student)
     )
     container.bind_singleton(ParentApplicationService, FakeParentService(parents_by_id))
-    container.bind_singleton(
-        OrganizationApplicationService, FakeOrganizationService(billing_model)
-    )
     container.bind_singleton(BillingApplicationService, FakeBillingService(subscription))
     notification_service = RecordingNotificationService()
     container.bind_singleton(NotificationApplicationService, notification_service)
@@ -185,10 +166,13 @@ def make_container(
 
     # `TransportOpsUnitOfWork` actually IS used now — `notify_vehicle_watchers` opens it
     # directly to read `student_assignments.list_all()` (see that method's own docstring).
-    # The other three UoW types are resolved but never actually opened by the fakes above —
-    # bound to inert sentinels only so `container.resolve` doesn't raise `LookupError`.
+    # `BillingUnitOfWork`/`NotificationsUnitOfWork` are resolved but never actually opened by
+    # the fakes above — bound to inert sentinels only so `container.resolve` doesn't raise
+    # `LookupError`. ADR-0016 removed `OrganizationUnitOfWork`/`OrganizationApplicationService`
+    # from `_NotificationFanOut` entirely (no more `billing_model` resolution), so neither is
+    # bound here anymore.
     container.bind_singleton(TransportOpsUnitOfWork, FakeTransportOpsUnitOfWork(assignments))
-    for uow_type in (OrganizationUnitOfWork, BillingUnitOfWork, NotificationsUnitOfWork):
+    for uow_type in (BillingUnitOfWork, NotificationsUnitOfWork):
         container.bind_singleton(uow_type, object())
 
     return container, notification_service
@@ -234,14 +218,14 @@ class NotifyVehicleWatchersTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(notifications.created, [])
 
-    async def test_active_assignment_organization_pays_notifies(self) -> None:
+    async def test_active_assignment_with_active_org_subscription_notifies(self) -> None:
         container, notifications = make_container(
             assignments=[
                 _AssignmentDTO(student_id="s1", status="active", vehicle_id="veh-1")
             ],
             links_by_student={"s1": [_ParentLinkDTO(parent_id="p1")]},
             parents_by_id={"p1": _ParentDTO(user_id="user-1")},
-            billing_model="organization_pays",
+            subscription=_SubscriptionDTO(status="active"),
         )
         fan_out = _NotificationFanOut(container)
         await fan_out.notify_vehicle_watchers(
@@ -256,39 +240,17 @@ class NotifyVehicleWatchersTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(notifications.created), 1)
         self.assertEqual(notifications.created[0]["recipient_user_id"], "user-1")
 
-    async def test_parent_pays_with_active_subscription_notifies(self) -> None:
+    async def test_no_subscription_withholds_notification(self) -> None:
+        """CR-1 (`.claude/rules/testing.md` #3, safety-critical). An organization with no
+        active subscription must not have its parents notified — withheld silently, not a
+        raised error, matching a notification's own "don't send it" semantics. ADR-0016: gated
+        on the organization's own subscription now, not a per-parent one."""
         container, notifications = make_container(
             assignments=[
                 _AssignmentDTO(student_id="s1", status="active", vehicle_id="veh-1")
             ],
             links_by_student={"s1": [_ParentLinkDTO(parent_id="p1")]},
             parents_by_id={"p1": _ParentDTO(user_id="user-1")},
-            billing_model="parent_pays",
-            subscription=_SubscriptionDTO(status="active"),
-        )
-        fan_out = _NotificationFanOut(container)
-        await fan_out.notify_vehicle_watchers(
-            vehicle_id="veh-1",
-            organization_id=VALID_ORG_ULID,
-            type="trip_started",
-            title="t",
-            body="b",
-            data=None,
-            trip_id="trip-1",
-        )
-        self.assertEqual(len(notifications.created), 1)
-
-    async def test_parent_pays_with_no_subscription_withholds_notification(self) -> None:
-        """CR-1 (`.claude/rules/testing.md` #3, safety-critical). A `PARENT_PAYS` parent with
-        no active subscription must not receive the notification — withheld silently, not a
-        raised error, matching a notification's own "don't send it" semantics."""
-        container, notifications = make_container(
-            assignments=[
-                _AssignmentDTO(student_id="s1", status="active", vehicle_id="veh-1")
-            ],
-            links_by_student={"s1": [_ParentLinkDTO(parent_id="p1")]},
-            parents_by_id={"p1": _ParentDTO(user_id="user-1")},
-            billing_model="parent_pays",
             subscription=None,
         )
         fan_out = _NotificationFanOut(container)
@@ -303,14 +265,13 @@ class NotifyVehicleWatchersTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(notifications.created, [])
 
-    async def test_parent_pays_with_expired_subscription_withholds_notification(self) -> None:
+    async def test_expired_subscription_withholds_notification(self) -> None:
         container, notifications = make_container(
             assignments=[
                 _AssignmentDTO(student_id="s1", status="active", vehicle_id="veh-1")
             ],
             links_by_student={"s1": [_ParentLinkDTO(parent_id="p1")]},
             parents_by_id={"p1": _ParentDTO(user_id="user-1")},
-            billing_model="parent_pays",
             subscription=_SubscriptionDTO(status="expired"),
         )
         fan_out = _NotificationFanOut(container)
@@ -336,7 +297,6 @@ class NotifyVehicleWatchersTests(unittest.IsolatedAsyncioTestCase):
                 "s2": [_ParentLinkDTO(parent_id="p1")],
             },
             parents_by_id={"p1": _ParentDTO(user_id="user-1")},
-            billing_model="organization_pays",
         )
         fan_out = _NotificationFanOut(container)
         await fan_out.notify_vehicle_watchers(

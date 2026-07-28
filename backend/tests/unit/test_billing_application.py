@@ -4,7 +4,7 @@
 repositories bundled onto one fake `BillingUnitOfWork`, plus a fake `PaymentProviderPort` — no
 SQLAlchemy, no FastAPI, no real database.
 
-Covers: Plan CRUD-lite, `renew_parent_subscription`'s open-or-reuse orchestration, Subscription
+Covers: Plan CRUD-lite, `open_organization_subscription`'s open-or-reuse orchestration, Subscription
 status transitions, Invoice issuance/void, Payment idempotency (find-or-return), the documented
 "no provider bound -> NotImplementedError at the charge step, Payment already persisted as
 PENDING" behavior, the successful-charge path with a bound fake provider,
@@ -41,7 +41,7 @@ from raad.modules.billing.application.commands import (
     MarkTransportFeeOverdueCommand,
     MarkTransportFeePaidCommand,
     PaymentCallbackCommand,
-    RenewParentSubscriptionCommand,
+    OpenOrganizationSubscriptionCommand,
     SuspendSubscriptionCommand,
     VoidInvoiceCommand,
     WaiveTransportFeeCommand,
@@ -77,10 +77,9 @@ from raad.modules.billing.domain.repositories import (
 from raad.modules.billing.domain.value_objects import (
     InvoiceId,
     Money,
+    OrganizationId,
     PaymentId,
     PlanId,
-    SubscriberId,
-    SubscriberType,
     SubscriptionId,
     TransportFeeId,
 )
@@ -236,15 +235,14 @@ class InMemorySubscriptionRepository(SubscriptionRepository):
             search=search,
         )
 
-    async def get_active_by_subscriber(
-        self, subscriber_type: SubscriberType, subscriber_id: SubscriberId
+    async def get_active_by_organization(
+        self, organization_id: OrganizationId
     ) -> Subscription | None:
         return next(
             (
                 s
                 for s in self.by_id.values()
-                if s.subscriber_type == subscriber_type
-                and str(s.subscriber_id) == str(subscriber_id)
+                if str(s.organization_id) == str(organization_id)
                 and s.status.value in ("trial", "active", "suspended")
             ),
             None,
@@ -449,7 +447,7 @@ class SubscriptionApplicationTests(unittest.IsolatedAsyncioTestCase):
         plan = await service.create_plan(
             CreatePlanCommand(
                 name="Parent Plan",
-                billing_scope="parent",
+                billing_scope="organization",
                 amount=10.00,
                 currency="USD",
                 billing_cycle="monthly",
@@ -460,19 +458,17 @@ class SubscriptionApplicationTests(unittest.IsolatedAsyncioTestCase):
         )
         return plan.id
 
-    async def test_renew_parent_subscription_opens_new_subscription_and_issues_invoice(
+    async def test_open_organization_subscription_opens_new_subscription_and_issues_invoice(
         self,
     ) -> None:
         service = make_service()
         uow = make_uow()
         plan_id = await self._make_plan(service, uow)
 
-        invoice = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-ref-001",
                 plan_id=plan_id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -481,38 +477,34 @@ class SubscriptionApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(uow.subscriptions.by_id), 1)
         self.assertEqual(len(uow.invoices.by_id), 1)
 
-    async def test_renew_parent_subscription_reuses_existing_active_subscription(
+    async def test_open_organization_subscription_reuses_existing_active_subscription(
         self,
     ) -> None:
         service = make_service()
         uow = make_uow()
         plan_id = await self._make_plan(service, uow)
-        command = RenewParentSubscriptionCommand(
+        command = OpenOrganizationSubscriptionCommand(
             organization_id=VALID_ORG_ULID,
-            parent_id="parent-ref-002",
             plan_id=plan_id,
-            msisdn="+2526000000",
             actor=make_actor(),
         )
-        await service.renew_parent_subscription(command, uow=uow)
+        await service.open_organization_subscription(command, uow=uow)
         self.assertEqual(len(uow.subscriptions.by_id), 1)
 
-        await service.renew_parent_subscription(command, uow=uow)
+        await service.open_organization_subscription(command, uow=uow)
         self.assertEqual(
             len(uow.subscriptions.by_id), 1, "second renewal must reuse, not duplicate"
         )
         self.assertEqual(len(uow.invoices.by_id), 2, "each renewal issues its own invoice")
 
-    async def test_renew_parent_subscription_missing_plan_raises_not_found(self) -> None:
+    async def test_open_organization_subscription_missing_plan_raises_not_found(self) -> None:
         service = make_service()
         uow = make_uow()
         with self.assertRaises(NotFoundError):
-            await service.renew_parent_subscription(
-                RenewParentSubscriptionCommand(
+            await service.open_organization_subscription(
+                OpenOrganizationSubscriptionCommand(
                     organization_id=VALID_ORG_ULID,
-                    parent_id="parent-ref-003",
                     plan_id=NON_EXISTENT_ID,
-                    msisdn="+2526000000",
                     actor=make_actor(),
                 ),
                 uow=uow,
@@ -522,12 +514,10 @@ class SubscriptionApplicationTests(unittest.IsolatedAsyncioTestCase):
         service = make_service()
         uow = make_uow()
         plan_id = await self._make_plan(service, uow)
-        invoice = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-ref-004",
                 plan_id=plan_id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -558,12 +548,10 @@ class SubscriptionApplicationTests(unittest.IsolatedAsyncioTestCase):
         service = make_service()
         uow = make_uow()
         plan_id = await self._make_plan(service, uow)
-        await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-ref-005",
                 plan_id=plan_id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -591,12 +579,10 @@ class InvoiceApplicationTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        renewal = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        renewal = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-ref-006",
                 plan_id=plan.id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -654,7 +640,7 @@ class PaymentApplicationTests(unittest.IsolatedAsyncioTestCase):
         plan = await service.create_plan(
             CreatePlanCommand(
                 name="Parent Plan",
-                billing_scope="parent",
+                billing_scope="organization",
                 amount=25.00,
                 currency="USD",
                 billing_cycle="monthly",
@@ -663,12 +649,10 @@ class PaymentApplicationTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        invoice = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-ref-payment",
                 plan_id=plan.id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -973,7 +957,7 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
     async def test_sweep_expired_subscriptions_expires_past_period_end(self) -> None:
         """A `Subscription` only gets a real `current_period_end` once a payment actually
         succeeds (`handle_payment_callback(status="paid")` calls `Subscription.renew()`,
-        `application/services.py`'s own module docstring) — `renew_parent_subscription` alone
+        `application/services.py`'s own module docstring) — `open_organization_subscription` alone
         leaves it `TRIAL`/`current_period_end=None`. This test drives the full pay-and-confirm
         flow so the sweep has a real, in-the-past period end to find."""
         early_clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
@@ -985,7 +969,7 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
         plan = await early_service.create_plan(
             CreatePlanCommand(
                 name="Parent Plan",
-                billing_scope="parent",
+                billing_scope="organization",
                 amount=10.00,
                 currency="USD",
                 billing_cycle="monthly",
@@ -994,12 +978,10 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        renewal = await early_service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        renewal = await early_service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-ref-sweep-1",
                 plan_id=plan.id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -1047,7 +1029,7 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
         plan = await service.create_plan(
             CreatePlanCommand(
                 name="Parent Plan",
-                billing_scope="parent",
+                billing_scope="organization",
                 amount=10.00,
                 currency="USD",
                 billing_cycle="monthly",
@@ -1056,12 +1038,10 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        renewal = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        renewal = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-ref-sweep-2",
                 plan_id=plan.id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -1103,7 +1083,7 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
         plan = await early_service.create_plan(
             CreatePlanCommand(
                 name="Parent Plan",
-                billing_scope="parent",
+                billing_scope="organization",
                 amount=25.00,
                 currency="USD",
                 billing_cycle="monthly",
@@ -1112,12 +1092,10 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        invoice = await early_service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        invoice = await early_service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-ref-reconcile-1",
                 plan_id=plan.id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -1158,7 +1136,7 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
         plan = await service.create_plan(
             CreatePlanCommand(
                 name="Parent Plan",
-                billing_scope="parent",
+                billing_scope="organization",
                 amount=25.00,
                 currency="USD",
                 billing_cycle="monthly",
@@ -1167,12 +1145,10 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        invoice = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-ref-reconcile-2",
                 plan_id=plan.id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -1206,7 +1182,7 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
         plan = await service.create_plan(
             CreatePlanCommand(
                 name="Parent Plan",
-                billing_scope="parent",
+                billing_scope="organization",
                 amount=25.00,
                 currency="USD",
                 billing_cycle="monthly",
@@ -1215,12 +1191,10 @@ class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        invoice = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-ref-reconcile-3",
                 plan_id=plan.id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -1291,12 +1265,16 @@ class PlanPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(second_page.data), 1)
 
-    async def test_list_plans_filters_by_billing_scope(self) -> None:
+    async def test_list_plans_filters_by_billing_cycle(self) -> None:
+        """Replaces the former `test_list_plans_filters_by_billing_scope` — ADR-0016 removed
+        `BillingScope.PARENT`, leaving `billing_scope` with exactly one value (`organization`),
+        so filtering by it can no longer distinguish rows. `billing_cycle` exercises the
+        identical filterable-fields mechanism with a field that still has multiple values."""
         service = make_service()
         uow = make_uow()
         await service.create_plan(
             CreatePlanCommand(
-                name="Org Plan",
+                name="Monthly Plan",
                 billing_scope="organization",
                 amount=50.00,
                 currency="USD",
@@ -1308,11 +1286,11 @@ class PlanPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         )
         await service.create_plan(
             CreatePlanCommand(
-                name="Parent Plan",
-                billing_scope="parent",
-                amount=10.00,
+                name="Annual Plan",
+                billing_scope="organization",
+                amount=500.00,
                 currency="USD",
-                billing_cycle="monthly",
+                billing_cycle="annual",
                 vehicle_limit=None,
                 actor=make_actor(),
             ),
@@ -1322,12 +1300,12 @@ class PlanPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         page = await service.list_plans(
             ListPlansQuery(
                 page_request=OffsetPageRequest(),
-                filters=[FilterCondition(field="billing_scope", op="eq", value="parent")],
+                filters=[FilterCondition(field="billing_cycle", op="eq", value="annual")],
             ),
             uow=uow,
         )
         self.assertEqual(page.total, 1)
-        self.assertEqual(page.data[0].name, "Parent Plan")
+        self.assertEqual(page.data[0].name, "Annual Plan")
 
     async def test_list_plans_sorts_descending_by_name(self) -> None:
         service = make_service()
@@ -1363,7 +1341,7 @@ class SubscriptionPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         plan = await service.create_plan(
             CreatePlanCommand(
                 name="Parent Plan",
-                billing_scope="parent",
+                billing_scope="organization",
                 amount=10.00,
                 currency="USD",
                 billing_cycle="monthly",
@@ -1378,13 +1356,14 @@ class SubscriptionPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         service = make_service()
         uow = make_uow()
         plan_id = await self._make_plan(service, uow)
+        # Distinct organization_id per call — `open_organization_subscription` now reuses any
+        # existing non-terminal subscription for the *same* organization (ADR-0016: keyed on
+        # `organization_id` alone), so three distinct rows need three distinct organizations.
         for i in range(3):
-            await service.renew_parent_subscription(
-                RenewParentSubscriptionCommand(
-                    organization_id=VALID_ORG_ULID,
-                    parent_id=f"parent-page-{i}",
+            await service.open_organization_subscription(
+                OpenOrganizationSubscriptionCommand(
+                    organization_id=f"org-page-{i}",
                     plan_id=plan_id,
-                    msisdn="+2526000000",
                     actor=make_actor(),
                 ),
                 uow=uow,
@@ -1407,22 +1386,18 @@ class SubscriptionPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         service = make_service()
         uow = make_uow()
         plan_id = await self._make_plan(service, uow)
-        first = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        first = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-filter-1",
                 plan_id=plan_id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
         )
-        await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-filter-2",
                 plan_id=plan_id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -1448,32 +1423,28 @@ class SubscriptionPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         service = make_service()
         uow = make_uow()
         plan_id = await self._make_plan(service, uow)
-        first = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
-                organization_id=VALID_ORG_ULID,
-                parent_id="parent-sort-1",
+        # Distinct organization_id per call — see the identical note on
+        # `test_list_subscriptions_paginates_and_reports_total` above.
+        first = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id="org-sort-1",
                 plan_id=plan_id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
         )
-        second = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
-                organization_id=VALID_ORG_ULID,
-                parent_id="parent-sort-2",
+        second = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id="org-sort-2",
                 plan_id=plan_id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
         )
-        await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
-                organization_id=VALID_ORG_ULID,
-                parent_id="parent-sort-3",
+        await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id="org-sort-3",
                 plan_id=plan_id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -1524,12 +1495,10 @@ class InvoicePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        renewal = await service.renew_parent_subscription(
-            RenewParentSubscriptionCommand(
+        renewal = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
                 organization_id=VALID_ORG_ULID,
-                parent_id="parent-invoice-page",
                 plan_id=plan.id,
-                msisdn="+2526000000",
                 actor=make_actor(),
             ),
             uow=uow,
@@ -1540,7 +1509,7 @@ class InvoicePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         service = make_service()
         uow = make_uow()
         _plan_id, subscription_id = await self._make_subscription(service, uow)
-        # renew_parent_subscription already issued one invoice - issue two more for a total of 3.
+        # open_organization_subscription already issued one invoice - issue two more for a total of 3.
         for i in range(2):
             await service.issue_invoice(
                 IssueInvoiceCommand(

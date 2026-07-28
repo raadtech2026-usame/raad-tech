@@ -18,9 +18,10 @@ than a special-cased hand-rolled `select()`.
 **`SqlAlchemyPaymentRepository.get_by_idempotency_key`** backs the documented idempotency
 contract (API Contracts §12) — a direct `select()`, mirroring
 `SqlAlchemyRouteRepository.get_by_name`'s identical shape for an analogous non-`get_by_id`
-finder. **`SqlAlchemySubscriptionRepository.get_active_by_subscriber`** backs
+finder. **`SqlAlchemySubscriptionRepository.get_active_by_organization`** backs
 `domain/repositories.py`'s own flagged, non-LLD-documented finder — see that method's docstring
-for the "not EXPIRED/CANCELLED" reading of "active."
+for the "not EXPIRED/CANCELLED" reading of "active" (ADR-0016: renamed from the former
+`get_active_by_subscriber`, organization-only now).
 """
 
 from __future__ import annotations
@@ -56,10 +57,9 @@ from raad.modules.billing.domain.repositories import (
 )
 from raad.modules.billing.domain.value_objects import (
     InvoiceId,
+    OrganizationId,
     PaymentId,
     PlanId,
-    SubscriberId,
-    SubscriberType,
     SubscriptionId,
     TransportFeeId,
 )
@@ -178,8 +178,7 @@ class SqlAlchemySubscriptionRepository(
     #: column, mirroring `SqlAlchemyRegionRepository`'s own "only opt in what actually exists"
     #: posture rather than inventing a search target.
     filterable_fields = {
-        "subscriber_type": FilterField(column="subscriber_type"),
-        "subscriber_id": FilterField(column="subscriber_id"),
+        "organization_id": FilterField(column="organization_id"),
         "plan_id": FilterField(column="plan_id"),
         "status": FilterField(column="status"),
     }
@@ -234,12 +233,11 @@ class SqlAlchemySubscriptionRepository(
             page_size=raw_page.page_size,
         )
 
-    async def get_active_by_subscriber(
-        self, subscriber_type: SubscriberType, subscriber_id: SubscriberId
+    async def get_active_by_organization(
+        self, organization_id: OrganizationId
     ) -> Subscription | None:
         statement = select(SubscriptionModel).where(
-            SubscriptionModel.subscriber_type == subscriber_type.value,
-            SubscriptionModel.subscriber_id == str(subscriber_id),
+            SubscriptionModel.organization_id == str(organization_id),
             SubscriptionModel.status.in_(("trial", "active", "suspended")),
             SubscriptionModel.deleted_at.is_(None),
         )

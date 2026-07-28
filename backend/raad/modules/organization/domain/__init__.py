@@ -14,7 +14,6 @@ from raad.modules.organization.domain.repositories import (
     RegionRepository,
 )
 from raad.modules.organization.domain.value_objects import (
-    BillingModel,
     OrgType,
     OrganizationId,
     OrganizationStatus,
@@ -23,7 +22,6 @@ from raad.modules.organization.domain.value_objects import (
 )
 
 __all__ = [
-    "BillingModel",
     "Organization",
     "OrganizationId",
     "OrganizationRepository",

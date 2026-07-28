@@ -34,7 +34,6 @@ from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.time.clock import SystemClock
 from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.value_objects import (
-    BillingModel,
     OrganizationId,
     OrganizationStatus,
     OrgType,
@@ -128,7 +127,6 @@ class RegionAndOrganizationRepositoryRoundTripTests(unittest.IsolatedAsyncioTest
                 name=f"Org {self.tag}",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 clock=self.clock,
             )
             uow.organizations.add(organization)
@@ -157,7 +155,6 @@ class RegionAndOrganizationRepositoryRoundTripTests(unittest.IsolatedAsyncioTest
                 name=f"Mutate Org {self.tag}",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 clock=self.clock,
             )
             uow.organizations.add(organization)
@@ -189,7 +186,6 @@ class RegionAndOrganizationRepositoryRoundTripTests(unittest.IsolatedAsyncioTest
                 name=f"Geofenced Org {self.tag}",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 clock=self.clock,
             )
             uow.organizations.add(organization)
@@ -229,7 +225,6 @@ class RegionAndOrganizationRepositoryRoundTripTests(unittest.IsolatedAsyncioTest
                 name=f"Approach Distance Org {self.tag}",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 clock=self.clock,
             )
             uow.organizations.add(organization)
@@ -261,7 +256,6 @@ class RegionAndOrganizationRepositoryRoundTripTests(unittest.IsolatedAsyncioTest
                 name=f"List Org {self.tag}",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 clock=self.clock,
             )
             uow.organizations.add(organization)
@@ -318,14 +312,13 @@ class OrganizationPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.session_factory, self.outbox_writer, self.audit_writer
         )
 
-    async def _seed(self, *, name: str, billing_model: BillingModel, region_id: RegionId) -> None:
+    async def _seed(self, *, name: str, region_id: RegionId) -> None:
         async with self._new_uow() as uow:
             organization = Organization.register(
                 id=OrganizationId(self.id_generator.new_id()),
                 name=name,
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=billing_model,
                 clock=self.clock,
             )
             uow.organizations.add(organization)
@@ -349,7 +342,6 @@ class OrganizationPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         for i in range(3):
             await self._seed(
                 name=f"Page Org {self.tag} {i}",
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 region_id=region_id,
             )
 
@@ -363,7 +355,10 @@ class OrganizationPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.total, 3)
         self.assertEqual(len(page.data), 2)
 
-    async def test_list_page_filters_by_billing_model(self) -> None:
+    async def test_list_page_filters_by_status(self) -> None:
+        """Replaces the former `test_list_page_filters_by_billing_model` — ADR-0016 removed
+        `Organization.billing_model` entirely. `status` exercises the identical whitelisted
+        filter mechanism with a field that still has multiple values."""
         async with self._new_uow() as uow:
             region = Region.create(
                 id=RegionId(self.id_generator.new_id()),
@@ -377,13 +372,11 @@ class OrganizationPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self._created_region_ids.append(str(region_id))
 
         await self._seed(
-            name=f"Org Pays {self.tag}",
-            billing_model=BillingModel.ORGANIZATION_PAYS,
+            name=f"Active Org {self.tag}",
             region_id=region_id,
         )
         await self._seed(
-            name=f"Parent Pays {self.tag}",
-            billing_model=BillingModel.PARENT_PAYS,
+            name=f"Suspended Org {self.tag}",
             region_id=region_id,
         )
 
@@ -391,14 +384,27 @@ class OrganizationPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
             page = await uow.organizations.list_page(
                 OffsetPageRequest(),
                 sort=[],
+                filters=[FilterCondition(field="region_id", op="eq", value=str(region_id))],
+                search=f"Suspended Org {self.tag}",
+            )
+            to_suspend = page.data[0]
+            loaded = await uow.organizations.get(to_suspend.id)
+            loaded.suspend(clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            page = await uow.organizations.list_page(
+                OffsetPageRequest(),
+                sort=[],
                 filters=[
                     FilterCondition(field="region_id", op="eq", value=str(region_id)),
-                    FilterCondition(field="billing_model", op="eq", value="parent_pays"),
+                    FilterCondition(field="status", op="eq", value="suspended"),
                 ],
                 search=None,
             )
         self.assertEqual(page.total, 1)
-        self.assertEqual(page.data[0].name, f"Parent Pays {self.tag}")
+        self.assertEqual(page.data[0].name, f"Suspended Org {self.tag}")
 
     async def test_list_page_search_matches_name_substring(self) -> None:
         async with self._new_uow() as uow:
@@ -415,12 +421,10 @@ class OrganizationPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         await self._seed(
             name=f"Findable-{self.tag}",
-            billing_model=BillingModel.ORGANIZATION_PAYS,
             region_id=region_id,
         )
         await self._seed(
             name=f"Other-{self.tag}",
-            billing_model=BillingModel.ORGANIZATION_PAYS,
             region_id=region_id,
         )
 

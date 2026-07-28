@@ -7,11 +7,8 @@ read to load the second aggregate — an I/O-dependent orchestration, which make
 domain service, mirroring `transport_ops.domain.services`'s identical reasoning for its own
 cross-aggregate orchestration (e.g. `Trip.schedule`'s Driver/Route loading).
 
-**Flagged, not enforced — a genuine judgment call, not a silent decision:** whether
-`Plan.billing_scope` must match a `Subscription.subscriber_type` at `Subscription.open()` time
-is not cross-validated anywhere in this codebase. Database Design §8.1 documents
-`billing_scope`'s *purpose* ("which `SubscriberType` a plan is meant to be purchased by") but no
-document states this is an *enforced* invariant, and this phase's own instructions are explicit
-about not inventing new business rules. Left unenforced; noted here as a real gap for a future
-phase/doc revision to resolve, not decided silently either way.
+**Superseded by ADR-0016 (RAAD business model realignment).** This module previously flagged an
+unenforced "does `Plan.billing_scope` match `Subscription.subscriber_type`" gap — moot now that
+`Subscription` no longer has a `subscriber_type` at all (organization-only, ADR-0016) and
+`BillingScope` itself lost its `PARENT` value, leaving nothing left to cross-validate.
 """

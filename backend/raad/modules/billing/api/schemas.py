@@ -44,8 +44,6 @@ class PlanResponse(BaseModel):
 class SubscriptionResponse(BaseModel):
     id: str
     organization_id: str
-    subscriber_type: str
-    subscriber_id: str
     plan_id: str
     status: str
     current_period_start: datetime | None

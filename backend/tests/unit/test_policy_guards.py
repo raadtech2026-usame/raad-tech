@@ -38,8 +38,6 @@ from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.services import VehicleApplicationService
-from raad.modules.organization.application.ports import OrganizationUnitOfWork
-from raad.modules.organization.application.services import OrganizationApplicationService
 from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
@@ -67,11 +65,6 @@ class _StudentLinkDTO:
 class _AssignmentDTO:
     status: str
     vehicle_id: str | None = None
-
-
-@dataclass(frozen=True)
-class _OrganizationDTO:
-    billing_model: str
 
 
 @dataclass(frozen=True)
@@ -103,19 +96,11 @@ class FakeStudentAssignmentService:
         return self._by_student.get(student_id)
 
 
-class FakeOrganizationService:
-    def __init__(self, billing_model: str) -> None:
-        self._billing_model = billing_model
-
-    async def get_organization_by_id(self, query, *, uow):
-        return _OrganizationDTO(billing_model=self._billing_model)
-
-
 class FakeBillingService:
     def __init__(self, subscription: _SubscriptionDTO | None) -> None:
         self._subscription = subscription
 
-    async def get_active_subscription_for_subscriber(self, subscriber_type, subscriber_id, *, uow):
+    async def get_active_subscription_for_organization(self, organization_id, *, uow):
         return self._subscription
 
 
@@ -186,7 +171,6 @@ def make_container(
     parent_user_id: str = "user-1",
     children: list[str] | None = None,
     assignments: dict[str, _AssignmentDTO | None] | None = None,
-    billing_model: str = "organization_pays",
     subscription: _SubscriptionDTO | None = None,
     scope: TenantRegionScope = TenantRegionScope(organization_ids=frozenset({ORG_ID})),
     vehicles: dict[str, _VehicleDTO] | None = None,
@@ -209,7 +193,6 @@ def make_container(
         StudentAssignmentApplicationService,
         FakeStudentAssignmentService(assignments or {}),
     )
-    container.bind_singleton(OrganizationApplicationService, FakeOrganizationService(billing_model))
     container.bind_singleton(BillingApplicationService, FakeBillingService(subscription))
     container.bind_singleton(ScopeResolver, FakeScopeResolver(scope))
     container.bind_singleton(VehicleApplicationService, FakeVehicleService(vehicles or {}))
@@ -220,7 +203,6 @@ def make_container(
 
     for uow_type in (
         TransportOpsUnitOfWork,
-        OrganizationUnitOfWork,
         BillingUnitOfWork,
         FleetDeviceUnitOfWork,
     ):
@@ -243,11 +225,11 @@ class ResolveCr1DecisionTests(unittest.IsolatedAsyncioTestCase):
                 principal=PARENT, student_id="s1", container=container
             )
 
-    async def test_inactive_assignment_denies_regardless_of_billing_model(self) -> None:
+    async def test_inactive_assignment_denies_regardless_of_subscription_state(self) -> None:
         container = make_container(
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="removed")},
-            billing_model="organization_pays",
+            subscription=_SubscriptionDTO(status="active"),
         )
         decision = await policy_guards.resolve_cr1_decision(
             principal=PARENT, student_id="s1", container=container
@@ -264,22 +246,10 @@ class ResolveCr1DecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "ASSIGNMENT_INACTIVE")
 
-    async def test_organization_pays_active_assignment_grants(self) -> None:
+    async def test_active_assignment_with_active_subscription_grants(self) -> None:
         container = make_container(
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="active")},
-            billing_model="organization_pays",
-        )
-        decision = await policy_guards.resolve_cr1_decision(
-            principal=PARENT, student_id="s1", container=container
-        )
-        self.assertTrue(decision.allowed)
-
-    async def test_parent_pays_with_active_subscription_grants(self) -> None:
-        container = make_container(
-            children=["s1"],
-            assignments={"s1": _AssignmentDTO(status="active")},
-            billing_model="parent_pays",
             subscription=_SubscriptionDTO(status="active"),
         )
         decision = await policy_guards.resolve_cr1_decision(
@@ -287,11 +257,12 @@ class ResolveCr1DecisionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(decision.allowed)
 
-    async def test_parent_pays_with_no_subscription_denies_with_redirect_action(self) -> None:
+    async def test_active_assignment_with_no_subscription_denies_with_redirect_action(
+        self,
+    ) -> None:
         container = make_container(
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="active")},
-            billing_model="parent_pays",
             subscription=None,
         )
         decision = await policy_guards.resolve_cr1_decision(
@@ -310,7 +281,6 @@ class ResolveCr1DecisionTests(unittest.IsolatedAsyncioTestCase):
         container = make_container(
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="active")},
-            billing_model="parent_pays",
             subscription=None,
         )
         decision = await policy_guards.resolve_cr1_decision(
@@ -327,7 +297,6 @@ class ResolveCr1DecisionTests(unittest.IsolatedAsyncioTestCase):
         container = make_container(
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="removed")},
-            billing_model="organization_pays",
         )
         decision = await policy_guards.resolve_cr1_decision(
             principal=PARENT,
@@ -354,7 +323,6 @@ class EnforceCr1Tests(unittest.IsolatedAsyncioTestCase):
         container = make_container(
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="active")},
-            billing_model="parent_pays",
             subscription=None,
         )
         with self.assertRaises(ParentAccessDeniedError) as ctx:
@@ -369,7 +337,7 @@ class EnforceCr1Tests(unittest.IsolatedAsyncioTestCase):
         container = make_container(
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="active")},
-            billing_model="organization_pays",
+            subscription=_SubscriptionDTO(status="active"),
         )
         await policy_guards.enforce_cr1(
             principal=PARENT, student_id="s1", container=container
@@ -421,13 +389,12 @@ class ResolveTrackingDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(decision.allowed)
 
     async def test_parent_with_active_trip_and_active_assignment_is_granted(self) -> None:
-        """The D4-protected scenario itself: live GPS during an active trip, even for a
-        PARENT_PAYS parent with no subscription at all — the safety override must flow through
-        `resolve_tracking_decision`'s own `is_trip_active`-driven `safety_override`."""
+        """The D4-protected scenario itself: live GPS during an active trip, even for an
+        organization with no active subscription at all — the safety override must flow
+        through `resolve_tracking_decision`'s own `is_trip_active`-driven `safety_override`."""
         container = make_container(
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
-            billing_model="parent_pays",
             subscription=None,
         )
         decision = await policy_guards.resolve_tracking_decision(
@@ -445,7 +412,6 @@ class ResolveTrackingDecisionTests(unittest.IsolatedAsyncioTestCase):
         container = make_container(
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
-            billing_model="parent_pays",
             subscription=None,
         )
         decision = await policy_guards.resolve_tracking_decision(

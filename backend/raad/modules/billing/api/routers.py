@@ -7,8 +7,8 @@ business logic, no repository/SQLAlchemy access — every error already maps to 
 **Five routes, matching API Contracts §4.7's table exactly (lines 170-174) — no more, no
 less.** The task scope for this phase explicitly forbids `POST/PATCH/DELETE /billing/plans` and
 `POST/PATCH /billing/subscriptions`: neither has a documented write route anywhere in §4.7 (the
-only way either aggregate is created is `RenewParentSubscriptionCommand`'s internal, HTTP-less
-orchestration — `application/services.py`'s own module docstring), so none is built here, the
+only way either aggregate is created is `OpenOrganizationSubscriptionCommand`'s internal,
+HTTP-less orchestration — `application/services.py`'s own module docstring), so none is built here, the
 same "routes are contract-driven, not capability-driven" restraint `transport_ops.api.routers`
 already applies to `Route.remove_stop`/`move_stop`/`Trip.interrupt`/`resume`.
 
@@ -127,8 +127,6 @@ def _subscription_dto_to_response(
     return SubscriptionResponse(
         id=subscription.id,
         organization_id=subscription.organization_id,
-        subscriber_type=subscription.subscriber_type,
-        subscriber_id=subscription.subscriber_id,
         plan_id=subscription.plan_id,
         status=subscription.status,
         current_period_start=subscription.current_period_start,

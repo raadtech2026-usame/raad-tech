@@ -8,6 +8,10 @@ explicitly ("+ standard audit cols ... soft delete supported", §4.2), and `regi
 same "+ standard audit cols" line (§4.1) — so both compose `AuditedTableMixin` (the bundle),
 unlike `iam.infra.models.RefreshTokenModel`, which deviates from the bundle only because its
 own table spec explicitly has no such line.
+
+**ADR-0016 (RAAD business model realignment): `organizations.billing_model` column (and its
+`billing_model` PostgreSQL `ENUM` type) is dropped** — RAAD bills Organizations only now. See
+the migration that drops it for the full column-and-type removal.
 """
 
 from __future__ import annotations
@@ -22,7 +26,6 @@ from raad.core.db.base import Base
 from raad.core.db.mixins import AuditedTableMixin
 
 _ORG_TYPE_VALUES = ("school",)
-_BILLING_MODEL_VALUES = ("organization_pays", "parent_pays")
 _ORGANIZATION_STATUS_VALUES = ("active", "suspended", "inactive")
 _REGION_STATUS_VALUES = ("active", "inactive")
 
@@ -64,9 +67,6 @@ class OrganizationModel(AuditedTableMixin, Base):
     )
     region_id: Mapped[str] = mapped_column(
         CHAR(26), ForeignKey("regions.id"), nullable=False, index=True
-    )
-    billing_model: Mapped[str] = mapped_column(
-        SqlEnum(*_BILLING_MODEL_VALUES, name="billing_model"), nullable=False
     )
     status: Mapped[str] = mapped_column(
         SqlEnum(*_ORGANIZATION_STATUS_VALUES, name="organization_status"),

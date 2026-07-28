@@ -54,7 +54,6 @@ from raad.core.events.base import DomainEvent
 from raad.core.time.clock import Clock
 from raad.modules.organization.domain import events as org_events
 from raad.modules.organization.domain.value_objects import (
-    BillingModel,
     OrgType,
     OrganizationId,
     OrganizationStatus,
@@ -133,9 +132,12 @@ class Organization(_AggregateRoot):
     that hierarchy, not this aggregate's concern to enforce (that's a repository/authorization
     concern per §2's cross-cutting tenancy note).
 
-    Deliberately no `change_region`/`change_billing_model`/`reparent` behavior: neither the
-    Database Design nor Phase 2 §18 document a rule for changing these post-creation, so they
-    stay constructor-set only rather than inventing an unstated transition.
+    Deliberately no `change_region`/`reparent` behavior: neither the Database Design nor Phase 2
+    §18 document a rule for changing these post-creation, so they stay constructor-set only
+    rather than inventing an unstated transition. **ADR-0016 (RAAD business model realignment)
+    removed `billing_model` entirely** — it was never a `change_*` candidate to begin with,
+    listed here only for the pattern; see `domain/value_objects.py`'s own docstring for why the
+    field itself is gone.
     """
 
     def __init__(
@@ -146,7 +148,6 @@ class Organization(_AggregateRoot):
         org_type: OrgType,
         parent_org_id: OrganizationId | None,
         region_id: RegionId,
-        billing_model: BillingModel,
         status: OrganizationStatus,
         created_at: datetime,
         updated_at: datetime,
@@ -167,7 +168,6 @@ class Organization(_AggregateRoot):
         self.org_type = org_type
         self.parent_org_id = parent_org_id
         self.region_id = region_id
-        self.billing_model = billing_model
         self.status = status
         self.created_at = created_at
         self.updated_at = updated_at
@@ -190,7 +190,6 @@ class Organization(_AggregateRoot):
         name: str,
         org_type: OrgType,
         region_id: RegionId,
-        billing_model: BillingModel,
         parent_org_id: OrganizationId | None = None,
         clock: Clock,
         actor_id: str | None = None,
@@ -206,7 +205,6 @@ class Organization(_AggregateRoot):
             org_type=org_type,
             parent_org_id=parent_org_id,
             region_id=region_id,
-            billing_model=billing_model,
             status=OrganizationStatus.ACTIVE,
             created_at=now,
             updated_at=now,
@@ -218,7 +216,6 @@ class Organization(_AggregateRoot):
                 org_type=org_type.value,
                 parent_org_id=str(parent_org_id) if parent_org_id else None,
                 region_id=str(region_id),
-                billing_model=billing_model.value,
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )

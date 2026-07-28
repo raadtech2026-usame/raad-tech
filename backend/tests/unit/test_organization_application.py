@@ -53,7 +53,6 @@ from raad.modules.organization.domain.repositories import (
     ScopeAssignmentRepository,
 )
 from raad.modules.organization.domain.value_objects import (
-    BillingModel,
     OrgType,
     OrganizationId,
     RegionId,
@@ -353,7 +352,6 @@ class OnboardOrganizationTests(unittest.IsolatedAsyncioTestCase):
                 name="Sunrise School",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 parent_org_id=None,
                 admin_full_name="Amina Warsame",
                 admin_email="amina@sunrise.example.com",
@@ -381,7 +379,6 @@ class OnboardOrganizationTests(unittest.IsolatedAsyncioTestCase):
                 name="Sunrise School",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 parent_org_id=None,
                 admin_full_name="Amina Warsame",
                 admin_email="amina@sunrise.example.com",
@@ -407,7 +404,6 @@ class OnboardOrganizationTests(unittest.IsolatedAsyncioTestCase):
                     name="Sunrise School",
                     org_type=OrgType.SCHOOL,
                     region_id=NON_EXISTENT_ULID,
-                    billing_model=BillingModel.ORGANIZATION_PAYS,
                     parent_org_id=None,
                     admin_full_name="Amina Warsame",
                     admin_email="amina@sunrise.example.com",
@@ -433,7 +429,6 @@ class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
                     name="Sunrise School",
                     org_type=OrgType.SCHOOL,
                     region_id=NON_EXISTENT_ULID,
-                    billing_model=BillingModel.ORGANIZATION_PAYS,
                     parent_org_id=None,
                     actor=make_actor(),
                 ),
@@ -450,7 +445,6 @@ class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
                 name="Sunrise School",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 parent_org_id=None,
                 actor=make_actor(),
             ),
@@ -471,7 +465,6 @@ class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
                     name="Sub Campus",
                     org_type=OrgType.SCHOOL,
                     region_id=region_id,
-                    billing_model=BillingModel.PARENT_PAYS,
                     parent_org_id=NON_EXISTENT_ULID,
                     actor=make_actor(),
                 ),
@@ -486,7 +479,6 @@ class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
                 name="Parent Org",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 parent_org_id=None,
                 actor=make_actor(),
             ),
@@ -498,7 +490,6 @@ class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
                 name="Sub Campus",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.PARENT_PAYS,
                 parent_org_id=parent_dto.id,
                 actor=make_actor(),
             ),
@@ -515,7 +506,6 @@ class OrganizationStatusTransitionApplicationTests(unittest.IsolatedAsyncioTestC
                 name="Sunrise School",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 parent_org_id=None,
                 actor=make_actor(),
             ),
@@ -581,7 +571,6 @@ class UpdateOrganizationGeofenceApplicationTests(unittest.IsolatedAsyncioTestCas
                 name="Sunrise School",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 parent_org_id=None,
                 actor=make_actor(),
             ),
@@ -665,7 +654,6 @@ class UpdateOrganizationApproachingDistanceApplicationTests(
                 name="Sunrise School",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 parent_org_id=None,
                 actor=make_actor(),
             ),
@@ -786,7 +774,6 @@ class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
                     name=f"School {i}",
                     org_type=OrgType.SCHOOL,
                     region_id=region_id,
-                    billing_model=BillingModel.ORGANIZATION_PAYS,
                     parent_org_id=None,
                     actor=make_actor(),
                 ),
@@ -808,15 +795,18 @@ class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(second_page.data), 1)
 
-    async def test_list_organizations_filters_by_billing_model(self) -> None:
+    async def test_list_organizations_filters_by_region_id(self) -> None:
+        """Replaces the former `test_list_organizations_filters_by_billing_model` — ADR-0016
+        removed `billing_model` (and its filter) from `Organization` entirely. `region_id`
+        exercises the identical filterable-fields mechanism with a field that still exists."""
         org_service, region_service, uow, _iam_provisioning = make_services()
-        region_id = await _seed_region(region_service, uow)
+        region_id = await _seed_region(region_service, uow, name="East Africa")
+        other_region_id = await _seed_region(region_service, uow, name="West Africa")
         await org_service.register_organization(
             RegisterOrganizationCommand(
-                name="Org Pays",
+                name="In Region",
                 org_type=OrgType.SCHOOL,
                 region_id=region_id,
-                billing_model=BillingModel.ORGANIZATION_PAYS,
                 parent_org_id=None,
                 actor=make_actor(),
             ),
@@ -824,10 +814,9 @@ class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         )
         await org_service.register_organization(
             RegisterOrganizationCommand(
-                name="Parent Pays",
+                name="In Other Region",
                 org_type=OrgType.SCHOOL,
-                region_id=region_id,
-                billing_model=BillingModel.PARENT_PAYS,
+                region_id=other_region_id,
                 parent_org_id=None,
                 actor=make_actor(),
             ),
@@ -838,13 +827,13 @@ class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
             ListOrganizationsQuery(
                 page_request=OffsetPageRequest(),
                 filters=[
-                    FilterCondition(field="billing_model", op="eq", value="parent_pays")
+                    FilterCondition(field="region_id", op="eq", value=region_id)
                 ],
             ),
             uow=uow,
         )
         self.assertEqual(page.total, 1)
-        self.assertEqual(page.data[0].name, "Parent Pays")
+        self.assertEqual(page.data[0].name, "In Region")
 
     async def test_list_organizations_sorts_descending_by_name(self) -> None:
         org_service, region_service, uow, _iam_provisioning = make_services()
@@ -855,7 +844,6 @@ class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
                     name=name,
                     org_type=OrgType.SCHOOL,
                     region_id=region_id,
-                    billing_model=BillingModel.ORGANIZATION_PAYS,
                     parent_org_id=None,
                     actor=make_actor(),
                 ),

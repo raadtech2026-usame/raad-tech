@@ -8,25 +8,27 @@ feature (live GPS, notifications, trip history — "the whole parent surface", L
 inside the `billing` bounded-context module. This module's own package docstring previously read
 *"added once their owning modules (`billing`, `video`) exist"* — that phrasing was never grounded
 in an approved document (confirmed by a dedicated documentation audit before this phase) and is
-corrected in `__init__.py`. `billing`/`transport_ops`/`organization` supply this policy's three
-*inputs*; they do not host the policy object itself.
+corrected in `__init__.py`. `billing`/`transport_ops` supply this policy's two *inputs*; they do
+not host the policy object itself.
 
 **Purity (LLD §5.4 verbatim): "Inputs (all resolved before the policy is called; the policy
 itself is pure)."** `evaluate()` performs no I/O and imports nothing from `raad.modules.*` — the
-three inputs below are primitives/local enums, never another module's domain objects, matching
+two inputs below are primitives/local enums, never another module's domain objects, matching
 the same "cross-module data is opaque, resolved by the caller" convention every bounded-context
 module already uses for its own cross-module references (e.g. `transport_ops.domain.
 value_objects.VehicleId`).
 
-**Decision table (LLD §5.4 verbatim, assignment gate has highest precedence — business rule
-3):**
+**ADR-0016 amendment (RAAD business model realignment) — `billing_model` input removed.** The
+original LLD §5.4 decision table conditioned `subscription_state` on a `billing_model` input
+(`ORGANIZATION_PAYS` skipped the check; `PARENT_PAYS` didn't) — that distinction no longer
+exists now that RAAD bills Organizations only (ADR-0016). `subscription_state` is now a single,
+unconditional check against the organization's own subscription:
 
-| assignment_state | billing_model | subscription_state | Decision | required_action |
-|---|---|---|---|---|
-| not `ACTIVE` | *(any)* | *(any)* | DENY — `ASSIGNMENT_INACTIVE` | `NONE` |
-| `ACTIVE` | `ORGANIZATION_PAYS` | *(ignored)* | GRANT | `NONE` |
-| `ACTIVE` | `PARENT_PAYS` | `ACTIVE` | GRANT | `NONE` |
-| `ACTIVE` | `PARENT_PAYS` | expired / inactive | DENY — `SUBSCRIPTION_EXPIRED` | `REDIRECT_TO_PAYMENT` |
+| assignment_state | subscription_state | Decision | required_action |
+|---|---|---|---|
+| not `ACTIVE` | *(any)* | DENY — `ASSIGNMENT_INACTIVE` | `NONE` |
+| `ACTIVE` | `ACTIVE` | GRANT | `NONE` |
+| `ACTIVE` | expired / inactive | DENY — `SUBSCRIPTION_EXPIRED` | `REDIRECT_TO_PAYMENT` |
 
 `required_action`'s documented value set is `{NONE, REDIRECT_TO_PAYMENT}` (LLD §5.4's own
 `AccessDecision` shape) — represented here as `None`/`"REDIRECT_TO_PAYMENT"` on
@@ -39,9 +41,9 @@ third invented value.
   filter — all named in LLD §5.4/§11.3/§16.2) is a later phase's application/API-layer
   responsibility. This file only provides the pure decision function.
 - **Caching / re-evaluation on events** — LLD §5.4 documents that cached decisions must be
-  invalidated by `SubscriptionExpired`/`SubscriptionRenewed`, the four `StudentAssignment*`
-  events, and `OrganizationBillingModelChanged`. Caching is an infra/worker concern, not this
-  policy's; not built here.
+  invalidated by `SubscriptionExpired`/`SubscriptionRenewed` and the four `StudentAssignment*`
+  events (`OrganizationBillingModelChanged` no longer applies — that concept was removed by
+  ADR-0016). Caching is an infra/worker concern, not this policy's; not built here.
 - **Role scope note.** LLD §5.4: *"this policy governs the Parent role only. Org Admin, Driver,
   and RAAD staff access is unaffected."* This is a statement about *who a caller invokes this
   policy for*, not an input the policy itself consumes — LLD's own "Inputs" section lists exactly
@@ -71,14 +73,6 @@ class AssignmentState(str, Enum):
     DISABLED = "disabled"
 
 
-class BillingModel(str, Enum):
-    """LLD §5.4 / Database Design (`organizations.billing_model`): the organization's chosen
-    subscription model (Project Brief Ch. 9.2)."""
-
-    ORGANIZATION_PAYS = "organization_pays"
-    PARENT_PAYS = "parent_pays"
-
-
 class SubscriptionState(str, Enum):
     """Database Design §8.2: `subscriptions.status ENUM(trial,active,suspended,expired,
     cancelled)`. LLD §5.4's own decision table only ever distinguishes `ACTIVE` from
@@ -105,20 +99,16 @@ class SubscriptionAccessPolicy(Policy):
         self,
         *,
         assignment_state: AssignmentState,
-        billing_model: BillingModel,
         subscription_state: SubscriptionState | None = None,
     ) -> PolicyDecision:
-        """`subscription_state` defaults to `None` since LLD §5.4 documents it as "consulted
-        only for `PARENT_PAYS`" — an `ORGANIZATION_PAYS` caller need not resolve it at all."""
+        """ADR-0016: `subscription_state` is now always consulted (no more `billing_model`
+        branch to skip it) — `None` means "the organization has no subscription row at all",
+        treated the same as a non-`ACTIVE` one."""
         if assignment_state != AssignmentState.ACTIVE:
             return PolicyDecision(
                 allowed=False, reason=_REASON_ASSIGNMENT_INACTIVE, required_action=None
             )
 
-        if billing_model == BillingModel.ORGANIZATION_PAYS:
-            return PolicyDecision(allowed=True)
-
-        # PARENT_PAYS
         if subscription_state == SubscriptionState.ACTIVE:
             return PolicyDecision(allowed=True)
 
@@ -131,7 +121,6 @@ class SubscriptionAccessPolicy(Policy):
 
 __all__ = [
     "AssignmentState",
-    "BillingModel",
     "SubscriptionState",
     "SubscriptionAccessPolicy",
 ]

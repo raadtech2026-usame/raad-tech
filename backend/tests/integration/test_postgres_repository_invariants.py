@@ -77,8 +77,6 @@ from raad.modules.billing.domain.value_objects import (
     OrganizationId as BillingOrganizationId,
     PaymentId,
     PlanId,
-    SubscriberId,
-    SubscriberType,
     SubscriptionId,
 )
 from raad.modules.billing.infra.repositories import SqlAlchemyBillingUnitOfWork
@@ -657,7 +655,7 @@ class BillingDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
             plan = Plan.create(
                 id=PlanId(self.id_generator.new_id()),
                 name=f"Plan {self.tag}",
-                billing_scope=BillingScope.PARENT,
+                billing_scope=BillingScope.ORGANIZATION,
                 price=Money(15.00, "USD"),
                 billing_cycle=BillingCycle.MONTHLY,
                 clock=self.clock,
@@ -671,8 +669,6 @@ class BillingDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
             subscription = Subscription.open(
                 id=SubscriptionId(self.id_generator.new_id()),
                 organization_id=BillingOrganizationId(org_id),
-                subscriber_type=SubscriberType.PARENT,
-                subscriber_id=SubscriberId(self.id_generator.new_id()),
                 plan_id=plan.id,
                 clock=self.clock,
             )
@@ -752,7 +748,7 @@ class BillingDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
             plan = Plan.create(
                 id=PlanId(self.id_generator.new_id()),
                 name=f"Plan {self.tag}-2",
-                billing_scope=BillingScope.PARENT,
+                billing_scope=BillingScope.ORGANIZATION,
                 price=Money(15.00, "USD"),
                 billing_cycle=BillingCycle.MONTHLY,
                 clock=self.clock,
@@ -765,8 +761,6 @@ class BillingDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
             subscription = Subscription.open(
                 id=SubscriptionId(self.id_generator.new_id()),
                 organization_id=first_invoice.organization_id,
-                subscriber_type=SubscriberType.PARENT,
-                subscriber_id=SubscriberId(self.id_generator.new_id()),
                 plan_id=plan.id,
                 clock=self.clock,
             )

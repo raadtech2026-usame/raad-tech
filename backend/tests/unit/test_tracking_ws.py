@@ -26,8 +26,6 @@ from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.services import VehicleApplicationService
-from raad.modules.organization.application.ports import OrganizationUnitOfWork
-from raad.modules.organization.application.services import OrganizationApplicationService
 from raad.modules.tracking.api.ws import (
     build_tracking_fanout_handler,
     handle_subscribe,
@@ -129,16 +127,8 @@ class FakeStudentAssignmentService:
         return self._by_student.get(student_id)
 
 
-class FakeOrganizationService:
-    def __init__(self, billing_model: str) -> None:
-        self._billing_model = billing_model
-
-    async def get_organization_by_id(self, query, *, uow):
-        return type("OrgDTO", (), {"billing_model": self._billing_model})()
-
-
 class FakeBillingService:
-    async def get_active_subscription_for_subscriber(self, subscriber_type, subscriber_id, *, uow):
+    async def get_active_subscription_for_organization(self, organization_id, *, uow):
         return None
 
 
@@ -158,7 +148,6 @@ def make_container(
     parent_id: str = "parent-1",
     children: list[str] | None = None,
     assignments: dict[str, _AssignmentDTO | None] | None = None,
-    billing_model: str = "organization_pays",
     scope: TenantRegionScope = TenantRegionScope(organization_ids=frozenset({ORG_ID})),
 ) -> Container:
     container = Container()
@@ -177,12 +166,10 @@ def make_container(
     container.bind_singleton(
         StudentAssignmentApplicationService, FakeStudentAssignmentService(assignments or {})
     )
-    container.bind_singleton(OrganizationApplicationService, FakeOrganizationService(billing_model))
     container.bind_singleton(BillingApplicationService, FakeBillingService())
     container.bind_singleton(ScopeResolver, FakeScopeResolver(scope))
     for uow_type in (
         TransportOpsUnitOfWork,
-        OrganizationUnitOfWork,
         BillingUnitOfWork,
         FleetDeviceUnitOfWork,
     ):
@@ -262,7 +249,8 @@ class HandleSubscribeTests(unittest.IsolatedAsyncioTestCase):
             trips={"trip-1": _TripStatusDTO(status="in_progress")},
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
-            billing_model="parent_pays",  # no subscription bound - only D4 override saves this
+            # no subscription bound (FakeBillingService always returns None) - only the D4
+            # safety_override saves this.
         )
         connections = ConnectionManager()
         websocket = FakeWebSocket()

@@ -1,6 +1,13 @@
 """Organization value objects (Backend LLD §5.1; Database Design §4.1/§4.2). Immutable,
 equality-by-value, framework-free — no SQLAlchemy/Pydantic/FastAPI. Validation raises
 `DomainError` (`core.errors.exceptions`), the project's existing domain-invariant exception.
+
+**ADR-0016 (RAAD business model realignment): `BillingModel` (formerly `ENUM(organization_pays,
+parent_pays)`) is removed entirely, not collapsed to a single value.** RAAD bills Organizations
+only now — there is no longer a per-organization billing-model choice to record, so this was
+removed outright rather than kept as a vestigial single-value enum (unlike `OrgType.SCHOOL`,
+which stays a genuine "documented seam for future variants" — see ADR-0016's own text for why
+the two cases are treated differently).
 """
 
 from __future__ import annotations
@@ -52,15 +59,6 @@ class OrgType(str, Enum):
     values for ahead of an approved extension."""
 
     SCHOOL = "school"
-
-
-class BillingModel(str, Enum):
-    """Database Design §4.2: `billing_model ENUM(organization_pays,parent_pays)` — **CR-1**
-    input (`SubscriptionAccessPolicy`, owned by `billing`, consumes this value; this module
-    only stores it)."""
-
-    ORGANIZATION_PAYS = "organization_pays"
-    PARENT_PAYS = "parent_pays"
 
 
 class OrganizationStatus(str, Enum):

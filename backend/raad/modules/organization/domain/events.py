@@ -46,7 +46,6 @@ def organization_registered(
     org_type: str,
     parent_org_id: str | None,
     region_id: str,
-    billing_model: str,
     occurred_at: datetime,
     actor_id: str | None,
 ) -> DomainEvent:
@@ -61,7 +60,6 @@ def organization_registered(
             "org_type": org_type,
             "parent_org_id": parent_org_id,
             "region_id": region_id,
-            "billing_model": billing_model,
             "actor_id": actor_id,
         },
     )

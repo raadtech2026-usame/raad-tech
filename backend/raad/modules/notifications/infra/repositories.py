@@ -8,8 +8,8 @@ aggregate-out" rule). Mirrors `billing.infra.repositories`'s identity-map/
 `recipient_user_id`, **not** `list_scoped`/`TenantRegionScope` — this is the personal "own
 in-app notifications" scoping (API Contracts §4.6), a different dimension than every other
 module's tenant/org scoping, so `list_scoped`'s org-filter machinery doesn't apply here at all
-(mirrors `SqlAlchemySubscriptionRepository.get_active_by_subscriber`'s identical "direct select,
-not list_scoped" shape for a non-tenant-dimension finder). It is kept unpaginated, alongside the
+(mirrors `SqlAlchemySubscriptionRepository.get_active_by_organization`'s identical "direct
+select, not list_scoped" shape for a non-tenant-dimension finder). It is kept unpaginated, alongside the
 new `list_for_recipient_page` below, which is what `GET /notifications` actually calls as of the
 Pagination/Filtering/Sorting phase. **`list_all`** still exists for interface-shape uniformity
 but is not what any route calls.

@@ -42,8 +42,6 @@ from raad.modules.billing.domain.value_objects import (
     PlanId,
     PlanStatus,
     StudentId,
-    SubscriberId,
-    SubscriberType,
     SubscriptionId,
     SubscriptionStatus,
     TransportFeeId,
@@ -56,7 +54,6 @@ VALID_INVOICE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3JV"
 VALID_PAYMENT_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3PY"
 VALID_TRANSPORT_FEE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3TF"
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
-VALID_SUBSCRIBER_REF = "some-opaque-subscriber-ref"
 VALID_STUDENT_REF = "some-opaque-student-ref"
 
 
@@ -108,13 +105,6 @@ class OpaqueCrossModuleValueObjectTests(unittest.TestCase):
     def test_organization_id_empty_raises_domain_error(self) -> None:
         with self.assertRaises(DomainError):
             OrganizationId("")
-
-    def test_subscriber_id_arbitrary_non_ulid_string_is_accepted(self) -> None:
-        self.assertEqual(str(SubscriberId(VALID_SUBSCRIBER_REF)), VALID_SUBSCRIBER_REF)
-
-    def test_subscriber_id_empty_raises_domain_error(self) -> None:
-        with self.assertRaises(DomainError):
-            SubscriberId("")
 
     def test_student_id_arbitrary_non_ulid_string_is_accepted(self) -> None:
         self.assertEqual(str(StudentId(VALID_STUDENT_REF)), VALID_STUDENT_REF)
@@ -216,8 +206,6 @@ class SubscriptionTests(unittest.TestCase):
         return Subscription.open(
             id=SubscriptionId(VALID_SUBSCRIPTION_ULID),
             organization_id=OrganizationId(VALID_ORG_ULID),
-            subscriber_type=SubscriberType.PARENT,
-            subscriber_id=SubscriberId(VALID_SUBSCRIBER_REF),
             plan_id=PlanId(VALID_PLAN_ULID),
             clock=CLOCK,
         )
@@ -502,7 +490,7 @@ class RepositoryInterfaceShapeTests(unittest.TestCase):
             PlanRepository()  # type: ignore[abstract]
 
     def test_subscription_repository_declares_expected_methods(self) -> None:
-        for method in ("get", "add", "list_all", "get_active_by_subscriber"):
+        for method in ("get", "add", "list_all", "get_active_by_organization"):
             self.assertTrue(hasattr(SubscriptionRepository, method))
 
     def test_invoice_repository_declares_expected_methods(self) -> None:

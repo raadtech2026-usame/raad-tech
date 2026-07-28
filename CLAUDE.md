@@ -91,8 +91,15 @@ implementation itself proceeds in milestones and is tracked here as each one lan
 
 **Implementation status:** architecture accepted; milestone implementation (IAM provisioning
 port → org onboarding → billing cutover → device inventory → session cap → platform analytics)
-is in progress — each milestone's own entry will replace this line as it lands, following the
-same "update as it lands" discipline every other phase in this file already follows.
+is in progress. **IAM provisioning port, org onboarding, and billing cutover have landed** — see
+the Billing (C8) bounded-context entry below for the billing cutover's own full writeup (parent
+billing deleted outright: `SubscriberType`/`SubscriberId`/`RenewParentSubscriptionCommand`/
+`Organization.billing_model`/`BillingScope.PARENT` all removed, not deprecated in place;
+`SubscriptionAccessPolicy` (CR-1) amended per ADR-0006's own Amendment section; a migration
+drops `organizations.billing_model` and `subscriptions.subscriber_type`/`subscriber_id`).
+Device inventory, session cap, and platform analytics remain not-yet-implemented — each
+milestone's own entry will replace this line as it lands, following the same "update as it
+lands" discipline every other phase in this file already follows.
 
 ## Core Technical Domains
 
@@ -294,8 +301,10 @@ resolve_tracking_decision` — ADR-0006 resolves the D4-vs-CR-1 documentation co
   no documented API surface). Only five HTTP routes are exposed, matching API Contracts §4.7
   exactly: `GET /billing/plans`, `GET /billing/subscriptions`, `GET /billing/invoices`,
   `POST /billing/payments`, `POST /billing/payments/callback` — `Plan`/`Subscription` have no
-  documented write routes at all (`RenewParentSubscriptionCommand`, LLD §4.2, is reachable at
-  the application layer only). `PaymentProviderPort` (LLD §4.2, EVC Plus's interface) has no
+  documented write routes at all (`OpenOrganizationSubscriptionCommand` — ADR-0016 renamed this
+  from LLD §4.2's original `RenewParentSubscriptionCommand`, see this bullet's own ADR-0016
+  paragraph below — is reachable at the application layer only). `PaymentProviderPort` (LLD
+  §4.2, EVC Plus's interface) has no
   bound adapter — `initiate_payment` persists the `Payment` as `PENDING` then raises
   `NotImplementedError` at the charge step, the same "fail loudly, don't fake" deferral
   `TrackingApplicationService`'s `LatestPositionPort` already established, applied at
@@ -313,7 +322,44 @@ resolve_tracking_decision` — ADR-0006 resolves the D4-vs-CR-1 documentation co
   `payments.idempotency_key` is `CHAR(64)` per Database Design §8.3 verbatim, but PostgreSQL
   blank-pads `CHAR(n)` storage and returns it padded on `SELECT` (unlike `VARCHAR`) —
   implemented exactly as documented, with `infra/mappers.py`'s `model_to_payment` stripping the
-  padding artifact back off before it reaches the domain layer.
+  padding artifact back off before it reaches the domain layer. **ADR-0016 (RAAD business model
+  realignment, billing cutover milestone) deletes the parent-billing path outright, not
+  deprecated in place:** `Subscription` no longer carries `subscriber_type`/`subscriber_id`
+  (the former polymorphic organization-or-parent subscriber) — it keys on its own
+  `organization_id` alone now, matching "RAAD bills Organizations only"; `SubscriberType`/
+  `SubscriberId` are removed from `billing/domain/value_objects.py` entirely.
+  `RenewParentSubscriptionCommand`/`BillingApplicationService.renew_parent_subscription` are
+  replaced by `OpenOrganizationSubscriptionCommand`/`open_organization_subscription` (drops the
+  former `parent_id`/`msisdn` fields, keeps `organization_id`/`plan_id`), and
+  `SubscriptionRepository.get_active_by_subscriber(subscriber_type, subscriber_id)` is renamed
+  `get_active_by_organization(organization_id)`. `Plan.billing_scope`'s `BillingScope` enum
+  loses its `PARENT` value (one active value left, `ORGANIZATION`, kept as a "documented seam
+  for future variants" the same way `OrgType.SCHOOL` is — not eliminated outright, unlike
+  `Organization.billing_model`, below). A same-milestone migration
+  (`f4a1c9e7b302_billing_organization_drop_parent_`) drops `subscriptions.subscriber_type`/
+  `subscriber_id` (and the `subscriber_type` Postgres `ENUM` type), replacing the composite
+  index `ix_subscriptions__subscriber_type_subscriber_id_status` with
+  `ix_subscriptions__organization_id_status`; `plans.billing_scope`'s own Postgres `ENUM` type
+  is deliberately left with its now-unused `'parent'` value still legal at the DB level — a
+  flagged, narrower scope call than what the column drops needed, since narrowing an existing
+  native `ENUM` type's allowed values in place would mean recreating the type and every
+  dependent column, a materially riskier operation no document asked for. **`Organization.
+billing_model`** (`BillingModel` enum, `ENUM(organization_pays,parent_pays)`) is removed
+  entirely from `organization/domain/value_objects.py` — not kept as a single-value enum — with
+  its own migration column-and-type drop bundled into the same revision;
+  `RegisterOrganizationRequest`/`OnboardOrganizationCommand`/`OrganizationDTO`/
+  `OrganizationResponse` all drop the field accordingly. **ADR-0006 gained an Amendment section**
+  recording that `SubscriptionAccessPolicy` (CR-1, `core/policies/subscription_access.py`) drops
+  its `billing_model` input entirely — `subscription_state` (the organization's own subscription
+  now, never a parent's) is evaluated unconditionally instead of only for the former
+  `PARENT_PAYS` branch; `interfaces/http/policy_guards.resolve_cr1_decision` no longer resolves
+  `organization` at all (only `billing`'s own `get_active_subscription_for_organization`), and
+  `notifications/events/subscribers.py`'s `_NotificationFanOut` gates each vehicle's
+  notifications on the organization's own subscription once per `vehicle_id`, not once per
+  parent. `TransportFee` is unaffected (it was never part of the parent-subscription path).
+  Usage-metrics tracking/display (active users, MAU, active devices, active vehicles — no
+  pricing formula, per this ADR's own explicit scope limit) remains unbuilt, deferred to
+  ADR-0020's platform-analytics milestone.
 - **Notifications (C7)** — `Notification` (create/mark_read, the in-app store — D2) and
   `DeviceToken` (register/revoke, FCM registration). `notification_preferences` (Database
   Design §7.7) is **not built** — no document gives it an HTTP route and the task's own scope

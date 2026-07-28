@@ -94,9 +94,9 @@ class GrantRolePermissionCommand:
     change" requirement (Database Design §4.4). No approved HTTP route exists for this yet
     (API Contracts documents no `/admin/roles` or similar surface) — reachable at the
     application layer only, the same "use-case exists, no approved endpoint yet" posture
-    `RenewParentSubscriptionCommand` already establishes. Enforcement of "only Founder may
-    call this" belongs to whichever future route wires it, via `require_permission` itself —
-    not re-implemented here."""
+    `billing.application.commands.OpenOrganizationSubscriptionCommand` already establishes.
+    Enforcement of "only Founder may call this" belongs to whichever future route wires it, via
+    `require_permission` itself — not re-implemented here."""
 
     role: Role
     permission: str

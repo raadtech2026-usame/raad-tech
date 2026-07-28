@@ -50,7 +50,6 @@ class OrganizationDTO:
     org_type: str
     parent_org_id: str | None
     region_id: str
-    billing_model: str
     status: str
     created_at: datetime
     updated_at: datetime
@@ -82,7 +81,6 @@ def organization_to_dto(organization: Organization) -> OrganizationDTO:
             else None
         ),
         region_id=str(organization.region_id),
-        billing_model=organization.billing_model.value,
         status=organization.status.value,
         created_at=organization.created_at,
         updated_at=organization.updated_at,

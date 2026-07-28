@@ -2,9 +2,11 @@
 objects describing what the caller wants done, matching `iam.application.commands`'s exact
 shape: every command carries the calling `Principal` as `actor` (LLD's own contract-skeleton
 style), and identifiers are plain `str` (converted to value objects inside the service), while
-`OrgType`/`BillingModel` are passed as the already-typed domain enums — the same treatment
+`OrgType` is passed as the already-typed domain enum — the same treatment
 `InviteUserCommand.role: Role` gives a core-shared enum, since both are "already-parsed by the
-caller" rather than raw wire strings this layer would need to validate.
+caller" rather than a raw wire string this layer would need to validate. **ADR-0016 (RAAD
+business model realignment): `billing_model` is removed from every command below** — RAAD bills
+Organizations only now, so there is no longer a per-organization billing-model choice to carry.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from raad.core.tenancy.principal import Principal
-from raad.modules.organization.domain.value_objects import BillingModel, OrgType
+from raad.modules.organization.domain.value_objects import OrgType
 
 
 @dataclass(frozen=True)
@@ -20,7 +22,6 @@ class RegisterOrganizationCommand:
     name: str
     org_type: OrgType
     region_id: str
-    billing_model: BillingModel
     parent_org_id: str | None
     actor: Principal
 
@@ -32,19 +33,17 @@ class OnboardOrganizationCommand:
     replaces the previously fully-manual, disconnected two-step process (`POST /organizations`
     then a separate, unlinked `POST /users`).
 
-    **Plan selection is deliberately not part of this command yet** — `services.py`'s
-    `OrganizationApplicationService.onboard_organization` docstring records why: wiring "select
-    a subscription plan" here would mean opening a
-    `billing.Subscription` against that module's *current* dual-mode shape
-    (`subscriber_type`/`subscriber_id`), which ADR-0016 (Organization-Only Billing, a separate,
-    already-accepted, not-yet-implemented milestone) is about to simplify. Sequenced to land
-    once ADR-0016 lands, avoiding throwaway code against a shape already scheduled to change —
-    flagged here rather than silently omitted."""
+    **Plan selection is still not part of this command.** It was originally deferred pending
+    ADR-0016 (Organization-Only Billing), which has since landed — `billing.Subscription` now
+    keys on `organization_id` alone, so the shape this command would have been throwaway code
+    against no longer applies. Wiring "select a subscription plan" into onboarding remains a
+    real, flagged follow-up (not attempted this phase — a new command field plus an
+    `OrganizationApplicationService.onboard_organization` orchestration change, outside this
+    phase's own scope of removing the parent-billing path), not a silent omission."""
 
     name: str
     org_type: OrgType
     region_id: str
-    billing_model: BillingModel
     parent_org_id: str | None
     admin_full_name: str
     admin_email: str | None

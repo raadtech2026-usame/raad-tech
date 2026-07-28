@@ -23,7 +23,6 @@ shape.
 from raad.core.policies.base import Policy, PolicyDecision
 from raad.core.policies.subscription_access import (
     AssignmentState,
-    BillingModel,
     SubscriptionAccessPolicy,
     SubscriptionState,
 )
@@ -31,7 +30,6 @@ from raad.core.policies.video_access import VideoAccessPolicy
 
 __all__ = [
     "AssignmentState",
-    "BillingModel",
     "Policy",
     "PolicyDecision",
     "SubscriptionAccessPolicy",

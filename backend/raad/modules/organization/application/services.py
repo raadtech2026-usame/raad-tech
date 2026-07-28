@@ -89,8 +89,8 @@ class OrganizationApplicationService:
         evaluated and deliberately deferred at implementation time, not silently dropped.
 
         Plan selection is deliberately not part of this method yet — see
-        `OnboardOrganizationCommand`'s own docstring for why (sequenced to land alongside
-        ADR-0016's billing changes)."""
+        `OnboardOrganizationCommand`'s own docstring for why (a real, flagged follow-up now
+        that ADR-0016 has landed, not attempted this phase)."""
         async with uow:
             region_id = RegionId(command.region_id)
             await ensure_region_exists(uow, region_id)
@@ -106,7 +106,6 @@ class OrganizationApplicationService:
                 name=command.name,
                 org_type=command.org_type,
                 region_id=region_id,
-                billing_model=command.billing_model,
                 parent_org_id=parent_org_id,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
@@ -145,7 +144,6 @@ class OrganizationApplicationService:
                 name=command.name,
                 org_type=command.org_type,
                 region_id=region_id,
-                billing_model=command.billing_model,
                 parent_org_id=parent_org_id,
                 clock=self._clock,
                 actor_id=command.actor.user_id,

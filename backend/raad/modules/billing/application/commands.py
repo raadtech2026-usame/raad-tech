@@ -2,16 +2,17 @@
 every command carries the calling `Principal` as `actor`, identifiers are plain `str`, mirroring
 `transport_ops.application.commands`'s exact shape.
 
-**`RenewParentSubscriptionCommand` is the one command in this file with a literal LLD
-citation** — §4.2's own contract-skeleton example names it verbatim: `Command
-RenewParentSubscription { parent_id, plan_id, msisdn, actor }`. `organization_id` is added here
-beyond that literal skeleton — every command in this entire codebase requires it for tenant
-scoping (`.claude/rules/backend.md` #4), and LLD §4.2's own skeletons are explicitly
-"signatures only... no logic" illustrations, not exhaustive field lists (the same minimal,
-necessary addition `ScheduleTripCommand` already makes beyond `Command StartTrip`'s own
-skeleton). No document names an HTTP route for it (API Contracts §4.7 lists no
-`/billing/subscriptions/renew`-shaped path) — reachable at the application layer only, the same
-"use-case exists, no approved endpoint yet" posture `RemoveStopFromRouteCommand` establishes.
+**`OpenOrganizationSubscriptionCommand` replaces the former `RenewParentSubscriptionCommand`
+(ADR-0016, RAAD business model realignment)** — Backend LLD §4.2's own contract-skeleton
+example named the latter verbatim (`Command RenewParentSubscription { parent_id, plan_id,
+msisdn, actor }`), but RAAD now bills Organizations only; there is no parent-owned subscription
+concept left to renew. This command drops `parent_id`/`msisdn` (an organization-level billing
+arrangement needs neither a parent identity nor a per-call mobile-money number) and keeps
+`organization_id`/`plan_id`, the same minimal, necessary shape every command in this codebase
+carries for tenant scoping (`.claude/rules/backend.md` #4). No document names an HTTP route for
+it (API Contracts §4.7 lists no `/billing/subscriptions`-open-shaped path) — reachable at the
+application layer only, the same "use-case exists, no approved endpoint yet" posture
+`RemoveStopFromRouteCommand` establishes; its predecessor carried the identical posture.
 
 **`InitiatePaymentCommand` / `PaymentCallbackCommand` back the two documented payment routes**
 (API Contracts §4.7: `POST /billing/payments`, `POST /billing/payments/callback`).
@@ -63,14 +64,12 @@ class DisablePlanCommand:
 
 
 @dataclass(frozen=True)
-class RenewParentSubscriptionCommand:
-    """Backend LLD §4.2 verbatim (plus `organization_id` — see module docstring). No approved
-    HTTP route exists for this command this phase."""
+class OpenOrganizationSubscriptionCommand:
+    """ADR-0016 — see module docstring for why this replaces `RenewParentSubscriptionCommand`.
+    No approved HTTP route exists for this command this phase."""
 
     organization_id: str
-    parent_id: str
     plan_id: str
-    msisdn: str
     actor: Principal
 
 

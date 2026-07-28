@@ -19,11 +19,16 @@ the same "fail loudly, don't fake" doctrine `core/di/bootstrap.py`'s own module 
 already states, applied at method-granularity instead of service-granularity because the
 granularity better matches where the real dependency actually sits.
 
-**Cross-aggregate orchestration (`renew_parent_subscription`, `handle_payment_callback`)** lives
-here, not in the domain layer, for the identical reason `transport_ops`'s own cross-aggregate
-flows do (`StudentAssignmentApplicationService.assign_student_to_route` loading `Student`+
-`Route`): I/O (repository reads) is required, which is an application-layer concern by this
-codebase's own established domain-purity rule (LLD §5.3).
+**Cross-aggregate orchestration (`open_organization_subscription`, `handle_payment_callback`)**
+lives here, not in the domain layer, for the identical reason `transport_ops`'s own
+cross-aggregate flows do (`StudentAssignmentApplicationService.assign_student_to_route` loading
+`Student`+`Route`): I/O (repository reads) is required, which is an application-layer concern by
+this codebase's own established domain-purity rule (LLD §5.3).
+
+**ADR-0016 (RAAD business model realignment): organization-only billing.** `renew_parent_
+subscription` is replaced by `open_organization_subscription`, and `get_active_subscription_
+for_subscriber` by `get_active_subscription_for_organization` — `Subscription` no longer has a
+`subscriber_type`/`subscriber_id` at all (see `domain/entities.py`'s own updated docstring).
 """
 
 from __future__ import annotations
@@ -46,8 +51,8 @@ from raad.modules.billing.application.commands import (
     MarkPaymentExpiredCommand,
     MarkTransportFeeOverdueCommand,
     MarkTransportFeePaidCommand,
+    OpenOrganizationSubscriptionCommand,
     PaymentCallbackCommand,
-    RenewParentSubscriptionCommand,
     SuspendSubscriptionCommand,
     VoidInvoiceCommand,
     WaiveTransportFeeCommand,
@@ -97,8 +102,6 @@ from raad.modules.billing.domain.value_objects import (
     PaymentStatus,
     PlanId,
     StudentId,
-    SubscriberId,
-    SubscriberType,
     SubscriptionId,
     SubscriptionStatus,
     TransportFeeId,
@@ -198,7 +201,7 @@ class BillingApplicationService:
         """Backs `GET /billing/plans` (API Contracts §4.7/§7/§8) - pagination/filtering/sorting
         added under the Pagination/Filtering/Sorting phase, on top of the Backend Stabilization
         phase's original `list_all`-backed addition (still used by `list_plans`'s own sibling
-        use-cases that need every plan unfiltered, e.g. `renew_parent_subscription`'s
+        use-cases that need every plan unfiltered, e.g. `open_organization_subscription`'s
         `ensure_plan_exists` precondition). Mirrors `organization.application.services.
         OrganizationApplicationService.list_organizations`'s identical shape."""
         async with uow:
@@ -224,30 +227,26 @@ class BillingApplicationService:
 
     # --- Subscription --------------------------------------------------------------------
 
-    async def renew_parent_subscription(
-        self, command: RenewParentSubscriptionCommand, *, uow: BillingUnitOfWork
+    async def open_organization_subscription(
+        self, command: OpenOrganizationSubscriptionCommand, *, uow: BillingUnitOfWork
     ) -> InvoiceDTO:
-        """Backend LLD §4.2's `RenewParentSubscription` command, orchestrated per Phase-2
-        §20.2's documented sequence up through invoice creation (the charge step is a separate
-        call, `initiate_payment`, matching the two documented, distinct API routes). Finds an
-        existing non-terminal subscription for this parent first (`get_active_by_subscriber`)
-        rather than always opening a new one — see that repository method's own docstring for
-        the flagged "active" reading. `command.msisdn` is accepted (matching LLD's documented
-        field list verbatim) but not used by this method itself — it is relevant to the
-        subsequent charge step, not invoice creation."""
+        """ADR-0016: replaces the former `renew_parent_subscription` — RAAD bills Organizations
+        only. Orchestrated per Phase-2 §20.2's documented sequence up through invoice creation
+        (the charge step is a separate call, `initiate_payment`, matching the two documented,
+        distinct API routes). Finds an existing non-terminal subscription for this organization
+        first (`get_active_by_organization`) rather than always opening a new one — see that
+        repository method's own docstring for the flagged "active" reading."""
         async with uow:
             plan = await ensure_plan_exists(uow, PlanId(command.plan_id))
 
-            subscriber_id = SubscriberId(command.parent_id)
-            subscription = await uow.subscriptions.get_active_by_subscriber(
-                SubscriberType.PARENT, subscriber_id
+            organization_id = OrganizationId(command.organization_id)
+            subscription = await uow.subscriptions.get_active_by_organization(
+                organization_id
             )
             if subscription is None:
                 subscription = Subscription.open(
                     id=SubscriptionId(self._id_generator.new_id()),
-                    organization_id=OrganizationId(command.organization_id),
-                    subscriber_type=SubscriberType.PARENT,
-                    subscriber_id=subscriber_id,
+                    organization_id=organization_id,
                     plan_id=plan.id,
                     clock=self._clock,
                     actor_id=command.actor.user_id,
@@ -259,7 +258,7 @@ class BillingApplicationService:
 
             invoice = Invoice.issue(
                 id=InvoiceId(self._id_generator.new_id()),
-                organization_id=OrganizationId(command.organization_id),
+                organization_id=organization_id,
                 subscription_id=subscription.id,
                 amount=plan.price,
                 period_start=period_start.date(),
@@ -374,18 +373,17 @@ class BillingApplicationService:
                 page_size=page.page_size,
             )
 
-    async def get_active_subscription_for_subscriber(
-        self, subscriber_type: str, subscriber_id: str, *, uow: BillingUnitOfWork
+    async def get_active_subscription_for_organization(
+        self, organization_id: str, *, uow: BillingUnitOfWork
     ) -> SubscriptionDTO | None:
-        """Application-layer read path over `SubscriptionRepository.get_active_by_subscriber`
-        (`domain/repositories.py`'s own flagged "not EXPIRED/CANCELLED" reading) — previously
-        reachable only from `renew_parent_subscription`'s internal orchestration, not as a
-        standalone query. Added under the Backend Stabilization phase to back CR-1 enforcement
-        (`interfaces/http/deps.parent_access_guard`), which needs a parent's current
-        `subscription_state` without also renewing anything."""
+        """Application-layer read path over `SubscriptionRepository.get_active_by_organization`
+        (`domain/repositories.py`'s own flagged "not EXPIRED/CANCELLED" reading). Backs CR-1
+        enforcement (`interfaces/http/policy_guards.resolve_cr1_decision`), which needs the
+        organization's current `subscription_state` — the *only* subscriber CR-1 evaluates now
+        (ADR-0016 amends ADR-0006: no more per-parent subscription branch)."""
         async with uow:
-            subscription = await uow.subscriptions.get_active_by_subscriber(
-                SubscriberType(subscriber_type), SubscriberId(subscriber_id)
+            subscription = await uow.subscriptions.get_active_by_organization(
+                OrganizationId(organization_id)
             )
             return subscription_to_dto(subscription) if subscription is not None else None
 
@@ -394,10 +392,10 @@ class BillingApplicationService:
     async def issue_invoice(
         self, command: IssueInvoiceCommand, *, uow: BillingUnitOfWork
     ) -> InvoiceDTO:
-        """Standalone issuance, independent of `renew_parent_subscription`'s own inline
+        """Standalone issuance, independent of `open_organization_subscription`'s own inline
         issuance — kept for completeness of the documented `Invoice` model/lifecycle
-        (this phase's own Business Rules scope) even though `renew_parent_subscription` is the
-        only reachable-at-this-layer path that actually produces one in practice."""
+        (this phase's own Business Rules scope) even though `open_organization_subscription` is
+        the only reachable-at-this-layer path that actually produces one in practice."""
         async with uow:
             subscription = await ensure_subscription_exists(
                 uow, SubscriptionId(command.subscription_id)

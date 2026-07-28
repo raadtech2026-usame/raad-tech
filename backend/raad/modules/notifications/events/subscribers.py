@@ -33,17 +33,20 @@ entities, not DTOs, so `status`/`vehicle_id` are compared through their own valu
 shape (`.status.value`, `str(a.vehicle_id)`), not string equality against a DTO field. Then
 every parent linked to each such student
 (`StudentParentApplicationService.list_parents_for_student` + `ParentApplicationService.
-get_parent_by_id` for `user_id`), then evaluates `SubscriptionAccessPolicy` (CR-1) per parent
-before calling `NotificationApplicationService.create_notification` — the same policy, same
-`AssignmentState`/`BillingModel`/`SubscriptionState` inputs `interfaces/http/policy_guards.
+get_parent_by_id` for `user_id`), then evaluates `SubscriptionAccessPolicy` (CR-1) before
+calling `NotificationApplicationService.create_notification` — the same policy, same
+`AssignmentState`/`SubscriptionState` inputs `interfaces/http/policy_guards.
 resolve_cr1_decision` already uses for the HTTP-facing tracking/video routes, applied here in a
 worker context instead. `assignment_state` is always `ACTIVE` by construction (the vehicle-scoped
-assignment list is already filtered to `active`), so only `subscription_state` (for
-`PARENT_PAYS` organizations) can still deny — **no `safety_override`**: D4's live-GPS exception
-(ADR-0006) is specific to live position during an active trip, not notifications, so a lapsed
-`PARENT_PAYS` parent's subscription-gated notifications are correctly withheld exactly like any
-other CR-1-gated read, matching `flutter.md` #4's framing that only *live GPS* gets the safety
-carve-out.
+assignment list is already filtered to `active`), so only `subscription_state` can still deny —
+**no `safety_override`**: D4's live-GPS exception (ADR-0006) is specific to live position during
+an active trip, not notifications, so a lapsed organization's subscription-gated notifications
+are correctly withheld exactly like any other CR-1-gated read, matching `flutter.md` #4's
+framing that only *live GPS* gets the safety carve-out. **ADR-0016 (RAAD business model
+realignment) amends this further**: `SubscriptionAccessPolicy` no longer takes a `billing_model`
+input at all (RAAD bills Organizations only) — the gate is now the *organization's own*
+subscription state, resolved once per `vehicle_id` (not once per parent, since it no longer
+varies by parent), not a per-parent lookup.
 
 **`SYSTEM_PRINCIPAL` — a real, flagged gap, not a silent invention.** Every application command
 in this codebase requires `actor: Principal` (including `CreateNotificationCommand`), but no
@@ -68,7 +71,6 @@ from raad.core.events.base import DomainEvent
 from raad.core.events.processor import EventProcessor, EventProcessorRegistry
 from raad.core.policies.subscription_access import (
     AssignmentState,
-    BillingModel,
     SubscriptionAccessPolicy,
     SubscriptionState,
 )
@@ -78,9 +80,6 @@ from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.notifications.application.commands import CreateNotificationCommand
 from raad.modules.notifications.application.ports import NotificationsUnitOfWork
 from raad.modules.notifications.application.services import NotificationApplicationService
-from raad.modules.organization.application.ports import OrganizationUnitOfWork
-from raad.modules.organization.application.queries import GetOrganizationByIdQuery
-from raad.modules.organization.application.services import OrganizationApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
     GetParentByIdQuery,
@@ -136,7 +135,7 @@ class _NotificationFanOut:
         if not active_student_ids:
             return
 
-        billing_model = await self._resolve_billing_model(organization_id)
+        cr1_granted = await self._is_cr1_granted(organization_id=organization_id)
 
         student_parent_service = self._container.resolve(StudentParentApplicationService)
         parent_service = self._container.resolve(ParentApplicationService)
@@ -155,9 +154,7 @@ class _NotificationFanOut:
                 )
                 if parent.user_id in notified_user_ids:
                     continue
-                if not await self._is_cr1_granted(
-                    parent_id=link.parent_id, billing_model=billing_model
-                ):
+                if not cr1_granted:
                     continue
                 notified_user_ids.add(parent.user_id)
                 await notification_service.create_notification(
@@ -182,27 +179,20 @@ class _NotificationFanOut:
         )
         return trip.vehicle_id
 
-    async def _resolve_billing_model(self, organization_id: str) -> BillingModel:
-        organization_service = self._container.resolve(OrganizationApplicationService)
-        organization = await organization_service.get_organization_by_id(
-            GetOrganizationByIdQuery(organization_id=organization_id),
-            uow=self._container.resolve(OrganizationUnitOfWork),
-        )
-        return BillingModel(organization.billing_model)
-
-    async def _is_cr1_granted(self, *, parent_id: str, billing_model: BillingModel) -> bool:
-        if billing_model != BillingModel.PARENT_PAYS:
-            return True
+    async def _is_cr1_granted(self, *, organization_id: str) -> bool:
+        """ADR-0016 (RAAD business model realignment): `SubscriptionAccessPolicy` no longer
+        takes a `billing_model` input — every organization's own subscription state gates its
+        parents' non-safety notifications now, resolved once per `vehicle_id` (this no longer
+        varies by parent, unlike the former per-parent-subscription check)."""
         billing_service = self._container.resolve(BillingApplicationService)
-        subscription = await billing_service.get_active_subscription_for_subscriber(
-            "parent", parent_id, uow=self._container.resolve(BillingUnitOfWork)
+        subscription = await billing_service.get_active_subscription_for_organization(
+            organization_id, uow=self._container.resolve(BillingUnitOfWork)
         )
         subscription_state = (
             SubscriptionState(subscription.status) if subscription is not None else None
         )
         decision = SubscriptionAccessPolicy().evaluate(
             assignment_state=AssignmentState.ACTIVE,
-            billing_model=billing_model,
             subscription_state=subscription_state,
         )
         return decision.allowed

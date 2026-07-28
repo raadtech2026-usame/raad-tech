@@ -8,12 +8,16 @@ missing enforcement point.
 
 Lives in `interfaces/http/`, not any single bounded-context module, because evaluating either
 policy requires orchestrating **application services from multiple modules** (`transport_ops`
-for assignment/ownership facts, `organization` for billing model, `billing` for subscription
-state) — exactly the kind of cross-cutting, request-scoped orchestration `interfaces/http/deps.py`
-already does for `get_scope`/`require_permission`. Each call resolves every input via the owning
-module's own **application service** (never a repository directly), matching
-`.claude/rules/backend.md` #3's "cross-context data comes from the owning module's application
-service" rule exactly — no cross-module DB read anywhere in this file.
+for assignment/ownership facts, `billing` for subscription state) — exactly the kind of
+cross-cutting, request-scoped orchestration `interfaces/http/deps.py` already does for
+`get_scope`/`require_permission`. Each call resolves every input via the owning module's own
+**application service** (never a repository directly), matching `.claude/rules/backend.md` #3's
+"cross-context data comes from the owning module's application service" rule exactly — no
+cross-module DB read anywhere in this file. **ADR-0016 (RAAD business model realignment):
+`resolve_cr1_decision` no longer resolves `organization` at all** — RAAD bills Organizations
+only now, so `SubscriptionAccessPolicy`'s former `billing_model` input (and the `organization`
+application-service call that resolved it) is gone; only `billing`'s own subscription state
+for `principal.org_id` is resolved.
 """
 
 from __future__ import annotations
@@ -27,7 +31,6 @@ from raad.core.di.container import Container
 from raad.core.policies.base import PolicyDecision
 from raad.core.policies.subscription_access import (
     AssignmentState,
-    BillingModel,
     SubscriptionAccessPolicy,
     SubscriptionState,
 )
@@ -37,9 +40,6 @@ from raad.core.tenancy.resolver import ScopeResolver
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
-from raad.modules.organization.application.ports import OrganizationUnitOfWork
-from raad.modules.organization.application.queries import GetOrganizationByIdQuery
-from raad.modules.organization.application.services import OrganizationApplicationService
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import GetVehicleByIdQuery
 from raad.modules.fleet_device.application.services import VehicleApplicationService
@@ -66,12 +66,14 @@ async def resolve_cr1_decision(
     container: Container,
     safety_override: bool = False,
 ) -> PolicyDecision:
-    """CR-1 (Backend LLD §5.4). Resolves the three documented inputs for the given `student_id`
-    and evaluates `SubscriptionAccessPolicy`. Raises `NotFoundError` (404, not 403 — this
-    codebase's established cross-tenant-probing-avoidance convention, `notifications.
-    application.queries.GetNotificationByIdQuery`'s own precedent) if `principal` is not a
-    Parent of `student_id` at all — CR-1 itself only governs Parent access to a **known-own**
-    child (LLD §5.4: "this policy governs the Parent role only"), not a stranger's.
+    """CR-1 (Backend LLD §5.4, amended by ADR-0016). Resolves the two inputs
+    `SubscriptionAccessPolicy` now takes (`assignment_state`, `subscription_state` — no more
+    `billing_model`, RAAD bills Organizations only) for the given `student_id`. Raises
+    `NotFoundError` (404, not 403 — this codebase's established cross-tenant-probing-avoidance
+    convention, `notifications.application.queries.GetNotificationByIdQuery`'s own precedent) if
+    `principal` is not a Parent of `student_id` at all — CR-1 itself only governs Parent access
+    to a **known-own** child (LLD §5.4: "this policy governs the Parent role only"), not a
+    stranger's.
 
     **`safety_override` — the D4/CR-1 reconciliation (ADR-0006), resolved here per this phase's
     explicit conflict-resolution authority.** `tracking.domain.policies`'s own module docstring
@@ -110,28 +112,18 @@ async def resolve_cr1_decision(
     if safety_override and assignment_state == AssignmentState.ACTIVE:
         return PolicyDecision(allowed=True)
 
-    organization_service = container.resolve(OrganizationApplicationService)
-    organization_uow = container.resolve(OrganizationUnitOfWork)
-    organization = await organization_service.get_organization_by_id(
-        GetOrganizationByIdQuery(organization_id=principal.org_id), uow=organization_uow
+    billing_service = container.resolve(BillingApplicationService)
+    billing_uow = container.resolve(BillingUnitOfWork)
+    subscription = await billing_service.get_active_subscription_for_organization(
+        principal.org_id, uow=billing_uow
     )
-    billing_model = BillingModel(organization.billing_model)
-
-    subscription_state = None
-    if billing_model == BillingModel.PARENT_PAYS:
-        billing_service = container.resolve(BillingApplicationService)
-        billing_uow = container.resolve(BillingUnitOfWork)
-        subscription = await billing_service.get_active_subscription_for_subscriber(
-            "parent", principal.user_id, uow=billing_uow
-        )
-        subscription_state = (
-            SubscriptionState(subscription.status) if subscription is not None else None
-        )
+    subscription_state = (
+        SubscriptionState(subscription.status) if subscription is not None else None
+    )
 
     policy = SubscriptionAccessPolicy()
     return policy.evaluate(
         assignment_state=assignment_state,
-        billing_model=billing_model,
         subscription_state=subscription_state,
     )
 

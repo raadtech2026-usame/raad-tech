@@ -7,15 +7,21 @@ equality-by-value, framework-free — no SQLAlchemy/Pydantic/FastAPI. Validation
 incremental one-aggregate-per-phase build-out) — this phase's own task explicitly scopes
 "the complete Billing bounded context... end-to-end in a single implementation."
 
-**Cross-module references stay opaque, never re-validated.** `organization_id` (every table),
-`subscriber_id` when `subscriber_type=parent` (→ `transport_ops.Parent`), and
-`transport_fees.student_id` (→ `transport_ops.Student`) are cross-module references — opaque,
-non-empty strings only, the same treatment `transport_ops.domain.value_objects.VehicleId`
-already establishes for its own cross-module reference to `fleet_device.Vehicle`
-(`.claude/rules/database.md` #3). `SubscriberId` covers both `subscriber_type` cases
-(`organization` or `parent`) with one opaque type — which aggregate it actually names is a
-runtime fact carried by the sibling `subscriber_type` field, not encoded in the id's own shape
-(Database Design §8.2 gives `subscriber_id` no distinct format per type).
+**Cross-module references stay opaque, never re-validated.** `organization_id` (every table)
+and `transport_fees.student_id` (→ `transport_ops.Student`) are cross-module references —
+opaque, non-empty strings only, the same treatment `transport_ops.domain.value_objects.
+VehicleId` already establishes for its own cross-module reference to `fleet_device.Vehicle`
+(`.claude/rules/database.md` #3).
+
+**RAAD business model realignment (ADR-0016): `Subscription` is organization-only now.**
+`SubscriberType`/`SubscriberId` (the former polymorphic organization-or-parent subscriber
+concept) are removed entirely — `Subscription` keys on `organization_id` alone, matching "RAAD
+bills Organizations only." `BillingScope.PARENT` is likewise removed (`Plan.billing_scope`
+keeps its `ORGANIZATION` value only, the same "documented seam for future variants" framing
+`organization.domain.value_objects.OrgType.SCHOOL` already establishes for an analogous
+single-active-value enum — not eliminated outright, since a `Plan`-level scope concept remains
+structurally meaningful even with one current value, unlike `Organization.billing_model`, which
+ADR-0016 removes outright as genuinely vestigial once single-valued).
 
 **`plan_id` / `subscription_id` / `invoice_id` are in-context references** — `Plan`,
 `Subscription`, `Invoice`, `Payment` are all owned by this same `billing` module, so these reuse
@@ -28,9 +34,10 @@ split (e.g. `Trip.route_id: RouteId` vs `Trip.vehicle_id: VehicleId`).
   values** (unlike every other status field in that table's compact notation). Mirrors
   `transport_ops.domain.value_objects.ParentStatus`'s identical situation: the simplest
   defensible choice, a flat `active`/`inactive` toggle, not an invented richer lifecycle.
-- Every other enum here (`BillingScope`, `BillingCycle`, `SubscriberType`, `SubscriptionStatus`,
+- Every other enum here (`BillingScope`, `BillingCycle`, `SubscriptionStatus`,
   `InvoiceStatus`, `PaymentStatus`, `TransportFeeStatus`) **is** explicitly spelled out in
-  Database Design §8.1-§8.5 and used verbatim.
+  Database Design §8.1-§8.5 and used verbatim (`BillingScope`'s own `PARENT` value now removed
+  per ADR-0016, see module docstring above).
 
 **`InvoiceStatus` has no `failed` value — flagged, not invented.** Phase-2 §20.2's payment
 workflow narrative says "Mark Invoice FAILED" on a declined/timeout payment, but Database Design
@@ -69,25 +76,9 @@ class OrganizationId:
 
 
 @dataclass(frozen=True)
-class SubscriberId:
-    """Cross-module reference, opaque — see module docstring. Names either an `Organization` or
-    a `transport_ops.Parent`, disambiguated at the call site by `SubscriberType`, never by this
-    id's own shape."""
-
-    value: str
-
-    def __post_init__(self) -> None:
-        if not self.value:
-            raise DomainError("SubscriberId must not be empty")
-
-    def __str__(self) -> str:
-        return self.value
-
-
-@dataclass(frozen=True)
 class StudentId:
     """Cross-module reference to a `transport_ops.Student` — opaque, non-empty string only, the
-    same treatment `SubscriberId` above gets."""
+    same treatment `OrganizationId` above gets."""
 
     value: str
 
@@ -160,11 +151,12 @@ class TransportFeeId:
 
 
 class BillingScope(str, Enum):
-    """Database Design §8.1: `plans.billing_scope ENUM(organization,parent)` — which
-    `SubscriberType` a plan is meant to be purchased by."""
+    """Database Design §8.1: `plans.billing_scope ENUM(organization,parent)`. ADR-0016 (RAAD
+    business model realignment) removes the `parent` value — RAAD bills Organizations only —
+    leaving one active value, the same "documented seam for future variants" framing
+    `organization.domain.value_objects.OrgType.SCHOOL` already establishes."""
 
     ORGANIZATION = "organization"
-    PARENT = "parent"
 
 
 class BillingCycle(str, Enum):
@@ -182,14 +174,6 @@ class PlanStatus(str, Enum):
 
     ACTIVE = "active"
     INACTIVE = "inactive"
-
-
-class SubscriberType(str, Enum):
-    """Database Design §8.2: `subscriptions.subscriber_type ENUM(organization,parent)` — "maps
-    to billing_model (CR-1)"."""
-
-    ORGANIZATION = "organization"
-    PARENT = "parent"
 
 
 class SubscriptionStatus(str, Enum):

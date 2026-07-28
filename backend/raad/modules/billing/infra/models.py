@@ -17,6 +17,10 @@ never FKs — cross-module references.
 `transport_ops.infra.models.StopModel.route_id` already establishes for its own in-context
 reference.
 
+**ADR-0016 (RAAD business model realignment): `subscriptions` is organization-only now.** The
+former polymorphic `subscriber_type`/`subscriber_id` columns are dropped — `organization_id`
+(already a plain indexed column on this table) is the sole subscriber reference.
+
 **`PaymentModel` composes `UlidPrimaryKeyMixin` only, not `AuditedTableMixin`.** Database
 Design §8.4's `payments` table lists exactly its own columns (including its own `created_at`/
 `confirmed_at` pair) with no "+ standard audit cols" line — unlike `plans`/`subscriptions`/
@@ -58,10 +62,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 from raad.core.db.base import Base
 from raad.core.db.mixins import AuditedTableMixin, UlidPrimaryKeyMixin
 
-_BILLING_SCOPE_VALUES = ("organization", "parent")
+_BILLING_SCOPE_VALUES = ("organization",)
 _BILLING_CYCLE_VALUES = ("monthly", "quarterly", "annual")
 _PLAN_STATUS_VALUES = ("active", "inactive")
-_SUBSCRIBER_TYPE_VALUES = ("organization", "parent")
 _SUBSCRIPTION_STATUS_VALUES = ("trial", "active", "suspended", "expired", "cancelled")
 _INVOICE_STATUS_VALUES = ("draft", "issued", "paid", "void")
 _PAYMENT_STATUS_VALUES = ("pending", "processing", "paid", "failed", "expired", "refunded")
@@ -103,23 +106,19 @@ class PlanModel(AuditedTableMixin, Base):
 
 
 class SubscriptionModel(AuditedTableMixin, Base):
-    """`subscriptions` (Database Design §8.2)."""
+    """`subscriptions` (Database Design §8.2). ADR-0016: organization-only — the former
+    `subscriber_type`/`subscriber_id` columns are dropped."""
 
     __tablename__ = "subscriptions"
     __table_args__ = (
         Index(
-            "ix_subscriptions__subscriber_type_subscriber_id_status",
-            "subscriber_type",
-            "subscriber_id",
+            "ix_subscriptions__organization_id_status",
+            "organization_id",
             "status",
         ),
     )
 
     organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
-    subscriber_type: Mapped[str] = mapped_column(
-        SqlEnum(*_SUBSCRIBER_TYPE_VALUES, name="subscriber_type"), nullable=False
-    )
-    subscriber_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
     plan_id: Mapped[str] = mapped_column(
         CHAR(26), ForeignKey("plans.id"), nullable=False, index=True
     )
