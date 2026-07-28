@@ -36,3 +36,12 @@ Derived from `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §12 an
    don't hold for a dynamic-IP fleet.
 10. **Payment callbacks are untrusted input** until signature/secret-verified; unverified callbacks
     are rejected and audited.
+11. **Account-sharing protection is a bounded concurrent-session cap, not device attestation
+    (ADR-0019).** Every login/refresh enforces a per-role maximum on non-revoked, non-expired
+    `refresh_tokens` rows for that user (oldest revoked first when exceeded), via one tested
+    `SessionLimitPolicy` object (`core/policies/`) — never a scattered ad hoc count check. The
+    cap is configurable per role via the existing `SystemSetting` store, never hardcoded. A
+    login from an unrecognized device/IP combination is audit-logged as a visibility signal only
+    — no automated hard block exists absent a documented fraud-detection policy. Heavier tiers
+    (device fingerprinting/trusted-device approval, hardware-backed attestation) are a deliberate
+    later decision, not an oversight — see ADR-0019's Consequences.

@@ -1,9 +1,10 @@
 # ADR-0003: Parent Registration Orchestration (IAM ↔ Transport Operations)
 
 ## Status
-Proposed. Not yet accepted — for review only. **This ADR defines an architecture decision for
-future implementation; it makes no code, schema, or migration changes.** No part of the current
-Phase 10.6 `Parent` implementation is altered by this document.
+**Accepted** (2026-07-28, RAAD business model realignment). This ADR's Recommended Option
+(Option A — synchronous cross-context orchestration via an application-owned provisioning port)
+is the approved design. See the **Extension** section at the end of this document for how the
+new business model widens this ADR's scope beyond `Parent` alone.
 
 ## Context
 `docs/business/RAAD_Phase3.2_Database_Design_v1.md` §6.3 defines `parents.user_id` as a required
@@ -264,3 +265,25 @@ registration creates a new login-capable identity.
 - `.claude/rules/workflow.md` #7, #8 (approved-design-before-implementation gate this ADR satisfies)
 - `docs/architecture/adr/0001-business-entity-module-mapping.md` (Parent owned by `transport_ops`,
   not split into `iam`)
+
+## Extension (2026-07-28): Driver and Organization Onboarding reuse this pattern
+
+Accepting this ADR (above) unblocks two workflows the RAAD business model realignment needs,
+both reusing the identical Option A shape — an application-owned provisioning port calling
+`iam`'s public facade, never its repository/ORM layer:
+
+1. **`Driver` registration** (`drivers.user_id FK→users`, Database Design §6.1) — this ADR's own
+   original "Impact" section already named Driver as the natural next consumer of the same
+   `UserProvisioningPort`, sharing the identical shape as `Parent`. `transport_ops` gets one
+   shared port implementation, used by both `ParentApplicationService` and
+   `DriverApplicationService`.
+2. **Organization onboarding** (`docs/architecture/adr/0017-organization-onboarding-orchestration.md`)
+   — a second instance of the same pattern, one module boundary over: `organization` orchestrates
+   creating its own `Organization` row plus, via an equivalent `IamProvisioningPort`, the
+   Organization's first `User` (`role=org_admin`). ADR-0017 covers the differences specific to
+   that workflow (a generated one-time temporary password, `is_password_change_required`) — the
+   underlying cross-context orchestration mechanics, failure handling, and DI wiring shape are
+   exactly this ADR's Option A, not a second design.
+
+No change to this ADR's own Sequence of Operations/Responsibilities/Failure Handling sections is
+needed — both new consumers instantiate the same pattern against a different pair of aggregates.

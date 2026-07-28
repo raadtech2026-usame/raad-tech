@@ -83,3 +83,41 @@ Org-Admin-only by construction, unconditionally, per `.claude/rules/jt1078.md` #
 - `raad/core/policies/subscription_access.py`, `raad/modules/tracking/domain/policies.py`
   (`TrackingVisibilityPolicy`), `raad/interfaces/http/policy_guards.py`,
   `raad/modules/tracking/api/routers.py` (implementation)
+
+## Amendment (2026-07-28): `billing_model` input removed (Organization-Only Billing)
+
+**Status:** Accepted (direct user decision, RAAD business model realignment). Superseding this
+ADR's `billing_model`-conditioned branch only — D4's own precedence rule (safety-over-billing
+during an active trip, `safety_override=is_trip_active`) and the `assignment_state` gate are
+unchanged.
+
+### Context
+**ADR-0016** (Organization-Only Billing Model) deletes `PARENT_PAYS`/`Organization.billing_model`
+entirely — RAAD bills organizations only. This ADR's original Decision described
+`SubscriptionAccessPolicy`'s `subscription_state` gate as conditioned on `billing_model`
+(skipped for `ORGANIZATION_PAYS`, evaluated for `PARENT_PAYS`). With only one billing model left,
+that conditioning has nothing left to condition on.
+
+### Decision
+`SubscriptionAccessPolicy` drops the `billing_model` input entirely. `subscription_state` is now
+evaluated as a single, unconditional check against the **organization's own subscription** (never
+a parent-owned one — that concept no longer exists per ADR-0016). The `safety_override`
+mechanism this ADR already established is otherwise untouched: `assignment_state` still always
+applies; `subscription_state` is still skipped (treated as granting) exactly when
+`safety_override=True` (live position during an active trip). D5/`VideoAccessPolicy` is
+unaffected — it never had a `billing_model` input.
+
+### Consequences
+- `SubscriptionAccessPolicy`'s signature loses one parameter; every call site
+  (`interfaces/http/policy_guards.py`) simplifies correspondingly — no behavioral change to the
+  `assignment_state`/`safety_override` reasoning this ADR's original Decision already recorded.
+- No re-litigation of D4 vs CR-1 precedence is needed — that reconciliation stands exactly as
+  originally decided; only the now-dead `billing_model` branch is removed.
+
+### Verification
+- `tests/unit/test_policy_guards.py`/`SubscriptionAccessPolicyTests` updated to the
+  single-branch signature; existing `assignment_state`/`safety_override` test cases must
+  continue passing unchanged.
+
+### References (amendment)
+- `docs/architecture/adr/0016-organization-only-billing-model.md`

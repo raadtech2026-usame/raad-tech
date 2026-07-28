@@ -38,6 +38,62 @@ If a request would pull RAAD toward any of the above, say so explicitly and ask 
 rather than implementing it. Scope creep into general school-management territory is the main risk
 to design against in this codebase.
 
+## Business Model (Realigned 2026-07-28)
+
+RAAD is a **three-level multi-tenant platform**, in this strict order of authority:
+
+1. **RAAD Platform (Super Admin)** — RAAD's own company dashboard. RAAD manages Organizations,
+   Subscriptions/Billing, Devices (hardware onboarding end-to-end), Drivers-as-fleet-assets
+   visibility, Live GPS/Video, Fleet Monitoring, Support, and Platform Analytics. **RAAD does not
+   manage students or parents directly, and does not run classroom/attendance/ERP functionality**
+   — that stays this project's permanent out-of-scope boundary (Product Scope, above).
+2. **Organization** — owns all operational data: Vehicles, Drivers, Routes/Stops, Students,
+   Parents, Staff Users, Device Assignments. Only reachable after RAAD onboards the Organization
+   (below) — an Organization never provisions itself.
+3. **Parent / Driver** — mobile-only (`.claude/rules/flutter.md` #1), scoped to exactly one
+   Organization, created only by that Organization.
+
+This realignment changed or added five things relative to the architecture already documented
+below, each formalized as an ADR before any implementation (`.claude/rules/workflow.md` #7/#8) —
+implementation itself proceeds in milestones and is tracked here as each one lands:
+
+- **Organization Onboarding is RAAD-only and one guided workflow, not two disconnected steps**
+  (`docs/architecture/adr/0017-organization-onboarding-orchestration.md`): RAAD creates the
+  Organization, selects its Plan, and creates its first Org Admin user — handing off a
+  username/phone + one-time temporary password — in one orchestrated flow. Reuses
+  **ADR-0003** (now **Accepted**, previously "Proposed, not accepted" — see that ADR's own
+  "Extension" section), the same cross-context provisioning-port pattern now also backing
+  Driver registration.
+- **Billing is Organization-only** (`docs/architecture/adr/0016-organization-only-billing-model.md`,
+  amending **ADR-0006**): direct parent billing (`SubscriberType.PARENT`,
+  `Organization.billing_model=parent_pays`, `RenewParentSubscriptionCommand`) is removed
+  outright — RAAD bills Organizations only, based on tracked usage (active users, MAU, active
+  devices, active vehicles; no pricing *formula* is documented, so only tracking/display ships).
+- **Device onboarding gains a pre-tenant RAAD inventory**
+  (`docs/architecture/adr/0018-device-inventory-and-allocation.md`, formalizing the
+  previously-drafted-only `docs/architecture/RAAD_DevicePlane_Architecture_v0_1_draft.md` §3.5):
+  Supplier → RAAD registers into `device_inventory` (platform-scoped, no `organization_id`) →
+  RAAD allocates to an Organization (creates the `devices` row, unchanged from today's existing
+  `Device.register()` shape) → the Organization can now **read** (not manage) devices allocated
+  to it — a narrow, explicit, flagged reversal of the Device Domain Overhaul's original
+  zero-device-visibility posture for `org_admin`.
+- **Account-sharing protection**
+  (`docs/architecture/adr/0019-account-sharing-session-cap.md`): a concurrent-session cap on the
+  existing (previously dead) `refresh_tokens` table, configurable per role via the existing
+  `SystemSetting` store, plus self-service session list/revoke. Lightweight tier only, by
+  explicit user choice — no device fingerprinting/attestation this phase (blocked on the Flutter
+  app existing beyond its current empty scaffold).
+- **Platform Analytics dashboard**
+  (`docs/architecture/adr/0020-platform-analytics-read-model.md`): a new, `platform_audit`-owned,
+  cross-module (but never cross-module-DB-reading) stats read-model backing the Super Admin
+  dashboard's KPI grid — including building the previously-missing `DeviceOnline`/`DeviceOffline`
+  consumer so Online/Offline Devices is a real number, not a fabricated one.
+
+**Implementation status:** architecture accepted; milestone implementation (IAM provisioning
+port → org onboarding → billing cutover → device inventory → session cap → platform analytics)
+is in progress — each milestone's own entry will replace this line as it lands, following the
+same "update as it lands" discipline every other phase in this file already follows.
+
 ## Core Technical Domains
 
 RAAD's real-time capabilities are built on two vehicle telematics protocols — these are the terms
