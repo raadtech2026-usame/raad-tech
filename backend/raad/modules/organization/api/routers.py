@@ -61,6 +61,7 @@ from raad.modules.organization.api.deps import (
 )
 from raad.modules.organization.api.schemas import (
     CreateRegionRequest,
+    OrganizationOnboardedResponse,
     OrganizationResponse,
     RegionResponse,
     RegisterOrganizationRequest,
@@ -72,6 +73,7 @@ from raad.modules.organization.application.commands import (
     CreateRegionCommand,
     DeactivateOrganizationCommand,
     DeactivateRegionCommand,
+    OnboardOrganizationCommand,
     ReactivateOrganizationCommand,
     RegisterOrganizationCommand,
     SuspendOrganizationCommand,
@@ -173,13 +175,17 @@ async def list_organizations(
 
 @organizations_router.post(
     "",
-    response_model=OrganizationResponse,
+    response_model=OrganizationOnboardedResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Register a new organization",
+    summary="Onboard a new organization",
     description=(
         "Founder, Reg.Mgr(region), Support(assigned) (API Contracts §4.1). Authorization "
         "uses `require_permission`, resolving against the real seeded RBAC permission matrix "
-        "(ADR-0004), matching `iam.api.routers.create_user`'s posture."
+        "(ADR-0004), matching `iam.api.routers.create_user`'s posture. ADR-0017 (RAAD business "
+        "model realignment): also provisions the Organization's first Org Admin login "
+        "(`iam.User`, role=org_admin) with a generated one-time temporary password, returned "
+        "here exactly once for hand-off — the previously fully-manual, two-step process is "
+        "now one guided workflow."
     ),
 )
 async def register_organization(
@@ -189,17 +195,26 @@ async def register_organization(
     ),
     org_service: OrganizationApplicationService = Depends(get_organization_service),
     uow: OrganizationUnitOfWork = Depends(get_organization_uow),
-) -> OrganizationResponse:
-    command = RegisterOrganizationCommand(
+) -> OrganizationOnboardedResponse:
+    command = OnboardOrganizationCommand(
         name=body.name,
         org_type=_parse_org_type(body.org_type),
         region_id=body.region_id,
         billing_model=_parse_billing_model(body.billing_model),
         parent_org_id=body.parent_org_id,
+        admin_full_name=body.admin_full_name,
+        admin_email=body.admin_email,
+        admin_phone=body.admin_phone,
         actor=principal,
     )
-    organization = await org_service.register_organization(command, uow=uow)
-    return _organization_dto_to_response(organization)
+    organization, admin_user_id, temporary_password = await org_service.onboard_organization(
+        command, uow=uow
+    )
+    return OrganizationOnboardedResponse(
+        organization=_organization_dto_to_response(organization),
+        admin_user_id=admin_user_id,
+        temporary_password=temporary_password,
+    )
 
 
 @organizations_router.get(

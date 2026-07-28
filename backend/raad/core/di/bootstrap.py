@@ -56,13 +56,19 @@ from raad.modules.fleet_device.events.subscribers import register_fleet_device_p
 from raad.modules.fleet_device.infra.repositories import (
     SqlAlchemyFleetDeviceUnitOfWork,
 )
-from raad.modules.organization.application.ports import OrganizationUnitOfWork
+from raad.modules.organization.application.ports import (
+    IamProvisioningPort,
+    OrganizationUnitOfWork,
+)
 from raad.modules.organization.application.services import (
     OrganizationApplicationService,
     RegionApplicationService,
     ScopeAssignmentApplicationService,
 )
-from raad.modules.organization.infra.adapters import OrganizationScopeResolver
+from raad.modules.organization.infra.adapters import (
+    IamUserProvisioningAdapter as OrganizationIamUserProvisioningAdapter,
+    OrganizationScopeResolver,
+)
 from raad.modules.organization.infra.repositories import (
     SqlAlchemyOrganizationUnitOfWork,
 )
@@ -165,15 +171,11 @@ def build_container(settings: Settings) -> Container:
         PermissionApplicationService(clock=container.resolve(Clock)),
     )
 
-    # OrganizationApplicationService/RegionApplicationService need no TokenService either —
-    # always constructible, same reasoning as UserApplicationService above.
-    container.bind_singleton(
-        OrganizationApplicationService,
-        OrganizationApplicationService(
-            clock=container.resolve(Clock),
-            id_generator=container.resolve(IdGenerator),
-        ),
-    )
+    # OrganizationApplicationService now additionally needs `IamProvisioningPort` (ADR-0017) —
+    # bound further below, inside the `if settings.db.url:` block, since the concrete adapter
+    # needs a DB-backed `IamUnitOfWork` factory (same reasoning ParentApplicationService/
+    # DriverApplicationService's own binding already documents). RegionApplicationService is
+    # unaffected and stays bound unconditionally here.
     container.bind_singleton(
         RegionApplicationService,
         RegionApplicationService(
@@ -464,6 +466,26 @@ def build_container(settings: Settings) -> Container:
             ScopeResolver,
             OrganizationScopeResolver(
                 lambda: container.resolve(OrganizationUnitOfWork)
+            ),
+        )
+        # IamProvisioningPort (ADR-0017) — a fresh IamUnitOfWork per call, same uow_factory
+        # shape as PermissionEvaluator/ScopeResolver/transport_ops's identical port above.
+        container.bind_singleton(
+            IamProvisioningPort,
+            OrganizationIamUserProvisioningAdapter(
+                user_service=container.resolve(UserApplicationService),
+                uow_factory=lambda: container.resolve(IamUnitOfWork),
+            ),
+        )
+        # OrganizationApplicationService depends on IamProvisioningPort (just bound above),
+        # so — unlike RegionApplicationService — it's bound here, inside the DB-configured
+        # block, rather than unconditionally near the top of this function.
+        container.bind_singleton(
+            OrganizationApplicationService,
+            OrganizationApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
+                iam_provisioning=container.resolve(IamProvisioningPort),
             ),
         )
         container.bind_factory(

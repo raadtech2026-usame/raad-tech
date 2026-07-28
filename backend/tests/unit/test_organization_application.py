@@ -25,13 +25,17 @@ from raad.modules.organization.application.commands import (
     CreateRegionCommand,
     DeactivateOrganizationCommand,
     DeactivateRegionCommand,
+    OnboardOrganizationCommand,
     ReactivateOrganizationCommand,
     RegisterOrganizationCommand,
     SuspendOrganizationCommand,
     UpdateOrganizationApproachingDistanceCommand,
     UpdateOrganizationGeofenceCommand,
 )
-from raad.modules.organization.application.ports import OrganizationUnitOfWork
+from raad.modules.organization.application.ports import (
+    IamProvisioningPort,
+    OrganizationUnitOfWork,
+)
 from raad.modules.organization.application.queries import (
     GetOrganizationByIdQuery,
     GetRegionByIdQuery,
@@ -271,19 +275,58 @@ def make_actor() -> Principal:
     return Principal(user_id="admin-1", role=Role.FOUNDER, org_id=None)
 
 
+VALID_ADMIN_USER_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MF"
+FAKE_ADMIN_TEMPORARY_PASSWORD = "Fake-Temp-Pw9!"
+
+
+class FakeIamProvisioningPort(IamProvisioningPort):
+    """ADR-0017: stands in for the real `IamUserProvisioningAdapter` — see
+    `test_transport_ops_parent_application.py`'s identical fake (ADR-0003) for the full
+    rationale. Records every call for assertions."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def create_user_with_temporary_password(
+        self,
+        *,
+        organization_id: str,
+        role: Role,
+        email: str | None,
+        phone: str | None,
+        full_name: str,
+        actor: Principal,
+    ) -> tuple[str, str]:
+        self.calls.append(
+            {
+                "organization_id": organization_id,
+                "role": role,
+                "email": email,
+                "phone": phone,
+                "full_name": full_name,
+                "actor": actor,
+            }
+        )
+        return VALID_ADMIN_USER_ULID, FAKE_ADMIN_TEMPORARY_PASSWORD
+
+
 def make_services() -> tuple[
     OrganizationApplicationService,
     RegionApplicationService,
     FakeOrganizationUnitOfWork,
+    FakeIamProvisioningPort,
 ]:
     clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
     id_generator = SequentialIdGenerator()
-    org_service = OrganizationApplicationService(clock=clock, id_generator=id_generator)
+    iam_provisioning = FakeIamProvisioningPort()
+    org_service = OrganizationApplicationService(
+        clock=clock, id_generator=id_generator, iam_provisioning=iam_provisioning
+    )
     region_service = RegionApplicationService(clock=clock, id_generator=id_generator)
     uow = FakeOrganizationUnitOfWork(
         InMemoryOrganizationRepository(), InMemoryRegionRepository()
     )
-    return org_service, region_service, uow
+    return org_service, region_service, uow, iam_provisioning
 
 
 async def _seed_region(
@@ -297,12 +340,93 @@ async def _seed_region(
     return dto.id
 
 
+class OnboardOrganizationTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0017: `onboard_organization` — Organization creation and Org Admin provisioning as
+    one guided workflow."""
+
+    async def test_onboard_creates_organization_and_provisions_admin(self) -> None:
+        org_service, region_service, uow, iam_provisioning = make_services()
+        region_id = await _seed_region(region_service, uow)
+
+        organization, admin_user_id, temporary_password = await org_service.onboard_organization(
+            OnboardOrganizationCommand(
+                name="Sunrise School",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                parent_org_id=None,
+                admin_full_name="Amina Warsame",
+                admin_email="amina@sunrise.example.com",
+                admin_phone=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(organization.status, "active")
+        self.assertEqual(admin_user_id, VALID_ADMIN_USER_ULID)
+        self.assertEqual(temporary_password, FAKE_ADMIN_TEMPORARY_PASSWORD)
+        # 1 commit from `_seed_region` above + 1 from the Organization itself (the iam call is
+        # a second, independent Unit of Work this fake doesn't share commit_count with).
+        self.assertEqual(uow.commit_count, 2)
+
+    async def test_onboard_calls_iam_provisioning_with_role_org_admin_and_new_org_id(
+        self,
+    ) -> None:
+        org_service, region_service, uow, iam_provisioning = make_services()
+        region_id = await _seed_region(region_service, uow)
+        actor = make_actor()
+
+        organization, _admin_user_id, _temporary_password = await org_service.onboard_organization(
+            OnboardOrganizationCommand(
+                name="Sunrise School",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                billing_model=BillingModel.ORGANIZATION_PAYS,
+                parent_org_id=None,
+                admin_full_name="Amina Warsame",
+                admin_email="amina@sunrise.example.com",
+                admin_phone=None,
+                actor=actor,
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(len(iam_provisioning.calls), 1)
+        call = iam_provisioning.calls[0]
+        self.assertEqual(call["organization_id"], organization.id)
+        self.assertEqual(call["role"], Role.ORG_ADMIN)
+        self.assertEqual(call["email"], "amina@sunrise.example.com")
+        self.assertEqual(call["full_name"], "Amina Warsame")
+        self.assertIs(call["actor"], actor)
+
+    async def test_onboard_requires_an_existing_region(self) -> None:
+        org_service, _region_service, uow, iam_provisioning = make_services()
+        with self.assertRaises(NotFoundError):
+            await org_service.onboard_organization(
+                OnboardOrganizationCommand(
+                    name="Sunrise School",
+                    org_type=OrgType.SCHOOL,
+                    region_id=NON_EXISTENT_ULID,
+                    billing_model=BillingModel.ORGANIZATION_PAYS,
+                    parent_org_id=None,
+                    admin_full_name="Amina Warsame",
+                    admin_email="amina@sunrise.example.com",
+                    admin_phone=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+        self.assertEqual(uow.commit_count, 0)
+        # A missing region fails before the Organization ever commits - iam is never called.
+        self.assertEqual(iam_provisioning.calls, [])
+
+
 class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_register_requires_an_existing_region(self) -> None:
         """Regression: `organizations.region_id` is an in-context FK (Database Design §4.2) -
         the application layer must pre-check it (surfacing NotFoundError) rather than letting
         an unchecked reference through."""
-        org_service, _region_service, uow = make_services()
+        org_service, _region_service, uow, _iam_provisioning = make_services()
         with self.assertRaises(NotFoundError):
             await org_service.register_organization(
                 RegisterOrganizationCommand(
@@ -318,7 +442,7 @@ class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(uow.commit_count, 0)
 
     async def test_register_with_valid_region_succeeds(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         region_id = await _seed_region(region_service, uow)
 
         dto = await org_service.register_organization(
@@ -338,7 +462,7 @@ class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_register_with_nonexistent_parent_org_raises_not_found(self) -> None:
         """Regression: parent_org_id hierarchy - the parent must actually exist (Database
         Design §4.2's self-referencing FK)."""
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         region_id = await _seed_region(region_service, uow)
 
         with self.assertRaises(NotFoundError):
@@ -355,7 +479,7 @@ class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_register_sub_organization_with_valid_parent_succeeds(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         region_id = await _seed_region(region_service, uow)
         parent_dto = await org_service.register_organization(
             RegisterOrganizationCommand(
@@ -401,7 +525,7 @@ class OrganizationStatusTransitionApplicationTests(unittest.IsolatedAsyncioTestC
         return dto.id
 
     async def test_suspend_then_reactivate(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         org_id = await self._registered_org_id(org_service, region_service, uow)
 
         suspended = await org_service.suspend_organization(
@@ -417,7 +541,7 @@ class OrganizationStatusTransitionApplicationTests(unittest.IsolatedAsyncioTestC
         self.assertEqual(reactivated.status, "active")
 
     async def test_deactivate_organization(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         org_id = await self._registered_org_id(org_service, region_service, uow)
         dto = await org_service.deactivate_organization(
             DeactivateOrganizationCommand(organization_id=org_id, actor=make_actor()),
@@ -426,7 +550,7 @@ class OrganizationStatusTransitionApplicationTests(unittest.IsolatedAsyncioTestC
         self.assertEqual(dto.status, "inactive")
 
     async def test_transition_on_missing_organization_raises_not_found(self) -> None:
-        org_service, _region_service, uow = make_services()
+        org_service, _region_service, uow, _iam_provisioning = make_services()
         with self.assertRaises(NotFoundError):
             await org_service.suspend_organization(
                 SuspendOrganizationCommand(
@@ -436,7 +560,7 @@ class OrganizationStatusTransitionApplicationTests(unittest.IsolatedAsyncioTestC
             )
 
     async def test_get_organization_by_id_returns_dto(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         org_id = await self._registered_org_id(org_service, region_service, uow)
         dto = await org_service.get_organization_by_id(
             GetOrganizationByIdQuery(organization_id=org_id), uow=uow
@@ -467,7 +591,7 @@ class UpdateOrganizationGeofenceApplicationTests(unittest.IsolatedAsyncioTestCas
         return dto.id
 
     async def test_newly_registered_organization_has_no_geofence(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         org_id = await self._registered_org_id(org_service, region_service, uow)
         dto = await org_service.get_organization_by_id(
             GetOrganizationByIdQuery(organization_id=org_id), uow=uow
@@ -477,7 +601,7 @@ class UpdateOrganizationGeofenceApplicationTests(unittest.IsolatedAsyncioTestCas
         self.assertIsNone(dto.geofence_radius_m)
 
     async def test_update_organization_geofence_sets_all_three_fields(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         org_id = await self._registered_org_id(org_service, region_service, uow)
 
         dto = await org_service.update_organization_geofence(
@@ -498,7 +622,7 @@ class UpdateOrganizationGeofenceApplicationTests(unittest.IsolatedAsyncioTestCas
     async def test_update_organization_geofence_on_missing_organization_raises_not_found(
         self,
     ) -> None:
-        org_service, _region_service, uow = make_services()
+        org_service, _region_service, uow, _iam_provisioning = make_services()
         with self.assertRaises(NotFoundError):
             await org_service.update_organization_geofence(
                 UpdateOrganizationGeofenceCommand(
@@ -512,7 +636,7 @@ class UpdateOrganizationGeofenceApplicationTests(unittest.IsolatedAsyncioTestCas
             )
 
     async def test_update_organization_geofence_rejects_invalid_radius(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         org_id = await self._registered_org_id(org_service, region_service, uow)
         with self.assertRaises(DomainError):
             await org_service.update_organization_geofence(
@@ -551,7 +675,7 @@ class UpdateOrganizationApproachingDistanceApplicationTests(
         return dto.id
 
     async def test_newly_registered_organization_defaults_to_300_meters(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         org_id = await self._registered_org_id(org_service, region_service, uow)
         dto = await org_service.get_organization_by_id(
             GetOrganizationByIdQuery(organization_id=org_id), uow=uow
@@ -559,7 +683,7 @@ class UpdateOrganizationApproachingDistanceApplicationTests(
         self.assertEqual(dto.approaching_distance_m, 300)
 
     async def test_update_sets_the_new_value(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         org_id = await self._registered_org_id(org_service, region_service, uow)
 
         dto = await org_service.update_organization_approaching_distance(
@@ -576,7 +700,7 @@ class UpdateOrganizationApproachingDistanceApplicationTests(
         )
 
     async def test_update_on_missing_organization_raises_not_found(self) -> None:
-        org_service, _region_service, uow = make_services()
+        org_service, _region_service, uow, _iam_provisioning = make_services()
         with self.assertRaises(NotFoundError):
             await org_service.update_organization_approaching_distance(
                 UpdateOrganizationApproachingDistanceCommand(
@@ -588,7 +712,7 @@ class UpdateOrganizationApproachingDistanceApplicationTests(
             )
 
     async def test_update_rejects_a_non_positive_value(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         org_id = await self._registered_org_id(org_service, region_service, uow)
         with self.assertRaises(DomainError):
             await org_service.update_organization_approaching_distance(
@@ -603,7 +727,7 @@ class UpdateOrganizationApproachingDistanceApplicationTests(
 
 class RegionApplicationTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_region_succeeds(self) -> None:
-        _org_service, region_service, uow = make_services()
+        _org_service, region_service, uow, _iam_provisioning = make_services()
         dto = await region_service.create_region(
             CreateRegionCommand(
                 name="East Africa",
@@ -616,7 +740,7 @@ class RegionApplicationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_duplicate_region_name_is_rejected(self) -> None:
         """Regression: Database Design §4.1's `regions.name` global-uniqueness (UX)."""
-        _org_service, region_service, uow = make_services()
+        _org_service, region_service, uow, _iam_provisioning = make_services()
         await region_service.create_region(
             CreateRegionCommand(
                 name="East Africa", geographic_scope=None, actor=make_actor()
@@ -633,7 +757,7 @@ class RegionApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(uow.regions.by_id), 1)
 
     async def test_activate_and_deactivate_region(self) -> None:
-        _org_service, region_service, uow = make_services()
+        _org_service, region_service, uow, _iam_provisioning = make_services()
         region_id = await _seed_region(region_service, uow)
         deactivated = await region_service.deactivate_region(
             DeactivateRegionCommand(region_id=region_id, actor=make_actor()), uow=uow
@@ -645,7 +769,7 @@ class RegionApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(activated.status, "active")
 
     async def test_get_region_by_id_raises_not_found_for_missing_region(self) -> None:
-        _org_service, region_service, uow = make_services()
+        _org_service, region_service, uow, _iam_provisioning = make_services()
         with self.assertRaises(NotFoundError):
             await region_service.get_region_by_id(
                 GetRegionByIdQuery(region_id=NON_EXISTENT_ULID), uow=uow
@@ -654,7 +778,7 @@ class RegionApplicationTests(unittest.IsolatedAsyncioTestCase):
 
 class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_organizations_paginates_and_reports_total(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         region_id = await _seed_region(region_service, uow)
         for i in range(3):
             await org_service.register_organization(
@@ -685,7 +809,7 @@ class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(second_page.data), 1)
 
     async def test_list_organizations_filters_by_billing_model(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         region_id = await _seed_region(region_service, uow)
         await org_service.register_organization(
             RegisterOrganizationCommand(
@@ -723,7 +847,7 @@ class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.data[0].name, "Parent Pays")
 
     async def test_list_organizations_sorts_descending_by_name(self) -> None:
-        org_service, region_service, uow = make_services()
+        org_service, region_service, uow, _iam_provisioning = make_services()
         region_id = await _seed_region(region_service, uow)
         for name in ("Alpha", "Beta", "Gamma"):
             await org_service.register_organization(
@@ -748,7 +872,7 @@ class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([o.name for o in page.data], ["Gamma", "Beta", "Alpha"])
 
     async def test_list_regions_paginates(self) -> None:
-        _org_service, region_service, uow = make_services()
+        _org_service, region_service, uow, _iam_provisioning = make_services()
         for name in ("East Africa", "West Africa"):
             await region_service.create_region(
                 CreateRegionCommand(name=name, geographic_scope=None, actor=make_actor()),

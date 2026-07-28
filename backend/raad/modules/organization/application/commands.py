@@ -26,6 +26,33 @@ class RegisterOrganizationCommand:
 
 
 @dataclass(frozen=True)
+class OnboardOrganizationCommand:
+    """ADR-0017: RAAD creates an Organization and its first Org Admin `iam.User` (a
+    login-capable account, generated one-time temporary password) as one guided workflow —
+    replaces the previously fully-manual, disconnected two-step process (`POST /organizations`
+    then a separate, unlinked `POST /users`).
+
+    **Plan selection is deliberately not part of this command yet** — `services.py`'s
+    `OrganizationApplicationService.onboard_organization` docstring records why: wiring "select
+    a subscription plan" here would mean opening a
+    `billing.Subscription` against that module's *current* dual-mode shape
+    (`subscriber_type`/`subscriber_id`), which ADR-0016 (Organization-Only Billing, a separate,
+    already-accepted, not-yet-implemented milestone) is about to simplify. Sequenced to land
+    once ADR-0016 lands, avoiding throwaway code against a shape already scheduled to change —
+    flagged here rather than silently omitted."""
+
+    name: str
+    org_type: OrgType
+    region_id: str
+    billing_model: BillingModel
+    parent_org_id: str | None
+    admin_full_name: str
+    admin_email: str | None
+    admin_phone: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class SuspendOrganizationCommand:
     organization_id: str
     actor: Principal

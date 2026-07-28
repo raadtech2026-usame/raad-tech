@@ -30,11 +30,30 @@ class OrganizationResponse(BaseModel):
 
 
 class RegisterOrganizationRequest(BaseModel):
+    """ADR-0017: Organization Onboarding is one guided workflow now, not two disconnected
+    steps — this request also carries the identity fields needed to provision the
+    Organization's first Org Admin login (`admin_email`/`admin_phone`: at least one required,
+    `iam.User`'s own invariant)."""
+
     name: str
     org_type: str
     region_id: str
     billing_model: str
     parent_org_id: str | None = None
+    admin_full_name: str
+    admin_email: str | None = None
+    admin_phone: str | None = None
+
+
+class OrganizationOnboardedResponse(BaseModel):
+    """`POST /organizations`'s actual response shape (ADR-0017) — wraps the usual
+    `OrganizationResponse` with the newly-provisioned Org Admin's `user_id` and a generated
+    one-time temporary password, surfaced exactly once here for hand-off. Never re-derivable
+    afterward via any other endpoint."""
+
+    organization: OrganizationResponse
+    admin_user_id: str
+    temporary_password: str
 
 
 class UpdateOrganizationRequest(BaseModel):

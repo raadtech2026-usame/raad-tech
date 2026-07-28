@@ -116,11 +116,37 @@ export interface CreateOrganizationInput {
   regionId: string;
   billingModel: BillingModel;
   parentOrgId?: string | null;
+  /** ADR-0017: Organization Onboarding is one guided workflow now — these identity fields
+   * provision the Organization's first Org Admin login in the same request. At least one of
+   * `adminEmail`/`adminPhone` is required (`iam.User`'s own invariant). */
+  adminFullName: string;
+  adminEmail?: string | null;
+  adminPhone?: string | null;
 }
 
-/** `POST /organizations` (API Contracts §4.1). */
-export async function createOrganization(input: CreateOrganizationInput): Promise<Organization> {
-  const wire = await apiRequest<OrganizationWire>("/organizations", {
+/** Wire shape of `organization.api.schemas.OrganizationOnboardedResponse` (ADR-0017) —
+ * `POST /organizations`'s actual response shape: the usual `OrganizationResponse` plus the
+ * newly-provisioned Org Admin's `user_id` and a one-time temporary password. */
+interface OrganizationOnboardedWire {
+  organization: OrganizationWire;
+  admin_user_id: string;
+  temporary_password: string;
+}
+
+export interface OnboardedOrganization {
+  organization: Organization;
+  adminUserId: string;
+  /** Surfaced exactly once, in this response — never retrievable again via any other
+   * endpoint. Hand it off to the Org Admin immediately; do not persist it client-side beyond
+   * this one-time reveal. */
+  temporaryPassword: string;
+}
+
+/** `POST /organizations` (ADR-0017, API Contracts §4.1). */
+export async function createOrganization(
+  input: CreateOrganizationInput,
+): Promise<OnboardedOrganization> {
+  const wire = await apiRequest<OrganizationOnboardedWire>("/organizations", {
     method: "POST",
     body: {
       name: input.name,
@@ -128,9 +154,16 @@ export async function createOrganization(input: CreateOrganizationInput): Promis
       region_id: input.regionId,
       billing_model: input.billingModel,
       parent_org_id: input.parentOrgId ?? null,
+      admin_full_name: input.adminFullName,
+      admin_email: input.adminEmail ?? null,
+      admin_phone: input.adminPhone ?? null,
     },
   });
-  return toOrganization(wire);
+  return {
+    organization: toOrganization(wire.organization),
+    adminUserId: wire.admin_user_id,
+    temporaryPassword: wire.temporary_password,
+  };
 }
 
 /** `PATCH /organizations/{id}` (API Contracts §4.1) — limited to the `status` transition the

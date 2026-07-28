@@ -31,6 +31,23 @@ function renderForm(onClose = vi.fn()) {
   return { onClose };
 }
 
+async function fillRequiredFields() {
+  await userEvent.type(
+    screen.getByPlaceholderText("e.g. Green Valley School"),
+    "Green Valley School",
+  );
+  await userEvent.selectOptions(screen.getByLabelText("Region"), REGION.id);
+  await userEvent.selectOptions(screen.getByLabelText("Billing model"), "organization_pays");
+  await userEvent.type(
+    screen.getByPlaceholderText("e.g. Amina Warsame"),
+    "Amina Warsame",
+  );
+  await userEvent.type(
+    screen.getByPlaceholderText("admin@school.example.com"),
+    "amina@greenvalley.example.com",
+  );
+}
+
 describe("CreateOrganizationForm", () => {
   beforeEach(() => {
     vi.mocked(api.listRegions).mockReset().mockResolvedValue({
@@ -50,10 +67,11 @@ describe("CreateOrganizationForm", () => {
     expect(await screen.findByText("Organization name is required")).toBeInTheDocument();
     expect(screen.getByText("Region is required")).toBeInTheDocument();
     expect(screen.getByText("Billing model is required")).toBeInTheDocument();
+    expect(screen.getByText("Org Admin name is required")).toBeInTheDocument();
     expect(api.createOrganization).not.toHaveBeenCalled();
   });
 
-  it("rejects a malformed parent organization id", async () => {
+  it("requires at least one of Org Admin email or phone", async () => {
     renderForm();
     await screen.findByText("Northern Region");
 
@@ -63,6 +81,24 @@ describe("CreateOrganizationForm", () => {
     );
     await userEvent.selectOptions(screen.getByLabelText("Region"), REGION.id);
     await userEvent.selectOptions(screen.getByLabelText("Billing model"), "organization_pays");
+    await userEvent.type(
+      screen.getByPlaceholderText("e.g. Amina Warsame"),
+      "Amina Warsame",
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Create organization" }));
+
+    expect(
+      await screen.findByText("Provide an Org Admin email or phone number"),
+    ).toBeInTheDocument();
+    expect(api.createOrganization).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed parent organization id", async () => {
+    renderForm();
+    await screen.findByText("Northern Region");
+
+    await fillRequiredFields();
     await userEvent.type(screen.getByPlaceholderText("26-character ULID"), "not-a-ulid");
 
     await userEvent.click(screen.getByRole("button", { name: "Create organization" }));
@@ -73,28 +109,27 @@ describe("CreateOrganizationForm", () => {
     expect(api.createOrganization).not.toHaveBeenCalled();
   });
 
-  it("submits the exact RegisterOrganizationRequest-shaped payload and reports success", async () => {
+  it("submits the exact OnboardOrganizationCommand-shaped payload and reveals the temporary password", async () => {
     vi.mocked(api.createOrganization).mockResolvedValue({
-      id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-      name: "Green Valley School",
-      orgType: "school",
-      parentOrgId: null,
-      regionId: REGION.id,
-      billingModel: "organization_pays",
-      status: "active",
-      createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-01T00:00:00Z",
+      organization: {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        name: "Green Valley School",
+        orgType: "school",
+        parentOrgId: null,
+        regionId: REGION.id,
+        billingModel: "organization_pays",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      adminUserId: "01ARZ3NDEKTSV4RRFFQ69G5FBZ",
+      temporaryPassword: "Temp-Pw9!xyz",
     });
 
     const { onClose } = renderForm();
     await screen.findByText("Northern Region");
 
-    await userEvent.type(
-      screen.getByPlaceholderText("e.g. Green Valley School"),
-      "Green Valley School",
-    );
-    await userEvent.selectOptions(screen.getByLabelText("Region"), REGION.id);
-    await userEvent.selectOptions(screen.getByLabelText("Billing model"), "organization_pays");
+    await fillRequiredFields();
 
     await userEvent.click(screen.getByRole("button", { name: "Create organization" }));
 
@@ -105,14 +140,23 @@ describe("CreateOrganizationForm", () => {
         regionId: REGION.id,
         billingModel: "organization_pays",
         parentOrgId: null,
+        adminFullName: "Amina Warsame",
+        adminEmail: "amina@greenvalley.example.com",
+        adminPhone: null,
       }),
     );
 
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    // The temporary password is a one-time reveal — onClose must NOT fire until "Done".
+    expect(await screen.findByText("Organization created")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Temp-Pw9!xyz")).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
     expect(useToastStore.getState().toasts[0]).toMatchObject({
       variant: "success",
       title: "Organization created",
     });
+
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces the backend error via a toast and keeps the drawer open on failure", async () => {
@@ -124,12 +168,7 @@ describe("CreateOrganizationForm", () => {
     const { onClose } = renderForm();
     await screen.findByText("Northern Region");
 
-    await userEvent.type(
-      screen.getByPlaceholderText("e.g. Green Valley School"),
-      "Green Valley School",
-    );
-    await userEvent.selectOptions(screen.getByLabelText("Region"), REGION.id);
-    await userEvent.selectOptions(screen.getByLabelText("Billing model"), "organization_pays");
+    await fillRequiredFields();
 
     await userEvent.click(screen.getByRole("button", { name: "Create organization" }));
 

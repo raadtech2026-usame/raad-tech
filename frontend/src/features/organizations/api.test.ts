@@ -84,15 +84,22 @@ describe("organizations api", () => {
     expect(result.billingModel).toBe("organization_pays");
   });
 
-  it("createOrganization posts the exact RegisterOrganizationRequest shape", async () => {
-    vi.mocked(apiRequest).mockResolvedValueOnce(ORG_WIRE);
+  it("createOrganization posts the exact OnboardOrganizationCommand shape and maps the temporary-password reveal", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      organization: ORG_WIRE,
+      admin_user_id: "01ARZ3NDEKTSV4RRFFQ69G5FBZ",
+      temporary_password: "Temp-Pw9!xyz",
+    });
 
-    await createOrganization({
+    const result = await createOrganization({
       name: "Green Valley School",
       orgType: "school",
       regionId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
       billingModel: "organization_pays",
       parentOrgId: null,
+      adminFullName: "Amina Warsame",
+      adminEmail: "amina@greenvalley.example.com",
+      adminPhone: null,
     });
 
     expect(apiRequest).toHaveBeenCalledWith("/organizations", {
@@ -103,7 +110,25 @@ describe("organizations api", () => {
         region_id: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
         billing_model: "organization_pays",
         parent_org_id: null,
+        admin_full_name: "Amina Warsame",
+        admin_email: "amina@greenvalley.example.com",
+        admin_phone: null,
       },
+    });
+    expect(result).toEqual({
+      organization: {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        name: "Green Valley School",
+        orgType: "school",
+        parentOrgId: null,
+        regionId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
+        billingModel: "organization_pays",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-02T00:00:00Z",
+      },
+      adminUserId: "01ARZ3NDEKTSV4RRFFQ69G5FBZ",
+      temporaryPassword: "Temp-Pw9!xyz",
     });
   });
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
+from raad.core.tenancy.principal import Role
 from raad.core.time.clock import Clock
 from raad.modules.organization.application.commands import (
     ActivateRegionCommand,
@@ -24,6 +25,7 @@ from raad.modules.organization.application.commands import (
     DeactivateRegionCommand,
     GrantRegionAssignmentCommand,
     GrantSupportAssignmentCommand,
+    OnboardOrganizationCommand,
     ReactivateOrganizationCommand,
     RegisterOrganizationCommand,
     RevokeRegionAssignmentCommand,
@@ -32,7 +34,10 @@ from raad.modules.organization.application.commands import (
     UpdateOrganizationApproachingDistanceCommand,
     UpdateOrganizationGeofenceCommand,
 )
-from raad.modules.organization.application.ports import OrganizationUnitOfWork
+from raad.modules.organization.application.ports import (
+    IamProvisioningPort,
+    OrganizationUnitOfWork,
+)
 from raad.modules.organization.application.queries import (
     GetOrganizationByIdQuery,
     GetRegionByIdQuery,
@@ -55,11 +60,72 @@ from raad.modules.organization.domain.value_objects import OrganizationId, Regio
 
 class OrganizationApplicationService:
     """Organization lifecycle use-cases: register, suspend, reactivate, deactivate, and the
-    `GetOrganizationByIdQuery` read path."""
+    `GetOrganizationByIdQuery` read path. `onboard_organization` (ADR-0017) additionally
+    provisions the Organization's first Org Admin user via `IamProvisioningPort`."""
 
-    def __init__(self, *, clock: Clock, id_generator: IdGenerator) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        id_generator: IdGenerator,
+        iam_provisioning: IamProvisioningPort,
+    ) -> None:
         self._clock = clock
         self._id_generator = id_generator
+        self._iam_provisioning = iam_provisioning
+
+    async def onboard_organization(
+        self, command: OnboardOrganizationCommand, *, uow: OrganizationUnitOfWork
+    ) -> tuple[OrganizationDTO, str, str]:
+        """ADR-0017: creates the `Organization` first (committing this module's own Unit of
+        Work), then calls `IamProvisioningPort` — a second, independent commit, real and
+        durable the moment it returns — to create the Org Admin `iam.User` scoped to the
+        just-created `organization_id`. Returns `(OrganizationDTO, admin_user_id,
+        temporary_password)`; the temporary password is surfaced exactly once, for hand-off.
+
+        Accepted, bounded gap (mirrors ADR-0003's identical Failure Handling trade-off): if the
+        `iam` call fails after the `Organization` commit succeeds, the Organization is left
+        without an Org Admin rather than being automatically rolled back or compensated —
+        evaluated and deliberately deferred at implementation time, not silently dropped.
+
+        Plan selection is deliberately not part of this method yet — see
+        `OnboardOrganizationCommand`'s own docstring for why (sequenced to land alongside
+        ADR-0016's billing changes)."""
+        async with uow:
+            region_id = RegionId(command.region_id)
+            await ensure_region_exists(uow, region_id)
+
+            parent_org_id = (
+                OrganizationId(command.parent_org_id) if command.parent_org_id else None
+            )
+            if parent_org_id is not None:
+                await ensure_parent_organization_exists(uow, parent_org_id)
+
+            organization = Organization.register(
+                id=OrganizationId(self._id_generator.new_id()),
+                name=command.name,
+                org_type=command.org_type,
+                region_id=region_id,
+                billing_model=command.billing_model,
+                parent_org_id=parent_org_id,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.organizations.add(organization)
+            uow.record_events(organization.pull_domain_events())
+            await uow.commit()
+
+        admin_user_id, temporary_password = (
+            await self._iam_provisioning.create_user_with_temporary_password(
+                organization_id=str(organization.id),
+                role=Role.ORG_ADMIN,
+                email=command.admin_email,
+                phone=command.admin_phone,
+                full_name=command.admin_full_name,
+                actor=command.actor,
+            )
+        )
+        return organization_to_dto(organization), admin_user_id, temporary_password
 
     async def register_organization(
         self, command: RegisterOrganizationCommand, *, uow: OrganizationUnitOfWork
