@@ -1,5 +1,5 @@
 import type { BadgeVariant } from "../../shared/components/Badge/Badge";
-import type { BillingModel, OrganizationStatus, OrgType } from "./api";
+import type { OrganizationStatus, OrgType } from "./api";
 
 /** Display copy for `organization.domain.value_objects` enums — kept in one place so the list
  * table, the detail drawer, and the create form all render the exact same wording. */
@@ -10,17 +10,6 @@ export function orgTypeLabel(orgType: OrgType): string {
       return "School";
     default:
       return orgType;
-  }
-}
-
-export function billingModelLabel(model: BillingModel): string {
-  switch (model) {
-    case "organization_pays":
-      return "Organization pays";
-    case "parent_pays":
-      return "Parent pays";
-    default:
-      return model;
   }
 }
 

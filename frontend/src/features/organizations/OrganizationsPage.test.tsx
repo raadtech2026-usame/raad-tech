@@ -30,7 +30,6 @@ const ORG: api.Organization = {
   orgType: "school",
   parentOrgId: null,
   regionId: REGION.id,
-  billingModel: "organization_pays",
   status: "active",
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-02T00:00:00Z",
@@ -81,7 +80,6 @@ describe("OrganizationsPage", () => {
 
     await waitFor(() => expect(screen.getByText("Green Valley School")).toBeInTheDocument());
     expect(screen.getByText("Northern Region")).toBeInTheDocument();
-    expect(screen.getByText("Organization pays")).toBeInTheDocument();
   });
 
   it("shows an empty state when there are no organizations", async () => {
@@ -111,8 +109,8 @@ describe("OrganizationsPage", () => {
     await userEvent.click(screen.getByText("Green Valley School"));
 
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("Billing model")).toBeInTheDocument();
-    expect(within(dialog).getByText("Organization pays")).toBeInTheDocument();
+    expect(within(dialog).getByText("Region")).toBeInTheDocument();
+    expect(within(dialog).getByText("Northern Region")).toBeInTheDocument();
     expect(within(dialog).getByText(ORG.id)).toBeInTheDocument();
   });
 

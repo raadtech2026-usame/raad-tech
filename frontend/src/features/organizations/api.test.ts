@@ -19,7 +19,6 @@ const ORG_WIRE = {
   org_type: "school",
   parent_org_id: null,
   region_id: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-  billing_model: "organization_pays",
   status: "active",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",
@@ -64,7 +63,6 @@ describe("organizations api", () => {
           orgType: "school",
           parentOrgId: null,
           regionId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-          billingModel: "organization_pays",
           status: "active",
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-02T00:00:00Z",
@@ -81,7 +79,6 @@ describe("organizations api", () => {
 
     expect(apiRequest).toHaveBeenCalledWith("/organizations/01ARZ3NDEKTSV4RRFFQ69G5FAV");
     expect(result.name).toBe("Green Valley School");
-    expect(result.billingModel).toBe("organization_pays");
   });
 
   it("createOrganization posts the exact OnboardOrganizationCommand shape and maps the temporary-password reveal", async () => {
@@ -95,7 +92,6 @@ describe("organizations api", () => {
       name: "Green Valley School",
       orgType: "school",
       regionId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-      billingModel: "organization_pays",
       parentOrgId: null,
       adminFullName: "Amina Warsame",
       adminEmail: "amina@greenvalley.example.com",
@@ -108,7 +104,6 @@ describe("organizations api", () => {
         name: "Green Valley School",
         org_type: "school",
         region_id: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-        billing_model: "organization_pays",
         parent_org_id: null,
         admin_full_name: "Amina Warsame",
         admin_email: "amina@greenvalley.example.com",
@@ -122,7 +117,6 @@ describe("organizations api", () => {
         orgType: "school",
         parentOrgId: null,
         regionId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-        billingModel: "organization_pays",
         status: "active",
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-02T00:00:00Z",

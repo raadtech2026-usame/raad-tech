@@ -24,7 +24,7 @@ import {
   type Organization,
   type OrganizationStatus,
 } from "./api";
-import { billingModelLabel, orgTypeLabel, statusLabel, statusTone } from "./labels";
+import { orgTypeLabel, statusLabel, statusTone } from "./labels";
 import styles from "./OrganizationsPage.module.css";
 
 const STATUS_FILTERS: FilterChipOption[] = [
@@ -160,11 +160,6 @@ export function OrganizationsPage() {
         },
       },
       {
-        id: "billingModel",
-        header: "Billing model",
-        cell: ({ row }) => billingModelLabel(row.original.billingModel),
-      },
-      {
         id: "status",
         header: "Status",
         meta: { sortField: "status" } satisfies DataTableColumnMeta,
@@ -273,7 +268,6 @@ export function OrganizationsPage() {
         rows={
           selectedOrg
             ? [
-                { key: "Billing model", value: billingModelLabel(selectedOrg.billingModel) },
                 {
                   key: "Region",
                   value: regionNameById.get(selectedOrg.regionId) ?? selectedOrg.regionId,

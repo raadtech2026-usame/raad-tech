@@ -9,11 +9,6 @@ import { toOffsetPage, type OffsetPage, type OffsetPageWire } from "../../shared
  * others exist. */
 export type OrgType = "school";
 
-/** `organization.domain.value_objects.BillingModel` (Database Design §4.2's `billing_model
- * ENUM(organization_pays,parent_pays)` — the CR-1 input `billing.SubscriptionAccessPolicy`
- * consumes). */
-export type BillingModel = "organization_pays" | "parent_pays";
-
 /** `organization.domain.value_objects.OrganizationStatus` (Database Design §4.2's
  * `status ENUM(active,suspended,inactive)`). There is no `trial` status anywhere in the backend
  * schema or domain layer — only these three real values are ever rendered here. */
@@ -25,7 +20,6 @@ export interface Organization {
   orgType: OrgType;
   parentOrgId: string | null;
   regionId: string;
-  billingModel: BillingModel;
   status: OrganizationStatus;
   createdAt: string;
   updatedAt: string;
@@ -52,7 +46,6 @@ interface OrganizationWire {
   org_type: string;
   parent_org_id: string | null;
   region_id: string;
-  billing_model: string;
   status: string;
   created_at: string;
   updated_at: string;
@@ -75,7 +68,6 @@ function toOrganization(wire: OrganizationWire): Organization {
     orgType: wire.org_type as OrgType,
     parentOrgId: wire.parent_org_id,
     regionId: wire.region_id,
-    billingModel: wire.billing_model as BillingModel,
     status: wire.status as OrganizationStatus,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
@@ -114,7 +106,6 @@ export interface CreateOrganizationInput {
   name: string;
   orgType: OrgType;
   regionId: string;
-  billingModel: BillingModel;
   parentOrgId?: string | null;
   /** ADR-0017: Organization Onboarding is one guided workflow now — these identity fields
    * provision the Organization's first Org Admin login in the same request. At least one of
@@ -152,7 +143,6 @@ export async function createOrganization(
       name: input.name,
       org_type: input.orgType,
       region_id: input.regionId,
-      billing_model: input.billingModel,
       parent_org_id: input.parentOrgId ?? null,
       admin_full_name: input.adminFullName,
       admin_email: input.adminEmail ?? null,
@@ -168,10 +158,9 @@ export async function createOrganization(
 
 /** `PATCH /organizations/{id}` (API Contracts §4.1) — limited to the `status` transition the
  * Application layer actually exposes (`suspend_organization`/`reactivate_organization`/
- * `deactivate_organization`); `billing_model` is deliberately not accepted here, matching
- * `UpdateOrganizationRequest`'s own backend docstring: `Organization` has no
- * `change_billing_model` behavior by design, so offering that field in a frontend edit form
- * would be building against a capability that doesn't exist. */
+ * `deactivate_organization`). API Contracts §4.1 also lists `billing_model` as a `PATCH`
+ * input, but ADR-0016 (RAAD business model realignment) removed that field from `Organization`
+ * entirely — RAAD bills Organizations only now, so there is nothing left to edit. */
 export async function updateOrganizationStatus(
   id: string,
   status: OrganizationStatus,

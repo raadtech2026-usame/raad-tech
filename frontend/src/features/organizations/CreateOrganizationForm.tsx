@@ -11,24 +11,17 @@ import { Input } from "../../shared/components/Input/Input";
 import { Select } from "../../shared/components/Select/Select";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
-import { createOrganization, listRegions, type BillingModel, type OnboardedOrganization } from "./api";
+import { createOrganization, listRegions, type OnboardedOrganization } from "./api";
 import styles from "./CreateOrganizationForm.module.css";
 
 // Matches `organization.domain.value_objects`'s own `_ULID_PATTERN` (Crockford Base32, 26 chars)
 // — client-side format validation of the same real domain invariant, not a new business rule.
 const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-const BILLING_MODELS = ["organization_pays", "parent_pays"] as const;
 
 const schema = z
   .object({
     name: z.string().trim().min(1, "Organization name is required"),
     regionId: z.string().min(1, "Region is required"),
-    billingModel: z
-      .string()
-      .min(1, "Billing model is required")
-      .refine((value) => (BILLING_MODELS as readonly string[]).includes(value), {
-        message: "Select a valid billing model",
-      }),
     parentOrgId: z
       .string()
       .trim()
@@ -52,7 +45,6 @@ type FormValues = z.infer<typeof schema>;
 const DEFAULT_VALUES: FormValues = {
   name: "",
   regionId: "",
-  billingModel: "",
   parentOrgId: "",
   adminFullName: "",
   adminEmail: "",
@@ -70,14 +62,16 @@ export interface CreateOrganizationFormProps {
  * this form offers one fixed choice rather than a dropdown implying others exist), `region_id`
  * (a required picker over `GET /regions` — this module has no standalone Regions feature this
  * phase; fetching the region list here is the minimal read this required field makes
- * unavoidable), `billing_model`, an optional `parent_org_id`, and — since Organization
- * Onboarding is now one guided workflow, not two disconnected steps — the Org Admin's own
- * identity fields (`admin_full_name`/`admin_email`/`admin_phone`). `org_type` is deliberately
- * not a form field at all: it is always sent as `"school"`.
+ * unavoidable), an optional `parent_org_id`, and — since Organization Onboarding is now one
+ * guided workflow, not two disconnected steps — the Org Admin's own identity fields
+ * (`admin_full_name`/`admin_email`/`admin_phone`). `org_type` is deliberately not a form field
+ * at all: it is always sent as `"school"`. **No `billing_model` field** — ADR-0016 (RAAD
+ * business model realignment) removed it from `Organization` entirely; RAAD bills Organizations
+ * only now.
  *
  * **Plan selection is deliberately not part of this form yet** — see
- * `organization.application.commands.OnboardOrganizationCommand`'s own docstring: sequenced to
- * land alongside ADR-0016's billing changes, not silently omitted.
+ * `organization.application.commands.OnboardOrganizationCommand`'s own docstring: a real,
+ * flagged follow-up now that ADR-0016 has landed, not attempted this phase.
  *
  * On success, the response carries a one-time Org Admin temporary password — surfaced in this
  * drawer exactly once (a `result` view replaces the form) before closing, since it is never
@@ -119,8 +113,6 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
         name: values.name,
         orgType: "school",
         regionId: values.regionId,
-        // Safe cast: the zod `.refine` above already guarantees one of `BILLING_MODELS`.
-        billingModel: values.billingModel as BillingModel,
         parentOrgId: values.parentOrgId || null,
         adminFullName: values.adminFullName,
         adminEmail: values.adminEmail || null,
@@ -262,14 +254,6 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
                 {region.name}
               </option>
             ))}
-          </Select>
-        </FormField>
-
-        <FormField label="Billing model" error={errors.billingModel?.message}>
-          <Select {...register("billingModel")} aria-label="Billing model">
-            <option value="">Select a billing model</option>
-            <option value="organization_pays">Organization pays</option>
-            <option value="parent_pays">Parent pays</option>
           </Select>
         </FormField>
 

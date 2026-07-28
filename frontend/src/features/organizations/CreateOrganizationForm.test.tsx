@@ -37,7 +37,6 @@ async function fillRequiredFields() {
     "Green Valley School",
   );
   await userEvent.selectOptions(screen.getByLabelText("Region"), REGION.id);
-  await userEvent.selectOptions(screen.getByLabelText("Billing model"), "organization_pays");
   await userEvent.type(
     screen.getByPlaceholderText("e.g. Amina Warsame"),
     "Amina Warsame",
@@ -66,7 +65,6 @@ describe("CreateOrganizationForm", () => {
 
     expect(await screen.findByText("Organization name is required")).toBeInTheDocument();
     expect(screen.getByText("Region is required")).toBeInTheDocument();
-    expect(screen.getByText("Billing model is required")).toBeInTheDocument();
     expect(screen.getByText("Org Admin name is required")).toBeInTheDocument();
     expect(api.createOrganization).not.toHaveBeenCalled();
   });
@@ -80,7 +78,6 @@ describe("CreateOrganizationForm", () => {
       "Green Valley School",
     );
     await userEvent.selectOptions(screen.getByLabelText("Region"), REGION.id);
-    await userEvent.selectOptions(screen.getByLabelText("Billing model"), "organization_pays");
     await userEvent.type(
       screen.getByPlaceholderText("e.g. Amina Warsame"),
       "Amina Warsame",
@@ -117,7 +114,6 @@ describe("CreateOrganizationForm", () => {
         orgType: "school",
         parentOrgId: null,
         regionId: REGION.id,
-        billingModel: "organization_pays",
         status: "active",
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
@@ -138,7 +134,6 @@ describe("CreateOrganizationForm", () => {
         name: "Green Valley School",
         orgType: "school",
         regionId: REGION.id,
-        billingModel: "organization_pays",
         parentOrgId: null,
         adminFullName: "Amina Warsame",
         adminEmail: "amina@greenvalley.example.com",
