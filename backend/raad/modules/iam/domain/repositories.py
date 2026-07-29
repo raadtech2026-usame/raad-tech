@@ -91,6 +91,15 @@ class RefreshTokenRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_by_user(self, user_id: UserId) -> list[RefreshToken]:
+        """ADR-0017 Amendment: every non-revoked token for `user_id` — backs admin-initiated
+        password reset's "invalidate any still-open session" step. Revoked/expired filtering of
+        *expired-but-not-yet-revoked* tokens is deliberately not done here (`is_expired` needs a
+        `Clock`, a domain-layer concern, not a query-layer one) — only genuinely revoked tokens
+        are excluded, since revoking an already-expired token is a harmless no-op."""
+        raise NotImplementedError
+
+    @abstractmethod
     def add(self, refresh_token: RefreshToken) -> None:
         raise NotImplementedError
 

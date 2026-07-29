@@ -93,6 +93,16 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class PasswordResetResponse(BaseModel):
+    """`POST /users/{user_id}/reset-password` (ADR-0017 Amendment). Carries the new plaintext
+    temporary password exactly once — never persisted or retrievable again after this response,
+    the same one-time-hand-off guarantee `OrganizationOnboardedResponse` already established for
+    initial onboarding, applied here to an admin-initiated reset of an existing user."""
+
+    user: UserResponse
+    temporary_password: str
+
+
 class UpdateUserRequest(BaseModel):
     """Partial update, limited to the transitions the Application layer actually exposes
     (Phase 5.2's `UserApplicationService` has no generic field-editing use-case) — `status`

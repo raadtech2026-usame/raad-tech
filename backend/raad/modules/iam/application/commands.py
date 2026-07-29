@@ -60,6 +60,18 @@ class ChangePasswordCommand:
 
 
 @dataclass(frozen=True)
+class ResetPasswordToTemporaryCommand:
+    """ADR-0017 Amendment: administrator-initiated regeneration for an *existing* user who has
+    lost their temporary (or any) password — as opposed to `CreateUserWithTemporaryPasswordCommand`,
+    which only ever applies to a brand-new invite. No `new_plain_password` field: the password
+    itself is generated server-side (`_generate_temporary_password`), never chosen by the
+    admin calling this."""
+
+    user_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class EnableMfaCommand:
     user_id: str
     actor: Principal

@@ -11,6 +11,9 @@ This is a CLI command, not an HTTP endpoint, deliberately — it runs behind you
 access boundary (whoever can already reach a shell/exec into the running environment), not the
 public network, and it adds no new attack surface to the API itself.
 
+**Already have a Founder account but lost the password?** This command refuses to run once any
+user exists — see `docs/runbooks/founder-password-recovery.md` instead (ADR-0017 Amendment).
+
 ## Prerequisites
 
 - Migrations applied (`alembic upgrade head`) — the `users` table must exist.

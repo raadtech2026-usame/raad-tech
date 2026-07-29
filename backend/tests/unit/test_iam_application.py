@@ -47,6 +47,7 @@ from raad.modules.iam.application.commands import (
     LoginCommand,
     LogoutCommand,
     RefreshAccessTokenCommand,
+    ResetPasswordToTemporaryCommand,
 )
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.queries import (
@@ -179,6 +180,13 @@ class InMemoryRefreshTokenRepository(RefreshTokenRepository):
             if token.token_hash == token_hash:
                 return token
         return None
+
+    async def list_by_user(self, user_id: UserId) -> list[RefreshToken]:
+        return [
+            token
+            for token in self.by_id.values()
+            if str(token.user_id) == str(user_id) and not token.is_revoked
+        ]
 
     def add(self, refresh_token: RefreshToken) -> None:
         self.by_id[str(refresh_token.id)] = refresh_token
@@ -1013,6 +1021,130 @@ class InviteUserScopeEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 uow=uow,
             )
+
+
+class ResetPasswordToTemporaryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0017 Amendment: administrator-initiated regeneration for an *existing* user —
+    `POST /users/{user_id}/reset-password`'s underlying use-case."""
+
+    async def test_generates_new_temporary_password_and_forces_change(self) -> None:
+        service, uow = make_user_service()
+        created_dto, _old_password = await service.create_user_with_temporary_password(
+            CreateUserWithTemporaryPasswordCommand(
+                organization_id=VALID_ORG_ULID,
+                role=Role.ORG_ADMIN,
+                email="org-admin@example.com",
+                phone=None,
+                full_name="Amina Warsame",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        dto, new_password = await service.reset_password_to_temporary(
+            ResetPasswordToTemporaryCommand(user_id=created_dto.id, actor=make_actor()),
+            uow=uow,
+        )
+        self.assertEqual(dto.id, created_dto.id)
+        self.assertTrue(dto.is_password_change_required)
+        self.assertTrue(new_password)
+
+    async def test_new_password_authenticates_and_old_one_no_longer_does(self) -> None:
+        service, uow = make_user_service()
+        created_dto, old_password = await service.create_user_with_temporary_password(
+            CreateUserWithTemporaryPasswordCommand(
+                organization_id=VALID_ORG_ULID,
+                role=Role.ORG_ADMIN,
+                email="org-admin2@example.com",
+                phone=None,
+                full_name="Amina Warsame",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        _dto, new_password = await service.reset_password_to_temporary(
+            ResetPasswordToTemporaryCommand(user_id=created_dto.id, actor=make_actor()),
+            uow=uow,
+        )
+        stored = await uow.users.get(UserId(created_dto.id))
+        hasher = Pbkdf2PasswordHasher(iterations=1_000)
+        self.assertTrue(hasher.verify(new_password, stored.password_hash))
+        self.assertFalse(hasher.verify(old_password, stored.password_hash))
+
+    async def test_revokes_every_existing_refresh_token_for_the_user(self) -> None:
+        service, uow = make_user_service()
+        created_dto, _password = await service.create_user_with_temporary_password(
+            CreateUserWithTemporaryPasswordCommand(
+                organization_id=VALID_ORG_ULID,
+                role=Role.ORG_ADMIN,
+                email="org-admin3@example.com",
+                phone=None,
+                full_name="Amina Warsame",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        # A token "already issued and committed earlier" - drain its own RefreshTokenIssued
+        # event immediately, exactly as it would already be pulled/recorded by whatever earlier
+        # login call actually created it.
+        token = RefreshToken.issue(
+            id=RefreshTokenId("01J8Z3K9G6X8YV5T4N2R7QW3TK"),
+            user_id=UserId(created_dto.id),
+            token_hash="a" * 64,
+            expires_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        token.pull_domain_events()
+        uow.refresh_tokens.add(token)
+
+        await service.reset_password_to_temporary(
+            ResetPasswordToTemporaryCommand(user_id=created_dto.id, actor=make_actor()),
+            uow=uow,
+        )
+        self.assertTrue(token.is_revoked)
+
+    async def test_raises_not_found_for_unknown_user(self) -> None:
+        service, uow = make_user_service()
+        with self.assertRaises(NotFoundError):
+            await service.reset_password_to_temporary(
+                ResetPasswordToTemporaryCommand(
+                    user_id=NON_EXISTENT_USER_ID, actor=make_actor()
+                ),
+                uow=uow,
+            )
+
+    async def test_records_temporary_password_set_and_refresh_token_revoked_events(
+        self,
+    ) -> None:
+        service, uow = make_user_service()
+        created_dto, _password = await service.create_user_with_temporary_password(
+            CreateUserWithTemporaryPasswordCommand(
+                organization_id=VALID_ORG_ULID,
+                role=Role.ORG_ADMIN,
+                email="org-admin4@example.com",
+                phone=None,
+                full_name="Amina Warsame",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        token = RefreshToken.issue(
+            id=RefreshTokenId("01J8Z3K9G6X8YV5T4N2R7QW3TM"),
+            user_id=UserId(created_dto.id),
+            token_hash="b" * 64,
+            expires_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        token.pull_domain_events()
+        uow.refresh_tokens.add(token)
+        uow.recorded_events.clear()
+
+        await service.reset_password_to_temporary(
+            ResetPasswordToTemporaryCommand(user_id=created_dto.id, actor=make_actor()),
+            uow=uow,
+        )
+        event_types = [e.event_type for e in uow.recorded_events]
+        self.assertEqual(event_types, ["UserTemporaryPasswordSet", "RefreshTokenRevoked"])
 
 
 if __name__ == "__main__":

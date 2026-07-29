@@ -271,6 +271,65 @@ class RefreshTokenRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(fetched.is_expired(clock=self.clock))
         self.assertFalse(fetched.is_revoked)
 
+    async def test_list_by_user_returns_only_non_revoked_tokens_for_that_user(self) -> None:
+        """ADR-0017 Amendment: the primitive `reset_password_to_temporary` uses to invalidate
+        a user's active sessions — must exclude already-revoked tokens and never return another
+        user's tokens."""
+        async with self._new_uow() as uow:
+            user_id = await self._seed_user(uow)
+            other_user = User.invite(
+                id=UserId(self.id_generator.new_id()),
+                organization_id=None,
+                role=Role.FOUNDER,
+                email=Email(f"refresh-token-other-{self.tag}@example.com"),
+                phone=None,
+                full_name=f"Refresh Token Other Test {self.tag}",
+                clock=self.clock,
+            )
+            uow.users.add(other_user)
+            uow.record_events(other_user.pull_domain_events())
+            await uow.commit()
+            self._created_user_ids.append(str(other_user.id))
+            other_user_id = other_user.id
+
+            live_token = RefreshToken.issue(
+                id=RefreshTokenId(self.id_generator.new_id()),
+                user_id=user_id,
+                token_hash=hashlib.sha256(f"live-{self.tag}".encode()).hexdigest(),
+                expires_at=self.clock.now() + timedelta(days=1),
+                clock=self.clock,
+            )
+            revoked_token = RefreshToken.issue(
+                id=RefreshTokenId(self.id_generator.new_id()),
+                user_id=user_id,
+                token_hash=hashlib.sha256(f"revoked-{self.tag}".encode()).hexdigest(),
+                expires_at=self.clock.now() + timedelta(days=1),
+                clock=self.clock,
+            )
+            other_users_token = RefreshToken.issue(
+                id=RefreshTokenId(self.id_generator.new_id()),
+                user_id=other_user_id,
+                token_hash=hashlib.sha256(f"other-{self.tag}".encode()).hexdigest(),
+                expires_at=self.clock.now() + timedelta(days=1),
+                clock=self.clock,
+            )
+            revoked_token.revoke(clock=self.clock)
+
+            uow.refresh_tokens.add(live_token)
+            uow.refresh_tokens.add(revoked_token)
+            uow.refresh_tokens.add(other_users_token)
+            uow.record_events(
+                live_token.pull_domain_events()
+                + revoked_token.pull_domain_events()
+                + other_users_token.pull_domain_events()
+            )
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            result = await uow.refresh_tokens.list_by_user(user_id)
+
+        self.assertEqual([str(t.id) for t in result], [str(live_token.id)])
+
 
 @unittest.skipUnless(_db_available(), _SKIP_REASON)
 class UserPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):

@@ -173,6 +173,14 @@ class SqlAlchemyRefreshTokenRepository(
         result = await self._session.execute(statement)
         return self._track(result.scalar_one_or_none())
 
+    async def list_by_user(self, user_id: UserId) -> list[RefreshToken]:
+        statement = select(RefreshTokenModel).where(
+            RefreshTokenModel.user_id == str(user_id),
+            RefreshTokenModel.revoked_at.is_(None),
+        )
+        result = await self._session.execute(statement)
+        return [self._track(row) for row in result.scalars().all()]  # type: ignore[misc]
+
     def add(self, refresh_token: RefreshToken) -> None:
         model = refresh_token_to_model(refresh_token)
         super().add(model)

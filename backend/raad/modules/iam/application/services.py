@@ -45,6 +45,7 @@ from raad.modules.iam.application.commands import (
     LoginCommand,
     LogoutCommand,
     RefreshAccessTokenCommand,
+    ResetPasswordToTemporaryCommand,
     RevokeRolePermissionCommand,
 )
 from raad.modules.iam.application.ports import IamUnitOfWork
@@ -267,6 +268,32 @@ class UserApplicationService:
             uow.record_events(user.pull_domain_events())
             await uow.commit()
             return user_to_dto(user)
+
+    async def reset_password_to_temporary(
+        self, command: ResetPasswordToTemporaryCommand, *, uow: IamUnitOfWork
+    ) -> tuple[UserDTO, str]:
+        """ADR-0017 Amendment: same guarantee as `create_user_with_temporary_password` (the new
+        plaintext password is returned exactly once, never persisted/retrievable again) applied
+        to an *existing* user instead of a new invite. Also revokes every non-revoked refresh
+        token already issued to this user — a reset should not leave a prior session usable."""
+        async with uow:
+            user = await self._get_user_or_raise(uow, command.user_id)
+            temporary_password = _generate_temporary_password(self._password_policy)
+            user.set_temporary_password_hash(
+                self._password_hasher.hash(temporary_password),
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            active_tokens = await uow.refresh_tokens.list_by_user(user.id)
+            for token in active_tokens:
+                token.revoke(clock=self._clock)
+
+            events = user.pull_domain_events()
+            for token in active_tokens:
+                events += token.pull_domain_events()
+            uow.record_events(events)
+            await uow.commit()
+            return user_to_dto(user), temporary_password
 
     async def enable_mfa(
         self, command: EnableMfaCommand, *, uow: IamUnitOfWork

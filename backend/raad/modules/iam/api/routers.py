@@ -49,6 +49,7 @@ from raad.modules.iam.api.schemas import (
     CreateUserRequest,
     LoginRequest,
     LogoutRequest,
+    PasswordResetResponse,
     PrincipalResponse,
     RefreshRequest,
     TokenResponse,
@@ -65,6 +66,7 @@ from raad.modules.iam.application.commands import (
     LoginCommand,
     LogoutCommand,
     RefreshAccessTokenCommand,
+    ResetPasswordToTemporaryCommand,
 )
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.queries import (
@@ -386,3 +388,33 @@ async def update_user(
             "update_user: no field was processed despite the guard above."
         )
     return _user_dto_to_response(user)
+
+
+@users_router.post(
+    "/{user_id}/reset-password",
+    response_model=PasswordResetResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Administrator-initiated password reset",
+    description=(
+        "ADR-0017 Amendment. In-scope admin only (`iam.users.reset_password`) — not "
+        "self-service (use `POST /auth/change-password` for that). Generates a brand new "
+        "one-time temporary password for `{user_id}`, invalidating whatever password they had "
+        "before and revoking every refresh token already issued to them. The new password is "
+        "returned in this response exactly once and is never retrievable again afterward."
+    ),
+)
+async def reset_user_password(
+    user_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("iam.users.reset_password"))
+    ),
+    user_service: UserApplicationService = Depends(get_user_service),
+    uow: IamUnitOfWork = Depends(get_iam_uow),
+) -> PasswordResetResponse:
+    command = ResetPasswordToTemporaryCommand(user_id=user_id, actor=principal)
+    user, temporary_password = await user_service.reset_password_to_temporary(
+        command, uow=uow
+    )
+    return PasswordResetResponse(
+        user=_user_dto_to_response(user), temporary_password=temporary_password
+    )
