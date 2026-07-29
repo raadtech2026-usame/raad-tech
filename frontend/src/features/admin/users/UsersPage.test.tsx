@@ -10,6 +10,7 @@ vi.mock("./api", () => ({
   updateUserStatus: vi.fn(),
   updateUserMfa: vi.fn(),
   inviteUser: vi.fn(),
+  resetUserPassword: vi.fn(),
   ASSIGNABLE_ROLES: [
     "founder",
     "regional_manager",
@@ -68,6 +69,7 @@ describe("UsersPage", () => {
       .mockResolvedValue([{ id: "01ARZ3NDEKTSV4RRFFQ69G5FBW", name: "Green Valley School" }]);
     vi.mocked(api.updateUserStatus).mockReset();
     vi.mocked(api.updateUserMfa).mockReset();
+    vi.mocked(api.resetUserPassword).mockReset();
   });
 
   it("renders skeleton state while loading, then the fetched users", async () => {
@@ -153,5 +155,47 @@ describe("UsersPage", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).queryByRole("button", { name: "Disable" })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Activate" })).not.toBeInTheDocument();
+  });
+
+  it("lets a founder reset a user's password from the detail drawer", async () => {
+    vi.mocked(api.listUsers).mockResolvedValue(pageOf([USER], 1));
+    vi.mocked(api.resetUserPassword).mockResolvedValue({
+      user: USER,
+      temporaryPassword: "Sw4pped!Pass9000",
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Amina Hassan")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Amina Hassan"));
+
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Reset password" }));
+
+    // Both the detail drawer's trigger and the confirmation drawer's own button share the
+    // label "Reset password" and may both be mounted at once - scope to the most recently
+    // opened dialog rather than assuming a single global match.
+    const dialogs = await screen.findAllByRole("dialog");
+    const resetDialog = dialogs[dialogs.length - 1];
+    await userEvent.click(within(resetDialog).getByRole("button", { name: "Reset password" }));
+
+    await waitFor(() =>
+      expect(api.resetUserPassword).toHaveBeenCalledWith("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+    );
+    expect(await screen.findByDisplayValue("Sw4pped!Pass9000")).toBeInTheDocument();
+  });
+
+  it("regional_manager sees the Reset password action but not Activate/Disable", async () => {
+    useAuthStore.setState({
+      principal: { userId: "u1", role: "regional_manager", organizationId: null, regionIds: [] },
+    });
+    vi.mocked(api.listUsers).mockResolvedValue(pageOf([USER], 1));
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Amina Hassan")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Amina Hassan"));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Reset password" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Disable" })).not.toBeInTheDocument();
   });
 });

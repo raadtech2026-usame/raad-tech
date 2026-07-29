@@ -165,6 +165,31 @@ export async function updateUserMfa(id: string, mfaEnabled: boolean): Promise<Us
   return toUser(wire);
 }
 
+interface PasswordResetWire {
+  user: UserWire;
+  temporary_password: string;
+}
+
+export interface PasswordResetResult {
+  user: User;
+  /** Surfaced exactly once, in this response — never retrievable again via any other endpoint,
+   * the same one-time-hand-off guarantee `OnboardedOrganization.temporaryPassword`
+   * (`features/organizations/api.ts`) already establishes for initial onboarding. */
+  temporaryPassword: string;
+}
+
+/** `POST /users/{id}/reset-password` (ADR-0017 Amendment) — administrator-initiated
+ * regeneration for a user who lost their temporary (or only) password. Immediately invalidates
+ * whatever password they had and revokes every refresh token already issued to them
+ * (`UserApplicationService.reset_password_to_temporary`, backend-enforced, not this call's own
+ * responsibility). No request body: the new password is generated server-side. */
+export async function resetUserPassword(id: string): Promise<PasswordResetResult> {
+  const wire = await apiRequest<PasswordResetWire>(`/users/${id}/reset-password`, {
+    method: "POST",
+  });
+  return { user: toUser(wire.user), temporaryPassword: wire.temporary_password };
+}
+
 export interface OrganizationOption {
   id: string;
   name: string;

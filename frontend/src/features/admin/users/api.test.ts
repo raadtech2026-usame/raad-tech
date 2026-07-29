@@ -11,6 +11,7 @@ import {
   isOrgScopedRole,
   listOrganizationsForPicker,
   listUsers,
+  resetUserPassword,
   updateUserMfa,
   updateUserStatus,
 } from "./api";
@@ -154,6 +155,21 @@ describe("users api", () => {
       body: { mfa_enabled: true },
     });
     expect(result.mfaEnabled).toBe(true);
+  });
+
+  it("resetUserPassword posts with no body and maps the one-time reveal envelope", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      user: { ...USER_WIRE, is_password_change_required: true },
+      temporary_password: "TempPass!23456",
+    });
+
+    const result = await resetUserPassword("01ARZ3NDEKTSV4RRFFQ69G5FAV");
+
+    expect(apiRequest).toHaveBeenCalledWith("/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/reset-password", {
+      method: "POST",
+    });
+    expect(result.user.fullName).toBe("Amina Hassan");
+    expect(result.temporaryPassword).toBe("TempPass!23456");
   });
 
   it("listOrganizationsForPicker maps the page envelope to a minimal option list", async () => {

@@ -19,6 +19,7 @@ import { Button } from "../../../shared/components/Button/Button";
 import { Input } from "../../../shared/components/Input/Input";
 import { Avatar } from "../../../shared/components/Avatar/Avatar";
 import { InviteUserForm } from "./InviteUserForm";
+import { ResetUserPasswordForm } from "./ResetUserPasswordForm";
 import {
   listOrganizationsForPicker,
   listUsers,
@@ -103,6 +104,7 @@ export function UsersPage() {
 
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [resetPasswordOpen, setResetPasswordOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
 
   const {
@@ -267,6 +269,14 @@ export function UsersPage() {
   // hidden for anyone else, exactly mirroring `OrganizationsPage`'s identical `canCreate`
   // precedent. The backend's own `require_permission` remains the real, unbypassable gate.
   const canManage = principal?.role === "founder";
+  // `iam.users.reset_password` (ADR-0017 Amendment migration `b8e2f4a91c67`) is granted more
+  // widely than `iam.users.update` — founder, regional_manager, and support_staff, matching an
+  // existing grant shape rather than a new access-control decision (see that migration's own
+  // docstring) — so this hint is deliberately its own, wider check, not a reuse of `canManage`.
+  const canResetPassword =
+    principal?.role === "founder" ||
+    principal?.role === "regional_manager" ||
+    principal?.role === "support_staff";
 
   return (
     <div className={styles.page}>
@@ -387,9 +397,9 @@ export function UsersPage() {
         }
         footer={
           selectedUser &&
-          canManage && (
+          (canManage || canResetPassword) && (
             <div className={styles.drawerActions}>
-              {selectedUser.status !== "active" && (
+              {canManage && selectedUser.status !== "active" && (
                 <Button
                   variant="secondary"
                   loading={isStatusPendingFor("active")}
@@ -399,7 +409,7 @@ export function UsersPage() {
                   Activate
                 </Button>
               )}
-              {selectedUser.status !== "disabled" && (
+              {canManage && selectedUser.status !== "disabled" && (
                 <Button
                   variant="danger"
                   loading={isStatusPendingFor("disabled")}
@@ -409,23 +419,29 @@ export function UsersPage() {
                   Disable
                 </Button>
               )}
-              {selectedUser.mfaEnabled ? (
-                <Button
-                  variant="secondary"
-                  loading={isMfaPendingFor(false)}
-                  disabled={mfaMutation.isPending}
-                  onClick={() => mfaMutation.mutate({ id: selectedUser.id, mfaEnabled: false })}
-                >
-                  Disable MFA
-                </Button>
-              ) : (
-                <Button
-                  variant="secondary"
-                  loading={isMfaPendingFor(true)}
-                  disabled={mfaMutation.isPending}
-                  onClick={() => mfaMutation.mutate({ id: selectedUser.id, mfaEnabled: true })}
-                >
-                  Enable MFA
+              {canManage &&
+                (selectedUser.mfaEnabled ? (
+                  <Button
+                    variant="secondary"
+                    loading={isMfaPendingFor(false)}
+                    disabled={mfaMutation.isPending}
+                    onClick={() => mfaMutation.mutate({ id: selectedUser.id, mfaEnabled: false })}
+                  >
+                    Disable MFA
+                  </Button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    loading={isMfaPendingFor(true)}
+                    disabled={mfaMutation.isPending}
+                    onClick={() => mfaMutation.mutate({ id: selectedUser.id, mfaEnabled: true })}
+                  >
+                    Enable MFA
+                  </Button>
+                ))}
+              {canResetPassword && (
+                <Button variant="secondary" onClick={() => setResetPasswordOpen(true)}>
+                  Reset password
                 </Button>
               )}
             </div>
@@ -434,6 +450,11 @@ export function UsersPage() {
       />
 
       <InviteUserForm open={inviteOpen} onClose={() => setInviteOpen(false)} />
+      <ResetUserPasswordForm
+        open={resetPasswordOpen}
+        user={selectedUser}
+        onClose={() => setResetPasswordOpen(false)}
+      />
     </div>
   );
 }
