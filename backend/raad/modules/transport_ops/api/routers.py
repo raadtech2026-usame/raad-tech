@@ -217,6 +217,7 @@ from raad.modules.transport_ops.api.schemas import (
     AddStopToRouteRequest,
     AssignStudentToRouteRequest,
     ChangeTripDriverRequest,
+    CountResponse,
     CreateRouteRequest,
     DriverCreatedResponse,
     DriverResponse,
@@ -578,6 +579,34 @@ async def list_students(
 
 
 @students_router.get(
+    "/count",
+    response_model=CountResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Total student count (no row data)",
+    description=(
+        "RAAD business model realignment: `transport_ops.students.count`, held by "
+        "founder/regional_manager/support_staff (migration granting this permission) — "
+        "distinct from `.list`, which those roles no longer hold (migration `c4d9a2e6f813`). "
+        "Backs the RAAD Platform's aggregated-statistics KPI strip ('Total Students (count "
+        "only)') without exposing individual student rows. Reuses `list_students` internally "
+        "(`page_size=1`) and returns only its `.total` — no new query logic."
+    ),
+)
+async def count_students(
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.students.count"))
+    ),
+    student_service: StudentApplicationService = Depends(get_student_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> CountResponse:
+    page = await student_service.list_students(
+        ListStudentsQuery(page_request=OffsetPageRequest(page=1, page_size=1)),
+        uow=uow,
+    )
+    return CountResponse(total=page.total)
+
+
+@students_router.get(
     "/{student_id}",
     response_model=StudentResponse,
     status_code=status.HTTP_200_OK,
@@ -753,6 +782,34 @@ async def list_parents(
         uow=uow,
     )
     return to_offset_page_response(page, _parent_summary_dto_to_response)
+
+
+@parents_router.get(
+    "/count",
+    response_model=CountResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Total parent count (no row data)",
+    description=(
+        "RAAD business model realignment: `transport_ops.parents.count`, held by "
+        "founder/regional_manager/support_staff — distinct from `.list`, which those roles no "
+        "longer hold (migration `c4d9a2e6f813`). Backs the RAAD Platform's aggregated-"
+        "statistics KPI strip ('Total Parents (count only)') without exposing individual "
+        "parent rows. Reuses `list_parents` internally (`page_size=1`) and returns only its "
+        "`.total` — no new query logic. See `count_students`'s identical note."
+    ),
+)
+async def count_parents(
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.parents.count"))
+    ),
+    parent_service: ParentApplicationService = Depends(get_parent_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> CountResponse:
+    page = await parent_service.list_parents(
+        ListParentsQuery(page_request=OffsetPageRequest(page=1, page_size=1)),
+        uow=uow,
+    )
+    return CountResponse(total=page.total)
 
 
 @parents_router.get(

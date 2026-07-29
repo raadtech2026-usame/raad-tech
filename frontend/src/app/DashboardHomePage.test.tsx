@@ -8,15 +8,15 @@ vi.mock("../features/organizations/api", () => ({ listOrganizations: vi.fn() }))
 vi.mock("../features/fleet-devices/vehicles/api", () => ({ listVehicles: vi.fn() }));
 vi.mock("../features/fleet-devices/devices/api", () => ({ listDevices: vi.fn() }));
 vi.mock("../features/transport-ops/drivers/api", () => ({ listDrivers: vi.fn() }));
-vi.mock("../features/transport-ops/students/api", () => ({ listStudents: vi.fn() }));
-vi.mock("../features/transport-ops/parents/api", () => ({ listParents: vi.fn() }));
+vi.mock("../features/transport-ops/students/api", () => ({ countStudents: vi.fn() }));
+vi.mock("../features/transport-ops/parents/api", () => ({ countParents: vi.fn() }));
 
 import { listOrganizations } from "../features/organizations/api";
 import { listVehicles } from "../features/fleet-devices/vehicles/api";
 import { listDevices } from "../features/fleet-devices/devices/api";
 import { listDrivers } from "../features/transport-ops/drivers/api";
-import { listStudents } from "../features/transport-ops/students/api";
-import { listParents } from "../features/transport-ops/parents/api";
+import { countStudents } from "../features/transport-ops/students/api";
+import { countParents } from "../features/transport-ops/parents/api";
 
 function pageOf(total: number) {
   return { data: [], page: { total, page: 1, pageSize: 1 } };
@@ -37,8 +37,8 @@ describe("DashboardHomePage", () => {
     vi.mocked(listVehicles).mockReset().mockResolvedValue(pageOf(2));
     vi.mocked(listDevices).mockReset().mockResolvedValue(pageOf(1));
     vi.mocked(listDrivers).mockReset().mockResolvedValue(pageOf(0));
-    vi.mocked(listStudents).mockReset().mockResolvedValue(pageOf(0));
-    vi.mocked(listParents).mockReset().mockResolvedValue(pageOf(0));
+    vi.mocked(countStudents).mockReset().mockResolvedValue(0);
+    vi.mocked(countParents).mockReset().mockResolvedValue(0);
   });
 
   it("shows the platform KPI strip with real counts for a platform role", async () => {

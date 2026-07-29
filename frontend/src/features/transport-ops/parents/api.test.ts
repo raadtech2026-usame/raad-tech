@@ -6,6 +6,7 @@ vi.mock("../../../shared/api/client", () => ({
 
 import { apiRequest } from "../../../shared/api/client";
 import {
+  countParents,
   getParent,
   listOrganizationsForPicker,
   listParents,
@@ -76,6 +77,15 @@ describe("parents api", () => {
       data: [{ id: "01ARZ3NDEKTSV4RRFFQ69G5FCX", fullName: "Fatima Ali", status: "active" }],
       page: { total: 1, page: 1, pageSize: 25 },
     });
+  });
+
+  it("countParents calls the count-only route and returns just the total", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({ total: 7 });
+
+    const result = await countParents();
+
+    expect(apiRequest).toHaveBeenCalledWith("/parents/count");
+    expect(result).toBe(7);
   });
 
   it("getParent maps the full response to camelCase, including fields the list route omits", async () => {

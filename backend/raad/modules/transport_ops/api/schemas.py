@@ -81,6 +81,19 @@ class StudentSummaryResponse(BaseModel):
     status: str
 
 
+class CountResponse(BaseModel):
+    """RAAD business model realignment: the RAAD Platform "may only display aggregated
+    statistics... Total Students (count only), Total Parents (count only)" but "must not list
+    or manage individual Students or Parents across organizations." `GET /students`/
+    `GET /parents` already carry a `.total` on their own paginated envelope, but reaching that
+    requires `transport_ops.students.list`/`.parents.list` — exactly the permission RAAD
+    Platform roles no longer hold (migration `c4d9a2e6f813`). This is the narrower response
+    shape that lets a caller learn *how many* without being able to list *which* — reused
+    identically by `GET /students/count` and `GET /parents/count`."""
+
+    total: int
+
+
 class EnrollStudentRequest(BaseModel):
     organization_id: str
     full_name: str

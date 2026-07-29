@@ -15,8 +15,8 @@ vi.mock("../../features/organizations/api", () => ({ listOrganizations: vi.fn(()
 vi.mock("../../features/fleet-devices/vehicles/api", () => ({ listVehicles: vi.fn(() => new Promise(() => {})) }));
 vi.mock("../../features/fleet-devices/devices/api", () => ({ listDevices: vi.fn(() => new Promise(() => {})) }));
 vi.mock("../../features/transport-ops/drivers/api", () => ({ listDrivers: vi.fn(() => new Promise(() => {})) }));
-vi.mock("../../features/transport-ops/students/api", () => ({ listStudents: vi.fn(() => new Promise(() => {})) }));
-vi.mock("../../features/transport-ops/parents/api", () => ({ listParents: vi.fn(() => new Promise(() => {})) }));
+vi.mock("../../features/transport-ops/students/api", () => ({ countStudents: vi.fn(() => new Promise(() => {})) }));
+vi.mock("../../features/transport-ops/parents/api", () => ({ countParents: vi.fn(() => new Promise(() => {})) }));
 
 function renderDashboard() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

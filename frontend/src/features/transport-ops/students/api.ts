@@ -87,6 +87,16 @@ export async function listStudents(params: OffsetListParams): Promise<OffsetPage
   return toOffsetPage(wire, toStudentSummary);
 }
 
+/** `GET /students/count` (RAAD business model realignment) — `transport_ops.students.count`,
+ * held by founder/regional_manager/support_staff, distinct from `.list` (which those roles no
+ * longer hold, migration `c4d9a2e6f813`). Backs the RAAD Platform's "Total students (count
+ * only)" KPI tile without exposing individual student rows — `org_admin`'s own `StudentsPage`
+ * still uses `listStudents` above; this is platform-only. */
+export async function countStudents(): Promise<number> {
+  const wire = await apiRequest<{ total: number }>("/students/count");
+  return wire.total;
+}
+
 /** `GET /students/{id}` — the only route returning the full `Student` shape (`organizationId`,
  * `externalRef`, `createdAt`/`updatedAt`). `StudentsPage`'s detail drawer calls this on row
  * selection rather than reusing the list row alone — see `Student`'s own docstring. */

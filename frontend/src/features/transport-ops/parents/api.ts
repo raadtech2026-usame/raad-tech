@@ -84,6 +84,16 @@ export async function listParents(params: OffsetListParams): Promise<OffsetPage<
   return toOffsetPage(wire, toParentSummary);
 }
 
+/** `GET /parents/count` (RAAD business model realignment) — `transport_ops.parents.count`,
+ * held by founder/regional_manager/support_staff, distinct from `.list` (which those roles no
+ * longer hold, migration `c4d9a2e6f813`). Backs the RAAD Platform's "Total parents (count
+ * only)" KPI tile without exposing individual parent rows — `org_admin`'s own `ParentsPage`
+ * still uses `listParents` above; this is platform-only. */
+export async function countParents(): Promise<number> {
+  const wire = await apiRequest<{ total: number }>("/parents/count");
+  return wire.total;
+}
+
 /** `GET /parents/{id}` — the only route returning the full `Parent` shape (`organizationId`,
  * `userId`, `phone`, `createdAt`/`updatedAt`). `ParentsPage`'s detail drawer calls this on row
  * selection rather than reusing the list row alone — see `Parent`'s own docstring. */

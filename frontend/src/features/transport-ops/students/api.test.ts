@@ -6,6 +6,7 @@ vi.mock("../../../shared/api/client", () => ({
 
 import { apiRequest } from "../../../shared/api/client";
 import {
+  countStudents,
   enrollStudent,
   getStudent,
   linkGuardianToStudent,
@@ -69,6 +70,15 @@ describe("students api", () => {
       data: [{ id: "01ARZ3NDEKTSV4RRFFQ69G5FAV", fullName: "Amina Hassan", status: "active" }],
       page: { total: 1, page: 1, pageSize: 25 },
     });
+  });
+
+  it("countStudents calls the count-only route and returns just the total", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({ total: 42 });
+
+    const result = await countStudents();
+
+    expect(apiRequest).toHaveBeenCalledWith("/students/count");
+    expect(result).toBe(42);
   });
 
   it("getStudent maps the full response to camelCase, including fields the list route omits", async () => {

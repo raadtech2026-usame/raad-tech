@@ -194,6 +194,12 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/users/{user_id}/reset-password",
         "ADR-0017 Amendment admin password reset, no API Contracts row",
     ),
+    # RAAD business model realignment: the RAAD Platform may display aggregate student/parent
+    # counts but must not list individual rows (migration c4d9a2e6f813 revoked
+    # transport_ops.students.list/.parents.list from every RAAD-staff role) - these two
+    # narrower, count-only routes back that KPI tile. API Contracts predates this realignment.
+    ("GET", "/api/v1/students/count", "RAAD business model realignment, no API Contracts row"),
+    ("GET", "/api/v1/parents/count", "RAAD business model realignment, no API Contracts row"),
     # Infrastructure/process health probes — outside API Contracts §1's `/api/v1` namespace
     # entirely by design (liveness/readiness checks are never versioned resource routes).
     ("GET", "/health", "process-level health probe, outside /api/v1"),
