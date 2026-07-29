@@ -1,29 +1,43 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuthStore } from "../../shared/stores/authStore";
 import { RouteGuard } from "../RouteGuard";
 import { DashboardHomePage } from "../DashboardHomePage";
 import { AppShell } from "./AppShell";
 import { platformNav } from "./navConfig";
 
+// `DashboardHomePage`'s platform KPI strip fetches from every one of these — irrelevant to
+// this file's own regression concern (the PageHeaderContext render loop), so mocked to an
+// unresolved promise: never resolves within this test, so no assertion here depends on it.
+vi.mock("../../features/organizations/api", () => ({ listOrganizations: vi.fn(() => new Promise(() => {})) }));
+vi.mock("../../features/fleet-devices/vehicles/api", () => ({ listVehicles: vi.fn(() => new Promise(() => {})) }));
+vi.mock("../../features/fleet-devices/devices/api", () => ({ listDevices: vi.fn(() => new Promise(() => {})) }));
+vi.mock("../../features/transport-ops/drivers/api", () => ({ listDrivers: vi.fn(() => new Promise(() => {})) }));
+vi.mock("../../features/transport-ops/students/api", () => ({ listStudents: vi.fn(() => new Promise(() => {})) }));
+vi.mock("../../features/transport-ops/parents/api", () => ({ listParents: vi.fn(() => new Promise(() => {})) }));
+
 function renderDashboard() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={["/platform"]}>
-      <Routes>
-        <Route path="/login" element={<div>Login page</div>} />
-        <Route
-          path="/platform"
-          element={
-            <RouteGuard allowedRoles={["founder"]}>
-              <AppShell nav={platformNav} notificationsPath="/platform/notifications" />
-            </RouteGuard>
-          }
-        >
-          <Route index element={<DashboardHomePage />} />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/platform"]}>
+        <Routes>
+          <Route path="/login" element={<div>Login page</div>} />
+          <Route
+            path="/platform"
+            element={
+              <RouteGuard allowedRoles={["founder"]}>
+                <AppShell nav={platformNav} notificationsPath="/platform/notifications" />
+              </RouteGuard>
+            }
+          >
+            <Route index element={<DashboardHomePage />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
