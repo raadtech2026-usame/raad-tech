@@ -9,6 +9,7 @@ interface PrincipalWire {
   role: Role;
   organization_id: string | null;
   region_ids: string[];
+  is_password_change_required: boolean;
 }
 
 interface TokenResponseWire {
@@ -25,6 +26,7 @@ function toPrincipal(wire: PrincipalWire): Principal {
     role: wire.role,
     organizationId: wire.organization_id,
     regionIds: wire.region_ids,
+    isPasswordChangeRequired: wire.is_password_change_required,
   };
 }
 
@@ -66,4 +68,14 @@ export async function logout(refreshToken: string): Promise<void> {
 export async function getMe(): Promise<Principal> {
   const wire = await apiRequest<PrincipalWire>("/auth/me");
   return toPrincipal(wire);
+}
+
+/** `POST /auth/change-password` (ADR-0017) — self-service only, identified by the bearer
+ * token. Clears `is_password_change_required` server-side; the caller (`ChangePasswordRequiredPage`)
+ * is responsible for reflecting that locally via `authStore.clearPasswordChangeRequired`. */
+export async function changePassword(newPassword: string): Promise<void> {
+  await apiRequest<unknown>("/auth/change-password", {
+    method: "POST",
+    body: { new_password: newPassword },
+  });
 }

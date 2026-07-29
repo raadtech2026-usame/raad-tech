@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { RouteGuard } from "./RouteGuard";
 import { LoginPage } from "./LoginPage";
+import { ChangePasswordRequiredPage } from "./ChangePasswordRequiredPage";
 import { MobileOnlyPage } from "./MobileOnlyPage";
 import { PlaceholderPage } from "./PlaceholderPage";
 import { DashboardHomePage } from "./DashboardHomePage";
@@ -140,9 +141,17 @@ export const router = createBrowserRouter([
     ),
   },
   {
+    path: "/change-password",
+    element: (
+      <RouteGuard>
+        <ChangePasswordRequiredPage />
+      </RouteGuard>
+    ),
+  },
+  {
     path: "/platform",
     element: (
-      <RouteGuard allowedRoles={PLATFORM_ROLES}>
+      <RouteGuard allowedRoles={PLATFORM_ROLES} enforcePasswordChange>
         <AppShell nav={platformNav} notificationsPath="/platform/notifications" />
       </RouteGuard>
     ),
@@ -154,7 +163,7 @@ export const router = createBrowserRouter([
   {
     path: "/org",
     element: (
-      <RouteGuard allowedRoles={ORGANIZATION_ROLES}>
+      <RouteGuard allowedRoles={ORGANIZATION_ROLES} enforcePasswordChange>
         <AppShell nav={organizationNav} notificationsPath="/org/notifications" />
       </RouteGuard>
     ),

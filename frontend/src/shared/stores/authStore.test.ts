@@ -131,4 +131,26 @@ describe("useAuthStore", () => {
     expect(useAuthStore.getState().status).toBe("signed_out");
     expect(useAuthStore.getState().principal).toBeNull();
   });
+
+  it("clearPasswordChangeRequired flips the flag on the current principal only", () => {
+    useAuthStore.setState({
+      principal: { ...PRINCIPAL, isPasswordChangeRequired: true },
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      status: "authenticated",
+      error: null,
+    });
+
+    useAuthStore.getState().clearPasswordChangeRequired();
+
+    expect(useAuthStore.getState().principal).toEqual({
+      ...PRINCIPAL,
+      isPasswordChangeRequired: false,
+    });
+  });
+
+  it("clearPasswordChangeRequired is a no-op when signed out", () => {
+    useAuthStore.getState().clearPasswordChangeRequired();
+    expect(useAuthStore.getState().principal).toBeNull();
+  });
 });

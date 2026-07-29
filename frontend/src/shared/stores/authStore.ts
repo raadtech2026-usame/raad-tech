@@ -21,6 +21,10 @@ interface AuthState {
   /** Attempts to exchange the current refresh token for a new pair. Returns whether it
    * succeeded — `shared/api/client.ts`'s 401-retry hook calls this, never the reverse. */
   refreshSession: () => Promise<boolean>;
+  /** Called by `ChangePasswordRequiredPage` immediately after `POST /auth/change-password`
+   * succeeds — reflects the server-side clear of `is_password_change_required` locally so
+   * `RouteGuard` stops redirecting there, without needing a fresh login/refresh round trip. */
+  clearPasswordChangeRequired: () => void;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -79,6 +83,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ principal: null, accessToken: null, refreshToken: null, status: "signed_out" });
       return false;
     }
+  },
+
+  clearPasswordChangeRequired() {
+    const { principal } = get();
+    if (!principal) {
+      return;
+    }
+    set({ principal: { ...principal, isPasswordChangeRequired: false } });
   },
 }));
 

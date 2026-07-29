@@ -16,6 +16,14 @@ export interface Principal {
   role: Role;
   organizationId: string | null;
   regionIds: string[];
+  /** ADR-0017 / ADR-0017 Amendment: true while this account still holds a one-time hand-off
+   * temporary password. `RouteGuard` (`app/RouteGuard.tsx`) redirects to `/change-password`
+   * until `POST /auth/change-password` clears it — server-enforced, not a client-only check
+   * (`.claude/rules/frontend.md` #2). Optional (rather than defaulted at this type's boundary)
+   * so the many pre-existing test fixtures across this codebase that construct a `Principal`
+   * without this field don't all need updating for an unrelated feature — `undefined` is
+   * treated as "no forced change pending," matching the backend's own `default=False`. */
+  isPasswordChangeRequired?: boolean;
 }
 
 export interface TokenPair {

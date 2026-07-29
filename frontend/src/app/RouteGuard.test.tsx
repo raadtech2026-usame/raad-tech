@@ -4,15 +4,19 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useAuthStore } from "../shared/stores/authStore";
 import { RouteGuard } from "./RouteGuard";
 
-function renderGuardedRoute(allowedRoles?: ("org_admin" | "founder")[]) {
+function renderGuardedRoute(
+  allowedRoles?: ("org_admin" | "founder")[],
+  enforcePasswordChange?: boolean,
+) {
   return render(
     <MemoryRouter initialEntries={["/dashboard"]}>
       <Routes>
         <Route path="/login" element={<div>Login page</div>} />
+        <Route path="/change-password" element={<div>Change password page</div>} />
         <Route
           path="/dashboard"
           element={
-            <RouteGuard allowedRoles={allowedRoles}>
+            <RouteGuard allowedRoles={allowedRoles} enforcePasswordChange={enforcePasswordChange}>
               <div>Protected content</div>
             </RouteGuard>
           }
@@ -65,6 +69,52 @@ describe("RouteGuard", () => {
       principal: { userId: "u1", role: "founder", organizationId: null, regionIds: [] },
     });
     renderGuardedRoute(["founder"]);
+    expect(screen.getByText("Protected content")).toBeInTheDocument();
+  });
+
+  it("redirects to /change-password when enforcePasswordChange is set and the flag is true", () => {
+    useAuthStore.setState({
+      status: "authenticated",
+      principal: {
+        userId: "u1",
+        role: "org_admin",
+        organizationId: "org-1",
+        regionIds: [],
+        isPasswordChangeRequired: true,
+      },
+    });
+    renderGuardedRoute(undefined, true);
+    expect(screen.getByText("Change password page")).toBeInTheDocument();
+    expect(screen.queryByText("Protected content")).not.toBeInTheDocument();
+  });
+
+  it("does not redirect for the forced-change flag when enforcePasswordChange is not set", () => {
+    useAuthStore.setState({
+      status: "authenticated",
+      principal: {
+        userId: "u1",
+        role: "org_admin",
+        organizationId: "org-1",
+        regionIds: [],
+        isPasswordChangeRequired: true,
+      },
+    });
+    renderGuardedRoute(undefined, false);
+    expect(screen.getByText("Protected content")).toBeInTheDocument();
+  });
+
+  it("renders children when enforcePasswordChange is set but the flag is false", () => {
+    useAuthStore.setState({
+      status: "authenticated",
+      principal: {
+        userId: "u1",
+        role: "org_admin",
+        organizationId: "org-1",
+        regionIds: [],
+        isPasswordChangeRequired: false,
+      },
+    });
+    renderGuardedRoute(undefined, true);
     expect(screen.getByText("Protected content")).toBeInTheDocument();
   });
 });
