@@ -75,13 +75,25 @@ export interface CreateOrganizationFormProps {
  *
  * On success, the response carries a one-time Org Admin temporary password — surfaced in this
  * drawer exactly once (a `result` view replaces the form) before closing, since it is never
- * retrievable again afterward via any other endpoint.
+ * retrievable again afterward via any other endpoint. That reveal also shows the new
+ * Organization's own id, its login URL (this app's own `/login` route — there is no separate
+ * "Organization Portal" domain), and the Org Admin's email/phone (captured from what was just
+ * submitted; the backend response itself only carries the opaque `adminUserId`) — everything a
+ * Founder needs to hand off to the Org Admin in one place.
  */
 export function CreateOrganizationForm({ open, onClose }: CreateOrganizationFormProps) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [result, setResult] = useState<OnboardedOrganization | null>(null);
+  const [adminContact, setAdminContact] = useState<{ email: string; phone: string } | null>(
+    null,
+  );
   const [copied, setCopied] = useState(false);
+
+  // This app has no separate "Organization Portal" domain — one SPA, one `/login` route for
+  // every role (`app/router.tsx`), redirecting to `/org` post-auth for an Org Admin. Read from
+  // the real, currently-running origin rather than a hardcoded/fabricated subdomain.
+  const organizationPortalUrl = `${window.location.origin}/login`;
 
   const regionsQuery = useQuery({
     queryKey: ["regions", "picker"],
@@ -118,11 +130,15 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
         adminEmail: values.adminEmail || null,
         adminPhone: values.adminPhone || null,
       }),
-    onSuccess: (onboarded) => {
+    onSuccess: (onboarded, values) => {
       // Matches every other feature's mutation convention (roadmap §3.2): invalidate the exact
       // query key affected, not a blanket `invalidateQueries()`.
       queryClient.invalidateQueries({ queryKey: ["organizations", "list"] });
       toast.success("Organization created", `${onboarded.organization.name} has been added.`);
+      // The response itself carries no email/phone (only the opaque adminUserId) — captured
+      // here from what was just submitted so the reveal panel can show the actual login
+      // identifier, not just a reference id.
+      setAdminContact({ email: values.adminEmail, phone: values.adminPhone });
       reset(DEFAULT_VALUES);
       // Don't close yet — the temporary password is shown exactly once, below.
       setResult(onboarded);
@@ -141,6 +157,7 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
     reset(DEFAULT_VALUES);
     mutation.reset();
     setResult(null);
+    setAdminContact(null);
     setCopied(false);
     onClose();
   }
@@ -182,7 +199,22 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
           <FormField label="Organization">
             <Input value={result.organization.name} readOnly />
           </FormField>
-          <FormField label="Org Admin user ID" hint="Reference id for this account — email or phone is the actual login.">
+          <FormField label="Organization ID">
+            <Input value={result.organization.id} readOnly />
+          </FormField>
+          <FormField
+            label="Organization Portal URL"
+            hint="This app's own login page — the same one every role signs in through; it redirects to the Organization Dashboard after a successful Org Admin login."
+          >
+            <Input value={organizationPortalUrl} readOnly />
+          </FormField>
+          <FormField
+            label="Org Admin login"
+            hint="Email or phone — whichever was provided is the actual sign-in identifier."
+          >
+            <Input value={adminContact?.email || adminContact?.phone || "—"} readOnly />
+          </FormField>
+          <FormField label="Org Admin user ID" hint="Reference id for this account — email or phone above is the actual login.">
             <Input value={result.adminUserId} readOnly />
           </FormField>
           <FormField

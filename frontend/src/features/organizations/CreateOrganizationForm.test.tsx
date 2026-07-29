@@ -144,6 +144,12 @@ describe("CreateOrganizationForm", () => {
     // The temporary password is a one-time reveal — onClose must NOT fire until "Done".
     expect(await screen.findByText("Organization created")).toBeInTheDocument();
     expect(screen.getByDisplayValue("Temp-Pw9!xyz")).toBeInTheDocument();
+    // ADR-0017: the reveal also carries the Organization's own id, its login URL (this app's
+    // own /login route — no separate "Organization Portal" domain), and the Org Admin's login
+    // identifier captured from what was just submitted.
+    expect(screen.getByDisplayValue("01ARZ3NDEKTSV4RRFFQ69G5FAV")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/\/login$/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue("amina@greenvalley.example.com")).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
     expect(useToastStore.getState().toasts[0]).toMatchObject({
       variant: "success",
