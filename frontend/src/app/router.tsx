@@ -96,15 +96,22 @@ function buildFeatureRoutes(
  * `navConfig.ts`) and, unlike every entry above, deliberately does **not** add a
  * `/platform/devices`/`/org/devices` pair anymore: `DevicesPage` stays `PLATFORM_BUILT_ROUTES`-
  * only now — see `ORGANIZATION_BUILT_ROUTES`'s own note for why it was removed from the Org
- * Admin dashboard specifically. */
+ * Admin dashboard specifically.
+ *
+ * **Reversal (platform verification, 2026-07-29):** Phase F4's own reasoning above (paragraph
+ * starting "Phase F4") turns out to have been a real deviation from CLAUDE.md's already-approved
+ * Business Model ("RAAD does not manage students or parents directly") — `/platform/students`/
+ * `/platform/parents` are removed from `PLATFORM_BUILT_ROUTES` and `navConfig.ts`'s
+ * `platformNav`, backed by RBAC migration `c4d9a2e6f813` revoking the underlying
+ * `transport_ops.students.*`/`.parents.*` grants from every RAAD-staff role. `StudentsPage`/
+ * `ParentsPage` remain exactly as built — only reachable via `/org/*` now, which was always the
+ * correct shape per the business model; nothing about the component or the `/org` route changed. */
 const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/organizations": <OrganizationsPage />,
   "/platform/regions": <RegionsPage />,
   "/platform/users": <UsersPage />,
   "/platform/vehicles": <VehiclesPage />,
   "/platform/devices": <DevicesPage />,
-  "/platform/students": <StudentsPage />,
-  "/platform/parents": <ParentsPage />,
   "/platform/drivers": <DriversPage />,
   "/platform/routes": <RoutesPage />,
   "/platform/trips": <TripsPage />,

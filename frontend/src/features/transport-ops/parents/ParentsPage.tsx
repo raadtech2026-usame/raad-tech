@@ -112,13 +112,15 @@ function LinkedStudentsSection({ parentId, canManage }: { parentId: string; canM
 }
 
 /**
- * `/platform/parents` and `/org/parents` (API Contracts §4.3's `/parents` row: "Org Admin") — one
- * shared page component reused at both routes, mirroring `StudentsPage`'s identical posture.
- * Per the seeded RBAC matrix, only `founder`/`org_admin` hold `transport_ops.parents.create`/
- * `.update`/`.student_parents.create`/`.student_parents.delete` — `regional_manager`/
- * `support_staff` hold `.list`/`.read`/`.student_parents.list` only, and `finance_staff`/
- * `driver`/`parent` hold none at all. `canManage` below is a presentation-layer hint only
- * (`.claude/rules/frontend.md` #2).
+ * `/org/parents` only (`app/router.tsx`'s `ORGANIZATION_BUILT_ROUTES`) — as of platform
+ * verification (2026-07-29), RAAD Platform staff no longer reach this page at all: migration
+ * `c4d9a2e6f813` revoked founder/regional_manager/support_staff's `transport_ops.parents.*`
+ * grants entirely, per CLAUDE.md's own Business Model ("RAAD does not manage students or
+ * parents directly"). Only `org_admin` holds any `transport_ops.parents.*`/`.student_parents.*`
+ * permission now (full CRUD, seeded matrix `5437a5d1651b`, unaffected by that migration) —
+ * `finance_staff`/`driver`/`parent` still hold none. `canManage` below is a presentation-layer
+ * hint only (`.claude/rules/frontend.md` #2). The component itself is unchanged from when it
+ * was also mounted at `/platform/parents` — only the route/nav wiring moved.
  *
  * **The list table shows only Name + Status** — `GET /parents` returns `ParentSummaryResponse`
  * (`id`/`full_name`/`status` only), not the full `Parent` shape. Opening the detail drawer issues
@@ -126,10 +128,13 @@ function LinkedStudentsSection({ parentId, canManage }: { parentId: string; canM
  * `StudentsPage.tsx`'s identical docstring note for the full reasoning (this is a `transport_ops`
  * -wide list-route shape, not specific to either aggregate).
  *
- * Not yet scope-filtered server-side (CLAUDE.md's own flagged, system-wide gap).
+ * Not yet scope-filtered server-side (CLAUDE.md's own flagged, system-wide gap) — the same real,
+ * live tenant-isolation leak `StudentsPage.tsx`'s own docstring flags applies here identically:
+ * since only `org_admin` can reach this route now, an Org Admin currently sees every
+ * organization's parents here, not just their own. Pre-existing, not introduced by this phase.
  */
 export function ParentsPage() {
-  usePageHeader("Parents", "Parents and guardians linked to students across the platform");
+  usePageHeader("Parents", "Parents and guardians linked to students in your organization");
 
   const principal = useAuthStore((s) => s.principal);
   const toast = useToast();

@@ -130,17 +130,16 @@ function GuardiansSection({
 }
 
 /**
- * `/platform/students` and `/org/students` (API Contracts §4.3's `/students` row: "Org Admin") —
- * one shared page component reused at both routes, mirroring `VehiclesPage`/`DevicesPage`'s
- * identical posture (`app/router.tsx`'s `PLATFORM_BUILT_ROUTES`/`ORGANIZATION_BUILT_ROUTES`).
- * Per the seeded RBAC matrix (`migrations/versions/
- * 20260721_0900_5437a5d1651b_iam_create_role_permissions_table.py`), only `founder`/`org_admin`
- * hold `transport_ops.students.create`/`.update`/`.update_status`/`.student_parents.create`/
- * `.student_parents.delete` — `regional_manager`/`support_staff` hold `.list`/`.read`/
- * `.student_parents.list` only (view, no enroll/status-change/link), and `finance_staff`/
- * `driver`/`parent` hold none of the `transport_ops.students.*`/`.student_parents.*` permissions
- * at all. `canManage` below is a presentation-layer hint only (`.claude/rules/frontend.md` #2);
- * the backend's own `require_permission` is the real gate.
+ * `/org/students` only (`app/router.tsx`'s `ORGANIZATION_BUILT_ROUTES`) — as of platform
+ * verification (2026-07-29), RAAD Platform staff no longer reach this page at all: migration
+ * `c4d9a2e6f813` revoked founder/regional_manager/support_staff's `transport_ops.students.*`
+ * grants entirely, per CLAUDE.md's own Business Model ("RAAD does not manage students or
+ * parents directly"). Only `org_admin` holds any `transport_ops.students.*`/`.student_parents.*`
+ * permission now (full CRUD, seeded matrix `5437a5d1651b`, unaffected by that migration) —
+ * `finance_staff`/`driver`/`parent` still hold none. `canManage` below is a presentation-layer
+ * hint only (`.claude/rules/frontend.md` #2); the backend's own `require_permission` is the real
+ * gate. The component itself is unchanged from when it was also mounted at `/platform/students`
+ * — only the route/nav wiring moved, not this page's logic.
  *
  * **The list table shows only Name + Status** — `GET /students` returns `StudentSummaryResponse`
  * (`id`/`full_name`/`status` only, see `./api.ts`'s `StudentSummary` docstring), not the full
@@ -160,11 +159,17 @@ function GuardiansSection({
  * #1 guards against — flagged here as a deliberate, narrow exception. There is still no dedicated
  * "Student Assignments" nav page — see `router.tsx`'s own Phase F6 note for why.
  *
- * Not yet scope-filtered server-side (CLAUDE.md's own flagged, system-wide gap), so every viewer
- * who can reach this route currently sees every student, not just their own organization's.
+ * Not yet scope-filtered server-side (CLAUDE.md's own flagged, system-wide gap) — this is now a
+ * real, live tenant-isolation leak worth calling out explicitly rather than just citing the
+ * general gap: since only `org_admin` can reach this route at all (above), an Org Admin
+ * currently sees every organization's students here, not just their own. Pre-existing (this
+ * page's underlying query was never scoped for any caller, including `org_admin`), not
+ * introduced or worsened by removing platform-staff access — but now the *only* remaining
+ * viewer of this page is directly affected by it, where before platform staff's identical
+ * unscoped view was the more visible instance of the same gap.
  */
 export function StudentsPage() {
-  usePageHeader("Students", "Students enrolled across the platform");
+  usePageHeader("Students", "Students enrolled in your organization");
 
   const principal = useAuthStore((s) => s.principal);
   const toast = useToast();

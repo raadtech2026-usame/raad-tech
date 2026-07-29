@@ -59,6 +59,13 @@ function header(label: string): NavHeaderItem {
  * Live Video is deliberately absent here: `.claude/rules/api.md` #2 documents `/video` as
  * "Org-Admin only" — not "Org-Admin plus RAAD staff" — so no platform role gets a Live Video nav
  * entry at all, only the organization nav below does.
+ *
+ * **No "Students"/"Parents" entries either** (platform verification, 2026-07-29) — CLAUDE.md's
+ * own Business Model section already says RAAD does not manage students or parents directly;
+ * the original `5437a5d1651b` seed granting founder/regional_manager/support_staff platform-wide
+ * `transport_ops.students.*`/`.parents.*` access was a real deviation from that, corrected by
+ * migration `c4d9a2e6f813`. `organizationNav` below keeps both — each Organization manages its
+ * own students/parents, unaffected.
  */
 export const platformNav: NavItem[] = [
   header("Overview"),
@@ -70,9 +77,6 @@ export const platformNav: NavItem[] = [
   link("Vehicles", Truck, "/platform/vehicles"),
   link("Devices", Cpu, "/platform/devices"),
   link("Drivers", UserRound, "/platform/drivers"),
-  header("People"),
-  link("Students", Users, "/platform/students"),
-  link("Parents", Contact, "/platform/parents"),
   header("Operations"),
   link("Routes", Navigation, "/platform/routes"),
   link("Trips", CalendarClock, "/platform/trips"),
