@@ -95,3 +95,52 @@ here for the first time.
 - `.claude/rules/frontend.md` #2 (server-enforced, not client-only, gating)
 - `raad/modules/organization/application/`, `raad/modules/iam/domain/entities.py`,
   `raad/modules/iam/application/services.py`
+
+## Amendment (2026-07-29): Administrator-initiated password reset
+
+**Context.** This ADR's own §3 designed the temporary password as generate-once,
+never-retrievable, never-regenerated — correct for the one-time onboarding hand-off, but it
+left two real gaps found during a platform verification pass: (1) if the Founder is ever
+locked out, no recovery path exists anywhere (`bootstrap_founder.py` refuses to run once any
+user exists, and there is no admin above a Founder to reset one via HTTP); (2) if an Org Admin
+loses their temporary password before ever logging in, it is gone forever — `POST
+/auth/change-password` is self-service-only (`user_id=principal.user_id`, hardcoded), so no
+admin can act on another user's credential at all. Both are closed here, as two distinct
+mechanisms, not one — a Founder locked out has no authenticated caller to act as; an Org Admin
+does have one (the RAAD staff who onboarded them).
+
+**1. Founder recovery — an operator-trust-boundary CLI, not an HTTP endpoint.** Exactly
+`bootstrap_founder.py`'s own reasoning (this file's `interfaces/cli/bootstrap_founder.py`
+docstring), applied to the opposite precondition: a new `interfaces/cli/
+reset_founder_password.py` refuses to run **unless** the target account already exists with
+`role=founder`, then calls the existing `UserApplicationService.change_password(...)`
+(`iam/application/services.py`) directly via the shared composition root — no new backend
+method. The operator supplies the new password themselves (`--password`/
+`RAAD_RESET_FOUNDER_PASSWORD`, mirroring bootstrap's own flag/env-var convention) — never
+auto-generated, since whoever can already reach a shell on the deployment is choosing their
+own permanent password, not receiving a hand-off from someone else. No `is_password_change_
+required` flag is set as a result — there is no "someone else" who generated it.
+
+**2. Admin-initiated regeneration — reuses this ADR's own mechanism, applied to an existing
+user.** A new `UserApplicationService.reset_password_to_temporary(command, *, uow)`, same
+shape as this ADR's own `create_user_with_temporary_password` (reuses the same `_generate_
+temporary_password` + `User.set_temporary_password_hash`, which already sets `is_password_
+change_required=True`) but loads an existing `User` instead of inviting a new one, and returns
+the new plaintext password exactly once, in the response, never persisted or retrievable
+again — identical guarantee to the original mechanism. Exposed as `POST /users/{user_id}/
+reset-password`, gated by a new permission, `iam.users.reset_password`, granted (via a new
+additive migration, never editing the original `5437a5d1651b` seed) to the same roles that
+already hold `iam.users.update` today: founder, regional_manager, support_staff — mirroring an
+existing grant shape rather than deciding a new access-control policy from scratch.
+**Additionally revokes the target user's existing refresh tokens** (a new `RefreshTokenRepository.
+list_by_user`/revoke-all primitive — none existed before this amendment) so a still-open
+session can't outlive the reset. This is a deliberate, small addition beyond "generate a new
+password" — standard password-reset hygiene, and consistent with `.claude/rules/security.md`'s
+general defense-in-depth posture — flagged here rather than silently bundled in.
+
+**Not changed:** the original one-time-onboarding mechanism, `is_password_change_required`'s
+enforcement point, and every other section of this ADR.
+
+**References (amendment-specific):** `.claude/rules/workflow.md` #7/#8 (the gate this amendment
+satisfies before implementation), `docs/runbooks/founder-bootstrap.md` (gains a sibling
+recovery runbook).
