@@ -186,6 +186,14 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/auth/change-password",
         "ADR-0017 forced-password-change gate, no API Contracts row",
     ),
+    # ADR-0017 Amendment (2026-07-29): administrator-initiated regeneration for a user who
+    # lost their temporary/only password before ever logging in - API Contracts predates this
+    # amendment too, same as /auth/change-password above.
+    (
+        "POST",
+        "/api/v1/users/{user_id}/reset-password",
+        "ADR-0017 Amendment admin password reset, no API Contracts row",
+    ),
     # Infrastructure/process health probes — outside API Contracts §1's `/api/v1` namespace
     # entirely by design (liveness/readiness checks are never versioned resource routes).
     ("GET", "/health", "process-level health probe, outside /api/v1"),
