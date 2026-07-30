@@ -106,11 +106,10 @@ class SqlAlchemyOrganizationRepository(
         return frozenset(result.scalars().all())
 
     async def list_all(self) -> list[Organization]:
-        """`list_scoped`'s org filter is inert here (`OrganizationModel` has no
-        `organization_id` column — it *is* the tenant root), the identical situation
-        `billing.infra.repositories.SqlAlchemyPlanRepository.list_all` already establishes for
-        `PlanModel`; the soft-delete filter still applies."""
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        """ADR-0021: `OrganizationModel` has no `organization_id` column — it *is* the tenant
+        root — so `scope_by_own_id = True` (set on the class below) makes `_apply_scope` filter
+        by the row's own `id` instead. Soft-delete filter still applies."""
+        rows = await self.list_scoped()
         return [self._track(row) for row in rows]  # type: ignore[misc]
 
     async def list_page(
@@ -121,10 +120,8 @@ class SqlAlchemyOrganizationRepository(
         filters: list[FilterCondition],
         search: str | None,
     ) -> OffsetPage[Organization]:
-        """Same unscoped posture as `list_all` above — `OrganizationModel` is the tenant root,
-        so `TenantRegionScope(organization_ids=None)` is inert here, not a shortcut."""
+        """ADR-0021: same `scope_by_own_id` posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -187,10 +184,14 @@ class SqlAlchemyRegionRepository(
         self._tracked[str(region.id)] = (region, model)
 
     async def list_all(self) -> list[Region]:
-        """`RegionModel` has no `organization_id` either (a platform-level geographic
-        division, not tenant-owned) — same inert-filter posture as
-        `SqlAlchemyOrganizationRepository.list_all` above."""
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        """ADR-0021: `RegionModel` has no `organization_id` column and is not the tenant root
+        either (a platform-level geographic grouping) — scope stays inert here (`_apply_scope`
+        finds neither `scope_by_own_id` nor an `organization_id` column), matching this
+        repository's pre-ADR-0021 behavior exactly. Region-level scoping (Regional Manager's
+        own assigned-region visibility) is a documented, separate, not-yet-built concern —
+        `TenantRegionScope.region_ids` exists for it but nothing reads it yet anywhere in this
+        codebase; not invented here."""
+        rows = await self.list_scoped()
         return [self._track(row) for row in rows]  # type: ignore[misc]
 
     async def list_page(
@@ -201,10 +202,8 @@ class SqlAlchemyRegionRepository(
         filters: list[FilterCondition],
         search: str | None,
     ) -> OffsetPage[Region]:
-        """Same inert-scope posture as `list_all` above — `RegionModel` has no
-        `organization_id`."""
+        """ADR-0021: same inert-scope posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,

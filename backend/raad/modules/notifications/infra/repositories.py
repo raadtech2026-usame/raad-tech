@@ -94,7 +94,7 @@ class SqlAlchemyNotificationRepository(
         self._tracked[str(notification.id)] = (notification, model)
 
     async def list_all(self) -> list[Notification]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_notification(row) for row in rows]
 
     async def list_for_recipient(self, recipient_user_id: UserId) -> list[Notification]:
@@ -122,7 +122,6 @@ class SqlAlchemyNotificationRepository(
             *filters,
         ]
         raw_page = await super().list_cursor_page(
-            TenantRegionScope(organization_ids=None),
             cursor_request,
             cursor_column="created_at",
             descending=True,
@@ -166,7 +165,7 @@ class SqlAlchemyDeviceTokenRepository(
         self._tracked[str(device_token.id)] = (device_token, model)
 
     async def list_all(self) -> list[DeviceToken]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_device_token(row) for row in rows]
 
     async def get_by_token(self, fcm_token: str) -> DeviceToken | None:

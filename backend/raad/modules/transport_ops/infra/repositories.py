@@ -190,7 +190,7 @@ class SqlAlchemyStudentRepository(
     async def list_all(self) -> list[Student]:
         """See module docstring: unrestricted `TenantRegionScope` today, pending a system-wide
         `ScopeResolver` binding — not a Student-specific gap."""
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_student(row) for row in rows]
 
     async def list_page(
@@ -203,7 +203,6 @@ class SqlAlchemyStudentRepository(
     ) -> OffsetPage[Student]:
         """Same unrestricted-scope posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -269,7 +268,7 @@ class SqlAlchemyParentRepository(
         self._tracked[str(parent.id)] = (parent, model)
 
     async def list_all(self) -> list[Parent]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_parent(row) for row in rows]
 
     async def list_page(
@@ -282,7 +281,6 @@ class SqlAlchemyParentRepository(
     ) -> OffsetPage[Parent]:
         """Same unrestricted-scope posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -414,7 +412,7 @@ class SqlAlchemyDriverRepository(
         self._tracked[str(driver.id)] = (driver, model)
 
     async def list_all(self) -> list[Driver]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_driver(row) for row in rows]
 
     async def list_page(
@@ -427,7 +425,6 @@ class SqlAlchemyDriverRepository(
     ) -> OffsetPage[Driver]:
         """Same unrestricted-scope posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -491,7 +488,7 @@ class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepos
         self._tracked[str(route.id)] = (route, model)
 
     async def list_all(self) -> list[Route]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_route(row) for row in rows]
 
     async def list_page(
@@ -504,7 +501,6 @@ class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepos
     ) -> OffsetPage[Route]:
         """Same unrestricted-scope posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -571,7 +567,7 @@ class SqlAlchemyTripRepository(SqlAlchemyRepositoryBase[TripModel], TripReposito
         self._tracked[str(trip.id)] = (trip, model)
 
     async def list_all(self) -> list[Trip]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_trip(row) for row in rows]
 
     async def list_page(
@@ -584,7 +580,6 @@ class SqlAlchemyTripRepository(SqlAlchemyRepositoryBase[TripModel], TripReposito
     ) -> OffsetPage[Trip]:
         """Same unrestricted-scope posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -662,7 +657,7 @@ class SqlAlchemyStudentAssignmentRepository(
         self._tracked[str(assignment.id)] = (assignment, model)
 
     async def list_all(self) -> list[StudentAssignment]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_student_assignment(row) for row in rows]
 
     async def list_page(
@@ -675,7 +670,6 @@ class SqlAlchemyStudentAssignmentRepository(
     ) -> OffsetPage[StudentAssignment]:
         """Same unrestricted-scope posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,

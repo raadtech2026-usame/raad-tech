@@ -112,7 +112,6 @@ class SqlAlchemyVehiclePositionRepository(
             *filters,
         ]
         raw_page = await super().list_cursor_page(
-            TenantRegionScope(organization_ids=None),
             cursor_request,
             cursor_column="event_time",
             descending=False,

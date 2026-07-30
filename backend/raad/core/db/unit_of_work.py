@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from raad.core.events.base import DomainEvent
+from raad.core.tenancy.scope import TenantRegionScope
 
 if TYPE_CHECKING:
     # Deferred to break the core.db <-> core.events / core.db <-> core.audit import cycles
@@ -91,6 +92,14 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self._audit_writer = audit_writer
         self._session: AsyncSession | None = None
         self._events: list[DomainEvent] = []
+        #: ADR-0021: the caller's resolved tenant/region scope, applied to every repository this
+        #: UoW constructs on `__aenter__`. Defaults to unrestricted — matches this class's
+        #: pre-ADR-0021 behavior for any construction path that never sets it (CLI scripts,
+        #: background workers, tests). `get_<module>_uow` (each module's `api/deps.py`) is the
+        #: only place that sets a real, resolved scope, before `__aenter__` is ever called (every
+        #: `get_<module>_uow` today returns the UoW un-entered — see that dependency's own
+        #: docstring) — never re-set mid-request.
+        self.scope: TenantRegionScope = TenantRegionScope(organization_ids=None)
 
     @property
     def session(self) -> AsyncSession:

@@ -115,7 +115,7 @@ class SqlAlchemyUserRepository(SqlAlchemyRepositoryBase[UserModel], UserReposito
     async def list_all(self) -> list[User]:
         """Unrestricted `TenantRegionScope` — not yet scope-filtered, the same system-wide,
         already-flagged gap every other module's own `list_all()` carries."""
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [self._track(row) for row in rows]  # type: ignore[misc]
 
     async def list_page(
@@ -128,7 +128,6 @@ class SqlAlchemyUserRepository(SqlAlchemyRepositoryBase[UserModel], UserReposito
     ) -> OffsetPage[User]:
         """Same unrestricted-scope posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,

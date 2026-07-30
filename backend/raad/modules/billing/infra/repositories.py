@@ -126,7 +126,7 @@ class SqlAlchemyPlanRepository(SqlAlchemyRepositoryBase[PlanModel], PlanReposito
         guards its org filter with `hasattr(self.model, "organization_id")`, so this simply
         never applies one for `PlanModel`, while the soft-delete filter still does - the same
         method every other repository in this file uses, not a special case."""
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_plan(row) for row in rows]
 
     async def list_page(
@@ -143,7 +143,6 @@ class SqlAlchemyPlanRepository(SqlAlchemyRepositoryBase[PlanModel], PlanReposito
         paginated/filtered/sorted contract, mirroring `SqlAlchemyOrganizationRepository.
         list_page`'s identical shape."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -205,7 +204,7 @@ class SqlAlchemySubscriptionRepository(
         self._tracked[str(subscription.id)] = (subscription, model)
 
     async def list_all(self) -> list[Subscription]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_subscription(row) for row in rows]
 
     async def list_page(
@@ -220,7 +219,6 @@ class SqlAlchemySubscriptionRepository(
         system-wide `ScopeResolver`-pending gap, not a `billing`-specific shortcut) - backs
         `GET /billing/subscriptions`'s paginated/filtered/sorted contract."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -297,7 +295,7 @@ class SqlAlchemyInvoiceRepository(
         self._tracked[str(invoice.id)] = (invoice, model)
 
     async def list_all(self) -> list[Invoice]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_invoice(row) for row in rows]
 
     async def list_page(
@@ -311,7 +309,6 @@ class SqlAlchemyInvoiceRepository(
         """Same unrestricted-`TenantRegionScope` posture `list_all` above already carries -
         backs `GET /billing/invoices`'s paginated/filtered/sorted contract."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -355,7 +352,7 @@ class SqlAlchemyPaymentRepository(
         self._tracked[str(payment.id)] = (payment, model)
 
     async def list_all(self) -> list[Payment]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_payment(row) for row in rows]
 
     async def get_by_idempotency_key(self, idempotency_key: str) -> Payment | None:
@@ -396,7 +393,7 @@ class SqlAlchemyTransportFeeRepository(
         self._tracked[str(transport_fee.id)] = (transport_fee, model)
 
     async def list_all(self) -> list[TransportFee]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_transport_fee(row) for row in rows]
 
     def flush_tracked_changes(self) -> None:

@@ -112,9 +112,9 @@ class SqlAlchemyVehicleRepository(
         self._tracked[str(vehicle.id)] = (vehicle, model)
 
     async def list_all(self) -> list[Vehicle]:
-        """Unrestricted `TenantRegionScope` — not yet scope-filtered, the same system-wide,
-        already-flagged gap every other module's own `list_all()` carries."""
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        """ADR-0021: scope-filtered via `self._scope` (bound at construction by
+        `SqlAlchemyFleetDeviceUnitOfWork.__aenter__`)."""
+        rows = await self.list_scoped()
         return [self._track(row) for row in rows]  # type: ignore[misc]
 
     async def list_page(
@@ -125,9 +125,8 @@ class SqlAlchemyVehicleRepository(
         filters: list[FilterCondition],
         search: str | None,
     ) -> OffsetPage[Vehicle]:
-        """Same unrestricted-scope posture as `list_all` above."""
+        """ADR-0021: scope-filtered via `self._scope`, same posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -221,9 +220,9 @@ class SqlAlchemyDeviceRepository(
         self._tracked[str(device.id)] = (device, model)
 
     async def list_all(self) -> list[Device]:
-        """Unrestricted `TenantRegionScope` — same posture as `SqlAlchemyVehicleRepository.
-        list_all` above."""
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        """ADR-0021: scope-filtered via `self._scope`, same posture as
+        `SqlAlchemyVehicleRepository.list_all` above."""
+        rows = await self.list_scoped()
         return [self._track(row) for row in rows]  # type: ignore[misc]
 
     async def list_page(
@@ -234,9 +233,8 @@ class SqlAlchemyDeviceRepository(
         filters: list[FilterCondition],
         search: str | None,
     ) -> OffsetPage[Device]:
-        """Same unrestricted-scope posture as `list_all` above."""
+        """ADR-0021: scope-filtered via `self._scope`, same posture as `list_all` above."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,

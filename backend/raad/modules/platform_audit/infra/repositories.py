@@ -73,7 +73,7 @@ class SqlAlchemyAuditEntryRepository(
         return audit_entry_model_to_domain(row) if row is not None else None
 
     async def list_all(self) -> list[AuditEntry]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [audit_entry_model_to_domain(row) for row in rows]
 
     async def list_page(
@@ -88,7 +88,6 @@ class SqlAlchemyAuditEntryRepository(
         this repository is read-only (module docstring), so rows are mapped straight through
         `audit_entry_model_to_domain`, exactly like `get`/`list_all` already do."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,
@@ -157,7 +156,6 @@ class SqlAlchemySystemSettingRepository(
         empty `sort` — a deliberate non-guard, not an oversight, since guarding it twice would
         hide a caller bug instead of surfacing it."""
         raw_page = await super().list_page(
-            TenantRegionScope(organization_ids=None),
             page_request,
             sort=sort,
             filters=filters,

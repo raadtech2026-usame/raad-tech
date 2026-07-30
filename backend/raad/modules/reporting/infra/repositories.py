@@ -39,7 +39,7 @@ class SqlAlchemyReportRunRepository(
         self._tracked[str(report_run.id)] = (report_run, model)
 
     async def list_all(self) -> list[ReportRun]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_report_run(row) for row in rows]
 
     def flush_tracked_changes(self) -> None:

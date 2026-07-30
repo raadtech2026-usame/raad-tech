@@ -120,6 +120,12 @@ class SqlAlchemyRepositoryBase(Generic[TModel]):
 
     Set `model` in the subclass, e.g. `class DeviceModelRepo(SqlAlchemyRepositoryBase[Device
     ORM]): model = DeviceORM`.
+
+    **ADR-0021**: `scope` is bound once, at construction (via the owning module's `SqlAlchemy
+    <Module>UnitOfWork.__aenter__`, itself set from the `get_<module>_uow` FastAPI dependency),
+    not threaded through every call — `.claude/rules/backend.md` #4's "injected into every
+    repository query automatically, never rely on a call site remembering." `get_by_id` and
+    every `list_*` method route through `_apply_scope` below, the single enforcement point.
     """
 
     model: type[TModel]
@@ -133,8 +139,33 @@ class SqlAlchemyRepositoryBase(Generic[TModel]):
     sortable_fields: dict[str, str] = {}
     searchable_fields: tuple[str, ...] = ()
 
-    def __init__(self, session: AsyncSession) -> None:
+    #: ADR-0021: `True` only for a repository whose model *is* the tenant root (`Organization`)
+    #: — such a model has no `organization_id` column of its own, so scope instead restricts by
+    #: the row's own `id` being in `scope.organization_ids`.
+    scope_by_own_id: bool = False
+
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
         self._session = session
+        #: ADR-0021: defaults to unrestricted for callers outside an HTTP request (CLI scripts,
+        #: background workers, tests constructing a repository directly) — every HTTP request
+        #: path supplies a real, resolved scope via the owning module's `get_<module>_uow`.
+        self._scope = scope if scope is not None else TenantRegionScope(organization_ids=None)
+
+    def _apply_scope(self, statement):
+        """ADR-0021: the single place tenant isolation is enforced at the persistence layer
+        (Backend LLD §7.3) — both `get_by_id` and every `list_*` method route through this,
+        rather than trusting each call site to remember it."""
+        if self._scope.is_unrestricted:
+            return statement
+        if self.scope_by_own_id:
+            return statement.where(self.model.id.in_(self._scope.organization_ids))
+        if hasattr(self.model, "organization_id"):
+            return statement.where(
+                self.model.organization_id.in_(self._scope.organization_ids)
+            )
+        return statement
 
     async def get_by_id(
         self, id_: str, *, include_deleted: bool = False
@@ -142,15 +173,14 @@ class SqlAlchemyRepositoryBase(Generic[TModel]):
         statement = select(self.model).where(self.model.id == id_)
         if not include_deleted and hasattr(self.model, "deleted_at"):
             statement = statement.where(self.model.deleted_at.is_(None))
+        statement = self._apply_scope(statement)
         result = await self._session.execute(statement)
         return result.scalar_one_or_none()
 
     def add(self, instance: TModel) -> None:
         self._session.add(instance)
 
-    async def list_scoped(
-        self, scope: TenantRegionScope, *, include_deleted: bool = False
-    ) -> Sequence[TModel]:
+    async def list_scoped(self, *, include_deleted: bool = False) -> Sequence[TModel]:
         """Applies the mandatory tenant/region scope filter (Phase 2 §17.4) to a model with an
         `organization_id` column — the single place tenant isolation is enforced at the
         persistence layer (Backend LLD §7.3), rather than trusting every call site to
@@ -158,10 +188,7 @@ class SqlAlchemyRepositoryBase(Generic[TModel]):
         statement = select(self.model)
         if not include_deleted and hasattr(self.model, "deleted_at"):
             statement = statement.where(self.model.deleted_at.is_(None))
-        if not scope.is_unrestricted and hasattr(self.model, "organization_id"):
-            statement = statement.where(
-                self.model.organization_id.in_(scope.organization_ids)
-            )
+        statement = self._apply_scope(statement)
         result = await self._session.execute(statement)
         return result.scalars().all()
 
@@ -220,7 +247,6 @@ class SqlAlchemyRepositoryBase(Generic[TModel]):
 
     async def list_page(
         self,
-        scope: TenantRegionScope,
         page_request: OffsetPageRequest,
         *,
         sort: Sequence[SortSpec] = (),
@@ -234,8 +260,7 @@ class SqlAlchemyRepositoryBase(Generic[TModel]):
         base = select(self.model)
         if not include_deleted and hasattr(self.model, "deleted_at"):
             base = base.where(self.model.deleted_at.is_(None))
-        if not scope.is_unrestricted and hasattr(self.model, "organization_id"):
-            base = base.where(self.model.organization_id.in_(scope.organization_ids))
+        base = self._apply_scope(base)
         base = self._apply_filters(base, filters)
         base = self._apply_search(base, search)
 
@@ -260,7 +285,6 @@ class SqlAlchemyRepositoryBase(Generic[TModel]):
 
     async def list_cursor_page(
         self,
-        scope: TenantRegionScope,
         cursor_request: CursorPageRequest,
         *,
         cursor_column: str,
@@ -277,8 +301,7 @@ class SqlAlchemyRepositoryBase(Generic[TModel]):
         base = select(self.model)
         if not include_deleted and hasattr(self.model, "deleted_at"):
             base = base.where(self.model.deleted_at.is_(None))
-        if not scope.is_unrestricted and hasattr(self.model, "organization_id"):
-            base = base.where(self.model.organization_id.in_(scope.organization_ids))
+        base = self._apply_scope(base)
         base = self._apply_filters(base, filters)
 
         if cursor_request.cursor is not None:

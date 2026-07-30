@@ -42,7 +42,7 @@ class SqlAlchemyVideoSessionRepository(
         self._tracked[str(video_session.id)] = (video_session, model)
 
     async def list_all(self) -> list[VideoSession]:
-        rows = await self.list_scoped(TenantRegionScope(organization_ids=None))
+        rows = await self.list_scoped()
         return [model_to_video_session(row) for row in rows]
 
     def flush_tracked_changes(self) -> None:
