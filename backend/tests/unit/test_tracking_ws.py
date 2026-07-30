@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from raad.core.di.container import Container
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.events.base import DomainEvent
+from raad.core.security.permissions import Permission, PermissionEvaluator
 from raad.core.security.tokens import JwtTokenService, TokenService
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.tenancy.resolver import ScopeResolver
@@ -140,6 +141,21 @@ class FakeScopeResolver(ScopeResolver):
         return self._scope
 
 
+class FakePermissionEvaluator(PermissionEvaluator):
+    """ADR-0021: defaults to granting every permission — matches every pre-existing test's own
+    implicit assumption before this evaluator existed at all. Pass `denied_roles` to simulate a
+    role that genuinely lacks `tracking.vehicles.read_latest` (`driver`/`finance_staff` in the
+    real seeded matrix, `role_permissions`)."""
+
+    def __init__(self, *, denied_roles: frozenset[Role] = frozenset()) -> None:
+        self._denied_roles = denied_roles
+
+    async def has_permission(
+        self, principal: Principal, permission: Permission
+    ) -> bool:
+        return principal.role not in self._denied_roles
+
+
 def make_container(
     *,
     vehicles: dict[str, _VehicleDTO] | None = None,
@@ -149,6 +165,7 @@ def make_container(
     children: list[str] | None = None,
     assignments: dict[str, _AssignmentDTO | None] | None = None,
     scope: TenantRegionScope = TenantRegionScope(organization_ids=frozenset({ORG_ID})),
+    permission_denied_roles: frozenset[Role] = frozenset(),
 ) -> Container:
     container = Container()
     container.bind_singleton(VehicleApplicationService, FakeVehicleService(vehicles or {}))
@@ -168,6 +185,10 @@ def make_container(
     )
     container.bind_singleton(BillingApplicationService, FakeBillingService())
     container.bind_singleton(ScopeResolver, FakeScopeResolver(scope))
+    container.bind_singleton(
+        PermissionEvaluator,
+        FakePermissionEvaluator(denied_roles=permission_denied_roles),
+    )
     for uow_type in (
         TransportOpsUnitOfWork,
         BillingUnitOfWork,
@@ -241,6 +262,56 @@ class HandleSubscribeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "veh-1")
         self.assertEqual(len(await connections.subscribers_for("veh-1")), 1)
         self.assertIsNone(websocket.closed_with)
+
+    async def test_driver_without_tracking_permission_is_denied_and_closes_forbidden(
+        self,
+    ) -> None:
+        """ADR-0021's adjacent WS finding: `driver` holds no `tracking.*` permission in the
+        real seeded matrix — this must be rejected before `resolve_tracking_decision` even
+        runs (that function assumes capability was already checked), not silently granted."""
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            permission_denied_roles=frozenset({Role.DRIVER}),
+        )
+        connections = ConnectionManager()
+        websocket = FakeWebSocket()
+        driver = Principal(user_id="driver-1", role=Role.DRIVER, org_id=ORG_ID)
+
+        result = await handle_subscribe(
+            {"type": "subscribe", "channel": "vehicle", "vehicle_id": "veh-1"},
+            websocket=websocket,
+            principal=driver,
+            container=container,
+            connections=connections,
+            current_vehicle_id=None,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(websocket.closed_with, WsCloseCode.FORBIDDEN)
+        self.assertEqual(len(await connections.subscribers_for("veh-1")), 0)
+
+    async def test_finance_staff_without_tracking_permission_is_denied(self) -> None:
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            permission_denied_roles=frozenset({Role.FINANCE_STAFF}),
+        )
+        connections = ConnectionManager()
+        websocket = FakeWebSocket()
+        finance_staff = Principal(
+            user_id="finance-1", role=Role.FINANCE_STAFF, org_id=None
+        )
+
+        result = await handle_subscribe(
+            {"type": "subscribe", "channel": "vehicle", "vehicle_id": "veh-1"},
+            websocket=websocket,
+            principal=finance_staff,
+            container=container,
+            connections=connections,
+            current_vehicle_id=None,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(websocket.closed_with, WsCloseCode.FORBIDDEN)
 
     async def test_parent_subscribe_to_owned_vehicle_with_active_trip_is_granted(self) -> None:
         container = make_container(

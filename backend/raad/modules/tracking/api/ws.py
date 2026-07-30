@@ -25,6 +25,19 @@ distinguishing "vehicle doesn't exist" from "exists but not authorized," mirrori
 codebase's own 404-over-403 cross-tenant-probing-avoidance posture, arguably even more
 important over a close-code channel than an HTTP body.
 
+**ADR-0021 addition — an explicit RBAC capability check in `handle_subscribe`, ahead of
+`resolve_tracking_decision`.** That function's own docstring documents an assumption —
+"capability already enforced by `require_permission`, already gates the route before this
+runs" — which the tenant-isolation audit found was simply never true for this channel: no
+FastAPI dependency chain runs before an accepted WebSocket connection's own message loop, so
+nothing here previously verified the caller actually held `tracking.vehicles.read_latest`
+before letting them subscribe. `driver`/`finance_staff` (neither holds any `tracking.*`
+permission) could subscribe to their own organization's live tracking despite lacking the
+equivalent REST permission — a same-org, capability-bypass finding, not a cross-tenant one,
+but fixed alongside the tenant-isolation work since it's the same file family. See
+`_TRACKING_SUBSCRIBE_PERMISSION`'s own comment for why this is checked once per subscribe, not
+on every position push.
+
 **One active vehicle subscription per connection.** API Contracts §11.2 documents a single
 subscribe example; a second `subscribe` message on the same connection replaces the first
 (unsubscribing from the prior `vehicle_id`) rather than accumulating multiple simultaneous
@@ -58,6 +71,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from raad.core.di.container import Container
 from raad.core.events.base import DomainEvent
 from raad.core.logging.setup import get_logger
+from raad.core.security.permissions import Permission, PermissionEvaluator
 from raad.core.security.tokens import TokenService
 from raad.core.tenancy.principal import Principal
 from raad.interfaces.http.policy_guards import (
@@ -87,6 +101,19 @@ logger = get_logger("raad.tracking.ws")
 # event_time, is_backfill" prose row.
 POSITION_EVENT_TYPE = "DevicePositionReported"
 TRIP_ENDED_EVENT_TYPE = "TripEnded"
+
+#: ADR-0021's adjacent WS finding: unlike the REST routes (`GET /tracking/vehicles/{id}/latest`,
+#: `GET /tracking/trips/{id}/positions`), this channel never sat behind a FastAPI
+#: `Depends(require_permission(...))` dependency at all — `resolve_tracking_decision`'s own
+#: docstring explicitly assumes "capability already enforced by `require_permission`, already
+#: gates the route before this runs," which is simply false for a WebSocket connection. A
+#: `driver`/`finance_staff` caller (neither holds any `tracking.*` permission,
+#: `role_permissions` seed migration) could subscribe and receive live positions despite lacking
+#: the equivalent REST permission. Checked explicitly in `handle_subscribe`, once per subscribe
+#: — not re-checked on every position push (`_handle_position_event`'s own re-authorization is
+#: for scope/ownership/time-window, which *can* change mid-connection; RBAC capability cannot,
+#: short of a brand new JWT).
+_TRACKING_SUBSCRIBE_PERMISSION = Permission("tracking.vehicles.read_latest")
 
 
 async def handle_subscribe(
@@ -129,6 +156,11 @@ async def handle_subscribe(
 
     if current_vehicle_id is not None:
         await connections.unregister(current_vehicle_id, websocket)
+
+    evaluator = container.resolve(PermissionEvaluator)
+    if not await evaluator.has_permission(principal, _TRACKING_SUBSCRIBE_PERMISSION):
+        await websocket.close(code=WsCloseCode.FORBIDDEN)
+        return None
 
     try:
         context = await resolve_vehicle_tracking_context(
