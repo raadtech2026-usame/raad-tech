@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from raad.core.errors.exceptions import ConflictError, NotFoundError
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
-from raad.modules.fleet_device.domain.entities import Vehicle
+from raad.modules.fleet_device.domain.entities import Device, Vehicle
 from raad.modules.fleet_device.domain.value_objects import (
     DeviceId,
     Iccid,
@@ -103,4 +103,19 @@ async def ensure_vehicle_has_no_active_device(
         raise ConflictError(
             f"Vehicle {vehicle_id} already has an active device {active.device_id} "
             "(one active device per vehicle, Phase 2 §19)."
+        )
+
+
+def ensure_same_organization(device: Device, vehicle: Vehicle) -> None:
+    """ADR-0021: `assign_device_to_vehicle`/`reassign_device` previously bound a device to a
+    vehicle with no check that they belong to the same organization at all — both were merely
+    each individually confirmed to exist. A device from one organization bound to a vehicle in
+    another is nonsensical regardless of who is asking, independent of the caller's own scope
+    (which by itself only proves the caller may act on *each* resource, not that the two
+    resources agree with each other)."""
+    if device.organization_id != vehicle.organization_id:
+        raise ConflictError(
+            f"Device {device.id} (organization {device.organization_id}) cannot be assigned "
+            f"to vehicle {vehicle.id} (organization {vehicle.organization_id}) — a device may "
+            "only be assigned to a vehicle in its own organization."
         )

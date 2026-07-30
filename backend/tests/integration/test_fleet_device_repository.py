@@ -32,6 +32,7 @@ from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
 from raad.modules.fleet_device.domain.entities import Device, Vehicle
 from raad.modules.fleet_device.domain.value_objects import (
@@ -489,6 +490,188 @@ class DevicePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     filters=[],
                     search=None,
                 )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0021: proves `TenantRegionScope` bound at UoW construction is actually enforced by
+    `SqlAlchemyVehicleRepository`/`SqlAlchemyDeviceRepository` against a real, live database —
+    two genuinely distinct organizations, not fakes. This is the "Organization A cannot
+    see/reach Organization B's data" security requirement, at the repository layer."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self.org_a = self.id_generator.new_id()
+        self.org_b = self.id_generator.new_id()
+        self._created_vehicle_ids: list[str] = []
+        self._created_device_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_vehicle_ids:
+                await conn.execute(
+                    text("DELETE FROM vehicles WHERE id = ANY(:ids)"),
+                    {"ids": self._created_vehicle_ids},
+                )
+            if self._created_device_ids:
+                await conn.execute(
+                    text("DELETE FROM devices WHERE id = ANY(:ids)"),
+                    {"ids": self._created_device_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(
+        self, *, scope: TenantRegionScope | None = None
+    ) -> SqlAlchemyFleetDeviceUnitOfWork:
+        uow = SqlAlchemyFleetDeviceUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+        if scope is not None:
+            uow.scope = scope
+        return uow
+
+    async def _seed_vehicle(self, *, organization_id: str, plate_no: str) -> str:
+        async with self._new_uow() as uow:
+            vehicle = Vehicle.register(
+                id=VehicleId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                plate_no=plate_no,
+                clock=self.clock,
+            )
+            uow.vehicles.add(vehicle)
+            uow.record_events(vehicle.pull_domain_events())
+            await uow.commit()
+            self._created_vehicle_ids.append(str(vehicle.id))
+            return str(vehicle.id)
+
+    async def _seed_device(self, *, organization_id: str, terminal_id: str) -> str:
+        async with self._new_uow() as uow:
+            device = Device.register(
+                id=DeviceId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                terminal_id=TerminalId(terminal_id),
+                clock=self.clock,
+            )
+            uow.devices.add(device)
+            uow.record_events(device.pull_domain_events())
+            await uow.commit()
+            self._created_device_ids.append(str(device.id))
+            return str(device.id)
+
+    async def test_org_a_cannot_get_org_bs_vehicle_by_id(self) -> None:
+        """The IDOR case: substituting another organization's real id must not work, even
+        though the id itself is perfectly valid and exists."""
+        vehicle_b = await self._seed_vehicle(
+            organization_id=self.org_b, plate_no=f"IDOR-{self.tag}"
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.vehicles.get(VehicleId(vehicle_b))
+
+        self.assertIsNone(result)
+
+    async def test_org_a_can_still_get_its_own_vehicle_by_id(self) -> None:
+        vehicle_a = await self._seed_vehicle(
+            organization_id=self.org_a, plate_no=f"OWN-{self.tag}"
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.vehicles.get(VehicleId(vehicle_a))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result.id), vehicle_a)
+
+    async def test_org_a_list_all_excludes_org_bs_vehicles(self) -> None:
+        vehicle_a = await self._seed_vehicle(
+            organization_id=self.org_a, plate_no=f"LISTA-{self.tag}"
+        )
+        vehicle_b = await self._seed_vehicle(
+            organization_id=self.org_b, plate_no=f"LISTB-{self.tag}"
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            visible = await uow.vehicles.list_all()
+
+        visible_ids = {str(v.id) for v in visible}
+        self.assertIn(vehicle_a, visible_ids)
+        self.assertNotIn(vehicle_b, visible_ids)
+
+    async def test_org_a_list_page_excludes_org_bs_vehicles(self) -> None:
+        vehicle_a = await self._seed_vehicle(
+            organization_id=self.org_a, plate_no=f"PAGEA-{self.tag}"
+        )
+        vehicle_b = await self._seed_vehicle(
+            organization_id=self.org_b, plate_no=f"PAGEB-{self.tag}"
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            page = await uow.vehicles.list_page(
+                OffsetPageRequest(), sort=[], filters=[], search=None
+            )
+
+        visible_ids = {str(v.id) for v in page.data}
+        self.assertIn(vehicle_a, visible_ids)
+        self.assertNotIn(vehicle_b, visible_ids)
+
+    async def test_org_a_cannot_bypass_scope_via_organization_id_filter(self) -> None:
+        """"Organization A cannot search Organization B's data" — a client-supplied
+        `filter[organization_id]=<org B>` must not override the bound scope; SQLAlchemy `.where()`
+        composes as AND, so this must return zero rows, not Organization B's vehicle."""
+        await self._seed_vehicle(organization_id=self.org_b, plate_no=f"SEARCH-{self.tag}")
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            page = await uow.vehicles.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(field="organization_id", op="eq", value=self.org_b)
+                ],
+                search=None,
+            )
+
+        self.assertEqual(page.total, 0)
+        self.assertEqual(page.data, [])
+
+    async def test_org_a_cannot_get_org_bs_device_by_id(self) -> None:
+        device_b = await self._seed_device(
+            organization_id=self.org_b, terminal_id=f"IDOR-{self.tag}"
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.devices.get(DeviceId(device_b))
+
+        self.assertIsNone(result)
+
+    async def test_founder_unrestricted_scope_sees_both_organizations(self) -> None:
+        """The unrestricted case (Founder) must be unaffected — confirms the fix narrows
+        tenant roles without breaking platform-wide visibility for the role that needs it."""
+        vehicle_a = await self._seed_vehicle(
+            organization_id=self.org_a, plate_no=f"ALL-A-{self.tag}"
+        )
+        vehicle_b = await self._seed_vehicle(
+            organization_id=self.org_b, plate_no=f"ALL-B-{self.tag}"
+        )
+
+        unrestricted = TenantRegionScope(organization_ids=None)
+        async with self._new_uow(scope=unrestricted) as uow:
+            visible = await uow.vehicles.list_all()
+
+        visible_ids = {str(v.id) for v in visible}
+        self.assertIn(vehicle_a, visible_ids)
+        self.assertIn(vehicle_b, visible_ids)
 
 
 if __name__ == "__main__":

@@ -314,10 +314,12 @@ def make_services() -> (
     return vehicle_service, device_service, uow
 
 
-async def _register_vehicle(vehicle_service, uow, plate_no="ABC-123") -> str:
+async def _register_vehicle(
+    vehicle_service, uow, plate_no="ABC-123", organization_id=VALID_ORG_ULID
+) -> str:
     dto = await vehicle_service.register_vehicle(
         RegisterVehicleCommand(
-            organization_id=VALID_ORG_ULID,
+            organization_id=organization_id,
             plate_no=plate_no,
             label=None,
             capacity=None,
@@ -330,11 +332,11 @@ async def _register_vehicle(vehicle_service, uow, plate_no="ABC-123") -> str:
 
 
 async def _register_activated_device(
-    device_service, uow, terminal_id="TERM-001"
+    device_service, uow, terminal_id="TERM-001", organization_id=VALID_ORG_ULID
 ) -> str:
     dto = await device_service.register_device(
         RegisterDeviceCommand(
-            organization_id=VALID_ORG_ULID,
+            organization_id=organization_id,
             terminal_id=terminal_id,
             model=None,
             vendor=None,
@@ -825,6 +827,92 @@ class DeviceAssignmentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(dto.cameras), 1)
         self.assertEqual(dto.cameras[0].label, "dashcam")
+
+
+OTHER_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3OT"
+
+
+class CrossOrganizationAssignmentTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0021: a device may only ever be assigned to a vehicle in its own organization,
+    independent of caller scope (which only proves the caller may act on *each* resource
+    individually, not that the two resources agree with each other) — the fix for a confirmed
+    finding: `assign_device_to_vehicle`/`reassign_device` previously had no such check at all."""
+
+    async def test_assign_rejects_a_device_and_vehicle_from_different_organizations(
+        self,
+    ) -> None:
+        vehicle_service, device_service, uow = make_services()
+        vehicle_id = await _register_vehicle(
+            vehicle_service, uow, organization_id=OTHER_ORG_ULID
+        )
+        device_id = await _register_activated_device(
+            device_service, uow, organization_id=VALID_ORG_ULID
+        )
+
+        with self.assertRaises(ConflictError):
+            await device_service.assign_device_to_vehicle(
+                AssignDeviceToVehicleCommand(
+                    device_id=device_id, vehicle_id=vehicle_id, actor=make_actor()
+                ),
+                uow=uow,
+            )
+        self.assertEqual(len(uow.device_assignments.by_id), 0)
+        self.assertEqual(uow.devices.by_id[device_id].lifecycle_state.value, "activated")
+
+    async def test_assign_succeeds_when_device_and_vehicle_share_an_organization(
+        self,
+    ) -> None:
+        """Confirms the new check doesn't reject the ordinary, same-org case."""
+        vehicle_service, device_service, uow = make_services()
+        vehicle_id = await _register_vehicle(
+            vehicle_service, uow, organization_id=VALID_ORG_ULID
+        )
+        device_id = await _register_activated_device(
+            device_service, uow, organization_id=VALID_ORG_ULID
+        )
+
+        dto = await device_service.assign_device_to_vehicle(
+            AssignDeviceToVehicleCommand(
+                device_id=device_id, vehicle_id=vehicle_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        self.assertTrue(dto.is_active)
+
+    async def test_reassign_rejects_a_new_vehicle_from_a_different_organization(
+        self,
+    ) -> None:
+        vehicle_service, device_service, uow = make_services()
+        own_vehicle = await _register_vehicle(
+            vehicle_service, uow, plate_no="VEH-OWN", organization_id=VALID_ORG_ULID
+        )
+        other_org_vehicle = await _register_vehicle(
+            vehicle_service, uow, plate_no="VEH-OTHER", organization_id=OTHER_ORG_ULID
+        )
+        device_id = await _register_activated_device(
+            device_service, uow, organization_id=VALID_ORG_ULID
+        )
+        await device_service.assign_device_to_vehicle(
+            AssignDeviceToVehicleCommand(
+                device_id=device_id, vehicle_id=own_vehicle, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        with self.assertRaises(ConflictError):
+            await device_service.reassign_device(
+                ReassignDeviceCommand(
+                    device_id=device_id,
+                    new_vehicle_id=other_org_vehicle,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+        # The original assignment must still be active - the rejected reassignment must not
+        # have closed it.
+        active = [a for a in uow.device_assignments.by_id.values() if a.is_active]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0].vehicle_id, VehicleId(own_vehicle))
 
 
 class VehiclePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):

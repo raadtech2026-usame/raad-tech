@@ -14,14 +14,18 @@ added, and `flush_tracked_changes()` re-projects every tracked domain object ont
 the mapper immediately before commit — called by `SqlAlchemyFleetDeviceUnitOfWork.commit()`,
 below.
 
-**Tenant-scoping note (pre-existing gap, consistent with every module so far):** repository
-queries do not yet apply the automatic tenant filter — `core.tenancy`'s `ScopeResolver` is
-still pending (see `interfaces/http/deps.get_scope`). For `get_by_plate_no` this means the
-per-tenant uniqueness pre-check (`ux_vehicles__org_plate` is composite) currently checks
-plate uniqueness *globally*: a same-plate vehicle in another tenant would be rejected at the
-validator even though the DB constraint would allow it — a conservative false-conflict, never
-data corruption. When tenant scoping lands (one place, per Backend LLD §7.3), this lookup
-inherits it automatically.
+**Tenant-scoping (ADR-0021):** every repository below is constructed with the caller's resolved
+`TenantRegionScope` (`SqlAlchemyFleetDeviceUnitOfWork.__aenter__`, set from `api/deps.
+get_fleet_device_uow`'s `Depends(get_scope)`) — `get_by_id`/`list_page`/`list_all` all apply it
+automatically via the base class. `get_by_plate_no` is a separate, explicit `AsyncSession`
+query (not `get_by_id`) and is deliberately left untouched by this ADR: it already queries
+`plate_no` globally, unscoped, and `ensure_plate_no_available`'s own error message ("already
+exists in this organization") suggests the *intent* was a per-org uniqueness check matching
+`ux_vehicles__org_plate`'s actual composite (org, plate) constraint — i.e. this looks like a
+pre-existing, separate correctness gap (an overly-conservative false-conflict across
+organizations, never a data leak) worth flagging, not silently fixed here: ADR-0021 is about
+one org reading/writing another's data, not about this validator's over-strict rejection
+behavior, and changing it would be a validation-behavior change outside that scope.
 """
 
 from __future__ import annotations
@@ -91,8 +95,10 @@ class SqlAlchemyVehicleRepository(
     }
     searchable_fields = ("plate_no", "label")
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Vehicle, VehicleModel]] = {}
 
     async def get(self, vehicle_id: VehicleId) -> Vehicle | None:
@@ -176,8 +182,10 @@ class SqlAlchemyDeviceRepository(
     }
     searchable_fields = ("terminal_id", "model", "vendor")
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Device, DeviceModel]] = {}
 
     async def get(self, device_id: DeviceId) -> Device | None:
@@ -268,8 +276,10 @@ class SqlAlchemyDeviceAssignmentRepository(
 
     model = DeviceAssignmentModel
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[DeviceAssignment, DeviceAssignmentModel]] = {}
 
     async def get(self, assignment_id: AssignmentId) -> DeviceAssignment | None:
@@ -326,9 +336,11 @@ class SqlAlchemyFleetDeviceUnitOfWork(SqlAlchemyUnitOfWork, FleetDeviceUnitOfWor
 
     async def __aenter__(self) -> "SqlAlchemyFleetDeviceUnitOfWork":
         await super().__aenter__()
-        self.vehicles = SqlAlchemyVehicleRepository(self.session)
-        self.devices = SqlAlchemyDeviceRepository(self.session)
-        self.device_assignments = SqlAlchemyDeviceAssignmentRepository(self.session)
+        self.vehicles = SqlAlchemyVehicleRepository(self.session, scope=self.scope)
+        self.devices = SqlAlchemyDeviceRepository(self.session, scope=self.scope)
+        self.device_assignments = SqlAlchemyDeviceAssignmentRepository(
+            self.session, scope=self.scope
+        )
         return self
 
     async def commit(self) -> None:

@@ -65,6 +65,7 @@ from raad.modules.fleet_device.application.validators import (
     ensure_iccid_available,
     ensure_imei_available,
     ensure_plate_no_available,
+    ensure_same_organization,
     ensure_serial_number_available,
     ensure_terminal_id_available,
     ensure_vehicle_exists,
@@ -388,7 +389,8 @@ class DeviceApplicationService:
         layer against races."""
         async with uow:
             device = await self._get_device_or_raise(uow, command.device_id)
-            await ensure_vehicle_exists(uow, VehicleId(command.vehicle_id))
+            vehicle = await ensure_vehicle_exists(uow, VehicleId(command.vehicle_id))
+            ensure_same_organization(device, vehicle)
             await ensure_device_has_no_active_assignment(uow, device.id)
             await ensure_vehicle_has_no_active_device(
                 uow, VehicleId(command.vehicle_id)
@@ -439,7 +441,10 @@ class DeviceApplicationService:
         a state change)."""
         async with uow:
             device = await self._get_device_or_raise(uow, command.device_id)
-            await ensure_vehicle_exists(uow, VehicleId(command.new_vehicle_id))
+            new_vehicle = await ensure_vehicle_exists(
+                uow, VehicleId(command.new_vehicle_id)
+            )
+            ensure_same_organization(device, new_vehicle)
 
             old_assignment = await uow.device_assignments.active_for_device(device.id)
             if old_assignment is None:
