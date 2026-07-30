@@ -744,13 +744,47 @@ delete_before` — a plain bulk `DELETE`, not `PARTITION BY RANGE` + partition-d
   `ScopeAssignmentApplicationService`'s own grant/revoke methods are reachable at the application
   layer only, the same "use-case exists, no approved endpoint yet" posture as
   `Route.remove_stop`/`Trip.interrupt` (ADR-0004/0005).
-- No module's own `list_all()`/`list_page()`/`list_cursor_page()`-backed repository method is
-  filtered by the now-real `ScopeResolver` — every one still applies an unrestricted
-  `TenantRegionScope(organization_ids=None)` internally, a system-wide gap predating ADR-0005
-  that ADR-0005 made a real resolver _available_ for but did not retrofit onto every existing
-  list endpoint (a separate, larger, cross-cutting change); the Pagination/Filtering/Sorting
-  phase's own `list_page`/`list_cursor_page` additions inherit this exact gap rather than
-  introducing a new one.
+- **Tenant Isolation Security Audit & Fix phase (ADR-0021) closed the gap this bullet used to
+  describe.** A live-reproduced vulnerability (a brand-new Org Admin's `GET /vehicles` returning
+  other organizations' vehicles) triggered a full audit across every organization-facing
+  resource. Root cause, confirmed once and present everywhere: `get_by_id` had **no** scope
+  filter at all (a read/write IDOR — every `PATCH`/status-transition/`DELETE` route loads its
+  aggregate via the same `get()`), and every `list_all`/`list_page`/`list_cursor_page` call site
+  passed a hardcoded unrestricted `TenantRegionScope`, exactly the gap this bullet used to name.
+  Fixed once, centrally, per `.claude/rules/backend.md` #4 ("resolved once at the edge...
+  injected into every repository query automatically — never rely on a call site remembering"):
+  `SqlAlchemyRepositoryBase` (`core/db/repository.py`) now takes the caller's `TenantRegionScope`
+  at construction and applies it inside `get_by_id`/`list_page`/`list_all`/`list_cursor_page` via
+  a new `_apply_scope` method (`scope_by_own_id: bool = False` handles `Organization`, the one
+  aggregate that *is* the tenant root rather than owning an `organization_id` column); each
+  module's `SqlAlchemyUnitOfWork` passes it into its repositories, set by that module's own
+  `get_<module>_uow` FastAPI dependency via `Depends(get_scope)`. Out-of-scope single-resource
+  access now 404s (never 403 — matches `notifications`/`reporting`'s existing "never confirm
+  existence of another org's data" precedent). Landed module by module — `fleet_device`
+  (Vehicle/Device, plus a new `ensure_same_organization` write-side check closing a device↔
+  vehicle cross-org assignment bug), `organization` (Organization/Region), `transport_ops` (all
+  seven aggregates, plus a new `_enforce_own_organization` authorization-layer check on every
+  creation command with a client-supplied `organization_id` — `EnrollStudent`/`CreateRoute` had
+  no cross-aggregate reference to transitively validate it against, a real write-side IDOR the
+  repository fix alone couldn't close), `billing` (Subscription/Invoice/Payment/TransportFee —
+  the audit's highest-severity finding, since `GET /billing/subscriptions`/`GET /billing/
+  invoices` leaked every organization's financial data to any caller holding the underlying
+  list-only permission, `parent` included), and `iam` (Users — the confirmed `regional_manager`/
+  `support_staff` scope-bypass finding; `login`/`refresh` deliberately kept on a **second**,
+  unscoped UoW dependency, since no `Principal` exists yet to resolve a scope from at that point
+  in the request). An adjacent finding fixed alongside this work: `/ws/tracking` never checked
+  RBAC capability at all (no FastAPI dependency chain runs before an accepted WebSocket's own
+  message loop), letting `driver`/`finance_staff` subscribe despite holding no `tracking.*`
+  permission — closed with an explicit `PermissionEvaluator` check in `handle_subscribe`. 68 new
+  tests (15 unit, 53 live-Postgres integration) plus a live two-organization verification script
+  (30/30 checks passing — cross-tenant GET/PATCH/DELETE/list/filter-bypass/write-side-IDOR
+  denial, `/ws/tracking`'s capability and cross-tenant checks) confirm the fix; see
+  `docs/architecture/adr/0021-tenant-scope-enforcement-at-repository-layer.md` for the full
+  design record. `notifications`/`reporting`/`tracking`/`video` needed no fix — independently
+  re-verified as already correctly scoped (personal-ownership or CR-1/D5-gated, not
+  `organization_id`-list-scoped in the way this bullet described). The frontend needed no fix
+  either — exhaustively checked, zero instances of client-side org-based filtering anywhere,
+  confirming the leak was identical via direct API calls, not masked by the UI.
 - **Real, unresolved documentation gap** (Reporting, Phase 17): Phase 2 Enterprise Architecture
   §2/§10.1 names a `ReportDefinition` domain concept as a documented pairing with `ReportRun`,
   but Database Design (the schema authority) never gives it a table, and no API route manages
