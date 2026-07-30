@@ -18,7 +18,7 @@ from __future__ import annotations
 import unittest
 from datetime import date, datetime, timezone
 
-from raad.core.errors.exceptions import DomainError, NotFoundError
+from raad.core.errors.exceptions import AuthorizationError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import (
     FilterCondition,
@@ -85,6 +85,7 @@ from raad.modules.billing.domain.value_objects import (
 )
 
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
+OTHER_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3OT"
 NON_EXISTENT_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
 
 
@@ -174,6 +175,10 @@ def _paginate_in_memory(
 
 def make_actor(org_id: str = VALID_ORG_ULID) -> Principal:
     return Principal(user_id="admin-1", role=Role.ORG_ADMIN, org_id=org_id)
+
+
+def make_founder_actor() -> Principal:
+    return Principal(user_id="founder-1", role=Role.FOUNDER, org_id=None)
 
 
 class InMemoryPlanRepository(PlanRepository):
@@ -562,6 +567,27 @@ class SubscriptionApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(page.data), 1)
         self.assertEqual(page.total, 1)
 
+    async def test_open_organization_subscription_for_a_different_organization_raises_authorization_error(
+        self,
+    ) -> None:
+        # ADR-0021's `_enforce_own_organization` (`application/services.py`) - `Subscription`
+        # has no cross-aggregate reference to transitively validate `organization_id` against
+        # (`Plan` isn't organization-owned at all), so this is the only check closing this
+        # write-side IDOR.
+        service = make_service()
+        uow = make_uow()
+        plan_id = await self._make_plan(service, uow)
+        with self.assertRaises(AuthorizationError):
+            await service.open_organization_subscription(
+                OpenOrganizationSubscriptionCommand(
+                    organization_id=OTHER_ORG_ULID,
+                    plan_id=plan_id,
+                    actor=make_actor(org_id=VALID_ORG_ULID),
+                ),
+                uow=uow,
+            )
+        self.assertEqual(len(uow.subscriptions.by_id), 0)
+
 
 class InvoiceApplicationTests(unittest.IsolatedAsyncioTestCase):
     async def test_issue_invoice_and_void(self) -> None:
@@ -606,6 +632,50 @@ class InvoiceApplicationTests(unittest.IsolatedAsyncioTestCase):
             VoidInvoiceCommand(invoice_id=invoice.id, actor=make_actor()), uow=uow
         )
         self.assertEqual(voided.status, "void")
+
+    async def test_issue_invoice_for_a_different_organization_raises_authorization_error(
+        self,
+    ) -> None:
+        # ADR-0021's `_enforce_own_organization` - nothing here cross-checks the loaded
+        # Subscription's own `organization_id` against `command.organization_id`, so this is
+        # the only check closing this write-side IDOR (a caller's own, correctly-scoped
+        # subscription could otherwise be billed to a different organization's invoice).
+        service = make_service()
+        uow = make_uow()
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Org Plan",
+                billing_scope="organization",
+                amount=100.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        renewal = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=VALID_ORG_ULID,
+                plan_id=plan.id,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(AuthorizationError):
+            await service.issue_invoice(
+                IssueInvoiceCommand(
+                    organization_id=OTHER_ORG_ULID,
+                    subscription_id=renewal.subscription_id,
+                    amount=100.00,
+                    currency="USD",
+                    period_start=date(2026, 8, 20),
+                    period_end=date(2026, 9, 19),
+                    due_at=None,
+                    actor=make_actor(org_id=VALID_ORG_ULID),
+                ),
+                uow=uow,
+            )
 
     async def test_get_invoice_by_id_not_found_raises(self) -> None:
         service = make_service()
@@ -1359,12 +1429,15 @@ class SubscriptionPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         # Distinct organization_id per call — `open_organization_subscription` now reuses any
         # existing non-terminal subscription for the *same* organization (ADR-0016: keyed on
         # `organization_id` alone), so three distinct rows need three distinct organizations.
+        # ADR-0021's `_enforce_own_organization` restricts an org_admin actor to their own org -
+        # a Founder actor (unrestricted) is what a real caller opening subscriptions across
+        # multiple organizations would actually be.
         for i in range(3):
             await service.open_organization_subscription(
                 OpenOrganizationSubscriptionCommand(
                     organization_id=f"org-page-{i}",
                     plan_id=plan_id,
-                    actor=make_actor(),
+                    actor=make_founder_actor(),
                 ),
                 uow=uow,
             )
@@ -1424,12 +1497,13 @@ class SubscriptionPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         uow = make_uow()
         plan_id = await self._make_plan(service, uow)
         # Distinct organization_id per call — see the identical note on
-        # `test_list_subscriptions_paginates_and_reports_total` above.
+        # `test_list_subscriptions_paginates_and_reports_total` above (including the Founder
+        # actor, for the same ADR-0021 `_enforce_own_organization` reason).
         first = await service.open_organization_subscription(
             OpenOrganizationSubscriptionCommand(
                 organization_id="org-sort-1",
                 plan_id=plan_id,
-                actor=make_actor(),
+                actor=make_founder_actor(),
             ),
             uow=uow,
         )
@@ -1437,7 +1511,7 @@ class SubscriptionPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
             OpenOrganizationSubscriptionCommand(
                 organization_id="org-sort-2",
                 plan_id=plan_id,
-                actor=make_actor(),
+                actor=make_founder_actor(),
             ),
             uow=uow,
         )
@@ -1445,7 +1519,7 @@ class SubscriptionPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
             OpenOrganizationSubscriptionCommand(
                 organization_id="org-sort-3",
                 plan_id=plan_id,
-                actor=make_actor(),
+                actor=make_founder_actor(),
             ),
             uow=uow,
         )

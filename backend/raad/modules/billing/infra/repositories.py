@@ -6,14 +6,19 @@ aggregate-out" rule). Mirrors `transport_ops.infra.repositories`'s identity-map/
 rationale (a handler mutating a `get()`-returned domain object needs this bridge, since
 SQLAlchemy only dirty-tracks its own ORM rows, not detached domain objects).
 
-**`list_all`'s unrestricted-`TenantRegionScope` caveat carries over unchanged** — the same
-system-wide `ScopeResolver`-pending gap `transport_ops.infra.repositories`'s own module
-docstring already flags, not a `billing`-specific one. **`PlanModel.list_all` still calls
-`list_scoped`** even though `Plan` has no `organization_id` column at all (`infra/models.py`'s
-own docstring) — `SqlAlchemyRepositoryBase.list_scoped` already guards its org filter with
-`hasattr(self.model, "organization_id")`, so it simply never applies one for `PlanModel` while
-still applying the soft-delete filter, the same method every other repository here uses rather
-than a special-cased hand-rolled `select()`.
+**Tenant-scoping (ADR-0021).** `subscriptions`/`invoices`/`payments`/`transport_fees` are now
+constructed with the caller's resolved `TenantRegionScope` (`SqlAlchemyBillingUnitOfWork.
+__aenter__`, set from `api/deps.get_billing_uow`'s `Depends(get_scope)`) — `get_by_id`/
+`list_page`/`list_all` all apply it automatically via the base class, mirroring `fleet_device`/
+`organization`/`transport_ops`'s identical fix. This closes what was flagged the highest-severity
+finding of the tenant-isolation audit: `GET /billing/subscriptions`/`GET /billing/invoices`
+previously returned every organization's financial data to any caller holding the (list-only)
+`billing.subscriptions.list`/`billing.invoices.list` permission — including `parent`, which
+holds both. `plans` also takes a `scope` constructor parameter for shape-parity with every other
+repository here, but it stays functionally inert: `PlanModel` has no `organization_id` column at
+all (`infra/models.py`'s own docstring), so `SqlAlchemyRepositoryBase._apply_scope`'s `hasattr`
+guard never applies one — the same, correct, already-audited "not a bug" posture this module
+docstring described before this ADR, unchanged.
 
 **`SqlAlchemyPaymentRepository.get_by_idempotency_key`** backs the documented idempotency
 contract (API Contracts §12) — a direct `select()`, mirroring
@@ -107,8 +112,10 @@ class SqlAlchemyPlanRepository(SqlAlchemyRepositoryBase[PlanModel], PlanReposito
     }
     searchable_fields = ("name",)
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Plan, PlanModel]] = {}
 
     async def get(self, plan_id: PlanId) -> Plan | None:
@@ -190,8 +197,10 @@ class SqlAlchemySubscriptionRepository(
     }
     searchable_fields = ()
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Subscription, SubscriptionModel]] = {}
 
     async def get(self, subscription_id: SubscriptionId) -> Subscription | None:
@@ -281,8 +290,10 @@ class SqlAlchemyInvoiceRepository(
     }
     searchable_fields = ("number",)
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Invoice, InvoiceModel]] = {}
 
     async def get(self, invoice_id: InvoiceId) -> Invoice | None:
@@ -338,8 +349,10 @@ class SqlAlchemyPaymentRepository(
 ):
     model = PaymentModel
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Payment, PaymentModel]] = {}
 
     async def get(self, payment_id: PaymentId) -> Payment | None:
@@ -379,8 +392,10 @@ class SqlAlchemyTransportFeeRepository(
 ):
     model = TransportFeeModel
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[TransportFee, TransportFeeModel]] = {}
 
     async def get(self, transport_fee_id: TransportFeeId) -> TransportFee | None:
@@ -423,11 +438,15 @@ class SqlAlchemyBillingUnitOfWork(SqlAlchemyUnitOfWork, BillingUnitOfWork):
 
     async def __aenter__(self) -> "SqlAlchemyBillingUnitOfWork":
         await super().__aenter__()
-        self.plans = SqlAlchemyPlanRepository(self.session)
-        self.subscriptions = SqlAlchemySubscriptionRepository(self.session)
-        self.invoices = SqlAlchemyInvoiceRepository(self.session)
-        self.payments = SqlAlchemyPaymentRepository(self.session)
-        self.transport_fees = SqlAlchemyTransportFeeRepository(self.session)
+        self.plans = SqlAlchemyPlanRepository(self.session, scope=self.scope)
+        self.subscriptions = SqlAlchemySubscriptionRepository(
+            self.session, scope=self.scope
+        )
+        self.invoices = SqlAlchemyInvoiceRepository(self.session, scope=self.scope)
+        self.payments = SqlAlchemyPaymentRepository(self.session, scope=self.scope)
+        self.transport_fees = SqlAlchemyTransportFeeRepository(
+            self.session, scope=self.scope
+        )
         return self
 
     async def commit(self) -> None:

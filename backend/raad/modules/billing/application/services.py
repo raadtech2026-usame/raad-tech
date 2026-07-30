@@ -35,9 +35,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
-from raad.core.errors.exceptions import DomainError, NotFoundError
+from raad.core.errors.exceptions import AuthorizationError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
+from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.billing.application.commands import (
     ActivatePlanCommand,
@@ -133,6 +134,33 @@ def _to_naive(value: datetime) -> datetime:
     `reconcile_expired_payments`, the two scheduled-job methods that compare a freshly-computed
     `now`/`cutoff` against a loaded aggregate's own timestamp field."""
     return value.replace(tzinfo=None) if value.tzinfo is not None else value
+
+
+def _enforce_own_organization(*, actor: Principal, organization_id: str) -> None:
+    """ADR-0021: mirrors `iam.application.services._enforce_creation_scope`/`transport_ops.
+    application.services._enforce_own_organization`'s identical shape/reasoning. Both
+    `OpenOrganizationSubscriptionCommand`/`IssueInvoiceCommand` carry a client-supplied
+    `organization_id` with no cross-aggregate reference to transitively validate it against (the
+    loaded `Plan`/`Subscription` don't carry an owning organization to compare against —
+    `Plan` has none at all, and nothing here checks the loaded `Subscription.organization_id`
+    against `command.organization_id` on `issue_invoice` either) — a real write-side IDOR the
+    repository-layer scope fix alone cannot close, the same reasoning that already applies to
+    `transport_ops.EnrollStudentCommand`/`CreateRouteCommand`. Neither command has an approved
+    HTTP route yet (`api/routers.py`'s module docstring) so this isn't reachable through
+    `require_permission` today, but the check is added now anyway rather than left for whoever
+    wires the route later to remember — the same "use-case exists, no approved endpoint yet, but
+    still built correctly" posture this module already applies to `handle_payment_callback`.
+    `initiate_payment` needs no equivalent check: it has no client-supplied `organization_id` at
+    all — `Payment.organization_id` is always taken from the already-scoped `Invoice` it loads
+    (`ensure_invoice_exists`), so a tenant-scoped caller can never even reference another
+    organization's invoice to begin with."""
+    if actor.role is not Role.ORG_ADMIN:
+        return
+    if organization_id != actor.org_id:
+        raise AuthorizationError(
+            "org_admin may only open a subscription or issue an invoice within their own "
+            "organization."
+        )
 
 
 class BillingApplicationService:
@@ -236,6 +264,9 @@ class BillingApplicationService:
         distinct API routes). Finds an existing non-terminal subscription for this organization
         first (`get_active_by_organization`) rather than always opening a new one — see that
         repository method's own docstring for the flagged "active" reading."""
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
         async with uow:
             plan = await ensure_plan_exists(uow, PlanId(command.plan_id))
 
@@ -396,6 +427,9 @@ class BillingApplicationService:
         issuance — kept for completeness of the documented `Invoice` model/lifecycle
         (this phase's own Business Rules scope) even though `open_organization_subscription` is
         the only reachable-at-this-layer path that actually produces one in practice."""
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
         async with uow:
             subscription = await ensure_subscription_exists(
                 uow, SubscriptionId(command.subscription_id)

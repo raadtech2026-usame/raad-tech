@@ -32,6 +32,7 @@ from raad.core.events.outbox import OutboxWriter
 from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
 from raad.modules.billing.domain.entities import Invoice, Payment, Plan, Subscription, TransportFee
 from raad.modules.billing.domain.value_objects import (
@@ -840,6 +841,231 @@ class InvoicePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     filters=[],
                     search=None,
                 )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0021: proves `TenantRegionScope` bound at UoW construction is actually enforced by
+    `SqlAlchemySubscriptionRepository`/`SqlAlchemyInvoiceRepository`/`SqlAlchemyPaymentRepository`
+    against a real, live database — the audit's highest-severity finding
+    (`GET /billing/subscriptions`/`GET /billing/invoices` previously returned every
+    organization's financial data). Mirrors `test_transport_ops_student_repository.py`'s
+    identical `TenantIsolationRepositoryTests` shape."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self.org_a = self.id_generator.new_id()
+        self.org_b = self.id_generator.new_id()
+        self._created_payment_ids: list[str] = []
+        self._created_invoice_ids: list[str] = []
+        self._created_subscription_ids: list[str] = []
+        self._created_plan_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_payment_ids:
+                await conn.execute(
+                    text("DELETE FROM payments WHERE id = ANY(:ids)"),
+                    {"ids": self._created_payment_ids},
+                )
+            if self._created_invoice_ids:
+                await conn.execute(
+                    text("DELETE FROM invoices WHERE id = ANY(:ids)"),
+                    {"ids": self._created_invoice_ids},
+                )
+            if self._created_subscription_ids:
+                await conn.execute(
+                    text("DELETE FROM subscriptions WHERE id = ANY(:ids)"),
+                    {"ids": self._created_subscription_ids},
+                )
+            if self._created_plan_ids:
+                await conn.execute(
+                    text("DELETE FROM plans WHERE id = ANY(:ids)"),
+                    {"ids": self._created_plan_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(
+        self, *, scope: TenantRegionScope | None = None
+    ) -> SqlAlchemyBillingUnitOfWork:
+        uow = SqlAlchemyBillingUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+        if scope is not None:
+            uow.scope = scope
+        return uow
+
+    async def _seed_plan(self, uow: SqlAlchemyBillingUnitOfWork) -> PlanId:
+        plan = Plan.create(
+            id=PlanId(self.id_generator.new_id()),
+            name=f"Tenant Test Plan {self.tag}",
+            billing_scope=BillingScope.ORGANIZATION,
+            price=Money(15.00, "USD"),
+            billing_cycle=BillingCycle.MONTHLY,
+            clock=self.clock,
+        )
+        uow.plans.add(plan)
+        uow.record_events(plan.pull_domain_events())
+        await uow.commit()
+        self._created_plan_ids.append(str(plan.id))
+        return plan.id
+
+    async def _seed_invoice_chain(self, *, organization_id: str) -> tuple[str, str, str]:
+        """Unscoped UoW - seeding is a test-setup concern, not the behavior under test. Returns
+        (subscription_id, invoice_id, payment_id)."""
+        async with self._new_uow() as uow:
+            plan_id = await self._seed_plan(uow)
+
+            subscription = Subscription.open(
+                id=SubscriptionId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                plan_id=plan_id,
+                clock=self.clock,
+            )
+            uow.subscriptions.add(subscription)
+            uow.record_events(subscription.pull_domain_events())
+            await uow.commit()
+            self._created_subscription_ids.append(str(subscription.id))
+
+            invoice = Invoice.issue(
+                id=InvoiceId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                subscription_id=subscription.id,
+                amount=Money(15.00, "USD"),
+                period_start=date(2026, 7, 20),
+                period_end=date(2026, 8, 19),
+                due_at=None,
+                clock=self.clock,
+            )
+            uow.invoices.add(invoice)
+            uow.record_events(invoice.pull_domain_events())
+            await uow.commit()
+            self._created_invoice_ids.append(str(invoice.id))
+
+            payment = Payment.initiate(
+                id=PaymentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                invoice_id=invoice.id,
+                provider="evcplus",
+                msisdn_masked="+2526••••••",
+                amount=Money(15.00, "USD"),
+                idempotency_key=f"idem-{self.tag}-{organization_id[-6:]}",
+                clock=self.clock,
+            )
+            uow.payments.add(payment)
+            uow.record_events(payment.pull_domain_events())
+            await uow.commit()
+            self._created_payment_ids.append(str(payment.id))
+
+            return str(subscription.id), str(invoice.id), str(payment.id)
+
+    async def test_org_a_cannot_get_org_bs_subscription_by_id(self) -> None:
+        subscription_b, _invoice_b, _payment_b = await self._seed_invoice_chain(
+            organization_id=self.org_b
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.subscriptions.get(SubscriptionId(subscription_b))
+
+        self.assertIsNone(result)
+
+    async def test_org_a_can_still_get_its_own_subscription_by_id(self) -> None:
+        subscription_a, _invoice_a, _payment_a = await self._seed_invoice_chain(
+            organization_id=self.org_a
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.subscriptions.get(SubscriptionId(subscription_a))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result.id), subscription_a)
+
+    async def test_org_a_list_all_excludes_org_bs_subscriptions(self) -> None:
+        subscription_a, _, _ = await self._seed_invoice_chain(organization_id=self.org_a)
+        subscription_b, _, _ = await self._seed_invoice_chain(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            visible = await uow.subscriptions.list_all()
+
+        visible_ids = {str(s.id) for s in visible}
+        self.assertIn(subscription_a, visible_ids)
+        self.assertNotIn(subscription_b, visible_ids)
+
+    async def test_org_a_cannot_bypass_scope_via_organization_id_filter(self) -> None:
+        """"Organization A cannot search Organization B's data" — a client-supplied
+        `filter[organization_id]=<org B>` must not override the bound scope; SQLAlchemy `.where()`
+        composes as AND, so this must return zero rows, not Organization B's subscription."""
+        await self._seed_invoice_chain(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            page = await uow.subscriptions.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(field="organization_id", op="eq", value=self.org_b)
+                ],
+                search=None,
+            )
+
+        self.assertEqual(page.total, 0)
+        self.assertEqual(page.data, [])
+
+    async def test_org_a_cannot_get_org_bs_invoice_by_id(self) -> None:
+        _sub_b, invoice_b, _payment_b = await self._seed_invoice_chain(
+            organization_id=self.org_b
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.invoices.get(InvoiceId(invoice_b))
+
+        self.assertIsNone(result)
+
+    async def test_org_a_list_all_excludes_org_bs_invoices(self) -> None:
+        _, invoice_a, _ = await self._seed_invoice_chain(organization_id=self.org_a)
+        _, invoice_b, _ = await self._seed_invoice_chain(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            visible = await uow.invoices.list_all()
+
+        visible_ids = {str(i.id) for i in visible}
+        self.assertIn(invoice_a, visible_ids)
+        self.assertNotIn(invoice_b, visible_ids)
+
+    async def test_org_a_cannot_get_org_bs_payment_by_id(self) -> None:
+        _sub_b, _invoice_b, payment_b = await self._seed_invoice_chain(
+            organization_id=self.org_b
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.payments.get(PaymentId(payment_b))
+
+        self.assertIsNone(result)
+
+    async def test_founder_unrestricted_scope_sees_both_organizations(self) -> None:
+        subscription_a, _, _ = await self._seed_invoice_chain(organization_id=self.org_a)
+        subscription_b, _, _ = await self._seed_invoice_chain(organization_id=self.org_b)
+
+        unrestricted = TenantRegionScope(organization_ids=None)
+        async with self._new_uow(scope=unrestricted) as uow:
+            visible = await uow.subscriptions.list_all()
+
+        visible_ids = {str(s.id) for s in visible}
+        self.assertIn(subscription_a, visible_ids)
+        self.assertIn(subscription_b, visible_ids)
 
 
 if __name__ == "__main__":
