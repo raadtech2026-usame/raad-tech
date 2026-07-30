@@ -30,8 +30,9 @@ from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
-from raad.core.time.clock import SystemClock
 from raad.core.tenancy.principal import Role
+from raad.core.tenancy.scope import TenantRegionScope
+from raad.core.time.clock import SystemClock
 from raad.modules.iam.domain.entities import RefreshToken, User
 from raad.modules.iam.domain.value_objects import (
     Email,
@@ -414,6 +415,162 @@ class UserPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     filters=[FilterCondition(field="password_hash", op="eq", value="x")],
                     search=None,
                 )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0021: proves `TenantRegionScope` bound at UoW construction is actually enforced by
+    `SqlAlchemyUserRepository` against a real, live database — the audit's confirmed
+    `regional_manager`/`support_staff` scope bypass (any in-scope-role caller could list/fetch
+    any organization's users, not just their assigned regions/orgs). Mirrors
+    `test_transport_ops_student_repository.py`'s identical `TenantIsolationRepositoryTests`
+    shape. Also proves `get_by_email`/`get_by_phone` stay deliberately unscoped — login must
+    resolve a principal before any scope is known."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self.org_a = self.id_generator.new_id()
+        self.org_b = self.id_generator.new_id()
+        self._created_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_ids:
+                await conn.execute(
+                    text("DELETE FROM users WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(
+        self, *, scope: TenantRegionScope | None = None
+    ) -> SqlAlchemyIamUnitOfWork:
+        uow = SqlAlchemyIamUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+        if scope is not None:
+            uow.scope = scope
+        return uow
+
+    async def _seed_user(
+        self, *, organization_id: str | None, role: Role = Role.ORG_ADMIN
+    ) -> str:
+        async with self._new_uow() as uow:
+            user = User.invite(
+                id=UserId(self.id_generator.new_id()),
+                organization_id=organization_id,
+                role=role,
+                email=Email(f"tenant-test-{uuid.uuid4().hex[:10]}@example.com"),
+                phone=None,
+                full_name=f"Tenant Test {self.tag}",
+                clock=self.clock,
+            )
+            uow.users.add(user)
+            uow.record_events(user.pull_domain_events())
+            await uow.commit()
+            self._created_ids.append(str(user.id))
+            return str(user.id)
+
+    async def test_org_a_cannot_get_org_bs_user_by_id(self) -> None:
+        user_b = await self._seed_user(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.users.get(UserId(user_b))
+
+        self.assertIsNone(result)
+
+    async def test_org_a_can_still_get_its_own_user_by_id(self) -> None:
+        user_a = await self._seed_user(organization_id=self.org_a)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.users.get(UserId(user_a))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result.id), user_a)
+
+    async def test_org_a_list_all_excludes_org_bs_users(self) -> None:
+        user_a = await self._seed_user(organization_id=self.org_a)
+        user_b = await self._seed_user(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            visible = await uow.users.list_all()
+
+        visible_ids = {str(u.id) for u in visible}
+        self.assertIn(user_a, visible_ids)
+        self.assertNotIn(user_b, visible_ids)
+
+    async def test_org_a_cannot_bypass_scope_via_organization_id_filter(self) -> None:
+        """"Organization A cannot search Organization B's data" — a client-supplied
+        `filter[organization_id]=<org B>` must not override the bound scope."""
+        await self._seed_user(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            page = await uow.users.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(field="organization_id", op="eq", value=self.org_b)
+                ],
+                search=None,
+            )
+
+        self.assertEqual(page.total, 0)
+        self.assertEqual(page.data, [])
+
+    async def test_scoped_listing_also_excludes_platform_staff_accounts(self) -> None:
+        """A side effect flagged in `infra/repositories.py`'s own docstring, not a new gap:
+        `UserModel.organization_id` is nullable for platform-staff roles, and `NULL` never
+        matches `IN (...)`, so a `regional_manager`/`support_staff`'s now-scoped listing also
+        can no longer see *other* platform-staff accounts — strictly a narrowing."""
+        org_scoped = await self._seed_user(organization_id=self.org_a)
+        platform_staff = await self._seed_user(
+            organization_id=None, role=Role.SUPPORT_STAFF
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            visible = await uow.users.list_all()
+
+        visible_ids = {str(u.id) for u in visible}
+        self.assertIn(org_scoped, visible_ids)
+        self.assertNotIn(platform_staff, visible_ids)
+
+    async def test_founder_unrestricted_scope_sees_both_organizations(self) -> None:
+        user_a = await self._seed_user(organization_id=self.org_a)
+        user_b = await self._seed_user(organization_id=self.org_b)
+
+        unrestricted = TenantRegionScope(organization_ids=None)
+        async with self._new_uow(scope=unrestricted) as uow:
+            visible = await uow.users.list_all()
+
+        visible_ids = {str(u.id) for u in visible}
+        self.assertIn(user_a, visible_ids)
+        self.assertIn(user_b, visible_ids)
+
+    async def test_get_by_email_stays_unscoped_for_login(self) -> None:
+        """`get_by_email`/`get_by_phone` must never be scope-filtered — login has no
+        `Principal`/scope to resolve until *after* this exact lookup succeeds."""
+        user_b = await self._seed_user(organization_id=self.org_b)
+        async with self._new_uow() as uow:
+            seeded = await uow.users.get(UserId(user_b))
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.users.get_by_email(seeded.email)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result.id), user_b)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,8 @@ from __future__ import annotations
 from fastapi import Depends
 
 from raad.core.di.container import Container
-from raad.interfaces.http.deps import get_container
+from raad.core.tenancy.scope import TenantRegionScope
+from raad.interfaces.http.deps import get_container, get_scope
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.services import (
     AuthApplicationService,
@@ -25,8 +26,33 @@ def get_iam_uow(container: Container = Depends(get_container)) -> IamUnitOfWork:
     the generic `UnitOfWork`) would call `__aenter__`/`__aexit__` twice on the same instance:
     the inner block's `__aexit__` closes the session and clears it, so the outer wrapper's own
     `__aexit__` would then raise trying to close an already-closed session. Resolving without
-    entering keeps each service call a fully self-contained transaction, as designed."""
+    entering keeps each service call a fully self-contained transaction, as designed.
+
+    **Stays unscoped, deliberately (ADR-0021).** Used by `login`/`refresh` (no `Principal`
+    exists yet to resolve a scope from — `Depends(get_scope)` would raise `AuthenticationError`
+    outright), `logout`/`change_password`/`get_me` (always the caller's own `user_id`, already
+    in-scope under any correct resolution), and `create_user` (targets no existing row, and
+    already has its own `_enforce_creation_scope` check). See `get_scoped_iam_uow` below for the
+    routes that actually need scoping."""
     return container.resolve(IamUnitOfWork)
+
+
+def get_scoped_iam_uow(
+    container: Container = Depends(get_container),
+    scope: TenantRegionScope = Depends(get_scope),
+) -> IamUnitOfWork:
+    """**ADR-0021**: the scoped counterpart to `get_iam_uow` above, for the genuinely
+    admin-target routes — `list_users`/`get_user`/`update_user`/`reset_user_password` — where
+    the audit found a real `regional_manager`/`support_staff` scope bypass (any in-scope-role
+    caller could list or fetch any organization's users, not just their assigned regions/orgs).
+    Sets the caller's resolved `TenantRegionScope` on the UoW before it's entered — every
+    repository `SqlAlchemyIamUnitOfWork.__aenter__` constructs picks it up automatically,
+    mirroring every other module's identical `get_<module>_uow` fix. Requires
+    `Depends(get_principal)` transitively (via `get_scope`), so this dependency must never be
+    used on an unauthenticated route."""
+    uow = container.resolve(IamUnitOfWork)
+    uow.scope = scope
+    return uow
 
 
 def get_user_service(

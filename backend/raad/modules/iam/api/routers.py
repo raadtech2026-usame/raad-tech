@@ -11,9 +11,12 @@ response themselves.
 **`GET /users` (list) — added under the Backend Stabilization phase.** Previously deferred here
 ("no listing use-case... adding one means touching Domain and Application, both frozen this
 phase") because RBAC/scope work was explicitly out of scope at the time; `UserRepository.
-list_all` (`domain/repositories.py`) and `UserApplicationService.list_users` now exist. Not
-itself scope-filtered yet — the same system-wide, already-flagged gap every other
-`list_all()`-backed endpoint in this codebase carries (CLAUDE.md's "Known gaps").
+list_all` (`domain/repositories.py`) and `UserApplicationService.list_users` now exist.
+**Scope-filtered as of ADR-0021** (the tenant-isolation audit's confirmed `regional_manager`/
+`support_staff` bypass) — this route, `GET /users/{id}`, `PATCH /users/{id}`, and
+`POST /users/{id}/reset-password` all resolve via `api/deps.get_scoped_iam_uow`, not the plain
+`get_iam_uow` every other route here still uses; see that dependency's own docstring for exactly
+which routes need scoping and which don't.
 
 **Endpoints deliberately not implemented** (see the module's own docstrings for why touching
 Domain/Application is out of scope this phase):
@@ -43,7 +46,12 @@ from raad.interfaces.http.deps import (
     require_permission,
 )
 from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
-from raad.modules.iam.api.deps import get_auth_service, get_iam_uow, get_user_service
+from raad.modules.iam.api.deps import (
+    get_auth_service,
+    get_iam_uow,
+    get_scoped_iam_uow,
+    get_user_service,
+)
 from raad.modules.iam.api.schemas import (
     ChangePasswordRequest,
     CreateUserRequest,
@@ -256,14 +264,14 @@ async def get_me(
     status_code=status.HTTP_200_OK,
     summary="List users",
     description=(
-        "In-scope admin (API Contracts §4.1). Not yet scope-filtered — see this file's module "
-        "docstring. Paginated/filterable/sortable per §7/§8."
+        "In-scope admin (API Contracts §4.1). Scope-filtered (ADR-0021) by the caller's "
+        "resolved tenant/region scope. Paginated/filterable/sortable per §7/§8."
     ),
 )
 async def list_users(
     principal: Principal = Depends(require_permission(Permission("iam.users.read"))),
     user_service: UserApplicationService = Depends(get_user_service),
-    uow: IamUnitOfWork = Depends(get_iam_uow),
+    uow: IamUnitOfWork = Depends(get_scoped_iam_uow),
     page_request: OffsetPageRequest = Depends(get_offset_page_request),
     sort: list[SortSpec] = Depends(get_sort_params),
     filters: list[FilterCondition] = Depends(get_filter_conditions),
@@ -321,7 +329,7 @@ async def get_user(
     user_id: str,
     principal: Principal = Depends(require_permission(Permission("iam.users.read"))),
     user_service: UserApplicationService = Depends(get_user_service),
-    uow: IamUnitOfWork = Depends(get_iam_uow),
+    uow: IamUnitOfWork = Depends(get_scoped_iam_uow),
 ) -> UserResponse:
     user = await user_service.get_user_by_id(GetUserByIdQuery(user_id=user_id), uow=uow)
     return _user_dto_to_response(user)
@@ -345,7 +353,7 @@ async def update_user(
     body: UpdateUserRequest,
     principal: Principal = Depends(require_permission(Permission("iam.users.update"))),
     user_service: UserApplicationService = Depends(get_user_service),
-    uow: IamUnitOfWork = Depends(get_iam_uow),
+    uow: IamUnitOfWork = Depends(get_scoped_iam_uow),
 ) -> UserResponse:
     if body.status is None and body.mfa_enabled is None:
         raise ValidationError(
@@ -409,7 +417,7 @@ async def reset_user_password(
         require_permission(Permission("iam.users.reset_password"))
     ),
     user_service: UserApplicationService = Depends(get_user_service),
-    uow: IamUnitOfWork = Depends(get_iam_uow),
+    uow: IamUnitOfWork = Depends(get_scoped_iam_uow),
 ) -> PasswordResetResponse:
     command = ResetPasswordToTemporaryCommand(user_id=user_id, actor=principal)
     user, temporary_password = await user_service.reset_password_to_temporary(

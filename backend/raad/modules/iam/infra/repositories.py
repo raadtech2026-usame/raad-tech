@@ -60,10 +60,32 @@ from raad.modules.iam.infra.models import (
 class SqlAlchemyUserRepository(SqlAlchemyRepositoryBase[UserModel], UserRepository):
     """`get_by_email`/`get_by_phone` intentionally search *all* organizations — `users.email`/
     `users.phone` are globally unique by design (Database Design §4.3), not per-tenant, since
-    login must resolve a principal before any tenant/region scope is known. Tenant/region
-    scoping (Phase 2 §17.4) has no call site yet in this phase's use-cases (none list/page
-    users); it applies once a scoped listing use-case exists, via `list_scoped` on the shared
-    base class.
+    login must resolve a principal before any tenant/region scope is known — both stay
+    deliberately untouched by ADR-0021 below, direct `select()`s rather than `get_by_id`.
+
+    **Tenant-scoping (ADR-0021).** `get`/`list_all`/`list_page` now apply the caller's resolved
+    `TenantRegionScope` (`SqlAlchemyIamUnitOfWork.__aenter__`, set from `api/deps.
+    get_scoped_iam_uow`'s `Depends(get_scope)` — a *second*, narrower UoW dependency alongside
+    the original unscoped `get_iam_uow`, since this module's routes span both unauthenticated
+    flows (`login`/`refresh`, no `Principal` yet to resolve a scope from at all) and
+    authenticated-but-self-targeting ones (`logout`/`change_password`/`get_me`, always the
+    caller's own `user_id`, already in-scope under any correct resolution) alongside the
+    genuinely admin-target routes this fix is actually for: `list_users`/`get_user`/
+    `update_user`/`reset_user_password`. This closes the audit's confirmed `regional_manager`/
+    `support_staff` bypass — an out-of-region-assignment/out-of-support-assignment `User` is now
+    invisible via `GET /users`/`GET /users/{id}`, and unreachable to
+    `activate_user`/`disable_user`/`reset_password_to_temporary`/`enable_mfa`/`disable_mfa`
+    (`NotFoundError`, not a 403, matching this codebase's established 404-over-403 posture).
+    `create_user` is intentionally left on the *unscoped* `get_iam_uow` — it targets no existing
+    row (nothing to leak) and already has its own, independent `_enforce_creation_scope` check
+    (`application/services.py`) for the one tenant-scoped actor (`org_admin`) that can call it. A
+    side effect, not a new gap: `UserModel.organization_id` is nullable (platform-staff accounts
+    have none) — `organization_id.in_(scope.organization_ids)` never matches `NULL`, so a scoped
+    `regional_manager`/`support_staff` listing now also can no longer see *other* platform-staff
+    accounts (Founder included) even though nothing before this fix restricted that either; this
+    is strictly a narrowing, not a behavior anyone depended on, and matches the same "Region
+    scoping is a second filter on top of tenant scoping for RAAD staff" posture
+    `.claude/rules/security.md` #3 already documents.
     """
 
     model = UserModel
@@ -85,8 +107,10 @@ class SqlAlchemyUserRepository(SqlAlchemyRepositoryBase[UserModel], UserReposito
     }
     searchable_fields = ("full_name", "email")
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[User, UserModel]] = {}
 
     async def get(self, user_id: UserId) -> User | None:
@@ -246,7 +270,7 @@ class SqlAlchemyIamUnitOfWork(SqlAlchemyUnitOfWork, IamUnitOfWork):
 
     async def __aenter__(self) -> "SqlAlchemyIamUnitOfWork":
         await super().__aenter__()
-        self.users = SqlAlchemyUserRepository(self.session)
+        self.users = SqlAlchemyUserRepository(self.session, scope=self.scope)
         self.refresh_tokens = SqlAlchemyRefreshTokenRepository(self.session)
         self.role_permissions = SqlAlchemyRolePermissionRepository(self.session)
         return self
