@@ -64,6 +64,10 @@ class SqlAlchemyOrganizationRepository(
 
     model = OrganizationModel
 
+    #: ADR-0021: `Organization` *is* the tenant root (no `organization_id` column of its own) —
+    #: scope restricts by the row's own `id` being in `scope.organization_ids` instead.
+    scope_by_own_id = True
+
     #: Whitelists for `GET /organizations` (§8) — limited to columns already exposed on
     #: `OrganizationResponse` (`api/schemas.py`), never an internal-only column.
     filterable_fields = {
@@ -80,8 +84,10 @@ class SqlAlchemyOrganizationRepository(
     }
     searchable_fields = ("name",)
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Organization, OrganizationModel]] = {}
 
     async def get(self, organization_id: OrganizationId) -> Organization | None:
@@ -163,8 +169,10 @@ class SqlAlchemyRegionRepository(
     }
     searchable_fields = ("name",)
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Region, RegionModel]] = {}
 
     async def get(self, region_id: RegionId) -> Region | None:
@@ -313,8 +321,10 @@ class SqlAlchemyOrganizationUnitOfWork(SqlAlchemyUnitOfWork, OrganizationUnitOfW
 
     async def __aenter__(self) -> "SqlAlchemyOrganizationUnitOfWork":
         await super().__aenter__()
-        self.organizations = SqlAlchemyOrganizationRepository(self.session)
-        self.regions = SqlAlchemyRegionRepository(self.session)
+        self.organizations = SqlAlchemyOrganizationRepository(
+            self.session, scope=self.scope
+        )
+        self.regions = SqlAlchemyRegionRepository(self.session, scope=self.scope)
         self.scope_assignments = SqlAlchemyScopeAssignmentRepository(self.session)
         return self
 

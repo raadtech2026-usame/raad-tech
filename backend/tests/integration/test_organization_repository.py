@@ -31,6 +31,7 @@ from raad.core.errors.exceptions import ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
 from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.value_objects import (
@@ -459,6 +460,140 @@ class OrganizationPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     filters=[],
                     search=None,
                 )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0021: `Organization` is the tenant root, so scope restricts by the row's own `id`
+    (`scope_by_own_id = True`) rather than an `organization_id` column — this proves that
+    mechanism against a real, live database, with two genuinely distinct organizations."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_org_ids: list[str] = []
+        self._created_region_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_org_ids:
+                await conn.execute(
+                    text("DELETE FROM organizations WHERE id = ANY(:ids)"),
+                    {"ids": self._created_org_ids},
+                )
+            if self._created_region_ids:
+                await conn.execute(
+                    text("DELETE FROM regions WHERE id = ANY(:ids)"),
+                    {"ids": self._created_region_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(
+        self, *, scope: TenantRegionScope | None = None
+    ) -> SqlAlchemyOrganizationUnitOfWork:
+        uow = SqlAlchemyOrganizationUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+        if scope is not None:
+            uow.scope = scope
+        return uow
+
+    async def _seed_org(self, *, name: str) -> str:
+        # Region must be committed in its own transaction before the Organization referencing
+        # it - see `_create_committed_region`'s docstring above (same underlying FK-ordering
+        # reason, no `relationship()` declared between the two tables).
+        async with self._new_uow() as uow:
+            region = Region.create(
+                id=RegionId(self.id_generator.new_id()), name=f"{name} Region", clock=self.clock
+            )
+            uow.regions.add(region)
+            uow.record_events(region.pull_domain_events())
+            await uow.commit()
+            self._created_region_ids.append(str(region.id))
+
+        async with self._new_uow() as uow:
+            organization = Organization.register(
+                id=OrganizationId(self.id_generator.new_id()),
+                name=name,
+                org_type=OrgType.SCHOOL,
+                region_id=region.id,
+                clock=self.clock,
+            )
+            uow.organizations.add(organization)
+            uow.record_events(organization.pull_domain_events())
+            await uow.commit()
+            self._created_org_ids.append(str(organization.id))
+            return str(organization.id)
+
+    async def test_org_a_cannot_get_org_b_by_id(self) -> None:
+        """The IDOR case: substituting another organization's real id in the URL must not
+        work, even though the id itself is perfectly valid and exists."""
+        org_a = await self._seed_org(name=f"Org A {self.tag}")
+        org_b = await self._seed_org(name=f"Org B {self.tag}")
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.organizations.get(OrganizationId(org_b))
+
+        self.assertIsNone(result)
+
+    async def test_org_a_can_still_get_itself(self) -> None:
+        org_a = await self._seed_org(name=f"Org A {self.tag}")
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.organizations.get(OrganizationId(org_a))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result.id), org_a)
+
+    async def test_org_a_list_all_excludes_org_b(self) -> None:
+        org_a = await self._seed_org(name=f"List A {self.tag}")
+        org_b = await self._seed_org(name=f"List B {self.tag}")
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            visible = await uow.organizations.list_all()
+
+        visible_ids = {str(o.id) for o in visible}
+        self.assertIn(org_a, visible_ids)
+        self.assertNotIn(org_b, visible_ids)
+
+    async def test_org_a_cannot_bypass_scope_via_parent_org_id_filter(self) -> None:
+        """"Organization A cannot search Organization B's data" at the repository level —
+        `?filter[parent_org_id]=...` (or any whitelisted filter naming org B) must AND against
+        the bound scope, never override it."""
+        org_a = await self._seed_org(name=f"Search A {self.tag}")
+        org_b = await self._seed_org(name=f"Search B {self.tag}")
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            page = await uow.organizations.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[FilterCondition(field="parent_org_id", op="eq", value=org_b)],
+                search=None,
+            )
+
+        self.assertEqual(page.total, 0)
+
+    async def test_founder_unrestricted_scope_sees_both_organizations(self) -> None:
+        org_a = await self._seed_org(name=f"Founder A {self.tag}")
+        org_b = await self._seed_org(name=f"Founder B {self.tag}")
+
+        unrestricted = TenantRegionScope(organization_ids=None)
+        async with self._new_uow(scope=unrestricted) as uow:
+            visible = await uow.organizations.list_all()
+
+        visible_ids = {str(o.id) for o in visible}
+        self.assertIn(org_a, visible_ids)
+        self.assertIn(org_b, visible_ids)
 
 
 if __name__ == "__main__":
