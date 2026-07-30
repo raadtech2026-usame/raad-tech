@@ -40,6 +40,7 @@ from raad.core.events.outbox import OutboxWriter
 from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
 from raad.modules.transport_ops.domain.entities import Student
 from raad.modules.transport_ops.domain.value_objects import (
@@ -298,6 +299,119 @@ class StudentPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     filters=[],
                     search=None,
                 )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0021: proves `TenantRegionScope` bound at UoW construction is actually enforced by
+    `SqlAlchemyStudentRepository` against a real, live database — two genuinely distinct
+    organizations, not fakes. Mirrors `test_fleet_device_repository.py`'s identical
+    `TenantIsolationRepositoryTests` shape."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self.org_a = self.id_generator.new_id()
+        self.org_b = self.id_generator.new_id()
+        self._created_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_ids:
+                await conn.execute(
+                    text("DELETE FROM students WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(
+        self, *, scope: TenantRegionScope | None = None
+    ) -> SqlAlchemyTransportOpsUnitOfWork:
+        uow = SqlAlchemyTransportOpsUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+        if scope is not None:
+            uow.scope = scope
+        return uow
+
+    async def _seed_student(self, *, organization_id: str) -> str:
+        async with self._new_uow() as uow:
+            student = Student.enroll(
+                id=StudentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                full_name=f"Tenant Test {self.tag}",
+                external_ref=None,
+                clock=self.clock,
+            )
+            uow.students.add(student)
+            uow.record_events(student.pull_domain_events())
+            await uow.commit()
+            self._created_ids.append(str(student.id))
+            return str(student.id)
+
+    async def test_org_a_cannot_get_org_bs_student_by_id(self) -> None:
+        student_b = await self._seed_student(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.students.get(StudentId(student_b))
+
+        self.assertIsNone(result)
+
+    async def test_org_a_can_still_get_its_own_student_by_id(self) -> None:
+        student_a = await self._seed_student(organization_id=self.org_a)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.students.get(StudentId(student_a))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result.id), student_a)
+
+    async def test_org_a_list_all_excludes_org_bs_students(self) -> None:
+        student_a = await self._seed_student(organization_id=self.org_a)
+        student_b = await self._seed_student(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            visible = await uow.students.list_all()
+
+        visible_ids = {str(s.id) for s in visible}
+        self.assertIn(student_a, visible_ids)
+        self.assertNotIn(student_b, visible_ids)
+
+    async def test_org_a_cannot_bypass_scope_via_organization_id_filter(self) -> None:
+        """"Organization A cannot search Organization B's data" — `Student` has no
+        `organization_id` in its own filter whitelist (`infra/repositories.py`), so this proves
+        the *bound scope* itself, not a client-supplied filter, is what's doing the filtering."""
+        await self._seed_student(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            page = await uow.students.list_page(
+                OffsetPageRequest(), sort=[], filters=[], search=None
+            )
+
+        self.assertEqual(page.total, 0)
+        self.assertEqual(page.data, [])
+
+    async def test_founder_unrestricted_scope_sees_both_organizations(self) -> None:
+        student_a = await self._seed_student(organization_id=self.org_a)
+        student_b = await self._seed_student(organization_id=self.org_b)
+
+        unrestricted = TenantRegionScope(organization_ids=None)
+        async with self._new_uow(scope=unrestricted) as uow:
+            visible = await uow.students.list_all()
+
+        visible_ids = {str(s.id) for s in visible}
+        self.assertIn(student_a, visible_ids)
+        self.assertIn(student_b, visible_ids)
 
 
 if __name__ == "__main__":

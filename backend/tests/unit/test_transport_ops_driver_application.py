@@ -15,7 +15,7 @@ import dataclasses
 import unittest
 from datetime import datetime, timezone
 
-from raad.core.errors.exceptions import DomainError, NotFoundError
+from raad.core.errors.exceptions import AuthorizationError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
@@ -49,6 +49,7 @@ from raad.modules.transport_ops.domain.value_objects import (
 )
 
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
+OTHER_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3OT"
 VALID_USER_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3ME"
 # Well-formed ULID shape but never added to any InMemoryDriverRepository in these tests -
 # exercises the NotFoundError path, distinct from DriverId's own malformed-shape DomainError.
@@ -359,6 +360,25 @@ class DriverApplicationServiceRegisterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(DomainError):
             await service.register_driver(_register_command(license_no=""), uow=uow)
         self.assertEqual(uow.commit_count, 0)
+
+    async def test_register_driver_for_a_different_organization_raises_authorization_error(
+        self,
+    ) -> None:
+        # ADR-0021's `_enforce_own_organization` - raised before the (redundant, transitive)
+        # iam-side check inside the fake `UserProvisioningPort` would ever run.
+        service, uow, provisioning = make_service()
+        command = RegisterDriverCommand(
+            organization_id=OTHER_ORG_ULID,
+            full_name="Ahmed Yusuf",
+            email=None,
+            phone=None,
+            license_no="DL-123456",
+            actor=make_actor(org_id=VALID_ORG_ULID),
+        )
+        with self.assertRaises(AuthorizationError):
+            await service.register_driver(command, uow=uow)
+        self.assertEqual(uow.commit_count, 0)
+        self.assertEqual(provisioning.calls, [])
 
 
 class DriverApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTestCase):

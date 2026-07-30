@@ -16,24 +16,25 @@ or added, and `flush_tracked_changes()` re-projects every tracked domain object 
 the mapper immediately before commit — called by `SqlAlchemyTransportOpsUnitOfWork.commit()`,
 below.
 
-**`list_all` is not yet tenant-scoped — flagged, not silently shipped as solved.** Phase 10.2's
-`StudentRepository.list_all` interface deliberately takes no `organization_id` parameter,
-since `.claude/rules/backend.md` #4 says tenant context should be "resolved once at the edge
-... and injected into every repository query automatically." That edge resolution
-(`core.tenancy.ScopeResolver` producing a `TenantRegionScope` per request) is not bound
-anywhere in `core/di/bootstrap.py` yet for *any* module (its own docstring lists
-`ScopeResolver` among the ports "bound here once their owning module/infra is implemented in a
-later phase") — `iam.infra.repositories.SqlAlchemyUserRepository` notes the identical gap
-("[tenant/region scoping] applies once a scoped listing use-case exists, via `list_scoped`"),
-but `list_all` here *is* that first scoped-listing use-case, so the gap can no longer be
-deferred by simply not implementing the method. Implemented via `list_scoped` (reusing the
-existing soft-delete-aware filter mechanics rather than hand-rolling a duplicate query) with an
-explicit unrestricted `TenantRegionScope` — functionally identical to no filtering, but written
-so that swapping in a real per-request scope is a one-line change once `ScopeResolver` is wired
-system-wide, rather than a rewrite. Wiring that resolver is out of this phase's scope (it is a
-cross-cutting, all-modules concern, not a Student-specific one) and is not attempted here.
-The Tier 2 pagination phase's own `list_page` (see below) carries the identical unrestricted-
-`TenantRegionScope` posture — the same system-wide gap, not re-solved or re-flagged per method.
+**Tenant-scoping (ADR-0021).** The gap this section used to describe (`list_all`/`list_page`
+constructed with an explicit unrestricted `TenantRegionScope`, pending a system-wide
+`ScopeResolver` binding) is now closed: every repository below — `students`, `parents`,
+`drivers`, `routes`, `trips`, `student_assignments` — is constructed with the caller's resolved
+`TenantRegionScope` (`SqlAlchemyTransportOpsUnitOfWork.__aenter__`, set from `api/deps.
+get_transport_ops_uow`'s `Depends(get_scope)`); `get_by_id`/`list_page`/`list_all` all apply it
+automatically via the base class, mirroring `fleet_device`/`organization`'s identical fix.
+`SqlAlchemyStudentParentRepository` (Phase 10.7, below) is the one exception — it takes no
+`scope` parameter at all, deliberately: every one of its call sites (`link_parent_to_student`/
+`unlink_parent_from_student`/`list_parents_for_student`/`list_students_for_parent`,
+`application/services.py`) already loads the parent `Student`/`Parent` through its own
+now-scoped repository first, so an out-of-scope `student_id`/`parent_id` raises `NotFoundError`
+before this repository is ever reached — verified by reading every call site, not assumed.
+`Trip.schedule`/`StudentAssignment.assign`'s own cross-organization domain checks
+(`domain/entities.py`) transitively benefit the same way once `drivers`/`routes`/`students` are
+scoped: a tenant-scoped caller can no longer load another org's `Driver`/`Route`/`Student` to
+build a request with it. `services.py`'s own `_enforce_own_organization` adds the matching
+authorization-layer check for every command's own client-supplied `organization_id` field
+(defense-in-depth per `.claude/rules/security.md` #2 — never rely on one layer alone).
 
 **Phase 10.7 addition: `SqlAlchemyStudentParentRepository`.** Cannot reuse `SqlAlchemyRepository
 Base.get_by_id`/its identity-map keying — both assume a single `.id` column, and
@@ -174,8 +175,10 @@ class SqlAlchemyStudentRepository(
     }
     searchable_fields = ("full_name",)
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Student, StudentModel]] = {}
 
     async def get(self, student_id: StudentId) -> Student | None:
@@ -247,8 +250,10 @@ class SqlAlchemyParentRepository(
     }
     searchable_fields = ("full_name",)
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Parent, ParentModel]] = {}
 
     async def get(self, parent_id: ParentId) -> Parent | None:
@@ -398,8 +403,10 @@ class SqlAlchemyDriverRepository(
     }
     searchable_fields = ("license_no",)
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Driver, DriverModel]] = {}
 
     async def get(self, driver_id: DriverId) -> Driver | None:
@@ -467,8 +474,10 @@ class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepos
     }
     searchable_fields = ("name",)
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Route, RouteModel]] = {}
 
     async def get(self, route_id: RouteId) -> Route | None:
@@ -553,8 +562,10 @@ class SqlAlchemyTripRepository(SqlAlchemyRepositoryBase[TripModel], TripReposito
     #: `searchable_fields` is empty" behavior.
     searchable_fields: tuple[str, ...] = ()
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Trip, TripModel]] = {}
 
     async def get(self, trip_id: TripId) -> Trip | None:
@@ -641,8 +652,10 @@ class SqlAlchemyStudentAssignmentRepository(
     }
     searchable_fields: tuple[str, ...] = ()
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[StudentAssignment, StudentAssignmentModel]] = {}
 
     async def get(
@@ -733,13 +746,15 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
 
     async def __aenter__(self) -> "SqlAlchemyTransportOpsUnitOfWork":
         await super().__aenter__()
-        self.students = SqlAlchemyStudentRepository(self.session)
-        self.parents = SqlAlchemyParentRepository(self.session)
+        self.students = SqlAlchemyStudentRepository(self.session, scope=self.scope)
+        self.parents = SqlAlchemyParentRepository(self.session, scope=self.scope)
         self.student_parents = SqlAlchemyStudentParentRepository(self.session)
-        self.drivers = SqlAlchemyDriverRepository(self.session)
-        self.routes = SqlAlchemyRouteRepository(self.session)
-        self.trips = SqlAlchemyTripRepository(self.session)
-        self.student_assignments = SqlAlchemyStudentAssignmentRepository(self.session)
+        self.drivers = SqlAlchemyDriverRepository(self.session, scope=self.scope)
+        self.routes = SqlAlchemyRouteRepository(self.session, scope=self.scope)
+        self.trips = SqlAlchemyTripRepository(self.session, scope=self.scope)
+        self.student_assignments = SqlAlchemyStudentAssignmentRepository(
+            self.session, scope=self.scope
+        )
         return self
 
     async def commit(self) -> None:

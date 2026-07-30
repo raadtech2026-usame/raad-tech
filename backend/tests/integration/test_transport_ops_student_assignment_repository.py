@@ -31,6 +31,7 @@ from raad.core.events.outbox import OutboxWriter
 from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
 from raad.modules.transport_ops.domain.entities import Route, Student, StudentAssignment
 from raad.modules.transport_ops.domain.value_objects import (
@@ -528,6 +529,173 @@ class StudentAssignmentPaginationRepositoryTests(unittest.IsolatedAsyncioTestCas
                     filters=[],
                     search=None,
                 )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0021: proves `TenantRegionScope` bound at UoW construction is actually enforced by
+    `SqlAlchemyStudentAssignmentRepository` against a real, live database — mirrors
+    `test_transport_ops_student_repository.py`'s identical `TenantIsolationRepositoryTests`
+    shape."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self.org_a = self.id_generator.new_id()
+        self.org_b = self.id_generator.new_id()
+        self._created_assignment_ids: list[str] = []
+        self._created_student_ids: list[str] = []
+        self._created_route_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_assignment_ids:
+                await conn.execute(
+                    text("DELETE FROM student_assignments WHERE id = ANY(:ids)"),
+                    {"ids": self._created_assignment_ids},
+                )
+            if self._created_student_ids:
+                await conn.execute(
+                    text("DELETE FROM students WHERE id = ANY(:ids)"),
+                    {"ids": self._created_student_ids},
+                )
+            if self._created_route_ids:
+                await conn.execute(
+                    text("DELETE FROM stops WHERE route_id = ANY(:ids)"),
+                    {"ids": self._created_route_ids},
+                )
+                await conn.execute(
+                    text("DELETE FROM routes WHERE id = ANY(:ids)"),
+                    {"ids": self._created_route_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(
+        self, *, scope: TenantRegionScope | None = None
+    ) -> SqlAlchemyTransportOpsUnitOfWork:
+        uow = SqlAlchemyTransportOpsUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+        if scope is not None:
+            uow.scope = scope
+        return uow
+
+    async def _seed_assignment(self, *, organization_id: str) -> str:
+        # Unscoped UoW - seeding is a test-setup concern, not the behavior under test. Student/
+        # Route and the StudentAssignment itself are seeded in two separate `async with` blocks,
+        # mirroring `test_transport_ops_trip_repository.py`'s identical two-block precedent (a
+        # second `commit()` reusing the same still-open UoW raises `MissingGreenlet`).
+        async with self._new_uow() as uow:
+            student = Student.enroll(
+                id=StudentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                full_name=f"Tenant Test {self.tag}",
+                external_ref=None,
+                clock=self.clock,
+            )
+            route = Route.create(
+                id=RouteId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                name=f"Tenant Test Route {self.tag} {organization_id[-4:]}",
+                clock=self.clock,
+            )
+            pickup = route.add_stop(
+                id=StopId(self.id_generator.new_id()),
+                name="Pickup",
+                latitude=2.5,
+                longitude=45.3,
+                sequence_no=1,
+                clock=self.clock,
+            )
+            dropoff = route.add_stop(
+                id=StopId(self.id_generator.new_id()),
+                name="Dropoff",
+                latitude=2.6,
+                longitude=45.4,
+                sequence_no=2,
+                clock=self.clock,
+            )
+            uow.students.add(student)
+            uow.routes.add(route)
+            uow.record_events(student.pull_domain_events())
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            self._created_student_ids.append(str(student.id))
+            self._created_route_ids.append(str(route.id))
+            student_id, route_id = student.id, route.id
+            pickup_id, dropoff_id = pickup.id, dropoff.id
+
+        async with self._new_uow() as uow:
+            assignment = StudentAssignment.assign(
+                id=StudentAssignmentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                student_id=student_id,
+                student_organization_id=OrganizationId(organization_id),
+                route_id=route_id,
+                route_organization_id=OrganizationId(organization_id),
+                pickup_stop_id=pickup_id,
+                dropoff_stop_id=dropoff_id,
+                vehicle_id=None,
+                clock=self.clock,
+            )
+            uow.student_assignments.add(assignment)
+            uow.record_events(assignment.pull_domain_events())
+            await uow.commit()
+            self._created_assignment_ids.append(str(assignment.id))
+            return str(assignment.id)
+
+    async def test_org_a_cannot_get_org_bs_assignment_by_id(self) -> None:
+        assignment_b = await self._seed_assignment(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.student_assignments.get(
+                StudentAssignmentId(assignment_b)
+            )
+
+        self.assertIsNone(result)
+
+    async def test_org_a_can_still_get_its_own_assignment_by_id(self) -> None:
+        assignment_a = await self._seed_assignment(organization_id=self.org_a)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.student_assignments.get(
+                StudentAssignmentId(assignment_a)
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result.id), assignment_a)
+
+    async def test_org_a_list_all_excludes_org_bs_assignments(self) -> None:
+        assignment_a = await self._seed_assignment(organization_id=self.org_a)
+        assignment_b = await self._seed_assignment(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            visible = await uow.student_assignments.list_all()
+
+        visible_ids = {str(a.id) for a in visible}
+        self.assertIn(assignment_a, visible_ids)
+        self.assertNotIn(assignment_b, visible_ids)
+
+    async def test_founder_unrestricted_scope_sees_both_organizations(self) -> None:
+        assignment_a = await self._seed_assignment(organization_id=self.org_a)
+        assignment_b = await self._seed_assignment(organization_id=self.org_b)
+
+        unrestricted = TenantRegionScope(organization_ids=None)
+        async with self._new_uow(scope=unrestricted) as uow:
+            visible = await uow.student_assignments.list_all()
+
+        visible_ids = {str(a.id) for a in visible}
+        self.assertIn(assignment_a, visible_ids)
+        self.assertIn(assignment_b, visible_ids)
 
 
 if __name__ == "__main__":

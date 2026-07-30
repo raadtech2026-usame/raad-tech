@@ -78,10 +78,10 @@ status methods exactly — load, call the one matching domain method, commit.
 
 from __future__ import annotations
 
-from raad.core.errors.exceptions import NotFoundError
+from raad.core.errors.exceptions import AuthorizationError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
-from raad.core.tenancy.principal import Role
+from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
     ActivateDriverCommand,
@@ -210,6 +210,43 @@ from raad.modules.transport_ops.domain.value_objects import (
 )
 
 
+def _enforce_own_organization(*, actor: Principal, organization_id: str) -> None:
+    """ADR-0021: the authorization-layer half of tenant-scope enforcement, mirroring
+    `iam.application.services._enforce_creation_scope`'s identical shape/reasoning. Every
+    creation command in this module carries a client-supplied `organization_id`
+    (`application/commands.py`) — the repository-layer fix (`infra/repositories.py`'s ADR-0021
+    addition) already makes any cross-aggregate reference this module loads (`Driver`, `Route`,
+    `Student`, `Parent`) come back `None`/`NotFoundError` when it belongs to another
+    organization, so `Trip.schedule`/`StudentAssignment.assign`'s own domain-level
+    cross-organization checks (`domain/entities.py`) already transitively force
+    `command.organization_id` to match a tenant-scoped caller's own org for those two commands.
+    `EnrollStudentCommand`/`CreateRouteCommand` have no such cross-aggregate reference to
+    transitively check against at all — without this function an `org_admin` could set
+    `organization_id` to any other organization's id and create a brand-new `Student`/`Route`
+    directly inside it, a write-side IDOR the repository fix alone cannot close.
+    `RegisterParentCommand`/`RegisterDriverCommand` already get a redundant, transitive check
+    via a different path — both provision an `iam.User` first (`UserProvisioningPort` →
+    `IamUserProvisioningAdapter` → `iam`'s own `UserApplicationService.
+    create_user_with_temporary_password`, which itself calls `iam.application.services.
+    _enforce_creation_scope`) before the `Parent`/`Driver` aggregate is ever created — but this
+    module's own authorization posture should not silently depend on a different module's
+    internal implementation detail staying exactly as it is today, so this function is applied
+    here too. Applied uniformly to every creation command in this module as the defense-in-depth
+    `.claude/rules/security.md` #2 requires — "enforced at both the repository layer and the
+    authorization layer, never only one." Only `org_admin` (tenant-scoped) is restricted, the
+    same early-return `iam`'s own function uses: `role_permissions` (migrations `5437a5d1651b`/
+    `c4d9a2e6f813`) grants every `transport_ops.*.create`/`.schedule` permission held by a
+    tenant-scoped role to `org_admin` alone — `driver`/`parent` hold none, so no other tenant
+    role is ever in a position to trip this check."""
+    if actor.role is not Role.ORG_ADMIN:
+        return
+    if organization_id != actor.org_id:
+        raise AuthorizationError(
+            "org_admin may only create or schedule transport_ops resources within their own "
+            "organization."
+        )
+
+
 class StudentApplicationService:
     """Student lifecycle use-cases: enroll, update, transfer, graduate, activate, disable, and
     the `GetStudentByIdQuery`/`ListStudentsQuery` read paths."""
@@ -221,6 +258,9 @@ class StudentApplicationService:
     async def enroll_student(
         self, command: EnrollStudentCommand, *, uow: TransportOpsUnitOfWork
     ) -> StudentDTO:
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
         async with uow:
             student = Student.enroll(
                 id=StudentId(self._id_generator.new_id()),
@@ -354,6 +394,9 @@ class ParentApplicationService:
         `Parent`) rather than being automatically compensated — evaluated and deliberately
         deferred at implementation time per that ADR's own "both viable, evaluate later"
         framing, not silently dropped."""
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
         user_id, temporary_password = (
             await self._user_provisioning.create_user_with_temporary_password(
                 organization_id=command.organization_id,
@@ -564,6 +607,9 @@ class DriverApplicationService:
         """ADR-0003 Extension (accepted): mirrors `ParentApplicationService.register_parent`'s
         identical provision-then-create sequence and the same accepted, bounded orphan-`User`
         gap on partial failure."""
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
         user_id, temporary_password = (
             await self._user_provisioning.create_user_with_temporary_password(
                 organization_id=command.organization_id,
@@ -669,6 +715,9 @@ class RouteApplicationService:
     async def create_route(
         self, command: CreateRouteCommand, *, uow: TransportOpsUnitOfWork
     ) -> RouteDTO:
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
         async with uow:
             await ensure_route_name_available(uow, command.name)
 
@@ -824,6 +873,9 @@ class TripApplicationService:
     async def schedule_trip(
         self, command: ScheduleTripCommand, *, uow: TransportOpsUnitOfWork
     ) -> TripDTO:
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
         async with uow:
             driver = await ensure_driver_exists(uow, DriverId(command.driver_id))
             route = await ensure_route_exists(uow, RouteId(command.route_id))
@@ -970,6 +1022,9 @@ class StudentAssignmentApplicationService:
     async def assign_student_to_route(
         self, command: AssignStudentToRouteCommand, *, uow: TransportOpsUnitOfWork
     ) -> StudentAssignmentDTO:
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
         async with uow:
             student = await ensure_student_exists(uow, StudentId(command.student_id))
             route = await ensure_route_exists(uow, RouteId(command.route_id))

@@ -32,6 +32,7 @@ from raad.core.events.outbox import OutboxWriter
 from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
 from raad.modules.transport_ops.domain.entities import Driver, Route, Trip
 from raad.modules.transport_ops.domain.value_objects import (
@@ -487,6 +488,150 @@ class TripPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     filters=[],
                     search=None,
                 )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0021: proves `TenantRegionScope` bound at UoW construction is actually enforced by
+    `SqlAlchemyTripRepository` against a real, live database — mirrors
+    `test_transport_ops_student_repository.py`'s identical `TenantIsolationRepositoryTests`
+    shape."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self.org_a = self.id_generator.new_id()
+        self.org_b = self.id_generator.new_id()
+        self._created_trip_ids: list[str] = []
+        self._created_driver_ids: list[str] = []
+        self._created_route_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_trip_ids:
+                await conn.execute(
+                    text("DELETE FROM trips WHERE id = ANY(:ids)"),
+                    {"ids": self._created_trip_ids},
+                )
+            if self._created_driver_ids:
+                await conn.execute(
+                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    {"ids": self._created_driver_ids},
+                )
+            if self._created_route_ids:
+                await conn.execute(
+                    text("DELETE FROM routes WHERE id = ANY(:ids)"),
+                    {"ids": self._created_route_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(
+        self, *, scope: TenantRegionScope | None = None
+    ) -> SqlAlchemyTransportOpsUnitOfWork:
+        uow = SqlAlchemyTransportOpsUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+        if scope is not None:
+            uow.scope = scope
+        return uow
+
+    async def _seed_trip(self, *, organization_id: str) -> str:
+        # Unscoped UoW - seeding is a test-setup concern, not the behavior under test (which is
+        # exercised entirely through the *scoped* uow each test constructs separately). Driver/
+        # Route and the Trip itself are seeded in two separate `async with` blocks - mirroring
+        # this file's own pre-existing `_seed_driver_and_route`/`_seed_trip` helpers exactly,
+        # since a second `commit()` reusing the same still-open UoW leaves its session in a
+        # state that raises `MissingGreenlet` on the next query.
+        async with self._new_uow() as uow:
+            driver = Driver.register(
+                id=DriverId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                user_id=UserId(self.id_generator.new_id()),
+                license_no=f"LIC-{self.tag}-{organization_id[-4:]}",
+                clock=self.clock,
+            )
+            route = Route.create(
+                id=RouteId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                name=f"Tenant Test Route {self.tag} {organization_id[-4:]}",
+                clock=self.clock,
+            )
+            uow.drivers.add(driver)
+            uow.routes.add(route)
+            uow.record_events(driver.pull_domain_events())
+            uow.record_events(route.pull_domain_events())
+            await uow.commit()
+            self._created_driver_ids.append(str(driver.id))
+            self._created_route_ids.append(str(route.id))
+            driver_id, route_id = driver.id, route.id
+
+        async with self._new_uow() as uow:
+            trip = Trip.schedule(
+                id=TripId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                vehicle_id=VehicleId(self.id_generator.new_id()),
+                driver_id=driver_id,
+                driver_organization_id=OrganizationId(organization_id),
+                route_id=route_id,
+                route_organization_id=OrganizationId(organization_id),
+                trip_type=TripType.MORNING,
+                scheduled_date=date(2026, 8, 1),
+                clock=self.clock,
+            )
+            uow.trips.add(trip)
+            uow.record_events(trip.pull_domain_events())
+            await uow.commit()
+            self._created_trip_ids.append(str(trip.id))
+            return str(trip.id)
+
+    async def test_org_a_cannot_get_org_bs_trip_by_id(self) -> None:
+        trip_b = await self._seed_trip(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.trips.get(TripId(trip_b))
+
+        self.assertIsNone(result)
+
+    async def test_org_a_can_still_get_its_own_trip_by_id(self) -> None:
+        trip_a = await self._seed_trip(organization_id=self.org_a)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.trips.get(TripId(trip_a))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result.id), trip_a)
+
+    async def test_org_a_list_all_excludes_org_bs_trips(self) -> None:
+        trip_a = await self._seed_trip(organization_id=self.org_a)
+        trip_b = await self._seed_trip(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            visible = await uow.trips.list_all()
+
+        visible_ids = {str(t.id) for t in visible}
+        self.assertIn(trip_a, visible_ids)
+        self.assertNotIn(trip_b, visible_ids)
+
+    async def test_founder_unrestricted_scope_sees_both_organizations(self) -> None:
+        trip_a = await self._seed_trip(organization_id=self.org_a)
+        trip_b = await self._seed_trip(organization_id=self.org_b)
+
+        unrestricted = TenantRegionScope(organization_ids=None)
+        async with self._new_uow(scope=unrestricted) as uow:
+            visible = await uow.trips.list_all()
+
+        visible_ids = {str(t.id) for t in visible}
+        self.assertIn(trip_a, visible_ids)
+        self.assertIn(trip_b, visible_ids)
 
 
 if __name__ == "__main__":

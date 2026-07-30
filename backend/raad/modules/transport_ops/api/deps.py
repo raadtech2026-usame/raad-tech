@@ -10,7 +10,8 @@ from __future__ import annotations
 from fastapi import Depends
 
 from raad.core.di.container import Container
-from raad.interfaces.http.deps import get_container
+from raad.core.tenancy.scope import TenantRegionScope
+from raad.interfaces.http.deps import get_container, get_scope
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
     DriverApplicationService,
@@ -25,13 +26,21 @@ from raad.modules.transport_ops.application.services import (
 
 def get_transport_ops_uow(
     container: Container = Depends(get_container),
+    scope: TenantRegionScope = Depends(get_scope),
 ) -> TransportOpsUnitOfWork:
     """Resolves a fresh `TransportOpsUnitOfWork` per call — **not** entered here, for the same
     reason `organization.api.deps.get_organization_uow` isn't: every
     `StudentApplicationService`/`ParentApplicationService` method already manages its own
     `async with uow:` block (`application/services.py`), so wrapping it again here would call
-    `__aenter__`/`__aexit__` twice on the same instance."""
-    return container.resolve(TransportOpsUnitOfWork)
+    `__aenter__`/`__aexit__` twice on the same instance.
+
+    **ADR-0021**: sets the caller's resolved `TenantRegionScope` on the UoW before it's
+    entered — every repository `SqlAlchemyTransportOpsUnitOfWork.__aenter__` constructs picks
+    it up automatically, mirroring `fleet_device.api.deps.get_fleet_device_uow`/
+    `organization.api.deps.get_organization_uow` exactly."""
+    uow = container.resolve(TransportOpsUnitOfWork)
+    uow.scope = scope
+    return uow
 
 
 def get_student_service(

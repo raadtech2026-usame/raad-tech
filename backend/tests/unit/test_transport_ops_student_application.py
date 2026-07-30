@@ -12,7 +12,7 @@ import dataclasses
 import unittest
 from datetime import datetime, timezone
 
-from raad.core.errors.exceptions import DomainError, NotFoundError
+from raad.core.errors.exceptions import AuthorizationError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
@@ -44,6 +44,7 @@ from raad.modules.transport_ops.domain.value_objects import (
 )
 
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
+OTHER_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3OT"
 # Well-formed ULID shape but never added to any InMemoryStudentRepository in these tests -
 # exercises the NotFoundError path, distinct from StudentId's own malformed-shape DomainError.
 NON_EXISTENT_STUDENT_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
@@ -180,6 +181,10 @@ class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
 
 def make_actor(org_id: str = VALID_ORG_ULID) -> Principal:
     return Principal(user_id="user-1", role=Role.ORG_ADMIN, org_id=org_id)
+
+
+def make_founder_actor() -> Principal:
+    return Principal(user_id="founder-1", role=Role.FOUNDER, org_id=None)
 
 
 def make_service() -> tuple[StudentApplicationService, FakeTransportOpsUnitOfWork]:
@@ -631,6 +636,55 @@ class RepositoryInteractionTests(unittest.IsolatedAsyncioTestCase):
             GetStudentByIdQuery(student_id=dto.id), uow=uow
         )
         self.assertEqual(fetched.id, dto.id)
+
+
+class CrossOrganizationEnrollmentTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0021: `_enforce_own_organization` (`application/services.py`) — an `org_admin`
+    cannot enroll a `Student` into an organization other than their own, even though
+    `EnrollStudentCommand.organization_id` is a client-supplied field with no cross-aggregate
+    reference to transitively validate it against (unlike `Trip.schedule`/
+    `StudentAssignment.assign`)."""
+
+    async def test_org_admin_cannot_enroll_student_into_a_different_organization(
+        self,
+    ) -> None:
+        service, uow = make_service()
+        command = EnrollStudentCommand(
+            organization_id=OTHER_ORG_ULID,
+            full_name="Amina Ali",
+            external_ref=None,
+            actor=make_actor(org_id=VALID_ORG_ULID),
+        )
+        with self.assertRaises(AuthorizationError):
+            await service.enroll_student(command, uow=uow)
+        self.assertEqual(uow.commit_count, 0)
+        self.assertEqual(len(uow.students.by_id), 0)
+
+    async def test_org_admin_can_still_enroll_student_into_their_own_organization(
+        self,
+    ) -> None:
+        service, uow = make_service()
+        command = EnrollStudentCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Amina Ali",
+            external_ref=None,
+            actor=make_actor(org_id=VALID_ORG_ULID),
+        )
+        dto = await service.enroll_student(command, uow=uow)
+        self.assertEqual(dto.organization_id, VALID_ORG_ULID)
+
+    async def test_founder_may_enroll_a_student_into_any_organization(self) -> None:
+        # Unrestricted platform-staff latitude - mirrors iam._enforce_creation_scope's own
+        # early-return for any non-org_admin actor.
+        service, uow = make_service()
+        command = EnrollStudentCommand(
+            organization_id=OTHER_ORG_ULID,
+            full_name="Amina Ali",
+            external_ref=None,
+            actor=make_founder_actor(),
+        )
+        dto = await service.enroll_student(command, uow=uow)
+        self.assertEqual(dto.organization_id, OTHER_ORG_ULID)
 
 
 if __name__ == "__main__":

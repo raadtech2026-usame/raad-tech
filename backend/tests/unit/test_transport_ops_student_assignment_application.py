@@ -14,7 +14,12 @@ import dataclasses
 import unittest
 from datetime import datetime, timezone
 
-from raad.core.errors.exceptions import ConflictError, DomainError, NotFoundError
+from raad.core.errors.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    DomainError,
+    NotFoundError,
+)
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
@@ -474,6 +479,20 @@ class AssignStudentToRouteTests(unittest.IsolatedAsyncioTestCase):
         uow.routes.add(make_route())
         with self.assertRaises(DomainError):
             await service.assign_student_to_route(make_assign_command(), uow=uow)
+
+    async def test_assign_for_a_different_organization_raises_authorization_error(
+        self,
+    ) -> None:
+        # ADR-0021's `_enforce_own_organization` - rejected before the student/route lookups
+        # even run, distinct from the cross-organization-student `DomainError` case above.
+        service, uow = make_service()
+        seed_student_and_route(uow)
+        command = make_assign_command(
+            organization_id=OTHER_ORG_ULID, actor=make_actor(org_id=VALID_ORG_ULID)
+        )
+        with self.assertRaises(AuthorizationError):
+            await service.assign_student_to_route(command, uow=uow)
+        self.assertEqual(uow.commit_count, 0)
 
     async def test_assign_with_no_vehicle_succeeds(self) -> None:
         service, uow = make_service()

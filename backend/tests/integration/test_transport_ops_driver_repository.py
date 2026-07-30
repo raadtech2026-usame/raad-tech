@@ -33,6 +33,7 @@ from raad.core.events.outbox import OutboxWriter
 from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
 from raad.modules.transport_ops.domain.entities import Driver
 from raad.modules.transport_ops.domain.value_objects import (
@@ -295,6 +296,104 @@ class DriverPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     filters=[],
                     search=None,
                 )
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0021: proves `TenantRegionScope` bound at UoW construction is actually enforced by
+    `SqlAlchemyDriverRepository` against a real, live database — mirrors
+    `test_transport_ops_student_repository.py`'s identical `TenantIsolationRepositoryTests`
+    shape."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self.org_a = self.id_generator.new_id()
+        self.org_b = self.id_generator.new_id()
+        self._created_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_ids:
+                await conn.execute(
+                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(
+        self, *, scope: TenantRegionScope | None = None
+    ) -> SqlAlchemyTransportOpsUnitOfWork:
+        uow = SqlAlchemyTransportOpsUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+        if scope is not None:
+            uow.scope = scope
+        return uow
+
+    async def _seed_driver(self, *, organization_id: str) -> str:
+        async with self._new_uow() as uow:
+            driver = Driver.register(
+                id=DriverId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                user_id=UserId(self.id_generator.new_id()),
+                license_no=f"LIC-{self.tag}-{organization_id[-4:]}",
+                clock=self.clock,
+            )
+            uow.drivers.add(driver)
+            uow.record_events(driver.pull_domain_events())
+            await uow.commit()
+            self._created_ids.append(str(driver.id))
+            return str(driver.id)
+
+    async def test_org_a_cannot_get_org_bs_driver_by_id(self) -> None:
+        driver_b = await self._seed_driver(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.drivers.get(DriverId(driver_b))
+
+        self.assertIsNone(result)
+
+    async def test_org_a_can_still_get_its_own_driver_by_id(self) -> None:
+        driver_a = await self._seed_driver(organization_id=self.org_a)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.drivers.get(DriverId(driver_a))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result.id), driver_a)
+
+    async def test_org_a_list_all_excludes_org_bs_drivers(self) -> None:
+        driver_a = await self._seed_driver(organization_id=self.org_a)
+        driver_b = await self._seed_driver(organization_id=self.org_b)
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            visible = await uow.drivers.list_all()
+
+        visible_ids = {str(d.id) for d in visible}
+        self.assertIn(driver_a, visible_ids)
+        self.assertNotIn(driver_b, visible_ids)
+
+    async def test_founder_unrestricted_scope_sees_both_organizations(self) -> None:
+        driver_a = await self._seed_driver(organization_id=self.org_a)
+        driver_b = await self._seed_driver(organization_id=self.org_b)
+
+        unrestricted = TenantRegionScope(organization_ids=None)
+        async with self._new_uow(scope=unrestricted) as uow:
+            visible = await uow.drivers.list_all()
+
+        visible_ids = {str(d.id) for d in visible}
+        self.assertIn(driver_a, visible_ids)
+        self.assertIn(driver_b, visible_ids)
 
 
 if __name__ == "__main__":

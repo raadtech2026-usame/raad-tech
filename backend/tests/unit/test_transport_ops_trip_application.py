@@ -15,7 +15,12 @@ import dataclasses
 import unittest
 from datetime import date, datetime, timezone
 
-from raad.core.errors.exceptions import ConflictError, DomainError, NotFoundError
+from raad.core.errors.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    DomainError,
+    NotFoundError,
+)
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
@@ -492,6 +497,28 @@ class ScheduleTripTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(DomainError):
             await service.schedule_trip(command, uow=uow)
+
+    async def test_schedule_trip_for_a_different_organization_raises_authorization_error(
+        self,
+    ) -> None:
+        # ADR-0021's `_enforce_own_organization` - rejected before the driver/route lookups
+        # even run, distinct from the cross-organization-driver `DomainError` case above (that
+        # one requires a same-org driver/route pair paired with a mismatched `organization_id`;
+        # this one is the bare "org_admin picks someone else's org" attempt).
+        service, uow = make_service()
+        seed_driver_and_route(uow)
+        command = ScheduleTripCommand(
+            organization_id=OTHER_ORG_ULID,
+            vehicle_id=VALID_VEHICLE_ULID,
+            driver_id=VALID_DRIVER_ULID,
+            route_id=VALID_ROUTE_ULID,
+            trip_type="morning",
+            scheduled_date=date(2026, 7, 20),
+            actor=make_actor(org_id=VALID_ORG_ULID),
+        )
+        with self.assertRaises(AuthorizationError):
+            await service.schedule_trip(command, uow=uow)
+        self.assertEqual(uow.commit_count, 0)
 
 
 class TripLifecycleOrchestrationTests(unittest.IsolatedAsyncioTestCase):

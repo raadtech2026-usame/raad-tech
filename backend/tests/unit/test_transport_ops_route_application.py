@@ -13,7 +13,12 @@ import dataclasses
 import unittest
 from datetime import datetime, timezone
 
-from raad.core.errors.exceptions import ConflictError, DomainError, NotFoundError
+from raad.core.errors.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    DomainError,
+    NotFoundError,
+)
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
@@ -48,6 +53,7 @@ from raad.modules.transport_ops.domain.value_objects import (
 )
 
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
+OTHER_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3OT"
 # Well-formed ULID shape but never added to any InMemoryRouteRepository in these tests -
 # exercises the NotFoundError path, distinct from RouteId's own malformed-shape DomainError.
 NON_EXISTENT_ROUTE_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
@@ -286,6 +292,23 @@ class RouteApplicationServiceCreateTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(uow.recorded_events), 1)
         self.assertEqual(uow.recorded_events[0].event_type, "RouteCreated")
+
+    async def test_create_route_for_a_different_organization_raises_authorization_error(
+        self,
+    ) -> None:
+        # ADR-0021's `_enforce_own_organization` (`application/services.py`) - `Route` has no
+        # cross-aggregate reference to transitively validate `organization_id` against, so this
+        # is the only defense-in-depth check that closes this write-side IDOR.
+        service, uow = make_service()
+        command = CreateRouteCommand(
+            organization_id=OTHER_ORG_ULID,
+            name="Morning Route A",
+            actor=make_actor(org_id=VALID_ORG_ULID),
+        )
+        with self.assertRaises(AuthorizationError):
+            await service.create_route(command, uow=uow)
+        self.assertEqual(uow.commit_count, 0)
+        self.assertEqual(len(uow.routes.by_id), 0)
 
     async def test_create_route_generates_a_fresh_id_per_call(self) -> None:
         service, uow = make_service()
