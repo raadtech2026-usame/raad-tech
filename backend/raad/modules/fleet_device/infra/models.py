@@ -58,6 +58,7 @@ _DEVICE_LIFECYCLE_VALUES = (
     "retired",
 )
 _CAMERA_POSITION_VALUES = ("in_cabin", "road_facing", "other")
+_DEVICE_INVENTORY_STATE_VALUES = ("manufactured", "in_stock", "allocated", "scrapped")
 
 
 class VehicleModel(AuditedTableMixin, Base):
@@ -107,6 +108,12 @@ class DeviceModel(AuditedTableMixin, Base):
     auth_key_hash: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
+    )
+    # ADR-0018: set only for a device created via `POST /device-inventory/{id}/allocate`; NULL
+    # for every device registered the pre-existing way. In-context FK (both tables owned by
+    # this same module), unlike `organization_id`'s deliberate cross-module id-only treatment.
+    inventory_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("device_inventory.id"), nullable=True, index=True
     )
 
     # Camera child rows load eagerly with the device (selectin) — the Device aggregate owns
@@ -174,4 +181,26 @@ class DeviceAssignmentModel(UlidPrimaryKeyMixin, Base):
     )
     unassigned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
+    )
+
+
+class DeviceInventoryModel(AuditedTableMixin, Base):
+    """`device_inventory` (ADR-0018 §1): a platform-scoped, pre-tenant hardware pool.
+    **Deliberately no `organization_id` column** — "like `regions`/`plans`, this is
+    platform-level stock" (ADR-0018 verbatim). `SqlAlchemyRepositoryBase._apply_scope`'s
+    existing `hasattr(model, "organization_id")` check therefore falls through to unrestricted
+    for this model automatically, with zero new scoping code — exactly the posture the ADR
+    wants, for free."""
+
+    __tablename__ = "device_inventory"
+
+    serial_number: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, unique=True)
+    imei: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True, unique=True)
+    iccid: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True, unique=True)
+    model: Mapped[str | None] = mapped_column(VARCHAR(120), nullable=True)
+    vendor: Mapped[str | None] = mapped_column(VARCHAR(120), nullable=True)
+    state: Mapped[str] = mapped_column(
+        SqlEnum(*_DEVICE_INVENTORY_STATE_VALUES, name="device_inventory_state"),
+        nullable=False,
+        index=True,
     )

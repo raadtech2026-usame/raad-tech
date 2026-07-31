@@ -138,13 +138,16 @@ def device_registered(
     occurred_at: datetime,
     actor_id: str | None,
     serial_number: str | None = None,
+    inventory_id: str | None = None,
 ) -> DomainEvent:
     """`serial_number` (additive, default `None` so any other call site stays source-compatible)
     was added alongside the already-present `terminal_id` for a device-plane consumer that keys
     on this vendor's own device-identity string rather than a JT/T-808-style terminal id — see
     `docs/architecture/adr/0009-mdvr-vendor-protocol-device-plane.md`'s "Consequences" section:
     a local device-registry projection resolving `serial_number -> {device_id, vehicle_id,
-    organization_id}` needs this field on the event, and it was missing until this change."""
+    organization_id}` needs this field on the event, and it was missing until this change.
+    `inventory_id` (ADR-0018, same additive/default-`None` treatment) is populated only when
+    this device was created via `POST /device-inventory/{id}/allocate`."""
     return _new_event(
         event_type="DeviceRegistered",
         aggregate_type="Device",
@@ -157,6 +160,7 @@ def device_registered(
             "model": model,
             "vendor": vendor,
             "actor_id": actor_id,
+            "inventory_id": inventory_id,
         },
     )
 
@@ -316,4 +320,58 @@ def device_reassigned(
             "new_assignment_id": new_assignment_id,
             "actor_id": actor_id,
         },
+    )
+
+
+# --- DeviceInventoryItem (ADR-0018) -------------------------------------------------------
+
+
+def device_inventory_item_received(
+    *,
+    inventory_item_id: str,
+    serial_number: str,
+    imei: str | None,
+    iccid: str | None,
+    model: str | None,
+    vendor: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """Platform-scoped — `org_id=None` (ADR-0018: `device_inventory` carries no
+    `organization_id` at all, unlike every other event in this module)."""
+    return _new_event(
+        event_type="DeviceInventoryItemReceived",
+        aggregate_type="DeviceInventoryItem",
+        aggregate_id=inventory_item_id,
+        org_id=None,
+        occurred_at=occurred_at,
+        payload={
+            "serial_number": serial_number,
+            "imei": imei,
+            "iccid": iccid,
+            "model": model,
+            "vendor": vendor,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def device_inventory_item_allocated(
+    *,
+    inventory_item_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """ADR-0018 §1: the allocated-to organization lands here, on the event's `org_id`/payload —
+    never as a persisted column on `device_inventory` itself; the durable, queryable link is
+    `Device.inventory_id` on the row `allocate_device_inventory_item` creates immediately
+    after, in the same transaction."""
+    return _new_event(
+        event_type="DeviceInventoryItemAllocated",
+        aggregate_type="DeviceInventoryItem",
+        aggregate_id=inventory_item_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"organization_id": organization_id, "actor_id": actor_id},
     )

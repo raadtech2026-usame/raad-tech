@@ -26,9 +26,10 @@ from __future__ import annotations
 
 from raad.core.errors.exceptions import ConflictError, NotFoundError
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
-from raad.modules.fleet_device.domain.entities import Device, Vehicle
+from raad.modules.fleet_device.domain.entities import Device, DeviceInventoryItem, Vehicle
 from raad.modules.fleet_device.domain.value_objects import (
     DeviceId,
+    DeviceInventoryState,
     Iccid,
     Imei,
     SerialNumber,
@@ -103,6 +104,51 @@ async def ensure_vehicle_has_no_active_device(
         raise ConflictError(
             f"Vehicle {vehicle_id} already has an active device {active.device_id} "
             "(one active device per vehicle, Phase 2 §19)."
+        )
+
+
+async def ensure_inventory_serial_number_available(
+    uow: FleetDeviceUnitOfWork, serial_number: SerialNumber
+) -> None:
+    """ADR-0018: uniqueness within `device_inventory`'s own table only — a separate check from
+    `ensure_serial_number_available`'s existing `devices`-table check. Cross-table uniqueness
+    (an inventory item's serial number vs. an already-registered `devices` row predating this
+    ADR) is not checked at receive time — flagged, not silently invented around; it *is* checked
+    at allocation time, when `allocate_device_inventory_item` reuses the existing `devices`-table
+    validators before creating the row."""
+    existing = await uow.device_inventory.get_by_serial_number(serial_number)
+    if existing is not None:
+        raise ConflictError(
+            f"A device inventory item with serial number {serial_number!r} already exists."
+        )
+
+
+async def ensure_inventory_imei_available(
+    uow: FleetDeviceUnitOfWork, imei: Imei
+) -> None:
+    existing = await uow.device_inventory.get_by_imei(imei)
+    if existing is not None:
+        raise ConflictError(f"A device inventory item with IMEI {imei} already exists.")
+
+
+async def ensure_inventory_iccid_available(
+    uow: FleetDeviceUnitOfWork, iccid: Iccid
+) -> None:
+    existing = await uow.device_inventory.get_by_iccid(iccid)
+    if existing is not None:
+        raise ConflictError(f"A device inventory item with ICCID {iccid} already exists.")
+
+
+def ensure_inventory_item_allocatable(item: DeviceInventoryItem) -> None:
+    """Application-layer guard, distinct from `DeviceInventoryItem.allocate()`'s own
+    domain-level idempotent same-state no-op: allocation has the side effect of creating a new
+    `devices` row, so a double-submit/retry against an already-`ALLOCATED` item must fail loudly
+    here rather than silently reach the aggregate's no-op path and let the service go on to
+    create a *second* `devices` row for the same physical item."""
+    if item.state != DeviceInventoryState.IN_STOCK:
+        raise ConflictError(
+            f"Device inventory item {item.id} is not allocatable (state "
+            f"{item.state.value!r}, ADR-0018)."
         )
 
 

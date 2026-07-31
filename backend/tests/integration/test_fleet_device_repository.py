@@ -34,11 +34,14 @@ from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
-from raad.modules.fleet_device.domain.entities import Device, Vehicle
+from raad.modules.fleet_device.domain.entities import Device, DeviceInventoryItem, Vehicle
 from raad.modules.fleet_device.domain.value_objects import (
     DeviceId,
+    DeviceInventoryState,
     DeviceLifecycleState,
+    InventoryItemId,
     OrganizationId,
+    SerialNumber,
     TerminalId,
     VehicleId,
     VehicleStatus,
@@ -672,6 +675,154 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         visible_ids = {str(v.id) for v in visible}
         self.assertIn(vehicle_a, visible_ids)
         self.assertIn(vehicle_b, visible_ids)
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class DeviceInventoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0018's own "Verification" section: round-trip a `device_inventory` row; prove
+    allocate -> a real `devices` row appears with the correct `organization_id`/`inventory_id`;
+    prove tenant-scoped visibility both directions for the resulting device (an `org_admin`-
+    scoped session sees only their own org's allocated devices, never another org's, never
+    un-allocated inventory) against the real, live-migrated schema — not fakes."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self.org_a = self.id_generator.new_id()
+        self.org_b = self.id_generator.new_id()
+        self._created_inventory_ids: list[str] = []
+        self._created_device_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_device_ids:
+                await conn.execute(
+                    text("DELETE FROM devices WHERE id = ANY(:ids)"),
+                    {"ids": self._created_device_ids},
+                )
+            if self._created_inventory_ids:
+                await conn.execute(
+                    text("DELETE FROM device_inventory WHERE id = ANY(:ids)"),
+                    {"ids": self._created_inventory_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(
+        self, *, scope: TenantRegionScope | None = None
+    ) -> SqlAlchemyFleetDeviceUnitOfWork:
+        uow = SqlAlchemyFleetDeviceUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+        if scope is not None:
+            uow.scope = scope
+        return uow
+
+    async def _receive(self, *, serial_number: str) -> str:
+        async with self._new_uow() as uow:
+            item = DeviceInventoryItem.receive(
+                id=InventoryItemId(self.id_generator.new_id()),
+                serial_number=SerialNumber(serial_number),
+                clock=self.clock,
+            )
+            uow.device_inventory.add(item)
+            uow.record_events(item.pull_domain_events())
+            await uow.commit()
+            self._created_inventory_ids.append(str(item.id))
+            return str(item.id)
+
+    async def _allocate(self, *, inventory_item_id: str, organization_id: str) -> str:
+        """Mirrors `DeviceInventoryApplicationService.allocate_device_inventory_item` at the
+        repository level — transitions the item and creates the resulting `devices` row in one
+        transaction, exactly as ADR-0018 §1 describes."""
+        async with self._new_uow() as uow:
+            item = await uow.device_inventory.get(InventoryItemId(inventory_item_id))
+            item.allocate(organization_id=OrganizationId(organization_id), clock=self.clock)
+            device = Device.register(
+                id=DeviceId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                terminal_id=TerminalId(str(item.serial_number)),
+                serial_number=item.serial_number,
+                inventory_id=item.id,
+                clock=self.clock,
+            )
+            uow.devices.add(device)
+            uow.record_events(item.pull_domain_events())
+            uow.record_events(device.pull_domain_events())
+            await uow.commit()
+            self._created_device_ids.append(str(device.id))
+            return str(device.id)
+
+    async def test_receive_then_get_round_trips_all_fields(self) -> None:
+        item_id = await self._receive(serial_number=f"SN-{self.tag}")
+
+        async with self._new_uow() as uow:
+            item = await uow.device_inventory.get(InventoryItemId(item_id))
+
+        self.assertIsNotNone(item)
+        self.assertEqual(str(item.serial_number), f"SN-{self.tag}")
+        self.assertEqual(item.state, DeviceInventoryState.IN_STOCK)
+
+    async def test_get_by_serial_number_finds_the_received_item(self) -> None:
+        serial_number = f"SN-LOOKUP-{self.tag}"
+        await self._receive(serial_number=serial_number)
+
+        async with self._new_uow() as uow:
+            item = await uow.device_inventory.get_by_serial_number(
+                SerialNumber(serial_number)
+            )
+
+        self.assertIsNotNone(item)
+        self.assertEqual(str(item.serial_number), serial_number)
+
+    async def test_allocate_creates_a_device_row_with_correct_org_and_inventory_link(
+        self,
+    ) -> None:
+        item_id = await self._receive(serial_number=f"SN-ALLOC-{self.tag}")
+
+        device_id = await self._allocate(
+            inventory_item_id=item_id, organization_id=self.org_a
+        )
+
+        async with self._new_uow() as uow:
+            device = await uow.devices.get(DeviceId(device_id))
+            item = await uow.device_inventory.get(InventoryItemId(item_id))
+
+        self.assertEqual(str(device.organization_id), self.org_a)
+        self.assertEqual(str(device.inventory_id), item_id)
+        self.assertEqual(item.state, DeviceInventoryState.ALLOCATED)
+
+    async def test_org_a_scoped_session_sees_its_own_allocated_device(self) -> None:
+        item_id = await self._receive(serial_number=f"SN-VIS-A-{self.tag}")
+        device_id = await self._allocate(
+            inventory_item_id=item_id, organization_id=self.org_a
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        async with self._new_uow(scope=scope_a) as uow:
+            result = await uow.devices.get(DeviceId(device_id))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result.id), device_id)
+
+    async def test_org_b_scoped_session_cannot_see_org_as_allocated_device(self) -> None:
+        """The IDOR case, same as `TenantIsolationRepositoryTests` above, now proven for a
+        device that came through the new allocation path rather than direct registration."""
+        item_id = await self._receive(serial_number=f"SN-VIS-B-{self.tag}")
+        device_id = await self._allocate(
+            inventory_item_id=item_id, organization_id=self.org_a
+        )
+
+        scope_b = TenantRegionScope(organization_ids=frozenset({self.org_b}))
+        async with self._new_uow(scope=scope_b) as uow:
+            result = await uow.devices.get(DeviceId(device_id))
+
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

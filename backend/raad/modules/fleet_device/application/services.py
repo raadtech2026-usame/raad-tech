@@ -33,11 +33,13 @@ from raad.core.logging.setup import get_logger
 from raad.modules.fleet_device.application.commands import (
     ActivateDeviceCommand,
     ActivateVehicleCommand,
+    AllocateDeviceInventoryItemCommand,
     AssignDeviceToVehicleCommand,
     DeactivateVehicleCommand,
     MarkVehicleUnderMaintenanceCommand,
     ReactivateDeviceCommand,
     ReassignDeviceCommand,
+    ReceiveDeviceInventoryItemCommand,
     RecordDeviceSeenCommand,
     RegisterCameraCommand,
     RegisterDeviceCommand,
@@ -50,6 +52,7 @@ from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import (
     DeviceAssignmentDTO,
     DeviceDTO,
+    DeviceInventoryItemDTO,
     GetDeviceByIdQuery,
     GetVehicleByIdQuery,
     ListDevicesQuery,
@@ -58,12 +61,17 @@ from raad.modules.fleet_device.application.queries import (
     VehicleDTO,
     assignment_to_dto,
     device_to_dto,
+    inventory_item_to_dto,
     vehicle_to_dto,
 )
 from raad.modules.fleet_device.application.validators import (
     ensure_device_has_no_active_assignment,
     ensure_iccid_available,
     ensure_imei_available,
+    ensure_inventory_iccid_available,
+    ensure_inventory_imei_available,
+    ensure_inventory_item_allocatable,
+    ensure_inventory_serial_number_available,
     ensure_plate_no_available,
     ensure_same_organization,
     ensure_serial_number_available,
@@ -72,13 +80,19 @@ from raad.modules.fleet_device.application.validators import (
     ensure_vehicle_has_no_active_device,
 )
 from raad.modules.fleet_device.domain import events as fleet_events
-from raad.modules.fleet_device.domain.entities import Device, DeviceAssignment, Vehicle
+from raad.modules.fleet_device.domain.entities import (
+    Device,
+    DeviceAssignment,
+    DeviceInventoryItem,
+    Vehicle,
+)
 from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
     CameraId,
     DeviceId,
     Iccid,
     Imei,
+    InventoryItemId,
     Msisdn,
     OrganizationId,
     SerialNumber,
@@ -494,3 +508,104 @@ class DeviceApplicationService:
         if device is None:
             raise NotFoundError(f"Device {device_id} not found.")
         return device
+
+
+class DeviceInventoryApplicationService:
+    """ADR-0018 device-inventory use-cases: `receive`/`allocate`. Its own service class
+    (not a method bolted onto `DeviceApplicationService`) — `/device-inventory` is a new REST
+    resource, matching this module's own "split into two services by natural API grouping"
+    precedent (this class's own module docstring, above)."""
+
+    def __init__(self, *, clock: Clock, id_generator: IdGenerator) -> None:
+        self._clock = clock
+        self._id_generator = id_generator
+
+    async def receive_device_inventory_item(
+        self, command: ReceiveDeviceInventoryItemCommand, *, uow: FleetDeviceUnitOfWork
+    ) -> DeviceInventoryItemDTO:
+        async with uow:
+            serial_number = SerialNumber(command.serial_number)
+            await ensure_inventory_serial_number_available(uow, serial_number)
+
+            imei = Imei(command.imei) if command.imei is not None else None
+            if imei is not None:
+                await ensure_inventory_imei_available(uow, imei)
+
+            iccid = Iccid(command.iccid) if command.iccid is not None else None
+            if iccid is not None:
+                await ensure_inventory_iccid_available(uow, iccid)
+
+            item = DeviceInventoryItem.receive(
+                id=InventoryItemId(self._id_generator.new_id()),
+                serial_number=serial_number,
+                imei=imei,
+                iccid=iccid,
+                model=command.model,
+                vendor=command.vendor,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.device_inventory.add(item)
+            uow.record_events(item.pull_domain_events())
+            await uow.commit()
+            return inventory_item_to_dto(item)
+
+    async def allocate_device_inventory_item(
+        self, command: AllocateDeviceInventoryItemCommand, *, uow: FleetDeviceUnitOfWork
+    ) -> DeviceDTO:
+        """ADR-0018 §1: transitions the inventory item to `allocated`, then creates the actual
+        `devices` row via the *existing* `Device.register()` factory, in the same transaction —
+        "allocation to a tenant creates the `devices` row and links back by `inventory_id`",
+        applied exactly.
+
+        **Resolved gap (confirmed with user):** ADR-0018's request body is `{organization_id}`
+        only, but `Device.register()` requires a non-empty `terminal_id`. Resolved by reusing
+        the inventory item's own `serial_number` as the new device's `terminal_id` — grounded in
+        ADR-0009/0010/0015: the only currently-integrated vendor (LSZ) has no real JT808
+        terminal_id concept, and `serial_number` is already its wire identity."""
+        async with uow:
+            item = await self._get_inventory_item_or_raise(uow, command.inventory_item_id)
+            ensure_inventory_item_allocatable(item)
+
+            terminal_id = TerminalId(str(item.serial_number))
+            await ensure_terminal_id_available(uow, terminal_id)
+            if item.imei is not None:
+                await ensure_imei_available(uow, item.imei)
+            if item.iccid is not None:
+                await ensure_iccid_available(uow, item.iccid)
+            await ensure_serial_number_available(uow, item.serial_number)
+
+            organization_id = OrganizationId(command.organization_id)
+            item.allocate(
+                organization_id=organization_id,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+
+            device = Device.register(
+                id=DeviceId(self._id_generator.new_id()),
+                organization_id=organization_id,
+                terminal_id=terminal_id,
+                model=item.model,
+                vendor=item.vendor,
+                imei=item.imei,
+                iccid=item.iccid,
+                serial_number=item.serial_number,
+                inventory_id=item.id,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.devices.add(device)
+            uow.record_events(item.pull_domain_events())
+            uow.record_events(device.pull_domain_events())
+            await uow.commit()
+            return device_to_dto(device)
+
+    @staticmethod
+    async def _get_inventory_item_or_raise(
+        uow: FleetDeviceUnitOfWork, inventory_item_id: str
+    ) -> DeviceInventoryItem:
+        item = await uow.device_inventory.get(InventoryItemId(inventory_item_id))
+        if item is None:
+            raise NotFoundError(f"Device inventory item {inventory_item_id} not found.")
+        return item

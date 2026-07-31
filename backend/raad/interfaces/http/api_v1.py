@@ -26,7 +26,11 @@ from fastapi import APIRouter, Security
 from fastapi.security import HTTPBearer
 
 from raad.modules.billing.api.routers import billing_router
-from raad.modules.fleet_device.api.routers import devices_router, vehicles_router
+from raad.modules.fleet_device.api.routers import (
+    device_inventory_router,
+    devices_router,
+    vehicles_router,
+)
 from raad.modules.iam.api.routers import auth_router, users_router
 from raad.modules.notifications.api.routers import notifications_router
 from raad.modules.organization.api.routers import organizations_router, regions_router
@@ -66,6 +70,9 @@ api_router.include_router(
     vehicles_router, prefix="/vehicles", tags=["fleet"]
 )  # fleet_device (C3)
 api_router.include_router(devices_router, prefix="/devices", tags=["fleet"])
+api_router.include_router(
+    device_inventory_router, prefix="/device-inventory", tags=["fleet"]
+)  # ADR-0018
 
 api_router.include_router(
     students_router, prefix="/students", tags=["transport-ops"]

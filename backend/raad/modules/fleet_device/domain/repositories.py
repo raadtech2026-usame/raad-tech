@@ -28,6 +28,7 @@ from raad.core.pagination import (
 from raad.modules.fleet_device.domain.entities import (
     Device,
     DeviceAssignment,
+    DeviceInventoryItem,
     Vehicle,
 )
 from raad.modules.fleet_device.domain.value_objects import (
@@ -35,6 +36,7 @@ from raad.modules.fleet_device.domain.value_objects import (
     DeviceId,
     Iccid,
     Imei,
+    InventoryItemId,
     SerialNumber,
     TerminalId,
     VehicleId,
@@ -155,4 +157,37 @@ class DeviceAssignmentRepository(ABC):
 
     @abstractmethod
     def add(self, assignment: DeviceAssignment) -> None:
+        raise NotImplementedError
+
+
+class DeviceInventoryRepository(ABC):
+    """ADR-0018 §1. No `list_all`/`list_page` — no approved route needs one this phase
+    (ADR-0018 §2 documents only the two `POST` routes); adding one now would be surface with
+    no caller, the same "don't build ahead of an approved contract" discipline this module's
+    own router docstring already states for camera registration."""
+
+    @abstractmethod
+    async def get(self, inventory_item_id: InventoryItemId) -> DeviceInventoryItem | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_serial_number(
+        self, serial_number: SerialNumber
+    ) -> DeviceInventoryItem | None:
+        """Backs the global serial-number uniqueness pre-check within `device_inventory`'s own
+        table (`ux_device_inventory__serial_number`)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_imei(self, imei: Imei) -> DeviceInventoryItem | None:
+        """Backs the global IMEI uniqueness pre-check within `device_inventory`'s own table."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_iccid(self, iccid: Iccid) -> DeviceInventoryItem | None:
+        """Backs the global ICCID uniqueness pre-check within `device_inventory`'s own table."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, item: DeviceInventoryItem) -> None:
         raise NotImplementedError

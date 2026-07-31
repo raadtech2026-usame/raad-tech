@@ -40,9 +40,11 @@ from raad.modules.fleet_device.domain.value_objects import (
     CameraId,
     CameraPosition,
     DeviceId,
+    DeviceInventoryState,
     DeviceLifecycleState,
     Iccid,
     Imei,
+    InventoryItemId,
     Msisdn,
     OrganizationId,
     SerialNumber,
@@ -257,6 +259,7 @@ class Device(_AggregateRoot):
         created_at: datetime,
         updated_at: datetime,
         cameras: list[Camera] | None = None,
+        inventory_id: InventoryItemId | None = None,
     ) -> None:
         super().__init__()
         self.id = id
@@ -274,6 +277,12 @@ class Device(_AggregateRoot):
         self.created_at = created_at
         self.updated_at = updated_at
         self._cameras: list[Camera] = list(cameras) if cameras else []
+        #: ADR-0018 §1: set only when this device was created via `POST
+        #: /device-inventory/{id}/allocate` (`DeviceInventoryApplicationService.
+        #: allocate_device_inventory_item`); `None` for every device registered the
+        #: pre-existing way (`POST /devices` / `register_device`). Zero change to this
+        #: aggregate's own lifecycle state machine — purely an additive provenance link.
+        self.inventory_id = inventory_id
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Device) and self.id == other.id
@@ -300,10 +309,13 @@ class Device(_AggregateRoot):
         iccid: Iccid | None = None,
         serial_number: SerialNumber | None = None,
         auth_key_hash: str | None = None,
+        inventory_id: InventoryItemId | None = None,
         clock: Clock,
         actor_id: str | None = None,
     ) -> "Device":
-        """Onboarding factory (Phase 2 §19.2: "[*] --> Registered: device onboarded")."""
+        """Onboarding factory (Phase 2 §19.2: "[*] --> Registered: device onboarded").
+        `inventory_id` (ADR-0018, additive, default `None`) is set only by the device-inventory
+        allocation use-case — every pre-existing call site stays source-compatible."""
         now = clock.now()
         device = cls(
             id=id,
@@ -320,6 +332,7 @@ class Device(_AggregateRoot):
             last_seen_at=None,
             created_at=now,
             updated_at=now,
+            inventory_id=inventory_id,
         )
         device._record(
             fleet_events.device_registered(
@@ -331,6 +344,7 @@ class Device(_AggregateRoot):
                 occurred_at=clock.now(),
                 actor_id=actor_id,
                 serial_number=str(serial_number) if serial_number is not None else None,
+                inventory_id=str(inventory_id) if inventory_id is not None else None,
             )
         )
         return device
@@ -575,4 +589,126 @@ class DeviceAssignment(_AggregateRoot):
                 occurred_at=self.unassigned_at,
                 actor_id=actor_id,
             )
+        )
+
+
+class DeviceInventoryItem(_AggregateRoot):
+    """`device_inventory` (ADR-0018 §1): a platform-scoped, pre-tenant hardware pool — "like
+    `regions`/`plans`, this is platform-level stock", deliberately carrying no
+    `organization_id` column of its own. `allocate()` records which organization an item was
+    given to only on the resulting `DomainEvent`'s payload, never as a persisted column on this
+    aggregate (ADR-0018 verbatim) — the actual, queryable tenant link lives on the `Device` row
+    `DeviceInventoryApplicationService.allocate_device_inventory_item` creates immediately after,
+    via `Device.inventory_id` pointing back here.
+
+    State machine (ADR-0018's exact four values):
+
+        manufactured ──?──► in_stock ──allocate()──► allocated
+        (any) ──?──► scrapped (terminal)
+
+    Only `in_stock ──allocate()──► allocated` is implemented this phase — `receive()` skips
+    `manufactured` and constructs directly into `in_stock` (ADR-0018 itself calls the exact
+    initial state "an implementation choice, not user-facing this phase"), and no `scrap()`
+    transition exists yet (no documented use-case/route reaches it). Same idempotent-same-state-
+    no-op / `_raise_illegal_transition`-on-any-other-state shape as `Device`'s own lifecycle
+    methods."""
+
+    def __init__(
+        self,
+        *,
+        id: InventoryItemId,
+        serial_number: SerialNumber,
+        imei: Imei | None,
+        iccid: Iccid | None,
+        model: str | None,
+        vendor: str | None,
+        state: DeviceInventoryState,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        self.id = id
+        self.serial_number = serial_number
+        self.imei = imei
+        self.iccid = iccid
+        self.model = model
+        self.vendor = vendor
+        self.state = state
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, DeviceInventoryItem) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    def receive(
+        cls,
+        *,
+        id: InventoryItemId,
+        serial_number: SerialNumber,
+        imei: Imei | None = None,
+        iccid: Iccid | None = None,
+        model: str | None = None,
+        vendor: str | None = None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "DeviceInventoryItem":
+        """Supplier → RAAD receives stock (ADR-0018 §1/§2: `POST /device-inventory`)."""
+        now = clock.now()
+        item = cls(
+            id=id,
+            serial_number=serial_number,
+            imei=imei,
+            iccid=iccid,
+            model=model,
+            vendor=vendor,
+            state=DeviceInventoryState.IN_STOCK,
+            created_at=now,
+            updated_at=now,
+        )
+        item._record(
+            fleet_events.device_inventory_item_received(
+                inventory_item_id=str(id),
+                serial_number=str(serial_number),
+                imei=str(imei) if imei is not None else None,
+                iccid=str(iccid) if iccid is not None else None,
+                model=model,
+                vendor=vendor,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+        return item
+
+    def allocate(
+        self, *, organization_id: OrganizationId, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """RAAD allocates this item to an Organization (ADR-0018 §1/§2:
+        `POST /device-inventory/{id}/allocate`). Idempotent no-op if already `ALLOCATED` — this
+        is a state-machine-correctness guard only, matching every other aggregate's precedent
+        here; the *application* layer runs its own `ensure_inventory_item_allocatable` pre-check
+        before ever calling this, since the side effect of allocation (creating a new `devices`
+        row) must never silently repeat on a retry the way a plain state no-op could imply."""
+        if self.state == DeviceInventoryState.ALLOCATED:
+            return
+        if self.state != DeviceInventoryState.IN_STOCK:
+            self._raise_illegal_transition("allocate")
+        self.state = DeviceInventoryState.ALLOCATED
+        self.updated_at = clock.now()
+        self._record(
+            fleet_events.device_inventory_item_allocated(
+                inventory_item_id=str(self.id),
+                organization_id=str(organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def _raise_illegal_transition(self, operation: str) -> None:
+        raise RuleViolationError(
+            f"Illegal device inventory transition: cannot {operation} an item in state "
+            f"{self.state.value!r} (ADR-0018)."
         )

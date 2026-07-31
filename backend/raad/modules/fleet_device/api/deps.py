@@ -15,6 +15,7 @@ from raad.interfaces.http.deps import get_container, get_scope
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.services import (
     DeviceApplicationService,
+    DeviceInventoryApplicationService,
     VehicleApplicationService,
 )
 
@@ -46,3 +47,9 @@ def get_device_service(
     container: Container = Depends(get_container),
 ) -> DeviceApplicationService:
     return container.resolve(DeviceApplicationService)
+
+
+def get_device_inventory_service(
+    container: Container = Depends(get_container),
+) -> DeviceInventoryApplicationService:
+    return container.resolve(DeviceInventoryApplicationService)

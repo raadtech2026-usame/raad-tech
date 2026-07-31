@@ -19,6 +19,7 @@ from raad.modules.fleet_device.domain.entities import (
     Camera,
     Device,
     DeviceAssignment,
+    DeviceInventoryItem,
     Vehicle,
 )
 
@@ -105,6 +106,7 @@ class DeviceDTO:
     created_at: datetime
     updated_at: datetime
     cameras: tuple[CameraDTO, ...]
+    inventory_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +163,7 @@ def device_to_dto(device: Device) -> DeviceDTO:
         created_at=device.created_at,
         updated_at=device.updated_at,
         cameras=tuple(camera_to_dto(camera) for camera in device.cameras),
+        inventory_id=str(device.inventory_id) if device.inventory_id is not None else None,
     )
 
 
@@ -176,4 +179,33 @@ def assignment_to_dto(assignment: DeviceAssignment) -> DeviceAssignmentDTO:
         assigned_at=assignment.assigned_at,
         unassigned_at=assignment.unassigned_at,
         is_active=assignment.is_active,
+    )
+
+
+@dataclass(frozen=True)
+class DeviceInventoryItemDTO:
+    id: str
+    serial_number: str
+    imei: str | None
+    iccid: str | None
+    model: str | None
+    vendor: str | None
+    state: str
+    created_at: datetime
+    updated_at: datetime
+
+
+def inventory_item_to_dto(item: DeviceInventoryItem) -> DeviceInventoryItemDTO:
+    """Shared mapper — the only place a `DeviceInventoryItem` aggregate is projected into its
+    DTO."""
+    return DeviceInventoryItemDTO(
+        id=str(item.id),
+        serial_number=str(item.serial_number),
+        imei=str(item.imei) if item.imei is not None else None,
+        iccid=str(item.iccid) if item.iccid is not None else None,
+        model=item.model,
+        vendor=item.vendor,
+        state=item.state.value,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
     )

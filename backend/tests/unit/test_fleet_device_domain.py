@@ -13,15 +13,22 @@ from datetime import datetime, timezone
 
 from raad.core.errors.exceptions import ConflictError, DomainError, RuleViolationError
 from raad.core.time.clock import Clock
-from raad.modules.fleet_device.domain.entities import Device, DeviceAssignment, Vehicle
+from raad.modules.fleet_device.domain.entities import (
+    Device,
+    DeviceAssignment,
+    DeviceInventoryItem,
+    Vehicle,
+)
 from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
     CameraId,
     CameraPosition,
     DeviceId,
+    DeviceInventoryState,
     DeviceLifecycleState,
     Iccid,
     Imei,
+    InventoryItemId,
     Msisdn,
     OrganizationId,
     SerialNumber,
@@ -35,6 +42,7 @@ VALID_DEVICE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3ME"
 VALID_ASSIGNMENT_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MF"
 VALID_CAMERA_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MG"
+VALID_INVENTORY_ITEM_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MH"
 
 
 class FixedClock(Clock):
@@ -489,6 +497,106 @@ class DeviceAssignmentTests(unittest.TestCase):
         )
         self.assertFalse(hasattr(assignment, "driver_id"))
         self.assertFalse(hasattr(assignment, "driver"))
+
+
+class DeviceInventoryItemTests(unittest.TestCase):
+    """ADR-0018. Same idempotent-same-state-no-op / illegal-transition-elsewhere shape as
+    `DeviceLifecycleTests`, above."""
+
+    def make_inventory_item(
+        self, state: DeviceInventoryState = DeviceInventoryState.IN_STOCK
+    ) -> DeviceInventoryItem:
+        return DeviceInventoryItem(
+            id=InventoryItemId(VALID_INVENTORY_ITEM_ULID),
+            serial_number=SerialNumber("SN-INV-001"),
+            imei=None,
+            iccid=None,
+            model=None,
+            vendor=None,
+            state=state,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+    def test_receive_starts_in_stock_and_records_event(self) -> None:
+        item = DeviceInventoryItem.receive(
+            id=InventoryItemId(VALID_INVENTORY_ITEM_ULID),
+            serial_number=SerialNumber("SN-INV-001"),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(item.state, DeviceInventoryState.IN_STOCK)
+        self.assertEqual(
+            item.pull_domain_events()[0].event_type, "DeviceInventoryItemReceived"
+        )
+
+    def test_allocate_from_in_stock_is_legal_and_records_event(self) -> None:
+        item = self.make_inventory_item(DeviceInventoryState.IN_STOCK)
+        item.allocate(
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(item.state, DeviceInventoryState.ALLOCATED)
+        event = item.pull_domain_events()[0]
+        self.assertEqual(event.event_type, "DeviceInventoryItemAllocated")
+        self.assertEqual(event.payload["organization_id"], VALID_ORG_ULID)
+        self.assertEqual(event.org_id, VALID_ORG_ULID)
+
+    def test_allocate_already_allocated_is_idempotent_no_op(self) -> None:
+        """Regression: the domain-level state machine must be idempotent-safe (matching every
+        other aggregate's precedent), even though the *application* layer's own
+        `ensure_inventory_item_allocatable` guard is what actually prevents a real double-submit
+        from reaching this path in production (see `application/validators.py`)."""
+        item = self.make_inventory_item(DeviceInventoryState.ALLOCATED)
+        item.allocate(
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(item.pull_domain_events(), [])
+
+    def test_allocate_from_manufactured_is_illegal(self) -> None:
+        item = self.make_inventory_item(DeviceInventoryState.MANUFACTURED)
+        with self.assertRaises(RuleViolationError):
+            item.allocate(
+                organization_id=OrganizationId(VALID_ORG_ULID),
+                clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+            )
+
+    def test_allocate_from_scrapped_is_illegal(self) -> None:
+        item = self.make_inventory_item(DeviceInventoryState.SCRAPPED)
+        with self.assertRaises(RuleViolationError):
+            item.allocate(
+                organization_id=OrganizationId(VALID_ORG_ULID),
+                clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+            )
+
+
+class DeviceInventoryLinkTests(unittest.TestCase):
+    """ADR-0018: `Device.inventory_id` is additive and defaults to `None` — every pre-existing
+    `Device.register()` call site (no `inventory_id` argument) must stay source-compatible."""
+
+    def test_register_without_inventory_id_defaults_to_none(self) -> None:
+        device = Device.register(
+            id=DeviceId(VALID_DEVICE_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            terminal_id=TerminalId("TERM-001"),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        self.assertIsNone(device.inventory_id)
+        self.assertIsNone(device.pull_domain_events()[0].payload["inventory_id"])
+
+    def test_register_with_inventory_id_carries_through_to_event(self) -> None:
+        device = Device.register(
+            id=DeviceId(VALID_DEVICE_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            terminal_id=TerminalId("SN-INV-001"),
+            inventory_id=InventoryItemId(VALID_INVENTORY_ITEM_ULID),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(device.inventory_id, InventoryItemId(VALID_INVENTORY_ITEM_ULID))
+        self.assertEqual(
+            device.pull_domain_events()[0].payload["inventory_id"],
+            VALID_INVENTORY_ITEM_ULID,
+        )
 
 
 if __name__ == "__main__":

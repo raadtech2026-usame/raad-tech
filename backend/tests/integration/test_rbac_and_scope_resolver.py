@@ -104,14 +104,20 @@ class IamPermissionEvaluatorRoundTripTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_seeded_matrix_denies_org_admin_device_management(self) -> None:
         """Regression: Device Domain Overhaul (migration `22e94bc4e924`) — RAAD owns all
-        hardware, so `org_admin` (a school's own admin) must hold zero `fleet_device.devices.*`
-        permissions, not even read. `fleet_device.vehicles.*` stays granted (vehicles are
-        legitimately school fleet data)."""
+        hardware, so `org_admin` (a school's own admin) must hold zero
+        `fleet_device.devices.*` *management* permissions. `fleet_device.vehicles.*` stays
+        granted (vehicles are legitimately school fleet data).
+
+        **ADR-0018 §3 amendment**: `org_admin` now *does* hold `fleet_device.devices.read` —
+        a deliberate, narrow reversal (migration `7eb581884c39`) so an Organization can see a
+        device RAAD allocated to it. Every other `fleet_device.devices.*` permission (create/
+        update/activate/assign/reassign/unassign) is still denied — RAAD retains exclusive
+        device lifecycle control; see this test's own sibling,
+        `test_seeded_matrix_grants_org_admin_read_only_device_visibility`, for the read grant."""
         evaluator = self._evaluator()
         principal = Principal(user_id="u1", role=Role.ORG_ADMIN, org_id="org1")
         for permission in (
             "fleet_device.devices.create",
-            "fleet_device.devices.read",
             "fleet_device.devices.update",
             "fleet_device.devices.activate",
             "fleet_device.devices.assign",
@@ -125,6 +131,41 @@ class IamPermissionEvaluatorRoundTripTests(unittest.IsolatedAsyncioTestCase):
             principal, Permission("fleet_device.vehicles.read")
         )
         self.assertTrue(result)
+
+    async def test_seeded_matrix_grants_org_admin_read_only_device_visibility(self) -> None:
+        """ADR-0018 §3 (migration `7eb581884c39`): a narrow, tenant-scoped, read-only reversal
+        of the Device Domain Overhaul's original zero-visibility posture — `org_admin` can now
+        see (never manage) a device RAAD allocated to their own organization."""
+        evaluator = self._evaluator()
+        principal = Principal(user_id="u1", role=Role.ORG_ADMIN, org_id="org1")
+        result = await evaluator.has_permission(
+            principal, Permission("fleet_device.devices.read")
+        )
+        self.assertTrue(result)
+
+    async def test_seeded_matrix_grants_founder_and_support_staff_device_inventory(
+        self,
+    ) -> None:
+        """ADR-0018 §2 (migration `7eb581884c39`): the two new `POST /device-inventory` routes
+        are RAAD-only — `founder`/`support_staff` hold both; `org_admin` holds neither
+        (device-inventory management, unlike read-only device visibility, stays exclusively
+        RAAD's)."""
+        evaluator = self._evaluator()
+        for permission in (
+            "fleet_device.device_inventory.create",
+            "fleet_device.device_inventory.allocate",
+        ):
+            for role in (Role.FOUNDER, Role.SUPPORT_STAFF):
+                with self.subTest(permission=permission, role=role):
+                    principal = Principal(user_id="u1", role=role, org_id=None)
+                    result = await evaluator.has_permission(
+                        principal, Permission(permission)
+                    )
+                    self.assertTrue(result)
+            with self.subTest(permission=permission, role=Role.ORG_ADMIN):
+                principal = Principal(user_id="u1", role=Role.ORG_ADMIN, org_id="org1")
+                result = await evaluator.has_permission(principal, Permission(permission))
+                self.assertFalse(result)
 
     async def test_seeded_matrix_grants_support_staff_device_assignment(self) -> None:
         """Regression: Device Domain Overhaul (migration `22e94bc4e924`) — `support_staff` (the

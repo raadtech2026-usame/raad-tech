@@ -24,6 +24,7 @@ from raad.modules.fleet_device.domain.entities import (
     Camera,
     Device,
     DeviceAssignment,
+    DeviceInventoryItem,
     Vehicle,
 )
 from raad.modules.fleet_device.domain.value_objects import (
@@ -31,9 +32,11 @@ from raad.modules.fleet_device.domain.value_objects import (
     CameraId,
     CameraPosition,
     DeviceId,
+    DeviceInventoryState,
     DeviceLifecycleState,
     Iccid,
     Imei,
+    InventoryItemId,
     Msisdn,
     OrganizationId,
     SerialNumber,
@@ -44,6 +47,7 @@ from raad.modules.fleet_device.domain.value_objects import (
 from raad.modules.fleet_device.infra.models import (
     CameraModel,
     DeviceAssignmentModel,
+    DeviceInventoryModel,
     DeviceModel,
     VehicleModel,
 )
@@ -144,6 +148,9 @@ def device_to_model(
     # the same class of bug `created_at`/`updated_at` below already guard against, just never
     # triggered because nothing ever set this column to a real (tz-aware `Clock.now()`) value.
     model.last_seen_at = _naive(device.last_seen_at)
+    model.inventory_id = (
+        str(device.inventory_id) if device.inventory_id is not None else None
+    )
     model.created_at = _naive(device.created_at)
     model.updated_at = _naive(device.updated_at)
 
@@ -187,6 +194,9 @@ def model_to_device(model: DeviceModel) -> Device:
         created_at=model.created_at,
         updated_at=model.updated_at,
         cameras=[model_to_camera(row) for row in model.cameras],
+        inventory_id=(
+            InventoryItemId(model.inventory_id) if model.inventory_id is not None else None
+        ),
     )
 
 
@@ -219,4 +229,36 @@ def model_to_assignment(model: DeviceAssignmentModel) -> DeviceAssignment:
         assigned_by=model.assigned_by,
         assigned_at=model.assigned_at,
         unassigned_at=model.unassigned_at,
+    )
+
+
+# --- DeviceInventoryItem (ADR-0018) -------------------------------------------------------
+
+
+def inventory_item_to_model(
+    item: DeviceInventoryItem, *, existing: DeviceInventoryModel | None = None
+) -> DeviceInventoryModel:
+    model = existing if existing is not None else DeviceInventoryModel(id=str(item.id))
+    model.serial_number = str(item.serial_number)
+    model.imei = str(item.imei) if item.imei is not None else None
+    model.iccid = str(item.iccid) if item.iccid is not None else None
+    model.model = item.model
+    model.vendor = item.vendor
+    model.state = item.state.value
+    model.created_at = _naive(item.created_at)
+    model.updated_at = _naive(item.updated_at)
+    return model
+
+
+def model_to_inventory_item(model: DeviceInventoryModel) -> DeviceInventoryItem:
+    return DeviceInventoryItem(
+        id=InventoryItemId(model.id),
+        serial_number=SerialNumber(model.serial_number),
+        imei=Imei(model.imei) if model.imei is not None else None,
+        iccid=Iccid(model.iccid) if model.iccid is not None else None,
+        model=model.model,
+        vendor=model.vendor,
+        state=DeviceInventoryState(model.state),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )

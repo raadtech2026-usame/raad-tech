@@ -88,6 +88,8 @@ class DeviceResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     cameras: list[CameraResponse]
+    #: ADR-0018: set only for a device created via `POST /device-inventory/{id}/allocate`.
+    inventory_id: str | None = None
 
 
 class RegisterDeviceRequest(BaseModel):
@@ -136,3 +138,34 @@ class DeviceAssignmentResponse(BaseModel):
     assigned_at: datetime
     unassigned_at: datetime | None
     is_active: bool
+
+
+# --- Device inventory (ADR-0018) -----------------------------------------------------------
+
+
+class DeviceInventoryItemResponse(BaseModel):
+    id: str
+    serial_number: str
+    imei: str | None
+    iccid: str | None
+    model: str | None
+    vendor: str | None
+    state: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReceiveDeviceInventoryItemRequest(BaseModel):
+    """ADR-0018 §2: `POST /device-inventory`."""
+
+    serial_number: str
+    imei: str | None = None
+    iccid: str | None = None
+    model: str | None = None
+    vendor: str | None = None
+
+
+class AllocateDeviceInventoryItemRequest(BaseModel):
+    """ADR-0018 §2: `POST /device-inventory/{id}/allocate` — body `{organization_id}` only."""
+
+    organization_id: str

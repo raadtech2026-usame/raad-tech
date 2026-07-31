@@ -1,5 +1,6 @@
 """HTTP surface of the `fleet_device` module (C3) — Phase 7.4. `vehicles_router` mounts at
-`/api/v1/vehicles`, `devices_router` at `/api/v1/devices` (`interfaces/http/api_v1.py`).
+`/api/v1/vehicles`, `devices_router` at `/api/v1/devices`, `device_inventory_router` at
+`/api/v1/device-inventory` (ADR-0018) (`interfaces/http/api_v1.py`).
 
 Thin controllers only (Backend LLD §16.2): parse the request DTO, call exactly one
 application-service method, return the response DTO. No business logic, no repository/
@@ -38,6 +39,12 @@ carries (CLAUDE.md's "Known gaps"). Same addition, same reasoning, as `GET /user
   Contracts §4.2 lists no camera route, so none is exposed (routes are contract-driven, not
   capability-driven). `RegisterCameraCommand` stays reachable for the future contract
   revision or provisioning flow that documents it.
+- **No `GET /device-inventory` / `GET /device-inventory/{id}`** — ADR-0018 §2 documents only
+  the two `POST` routes this file implements; same contract-driven-not-capability-driven
+  posture as camera registration, immediately above. A real, flagged usability gap this
+  creates: RAAD staff has no way to browse in-stock inventory before allocating from it —
+  `POST /device-inventory/{id}/allocate` requires already knowing an `inventory_item_id`.
+  Deferred to a future ADR-0018 amendment or contract revision, not silently invented around.
 """
 
 from __future__ import annotations
@@ -57,16 +64,20 @@ from raad.interfaces.http.deps import (
 )
 from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
 from raad.modules.fleet_device.api.deps import (
+    get_device_inventory_service,
     get_device_service,
     get_fleet_device_uow,
     get_vehicle_service,
 )
 from raad.modules.fleet_device.api.schemas import (
+    AllocateDeviceInventoryItemRequest,
     AssignDeviceRequest,
     CameraResponse,
     DeviceAssignmentResponse,
+    DeviceInventoryItemResponse,
     DeviceResponse,
     ReassignDeviceRequest,
+    ReceiveDeviceInventoryItemRequest,
     RegisterDeviceRequest,
     RegisterVehicleRequest,
     TrackingStatusResponse,
@@ -77,11 +88,13 @@ from raad.modules.fleet_device.api.schemas import (
 from raad.modules.fleet_device.application.commands import (
     ActivateDeviceCommand,
     ActivateVehicleCommand,
+    AllocateDeviceInventoryItemCommand,
     AssignDeviceToVehicleCommand,
     DeactivateVehicleCommand,
     MarkVehicleUnderMaintenanceCommand,
     ReactivateDeviceCommand,
     ReassignDeviceCommand,
+    ReceiveDeviceInventoryItemCommand,
     RegisterDeviceCommand,
     RegisterVehicleCommand,
     RetireDeviceCommand,
@@ -92,6 +105,7 @@ from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import (
     DeviceAssignmentDTO,
     DeviceDTO,
+    DeviceInventoryItemDTO,
     GetDeviceByIdQuery,
     GetVehicleByIdQuery,
     ListDevicesQuery,
@@ -100,11 +114,13 @@ from raad.modules.fleet_device.application.queries import (
 )
 from raad.modules.fleet_device.application.services import (
     DeviceApplicationService,
+    DeviceInventoryApplicationService,
     VehicleApplicationService,
 )
 
 vehicles_router = APIRouter()
 devices_router = APIRouter()
+device_inventory_router = APIRouter()
 
 
 def _vehicle_dto_to_response(vehicle: VehicleDTO) -> VehicleResponse:
@@ -149,6 +165,7 @@ def _device_dto_to_response(device: DeviceDTO) -> DeviceResponse:
             )
             for camera in device.cameras
         ],
+        inventory_id=device.inventory_id,
     )
 
 
@@ -164,6 +181,22 @@ def _assignment_dto_to_response(
         assigned_at=assignment.assigned_at,
         unassigned_at=assignment.unassigned_at,
         is_active=assignment.is_active,
+    )
+
+
+def _inventory_item_dto_to_response(
+    item: DeviceInventoryItemDTO,
+) -> DeviceInventoryItemResponse:
+    return DeviceInventoryItemResponse(
+        id=item.id,
+        serial_number=item.serial_number,
+        imei=item.imei,
+        iccid=item.iccid,
+        model=item.model,
+        vendor=item.vendor,
+        state=item.state,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
     )
 
 
@@ -553,3 +586,71 @@ async def unassign_device(
         UnassignDeviceCommand(device_id=device_id, actor=principal), uow=uow
     )
     return _assignment_dto_to_response(assignment)
+
+
+# --- Device inventory (ADR-0018) -------------------------------------------------------
+
+
+@device_inventory_router.post(
+    "",
+    response_model=DeviceInventoryItemResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Receive new device stock into the platform inventory",
+    description=(
+        "RAAD-only (founder/support_staff) — ADR-0018 §2. Supplier → RAAD receives new "
+        "hardware into `device_inventory`, a platform-scoped pre-tenant pool (no "
+        "organization_id) — not yet assigned to any Organization."
+    ),
+)
+async def receive_device_inventory_item(
+    body: ReceiveDeviceInventoryItemRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("fleet_device.device_inventory.create"))
+    ),
+    device_inventory_service: DeviceInventoryApplicationService = Depends(
+        get_device_inventory_service
+    ),
+    uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> DeviceInventoryItemResponse:
+    command = ReceiveDeviceInventoryItemCommand(
+        serial_number=body.serial_number,
+        imei=body.imei,
+        iccid=body.iccid,
+        model=body.model,
+        vendor=body.vendor,
+        actor=principal,
+    )
+    item = await device_inventory_service.receive_device_inventory_item(command, uow=uow)
+    return _inventory_item_dto_to_response(item)
+
+
+@device_inventory_router.post(
+    "/{inventory_item_id}/allocate",
+    response_model=DeviceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Allocate an inventory item to an Organization",
+    description=(
+        "RAAD-only (founder/support_staff) — ADR-0018 §2. Body `{organization_id}` only. "
+        "Transitions the inventory item to `allocated` and creates the resulting `devices` "
+        "row in the same transaction, via the existing `Device.register()` factory — the "
+        "response is that new device, not the inventory item."
+    ),
+)
+async def allocate_device_inventory_item(
+    inventory_item_id: str,
+    body: AllocateDeviceInventoryItemRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("fleet_device.device_inventory.allocate"))
+    ),
+    device_inventory_service: DeviceInventoryApplicationService = Depends(
+        get_device_inventory_service
+    ),
+    uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> DeviceResponse:
+    command = AllocateDeviceInventoryItemCommand(
+        inventory_item_id=inventory_item_id,
+        organization_id=body.organization_id,
+        actor=principal,
+    )
+    device = await device_inventory_service.allocate_device_inventory_item(command, uow=uow)
+    return _device_dto_to_response(device)

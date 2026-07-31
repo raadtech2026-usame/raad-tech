@@ -79,6 +79,23 @@ class AssignmentId:
 
 
 @dataclass(frozen=True)
+class InventoryItemId:
+    """`device_inventory.id` (ADR-0018) — minted and owned by this module, same strict-ULID
+    treatment as `DeviceId`."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(
+                f"InventoryItemId must be a 26-character ULID: {self.value!r}"
+            )
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
 class OrganizationId:
     """A reference to an `Organization` aggregate owned by the `organization` module
     (Database Design §4.2) — this module never loads or mutates that aggregate, only stores
@@ -236,3 +253,17 @@ class CameraPosition(str, Enum):
     IN_CABIN = "in_cabin"
     ROAD_FACING = "road_facing"
     OTHER = "other"
+
+
+class DeviceInventoryState(str, Enum):
+    """ADR-0018 §1: `device_inventory.state ENUM(manufactured,in_stock,allocated,scrapped)`.
+    `receive()` (`entities.DeviceInventoryItem`) deliberately skips straight to `IN_STOCK` —
+    ADR-0018 itself calls the exact initial state "an implementation choice, not user-facing
+    this phase" — and no `scrap()` transition is implemented this phase (no documented
+    use-case/route reaches it); `SCRAPPED` stays a legal value only to match the ADR's exact
+    enum shape at the database level."""
+
+    MANUFACTURED = "manufactured"
+    IN_STOCK = "in_stock"
+    ALLOCATED = "allocated"
+    SCRAPPED = "scrapped"

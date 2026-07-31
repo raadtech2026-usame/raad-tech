@@ -46,10 +46,12 @@ from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.domain.entities import (
     Device,
     DeviceAssignment,
+    DeviceInventoryItem,
     Vehicle,
 )
 from raad.modules.fleet_device.domain.repositories import (
     DeviceAssignmentRepository,
+    DeviceInventoryRepository,
     DeviceRepository,
     VehicleRepository,
 )
@@ -58,6 +60,7 @@ from raad.modules.fleet_device.domain.value_objects import (
     DeviceId,
     Iccid,
     Imei,
+    InventoryItemId,
     SerialNumber,
     TerminalId,
     VehicleId,
@@ -65,13 +68,16 @@ from raad.modules.fleet_device.domain.value_objects import (
 from raad.modules.fleet_device.infra.mappers import (
     assignment_to_model,
     device_to_model,
+    inventory_item_to_model,
     model_to_assignment,
     model_to_device,
+    model_to_inventory_item,
     model_to_vehicle,
     vehicle_to_model,
 )
 from raad.modules.fleet_device.infra.models import (
     DeviceAssignmentModel,
+    DeviceInventoryModel,
     DeviceModel,
     VehicleModel,
 )
@@ -321,6 +327,69 @@ class SqlAlchemyDeviceAssignmentRepository(
         return assignment
 
 
+class SqlAlchemyDeviceInventoryRepository(
+    SqlAlchemyRepositoryBase[DeviceInventoryModel], DeviceInventoryRepository
+):
+    """ADR-0018 §1. `DeviceInventoryModel` has no `organization_id` column, so
+    `SqlAlchemyRepositoryBase._apply_scope` naturally falls through to unrestricted for every
+    caller regardless of `self._scope` — the platform-scoped posture the ADR wants, with no
+    override needed here. No `filterable_fields`/`sortable_fields`/`searchable_fields` and no
+    `list_page`/`list_all` override — no route needs list/filter/sort this phase."""
+
+    model = DeviceInventoryModel
+
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
+        self._tracked: dict[str, tuple[DeviceInventoryItem, DeviceInventoryModel]] = {}
+
+    async def get(self, inventory_item_id: InventoryItemId) -> DeviceInventoryItem | None:
+        row = await self.get_by_id(str(inventory_item_id))
+        return self._track(row)
+
+    async def get_by_serial_number(
+        self, serial_number: SerialNumber
+    ) -> DeviceInventoryItem | None:
+        statement = select(DeviceInventoryModel).where(
+            DeviceInventoryModel.serial_number == str(serial_number),
+            DeviceInventoryModel.deleted_at.is_(None),
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
+
+    async def get_by_imei(self, imei: Imei) -> DeviceInventoryItem | None:
+        statement = select(DeviceInventoryModel).where(
+            DeviceInventoryModel.imei == str(imei), DeviceInventoryModel.deleted_at.is_(None)
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
+
+    async def get_by_iccid(self, iccid: Iccid) -> DeviceInventoryItem | None:
+        statement = select(DeviceInventoryModel).where(
+            DeviceInventoryModel.iccid == str(iccid),
+            DeviceInventoryModel.deleted_at.is_(None),
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
+
+    def add(self, item: DeviceInventoryItem) -> None:
+        model = inventory_item_to_model(item)
+        super().add(model)
+        self._tracked[str(item.id)] = (item, model)
+
+    def flush_tracked_changes(self) -> None:
+        for item, model in self._tracked.values():
+            inventory_item_to_model(item, existing=model)
+
+    def _track(self, row: DeviceInventoryModel | None) -> DeviceInventoryItem | None:
+        if row is None:
+            return None
+        item = model_to_inventory_item(row)
+        self._tracked[row.id] = (item, row)
+        return item
+
+
 class SqlAlchemyFleetDeviceUnitOfWork(SqlAlchemyUnitOfWork, FleetDeviceUnitOfWork):
     """Concrete `FleetDeviceUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `fleet_device`'s
     three repositories once the session is open, and re-syncs every tracked aggregate's
@@ -333,6 +402,7 @@ class SqlAlchemyFleetDeviceUnitOfWork(SqlAlchemyUnitOfWork, FleetDeviceUnitOfWor
     vehicles: SqlAlchemyVehicleRepository
     devices: SqlAlchemyDeviceRepository
     device_assignments: SqlAlchemyDeviceAssignmentRepository
+    device_inventory: SqlAlchemyDeviceInventoryRepository
 
     async def __aenter__(self) -> "SqlAlchemyFleetDeviceUnitOfWork":
         await super().__aenter__()
@@ -341,10 +411,14 @@ class SqlAlchemyFleetDeviceUnitOfWork(SqlAlchemyUnitOfWork, FleetDeviceUnitOfWor
         self.device_assignments = SqlAlchemyDeviceAssignmentRepository(
             self.session, scope=self.scope
         )
+        self.device_inventory = SqlAlchemyDeviceInventoryRepository(
+            self.session, scope=self.scope
+        )
         return self
 
     async def commit(self) -> None:
         self.vehicles.flush_tracked_changes()
         self.devices.flush_tracked_changes()
         self.device_assignments.flush_tracked_changes()
+        self.device_inventory.flush_tracked_changes()
         await super().commit()

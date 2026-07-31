@@ -97,9 +97,10 @@ billing deleted outright: `SubscriberType`/`SubscriberId`/`RenewParentSubscripti
 `Organization.billing_model`/`BillingScope.PARENT` all removed, not deprecated in place;
 `SubscriptionAccessPolicy` (CR-1) amended per ADR-0006's own Amendment section; a migration
 drops `organizations.billing_model` and `subscriptions.subscriber_type`/`subscriber_id`).
-Device inventory, session cap, and platform analytics remain not-yet-implemented — each
-milestone's own entry will replace this line as it lands, following the same "update as it
-lands" discipline every other phase in this file already follows.
+**Device inventory has landed** — see the Fleet Device bounded-context entry below for the full
+writeup. Session cap and platform analytics remain not-yet-implemented — each milestone's own
+entry will replace this line as it lands, following the same "update as it lands" discipline
+every other phase in this file already follows.
 
 ## Core Technical Domains
 
@@ -233,9 +234,32 @@ raad.interfaces.cli.bootstrap_founder`) closes that gap as a one-time, operator-
   service's own Redis session state, which this query never reads) via a same-module join of
   this context's own `device_assignments`/`devices` tables — the _only_ device-derived data an
   Org Admin session can ever reach; `list_vehicles` deliberately leaves it `null` to avoid an
-  N+1 device lookup per page. `device_inventory` (a pre-tenant hardware pool) and
+  N+1 device lookup per page. **ADR-0018 (Device Inventory & Allocation) has landed**, closing
+  the `device_inventory` half of this bullet's earlier deferral: a new `DeviceInventoryItem`
+  aggregate (`manufactured/in_stock/allocated/scrapped`, `receive()`/`allocate()`) backs
+  `device_inventory` — a platform-scoped, pre-tenant hardware pool with deliberately **no**
+  `organization_id` column, "like `regions`/`plans`". Two new RAAD-only routes,
+  matching ADR-0018 §2 exactly: `POST /device-inventory` (receives stock) and
+  `POST /device-inventory/{id}/allocate` (body `{organization_id}` only — allocates one item to
+  an Organization, transitioning it to `allocated` and creating the resulting `devices` row via
+  the *existing* `Device.register()` factory in the same transaction, linked back by a new
+  nullable `devices.inventory_id`). **Resolved gap, not silently invented around**: ADR-0018's
+  own request body has no `terminal_id` field, but `Device.register()` requires one — resolved
+  (confirmed with the user) by reusing the inventory item's own `serial_number` as the new
+  device's `terminal_id`, grounded in ADR-0009/0010/0015 (the only currently-integrated vendor,
+  LSZ, has no real JT808 terminal_id concept; `serial_number` is already its wire identity). The
+  seeded RBAC matrix gained three grants (migration `7eb581884c39`): `org_admin` →
+  `fleet_device.devices.read` — ADR-0018 §3's own narrow, explicit, flagged reversal of the
+  Device Domain Overhaul's zero-device-visibility posture, read-only, tenant-scoped, no other
+  `fleet_device.devices.*` grant added — satisfying "Organization immediately sees the assigned
+  device" without reopening device management; and `founder`/`support_staff` →
+  `fleet_device.device_inventory.create`/`.allocate`. No `GET /device-inventory` list/detail
+  route exists — ADR-0018 §2 documents only the two `POST` routes, so none is exposed (routes
+  are contract-driven, not capability-driven, matching this module's own existing camera-
+  registration precedent) — flagged as a real usability gap (RAAD staff has no way to browse
+  in-stock inventory before allocating from it) rather than silently invented around.
   `device_status_log` (a durable online/offline transition history, Database Design §7.3)
-  remain documented-but-not-built, deliberately deferred again, not silently dropped.
+  remains documented-but-not-built, deliberately deferred, not silently dropped.
 - **Tracking** — vehicle positions, geofence crossings. `LatestPositionPort` now has a concrete,
   read-only `RedisLatestPositionPort` (`tracking/infra/adapters.py`, Database Design §7.1's
   `vehicle:{id}:last` key), bound in DI whenever `RAAD_REDIS__URL` is configured (no Redis is

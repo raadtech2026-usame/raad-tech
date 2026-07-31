@@ -138,3 +138,30 @@ class ReassignDeviceCommand:
     device_id: str
     new_vehicle_id: str
     actor: Principal
+
+
+# --- DeviceInventoryItem (ADR-0018) ---------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReceiveDeviceInventoryItemCommand:
+    """ADR-0018 §2: `POST /device-inventory`."""
+
+    serial_number: str
+    imei: str | None
+    iccid: str | None
+    model: str | None
+    vendor: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class AllocateDeviceInventoryItemCommand:
+    """ADR-0018 §2: `POST /device-inventory/{id}/allocate` — body `{organization_id}` only.
+    `terminal_id` is deliberately absent here: `DeviceInventoryApplicationService.
+    allocate_device_inventory_item` derives it from the inventory item's own `serial_number`
+    (resolved gap, see that method's own docstring)."""
+
+    inventory_item_id: str
+    organization_id: str
+    actor: Principal

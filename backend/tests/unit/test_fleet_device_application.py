@@ -27,9 +27,11 @@ from raad.core.time.clock import Clock
 from raad.modules.fleet_device.application.commands import (
     ActivateDeviceCommand,
     ActivateVehicleCommand,
+    AllocateDeviceInventoryItemCommand,
     AssignDeviceToVehicleCommand,
     MarkVehicleUnderMaintenanceCommand,
     ReassignDeviceCommand,
+    ReceiveDeviceInventoryItemCommand,
     RecordDeviceSeenCommand,
     RegisterCameraCommand,
     RegisterDeviceCommand,
@@ -47,11 +49,18 @@ from raad.modules.fleet_device.application.queries import (
 )
 from raad.modules.fleet_device.application.services import (
     DeviceApplicationService,
+    DeviceInventoryApplicationService,
     VehicleApplicationService,
 )
-from raad.modules.fleet_device.domain.entities import Device, DeviceAssignment, Vehicle
+from raad.modules.fleet_device.domain.entities import (
+    Device,
+    DeviceAssignment,
+    DeviceInventoryItem,
+    Vehicle,
+)
 from raad.modules.fleet_device.domain.repositories import (
     DeviceAssignmentRepository,
+    DeviceInventoryRepository,
     DeviceRepository,
     VehicleRepository,
 )
@@ -59,6 +68,7 @@ from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
     CameraPosition,
     DeviceId,
+    InventoryItemId,
     TerminalId,
     VehicleId,
 )
@@ -269,16 +279,47 @@ class InMemoryDeviceAssignmentRepository(DeviceAssignmentRepository):
         self.by_id[str(assignment.id)] = assignment
 
 
+class InMemoryDeviceInventoryRepository(DeviceInventoryRepository):
+    def __init__(self) -> None:
+        self.by_id: dict[str, DeviceInventoryItem] = {}
+
+    async def get(self, inventory_item_id: InventoryItemId) -> DeviceInventoryItem | None:
+        return self.by_id.get(str(inventory_item_id))
+
+    async def get_by_serial_number(self, serial_number) -> DeviceInventoryItem | None:
+        for item in self.by_id.values():
+            if str(item.serial_number) == str(serial_number):
+                return item
+        return None
+
+    async def get_by_imei(self, imei) -> DeviceInventoryItem | None:
+        for item in self.by_id.values():
+            if item.imei is not None and str(item.imei) == str(imei):
+                return item
+        return None
+
+    async def get_by_iccid(self, iccid) -> DeviceInventoryItem | None:
+        for item in self.by_id.values():
+            if item.iccid is not None and str(item.iccid) == str(iccid):
+                return item
+        return None
+
+    def add(self, item: DeviceInventoryItem) -> None:
+        self.by_id[str(item.id)] = item
+
+
 class FakeFleetDeviceUnitOfWork(FleetDeviceUnitOfWork):
     def __init__(
         self,
         vehicles: InMemoryVehicleRepository,
         devices: InMemoryDeviceRepository,
         device_assignments: InMemoryDeviceAssignmentRepository,
+        device_inventory: InMemoryDeviceInventoryRepository | None = None,
     ) -> None:
         self.vehicles = vehicles
         self.devices = devices
         self.device_assignments = device_assignments
+        self.device_inventory = device_inventory or InMemoryDeviceInventoryRepository()
         self.recorded_events = []
         self.commit_count = 0
         self.rollback_count = 0
@@ -312,6 +353,25 @@ def make_services() -> (
         InMemoryDeviceAssignmentRepository(),
     )
     return vehicle_service, device_service, uow
+
+
+def make_inventory_service() -> tuple[
+    DeviceInventoryApplicationService, FakeFleetDeviceUnitOfWork
+]:
+    """ADR-0018: a separate fixture from `make_services()` (35 existing call sites there stay
+    untouched) — `allocate_device_inventory_item` needs both `uow.device_inventory` and
+    `uow.devices` on the same fake UoW, exactly like the real `SqlAlchemyFleetDeviceUnitOfWork`
+    bundles both."""
+    clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    id_generator = SequentialIdGenerator()
+    service = DeviceInventoryApplicationService(clock=clock, id_generator=id_generator)
+    uow = FakeFleetDeviceUnitOfWork(
+        InMemoryVehicleRepository(),
+        InMemoryDeviceRepository(),
+        InMemoryDeviceAssignmentRepository(),
+        InMemoryDeviceInventoryRepository(),
+    )
+    return service, uow
 
 
 async def _register_vehicle(
@@ -1136,6 +1196,200 @@ class RecordDeviceSeenTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(uow.devices.by_id[device_id].lifecycle_state.value, "activated")
+
+
+class ReceiveDeviceInventoryItemTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0018 §2: `POST /device-inventory`."""
+
+    async def test_receive_creates_in_stock_item(self) -> None:
+        service, uow = make_inventory_service()
+        dto = await service.receive_device_inventory_item(
+            ReceiveDeviceInventoryItemCommand(
+                serial_number="SN-001",
+                imei=None,
+                iccid=None,
+                model="LSZ-C5804DG-Q-F",
+                vendor="LSZ",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(dto.serial_number, "SN-001")
+        self.assertEqual(dto.state, "in_stock")
+        self.assertEqual(uow.commit_count, 1)
+
+    async def test_duplicate_serial_number_is_rejected(self) -> None:
+        service, uow = make_inventory_service()
+        await service.receive_device_inventory_item(
+            ReceiveDeviceInventoryItemCommand(
+                serial_number="SN-001", imei=None, iccid=None, model=None, vendor=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(ConflictError):
+            await service.receive_device_inventory_item(
+                ReceiveDeviceInventoryItemCommand(
+                    serial_number="SN-001", imei=None, iccid=None, model=None, vendor=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+    async def test_duplicate_imei_is_rejected(self) -> None:
+        service, uow = make_inventory_service()
+        await service.receive_device_inventory_item(
+            ReceiveDeviceInventoryItemCommand(
+                serial_number="SN-001", imei="352389088459231", iccid=None,
+                model=None, vendor=None, actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(ConflictError):
+            await service.receive_device_inventory_item(
+                ReceiveDeviceInventoryItemCommand(
+                    serial_number="SN-002", imei="352389088459231", iccid=None,
+                    model=None, vendor=None, actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+    async def test_duplicate_iccid_is_rejected(self) -> None:
+        service, uow = make_inventory_service()
+        await service.receive_device_inventory_item(
+            ReceiveDeviceInventoryItemCommand(
+                serial_number="SN-001", imei=None, iccid="8944500XXXXXXXXXXXX",
+                model=None, vendor=None, actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(ConflictError):
+            await service.receive_device_inventory_item(
+                ReceiveDeviceInventoryItemCommand(
+                    serial_number="SN-002", imei=None, iccid="8944500XXXXXXXXXXXX",
+                    model=None, vendor=None, actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+
+class AllocateDeviceInventoryItemTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0018 §2: `POST /device-inventory/{id}/allocate`."""
+
+    async def _receive(
+        self, service: DeviceInventoryApplicationService, uow: FakeFleetDeviceUnitOfWork,
+        *, serial_number: str = "SN-001", imei: str | None = None, iccid: str | None = None,
+    ) -> str:
+        dto = await service.receive_device_inventory_item(
+            ReceiveDeviceInventoryItemCommand(
+                serial_number=serial_number, imei=imei, iccid=iccid,
+                model="LSZ-C5804DG-Q-F", vendor="LSZ", actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        return dto.id
+
+    async def test_allocate_creates_device_row_with_inventory_link(self) -> None:
+        service, uow = make_inventory_service()
+        item_id = await self._receive(service, uow, serial_number="SN-001")
+
+        device = await service.allocate_device_inventory_item(
+            AllocateDeviceInventoryItemCommand(
+                inventory_item_id=item_id, organization_id=VALID_ORG_ULID, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(device.organization_id, VALID_ORG_ULID)
+        self.assertEqual(device.inventory_id, item_id)
+        self.assertEqual(device.lifecycle_state, "registered")
+
+    async def test_allocate_derives_terminal_id_from_serial_number(self) -> None:
+        """Resolved gap (confirmed with user): ADR-0018's request body is {organization_id}
+        only, so terminal_id must come from somewhere - the inventory item's own serial_number
+        (ADR-0009/0010/0015: the only integrated vendor's actual wire identity)."""
+        service, uow = make_inventory_service()
+        item_id = await self._receive(service, uow, serial_number="SN-UNIQUE-001")
+
+        device = await service.allocate_device_inventory_item(
+            AllocateDeviceInventoryItemCommand(
+                inventory_item_id=item_id, organization_id=VALID_ORG_ULID, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(device.terminal_id, "SN-UNIQUE-001")
+
+    async def test_allocate_copies_imei_iccid_model_vendor_onto_device(self) -> None:
+        service, uow = make_inventory_service()
+        item_id = await self._receive(
+            service, uow, serial_number="SN-001", imei="352389088459231",
+            iccid="8944500XXXXXXXXXXXX",
+        )
+
+        device = await service.allocate_device_inventory_item(
+            AllocateDeviceInventoryItemCommand(
+                inventory_item_id=item_id, organization_id=VALID_ORG_ULID, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(device.imei, "352389088459231")
+        self.assertEqual(device.iccid, "8944500XXXXXXXXXXXX")
+        self.assertEqual(device.model, "LSZ-C5804DG-Q-F")
+        self.assertEqual(device.vendor, "LSZ")
+
+    async def test_allocate_transitions_item_to_allocated(self) -> None:
+        service, uow = make_inventory_service()
+        item_id = await self._receive(service, uow)
+
+        await service.allocate_device_inventory_item(
+            AllocateDeviceInventoryItemCommand(
+                inventory_item_id=item_id, organization_id=VALID_ORG_ULID, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(uow.device_inventory.by_id[item_id].state.value, "allocated")
+
+    async def test_allocate_missing_item_raises_not_found(self) -> None:
+        service, uow = make_inventory_service()
+        with self.assertRaises(NotFoundError):
+            await service.allocate_device_inventory_item(
+                AllocateDeviceInventoryItemCommand(
+                    inventory_item_id=NON_EXISTENT_ULID,
+                    organization_id=VALID_ORG_ULID,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+    async def test_allocate_already_allocated_item_raises_conflict_not_duplicate_device(
+        self,
+    ) -> None:
+        """Regression: a double-submit/retry must fail loudly, not silently create a second
+        `devices` row for the same physical item (`ensure_inventory_item_allocatable`)."""
+        service, uow = make_inventory_service()
+        item_id = await self._receive(service, uow)
+        await service.allocate_device_inventory_item(
+            AllocateDeviceInventoryItemCommand(
+                inventory_item_id=item_id, organization_id=VALID_ORG_ULID, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        devices_before = len(uow.devices.by_id)
+
+        with self.assertRaises(ConflictError):
+            await service.allocate_device_inventory_item(
+                AllocateDeviceInventoryItemCommand(
+                    inventory_item_id=item_id,
+                    organization_id=VALID_ORG_ULID,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        self.assertEqual(len(uow.devices.by_id), devices_before)
 
 
 if __name__ == "__main__":

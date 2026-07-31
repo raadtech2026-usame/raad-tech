@@ -25,17 +25,23 @@ from __future__ import annotations
 from raad.core.db.unit_of_work import UnitOfWork
 from raad.modules.fleet_device.domain.repositories import (
     DeviceAssignmentRepository,
+    DeviceInventoryRepository,
     DeviceRepository,
     VehicleRepository,
 )
 
 
 class FleetDeviceUnitOfWork(UnitOfWork):
-    """Bundles the three repositories `fleet_device`'s use-cases need onto one transaction
+    """Bundles the four repositories `fleet_device`'s use-cases need onto one transaction
     boundary (LLD §8.2 contract skeleton style — plain attributes, matching
-    `IamUnitOfWork`/`OrganizationUnitOfWork`). The concrete implementation (a future
-    `SqlAlchemyFleetDeviceUnitOfWork`) is infra, not implemented in this phase."""
+    `IamUnitOfWork`/`OrganizationUnitOfWork`). The concrete implementation
+    (`SqlAlchemyFleetDeviceUnitOfWork`) is infra.
+
+    `device_inventory` (ADR-0018) bundled onto the same UoW as `devices` deliberately —
+    `allocate_device_inventory_item` must transition a `DeviceInventoryItem` and create a
+    `Device` row in one transaction, and both repositories are owned by this same module."""
 
     vehicles: VehicleRepository
     devices: DeviceRepository
     device_assignments: DeviceAssignmentRepository
+    device_inventory: DeviceInventoryRepository

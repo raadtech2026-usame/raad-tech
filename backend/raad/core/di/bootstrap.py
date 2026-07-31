@@ -50,6 +50,7 @@ from raad.modules.iam.infra.repositories import SqlAlchemyIamUnitOfWork
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.services import (
     DeviceApplicationService,
+    DeviceInventoryApplicationService,
     VehicleApplicationService,
 )
 from raad.modules.fleet_device.events.subscribers import register_fleet_device_processors
@@ -199,6 +200,13 @@ def build_container(settings: Settings) -> Container:
     container.bind_singleton(
         DeviceApplicationService,
         DeviceApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+        ),
+    )
+    container.bind_singleton(
+        DeviceInventoryApplicationService,
+        DeviceInventoryApplicationService(
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
         ),
