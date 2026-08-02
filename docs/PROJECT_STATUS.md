@@ -1,0 +1,538 @@
+# RAAD — Project Status
+
+**This document is the single source of truth for implementation progress.** It does not replace
+`CLAUDE.md` (the architectural/historical record — *why* each decision was made) — this file
+tracks *where things stand right now* and *what to do next*. See `.claude/rules/documentation.md`
+for how the two relate: `CLAUDE.md` and `docs/business/` remain the sources of truth for
+architecture; this file is the source of truth for progress and sequencing.
+
+**Read this file before starting any implementation work.** See Section 9.
+
+---
+
+## 1. Executive Summary
+
+| | |
+|---|---|
+| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 40 subsystems in Section 2 — a rough gauge, not a precise metric) |
+| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; nine Priority-1 blockers are open — see Section 4. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 4's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. |
+| **Current git commit** | `d13a5a8` — `feat(fleet_device): implement ADR-0018 device inventory & allocation` (branch `main`, working tree clean) |
+| **Last updated** | 2026-08-02 |
+
+---
+
+## 2. Architecture Status
+
+Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbsp;·&nbsp; ⏸ Deferred (deliberate, not a gap)
+
+### Identity & access
+
+#### Authentication — 🟡 Partial
+- **Implemented:** From-scratch HS256 JWT service (`backend/raad/core/security/tokens.py`), refuses to boot in prod with an unset/default secret; refresh-token rotation on every `/auth/refresh`, hashed at rest; PBKDF2-HMAC-SHA256 password hashing (260k iterations); enforced password-strength policy.
+- **Missing:** No rate limiting or account lockout on `/auth/login` (`interfaces/http/middleware.py` has an explicit, unimplemented rate-limit hook).
+- **Production blocker?** Yes.
+- **Dependencies:** None (foundational).
+
+#### Authorization / RBAC — 🟡 Partial
+- **Implemented:** Seeded `role_permissions` matrix enforced on every route (ADR-0004); tenant/region scope resolved once at the edge, enforced at the repository layer (ADR-0005); ADR-0021 closed a real cross-org IDOR, independently re-verified (68 tests + a live two-org script).
+- **Missing:** Zero HTTP route to grant/revoke a permission or region/support assignment — DB-only today.
+- **Production blocker?** Yes (operationally — RAAD can't safely onboard its own staff).
+- **Dependencies:** Authentication.
+
+#### Organizations (onboarding + CRUD) — ✅ Complete
+- **Implemented:** ADR-0017's one guided RAAD-only flow — creates the Organization, assigns a Plan, issues the first Org Admin a one-time password with a forced change-on-first-login gate.
+- **Missing:** Nothing.
+- **Production blocker?** No.
+- **Dependencies:** Authentication, Authorization.
+
+#### Founder Onboarding & Recovery — ✅ Complete
+- **Implemented:** One-shot CLI bootstrap (refuses to run if `users` has any row); documented recovery CLI + runbook.
+- **Missing:** The 3-step bootstrap isn't atomic (documented, not hidden).
+- **Production blocker?** No.
+- **Dependencies:** Authentication.
+
+### Fleet & people
+
+#### Fleet (Vehicles + Devices, umbrella) — ✅ Complete
+- **Implemented:** Full `Vehicle`/`Device` lifecycle, camera child entities, tenant-scoped CRUD.
+- **Missing:** Nothing.
+- **Production blocker?** No.
+- **Dependencies:** Organizations.
+
+#### Drivers — ✅ Complete
+- **Implemented:** Register/update/activate/disable; trip-ownership enforcement (a Driver can only start/end their own trips).
+- **Missing:** Nothing.
+- **Production blocker?** No.
+- **Dependencies:** Organizations.
+
+#### Routes — ✅ Complete
+- **Implemented:** Create/update/activate/disable, add-stop wired end-to-end.
+- **Missing:** Nothing blocking.
+- **Production blocker?** No.
+- **Dependencies:** Organizations.
+
+#### Stops — 🟡 Partial
+- **Implemented:** `Route.add_stop` fully wired (domain + HTTP + frontend).
+- **Missing:** `Route.remove_stop`/`move_stop` are implemented and unit-tested but have no approved HTTP route yet.
+- **Production blocker?** No.
+- **Dependencies:** Routes.
+
+#### Students — ✅ Complete
+- **Implemented:** Full enroll/update/activate/disable/graduate/transfer lifecycle; `StudentAssignment` (the CR-1 access gate).
+- **Missing:** Nothing.
+- **Production blocker?** No.
+- **Dependencies:** Organizations, Routes.
+
+#### Parents — ✅ Complete (backend only)
+- **Implemented:** Register/update/activate/disable, student-parent linking, CR-1-gated visibility, reachable from the Organization dashboard.
+- **Missing:** Nothing on the backend — but a Parent has no client of their own to use any of it (see Mobile App).
+- **Production blocker?** Indirectly, via Mobile App.
+- **Dependencies:** Students.
+
+### Device supply chain
+
+#### Devices (onboarding/lifecycle) — ✅ Complete
+- **Implemented:** LSZ registration/heartbeat/position handlers; Redis-backed device-registry projection; proven end-to-end via `services/device-gateway/scripts/verify_redis_e2e.py`.
+- **Missing:** Identity is serial-number-only (hardware has no credential, accepted per ADR-0015); no network-layer compensating control configured (IP allow-list/mTLS).
+- **Production blocker?** No.
+- **Dependencies:** None (RAAD-owned hardware pipeline).
+
+#### Device Inventory — ✅ Complete
+- **Implemented:** ADR-0018 — platform-scoped `device_inventory` pool, full state machine, `POST /device-inventory`.
+- **Missing:** No `GET /device-inventory` list route (flagged in-code; a narrow usability gap).
+- **Production blocker?** No.
+- **Dependencies:** None.
+
+#### Device Allocation — ✅ Complete
+- **Implemented:** ADR-0018 — `POST /device-inventory/{id}/allocate` transitions the item and creates the `devices` row in one transaction; narrow read-only Org Admin visibility.
+- **Missing:** Nothing.
+- **Production blocker?** No.
+- **Dependencies:** Device Inventory, Organizations.
+
+#### JT808 — ⏸ Deferred (dormant by design)
+- **Implemented:** Fully built, parsed, tested (`services/device-gateway/src/vendors/jt808/`), still instantiated live in the gateway.
+- **Missing:** No procured hardware speaks it — kept ready for a future genuinely-compliant vendor.
+- **Production blocker?** No.
+- **Dependencies:** None.
+
+#### JT1078 — ❌ Missing
+- **Implemented:** Nothing. `services/jt1078/` is empty folders; README states the runtime isn't decided.
+- **Missing:** Everything — session management, ingest, repackaging to WebRTC/HLS, a runtime decision, and LSZ-specific signaling (LSZ isn't JT/T 1078-compliant either).
+- **Production blocker?** Only if live video is required for launch.
+- **Dependencies:** A runtime/vendor decision.
+
+### Live operations
+
+#### GPS (ingestion) — ✅ Complete
+- **Implemented:** Proven end-to-end: LSZ position frame → `DevicePositionReported` → Redis Streams → backend processor → `vehicle_positions` row; real writer for the `vehicle:{id}:last` Redis key.
+- **Missing:** Alarm-flag taxonomy mapping, boarding/alighting modeling (tracked separately — see Known Issues).
+- **Production blocker?** No.
+- **Dependencies:** Devices, Redis.
+
+#### Live Tracking — 🟡 Partial
+- **Implemented:** `/ws/tracking` (JWT-authenticated, re-authorizes on every push); real F7 frontend page; geofence-crossing detection now wired into live ingestion.
+- **Missing:** One active vehicle subscription per WebSocket connection (no fleet-wide live map); hard-dependent on Redis, which has no production hardening.
+- **Production blocker?** Partially — works today, not yet trustworthy at scale.
+- **Dependencies:** GPS ingestion, Redis (hardening).
+
+#### Video — ❌ Missing
+- **Implemented:** The D5 authorization policy (parents get zero reachable path to video) is real and enforced even though nothing exists behind it.
+- **Missing:** Everything downstream of JT1078; frontend player (F10) not started.
+- **Production blocker?** Only if required for launch.
+- **Dependencies:** JT1078.
+
+### Engagement & revenue
+
+#### Notifications — 🟡 Partial
+- **Implemented:** `Notification`+`DeviceToken` aggregates, `/ws/notifications`, a real Notification Worker gating sends through CR-1 across 4 event types.
+- **Missing:** Zero frontend UI (`features/notifications/` empty — F8 not started); no mobile client to receive a push.
+- **Production blocker?** Yes, for the customer-facing promise.
+- **Dependencies:** Live Tracking (for trip events), Mobile App (for delivery to Parents).
+
+#### Billing — 🟡 Partial
+- **Implemented:** Full `Plan`/`Subscription`/`Invoice`/`Payment`/`TransportFee` lifecycle; 5 documented routes.
+- **Missing:** `PaymentProviderPort` completely unbound — no charge has ever completed; zero frontend UI (F9 not started).
+- **Production blocker?** Yes — no way to collect money today.
+- **Dependencies:** A payment provider adapter (EVC Plus).
+
+#### Subscriptions — 🟡 Partial
+- **Implemented:** Full open/renew/expire/suspend/cancel lifecycle; two scheduled jobs keep state honest automatically.
+- **Missing:** Nothing beyond Billing's payment-completion gap.
+- **Production blocker?** Tied to Billing.
+- **Dependencies:** Billing.
+
+### Surfaces
+
+#### Platform Dashboard — 🟡 Partial
+- **Implemented:** 9 of 14 nav sections real (organizations, regions, users, vehicles, devices, drivers, routes, trips, live tracking).
+- **Missing:** Notifications, reports, billing, audit, settings — all honest placeholders.
+- **Production blocker?** Partially.
+- **Dependencies:** Notifications, Billing, Reporting, Analytics (each backlogged feature owns one placeholder).
+
+#### Organization Dashboard — 🟡 Partial
+- **Implemented:** 7 of 12 sections real (vehicles, students, parents, drivers, routes, trips, live tracking).
+- **Missing:** Video, notifications, reports, billing, users, settings.
+- **Production blocker?** Yes, partially — a real customer hits a "being built" wall on day one.
+- **Dependencies:** Same as Platform Dashboard, plus Video.
+
+#### Mobile App — ❌ Missing
+- **Implemented:** Nothing. `pubspec.yaml` declares no Flutter SDK; `lib/main.dart` is a literal 0-byte file; `android/`/`ios/` hold only `.gitkeep`. `flutter create` has never been run.
+- **Missing:** Everything — auth, active-trip-only live GPS map, trip/payment history, push handling, offline states, native scaffolding.
+- **Production blocker?** Yes, unconditionally — this is the *only* channel Parents/Drivers have.
+- **Dependencies:** None technically (can start immediately); Notifications and Video are only meaningful to Parents once this exists.
+
+### Insight
+
+#### Analytics — ❌ Missing
+- **Implemented:** Nothing beyond what already existed pre-ADR-0020 (`AuditEntry`, `SystemSetting`).
+- **Missing:** The entire ADR-0020 scope — an `is_online` read-model, a stats read-model, a platform-stats route, and the frontend KPI grid.
+- **Production blocker?** No.
+- **Dependencies:** ADR-0020 implementation.
+
+#### Reporting — ❌ Missing (functionally)
+- **Implemented:** `ReportRun` request/track lifecycle and a Report Worker that polls queued runs.
+- **Missing:** `ReportRendererPort` has zero binding (not even referenced in DI bootstrap) — every run ends `failed` by design; frontend `features/reports/` is empty.
+- **Production blocker?** No for a pilot; yes before this can be marketed as working.
+- **Dependencies:** A PDF/Excel rendering engine choice.
+
+### Platform operations
+
+#### Docker — 🟡 Partial
+- **Implemented:** Real dev + production compose overlays, 3 real Dockerfiles (backend, frontend, device-gateway), working nginx reverse proxy — verified live per ADR-0013.
+- **Missing:** No TLS termination anywhere; no container for `services/jt1078/`.
+- **Production blocker?** Yes, via the TLS gap.
+- **Dependencies:** A domain name + certificate.
+
+#### Database (PostgreSQL) — ✅ Complete
+- **Implemented:** SQLAlchemy 2.x async + Alembic, one linear migration chain, verified zero-drift, ADR-0021 tenant-isolation fix.
+- **Missing:** Nothing in the schema layer itself (backups/encryption tracked separately).
+- **Production blocker?** No, on its own merits.
+- **Dependencies:** None.
+
+#### Redis — 🟡 Partial
+- **Implemented:** Event broker, live-position cache, geofence hysteresis state, both WS fan-out workers — all real, tested code.
+- **Missing:** Zero production hardening — `infrastructure/redis/redis.conf.template` is a placeholder comment; no persistence (AOF/RDB) config, no HA plan.
+- **Production blocker?** Yes.
+- **Dependencies:** None.
+
+#### Background Workers — ✅ Complete
+- **Implemented:** Notification Worker, Report Worker, 3 scheduled jobs (`prune_vehicle_positions`, `sweep_expired_subscriptions`, `reconcile_expired_payments`), 2 WS fan-out workers.
+- **Missing:** Nothing in the plumbing; Report Worker's output blocked on Reporting.
+- **Production blocker?** No, on its own merits.
+- **Dependencies:** Redis.
+
+#### Monitoring — ❌ Missing
+- **Implemented:** `/health`, `/health/live`, `/health/ready` endpoints exist.
+- **Missing:** `/health/ready` doesn't check DB/Redis reachability (docstring admits this); no Prometheus/Grafana/Sentry/OpenTelemetry anywhere; `infrastructure/monitoring/` empty.
+- **Production blocker?** Yes.
+- **Dependencies:** None.
+
+#### Logging — 🟡 Partial
+- **Implemented:** Real structured JSON logging, backend + device-gateway, with PII redaction and correlation-id context.
+- **Missing:** Stdout only, no shipping/aggregation anywhere; frontend has zero logging/error-tracking.
+- **Production blocker?** Partially (acceptable for a single-VPS pilot via `docker logs`).
+- **Dependencies:** A log-aggregation destination choice.
+
+#### Deployment — 🟡 Partial
+- **Implemented:** `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build` genuinely works, live-verified (ADR-0013).
+- **Missing:** No TLS, no automated backups, no monitoring, no secrets-manager integration, no deploy step in CI, no rollback runbook; `scripts/db/migrate.sh`/`seed.sh`/`scripts/dev/bootstrap.sh` are literal 0-byte files.
+- **Production blocker?** Yes — the umbrella item.
+- **Dependencies:** TLS, Backups, Monitoring, Security.
+
+#### Backups — ❌ Missing
+- **Implemented:** Nothing. `infrastructure/backups/` holds a single empty placeholder.
+- **Missing:** An automated backup job, off-site storage, one tested restore procedure.
+- **Production blocker?** Yes, unconditionally.
+- **Dependencies:** None.
+
+#### Security (composite) — 🟡 Partial
+- **Implemented:** Real tenant isolation (ADR-0021), real password hashing/policy, JWT with no hardcoded secrets, safe-by-default CORS, nothing secret committed to git.
+- **Missing:** Rate limiting, account lockout, TLS, in-repo encryption-at-rest, RBAC admin route, `/docs` exposed with no environment gating.
+- **Production blocker?** Yes.
+- **Dependencies:** Authentication, Authorization, Docker (TLS), Backups.
+
+### Completeness
+
+#### API Completeness — ✅ Complete
+- **Implemented:** All 10 bounded contexts expose working, RBAC-enforced, paginated REST APIs; a real contract test suite validates the OpenAPI surface; 1,180 unit tests + 10 architecture-gate tests passing.
+- **Missing:** A handful of small, individually-tracked gaps (RBAC routes, stop reorder, camera registration, device-inventory listing, payment-callback verification).
+- **Production blocker?** No, as a category.
+- **Dependencies:** None.
+
+#### Frontend Completeness — 🟡 Partial
+- **Implemented:** F0–F7 built and tested — 54 real test files, working production build, correct in-memory-only token handling, real Docker/nginx deployment path.
+- **Missing:** F8 (notifications), F9 (billing), F10 (video), reporting, analytics — all empty feature folders.
+- **Production blocker?** Partially.
+- **Dependencies:** Notifications, Billing, Video, Reporting, Analytics (backend halves).
+
+#### CI/CD — 🟡 Partial
+- **Implemented:** `.github/workflows/backend-pipeline.yml` — real, runs unit/architecture/integration tests against live Postgres+Redis service containers on every backend PR.
+- **Missing:** No lint/security-scan gate, no deploy step, no frontend/mobile/device-gateway CI at all (`ci-cd/pipelines/*.yml` are empty placeholders except the backend one, which just points at the real workflow).
+- **Production blocker?** No, but blocks safe automated deploys.
+- **Dependencies:** None.
+
+#### Documentation Completeness — 🟡 Partial
+- **Implemented:** Exceptionally thorough at the architecture/business/ADR level — every phase recorded in `CLAUDE.md`, 21 ADRs covering every major decision.
+- **Missing:** Only 2 of the planned operational runbooks exist (founder bootstrap, password recovery); no incident-response/rollback/on-call runbooks; no VPS/TLS/DNS deployment guide; two stale docstrings found (see Known Issues).
+- **Production blocker?** Partially (folded into Deployment).
+- **Dependencies:** None.
+
+---
+
+## 3. ADR Progress
+
+| ADR | Title | Status |
+|---|---|---|
+| 0001 | Business Entity ↔ Module Mapping | ✅ Complete |
+| 0002 | PostgreSQL Migration | ✅ Complete |
+| 0003 | Parent Registration Orchestration | ✅ Complete (extended to cover Driver + Org onboarding) |
+| 0004 | RBAC Permission Matrix | ✅ Complete |
+| 0005 | Scope Resolver | ✅ Complete |
+| 0006 | D4/CR-1 Safety-over-Billing Reconciliation | ✅ Complete (amended for ADR-0016) |
+| 0007 | Audit Entries Write Architecture | ✅ Complete |
+| 0008 | Redis Streams Event Broker | ✅ Complete |
+| 0009 | MDVR Vendor Protocol (Device Plane) | ✅ Complete |
+| 0010 | Device Gateway Multi-Vendor Architecture | ✅ Complete |
+| 0011 | Mapbox Map Provider | ✅ Complete |
+| 0012 | Development Redis Environment | ✅ Complete |
+| 0013 | Platform Dockerization | ✅ Complete |
+| 0014 | Geofence Evaluation Config Gaps | ✅ Complete |
+| 0015 | Device-Plane Authentication Trust Model | ✅ Complete |
+| 0016 | Organization-Only Billing Model | ✅ Complete |
+| 0017 | Organization Onboarding Orchestration | ✅ Complete |
+| 0018 | Device Inventory & Allocation | ✅ Complete |
+| 0019 | Account-Sharing Session Cap | ❌ Not Started |
+| 0020 | Platform Analytics Read Model | ❌ Not Started |
+| 0021 | Tenant Scope Enforcement at Repository Layer | ✅ Complete |
+
+---
+
+## 4. Production Readiness Roadmap
+
+> **On ADR-0019 / ADR-0020:** both are well-specified and next in the backend milestone
+> sequence, but neither is a production blocker. Priority 1 below (backups, TLS, rate limiting,
+> mobile app, payments, monitoring) is where a real launch actually gets stopped — recommend
+> clearing Priority 1 first; ADR-0019/0020 slot into Priority 2.
+
+### Priority 1 — Critical blockers before production
+1. **Backups** — zero mechanism exists. *(1–2 days)*
+2. **TLS/HTTPS** — stack runs on plain HTTP today. *(0.5–1 day once domain/cert exist)*
+3. **Auth rate limiting + account lockout** — login is unthrottled. *(2–3 days)*
+4. **Redis production hardening** — no persistence config. *(1–2 days)*
+5. **Real health checks + minimum monitoring** — `/health/ready` doesn't check its dependencies. *(3–5 days)*
+6. **RBAC grant/revoke route** — RAAD can't onboard its own staff without hand-editing the DB. *(3–4 days)*
+7. **Deployment & rollback runbook, VPS/TLS setup guide** — currently one command and nothing else. *(2–3 days)*
+8. **Payment provider adapter** — no real payment has ever completed. *(1–2 weeks)*
+9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form. *(4–8 weeks)*
+
+### Priority 2 — Recommended before first customer
+- Notifications web UI (F8) *(3–5 days)*
+- Billing web UI (F9) *(3–5 days)*
+- Live video / JT1078 — only if video is part of the launch pitch *(3–6 weeks)*
+- Platform analytics (ADR-0020) *(1–2 weeks)*
+- Session cap (ADR-0019) *(3–5 days)*
+- Reporting renderer (PDF/Excel) *(~1 week)*
+- Load testing — plan exists, zero scripts *(3–5 days)*
+- Log shipping / aggregation *(1–2 days)*
+- Secrets-manager integration, replacing hand-edited `.env` *(2–3 days)*
+- CI hardening — lint/security scan + frontend/mobile/device-gateway CI *(2–3 days)*
+- `/docs` gating for production *(&lt; 1 day)*
+- SOS/overspeed alarm mapping + notification triggers *(3–5 days)*
+
+### Priority 3 — Can wait until after launch
+- Dark mode (mechanism exists, no palette)
+- Boarding/alighting/ignition events (no design spec yet)
+- Teltonika/Queclink/Ruptela vendor adapters (only relevant if a new vendor is procured)
+- Route stop reorder/remove, camera registration, device-inventory list routes
+- Remaining exception-workflow runbooks (device offline, GPS signal lost, etc.)
+- Infrastructure-as-code (Terraform/Ansible/K8s) — only relevant beyond single-VPS scale
+- Two stale docstrings (see Known Issues)
+
+*(Full reasoning and evidence for this roadmap: see the 2026-08-02 production-readiness audit
+referenced in Section 6.)*
+
+---
+
+## 5. Current Sprint
+
+**Currently Working On:**
+Nothing in-progress — session paused, at the user's explicit request, to create this status
+document before any further implementation work begins.
+
+**Completed This Sprint:**
+- ADR-0018 (Device Inventory & Allocation) — full vertical slice: domain, application, infra,
+  API, 2 migrations, RBAC grants, 23 new unit tests, 5 new integration tests. Committed as
+  `d13a5a8`.
+- Full 38-subsystem production-readiness audit (read-only, no code changes) covering docs,
+  infra/Docker/deployment, device-plane depth, frontend/mobile, and backend security.
+- This document (`docs/PROJECT_STATUS.md`).
+
+**Next Task:**
+Awaiting a decision on which Priority 1 item (Section 4) to start with. Per Section 9's rules,
+the next implementation session should not resume ADR-0019/ADR-0020 until Priority 1 is
+addressed, unless explicitly redirected.
+
+---
+
+## 6. Recent Completed Work
+
+Reverse-chronological (most recent first):
+
+- **ADR-0018 — Device Inventory & Allocation** completed (backend, migrations, RBAC, tests).
+- **Production-readiness audit** completed (38 subsystems, read-only).
+- **Tenant Isolation Security Audit & Fix (ADR-0021)** completed — closed a live cross-org IDOR
+  at the repository layer, module by module (`fleet_device`, `organization`, `transport_ops`,
+  `billing`, `iam`), plus a `/ws/tracking` RBAC-capability gap; 68 new tests + a live two-org
+  verification script.
+- **WebSocket phase** completed — `/ws/tracking` + `/ws/notifications`, Redis Streams fan-out
+  workers, live re-authorization on every position push.
+- **Pagination/Filtering/Sorting phase** completed — offset + cursor pagination across every
+  list endpoint in the API.
+- **Final Backend Completion phase** completed — closed 7 confirmed RBAC/error-code/ownership/
+  audit-column gaps, added CORS support.
+- **Organization Billing cutover (ADR-0016)** completed — parent-billing path removed outright,
+  Organization-only billing model.
+- **Organization Onboarding orchestration (ADR-0017)** completed — one guided RAAD-only flow.
+- **Founder Recovery** completed — CLI-based password recovery for a locked-out Founder.
+- **IAM provisioning port** completed — cross-context orchestration for Org Admin / Driver
+  account creation.
+- **Device Domain Overhaul** completed — RAAD-owns-hardware RBAC correction, hardware-intake
+  identity fields (`imei`/`iccid`/`serial_number`).
+- **MDVR vendor protocol integration (ADR-0009/0010)** completed — the LSZ vendor stack,
+  device-gateway multi-vendor reorganization, real Redis event bus + device registry.
+- **Backend Stabilization phase** completed — RBAC permission matrix, `ScopeResolver`, Redis
+  Streams broker, all ten bounded contexts' domain→infra→API stacks.
+
+*(For the full reasoning behind each phase, see `CLAUDE.md`.)*
+
+---
+
+## 7. Known Issues
+
+### 1. No rate limiting or account lockout on authentication
+- **Severity:** High
+- **Recommended fix:** Redis-backed attempt counter + IP/user throttle on `/auth/login`.
+- **Blocking production?** Yes.
+
+### 2. Zero backup mechanism
+- **Severity:** Critical
+- **Recommended fix:** `pg_dump` cron + off-site copy + one tested restore drill.
+- **Blocking production?** Yes.
+
+### 3. `/health/ready` doesn't check real dependencies
+- **Severity:** High
+- **Recommended fix:** Add actual Postgres/Redis connectivity checks before reporting ready.
+- **Blocking production?** Yes.
+
+### 4. `PaymentProviderPort`, `VideoProviderPort`, `ReportRendererPort` all unbound
+- **Severity:** High (Payment), Medium (Video, Reporting)
+- **Recommended fix:** Bind a real EVC Plus adapter (Payment); decide a JT1078 runtime (Video);
+  pick a PDF/Excel engine (Reporting).
+- **Blocking production?** Payment: yes. Video/Reporting: only if marketed as working at launch.
+
+### 5. Stale docstring — `tracking/infra/adapters.py`
+- **Severity:** Low (documentation hygiene, not a functional bug)
+- **Description:** Still states no writer exists for the `vehicle:{id}:last` Redis key. The LSZ
+  vendor's `RedisLatestPositionWriter` now supplies exactly that.
+- **Recommended fix:** Update the docstring to reflect the device-gateway's writer.
+- **Blocking production?** No.
+
+### 6. Stale docstring — `fleet_device/api/routers.py`
+- **Severity:** Low
+- **Description:** Still states "neither the JT808 service nor that consumer exists yet, so
+  `last_seen_at` is always NULL" — `DeviceConnectivityProcessor` now consumes
+  `DeviceOnline`/`DeviceOffline` and populates it for real.
+- **Recommended fix:** Update the docstring.
+- **Blocking production?** No.
+
+### 7. `DeviceAlarmRaised` event defined but never constructed
+- **Severity:** Medium
+- **Description:** The event type and publisher branch exist in
+  `services/device-gateway/src/events/redis_event_publisher.py`, but no handler (LSZ or dormant
+  JT808) ever builds one — dead code path.
+- **Recommended fix:** Either wire a real alarm handler or remove the unused event type until one
+  exists.
+- **Blocking production?** No.
+
+### 8. `alarm_flags` has no per-bit taxonomy mapping
+- **Severity:** Medium
+- **Description:** LSZ's `alarm_flags` is parsed as an opaque, range-clamped integer and passed
+  through with no ACL/taxonomy mapping. `0` means "unmapped/unknown," not "verified no alarms" —
+  a real ambiguity if this is ever surfaced to an end user.
+- **Recommended fix:** Design and implement the alarm-bit → taxonomy mapping (SOS, overspeed,
+  etc.) before marketing any alarm-based safety feature.
+- **Blocking production?** No, unless alarms are marketed as working.
+
+### 9. ADR-0020's Context section conflates two different consumers
+- **Severity:** Low
+- **Description:** ADR-0020 frames the `DeviceOnline`/`DeviceOffline` consumer as something it
+  still needs to build — but the `last_seen_at`-populating consumer is already real (see Known
+  Issue 6). ADR-0020 actually needs a *second*, distinct consumer that additionally sets a new
+  `devices.is_online` boolean for the KPI grid.
+- **Recommended fix:** Amend ADR-0020's Context section to name the two consumers separately
+  before implementation starts.
+- **Blocking production?** No.
+
+### 10. `infrastructure/mysql/` templates are orphaned
+- **Severity:** Low
+- **Description:** Leftover placeholder config from before ADR-0002 moved the project to
+  PostgreSQL. Still present, unused, potentially confusing to a new contributor.
+- **Recommended fix:** Delete `infrastructure/mysql/`.
+- **Blocking production?** No.
+
+### 11. `ci-cd/pipelines/*.yml` and `scripts/*.sh` are non-functional placeholders
+- **Severity:** Low
+- **Description:** `ci-cd/pipelines/frontend-pipeline.yml`, `mobile-pipeline.yml`,
+  `jt808-pipeline.yml`, `jt1078-pipeline.yml`, `infrastructure-pipeline.yml` are empty.
+  `scripts/db/migrate.sh`, `scripts/db/seed.sh`, `scripts/dev/bootstrap.sh` are literal 0-byte
+  files. Neither is wired to anything — GitHub Actions only reads `.github/workflows/`.
+- **Recommended fix:** Either implement them or remove the misleading scaffolding.
+- **Blocking production?** No.
+
+---
+
+## 8. Deployment Checklist
+
+Live checklist for a real VPS deployment — update as each item closes.
+
+- [ ] **TLS** — not configured; `docker-compose.prod.yml`/`prod.conf` stay on plain HTTP 80.
+- [ ] **Domain** — no domain name assigned/configured yet.
+- [x] **Docker** — dev + prod compose overlays real and live-verified (ADR-0013); missing only a
+      `services/jt1078/` container (tracked separately, see Video/JT1078).
+- [ ] **Backups** — no mechanism exists (see Known Issue 2).
+- [ ] **Redis** — real in code, zero production hardening (no persistence config, no HA).
+- [x] **PostgreSQL** — schema/migrations solid, verified zero-drift.
+- [ ] **Monitoring** — only basic `/health*` endpoints; no real dependency checks, no
+      Prometheus/Grafana/Sentry.
+- [ ] **Logging** — real structured JSON, but stdout-only; no shipping/aggregation configured.
+- [ ] **Health Checks** — endpoints exist; `/health/ready` doesn't verify DB/Redis reachability.
+- [ ] **Environment Variables** — `.env.example` templates exist for every service; real
+      deployment still means hand-editing a `.env` on the host, no secrets manager.
+- [ ] **CI/CD** — backend test-only pipeline exists; no deploy step, no lint/security gate, no
+      frontend/mobile/device-gateway CI.
+- [x] **Reverse Proxy** — nginx configs (dev/prod/frontend) real and working.
+- [ ] **Object Storage** — not present anywhere in the repo (no S3-equivalent evaluated for
+      report files, etc.).
+- [ ] **Secrets** — plain env vars only; no Vault/sealed-secrets/cloud secrets manager.
+- [ ] **Firewall** — not configured or documented anywhere in-repo.
+
+---
+
+## 9. Development Rules
+
+Before implementing **any** feature:
+
+1. Read `PROJECT_STATUS.md`.
+2. Verify the current state against the actual repository — this file describes reality, but
+   code is the final authority; if they disagree, trust the code and fix this file.
+3. Update the roadmap (Section 4) if priorities have changed.
+4. Continue only the highest-priority unfinished work.
+5. Never repeat completed work.
+6. Never remove valid architecture.
+7. Update `PROJECT_STATUS.md` before committing.
+8. Keep `PROJECT_STATUS.md` synchronized with `CLAUDE.md` — `CLAUDE.md` remains the authority on
+   *why*; this file is the authority on *current state and what's next*.
+
+This document must always reflect the real repository, not planned work. Treat it as mandatory
+reading before every implementation session.
