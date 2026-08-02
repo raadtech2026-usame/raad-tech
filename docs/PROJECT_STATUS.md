@@ -6,7 +6,7 @@ tracks *where things stand right now* and *what to do next*. See `.claude/rules/
 for how the two relate: `CLAUDE.md` and `docs/business/` remain the sources of truth for
 architecture; this file is the source of truth for progress and sequencing.
 
-**Read this file before starting any implementation work.** See Section 9.
+**Read this file before starting any implementation work.** See Section 14.
 
 ---
 
@@ -14,15 +14,29 @@ architecture; this file is the source of truth for progress and sequencing.
 
 | | |
 |---|---|
-| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 40 subsystems in Section 2 — a rough gauge, not a precise metric) |
-| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; nine Priority-1 blockers are open — see Section 4. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 4's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. |
-| **Current git commit** | `d13a5a8` — `feat(fleet_device): implement ADR-0018 device inventory & allocation` (branch `main`, working tree clean) |
+| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 40 subsystems in Section 3 — a rough gauge, not a precise metric) |
+| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; nine Priority-1 blockers are open — see Section 5. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. — see Section 2 for the full per-track breakdown. |
+| **Current git commit** | `3525d7f` — `docs(status): add PROJECT_STATUS.md as the living implementation-progress source of truth` (branch `main`, working tree clean) |
 | **Last updated** | 2026-08-02 |
 
 ---
 
-## 2. Architecture Status
+## 2. Current Phase
+
+At-a-glance status per track. **Update this section after every completed implementation** —
+it should never lag behind Section 3's detail.
+
+| Track | Current phase |
+|---|---|
+| **Backend** | ADR-0018 (Device Inventory & Allocation) complete. All ten bounded contexts implemented end-to-end. Next queued backend work is ADR-0019 (Session Cap) / ADR-0020 (Platform Analytics), but both are **paused** — see the Section 5 callout on why Priority-1 production-readiness work goes first. |
+| **Frontend** | Phases F0–F7 complete (design system, org/region/user/fleet/device/people management, live tracking). F8 (Notifications), F9 (Billing), F10 (Video), and reporting/analytics feature folders are empty — not started. |
+| **Mobile** | Pre-implementation. `mobile/` is a structural scaffold only — no Flutter SDK dependency declared in `pubspec.yaml`, `lib/main.dart` is a 0-byte file, no native Android/iOS project files exist. `flutter create` has never been run. |
+| **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. TLS, automated backups, production monitoring, and Redis persistence hardening remain open — all four are Priority-1 blockers (Section 5). |
+
+---
+
+## 3. Architecture Status
 
 Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbsp;·&nbsp; ⏸ Deferred (deliberate, not a gap)
 
@@ -280,7 +294,7 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 
 ---
 
-## 3. ADR Progress
+## 4. ADR Progress
 
 | ADR | Title | Status |
 |---|---|---|
@@ -308,7 +322,7 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 
 ---
 
-## 4. Production Readiness Roadmap
+## 5. Production Readiness Roadmap
 
 > **On ADR-0019 / ADR-0020:** both are well-specified and next in the backend milestone
 > sequence, but neither is a production blocker. Priority 1 below (backups, TLS, rate limiting,
@@ -350,11 +364,56 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - Two stale docstrings (see Known Issues)
 
 *(Full reasoning and evidence for this roadmap: see the 2026-08-02 production-readiness audit
-referenced in Section 6.)*
+referenced in Section 9.)*
 
 ---
 
-## 5. Current Sprint
+## 6. Upcoming Roadmap
+
+This is a different axis from Section 5: Section 5 orders work by *what blocks a safe launch*.
+This section orders the same overall body of work by *conceptual build sequence*, beginning to
+production — useful for seeing where "we" are in the big picture. The two will not always agree
+on what's "next" (e.g. Session Cap is Phase 6 here but Priority 2 there) — that's expected; use
+Section 5 for sequencing decisions and this section for orientation. **Update this roadmap
+whenever a phase finishes.**
+
+| Phase | Name | Status | Note |
+|---|---|---|---|
+| 1 | Architecture | ✅ Complete | Ten bounded contexts, Clean Architecture/DDD patterns, foundational ADRs (0001–0002, 0007–0008). |
+| 2 | Authentication | 🟡 In Progress | Core JWT/RBAC complete; rate limiting + account lockout still open (Priority 1). |
+| 3 | Organizations | ✅ Complete | Onboarding (ADR-0017), billing cutover (ADR-0016), tenant isolation (ADR-0021). |
+| 4 | Tracking | 🟡 In Progress | GPS ingestion + live tracking backend complete; blocked on Redis production hardening for launch. |
+| 5 | Device Inventory | ✅ Complete | ADR-0018. |
+| 6 | ADR-0019 Session Cap | ⬜ Planned | Not started. |
+| 7 | ADR-0020 Platform Analytics | ⬜ Planned | Not started. |
+| 8 | Flutter Mobile App | ⬜ Planned | 0% built — structural scaffold only. |
+| 9 | Video Platform | ⬜ Planned | JT1078, 0% built — runtime not yet decided. |
+| 10 | Production Deployment | ⬜ Planned | Blocked on Section 5 Priority 1 (TLS, backups, monitoring, rate limiting, payments, mobile app). |
+
+---
+
+## 7. Future Features
+
+Ideas that are **intentionally not part of the active roadmap** (Sections 5 and 6). Kept
+separate specifically so they are never mistaken for required work or silently pulled into a
+sprint.
+
+- AI Camera
+- Driver Voice Calls
+- Parent ETA Prediction
+- Fuel Monitoring
+- School Payments
+- Driver Behavior Scoring
+
+None of these have an ADR, a design document, or an approved scope. Before any of them is ever
+promoted out of this list, it must (a) get its own ADR per `.claude/rules/workflow.md` #8, and
+(b) be checked against `CLAUDE.md`'s Product Scope guardrails — several of these sit close to the
+project's explicit "not a school ERP" boundary and would need that conflict flagged and resolved
+first, not assumed away.
+
+---
+
+## 8. Current Sprint
 
 **Currently Working On:**
 Nothing in-progress — session paused, at the user's explicit request, to create this status
@@ -366,16 +425,17 @@ document before any further implementation work begins.
   `d13a5a8`.
 - Full 38-subsystem production-readiness audit (read-only, no code changes) covering docs,
   infra/Docker/deployment, device-plane depth, frontend/mobile, and backend security.
-- This document (`docs/PROJECT_STATUS.md`).
+- This document (`docs/PROJECT_STATUS.md`), created and then expanded into the permanent
+  Project Control Center (Sections 2, 6, 7, 12, 13).
 
 **Next Task:**
-Awaiting a decision on which Priority 1 item (Section 4) to start with. Per Section 9's rules,
+Awaiting a decision on which Priority 1 item (Section 5) to start with. Per Section 14's rules,
 the next implementation session should not resume ADR-0019/ADR-0020 until Priority 1 is
 addressed, unless explicitly redirected.
 
 ---
 
-## 6. Recent Completed Work
+## 9. Recent Completed Work
 
 Reverse-chronological (most recent first):
 
@@ -408,7 +468,7 @@ Reverse-chronological (most recent first):
 
 ---
 
-## 7. Known Issues
+## 10. Known Issues
 
 ### 1. No rate limiting or account lockout on authentication
 - **Severity:** High
@@ -492,7 +552,7 @@ Reverse-chronological (most recent first):
 
 ---
 
-## 8. Deployment Checklist
+## 11. Deployment Checklist
 
 Live checklist for a real VPS deployment — update as each item closes.
 
@@ -519,20 +579,72 @@ Live checklist for a real VPS deployment — update as each item closes.
 
 ---
 
-## 9. Development Rules
+## 12. Business Rules (Protected)
+
+These are the project's non-negotiable business rules — drawn from the existing architecture
+record (`CLAUDE.md`, the ADRs cited below, `.claude/rules/`), restated here for quick reference,
+**not newly invented.** Any feature request that would violate one of these must be flagged
+explicitly, per `.claude/rules/workflow.md` #7, not silently implemented around.
+
+- RAAD owns all hardware. *(Device Domain Overhaul; ADR-0018)*
+- Organizations own all operational data — vehicles, drivers, routes, students, parents, staff
+  users. *(Three-tier business model)*
+- Organizations create Students.
+- Organizations create Parents.
+- Parents never exist at Platform level — Parent is Organization-scoped and mobile-only.
+  *(`.claude/rules/flutter.md` #1)*
+- RAAD bills Organizations only — no direct parent billing. *(ADR-0016)*
+- Organizations collect money from Parents independently, outside RAAD's billing system.
+  *(ADR-0016's scope boundary)*
+- Device Inventory belongs only to RAAD — platform-scoped, carries no `organization_id`.
+  *(ADR-0018)*
+- Devices become visible to an Organization only after allocation, and only read-only.
+  *(ADR-0018 §3)*
+- Organization users must never access another Organization's data. *(Tenant isolation, ADR-0021)*
+- Multi-tenancy is mandatory — every tenant-owned entity carries `organization_id`, enforced at
+  the repository layer, not just the UI. *(`.claude/rules/architecture.md` #4; ADR-0021)*
+
+---
+
+## 13. Architecture Freeze
+
+Decisions listed here must **never be changed without explicit approval** before implementation.
+This is a subset of Section 12 focused specifically on structural/technical decisions (Section 12
+covers business rules; this section covers the architecture that enforces them).
+
+- Multi-tenant architecture
+- Tenant isolation, enforced at the repository layer *(ADR-0021)*
+- Organization-only billing model *(ADR-0016)*
+- Device Inventory design (platform-scoped, no `organization_id`) *(ADR-0018)*
+- Device Allocation workflow *(ADR-0018)*
+- Redis Streams event architecture *(ADR-0008)*
+- Scope Resolver *(ADR-0005)*
+- RBAC model *(ADR-0004)*
+- Event-driven architecture between the device plane and business plane *(ADR-0009, ADR-0010)*
+- GPS ingestion pipeline (device-gateway → Redis → backend)
+
+**Any change to these decisions requires explicit approval before implementation.**
+
+---
+
+## 14. Development Rules
 
 Before implementing **any** feature:
 
 1. Read `PROJECT_STATUS.md`.
-2. Verify the current state against the actual repository — this file describes reality, but
-   code is the final authority; if they disagree, trust the code and fix this file.
-3. Update the roadmap (Section 4) if priorities have changed.
-4. Continue only the highest-priority unfinished work.
-5. Never repeat completed work.
-6. Never remove valid architecture.
-7. Update `PROJECT_STATUS.md` before committing.
+2. Verify it matches the current repository — this file describes reality, but code is the final
+   authority; if they disagree, trust the code and fix this file.
+3. Read `CLAUDE.md`.
+4. Determine the highest-priority unfinished work.
+5. Confirm it does not conflict with frozen architecture (Section 13) or a protected business
+   rule (Section 12).
+6. Continue only the next approved roadmap item (Section 5 or Section 6).
+7. Update `PROJECT_STATUS.md` after every completed implementation.
 8. Keep `PROJECT_STATUS.md` synchronized with `CLAUDE.md` — `CLAUDE.md` remains the authority on
    *why*; this file is the authority on *current state and what's next*.
+
+These rules absorb and extend the project's existing discipline: never repeat completed work,
+and never remove valid architecture (Section 13) without the explicit approval it requires.
 
 This document must always reflect the real repository, not planned work. Treat it as mandatory
 reading before every implementation session.
