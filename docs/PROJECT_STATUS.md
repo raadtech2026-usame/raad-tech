@@ -14,10 +14,10 @@ architecture; this file is the source of truth for progress and sequencing.
 
 | | |
 |---|---|
-| **Overall completion** | ~62% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Monitoring moved ❌→🟡 this item) |
-| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; four Priority-1 blockers remain open (Backups, TLS/HTTPS, Auth rate limiting + account lockout, Redis production hardening, and Health checks + minimum monitoring all closed) — see Section 5. **Continuous-completion program in progress** (user directive 2026-08-03: complete the entire remaining Priority 1 roadmap without stopping for per-item approval) — this row is updated as each remaining item lands. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–5 (Backups, TLS/HTTPS, Auth rate limiting + account lockout, Redis production hardening, Health checks + minimum monitoring) complete, Item 6 (RBAC grant/revoke route) in progress. — see Section 2 for the full per-track breakdown. |
-| **Current git commit** | `1e3fafd` — `feat(infra): implement Priority 1 Item 4 - Redis production hardening` (branch `main`; this health-checks/monitoring work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Overall completion** | ~64% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Authorization/RBAC moved 🟡→✅ this item) |
+| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; three Priority-1 blockers remain open (Backups, TLS/HTTPS, Auth rate limiting + account lockout, Redis production hardening, Health checks + minimum monitoring, and RBAC grant/revoke all closed) — see Section 5. **Continuous-completion program in progress** (user directive 2026-08-03: complete the entire remaining Priority 1 roadmap without stopping for per-item approval) — this row is updated as each remaining item lands. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–6 complete, Item 7 (Deployment & rollback runbook, VPS setup guide) in progress. — see Section 2 for the full per-track breakdown. |
+| **Current git commit** | `c8fc819` — `feat(infra): implement Priority 1 Item 5 - real health checks + minimum monitoring` (branch `main`; this RBAC grant/revoke work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
 | **Last updated** | 2026-08-03 |
 
 ---
@@ -48,10 +48,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** No longer.
 - **Dependencies:** None (foundational).
 
-#### Authorization / RBAC — 🟡 Partial
-- **Implemented:** Seeded `role_permissions` matrix enforced on every route (ADR-0004); tenant/region scope resolved once at the edge, enforced at the repository layer (ADR-0005); ADR-0021 closed a real cross-org IDOR, independently re-verified (68 tests + a live two-org script).
-- **Missing:** Zero HTTP route to grant/revoke a permission or region/support assignment — DB-only today.
-- **Production blocker?** Yes (operationally — RAAD can't safely onboard its own staff).
+#### Authorization / RBAC — ✅ Complete
+- **Implemented:** Seeded `role_permissions` matrix enforced on every route (ADR-0004); tenant/region scope resolved once at the edge, enforced at the repository layer (ADR-0005); ADR-0021 closed a real cross-org IDOR, independently re-verified (68 tests + a live two-org script). **Priority 1 Item 6:** `GET/POST /roles/{role}/permissions` (+`/revoke`) and `GET /scope-assignments/{user_id}` + `POST /scope-assignments/{regions,support}` (+`/revoke`) — Founder-only, live-verified end-to-end over real HTTP against real Postgres (grant → confirmed via GET → revoke → confirmed cleared; non-Founder caller correctly gets 403). Closes "RAAD can't onboard its own staff without hand-editing the DB."
+- **Missing:** Nothing blocking.
+- **Production blocker?** No longer.
 - **Dependencies:** Authentication.
 
 #### Organizations (onboarding + CRUD) — ✅ Complete
@@ -354,8 +354,20 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
    container itself not live-tested (no Docker in this sandbox). Grafana/Sentry/OpenTelemetry
    deliberately not built — each needs a real external account/target this session can't obtain.
    `docs/runbooks/monitoring.md`.
-6. **RBAC grant/revoke route** — RAAD can't onboard its own staff without hand-editing the DB. *(3–4 days)* ← **in progress**
-7. **Deployment & rollback runbook, VPS setup guide** — the TLS half of this is now covered by `docs/runbooks/tls-setup.md` (item 2); still missing: a general VPS provisioning guide and a rollback runbook. *(1–2 days remaining)*
+6. ~~**RBAC grant/revoke route**~~ — ✅ **Complete** (2026-08-03). `iam.roles_router`
+   (`GET/POST /roles/{role}/permissions`, `+/revoke`) and `organization.
+   scope_assignments_router` (`GET /scope-assignments/{user_id}`,
+   `POST /scope-assignments/{regions,support}`, `+/revoke`) — Founder-only, no documented API
+   Contracts surface (built on Database Design §4.4/§4.6 directly, same posture as `/drivers`).
+   **A real, live-caught production bug** (not specific to this item's own new code, but only
+   reachable through it): `role_permission_granted`/`revoked` and the four
+   `region_assignment_*`/`support_assignment_*` event factories built `aggregate_id` from a
+   composite string that overflows `outbox.aggregate_id`/`audit_entries.entity_id`'s shared
+   `CHAR(26)` column — fixed by widening `DomainEvent.aggregate_id` to `str | None` (a new
+   migration, `f3d8b1a4e6c2`, drops `outbox.aggregate_id`'s `NOT NULL`) and passing `None` for
+   these six events, full identity preserved in `payload`. Live-verified end-to-end over real
+   HTTP/real Postgres both before and after the fix.
+7. **Deployment & rollback runbook, VPS setup guide** — the TLS half of this is now covered by `docs/runbooks/tls-setup.md` (item 2); still missing: a general VPS provisioning guide and a rollback runbook. *(1–2 days remaining)* ← **in progress**
 8. **Payment provider adapter** — no real payment has ever completed. *(1–2 weeks)*
 9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form. *(4–8 weeks)*
 
@@ -437,11 +449,36 @@ first, not assumed away.
 **Currently Working On:**
 **Mode change, 2026-08-03**: the user directed a continuous completion program — implement every
 remaining Priority 1 item (5–9) back to back without stopping for per-item approval, ending in
-one consolidated Production Readiness report. Items 1–5 are complete; Item 6 (RBAC grant/revoke
-route) is the active item as this line is written. Each item still gets its own architecture
-review → implementation → tests → live verification (where a real dependency exists) → docs →
-this file/`CLAUDE.md` update, per the same rigor every prior item followed — only the
-between-items approval gate is removed for this program.
+one consolidated Production Readiness report. Items 1–6 are complete; Item 7 (Deployment &
+rollback runbook, VPS setup guide) is the active item as this line is written. Each item still
+gets its own architecture review → implementation → tests → live verification (where a real
+dependency exists) → docs → this file/`CLAUDE.md` update, per the same rigor every prior item
+followed — only the between-items approval gate is removed for this program.
+
+**Priority 1 Item 6 — RBAC grant/revoke route.** New `GET/POST /roles/{role}/permissions`
+(+`/revoke`, `iam`) and `GET /scope-assignments/{user_id}` + `POST /scope-assignments/
+{regions,support}` (+`/revoke`, `organization`) — Founder-only in the seeded matrix (migration
+`a1c9e4f2b871`). No documented API Contracts surface exists for either (built on Database Design
+§4.4/§4.6 directly, the same "use-case exists, no approved endpoint yet" posture `/drivers`
+already established). **A real, live-caught production bug, not specific to this item's own new
+code but only reachable through it**: `role_permission_granted`/`revoked` and the four
+`region_assignment_*`/`support_assignment_*` event factories (existing since the Backend
+Stabilization phase, never previously reachable via any HTTP route) built `aggregate_id` from a
+composite string (`f"{role}:{permission}"` or two concatenated ULIDs) — reliably overflowing the
+shared `CHAR(26)` column both `outbox.aggregate_id` and `audit_entries.entity_id` use, caught via
+`asyncpg.exceptions.StringDataRightTruncationError` against this sandbox's real, live Postgres
+the first time the grant route was actually called end-to-end. Fixed by widening
+`DomainEvent.aggregate_id` to `str | None` (`core/events/base.py`) and passing `None` from these
+six factories — the full role/permission or user/region/organization identity stays in
+`payload`, so nothing is lost — plus a new migration (`f3d8b1a4e6c2`) dropping `outbox.
+aggregate_id`'s `NOT NULL` to match `audit_entries.entity_id`'s already-nullable design. 19 new
+unit tests (13 application-layer + 6 locking the `aggregate_id=None` fix in place directly), full
+live-HTTP verification both before and after the fix (grant → confirm via GET → revoke → confirm
+cleared, for both role-permissions and region-assignments; non-Founder caller correctly 403s). A
+second, pre-existing, unrelated rough edge was found during the same live testing and tracked
+honestly rather than silently worked around: a real FK violation (bad `organization_id`) surfaces
+as a generic 500 rather than a clean 4xx — confirmed systemic (not this item's bug), tracked as
+new Known Issue #16. 1236 unit + 10 architecture tests pass with zero regressions.
 
 **Completed This Sprint:**
 - **Priority 1 Item 5 — Real health checks + minimum monitoring.** New `HealthCheckService`
@@ -575,6 +612,12 @@ ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user confirms o
 
 Reverse-chronological (most recent first):
 
+- **Priority 1 Item 6 — RBAC grant/revoke route** completed — new Founder-only
+  `/roles/{role}/permissions` and `/scope-assignments/*` routes, live-verified over real HTTP/
+  Postgres. Caught and fixed a real production bug along the way: six RBAC/scope-assignment
+  event factories built an oversized composite `aggregate_id` that overflowed a shared
+  `CHAR(26)` column, never caught before since no route had ever reached them — fixed by
+  widening `DomainEvent.aggregate_id` to nullable, with a corresponding schema migration.
 - **Priority 1 Item 5 — Real health checks + minimum monitoring** completed — real Postgres/
   Redis dependency checks on `/health/ready` (closes Known Issue #3), a new hand-rolled
   `/metrics` Prometheus endpoint, and a `prometheus` Compose service scraping it. Live-verified
@@ -807,6 +850,30 @@ Reverse-chronological (most recent first):
   previous, completely unhardened state was strictly worse) — but treat "Redis hardening
   live-verified" as not yet true until that checklist has actually been run for real, the same
   posture Known Issue #13 already establishes for TLS.
+
+### 16. Raw database constraint violations (FK, unique, etc.) surface as generic 500s
+- **Severity:** Low
+- **Description:** Discovered live while testing Priority 1 Item 6's new `POST
+  /scope-assignments/support` route with a syntactically-valid but non-existent
+  `organization_id`: the resulting `asyncpg.exceptions.ForeignKeyViolationError` propagates
+  uncaught to the global unhandled-exception handler, returning a generic `{"code":
+  "INTERNAL_ERROR"}` (500) instead of a clear `{"code":"VALIDATION_ERROR"}` (422) or
+  `{"code":"NOT_FOUND"}` (404) naming the actual problem. **Not a regression this item
+  introduced** — confirmed pre-existing and systemic: `IntegrityError`/`ForeignKeyViolation` is
+  caught in exactly one place anywhere in this codebase
+  (`transport_ops/application/validators.py`), everywhere else a real DB constraint violation
+  takes this same generic path. The FK constraint itself is correct and working as designed
+  (`.claude/rules/database.md` #3: "in-context FKs are enforced by the database") — this is
+  purely about the *error presentation* once one fires.
+- **Recommended fix:** A single global handler for `sqlalchemy.exc.IntegrityError` (`core/errors/
+  handlers.py`, alongside the existing `AppError`/`RequestValidationError`/`StarletteHTTPException`
+  handlers) that maps common constraint-violation shapes (FK violation → 404/422 naming the
+  missing reference, unique violation → 409) would close this everywhere at once, matching this
+  file's own "resolved once at the edge, not per call site" principle already applied to tenant
+  scoping (ADR-0021).
+- **Blocking production?** No — the underlying data integrity guarantee is never at risk (the
+  constraint still fires and the bad write is still rejected); this is purely a rough edge in
+  the *error message* a caller sees, not a functional or security gap.
 
 ---
 

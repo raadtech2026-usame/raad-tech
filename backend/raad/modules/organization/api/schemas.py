@@ -95,3 +95,24 @@ class UpdateRegionRequest(BaseModel):
     given."""
 
     status: str | None = None
+
+
+class GrantRegionAssignmentRequest(BaseModel):
+    """Priority 1 Item 6 (`PROJECT_STATUS.md`, RBAC grant/revoke route). Backs a Regional
+    Manager's `ScopeResolver` formula (Database Design §4.6)."""
+
+    user_id: str
+    region_id: str
+
+
+class GrantSupportAssignmentRequest(BaseModel):
+    """Same item — backs a Support Staff's `ScopeResolver` formula."""
+
+    user_id: str
+    organization_id: str
+
+
+class ScopeAssignmentsResponse(BaseModel):
+    user_id: str
+    region_ids: list[str]
+    organization_ids: list[str]

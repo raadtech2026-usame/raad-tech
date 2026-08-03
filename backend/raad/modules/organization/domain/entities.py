@@ -4,14 +4,18 @@ enforce invariants, and buffer the resulting `DomainEvent`s, matching the same s
 `modules.iam.domain.entities` (`Clock` passed in, never called internally, so behavior stays
 deterministic and unit-testable with a fake clock).
 
-Scope note: only `Organization` and `Region` are implemented (Database Design §4.2/§4.1).
-`OrgSettings` (§4.7) and `region_assignments`/`support_assignments` (§4.6) are deliberately
-deferred — §4.7 is documented only in prose (no column table, unlike every other table in this
-section) and one of its own examples ("parent-video-enabled=false by default — D5") would
-conflict with `.claude/rules/jt1078.md` #1 ("not a configurable setting") if taken literally;
-§4.6's module ownership isn't settled by the API contract rule (which routes only
-`/organizations` + `/regions` to this module). Both need an explicit design decision before
-implementation, not an invented one here.
+Scope note: only `Organization` and `Region` are implemented as rich entities here (Database
+Design §4.2/§4.1). `OrgSettings` (§4.7) remains deliberately deferred — documented only in prose
+(no column table, unlike every other table in this section), and one of its own examples
+("parent-video-enabled=false by default — D5") would conflict with `.claude/rules/jt1078.md` #1
+("not a configurable setting") if taken literally, so it needs an explicit design decision
+before implementation, not an invented one here. `region_assignments`/`support_assignments`
+(§4.6) were never going to be rich entities either way — `ScopeAssignmentRepository`'s own
+docstring calls them "pure grant/revoke reference data, no aggregate lifecycle," the same shape
+`iam`'s `role_permissions` already has — but their *module ownership* (not settled by the API
+contract rule, which only routes `/organizations` + `/regions` here) was the real open question;
+resolved as `organization`'s own (Priority 1 Item 6, `PROJECT_STATUS.md`) — see
+`api/routers.py`'s `scope_assignments_router`.
 
 **`latitude`/`longitude`/`geofence_radius_m` (added post-hoc, ADR-0014).** Phase 2 §22.1 names
 an "organization geofence" for `VehicleArrivedAtOrganization` evaluation, but the originally

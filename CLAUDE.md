@@ -1474,3 +1474,68 @@ to trace) that this session cannot obtain or fabricate meaningfully, flagged exp
 `docs/runbooks/monitoring.md` rather than shipped as dead/unverifiable code — the same "fail
 loudly, don't fake it" posture `PaymentProviderPort`/`VideoProviderPort` already establish.
 Zero changes to any bounded context, RBAC/tenant-isolation code, or database migration.
+
+**Priority 1 Item 6 — RBAC grant/revoke route (complete).** Closed what had been a real
+operational blocker: `PermissionApplicationService` (`iam`) and `ScopeAssignmentApplicationService`
+(`organization`) have existed, fully implemented, since the Backend Stabilization phase — both
+docstrings named the exact gap this closes ("RAAD can't onboard its own staff without
+hand-editing the DB"), reachable at the application layer only. New Founder-only routes:
+`GET/POST /roles/{role}/permissions` + `POST /roles/{role}/permissions/revoke` (`iam.
+roles_router`), and `GET /scope-assignments/{user_id}` + `POST /scope-assignments/regions`/
+`/support` + their own `/revoke` counterparts (`organization.scope_assignments_router`). No
+documented API Contracts surface exists for either — built directly on Database Design §4.4's
+("editable by Founder... without code change") and §4.6's own schema authority instead, the same
+"use-case exists, no approved endpoint yet, built on the schema authority" posture `/drivers`
+already established; `organization/domain/entities.py`'s own module docstring, which had named
+`region_assignments`/`support_assignments`'s module ownership as an open question, is updated to
+record the resolution. New migration (`a1c9e4f2b871`) grants `founder` the six new permissions
+(`iam.role_permissions.{list,grant,revoke}`, `organization.scope_assignments.{list,grant,
+revoke}`) — the most sensitive action in the system, since it can grant any permission to any
+role including itself, so no other role gets it.
+
+**A real, live-caught production bug — not specific to this item's own new code, but only
+reachable through it.** Live-testing the new grant route (a real running server, a real Founder
+JWT, a real POST) surfaced `asyncpg.exceptions.StringDataRightTruncationError` the instant a real
+permission string was granted. Root cause, traced to the actual event factories: `iam.domain.
+events.role_permission_granted`/`revoked` built `aggregate_id` as `f"{role}:{permission}"`, and
+`organization.domain.events.region_assignment_granted`/`revoked`/`support_assignment_granted`/
+`revoked` built it as `f"{user_id}:{region_id}"` (or `organization_id`) — composite strings that
+reliably exceed 26 characters (even two concatenated 26-char ULIDs plus a separator already do),
+while `outbox.aggregate_id` **and** `audit_entries.entity_id` are both `CHAR(26)`, sized for a
+real minted ULID like every *other* event in this codebase actually has. Never caught before
+this item: both application services existed since the Backend Stabilization phase, but no HTTP
+route (and no live-Postgres integration test) had ever actually exercised them — a fake-backed
+unit test can't catch a real column-width constraint at all, which is exactly why this class of
+bug keeps surfacing only during this program's live-verification step, not its unit tests.
+
+**Fixed at the right layer, not papered over with truncation.** `RolePermission`/
+`ScopeAssignment` are, by `RolePermissionRepository`'s/`ScopeAssignmentRepository`'s own existing
+docstrings, "pure grant/revoke reference data, no aggregate lifecycle" — they never had a real
+minted ULID identity to begin with, so a composite string was always a fabrication standing in
+for one. `core.events.base.DomainEvent.aggregate_id` is now `str | None` (widened alongside the
+already-nullable `org_id`/`correlation_id` on the same dataclass — not a novel precedent), and
+all six factories now pass `aggregate_id=None`; the full identifying data (role, permission,
+user_id, region_id/organization_id) stays exactly where it already was, in `payload`, so no
+information is actually lost. `outbox.aggregate_id` needed a real schema change to match —
+`CHAR(26) NOT NULL` — closed by a new shared-kernel migration (`f3d8b1a4e6c2`, chained after the
+RBAC-grant migration), following the same "owned by `core`, not a single bounded context"
+precedent `role_permissions`'/`audit_entries`' own earlier migrations already established.
+`audit_entries.entity_id` needed no schema change — it was already nullable, which is in fact
+what first suggested this exact fix.
+
+**Live-verified twice, not just asserted fixed**: the exact same grant call that produced the
+original `StringDataRightTruncationError` was re-run against the same live server after the fix
+and returned a clean `204`, immediately confirmed via a follow-up `GET` showing the new grant
+present; the same round trip (grant → confirm → revoke → confirm cleared) was independently
+repeated for a region-scope assignment against a real, freshly-created `Region` row, and a
+non-Founder caller's attempt was independently confirmed to 403 with `iam.role_permissions.grant`
+named in the error. 19 new unit tests (13 covering both application services, which had zero
+prior test coverage despite existing since the Backend Stabilization phase, plus 6 asserting
+`aggregate_id is None` directly on all six fixed event factories — a permanent regression guard
+for this exact bug class). A second, genuinely unrelated rough edge surfaced during the same live
+session and was tracked honestly rather than silently absorbed into this item's own fix: a
+mistyped `organization_id` in a scope-assignment grant produced a raw, uncaught
+`ForeignKeyViolationError` (a correct constraint, an unhelpful 500 instead of a clean 4xx) —
+confirmed systemic (`IntegrityError` is caught in exactly one place anywhere in this codebase),
+not something this item introduced or fully in scope to fix, recorded as `PROJECT_STATUS.md`
+Known Issue #16. 1236 unit tests + 10 architecture-gate tests pass with zero regressions.

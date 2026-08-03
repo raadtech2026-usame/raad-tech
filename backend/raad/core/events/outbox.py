@@ -38,7 +38,11 @@ class OutboxRecord(UlidPrimaryKeyMixin, Base):
     event_type: Mapped[str] = mapped_column(String(150), nullable=False)
     event_version: Mapped[int] = mapped_column(Integer, nullable=False)
     aggregate_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    aggregate_id: Mapped[str] = mapped_column(CHAR(26), nullable=False)
+    #: Nullable as of Priority 1 Item 6 (`PROJECT_STATUS.md`, migration `<see versions/>`) — see
+    #: `core.events.base.DomainEvent.aggregate_id`'s own docstring for why a composite-key
+    #: "aggregate" with no real minted ULID (RolePermission/ScopeAssignment) must be able to
+    #: omit this rather than overflow `CHAR(26)`.
+    aggregate_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
     organization_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     correlation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

@@ -21,7 +21,7 @@ def _new_event(
     *,
     event_type: str,
     aggregate_type: str,
-    aggregate_id: str,
+    aggregate_id: str | None,
     org_id: str | None,
     occurred_at: datetime,
     payload: dict[str, Any],
@@ -207,11 +207,19 @@ def region_assignment_granted(
 ) -> DomainEvent:
     """RBAC/scope change (Database Design §10's audit-worthy action list) — no approved
     document names this event; this phase's own flagged choice, mirroring `iam.domain.events.
-    role_permission_granted`'s identical reasoning."""
+    role_permission_granted`'s identical reasoning.
+
+    `aggregate_id=None` (Priority 1 Item 6, `PROJECT_STATUS.md`) — `ScopeAssignment` has no real
+    minted ULID (`ScopeAssignmentRepository`'s own "pure grant/revoke reference data, no
+    aggregate lifecycle" docstring). A composite `f"{user_id}:{region_id}"` was tried first and,
+    live-verified, overflows `audit_entries.entity_id`'s `CHAR(26)` column even though each half
+    is itself a 26-char ULID — two ULIDs plus a separator is inherently >26 characters, the same
+    `StringDataRightTruncationError` `iam.domain.events.role_permission_granted` hit. `user_id`/
+    `region_id` are still fully captured in `payload` below."""
     return _new_event(
         event_type="RegionAssignmentGranted",
         aggregate_type="ScopeAssignment",
-        aggregate_id=f"{user_id}:{region_id}",
+        aggregate_id=None,
         org_id=None,
         occurred_at=occurred_at,
         payload={"user_id": user_id, "region_id": region_id, "actor_id": actor_id},
@@ -221,10 +229,11 @@ def region_assignment_granted(
 def region_assignment_revoked(
     *, user_id: str, region_id: str, occurred_at: datetime, actor_id: str | None
 ) -> DomainEvent:
+    """See `region_assignment_granted`'s own docstring for why `aggregate_id=None`."""
     return _new_event(
         event_type="RegionAssignmentRevoked",
         aggregate_type="ScopeAssignment",
-        aggregate_id=f"{user_id}:{region_id}",
+        aggregate_id=None,
         org_id=None,
         occurred_at=occurred_at,
         payload={"user_id": user_id, "region_id": region_id, "actor_id": actor_id},
@@ -238,10 +247,12 @@ def support_assignment_granted(
     occurred_at: datetime,
     actor_id: str | None,
 ) -> DomainEvent:
+    """See `region_assignment_granted`'s own docstring for why `aggregate_id=None` — identical
+    reasoning applies here."""
     return _new_event(
         event_type="SupportAssignmentGranted",
         aggregate_type="ScopeAssignment",
-        aggregate_id=f"{user_id}:{organization_id}",
+        aggregate_id=None,
         org_id=organization_id,
         occurred_at=occurred_at,
         payload={
@@ -262,7 +273,7 @@ def support_assignment_revoked(
     return _new_event(
         event_type="SupportAssignmentRevoked",
         aggregate_type="ScopeAssignment",
-        aggregate_id=f"{user_id}:{organization_id}",
+        aggregate_id=None,
         org_id=organization_id,
         occurred_at=occurred_at,
         payload={

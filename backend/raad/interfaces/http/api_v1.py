@@ -31,9 +31,13 @@ from raad.modules.fleet_device.api.routers import (
     devices_router,
     vehicles_router,
 )
-from raad.modules.iam.api.routers import auth_router, users_router
+from raad.modules.iam.api.routers import auth_router, roles_router, users_router
 from raad.modules.notifications.api.routers import notifications_router
-from raad.modules.organization.api.routers import organizations_router, regions_router
+from raad.modules.organization.api.routers import (
+    organizations_router,
+    regions_router,
+    scope_assignments_router,
+)
 from raad.modules.platform_audit.api.routers import admin_router
 from raad.modules.reporting.api.routers import reports_router
 from raad.modules.tracking.api.routers import tracking_router
@@ -60,11 +64,19 @@ api_router = APIRouter(prefix="/api/v1", dependencies=[Security(_bearer_scheme)]
 
 api_router.include_router(auth_router, prefix="/auth", tags=["auth"])  # iam (C1)
 api_router.include_router(users_router, prefix="/users", tags=["users"])
+# Priority 1 Item 6 (PROJECT_STATUS.md) — RBAC role/permission matrix management, no documented
+# API Contracts surface (see roles_router's own module-level comment in iam/api/routers.py).
+api_router.include_router(roles_router, prefix="/roles", tags=["users"])
 
 api_router.include_router(
     organizations_router, prefix="/organizations", tags=["organizations"]
 )  # organization (C2)
 api_router.include_router(regions_router, prefix="/regions", tags=["organizations"])
+# Priority 1 Item 6 (PROJECT_STATUS.md) — RAAD-staff region/support scope-assignment management,
+# no documented API Contracts surface (see scope_assignments_router's own module-level comment).
+api_router.include_router(
+    scope_assignments_router, prefix="/scope-assignments", tags=["organizations"]
+)
 
 api_router.include_router(
     vehicles_router, prefix="/vehicles", tags=["fleet"]

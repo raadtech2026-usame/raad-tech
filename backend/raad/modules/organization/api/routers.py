@@ -22,13 +22,17 @@ route is itself scope-filtered yet**, the same system-wide, already-flagged gap 
 real per-request scope-filtering onto every existing list endpoint at once is a separate, larger
 change, not bundled into this addition for consistency's sake).
 
+**`scope_assignments_router` mounts at `/api/v1/scope-assignments`** (Priority 1 Item 6,
+`PROJECT_STATUS.md`) — the design decision this module's own docstring used to say was still
+pending: `region_assignments`/`support_assignments` (Database Design §4.6) are owned here (the
+same module `ScopeAssignmentApplicationService` already lived in), not `iam` or
+`platform_audit`, closing "RAAD can't onboard its own staff without hand-editing the DB." No
+documented API Contracts surface exists for this either — built on the schema authority instead,
+the same posture `iam.api.routers.roles_router` follows for the analogous `role_permissions`
+gap.
+
 **Endpoints deliberately not implemented** (see this module's own docstrings for why touching
 Domain/Application is out of scope this phase):
-- `POST /regions/{id}/assignments` — `organization.domain.entities`'s own docstring records
-  `region_assignments`/`support_assignments` (Database Design §4.6) as deliberately deferred:
-  module ownership isn't settled by the API contract rule (which routes only `/organizations`
-  + `/regions` to this module), so it needs an explicit design decision, not an invented one
-  here.
 - `PATCH /organizations/{id}`'s `billing_model` field — see `UpdateOrganizationRequest`'s
   docstring (`api/schemas.py`): `Organization` had no `change_billing_model` behavior even
   before ADR-0016 removed the field from the aggregate entirely, so only `status` is accepted.
@@ -58,13 +62,17 @@ from raad.modules.organization.api.deps import (
     get_organization_service,
     get_organization_uow,
     get_region_service,
+    get_scope_assignment_service,
 )
 from raad.modules.organization.api.schemas import (
     CreateRegionRequest,
+    GrantRegionAssignmentRequest,
+    GrantSupportAssignmentRequest,
     OrganizationOnboardedResponse,
     OrganizationResponse,
     RegionResponse,
     RegisterOrganizationRequest,
+    ScopeAssignmentsResponse,
     UpdateOrganizationRequest,
     UpdateRegionRequest,
 )
@@ -73,9 +81,13 @@ from raad.modules.organization.application.commands import (
     CreateRegionCommand,
     DeactivateOrganizationCommand,
     DeactivateRegionCommand,
+    GrantRegionAssignmentCommand,
+    GrantSupportAssignmentCommand,
     OnboardOrganizationCommand,
     ReactivateOrganizationCommand,
     RegisterOrganizationCommand,
+    RevokeRegionAssignmentCommand,
+    RevokeSupportAssignmentCommand,
     SuspendOrganizationCommand,
 )
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
@@ -90,11 +102,13 @@ from raad.modules.organization.application.queries import (
 from raad.modules.organization.application.services import (
     OrganizationApplicationService,
     RegionApplicationService,
+    ScopeAssignmentApplicationService,
 )
 from raad.modules.organization.domain.value_objects import OrgType
 
 organizations_router = APIRouter()
 regions_router = APIRouter()
+scope_assignments_router = APIRouter()
 
 
 def _parse_org_type(value: str) -> OrgType:
@@ -403,3 +417,123 @@ async def update_region(
         )
 
     return _region_dto_to_response(region)
+
+
+# --- RAAD-staff scope-assignment management (Priority 1 Item 6, PROJECT_STATUS.md) ------------
+#
+# Founder-only in the seeded matrix — controls who else can act as a Regional Manager/Support
+# Staff at all, the platform-configuration equivalent of `iam.role_permissions.*`.
+
+
+@scope_assignments_router.get(
+    "/{user_id}",
+    response_model=ScopeAssignmentsResponse,
+    summary="List a user's region and support scope assignments",
+)
+async def get_scope_assignments(
+    user_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("organization.scope_assignments.list"))
+    ),
+    scope_service: ScopeAssignmentApplicationService = Depends(
+        get_scope_assignment_service
+    ),
+    uow: OrganizationUnitOfWork = Depends(get_organization_uow),
+) -> ScopeAssignmentsResponse:
+    region_ids = await scope_service.list_region_assignments(user_id, uow=uow)
+    organization_ids = await scope_service.list_organization_assignments(
+        user_id, uow=uow
+    )
+    return ScopeAssignmentsResponse(
+        user_id=user_id,
+        region_ids=sorted(region_ids),
+        organization_ids=sorted(organization_ids),
+    )
+
+
+@scope_assignments_router.post(
+    "/regions",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Grant a Regional Manager's region scope assignment",
+)
+async def grant_region_assignment(
+    body: GrantRegionAssignmentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("organization.scope_assignments.grant"))
+    ),
+    scope_service: ScopeAssignmentApplicationService = Depends(
+        get_scope_assignment_service
+    ),
+    uow: OrganizationUnitOfWork = Depends(get_organization_uow),
+) -> None:
+    command = GrantRegionAssignmentCommand(
+        user_id=body.user_id, region_id=body.region_id, actor=principal
+    )
+    await scope_service.grant_region_assignment(command, uow=uow)
+
+
+@scope_assignments_router.post(
+    "/regions/revoke",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke a Regional Manager's region scope assignment",
+)
+async def revoke_region_assignment(
+    body: GrantRegionAssignmentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("organization.scope_assignments.revoke"))
+    ),
+    scope_service: ScopeAssignmentApplicationService = Depends(
+        get_scope_assignment_service
+    ),
+    uow: OrganizationUnitOfWork = Depends(get_organization_uow),
+) -> None:
+    command = RevokeRegionAssignmentCommand(
+        user_id=body.user_id, region_id=body.region_id, actor=principal
+    )
+    await scope_service.revoke_region_assignment(command, uow=uow)
+
+
+@scope_assignments_router.post(
+    "/support",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Grant a Support Staff's organization scope assignment",
+)
+async def grant_support_assignment(
+    body: GrantSupportAssignmentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("organization.scope_assignments.grant"))
+    ),
+    scope_service: ScopeAssignmentApplicationService = Depends(
+        get_scope_assignment_service
+    ),
+    uow: OrganizationUnitOfWork = Depends(get_organization_uow),
+) -> None:
+    command = GrantSupportAssignmentCommand(
+        user_id=body.user_id,
+        organization_id=body.organization_id,
+        actor=principal,
+    )
+    await scope_service.grant_support_assignment(command, uow=uow)
+
+
+@scope_assignments_router.post(
+    "/support/revoke",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke a Support Staff's organization scope assignment",
+)
+async def revoke_support_assignment(
+    body: GrantSupportAssignmentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("organization.scope_assignments.revoke"))
+    ),
+    scope_service: ScopeAssignmentApplicationService = Depends(
+        get_scope_assignment_service
+    ),
+    uow: OrganizationUnitOfWork = Depends(get_organization_uow),
+) -> None:
+    command = RevokeSupportAssignmentCommand(
+        user_id=body.user_id,
+        organization_id=body.organization_id,
+        actor=principal,
+    )
+    await scope_service.revoke_support_assignment(command, uow=uow)

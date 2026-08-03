@@ -49,6 +49,7 @@ from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_r
 from raad.modules.iam.api.deps import (
     get_auth_service,
     get_iam_uow,
+    get_permission_service,
     get_scoped_iam_uow,
     get_user_service,
 )
@@ -60,6 +61,8 @@ from raad.modules.iam.api.schemas import (
     PasswordResetResponse,
     PrincipalResponse,
     RefreshRequest,
+    RolePermissionRequest,
+    RolePermissionsResponse,
     TokenResponse,
     UpdateUserRequest,
     UserResponse,
@@ -70,11 +73,13 @@ from raad.modules.iam.application.commands import (
     DisableMfaCommand,
     DisableUserCommand,
     EnableMfaCommand,
+    GrantRolePermissionCommand,
     InviteUserCommand,
     LoginCommand,
     LogoutCommand,
     RefreshAccessTokenCommand,
     ResetPasswordToTemporaryCommand,
+    RevokeRolePermissionCommand,
 )
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.queries import (
@@ -85,11 +90,13 @@ from raad.modules.iam.application.queries import (
 )
 from raad.modules.iam.application.services import (
     AuthApplicationService,
+    PermissionApplicationService,
     UserApplicationService,
 )
 
 auth_router = APIRouter()
 users_router = APIRouter()
+roles_router = APIRouter()
 
 
 def _parse_role(value: str) -> Role:
@@ -426,3 +433,79 @@ async def reset_user_password(
     return PasswordResetResponse(
         user=_user_dto_to_response(user), temporary_password=temporary_password
     )
+
+
+# --- Role/permission matrix management (Priority 1 Item 6, PROJECT_STATUS.md) -----------------
+#
+# `PermissionApplicationService` (`application/services.py`) has existed, reachable at the
+# application layer only, since the Backend Stabilization phase — its own docstring named the
+# gap this closes: "RAAD can't onboard its own staff without hand-editing the DB". No documented
+# route exists for this in API Contracts (that document has no `/roles` or `/admin/roles`
+# surface at all) — built anyway on Database Design §4.4's own unambiguous requirement
+# ("editable by Founder... without code change"), the same "use-case exists, no approved
+# endpoint yet, built on the schema authority instead" posture already established for
+# `/drivers` and `Route.remove_stop`/`Trip.interrupt`. Founder-only in the seeded matrix
+# (migration `<this item's own revision>`) — the most sensitive action in the whole system,
+# since it can grant any permission to any role, including itself.
+
+
+@roles_router.get(
+    "/{role}/permissions",
+    response_model=RolePermissionsResponse,
+    summary="List a role's granted permissions",
+)
+async def list_role_permissions(
+    role: str,
+    principal: Principal = Depends(
+        require_permission(Permission("iam.role_permissions.list"))
+    ),
+    permission_service: PermissionApplicationService = Depends(get_permission_service),
+    uow: IamUnitOfWork = Depends(get_iam_uow),
+) -> RolePermissionsResponse:
+    parsed_role = _parse_role(role)
+    permissions = await permission_service.list_permissions_for_role(
+        parsed_role, uow=uow
+    )
+    return RolePermissionsResponse(
+        role=parsed_role.value, permissions=sorted(permissions)
+    )
+
+
+@roles_router.post(
+    "/{role}/permissions",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Grant a permission to a role",
+)
+async def grant_role_permission(
+    role: str,
+    body: RolePermissionRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("iam.role_permissions.grant"))
+    ),
+    permission_service: PermissionApplicationService = Depends(get_permission_service),
+    uow: IamUnitOfWork = Depends(get_iam_uow),
+) -> None:
+    command = GrantRolePermissionCommand(
+        role=_parse_role(role), permission=body.permission, actor=principal
+    )
+    await permission_service.grant_role_permission(command, uow=uow)
+
+
+@roles_router.post(
+    "/{role}/permissions/revoke",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke a permission from a role",
+)
+async def revoke_role_permission(
+    role: str,
+    body: RolePermissionRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("iam.role_permissions.revoke"))
+    ),
+    permission_service: PermissionApplicationService = Depends(get_permission_service),
+    uow: IamUnitOfWork = Depends(get_iam_uow),
+) -> None:
+    command = RevokeRolePermissionCommand(
+        role=_parse_role(role), permission=body.permission, actor=principal
+    )
+    await permission_service.revoke_role_permission(command, uow=uow)

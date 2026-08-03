@@ -114,3 +114,20 @@ class UpdateUserRequest(BaseModel):
 
     status: str | None = None
     mfa_enabled: bool | None = None
+
+
+class RolePermissionRequest(BaseModel):
+    """Priority 1 Item 6 (`PROJECT_STATUS.md`, RBAC grant/revoke route) — the shared request
+    body shape for both `POST /roles/{role}/permissions` (grant) and
+    `POST /roles/{role}/permissions/revoke`. `permission` is an opaque, non-empty string
+    (`"fleet_device.devices.read"` shape) — not a closed enum, matching `RolePermissionRepository`'s
+    own storage shape (`VARCHAR`, no `CHECK`/`ENUM` constraint); the seeded matrix's own
+    permission strings are the only real catalog, and inventing a closed set here would drift
+    from it the first time a new permission string is added."""
+
+    permission: str = Field(..., min_length=1)
+
+
+class RolePermissionsResponse(BaseModel):
+    role: str
+    permissions: list[str]

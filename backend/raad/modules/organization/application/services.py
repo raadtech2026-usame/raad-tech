@@ -438,3 +438,19 @@ class ScopeAssignmentApplicationService:
                 ]
             )
             await uow.commit()
+
+    async def list_region_assignments(
+        self, user_id: str, *, uow: OrganizationUnitOfWork
+    ) -> frozenset[str]:
+        """Priority 1 Item 6 (`PROJECT_STATUS.md`, RBAC grant/revoke route) — the read half of
+        the same grant/revoke primitive above, previously reachable only by calling the
+        repository directly (never through this service, since no caller needed it before an
+        HTTP route existed)."""
+        async with uow:
+            return await uow.scope_assignments.list_assigned_region_ids(user_id)
+
+    async def list_organization_assignments(
+        self, user_id: str, *, uow: OrganizationUnitOfWork
+    ) -> frozenset[str]:
+        async with uow:
+            return await uow.scope_assignments.list_assigned_organization_ids(user_id)

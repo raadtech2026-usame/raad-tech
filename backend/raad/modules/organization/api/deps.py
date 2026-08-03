@@ -16,6 +16,7 @@ from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.application.services import (
     OrganizationApplicationService,
     RegionApplicationService,
+    ScopeAssignmentApplicationService,
 )
 
 
@@ -50,3 +51,9 @@ def get_region_service(
     container: Container = Depends(get_container),
 ) -> RegionApplicationService:
     return container.resolve(RegionApplicationService)
+
+
+def get_scope_assignment_service(
+    container: Container = Depends(get_container),
+) -> ScopeAssignmentApplicationService:
+    return container.resolve(ScopeAssignmentApplicationService)

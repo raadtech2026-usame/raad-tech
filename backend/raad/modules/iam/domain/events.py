@@ -23,7 +23,7 @@ def _new_event(
     *,
     event_type: str,
     aggregate_type: str,
-    aggregate_id: str,
+    aggregate_id: str | None,
     org_id: str | None,
     occurred_at: datetime,
     payload: dict[str, Any],
@@ -246,11 +246,19 @@ def role_permission_granted(
 ) -> DomainEvent:
     """RBAC/scope change (Database Design §10's audit-worthy action list names this category
     explicitly) — no approved document names this event; this phase's own flagged choice,
-    matching every other unnamed-event precedent in this codebase."""
+    matching every other unnamed-event precedent in this codebase.
+
+    `aggregate_id=None` (Priority 1 Item 6, `PROJECT_STATUS.md`) — `RolePermission` has no real
+    minted ULID (`RolePermissionRepository`'s own "pure grant data, no aggregate lifecycle"
+    docstring); a composite `f"{role}:{permission}"` string was tried first and, live-verified
+    against a real permission string, overflowed `audit_entries.entity_id`'s `CHAR(26)` column
+    (`StringDataRightTruncationError`) — never caught earlier because no HTTP route reached this
+    factory before this item. `role`/`permission` are still fully captured in `payload` below,
+    so no identifying information is actually lost by omitting `aggregate_id`."""
     return _new_event(
         event_type="RolePermissionGranted",
         aggregate_type="RolePermission",
-        aggregate_id=f"{role}:{permission}",
+        aggregate_id=None,
         org_id=None,
         occurred_at=occurred_at,
         payload={"role": role, "permission": permission, "actor_id": actor_id},
@@ -260,10 +268,11 @@ def role_permission_granted(
 def role_permission_revoked(
     *, role: str, permission: str, occurred_at: datetime, actor_id: str | None
 ) -> DomainEvent:
+    """See `role_permission_granted`'s own docstring for why `aggregate_id=None`."""
     return _new_event(
         event_type="RolePermissionRevoked",
         aggregate_type="RolePermission",
-        aggregate_id=f"{role}:{permission}",
+        aggregate_id=None,
         org_id=None,
         occurred_at=occurred_at,
         payload={"role": role, "permission": permission, "actor_id": actor_id},
