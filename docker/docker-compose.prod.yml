@@ -13,9 +13,12 @@
 # start `backend`/`worker` without a real `RAAD_AUTH__JWT_SECRET_KEY`, the same fail-loud check
 # this repo already applies everywhere else.
 #
-# TLS is explicitly out of scope this phase — no domain name or certificate material was
-# supplied. `infrastructure/nginx/conf.d/prod.conf` stays plain HTTP; see that file's own
-# comment for where to add a `listen 443 ssl` block once a real domain/cert exists.
+# TLS (Priority 1 Item 2, PROJECT_STATUS.md): a `certbot` service plus nginx's own official
+# templating mechanism now exist to terminate TLS via Let's Encrypt — but no domain name or
+# certificate material is supplied *in this repo*, and this override still defaults to
+# NGINX_PROD_CONF=prod.conf (plain HTTP) so a fresh `docker/.env` with nothing filled in stays
+# exactly as safe/bootable as before. See docs/runbooks/tls-setup.md for the two-phase bootstrap
+# that turns this on for real once a domain/VPS exist.
 #
 # Run with:
 #   docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml up -d --build
@@ -46,5 +49,55 @@ services:
     ports: !reset []
 
   nginx:
+    # `volumes: !reset`, not a plain merge — the base file's dev.conf mount targets this same
+    # container path (/etc/nginx/conf.d/default.conf); without `!reset` it would keep merging
+    # by target path (correct, and how this worked before TLS), but now that the target itself
+    # is changing (templates/, not conf.d/ directly — see below), an explicit reset is the only
+    # way to guarantee dev.conf's mount doesn't linger unused alongside the new one. Same
+    # merge-control tag `ports: !reset []` below already establishes in this file.
+    volumes: !reset
+      # NGINX_PROD_CONF: prod.conf (default, plain HTTP) or prod-tls.conf (after the two-phase
+      # bootstrap, docs/runbooks/tls-setup.md) — mounted to templates/, not conf.d/, directly:
+      # nginx's own stock entrypoint (20-envsubst-on-templates.sh, standard since its 1.19 Docker
+      # image) renders *.template -> conf.d/ at container startup, substituting only variables
+      # actually present in `environment:` below (nginx's own $host/$request_uri/etc. runtime
+      # variables are never real env vars, so they pass through untouched). A no-op substitution
+      # for prod.conf, which has no ${} tokens — same mount path for both, deliberately, so
+      # switching NGINX_PROD_CONF is the only thing that changes.
+      - ../infrastructure/nginx/conf.d/${NGINX_PROD_CONF:-prod.conf}:/etc/nginx/templates/default.conf.template:ro
+      - raad_certbot_conf:/etc/letsencrypt:ro
+      - raad_certbot_webroot:/var/www/certbot:ro
+    environment:
+      DOMAIN_NAME: ${DOMAIN_NAME:-}
+    # No `!reset` here, deliberately — nginx is "the one service meant to be reachable from
+    # outside the Docker network" (this file's own header comment); its base 80:80 mapping must
+    # stay published in prod, unlike every other service's `ports: !reset []` above. Compose's
+    # default merge for `ports:` is additive (this file's own comment on that tag, further up),
+    # so this just adds 443 alongside the base's existing 80 — needed now that nginx can
+    # actually terminate HTTPS once NGINX_PROD_CONF=prod-tls.conf.
+    ports:
+      - "443:443"
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: raad-certbot
+    restart: unless-stopped
+    # Shares nginx's PID namespace so certbot-renew-loop.sh's --deploy-hook can `kill -HUP 1` to
+    # reload nginx after a real renewal, without mounting the Docker socket (the lower-privilege
+    # alternative to `docker exec nginx nginx -s reload` from a sibling container).
+    pid: "service:nginx"
+    entrypoint: []
+    command: ["sh", "/scripts/certbot-renew-loop.sh"]
+    environment:
+      CERTBOT_RENEW_INTERVAL_HOURS: ${CERTBOT_RENEW_INTERVAL_HOURS:-12}
     volumes:
-      - ../infrastructure/nginx/conf.d/prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - raad_certbot_conf:/etc/letsencrypt
+      - raad_certbot_webroot:/var/www/certbot
+      - ../scripts/tls/certbot-renew-loop.sh:/scripts/certbot-renew-loop.sh:ro
+    depends_on:
+      nginx:
+        condition: service_started
+
+volumes:
+  raad_certbot_conf:
+  raad_certbot_webroot:

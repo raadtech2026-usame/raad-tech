@@ -14,10 +14,10 @@ architecture; this file is the source of truth for progress and sequencing.
 
 | | |
 |---|---|
-| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric) |
-| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; eight Priority-1 blockers remain open (Backups closed) — see Section 5. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is now active: Item 1 (Backups) complete, Item 2 (TLS/HTTPS) recommended next. — see Section 2 for the full per-track breakdown. |
-| **Current git commit** | `d8405a0` — `docs(status): expand PROJECT_STATUS.md into the permanent project control center` (branch `main`; this Backups work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; unchanged by Item 2 numerically since TLS was a sub-concern of three already-🟡 rows, not its own row) |
+| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; seven Priority-1 blockers remain open (Backups and TLS/HTTPS closed) — see Section 5. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–2 (Backups, TLS/HTTPS) complete, Item 3 (Auth rate limiting + account lockout) recommended next. — see Section 2 for the full per-track breakdown. |
+| **Current git commit** | `a5bbdba` — `feat(infra): implement Priority 1 Item 1 - database backups` (branch `main`; this TLS/HTTPS work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
 | **Last updated** | 2026-08-03 |
 
 ---
@@ -32,7 +32,7 @@ it should never lag behind Section 3's detail.
 | **Backend** | ADR-0018 (Device Inventory & Allocation) complete. All ten bounded contexts implemented end-to-end. Next queued backend work is ADR-0019 (Session Cap) / ADR-0020 (Platform Analytics), but both are **paused** — see the Section 5 callout on why Priority-1 production-readiness work goes first. |
 | **Frontend** | Phases F0–F7 complete (design system, org/region/user/fleet/device/people management, live tracking). F8 (Notifications), F9 (Billing), F10 (Video), and reporting/analytics feature folders are empty — not started. |
 | **Mobile** | Pre-implementation. `mobile/` is a structural scaffold only — no Flutter SDK dependency declared in `pubspec.yaml`, `lib/main.dart` is a 0-byte file, no native Android/iOS project files exist. `flutter create` has never been run. |
-| **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Item 1 (Backups) complete** — a `backup` service, live-verified backup/restore round trip, CI coverage. TLS, production monitoring, and Redis persistence hardening remain open — three of the remaining Priority-1 blockers (Section 5). |
+| **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Item 1 (Backups) complete.** **Priority 1 Item 2 (TLS/HTTPS) complete** — nginx `prod-tls.conf` + a `certbot` service (Let's Encrypt via webroot challenge, auto-renewal), mechanism built and carefully reviewed but not live-tested against a real domain (none provisioned yet — Known Issue #13). Production monitoring and Redis persistence hardening remain open — two of the remaining Priority-1 blockers (Section 5). |
 
 ---
 
@@ -213,10 +213,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 ### Platform operations
 
 #### Docker — 🟡 Partial
-- **Implemented:** Real dev + production compose overlays, 3 real Dockerfiles (backend, frontend, device-gateway), working nginx reverse proxy — verified live per ADR-0013.
-- **Missing:** No TLS termination anywhere; no container for `services/jt1078/`.
-- **Production blocker?** Yes, via the TLS gap.
-- **Dependencies:** A domain name + certificate.
+- **Implemented:** Real dev + production compose overlays, 3 real Dockerfiles (backend, frontend, device-gateway), working nginx reverse proxy — verified live per ADR-0013. Priority 1 Item 2: TLS termination mechanism (nginx `prod-tls.conf` + `certbot` service, Let's Encrypt via webroot challenge, auto-renewal) built and carefully reviewed.
+- **Missing:** No container for `services/jt1078/`. TLS mechanism not live-tested against a real domain — no domain/VPS provisioned yet; see Known Issue #13.
+- **Production blocker?** No longer for TLS itself (mechanism exists, documented two-phase bootstrap in `docs/runbooks/tls-setup.md`) — the residual risk is that it hasn't been proven against a real domain yet.
+- **Dependencies:** A domain name + DNS pointed at a real VPS, to actually run the bootstrap.
 
 #### Database (PostgreSQL) — ✅ Complete
 - **Implemented:** SQLAlchemy 2.x async + Alembic, one linear migration chain, verified zero-drift, ADR-0021 tenant-isolation fix.
@@ -249,10 +249,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Dependencies:** A log-aggregation destination choice.
 
 #### Deployment — 🟡 Partial
-- **Implemented:** `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build` genuinely works, live-verified (ADR-0013). Automated backups now run as part of this stack (Priority 1 Item 1, see Backups below).
-- **Missing:** No TLS, no monitoring, no secrets-manager integration, no deploy step in CI, no rollback runbook; `scripts/db/migrate.sh`/`seed.sh`/`scripts/dev/bootstrap.sh` are still literal 0-byte files.
+- **Implemented:** `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build` genuinely works, live-verified (ADR-0013). Automated backups (Priority 1 Item 1) and a TLS/HTTPS mechanism (Priority 1 Item 2, `docs/runbooks/tls-setup.md`) both now ship as part of this stack.
+- **Missing:** No monitoring, no secrets-manager integration, no deploy step in CI, no rollback runbook; `scripts/db/migrate.sh`/`seed.sh`/`scripts/dev/bootstrap.sh` are still literal 0-byte files. TLS itself is unverified against a real domain (Known Issue #13).
 - **Production blocker?** Yes — the umbrella item.
-- **Dependencies:** TLS, Monitoring, Security.
+- **Dependencies:** Monitoring, Security.
 
 #### Backups — ✅ Complete (local mechanism; off-site not yet configured to a real destination)
 - **Implemented:** Priority 1 Item 1. A `backup` Docker Compose service (`docker/backup.Dockerfile`,
@@ -274,10 +274,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
   change needed.)
 
 #### Security (composite) — 🟡 Partial
-- **Implemented:** Real tenant isolation (ADR-0021), real password hashing/policy, JWT with no hardcoded secrets, safe-by-default CORS, nothing secret committed to git. Data-loss risk lowered by Priority 1 Item 1 (Backups, now local-complete).
-- **Missing:** Rate limiting, account lockout, TLS, in-repo encryption-at-rest, RBAC admin route, `/docs` exposed with no environment gating.
+- **Implemented:** Real tenant isolation (ADR-0021), real password hashing/policy, JWT with no hardcoded secrets, safe-by-default CORS, nothing secret committed to git. Data-loss risk lowered by Priority 1 Item 1 (Backups). Transport encryption mechanism shipped by Priority 1 Item 2 (TLS/HTTPS) — see Docker above for its unverified-against-a-real-domain caveat.
+- **Missing:** Rate limiting, account lockout, in-repo encryption-at-rest, RBAC admin route, `/docs` exposed with no environment gating.
 - **Production blocker?** Yes.
-- **Dependencies:** Authentication, Authorization, Docker (TLS).
+- **Dependencies:** Authentication, Authorization.
 
 ### Completeness
 
@@ -344,12 +344,12 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 
 ### Priority 1 — Critical blockers before production
 1. ~~**Backups**~~ — ✅ **Complete** (2026-08-03). Local `pg_dump`/`pg_restore` mechanism, live-verified round trip, CI-covered, pluggable off-site hook (unconfigured — see Known Issue #12). `docs/runbooks/backup-and-restore.md`.
-2. **TLS/HTTPS** — stack runs on plain HTTP today. *(0.5–1 day once domain/cert exist)* ← **recommended next**
-3. **Auth rate limiting + account lockout** — login is unthrottled. *(2–3 days)*
+2. ~~**TLS/HTTPS**~~ — ✅ **Complete** (2026-08-03). nginx `prod-tls.conf` + `certbot` service (Let's Encrypt via webroot challenge, auto-renewal via PID-namespace reload signal), two-phase bootstrap runbook. Mechanism built and carefully reviewed, **not live-tested against a real domain** (none provisioned — see Known Issue #13). `docs/runbooks/tls-setup.md`.
+3. **Auth rate limiting + account lockout** — login is unthrottled. *(2–3 days)* ← **recommended next**
 4. **Redis production hardening** — no persistence config. *(1–2 days)*
 5. **Real health checks + minimum monitoring** — `/health/ready` doesn't check its dependencies. *(3–5 days)*
 6. **RBAC grant/revoke route** — RAAD can't onboard its own staff without hand-editing the DB. *(3–4 days)*
-7. **Deployment & rollback runbook, VPS/TLS setup guide** — currently one command and nothing else. *(2–3 days)*
+7. **Deployment & rollback runbook, VPS setup guide** — the TLS half of this is now covered by `docs/runbooks/tls-setup.md` (item 2); still missing: a general VPS provisioning guide and a rollback runbook. *(1–2 days remaining)*
 8. **Payment provider adapter** — no real payment has ever completed. *(1–2 weeks)*
 9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form. *(4–8 weeks)*
 
@@ -429,11 +429,26 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-Nothing in-progress — Priority 1 Item 1 (Backups) just closed out completely (architecture
-review → implementation → automated tests → live verification → docs → deployment changes →
-runbook → this update), per the user's explicit "one item at a time, fully finished" process.
+Nothing in-progress — Priority 1 Item 2 (TLS/HTTPS) just closed out completely (architecture
+review → implementation → careful manual verification (live testing genuinely not possible — no
+domain/VPS/local nginx binary/Docker daemon in this sandbox, disclosed plainly rather than
+faked) → docs → deployment changes → runbook → this update), per the user's explicit "one item
+at a time, fully finished" process.
 
 **Completed This Sprint:**
+- **Priority 1 Item 2 — TLS/HTTPS.** nginx `prod-tls.conf` (new) + `prod.conf` gains an ACME
+  challenge location; a new `certbot` Docker Compose service (official image, no custom
+  Dockerfile) obtains/renews Let's Encrypt certificates via the webroot HTTP-01 challenge and
+  reloads nginx by sharing its PID namespace (`kill -HUP 1`) rather than mounting the Docker
+  socket. `${DOMAIN_NAME}` substitution uses nginx's own official templating mechanism. Two real
+  bugs were caught by careful review (this sandbox cannot run `nginx -t`/`docker compose up`):
+  an accidentally-added `ports: !reset []` on nginx that would have un-published port 80 in
+  prod, and a TLS-config catch-all that would have redirected the container's own `/health`
+  healthcheck to HTTPS and broken it. A real self-signed certificate (via the locally-available
+  `openssl`) confirmed the cert file paths match certbot's actual output convention. New runbook
+  `docs/runbooks/tls-setup.md` — two-phase bootstrap, Let's-Encrypt-staging-first
+  recommendation, verifying auto-renewal, troubleshooting. Zero changes to any bounded context,
+  RBAC/tenant-isolation code, or migration.
 - **Priority 1 Item 1 — Backups.** New `backup` Docker Compose service
   (`docker/backup.Dockerfile`), `scripts/db/{backup,restore,backup-loop}.sh`, local retention,
   pluggable off-site `rclone` hook (unconfigured — Known Issue #12). Live-verified end-to-end
@@ -452,9 +467,9 @@ runbook → this update), per the user's explicit "one item at a time, fully fin
   Project Control Center (Sections 2, 6, 7, 12, 13).
 
 **Next Task:**
-**Recommended: Priority 1 Item 2 — TLS/HTTPS.** Per Section 14's rules, the next implementation
-session should not resume ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user
-confirms or redirects.
+**Recommended: Priority 1 Item 3 — Auth rate limiting + account lockout.** Per Section 14's
+rules, the next implementation session should not resume ADR-0019/ADR-0020 or skip ahead in the
+Priority 1 list until the user confirms or redirects.
 
 ---
 
@@ -462,6 +477,10 @@ confirms or redirects.
 
 Reverse-chronological (most recent first):
 
+- **Priority 1 Item 2 — TLS/HTTPS** completed — nginx `prod-tls.conf` + `certbot` service (Let's
+  Encrypt via webroot challenge, PID-namespace auto-reload on renewal), two-phase bootstrap
+  runbook; mechanism built and carefully reviewed but not live-tested against a real domain (none
+  provisioned).
 - **Priority 1 Item 1 — Backups** completed — local `pg_dump`/`pg_restore` mechanism, live
   round-trip verified, CI-covered, runbook written; off-site copy shipped as a documented,
   pluggable hook, not yet wired to a real destination.
@@ -592,14 +611,36 @@ Reverse-chronological (most recent first):
 - **Blocking production?** Not this item on its own, but a real risk until closed — a lost VPS
   with only local backups is still total data loss.
 
+### 13. TLS mechanism not live-tested against a real domain
+- **Severity:** Medium
+- **Description:** Priority 1 Item 2 shipped a complete, carefully-reviewed TLS termination
+  mechanism (nginx `prod-tls.conf`, a `certbot` service for Let's Encrypt via the webroot HTTP-01
+  challenge, PID-namespace-based auto-reload on renewal) — but it has never been run against a
+  real domain, because no domain or VPS is provisioned yet. This sandbox also has no local
+  `nginx`/`certbot` binary and no Docker daemon, so not even `nginx -t`/`docker compose config`
+  could be run; verification was YAML structural validation, a hand-simulated Compose merge, and
+  careful manual config review (which did catch two real bugs — see Section 9's entry for this
+  item) rather than an actual boot/request cycle.
+- **Recommended fix:** Follow `docs/runbooks/tls-setup.md` once a domain/VPS exist — Step 2's
+  Let's-Encrypt-**staging** run is deliberately where the first genuinely live test happens,
+  safely, before any production certificate request.
+- **Blocking production?** Not on its own (the design is the standard, documented pattern for
+  this exact topology, and `prod.conf`'s plain-HTTP fallback stays the safe default until an
+  operator explicitly opts in) — but treat "TLS live-verified" as not yet true until the runbook
+  has actually been run once for real.
+
 ---
 
 ## 11. Deployment Checklist
 
 Live checklist for a real VPS deployment — update as each item closes.
 
-- [ ] **TLS** — not configured; `docker-compose.prod.yml`/`prod.conf` stay on plain HTTP 80.
-- [ ] **Domain** — no domain name assigned/configured yet.
+- [x] **TLS** — mechanism complete (Priority 1 Item 2): nginx `prod-tls.conf` + `certbot`
+      service, auto-renewal. Check this box again once `docs/runbooks/tls-setup.md`'s bootstrap
+      has actually been run for real (Known Issue 13) — stays on plain HTTP (`prod.conf`) until
+      an operator opts in via `NGINX_PROD_CONF`.
+- [ ] **Domain** — no domain name assigned/configured yet; required before Item 2's mechanism can
+      actually be exercised.
 - [x] **Docker** — dev + prod compose overlays real and live-verified (ADR-0013); missing only a
       `services/jt1078/` container (tracked separately, see Video/JT1078).
 - [x] **Backups** — local `pg_dump`/`pg_restore` mechanism live-verified, CI-covered (Priority 1

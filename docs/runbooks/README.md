@@ -7,7 +7,7 @@ incident response, deployment rollback, and on-call procedures.
 
 ## Status
 
-Structural placeholder for the exception-workflow/incident-response runbooks listed above. Three
+Structural placeholder for the exception-workflow/incident-response runbooks listed above. Four
 real runbooks exist outside that original list:
 
 - [`founder-bootstrap.md`](founder-bootstrap.md) — first-time-deployment Founder account
@@ -18,3 +18,7 @@ real runbooks exist outside that original list:
 - [`backup-and-restore.md`](backup-and-restore.md) — database backup/restore operations and
   disaster recovery (`PROJECT_STATUS.md` Priority 1 Item 1), added alongside
   `scripts/db/backup.sh`/`scripts/db/restore.sh` and the `docker-compose.yml` `backup` service.
+- [`tls-setup.md`](tls-setup.md) — the two-phase HTTPS bootstrap and Let's Encrypt renewal
+  verification (`PROJECT_STATUS.md` Priority 1 Item 2), added alongside
+  `infrastructure/nginx/conf.d/prod-tls.conf` and the `docker-compose.prod.yml` `certbot`
+  service.

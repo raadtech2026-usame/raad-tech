@@ -18,7 +18,8 @@ and the production VPS, from the same files (ADR-0013: `docs/architecture/adr/
 | `device-gateway` | built from `device-gateway.Dockerfile` | The multi-vendor device-plane gateway (ADR-0009/ADR-0010) — terminates bus terminal TCP connections on `7808` (dormant JT/T 808) and `7809` (LSZ MDVR, the actually-integrated hardware). |
 | `backup` | built from `backup.Dockerfile` | Priority 1 Item 1 (`PROJECT_STATUS.md`) — periodically `pg_dump`s `postgres` into the `raad_backups_data` volume, prunes local dumps past `BACKUP_RETENTION_DAYS`, and pushes off-site via `rclone` if `BACKUP_RCLONE_REMOTE` is configured. See `docs/runbooks/backup-and-restore.md`. |
 | `frontend` | built from `frontend.Dockerfile` | React web dashboard. Dev: Vite dev server w/ HMR on `5173`. Prod: its own `nginx:alpine` serving the built static bundle on `80`. |
-| `nginx` | stock `nginx:1.27-alpine` | The platform's single public entrypoint — reverse-proxies `/api`, `/ws`, `/health` to `backend` and everything else to `frontend`. No custom Dockerfile: its config is bind-mounted from `infrastructure/nginx/conf.d/` (`dev.conf` or `prod.conf`). |
+| `nginx` | stock `nginx:1.27-alpine` | The platform's single public entrypoint — reverse-proxies `/api`, `/ws`, `/health` to `backend` and everything else to `frontend`. No custom Dockerfile: its config is bind-mounted from `infrastructure/nginx/conf.d/` (dev: `dev.conf`; prod: `prod.conf` or, once TLS is bootstrapped, `prod-tls.conf` — both mounted via nginx's own official templating mechanism so `${DOMAIN_NAME}` resolves for real). |
+| `certbot` | stock `certbot/certbot:latest` (prod only) | Priority 1 Item 2 (`PROJECT_STATUS.md`) — obtains and renews the Let's Encrypt certificate `prod-tls.conf` serves, via the webroot HTTP-01 challenge. Reloads `nginx` after a real renewal by sharing its PID namespace (`kill -HUP 1`), not the Docker socket. See `docs/runbooks/tls-setup.md`. |
 
 `services/jt1078/` has no service here — still a structural scaffold with no approved language/
 runtime (`services/jt1078/README.md`), so there is nothing to containerize yet.
@@ -29,10 +30,11 @@ runtime (`services/jt1078/README.md`), so there is nothing to containerize yet.
 - `docker-compose.dev.yml` — hot-reload/DX overrides (bind-mounted source, `uvicorn --reload`).
   Optional — the base file already runs correctly without it, just without live-reload.
 - `docker-compose.prod.yml` — VPS overrides: `frontend` builds its static bundle instead of
-  running the Vite dev server, `nginx` serves `prod.conf` instead of `dev.conf`, and only `nginx`
-  keeps a published host port. No `environment:` overrides live here — a real `docker/.env` on
-  the VPS (same shape as `.env.example`, never committed) is all that's needed; see that file's
-  own comments for `RAAD_ENVIRONMENT=prod`'s fail-loud JWT-secret check.
+  running the Vite dev server, `nginx` serves `prod.conf`/`prod-tls.conf` instead of `dev.conf`
+  (plus a `certbot` service and its two volumes, Priority 1 Item 2), and only `nginx` keeps a
+  published host port (`80` always, `443` once TLS is bootstrapped). A real `docker/.env` on the
+  VPS (same shape as `.env.example`, never committed) is all that's needed; see that file's own
+  comments for `RAAD_ENVIRONMENT=prod`'s fail-loud JWT-secret check.
 - `.env.example` — the one Compose-level env template. Copy to `docker/.env` before first run.
 - `backend.Dockerfile` — builds the Business API image; also reused for `migrate`/`worker`.
 - `frontend.Dockerfile` — multi-stage (`deps` → `dev` / `build` → `prod`); `target` picks dev
@@ -124,8 +126,18 @@ loud, repeated warning on every run reminding you it hasn't been configured. Ful
 — manual backup/restore, disaster recovery, configuring off-site storage —
 `docs/runbooks/backup-and-restore.md`.
 
+## TLS
+
+Not enabled by default — a fresh `docker/.env` (nothing filled in) runs `nginx` on plain HTTP
+exactly as before, via `NGINX_PROD_CONF=prod.conf`. Enabling real HTTPS is a one-time, two-phase
+bootstrap (get the first certificate while still on plain HTTP, then switch configs) documented
+in full — DNS prerequisite, exact commands, verifying auto-renewal, troubleshooting —
+in `docs/runbooks/tls-setup.md`. Once bootstrapped, the `certbot` service renews automatically;
+no further manual steps.
+
 ## Status
 
-Implemented (ADR-0013). Not yet covered: TLS termination at the Nginx gateway (no domain/cert
-material exists yet — see `infrastructure/nginx/conf.d/prod.conf`'s own comment for where that
-goes) and `services/jt1078/` (still no approved runtime).
+Docker itself: implemented (ADR-0013). TLS: mechanism implemented (Priority 1 Item 2,
+`PROJECT_STATUS.md`) but not live-tested against a real domain in this repository's own
+development — see the runbook's own disclosed testing scope. `services/jt1078/` still has no
+approved runtime to containerize.

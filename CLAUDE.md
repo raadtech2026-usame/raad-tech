@@ -1162,3 +1162,63 @@ Full operator guide — manual backup, restore drills, disaster recovery, config
 off-site remote: `docs/runbooks/backup-and-restore.md`. Zero changes to any bounded context, RBAC/
 tenant-isolation code, or database migration — this item touched only Docker/scripts/tests/docs,
 exactly its own scope.
+
+**Priority 1 Item 2 — TLS/HTTPS (complete, mechanism-wise; not yet live-tested against a real
+domain).** Closes what had been a real, unconditional production blocker: the whole stack ran on
+plain HTTP, with `infrastructure/nginx/conf.d/prod.conf`'s own comment already naming the
+intended shape — "a `listen 443 ssl` server block... certbot-managed files bind-mounted from the
+VPS host... once a real domain/cert exists." This item builds exactly that design, not a
+different one; ADR-0013 had deferred it, not left it undecided.
+
+**The chicken-and-egg bootstrap problem** (nginx refuses to start if a `listen 443 ssl` block's
+certificate file doesn't exist, but the first certificate can only be obtained by proving domain
+ownership over a *working* HTTP server) is solved with an explicit two-phase runbook, not a
+clever auto-generating entrypoint — matching this codebase's existing preference for documented
+one-time steps (`docs/runbooks/founder-bootstrap.md`'s precedent) over implicit magic.
+`prod.conf` (existing file) gained only an ACME-challenge webroot location, staying the safe,
+always-bootable default (`docker/.env.example`'s `NGINX_PROD_CONF=prod.conf`). A new
+`infrastructure/nginx/conf.d/prod-tls.conf` is the enabled-TLS successor an operator switches to
+once `docs/runbooks/tls-setup.md`'s bootstrap — get a certificate while still on plain HTTP, then
+flip `NGINX_PROD_CONF` and restart — has actually been run.
+
+**`${DOMAIN_NAME}` substitution uses nginx's own official templating mechanism** (mounting to
+`/etc/nginx/templates/default.conf.template` rather than directly to `conf.d/`, standard since
+nginx 1.19's Docker image), not a custom render step — its entrypoint substitutes only variable
+names actually present in the container's `environment:`, so nginx's own runtime variables
+(`$host`, `$request_uri`, etc., never real env vars) pass through untouched. Both `prod.conf` and
+`prod-tls.conf` mount through this same path for consistency (a no-op substitution for the
+former). Getting `docker-compose.prod.yml`'s `nginx` service to this shape required the `!reset`
+YAML tag (Compose's explicit "clear this field" merge-control, the same mechanism `ports: !reset
+[]` already established in this same file) on `volumes:`, since the target path changed from the
+base file's direct `conf.d/` mount.
+
+**Renewal reloads nginx without mounting the Docker socket.** A new `certbot` service (official
+`certbot/certbot` image, no custom Dockerfile — bind-mounts `scripts/tls/certbot-renew-loop.sh`
+in, the same "stock image + bind-mounted file" pattern `nginx`'s own service already uses in this
+repo) calls `certbot renew --deploy-hook "kill -HUP 1"` on a schedule
+(`CERTBOT_RENEW_INTERVAL_HOURS`). The deploy-hook only fires on an actual renewal, and reaches
+nginx's master process by sharing its PID namespace (Compose's `pid: "service:nginx"`) —
+deliberately not the Docker-socket-mount pattern some nginx+certbot tutorials use, which grants a
+container effectively-root host access for the same outcome.
+
+**Testing limitation, disclosed rather than hidden**: this sandbox has no Docker daemon and no
+local `nginx`/`certbot` binary (unlike Item 1's Backups, where PostgreSQL's client tools
+happened to be locally installed) — neither `nginx -t` nor `docker compose up` could be run.
+Verification was YAML structural validation, a hand-written Compose-merge simulation (confirming
+the final merged `nginx` service actually publishes both `80` and `443` and no longer mounts
+`dev.conf`), and careful manual config review — which caught two real bugs before they could ship
+silently: an accidentally-added `ports: !reset []` on `nginx` that would have un-published port
+80 in prod entirely (nginx is "the one service meant to be reachable from outside the Docker
+network" per this file's own header comment), and `prod-tls.conf`'s original catch-all redirect
+that would have sent the nginx container's own Docker healthcheck (a plain-HTTP request to
+`127.0.0.1/health`) to an HTTPS URL it has no clean way to validate, turning a healthy container
+into a false-negative "unhealthy" the moment TLS activated — fixed by carving out `/health` as a
+plain-HTTP exception in the port-80 server block. A real self-signed certificate, generated with
+the one crypto tool that *was* locally available (`openssl`), confirmed the `ssl_certificate`/
+`ssl_certificate_key` paths match certbot's actual, unchanging output convention
+(`/etc/letsencrypt/live/<domain>/{fullchain,privkey}.pem`) — not a substitute for a real ACME
+run, but confirms the path convention is right. `docs/runbooks/tls-setup.md` makes an operator's
+first genuinely live test a Let's Encrypt **staging** request specifically, so that first real
+exercise of this mechanism happens safely, with no rate-limit consequence, before any production
+certificate is ever requested. Zero changes to any bounded context, RBAC/tenant-isolation code,
+or database migration.
