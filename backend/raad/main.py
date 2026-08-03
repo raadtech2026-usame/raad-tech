@@ -23,6 +23,7 @@ from raad.interfaces.http.api_v1 import api_router
 from raad.interfaces.http.health import router as health_router
 from raad.interfaces.http.middleware import (
     CorrelationIdMiddleware,
+    RateLimitMiddleware,
     RequestLoggingMiddleware,
     SecurityContextMiddleware,
     SecurityHeadersMiddleware,
@@ -140,8 +141,16 @@ def create_app() -> FastAPI:
     # `Authorization` header, so it must be answered before `SecurityContextMiddleware` (or
     # any other layer) ever runs, and every response (success or error) needs the CORS headers
     # stamped on it for the browser to expose it to the calling frontend at all.
+    #
+    # RateLimitMiddleware (Priority 1 Item 3, PROJECT_STATUS.md) is added between
+    # SecurityContextMiddleware and CorrelationIdMiddleware — meaning it *executes* right after
+    # CorrelationIdMiddleware (add-order is reversed at execution time, per the rule above), so
+    # its raised RateLimitedError reaches the global handler with correlation_id_var already
+    # bound, while still running before SecurityContextMiddleware's JWT check and before any
+    # route/business logic.
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(SecurityContextMiddleware)
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(

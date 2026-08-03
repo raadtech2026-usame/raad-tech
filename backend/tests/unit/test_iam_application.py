@@ -17,7 +17,9 @@ import dataclasses
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from raad.core.config.settings import LockoutSettings
 from raad.core.errors.exceptions import (
+    AccountLockedError,
     AuthenticationError,
     AuthorizationError,
     ConflictError,
@@ -259,7 +261,7 @@ class _PasswordPolicySettingsStub:
 
 
 def make_auth_service(
-    clock: Clock,
+    clock: Clock, *, lockout_settings: LockoutSettings | None = None
 ) -> tuple[AuthApplicationService, FakeIamUnitOfWork, Pbkdf2PasswordHasher]:
     hasher = Pbkdf2PasswordHasher(iterations=1_000)
     token_service = JwtTokenService(
@@ -274,6 +276,7 @@ def make_auth_service(
         id_generator=SequentialIdGenerator(),
         token_service=token_service,
         password_hasher=hasher,
+        lockout_settings=lockout_settings,
     )
     uow = FakeIamUnitOfWork(InMemoryUserRepository(), InMemoryRefreshTokenRepository())
     return service, uow, hasher
@@ -647,7 +650,12 @@ class LoginTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 uow=uow,
             )
-        self.assertEqual(uow.commit_count, 0)
+        # Priority 1 Item 3 (account lockout): a wrong password against a *known* account now
+        # commits once, to persist the incremented `failed_login_attempts` counter — unlike an
+        # unknown identifier, which has no aggregate to persist against
+        # (`AccountLockoutApplicationTests.test_unknown_identifier_never_locks_anything_and_
+        # commits_nothing` covers that case).
+        self.assertEqual(uow.commit_count, 1)
 
     async def test_login_with_unknown_email_raises_authentication_error(self) -> None:
         clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
@@ -678,6 +686,189 @@ class LoginTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 uow=uow,
             )
+
+
+class AccountLockoutApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """Priority 1 Item 3 (PROJECT_STATUS.md): `AuthApplicationService.login()`'s lockout
+    branches. Uses a tight `LockoutSettings(max_failed_attempts=3, ...)` so each test doesn't
+    need to loop through the documented default of 5."""
+
+    async def _active_user_with_password(
+        self, uow: FakeIamUnitOfWork, hasher: Pbkdf2PasswordHasher, password: str
+    ) -> User:
+        user = User(
+            id=UserId("01J8Z3K9G6X8YV5T4N2R7QW3M5"),
+            organization_id=None,
+            role=Role.FOUNDER,
+            email=Email("lockout@example.com"),
+            phone=None,
+            full_name="Lockout User",
+            status=UserStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            password_hash=hasher.hash(password),
+        )
+        uow.users.add(user)
+        return user
+
+    async def test_repeated_wrong_password_increments_failed_attempts_and_persists(
+        self,
+    ) -> None:
+        clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(
+            clock, lockout_settings=LockoutSettings(max_failed_attempts=3)
+        )
+        user = await self._active_user_with_password(uow, hasher, "correct-password")
+
+        for _ in range(2):
+            with self.assertRaises(AuthenticationError):
+                await service.login(
+                    LoginCommand(
+                        email="lockout@example.com",
+                        phone=None,
+                        plain_password="wrong-password",
+                    ),
+                    uow=uow,
+                )
+
+        self.assertEqual(user.failed_login_attempts, 2)
+        self.assertIsNone(user.locked_until)
+        # A failed attempt still commits the (updated) User row, unlike the "unknown email"
+        # case which has no aggregate to persist against.
+        self.assertEqual(uow.commit_count, 2)
+
+    async def test_reaching_threshold_locks_the_account_and_raises_authentication_error(
+        self,
+    ) -> None:
+        clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(
+            clock, lockout_settings=LockoutSettings(max_failed_attempts=3)
+        )
+        user = await self._active_user_with_password(uow, hasher, "correct-password")
+
+        for _ in range(3):
+            with self.assertRaises(AuthenticationError):
+                await service.login(
+                    LoginCommand(
+                        email="lockout@example.com",
+                        phone=None,
+                        plain_password="wrong-password",
+                    ),
+                    uow=uow,
+                )
+
+        self.assertEqual(user.failed_login_attempts, 3)
+        self.assertIsNotNone(user.locked_until)
+        self.assertTrue(user.is_locked(now=clock.now()))
+
+    async def test_locked_account_rejects_even_the_correct_password(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(
+            clock, lockout_settings=LockoutSettings(max_failed_attempts=3)
+        )
+        await self._active_user_with_password(uow, hasher, "correct-password")
+
+        for _ in range(3):
+            with self.assertRaises(AuthenticationError):
+                await service.login(
+                    LoginCommand(
+                        email="lockout@example.com",
+                        phone=None,
+                        plain_password="wrong-password",
+                    ),
+                    uow=uow,
+                )
+
+        with self.assertRaises(AccountLockedError):
+            await service.login(
+                LoginCommand(
+                    email="lockout@example.com",
+                    phone=None,
+                    plain_password="correct-password",  # the real password - still rejected
+                ),
+                uow=uow,
+            )
+
+    async def test_account_unlocks_once_the_lockout_window_has_elapsed(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        clock = FixedClock(start)
+        service, uow, hasher = make_auth_service(
+            clock,
+            lockout_settings=LockoutSettings(
+                max_failed_attempts=3, lockout_duration_minutes=15
+            ),
+        )
+        await self._active_user_with_password(uow, hasher, "correct-password")
+
+        for _ in range(3):
+            with self.assertRaises(AuthenticationError):
+                await service.login(
+                    LoginCommand(
+                        email="lockout@example.com",
+                        phone=None,
+                        plain_password="wrong-password",
+                    ),
+                    uow=uow,
+                )
+
+        # Simulate the lockout window passing by advancing the fixed clock.
+        clock._now = start + timedelta(minutes=15, seconds=1)
+
+        result = await service.login(
+            LoginCommand(
+                email="lockout@example.com",
+                phone=None,
+                plain_password="correct-password",
+            ),
+            uow=uow,
+        )
+        self.assertTrue(result.access_token)
+
+    async def test_successful_login_resets_failed_attempts(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(
+            clock, lockout_settings=LockoutSettings(max_failed_attempts=3)
+        )
+        user = await self._active_user_with_password(uow, hasher, "correct-password")
+
+        for _ in range(2):
+            with self.assertRaises(AuthenticationError):
+                await service.login(
+                    LoginCommand(
+                        email="lockout@example.com",
+                        phone=None,
+                        plain_password="wrong-password",
+                    ),
+                    uow=uow,
+                )
+        self.assertEqual(user.failed_login_attempts, 2)
+
+        await service.login(
+            LoginCommand(
+                email="lockout@example.com",
+                phone=None,
+                plain_password="correct-password",
+            ),
+            uow=uow,
+        )
+        self.assertEqual(user.failed_login_attempts, 0)
+        self.assertIsNone(user.locked_until)
+
+    async def test_unknown_identifier_never_locks_anything_and_commits_nothing(
+        self,
+    ) -> None:
+        clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        service, uow, _hasher = make_auth_service(
+            clock, lockout_settings=LockoutSettings(max_failed_attempts=3)
+        )
+        with self.assertRaises(AuthenticationError):
+            await service.login(
+                LoginCommand(
+                    email="nobody@example.com", phone=None, plain_password="x"
+                ),
+                uow=uow,
+            )
+        self.assertEqual(uow.commit_count, 0)
 
 
 class RefreshTokenFlowTests(unittest.IsolatedAsyncioTestCase):

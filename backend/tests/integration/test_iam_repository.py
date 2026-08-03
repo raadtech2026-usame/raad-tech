@@ -24,15 +24,19 @@ from datetime import timedelta
 from sqlalchemy import text
 
 from raad.core.audit.writer import AuditWriter
-from raad.core.config.settings import get_settings
+from raad.core.config.settings import LockoutSettings, get_settings
 from raad.core.db.engine import build_engine, build_session_factory
-from raad.core.errors.exceptions import ValidationError
+from raad.core.errors.exceptions import AccountLockedError, AuthenticationError, ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.core.security.password_hashing import Pbkdf2PasswordHasher
+from raad.core.security.tokens import JwtTokenService
 from raad.core.tenancy.principal import Role
 from raad.core.tenancy.scope import TenantRegionScope
-from raad.core.time.clock import SystemClock
+from raad.core.time.clock import Clock, SystemClock
+from raad.modules.iam.application.commands import LoginCommand
+from raad.modules.iam.application.services import AuthApplicationService
 from raad.modules.iam.domain.entities import RefreshToken, User
 from raad.modules.iam.domain.value_objects import (
     Email,
@@ -41,6 +45,20 @@ from raad.modules.iam.domain.value_objects import (
     UserStatus,
 )
 from raad.modules.iam.infra.repositories import SqlAlchemyIamUnitOfWork
+
+
+class _FixedClock(Clock):
+    """A settable fake clock — used only by `AccountLockoutRepositoryTests` to simulate the
+    lockout window elapsing without a real `time.sleep`."""
+
+    def __init__(self, now):  # type: ignore[no-untyped-def]
+        self._now = now
+
+    def now(self):  # type: ignore[no-untyped-def]
+        return self._now
+
+    def set(self, now) -> None:  # type: ignore[no-untyped-def]
+        self._now = now
 
 
 def _db_available() -> bool:
@@ -571,6 +589,209 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(str(result.id), user_b)
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class AccountLockoutRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """Priority 1 Item 3 (PROJECT_STATUS.md): the full account-lockout round trip against a
+    real, migrated Postgres database — `AuthApplicationService.login()` driven by the real
+    `SqlAlchemyIamUnitOfWork`, not the in-memory fakes `tests/unit/test_iam_application.py`
+    uses. Proves the new `failed_login_attempts`/`locked_until` columns (migration
+    `d4fbe03f2b94`) actually persist and round-trip through `infra/mappers.py`, not just that
+    the domain/application logic is internally consistent."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.hasher = Pbkdf2PasswordHasher(iterations=1_000)
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_ids:
+                # A successful login (the unlock test) issues a refresh_tokens row with no ON
+                # DELETE CASCADE to users (migration 8ffa6434d344) - delete the child rows
+                # first, mirroring RefreshTokenRepositoryRoundTripTests.asyncTearDown's own
+                # established pattern above.
+                await conn.execute(
+                    text("DELETE FROM refresh_tokens WHERE user_id = ANY(:ids)"),
+                    {"ids": self._created_ids},
+                )
+                await conn.execute(
+                    text("DELETE FROM users WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyIamUnitOfWork:
+        return SqlAlchemyIamUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    def _make_service(
+        self, clock: Clock, *, max_attempts: int = 3, lockout_minutes: int = 15
+    ) -> AuthApplicationService:
+        token_service = JwtTokenService(
+            secret_key="integration-test-secret-not-for-production",
+            algorithm="HS256",
+            access_token_ttl_seconds=900,
+            refresh_token_ttl_seconds=1_209_600,
+            clock=clock,
+        )
+        return AuthApplicationService(
+            clock=clock,
+            id_generator=self.id_generator,
+            token_service=token_service,
+            password_hasher=self.hasher,
+            lockout_settings=LockoutSettings(
+                max_failed_attempts=max_attempts,
+                lockout_duration_minutes=lockout_minutes,
+            ),
+        )
+
+    async def _seed_active_user(self, *, password: str) -> str:
+        async with self._new_uow() as uow:
+            user = User.invite(
+                id=UserId(self.id_generator.new_id()),
+                organization_id=None,
+                role=Role.FOUNDER,
+                email=Email(f"lockout-live-{self.tag}@example.com"),
+                phone=None,
+                full_name=f"Lockout Live Test {self.tag}",
+                clock=SystemClock(),
+            )
+            user.activate(clock=SystemClock())
+            user.change_password_hash(self.hasher.hash(password), clock=SystemClock())
+            uow.users.add(user)
+            uow.record_events(user.pull_domain_events())
+            await uow.commit()
+            self._created_ids.append(str(user.id))
+            return str(user.id)
+
+    async def test_repeated_failures_persist_the_counter_across_separate_requests(
+        self,
+    ) -> None:
+        # `AuthApplicationService.login()` already manages its own `async with uow:` block
+        # internally (`application/services.py`) — each simulated "separate HTTP request"
+        # below passes a freshly *constructed but not yet entered* UoW, exactly like every
+        # other caller of `login()` (`interfaces/http`, `tests/unit/test_iam_application.py`'s
+        # fakes) already does. Wrapping the call in another `async with self._new_uow() as
+        # uow:` here would double-enter the session (`SqlAlchemyUnitOfWork.__aenter__`
+        # overwrites `self._session`), which is why every call below uses a plain `uow =
+        # self._new_uow()` instead.
+        clock = _FixedClock(SystemClock().now())
+        await self._seed_active_user(password="correct-password")
+        service = self._make_service(clock, max_attempts=3)
+
+        for _ in range(2):
+            with self.assertRaises(AuthenticationError):
+                await service.login(
+                    LoginCommand(
+                        email=f"lockout-live-{self.tag}@example.com",
+                        phone=None,
+                        plain_password="wrong-password",
+                    ),
+                    uow=self._new_uow(),
+                )
+
+        async with self._new_uow() as uow:
+            reloaded = await uow.users.get_by_email(
+                Email(f"lockout-live-{self.tag}@example.com")
+            )
+        self.assertEqual(reloaded.failed_login_attempts, 2)
+        self.assertIsNone(reloaded.locked_until)
+
+    async def test_reaching_the_threshold_locks_the_account_in_the_database(self) -> None:
+        clock = _FixedClock(SystemClock().now())
+        await self._seed_active_user(password="correct-password")
+        service = self._make_service(clock, max_attempts=3, lockout_minutes=15)
+
+        for _ in range(3):
+            with self.assertRaises(AuthenticationError):
+                await service.login(
+                    LoginCommand(
+                        email=f"lockout-live-{self.tag}@example.com",
+                        phone=None,
+                        plain_password="wrong-password",
+                    ),
+                    uow=self._new_uow(),
+                )
+
+        async with self._new_uow() as uow:
+            reloaded = await uow.users.get_by_email(
+                Email(f"lockout-live-{self.tag}@example.com")
+            )
+        self.assertEqual(reloaded.failed_login_attempts, 3)
+        self.assertIsNotNone(reloaded.locked_until)
+        self.assertTrue(reloaded.is_locked(now=clock.now()))
+
+    async def test_locked_account_rejects_the_correct_password_via_real_db(self) -> None:
+        clock = _FixedClock(SystemClock().now())
+        await self._seed_active_user(password="correct-password")
+        service = self._make_service(clock, max_attempts=3, lockout_minutes=15)
+
+        for _ in range(3):
+            with self.assertRaises(AuthenticationError):
+                await service.login(
+                    LoginCommand(
+                        email=f"lockout-live-{self.tag}@example.com",
+                        phone=None,
+                        plain_password="wrong-password",
+                    ),
+                    uow=self._new_uow(),
+                )
+
+        with self.assertRaises(AccountLockedError):
+            await service.login(
+                LoginCommand(
+                    email=f"lockout-live-{self.tag}@example.com",
+                    phone=None,
+                    plain_password="correct-password",
+                ),
+                uow=self._new_uow(),
+            )
+
+    async def test_account_unlocks_in_the_database_once_the_window_elapses(self) -> None:
+        clock = _FixedClock(SystemClock().now())
+        await self._seed_active_user(password="correct-password")
+        service = self._make_service(clock, max_attempts=3, lockout_minutes=15)
+
+        for _ in range(3):
+            with self.assertRaises(AuthenticationError):
+                await service.login(
+                    LoginCommand(
+                        email=f"lockout-live-{self.tag}@example.com",
+                        phone=None,
+                        plain_password="wrong-password",
+                    ),
+                    uow=self._new_uow(),
+                )
+
+        # Simulate the lockout window passing — no real sleep, the service's own Clock port is
+        # advanced instead (the same pure-port pattern the domain layer already uses).
+        clock.set(clock.now() + timedelta(minutes=15, seconds=1))
+
+        result = await service.login(
+            LoginCommand(
+                email=f"lockout-live-{self.tag}@example.com",
+                phone=None,
+                plain_password="correct-password",
+            ),
+            uow=self._new_uow(),
+        )
+        self.assertTrue(result.access_token)
+
+        async with self._new_uow() as uow:
+            reloaded = await uow.users.get_by_email(
+                Email(f"lockout-live-{self.tag}@example.com")
+            )
+        self.assertEqual(reloaded.failed_login_attempts, 0)
+        self.assertIsNone(reloaded.locked_until)
 
 
 if __name__ == "__main__":

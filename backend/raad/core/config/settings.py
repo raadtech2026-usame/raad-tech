@@ -49,12 +49,38 @@ class PasswordPolicySettings(BaseModel):
     require_special: bool = True
 
 
+class LockoutSettings(BaseModel):
+    """Account lockout after repeated failed logins (Priority 1 Item 3, `PROJECT_STATUS.md`).
+    Enforced by `User.record_failed_login`/`is_locked` (`modules.iam.domain.entities`) — kept
+    configurable rather than hardcoded, the same reasoning `PasswordPolicySettings` above
+    already applies. Defaults sit in the commonly-recommended range (OWASP names 3-10 attempts,
+    a lockout on the order of minutes) rather than inventing untested numbers."""
+
+    max_failed_attempts: int = 5
+    lockout_duration_minutes: int = 15
+
+
+class RateLimitSettings(BaseModel):
+    """IP-based throttling on `/auth/login` (Priority 1 Item 3, `PROJECT_STATUS.md`), distinct
+    from and complementary to `LockoutSettings` above: this limits *how fast* one source can
+    attempt logins at all, regardless of which account(s) it targets, where lockout limits
+    *how many wrong guesses* one specific account tolerates regardless of source. Enforced by
+    `core.security.login_rate_limiter.LoginRateLimiter`, bound only when `RedisSettings.url` is
+    configured — see that class's own docstring for the fail-open-and-log-once posture when it
+    isn't."""
+
+    max_attempts: int = 10
+    window_seconds: int = 60
+
+
 class AuthSettings(BaseModel):
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     access_token_ttl_seconds: int = 900
     refresh_token_ttl_seconds: int = 1_209_600
     password_policy: PasswordPolicySettings = PasswordPolicySettings()
+    lockout: LockoutSettings = LockoutSettings()
+    rate_limit: RateLimitSettings = RateLimitSettings()
 
 
 class FcmSettings(BaseModel):

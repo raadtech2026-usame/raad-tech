@@ -29,6 +29,7 @@ from raad.core.events.redis_streams import (
 )
 from raad.core.ids.generator import IdGenerator, UlidGenerator
 from raad.core.policies import SubscriptionAccessPolicy, VideoAccessPolicy
+from raad.core.security.login_rate_limiter import LoginRateLimiter
 from raad.core.security.password_hashing import PasswordHasher, Pbkdf2PasswordHasher
 from raad.core.security.password_policy import PasswordPolicy
 from raad.core.security.permissions import PermissionEvaluator
@@ -343,6 +344,15 @@ def build_container(settings: Settings) -> Container:
         container.bind_singleton(
             GeofenceStatePort, RedisGeofenceStatePort(latest_position_redis_client)
         )
+        # LoginRateLimiter (Priority 1 Item 3, PROJECT_STATUS.md) - same "reuse, don't
+        # duplicate" reasoning as GeofenceStatePort immediately above. Left unbound without a
+        # reachable RAAD_REDIS__URL, same policy as everything else in this `if` block -
+        # RateLimitMiddleware (interfaces/http/middleware.py) treats that as "not enforced,"
+        # logged once, never as a reason to refuse login itself.
+        container.bind_singleton(
+            LoginRateLimiter,
+            LoginRateLimiter(latest_position_redis_client, settings=settings.auth.rate_limit),
+        )
 
     # TrackingApplicationService is always constructible — `latest_position_port` is optional
     # at the service level (Backend Stabilization phase, see that class's own module
@@ -423,6 +433,7 @@ def build_container(settings: Settings) -> Container:
                 id_generator=container.resolve(IdGenerator),
                 token_service=container.resolve(TokenService),
                 password_hasher=container.resolve(PasswordHasher),
+                lockout_settings=settings.auth.lockout,
             ),
         )
 

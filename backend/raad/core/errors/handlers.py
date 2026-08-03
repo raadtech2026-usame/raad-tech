@@ -24,6 +24,7 @@ from raad.core.errors.exceptions import (
     InfrastructureError,
     NotFoundError,
     PaymentError,
+    RateLimitedError,
     RuleViolationError,
     ValidationError,
 )
@@ -41,6 +42,7 @@ _STATUS_TABLE: list[tuple[type[AppError], int]] = [
     (ConflictError, 409),
     (RuleViolationError, 409),
     (PaymentError, 402),
+    (RateLimitedError, 429),
     (ExternalServiceError, 502),
     (InfrastructureError, 500),
 ]

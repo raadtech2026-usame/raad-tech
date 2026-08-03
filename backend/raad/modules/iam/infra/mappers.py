@@ -73,12 +73,25 @@ def user_to_model(user: User, *, existing: UserModel | None = None) -> UserModel
     model.mfa_enabled = user.mfa_enabled
     model.last_login_at = _naive(user.last_login_at)
     model.is_password_change_required = user.is_password_change_required
+    model.failed_login_attempts = user.failed_login_attempts
+    model.locked_until = _naive(user.locked_until)
     model.created_at = _naive(user.created_at)
     model.updated_at = _naive(user.updated_at)
     return model
 
 
 def model_to_user(model: UserModel) -> User:
+    """`_aware_utc` on every reloaded datetime field, mirroring `model_to_refresh_token`'s own
+    already-established fix for the identical class of bug: `User.is_locked` (Priority 1 Item
+    3, `PROJECT_STATUS.md`) compares `locked_until` directly against `Clock.now()` (tz-aware),
+    so a `User` reloaded from this `DateTime(timezone=False)` column previously carried a naive
+    `locked_until` and crashed with `TypeError: can't compare offset-naive and offset-aware
+    datetimes` the moment an actually-persisted, locked account was checked — caught by
+    `tests/integration/test_iam_repository.py`'s live-Postgres lockout round trip, the same way
+    the `RefreshToken.is_expired` regression was originally caught (see `_aware_utc`'s own
+    docstring). `created_at`/`updated_at`/`last_login_at` get the identical treatment
+    preemptively — no call site compares them against `Clock.now()` today, but leaving them
+    naive would silently reintroduce this exact bug the moment one did."""
     return User(
         id=UserId(model.id),
         organization_id=(
@@ -89,12 +102,14 @@ def model_to_user(model: UserModel) -> User:
         phone=PhoneNumber(model.phone) if model.phone else None,
         full_name=model.full_name,
         status=UserStatus(model.status),
-        created_at=model.created_at,
-        updated_at=model.updated_at,
+        created_at=_aware_utc(model.created_at),
+        updated_at=_aware_utc(model.updated_at),
         password_hash=model.password_hash,
         mfa_enabled=model.mfa_enabled,
-        last_login_at=model.last_login_at,
+        last_login_at=_aware_utc(model.last_login_at),
         is_password_change_required=model.is_password_change_required,
+        failed_login_attempts=model.failed_login_attempts,
+        locked_until=_aware_utc(model.locked_until),
     )
 
 

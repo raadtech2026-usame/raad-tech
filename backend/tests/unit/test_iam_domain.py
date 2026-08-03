@@ -331,6 +331,158 @@ class UserStateTransitionTests(unittest.TestCase):
         self.assertFalse(user.mfa_enabled)
 
 
+# --- Account lockout (Priority 1 Item 3, PROJECT_STATUS.md) -------------------------------
+
+
+class AccountLockoutTests(unittest.TestCase):
+    def make_user(self) -> User:
+        return User(
+            id=UserId(VALID_USER_ULID),
+            organization_id=None,
+            role=Role.FOUNDER,
+            email=Email("founder@example.com"),
+            phone=None,
+            full_name="Founder",
+            status=UserStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+    def test_new_user_is_not_locked(self) -> None:
+        user = self.make_user()
+        self.assertFalse(user.is_locked(now=datetime(2026, 1, 1, tzinfo=timezone.utc)))
+
+    def test_failed_login_below_threshold_does_not_lock(self) -> None:
+        user = self.make_user()
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        for _ in range(4):
+            user.record_failed_login(
+                max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(now)
+            )
+        self.assertEqual(user.failed_login_attempts, 4)
+        self.assertIsNone(user.locked_until)
+        self.assertFalse(user.is_locked(now=now))
+
+    def test_failed_login_reaching_threshold_locks_account(self) -> None:
+        user = self.make_user()
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        for _ in range(5):
+            user.record_failed_login(
+                max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(now)
+            )
+        self.assertEqual(user.failed_login_attempts, 5)
+        self.assertEqual(user.locked_until, now + timedelta(minutes=15))
+        self.assertTrue(user.is_locked(now=now))
+
+    def test_is_locked_false_once_window_has_elapsed(self) -> None:
+        user = self.make_user()
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        for _ in range(5):
+            user.record_failed_login(
+                max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(now)
+            )
+        after_window = now + timedelta(minutes=15, seconds=1)
+        self.assertFalse(user.is_locked(now=after_window))
+
+    def test_is_locked_true_exactly_at_boundary_is_false(self) -> None:
+        # `is_locked` uses a strict `>` comparison — the exact expiry instant itself counts
+        # as already unlocked, not the last locked instant.
+        user = self.make_user()
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        for _ in range(5):
+            user.record_failed_login(
+                max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(now)
+            )
+        self.assertFalse(user.is_locked(now=user.locked_until))
+
+    def test_failed_login_after_window_elapsed_resets_counter_before_incrementing(
+        self,
+    ) -> None:
+        user = self.make_user()
+        start = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        for _ in range(5):
+            user.record_failed_login(
+                max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(start)
+            )
+        self.assertTrue(user.is_locked(now=start))
+
+        # A single failed attempt long after the lockout window has elapsed must not
+        # immediately re-lock the account from a stale high count — it starts a fresh episode.
+        much_later = start + timedelta(hours=1)
+        user.record_failed_login(
+            max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(much_later)
+        )
+        self.assertEqual(user.failed_login_attempts, 1)
+        self.assertIsNone(user.locked_until)
+        self.assertFalse(user.is_locked(now=much_later))
+
+    def test_record_failed_login_records_user_login_failed_event(self) -> None:
+        user = self.make_user()
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        user.record_failed_login(
+            max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(now)
+        )
+        events = user.pull_domain_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "UserLoginFailed")
+        self.assertEqual(events[0].payload["failed_login_attempts"], 1)
+        self.assertIsNone(events[0].payload["locked_until"])
+
+    def test_record_failed_login_event_payload_carries_locked_until_on_lock(self) -> None:
+        user = self.make_user()
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        for _ in range(4):
+            user.record_failed_login(
+                max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(now)
+            )
+        user.pull_domain_events()
+        user.record_failed_login(
+            max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(now)
+        )
+        event = user.pull_domain_events()[0]
+        self.assertEqual(event.payload["failed_login_attempts"], 5)
+        self.assertEqual(
+            event.payload["locked_until"], (now + timedelta(minutes=15)).isoformat()
+        )
+
+    def test_record_login_clears_lockout_state(self) -> None:
+        user = self.make_user()
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        for _ in range(5):
+            user.record_failed_login(
+                max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(now)
+            )
+        self.assertTrue(user.is_locked(now=now))
+        user.record_login(clock=FixedClock(now))
+        self.assertEqual(user.failed_login_attempts, 0)
+        self.assertIsNone(user.locked_until)
+        self.assertFalse(user.is_locked(now=now))
+
+    def test_change_password_hash_clears_lockout_state(self) -> None:
+        user = self.make_user()
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        for _ in range(5):
+            user.record_failed_login(
+                max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(now)
+            )
+        self.assertTrue(user.is_locked(now=now))
+        user.change_password_hash("new-hash", clock=FixedClock(now))
+        self.assertEqual(user.failed_login_attempts, 0)
+        self.assertIsNone(user.locked_until)
+
+    def test_set_temporary_password_hash_clears_lockout_state(self) -> None:
+        user = self.make_user()
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        for _ in range(5):
+            user.record_failed_login(
+                max_attempts=5, lockout_duration_minutes=15, clock=FixedClock(now)
+            )
+        self.assertTrue(user.is_locked(now=now))
+        user.set_temporary_password_hash("temp-hash", clock=FixedClock(now))
+        self.assertEqual(user.failed_login_attempts, 0)
+        self.assertIsNone(user.locked_until)
+
+
 # --- RefreshToken aggregate ---------------------------------------------------------------
 
 

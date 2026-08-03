@@ -14,10 +14,10 @@ architecture; this file is the source of truth for progress and sequencing.
 
 | | |
 |---|---|
-| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; unchanged by Item 2 numerically since TLS was a sub-concern of three already-🟡 rows, not its own row) |
-| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; seven Priority-1 blockers remain open (Backups and TLS/HTTPS closed) — see Section 5. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–2 (Backups, TLS/HTTPS) complete, Item 3 (Auth rate limiting + account lockout) recommended next. — see Section 2 for the full per-track breakdown. |
-| **Current git commit** | `a5bbdba` — `feat(infra): implement Priority 1 Item 1 - database backups` (branch `main`; this TLS/HTTPS work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Item 3 flips the Authentication row from 🟡 to ✅, but a single row's movement across 39 doesn't meaningfully shift this rounded figure) |
+| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; six Priority-1 blockers remain open (Backups, TLS/HTTPS, and Auth rate limiting + account lockout closed) — see Section 5. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–3 (Backups, TLS/HTTPS, Auth rate limiting + account lockout) complete, Item 4 (Redis production hardening) recommended next. — see Section 2 for the full per-track breakdown. |
+| **Current git commit** | `f70863a` — `feat(infra): implement Priority 1 Item 2 - TLS/HTTPS` (branch `main`; this auth rate-limiting/account-lockout work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
 | **Last updated** | 2026-08-03 |
 
 ---
@@ -32,7 +32,7 @@ it should never lag behind Section 3's detail.
 | **Backend** | ADR-0018 (Device Inventory & Allocation) complete. All ten bounded contexts implemented end-to-end. Next queued backend work is ADR-0019 (Session Cap) / ADR-0020 (Platform Analytics), but both are **paused** — see the Section 5 callout on why Priority-1 production-readiness work goes first. |
 | **Frontend** | Phases F0–F7 complete (design system, org/region/user/fleet/device/people management, live tracking). F8 (Notifications), F9 (Billing), F10 (Video), and reporting/analytics feature folders are empty — not started. |
 | **Mobile** | Pre-implementation. `mobile/` is a structural scaffold only — no Flutter SDK dependency declared in `pubspec.yaml`, `lib/main.dart` is a 0-byte file, no native Android/iOS project files exist. `flutter create` has never been run. |
-| **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Item 1 (Backups) complete.** **Priority 1 Item 2 (TLS/HTTPS) complete** — nginx `prod-tls.conf` + a `certbot` service (Let's Encrypt via webroot challenge, auto-renewal), mechanism built and carefully reviewed but not live-tested against a real domain (none provisioned yet — Known Issue #13). Production monitoring and Redis persistence hardening remain open — two of the remaining Priority-1 blockers (Section 5). |
+| **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Item 1 (Backups) complete.** **Priority 1 Item 2 (TLS/HTTPS) complete** — nginx `prod-tls.conf` + a `certbot` service (Let's Encrypt via webroot challenge, auto-renewal), mechanism built and carefully reviewed but not live-tested against a real domain (none provisioned yet — Known Issue #13). **Priority 1 Item 3 (Auth rate limiting + account lockout) complete** — account lockout fully live-verified (real Postgres round trip + real HTTP requests against a running server); IP-based rate limiting's counting logic unit-tested only (no reachable Redis in this sandbox — Known Issue #14), but its Redis-unreachable fail-open behavior *is* live-verified over real HTTP. Production monitoring and Redis persistence hardening remain open — two of the remaining Priority-1 blockers (Section 5). |
 
 ---
 
@@ -42,10 +42,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 
 ### Identity & access
 
-#### Authentication — 🟡 Partial
-- **Implemented:** From-scratch HS256 JWT service (`backend/raad/core/security/tokens.py`), refuses to boot in prod with an unset/default secret; refresh-token rotation on every `/auth/refresh`, hashed at rest; PBKDF2-HMAC-SHA256 password hashing (260k iterations); enforced password-strength policy.
-- **Missing:** No rate limiting or account lockout on `/auth/login` (`interfaces/http/middleware.py` has an explicit, unimplemented rate-limit hook).
-- **Production blocker?** Yes.
+#### Authentication — ✅ Complete
+- **Implemented:** From-scratch HS256 JWT service (`backend/raad/core/security/tokens.py`), refuses to boot in prod with an unset/default secret; refresh-token rotation on every `/auth/refresh`, hashed at rest; PBKDF2-HMAC-SHA256 password hashing (260k iterations); enforced password-strength policy. **Priority 1 Item 3:** account lockout (`User.record_failed_login`/`is_locked` — 5 failed attempts locks for 15 minutes, both configurable), fully live-verified against real Postgres and a real running server; IP-based login rate limiting (`RateLimitMiddleware` + `LoginRateLimiter`, Redis `INCR`+`EXPIRE` fixed window) with a live-verified fail-open path when Redis is unreachable — see Known Issue #14 for the one disclosed residual gap (counting logic itself untested against a real Redis server, no reachable instance in this sandbox).
+- **Missing:** Nothing blocking. Known Issue #14 (rate limiter's real-Redis round trip) is low-severity, non-blocking.
+- **Production blocker?** No longer.
 - **Dependencies:** None (foundational).
 
 #### Authorization / RBAC — 🟡 Partial
@@ -274,9 +274,9 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
   change needed.)
 
 #### Security (composite) — 🟡 Partial
-- **Implemented:** Real tenant isolation (ADR-0021), real password hashing/policy, JWT with no hardcoded secrets, safe-by-default CORS, nothing secret committed to git. Data-loss risk lowered by Priority 1 Item 1 (Backups). Transport encryption mechanism shipped by Priority 1 Item 2 (TLS/HTTPS) — see Docker above for its unverified-against-a-real-domain caveat.
-- **Missing:** Rate limiting, account lockout, in-repo encryption-at-rest, RBAC admin route, `/docs` exposed with no environment gating.
-- **Production blocker?** Yes.
+- **Implemented:** Real tenant isolation (ADR-0021), real password hashing/policy, JWT with no hardcoded secrets, safe-by-default CORS, nothing secret committed to git. Data-loss risk lowered by Priority 1 Item 1 (Backups). Transport encryption mechanism shipped by Priority 1 Item 2 (TLS/HTTPS) — see Docker above for its unverified-against-a-real-domain caveat. Auth-abuse protection shipped by Priority 1 Item 3 (rate limiting + account lockout) — see Authentication above.
+- **Missing:** In-repo encryption-at-rest, RBAC admin route, `/docs` exposed with no environment gating.
+- **Production blocker?** Yes (RBAC admin route in particular — Section 5 Item 6).
 - **Dependencies:** Authentication, Authorization.
 
 ### Completeness
@@ -345,8 +345,8 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 ### Priority 1 — Critical blockers before production
 1. ~~**Backups**~~ — ✅ **Complete** (2026-08-03). Local `pg_dump`/`pg_restore` mechanism, live-verified round trip, CI-covered, pluggable off-site hook (unconfigured — see Known Issue #12). `docs/runbooks/backup-and-restore.md`.
 2. ~~**TLS/HTTPS**~~ — ✅ **Complete** (2026-08-03). nginx `prod-tls.conf` + `certbot` service (Let's Encrypt via webroot challenge, auto-renewal via PID-namespace reload signal), two-phase bootstrap runbook. Mechanism built and carefully reviewed, **not live-tested against a real domain** (none provisioned — see Known Issue #13). `docs/runbooks/tls-setup.md`.
-3. **Auth rate limiting + account lockout** — login is unthrottled. *(2–3 days)* ← **recommended next**
-4. **Redis production hardening** — no persistence config. *(1–2 days)*
+3. ~~**Auth rate limiting + account lockout**~~ — ✅ **Complete** (2026-08-03). Account lockout (`User.record_failed_login`/`is_locked`, migration `d4fbe03f2b94`) fully live-verified — real Postgres round trip + real HTTP smoke test against a running server. IP-based rate limiting (`LoginRateLimiter`, `RateLimitMiddleware`) unit-tested against a fake Redis; its fail-open-when-Redis-unreachable path live-verified (a real bug caught and fixed during that verification — see Known Issue #14). `AccountLockedError`/`RateLimitedError` added to the documented error taxonomy.
+4. **Redis production hardening** — no persistence config; also closes Known Issue #14 (rate limiter's real-Redis round trip untested). *(1–2 days)* ← **recommended next**
 5. **Real health checks + minimum monitoring** — `/health/ready` doesn't check its dependencies. *(3–5 days)*
 6. **RBAC grant/revoke route** — RAAD can't onboard its own staff without hand-editing the DB. *(3–4 days)*
 7. **Deployment & rollback runbook, VPS setup guide** — the TLS half of this is now covered by `docs/runbooks/tls-setup.md` (item 2); still missing: a general VPS provisioning guide and a rollback runbook. *(1–2 days remaining)*
@@ -393,7 +393,7 @@ whenever a phase finishes.**
 | Phase | Name | Status | Note |
 |---|---|---|---|
 | 1 | Architecture | ✅ Complete | Ten bounded contexts, Clean Architecture/DDD patterns, foundational ADRs (0001–0002, 0007–0008). |
-| 2 | Authentication | 🟡 In Progress | Core JWT/RBAC complete; rate limiting + account lockout still open (Priority 1). |
+| 2 | Authentication | ✅ Complete | Core JWT/RBAC complete; rate limiting + account lockout shipped (Priority 1 Item 3). |
 | 3 | Organizations | ✅ Complete | Onboarding (ADR-0017), billing cutover (ADR-0016), tenant isolation (ADR-0021). |
 | 4 | Tracking | 🟡 In Progress | GPS ingestion + live tracking backend complete; blocked on Redis production hardening for launch. |
 | 5 | Device Inventory | ✅ Complete | ADR-0018. |
@@ -401,7 +401,7 @@ whenever a phase finishes.**
 | 7 | ADR-0020 Platform Analytics | ⬜ Planned | Not started. |
 | 8 | Flutter Mobile App | ⬜ Planned | 0% built — structural scaffold only. |
 | 9 | Video Platform | ⬜ Planned | JT1078, 0% built — runtime not yet decided. |
-| 10 | Production Deployment | ⬜ Planned | Blocked on Section 5 Priority 1 (TLS, backups, monitoring, rate limiting, payments, mobile app). |
+| 10 | Production Deployment | ⬜ Planned | Blocked on Section 5 Priority 1 (Redis hardening, monitoring, RBAC admin route, deployment docs, payments, mobile app). |
 
 ---
 
@@ -429,13 +429,46 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-Nothing in-progress — Priority 1 Item 2 (TLS/HTTPS) just closed out completely (architecture
-review → implementation → careful manual verification (live testing genuinely not possible — no
-domain/VPS/local nginx binary/Docker daemon in this sandbox, disclosed plainly rather than
-faked) → docs → deployment changes → runbook → this update), per the user's explicit "one item
-at a time, fully finished" process.
+Nothing in-progress — Priority 1 Item 3 (Auth rate limiting + account lockout) just closed out
+completely (architecture review → implementation → unit tests → live Postgres integration test
+→ live HTTP verification against a real running server → regression suite → docs → this update),
+per the user's explicit "one item at a time, fully finished" process.
 
 **Completed This Sprint:**
+- **Priority 1 Item 3 — Auth rate limiting + account lockout.** Account lockout: `User.
+  record_failed_login`/`is_locked` (`modules/iam/domain/entities.py`) — 5 consecutive failed
+  attempts locks the account for 15 minutes (both configurable via `LockoutSettings`); a prior
+  window's lapse resets the counter rather than accumulating across unrelated episodes; a
+  successful login or any legitimate password-establishing action (`change_password_hash`/
+  `set_temporary_password_hash`, the existing operator "reset password" path) clears lockout
+  state, giving operators an unlock path with zero new API surface or RBAC permission. New
+  `AccountLockedError` (401, `ACCOUNT_LOCKED`) and migration `d4fbe03f2b94` (`users.
+  failed_login_attempts`/`locked_until`). Rate limiting: `LoginRateLimiter` (`core/security/
+  login_rate_limiter.py`, Redis `INCR`+`EXPIRE` fixed window) + new `RateLimitMiddleware`,
+  scoped to `POST /api/v1/auth/login` only, wired into `main.py` between
+  `CorrelationIdMiddleware` and `SecurityContextMiddleware`; new `RateLimitedError` (429,
+  `RATE_LIMITED`). **Two real bugs were caught during live verification, not just asserted
+  away:** (1) a tz-aware/naive datetime bug — `model_to_user` (`modules/iam/infra/mappers.py`)
+  never applied the existing `_aware_utc` conversion on read, so `User.is_locked` crashed with
+  `TypeError` the instant a real, previously-persisted locked account was checked (the exact
+  same class of bug `RefreshToken.is_expired` had already taught this codebase to guard
+  against) — caught by the new live-Postgres lockout round trip, fixed by applying `_aware_utc`
+  uniformly across `created_at`/`updated_at`/`last_login_at`/`locked_until`. (2) The rate-limit
+  middleware only handled "Redis not configured" (`limiter is None`) — a *configured but
+  unreachable* Redis (this sandbox's actual condition: `RAAD_REDIS__URL` is set, but nothing is
+  listening on `localhost:6379`) would have raised an uncaught `RedisError` on every login
+  attempt, taking `/auth/login` down entirely; fixed by catching `RedisError` and failing open
+  (log once, allow the request), then live-confirmed via a real running server + real HTTP
+  requests logging the warning exactly once across 6 requests while login kept working
+  throughout. Account lockout's full round trip (5 wrong passwords → `ACCOUNT_LOCKED` even with
+  the correct password on attempt 6) was also verified the same way, against a real disposable
+  user in the live database. 15 new domain unit tests, 8 new application unit tests (plus 1
+  pre-existing test's commit-count assertion corrected for the new, intentional persist-on-
+  failure behavior), 6 new rate-limiter unit tests, 4 new live-Postgres integration tests — 1203
+  unit + 10 architecture tests pass with zero regressions; the only integration-suite failures
+  are the pre-existing, already-disclosed "no reachable Redis in this sandbox" gap in unrelated
+  tracking/broker-fanout tests. Zero changes to any other bounded context, RBAC, or tenant
+  isolation.
 - **Priority 1 Item 2 — TLS/HTTPS.** nginx `prod-tls.conf` (new) + `prod.conf` gains an ACME
   challenge location; a new `certbot` Docker Compose service (official image, no custom
   Dockerfile) obtains/renews Let's Encrypt certificates via the webroot HTTP-01 challenge and
@@ -467,9 +500,10 @@ at a time, fully finished" process.
   Project Control Center (Sections 2, 6, 7, 12, 13).
 
 **Next Task:**
-**Recommended: Priority 1 Item 3 — Auth rate limiting + account lockout.** Per Section 14's
-rules, the next implementation session should not resume ADR-0019/ADR-0020 or skip ahead in the
-Priority 1 list until the user confirms or redirects.
+**Recommended: Priority 1 Item 4 — Redis production hardening.** Directly closes Known Issue
+#14 (the rate limiter's untested-against-real-Redis gap) as a side effect, on top of its own
+persistence/HA scope. Per Section 14's rules, the next implementation session should not resume
+ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user confirms or redirects.
 
 ---
 
@@ -477,6 +511,14 @@ Priority 1 list until the user confirms or redirects.
 
 Reverse-chronological (most recent first):
 
+- **Priority 1 Item 3 — Auth rate limiting + account lockout** completed — account lockout
+  (`User.record_failed_login`/`is_locked`, migration `d4fbe03f2b94`) fully live-verified against
+  real Postgres and a real running server; IP-based rate limiting (`LoginRateLimiter`,
+  `RateLimitMiddleware`) unit-tested against a fake Redis, with its Redis-unreachable fail-open
+  path live-verified. Two real bugs caught and fixed during live verification: a tz-aware/naive
+  datetime bug in `model_to_user` (identical class of bug to the earlier `RefreshToken.
+  is_expired` regression) and a missing `RedisError` handler that would have taken `/auth/login`
+  down entirely whenever Redis was configured but unreachable — this sandbox's actual condition.
 - **Priority 1 Item 2 — TLS/HTTPS** completed — nginx `prod-tls.conf` + `certbot` service (Let's
   Encrypt via webroot challenge, PID-namespace auto-reload on renewal), two-phase bootstrap
   runbook; mechanism built and carefully reviewed but not live-tested against a real domain (none
@@ -515,10 +557,19 @@ Reverse-chronological (most recent first):
 
 ## 10. Known Issues
 
-### 1. No rate limiting or account lockout on authentication
-- **Severity:** High
-- **Recommended fix:** Redis-backed attempt counter + IP/user throttle on `/auth/login`.
-- **Blocking production?** Yes.
+### 1. ~~No rate limiting or account lockout on authentication~~ — RESOLVED 2026-08-03
+- **Resolution:** Priority 1 Item 3. Account lockout (`User.record_failed_login`/`is_locked`,
+  `modules/iam/domain/entities.py`; migration `d4fbe03f2b94` adds `failed_login_attempts`/
+  `locked_until` to `users`) is fully live-verified — a real Postgres round trip
+  (`tests/integration/test_iam_repository.py`'s `AccountLockoutRepositoryTests`) and a real
+  running-server HTTP smoke test (5 wrong passwords → `ACCOUNT_LOCKED` 401 even with the
+  correct password on the 6th attempt). IP-based rate limiting
+  (`core/security/login_rate_limiter.py`, `RateLimitMiddleware`) is unit-tested against a fake
+  Redis only — see Known Issue #14 for the narrower, disclosed residual gap this left (the
+  counting/threshold logic itself was never exercised against a real Redis server, only its
+  fail-open-when-Redis-is-unreachable path, which *was* live-verified).
+- **Severity:** ~~High~~
+- **Blocking production?** No longer.
 
 ### 2. ~~Zero backup mechanism~~ — RESOLVED 2026-08-03
 - **Resolution:** Priority 1 Item 1. `docker-compose.yml`'s `backup` service, `scripts/db/
@@ -628,6 +679,29 @@ Reverse-chronological (most recent first):
   this exact topology, and `prod.conf`'s plain-HTTP fallback stays the safe default until an
   operator explicitly opts in) — but treat "TLS live-verified" as not yet true until the runbook
   has actually been run once for real.
+
+### 14. Login rate limiter's counting logic never exercised against a real Redis server
+- **Severity:** Low
+- **Description:** Priority 1 Item 3 shipped `LoginRateLimiter` (`core/security/
+  login_rate_limiter.py`, a Redis `INCR`+`EXPIRE` fixed-window counter) and wired it into
+  `RateLimitMiddleware`. Its counting/threshold logic is unit-tested only, against a fake
+  in-memory Redis double (`tests/unit/test_login_rate_limiter.py`) — this sandbox's configured
+  `RAAD_REDIS__URL` (`redis://localhost:6379/0`) is confirmed genuinely unreachable (`Error 22
+  connecting to localhost:6379`), so the real `INCR`/`EXPIRE` round trip against an actual Redis
+  server has never run. What **has** been live-verified, over a real running server and real HTTP
+  requests: the middleware's fail-open behavior when `LoginRateLimiter` is bound but Redis is
+  unreachable (`RedisError` caught, logged exactly once, `/auth/login` keeps working) — this was
+  in fact caught and fixed *during* this item's own live verification (the original design only
+  handled "unbound," not "bound but connection fails," which would otherwise have taken
+  `/auth/login` down entirely the moment Redis was configured-but-down, exactly this sandbox's own
+  condition).
+- **Recommended fix:** Once Priority 1 Item 4 (Redis production hardening) makes a real reachable
+  Redis instance available, re-run `tests/unit/test_login_rate_limiter.py`'s scenarios against it
+  (or add a dedicated live integration test) to confirm the real `INCR`/`EXPIRE` behavior matches
+  the fake's.
+- **Blocking production?** No — the fail-open design means an unreachable/misconfigured Redis
+  degrades to "rate limiting temporarily off," never to "login broken," and account lockout
+  (Known Issue #1, resolved) is the higher-value, fully-live-verified control of the two.
 
 ---
 

@@ -115,6 +115,33 @@ def user_logged_in(
     )
 
 
+def user_login_failed(
+    *,
+    user_id: str,
+    organization_id: str | None,
+    occurred_at: datetime,
+    failed_login_attempts: int,
+    locked_until: datetime | None,
+) -> DomainEvent:
+    """Priority 1 Item 3 (PROJECT_STATUS.md, account lockout). Recorded for every failed
+    attempt against a *known* account (an unknown identifier never reaches `User.
+    record_failed_login` — there's no aggregate to record it on), audited via the same
+    outbox/`audit_entries` path every other event already uses (ADR-0007). `locked_until` is
+    `None` unless this specific failure just crossed the lockout threshold — lets a consumer
+    distinguish "one more failed attempt" from "this account just got locked."""
+    return _new_event(
+        event_type="UserLoginFailed",
+        aggregate_type="User",
+        aggregate_id=user_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "failed_login_attempts": failed_login_attempts,
+            "locked_until": locked_until.isoformat() if locked_until else None,
+        },
+    )
+
+
 def user_password_changed(
     *,
     user_id: str,

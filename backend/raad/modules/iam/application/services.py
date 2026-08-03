@@ -19,7 +19,9 @@ import hashlib
 import secrets
 import string
 
+from raad.core.config.settings import LockoutSettings
 from raad.core.errors.exceptions import (
+    AccountLockedError,
     AuthenticationError,
     AuthorizationError,
     NotFoundError,
@@ -360,11 +362,16 @@ class AuthApplicationService:
         id_generator: IdGenerator,
         token_service: TokenService,
         password_hasher: PasswordHasher,
+        lockout_settings: LockoutSettings | None = None,
     ) -> None:
         self._clock = clock
         self._id_generator = id_generator
         self._token_service = token_service
         self._password_hasher = password_hasher
+        # Defaulted, not required — every existing/future caller that constructs this service
+        # without an explicit LockoutSettings (e.g. a test fixture predating Priority 1 Item 3)
+        # still gets the documented default policy rather than a constructor break.
+        self._lockout_settings = lockout_settings or LockoutSettings()
 
     async def login(
         self, command: LoginCommand, *, uow: IamUnitOfWork
@@ -373,13 +380,34 @@ class AuthApplicationService:
             user = await self._find_user_by_identifier(
                 uow, command.email, command.phone
             )
-            if (
-                user is None
-                or user.password_hash is None
-                or not self._password_hasher.verify(
+
+            # Checked before spending a bcrypt verify on it, and before the credential check
+            # below — a locked account is rejected regardless of whether the password given is
+            # actually correct (Priority 1 Item 3).
+            if user is not None and user.is_locked(now=self._clock.now()):
+                raise AccountLockedError(locked_until=user.locked_until)
+
+            password_ok = (
+                user is not None
+                and user.password_hash is not None
+                and self._password_hasher.verify(
                     command.plain_password, user.password_hash
                 )
-            ):
+            )
+            if not password_ok:
+                if user is not None:
+                    # Persisted even though this request ultimately fails — the whole point of
+                    # tracking failed attempts is that the count survives across requests.
+                    # Safe to commit here and still raise below: SqlAlchemyUnitOfWork.__aexit__
+                    # only rolls back when an exception is propagating, and a rollback() called
+                    # after an already-completed commit() has nothing left to undo.
+                    user.record_failed_login(
+                        max_attempts=self._lockout_settings.max_failed_attempts,
+                        lockout_duration_minutes=self._lockout_settings.lockout_duration_minutes,
+                        clock=self._clock,
+                    )
+                    uow.record_events(user.pull_domain_events())
+                    await uow.commit()
                 raise AuthenticationError("Invalid credentials.")
             if user.status is not UserStatus.ACTIVE:
                 raise AuthenticationError("Account is not active.")

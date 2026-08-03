@@ -12,7 +12,7 @@ domain never sees a plaintext password or a hashing algorithm.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from raad.core.errors.exceptions import DomainError
 from raad.core.events.base import DomainEvent
@@ -77,6 +77,8 @@ class User(_AggregateRoot):
         mfa_enabled: bool = False,
         last_login_at: datetime | None = None,
         is_password_change_required: bool = False,
+        failed_login_attempts: int = 0,
+        locked_until: datetime | None = None,
     ) -> None:
         super().__init__()
         self._validate_identity_and_scope(
@@ -95,6 +97,13 @@ class User(_AggregateRoot):
         self.mfa_enabled = mfa_enabled
         self.last_login_at = last_login_at
         self.is_password_change_required = is_password_change_required
+        #: Priority 1 Item 3 (PROJECT_STATUS.md): account lockout. `failed_login_attempts`
+        #: counts consecutive failures since the last successful login or the last lockout
+        #: window's expiry (see `record_failed_login`); `locked_until` is a plain expiry
+        #: timestamp, not a boolean — `is_locked` compares it to "now" rather than needing a
+        #: separate write to clear it once the window passes.
+        self.failed_login_attempts = failed_login_attempts
+        self.locked_until = locked_until
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, User) and self.id == other.id
@@ -196,11 +205,51 @@ class User(_AggregateRoot):
         now = clock.now()
         self.last_login_at = now
         self.updated_at = now
+        # A successful login is proof of legitimate ownership — forgive any prior lockout
+        # state, the same reasoning `change_password_hash`/`set_temporary_password_hash` below
+        # apply for the identical reason (Priority 1 Item 3).
+        self.failed_login_attempts = 0
+        self.locked_until = None
         self._record(
             iam_events.user_logged_in(
                 user_id=str(self.id),
                 organization_id=self._org_id_value(),
                 occurred_at=now,
+            )
+        )
+
+    def is_locked(self, *, now: datetime) -> bool:
+        """Priority 1 Item 3: pure computed check, no separate "unlock" write needed — once
+        `now` passes `locked_until`, this simply starts returning `False` again. The stale
+        counter/timestamp are reset lazily, by the next `record_failed_login` or `record_login`
+        call, not by this check itself (a read must never mutate state)."""
+        return self.locked_until is not None and self.locked_until > now
+
+    def record_failed_login(
+        self, *, max_attempts: int, lockout_duration_minutes: int, clock: Clock
+    ) -> None:
+        """Priority 1 Item 3 (PROJECT_STATUS.md). `max_attempts`/`lockout_duration_minutes` are
+        passed in as plain values (from `LockoutSettings`, `core/config/settings.py`) rather
+        than the domain importing a settings object — the same "Clock passed in, never
+        constructed here" discipline this whole file already applies everywhere else."""
+        now = clock.now()
+        if self.locked_until is not None and self.locked_until <= now:
+            # A prior lockout window has fully elapsed — start counting fresh rather than
+            # accumulating across unrelated episodes (a single failure right after expiry
+            # would otherwise immediately re-trigger a new lockout from a stale high count).
+            self.failed_login_attempts = 0
+            self.locked_until = None
+        self.failed_login_attempts += 1
+        self.updated_at = now
+        if self.failed_login_attempts >= max_attempts:
+            self.locked_until = now + timedelta(minutes=lockout_duration_minutes)
+        self._record(
+            iam_events.user_login_failed(
+                user_id=str(self.id),
+                organization_id=self._org_id_value(),
+                occurred_at=now,
+                failed_login_attempts=self.failed_login_attempts,
+                locked_until=self.locked_until,
             )
         )
 
@@ -211,11 +260,14 @@ class User(_AggregateRoot):
         (Phase 4.3) — the domain never imports it, and never handles a plaintext password.
         Clears `is_password_change_required` — this is the user's own deliberate password
         choice, not a hand-off credential, so whatever forced-change gate was pending is now
-        satisfied."""
+        satisfied. Also clears any account lockout (Priority 1 Item 3) — establishing a new
+        password is proof of legitimate ownership, the same reasoning `record_login` applies."""
         if not new_password_hash:
             raise DomainError("password hash must not be empty")
         self.password_hash = new_password_hash
         self.is_password_change_required = False
+        self.failed_login_attempts = 0
+        self.locked_until = None
         self.updated_at = clock.now()
         self._record(
             iam_events.user_password_changed(
@@ -233,11 +285,16 @@ class User(_AggregateRoot):
         Admin creating a Parent/Driver account) generates and hands off a one-time credential —
         the recipient must change it before doing anything else. Distinct from
         `change_password_hash` precisely in that it *sets* (rather than clears)
-        `is_password_change_required`."""
+        `is_password_change_required`. Also clears any account lockout (Priority 1 Item 3) —
+        this is the operator-facing unlock path: an admin resetting a stuck user's password via
+        the existing `iam.users.reset_password`-gated route is exactly the moment a prior
+        lockout should be forgiven too, with no new API surface or RBAC permission needed."""
         if not new_password_hash:
             raise DomainError("password hash must not be empty")
         self.password_hash = new_password_hash
         self.is_password_change_required = True
+        self.failed_login_attempts = 0
+        self.locked_until = None
         self.updated_at = clock.now()
         self._record(
             iam_events.user_temporary_password_set(

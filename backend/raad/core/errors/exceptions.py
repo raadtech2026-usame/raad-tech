@@ -8,6 +8,7 @@ exceptions to their own transport without duplicating the hierarchy.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 
@@ -53,6 +54,29 @@ class AuthenticationError(AppError):
     code = "UNAUTHENTICATED"
 
 
+class AccountLockedError(AuthenticationError):
+    """Priority 1 Item 3 (PROJECT_STATUS.md, account lockout) — too many consecutive failed
+    login attempts against this account. A deliberate judgment call, not the generic
+    `AuthenticationError`: discloses that the account exists and is temporarily locked, rather
+    than the same undifferentiated "Invalid credentials." — the same tradeoff `AuthApplication
+    Service.login()`'s existing "Account is not active." message already makes (clarity for a
+    legitimate locked-out Driver/Parent, judged as a low-severity enumeration risk for this
+    platform's actual threat model). Resolves to HTTP 401 automatically (`core/errors/
+    handlers.py`'s `_STATUS_TABLE` walks `isinstance`, so this subtype matches the existing
+    `AuthenticationError` entry — no table edit needed). `locked_until` rides the base
+    `AppError.details` dict — the existing generic mechanism `ValidationError`'s own
+    `{"violations": [...]}` already uses — rather than a bespoke envelope field, so
+    `handlers.py`'s shared handler needs no change for this one new error type."""
+
+    code = "ACCOUNT_LOCKED"
+
+    def __init__(self, *, locked_until: datetime) -> None:
+        super().__init__(
+            "Account is temporarily locked due to too many failed login attempts.",
+            details={"locked_until": locked_until.isoformat()},
+        )
+
+
 class AuthorizationError(AppError):
     """Authenticated but not permitted (RBAC / scope / policy)."""
 
@@ -80,6 +104,18 @@ class VideoForbiddenError(AuthorizationError):
     unlike CR-1 — message-only."""
 
     code = "VIDEO_FORBIDDEN"
+
+
+class RateLimitedError(AppError):
+    """Priority 1 Item 3 (PROJECT_STATUS.md) — `interfaces.http.middleware.RateLimitMiddleware`
+    raises this directly from within middleware (not a route/application-layer error) rather
+    than constructing the error envelope by hand there; it propagates to the same global
+    `AppError` handler (`core/errors/handlers.py`) every other error already goes through —
+    correlation-id binding, the standard envelope shape, all for free, no duplicated logic.
+    Needs its own `_STATUS_TABLE` entry (429) — unlike `AccountLockedError` above, this isn't a
+    subtype of any existing category."""
+
+    code = "RATE_LIMITED"
 
 
 class NotFoundError(AppError):

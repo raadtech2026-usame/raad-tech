@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CHAR, VARCHAR, Boolean, CheckConstraint, DateTime, ForeignKey
+from sqlalchemy import CHAR, VARCHAR, Boolean, CheckConstraint, DateTime, ForeignKey, Integer
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -81,6 +81,15 @@ class UserModel(
     )
     is_password_change_required: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    # Priority 1 Item 3 (PROJECT_STATUS.md): account lockout. Same server_default-bearing shape
+    # as is_password_change_required immediately above, for the same reason — existing rows on
+    # upgrade get a safe default with no separate backfill step.
+    failed_login_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, default=None
     )
 
 

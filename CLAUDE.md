@@ -1222,3 +1222,101 @@ first genuinely live test a Let's Encrypt **staging** request specifically, so t
 exercise of this mechanism happens safely, with no rate-limit consequence, before any production
 certificate is ever requested. Zero changes to any bounded context, RBAC/tenant-isolation code,
 or database migration.
+
+**Priority 1 Item 3 — Auth rate limiting + account lockout (complete).** Closes what had been a
+real, unconditional production blocker: `/auth/login` was completely unthrottled —
+`interfaces/http/middleware.py` carried only an explicit stub comment ("no rate-limit policy...
+has been approved yet"), and nothing in `iam`'s `User` aggregate tracked failed attempts at all.
+Two distinct, complementary mechanisms, per this item's own name: **account lockout** (identity-
+based — N consecutive failed attempts against *one account* locks it, regardless of source IP)
+and **rate limiting** (IP-based — throttles `/auth/login` from *one source*, regardless of which
+account(s) it targets).
+
+**Account lockout** lives on the `User` aggregate itself (`modules/iam/domain/entities.py`),
+matching this codebase's "aggregates own their own invariants" convention rather than a
+bolted-on middleware check: `record_failed_login(*, max_attempts, lockout_duration_minutes,
+clock)` increments a counter and, once it reaches `max_attempts`, sets `locked_until = now +
+lockout_duration_minutes`; a *prior* lockout window that has already elapsed resets the counter
+to zero first, so a single stray failure long after an old lockout expired doesn't immediately
+re-lock the account from a stale high count. `is_locked(*, now)` is a pure computed check
+(`locked_until is not None and locked_until > now`) — no separate "unlock" write exists, the
+window simply elapses. `AuthApplicationService.login()` checks `is_locked` before spending a
+bcrypt verify on the password at all, and on a wrong password against a *known* account, commits
+the incremented counter and *then* raises — confirmed safe by reading `SqlAlchemyUnitOfWork.
+__aexit__`'s actual implementation: it only rolls back when an exception is propagating, and a
+`rollback()` called after an already-completed `commit()` has nothing left to undo. A successful
+login, or any legitimate password-establishing action (`change_password_hash`/
+`set_temporary_password_hash` — the latter is the *existing*, already-permission-gated
+`iam.users.reset_password` operator flow), clears lockout state — giving operators a working
+unlock path with zero new API surface or RBAC permission, the same reasoning already established
+for that flow's other side effects. New `AccountLockedError` (`AuthenticationError` subtype, 401,
+`ACCOUNT_LOCKED`, carries `locked_until` via the existing generic `details` dict) resolves through
+the existing `isinstance`-walked `_STATUS_TABLE` with no table edit needed. New `LockoutSettings`
+(`max_failed_attempts=5`, `lockout_duration_minutes=15`, both configurable) and a migration
+(`d4fbe03f2b94`) adding `users.failed_login_attempts`/`locked_until`.
+
+**Rate limiting** is IP-scoped and deliberately the simplest correct primitive — a Redis
+`INCR`+`EXPIRE` fixed-window counter (`core/security/login_rate_limiter.py`'s
+`LoginRateLimiter`), not a sliding-window/token-bucket algorithm; no requirement here justified
+that extra complexity, and account lockout already owns the "one account targeted from many IPs"
+case, so duplicating that here would be redundant. New `RateLimitMiddleware`
+(`interfaces/http/middleware.py`) fills the file's long-standing stub, deliberately scoped to
+`POST /api/v1/auth/login` only — not the general per-route framework the original stub gestured
+at and explicitly said was never approved. Resolves `LoginRateLimiter` via `container.
+try_resolve(...)`, the same idiom `SecurityContextMiddleware` already uses for `TokenService`;
+bound in DI only when `RAAD_REDIS__URL` is configured, reusing the tracking module's existing
+Redis client rather than opening a second connection (`core/di/bootstrap.py`'s established
+"reuse, don't duplicate" convention). Wired into `main.py` between `CorrelationIdMiddleware` and
+`SecurityContextMiddleware` (Starlette runs last-added outermost, so this executes right after
+correlation-id binding but before the JWT check) — its `RateLimitedError` (429, `RATE_LIMITED`,
+needs its own new `_STATUS_TABLE` entry, unlike `AccountLockedError`) is raised directly rather
+than hand-built into a `JSONResponse`, propagating to the same global `AppError` handler every
+other error already goes through.
+
+**Two real bugs were found and fixed during live verification, not just asserted away** — the
+same "prove it against a real dependency, not just a fake" discipline Item 1's password-redaction
+bug and Item 2's `ports: !reset []`/healthcheck bugs already established for this roadmap:
+
+1. A tz-aware/naive datetime bug, the *identical class* of bug `RefreshToken.is_expired` had
+   already taught this codebase to guard against (Backend Stabilization phase) — `model_to_user`
+   (`modules/iam/infra/mappers.py`) never applied the existing `_aware_utc` conversion on read
+   (unlike `model_to_refresh_token`, which already had the fix), so `User.is_locked` crashed with
+   `TypeError: can't compare offset-naive and offset-aware datetimes` the instant a real,
+   previously-persisted locked account was checked against `Clock.now()` (tz-aware). Never caught
+   by unit tests (all fake-repository-backed, never round-tripping a real naive-column read) — only
+   the new live-Postgres integration test (`tests/integration/test_iam_repository.py`'s
+   `AccountLockoutRepositoryTests`) exercised the actual reload path and caught it. Fixed by
+   applying `_aware_utc` uniformly across all four of `model_to_user`'s datetime fields
+   (`created_at`/`updated_at`/`last_login_at`/`locked_until`), not just the one that crashed —
+   `created_at`/`updated_at`/`last_login_at` aren't compared against `Clock.now()` anywhere today,
+   but leaving them naive would silently reintroduce this exact bug the moment one was.
+2. `RateLimitMiddleware`'s original design only handled `LoginRateLimiter` being *unbound*
+   (`RAAD_REDIS__URL` not configured) — it had no handling for the limiter being bound but the
+   underlying Redis connection actually failing. This sandbox's own `RAAD_REDIS__URL` **is**
+   configured (`redis://localhost:6379/0`) while no Redis process is actually reachable at that
+   address (confirmed: `redis.exceptions.ConnectionError: Error 22 connecting to localhost:6379`)
+   — exactly the scenario the original design missed, and the uncaught `RedisError` would have
+   taken `/auth/login` down entirely, the worst possible failure mode for an *optional* hardening
+   layer. Fixed by catching `RedisError` around the `is_allowed(...)` call and failing open (log a
+   warning once, not per-request, then allow the request) — the same "fail loud once, don't
+   cascade-fail the platform over an optional hardening layer" posture already established for
+   every other optionally-bound Redis port in this codebase, just extended to cover "configured but
+   down," not only "never configured."
+
+**Live verification, not just unit tests**: account lockout's full round trip — 5 wrong passwords
+via real HTTP requests against a genuinely running `uvicorn` server, then confirmed `ACCOUNT_
+LOCKED` (401) even on the correct password on attempt 6 — was exercised end-to-end against a real,
+disposable user in the live database, alongside a live-Postgres integration test proving the same
+round trip at the repository layer (fail N times → confirm locked in the database → confirm
+rejection even with the correct password → advance a `FixedClock` past the window → confirm
+unlock). Rate limiting's counting/threshold logic itself is unit-tested only, against a fake
+in-memory Redis double (`tests/unit/test_login_rate_limiter.py`) — no reachable Redis server
+exists in this sandbox to round-trip the real `INCR`/`EXPIRE` behavior against, tracked honestly
+as `PROJECT_STATUS.md` Known Issue #14, not overstated as complete. What *is* live-verified for
+rate limiting is the fail-open path above: a real server, real HTTP requests, confirmed via the
+server's own structured logs that `login_rate_limiter_unreachable` logged exactly once across six
+requests while login kept functioning throughout. 1203 unit tests + 10 architecture-gate tests
+pass with zero regressions; the only integration-suite failures are the pre-existing, already-
+disclosed "no reachable Redis in this sandbox" gap in unrelated tracking/broker-fanout tests, not
+anything this item touched. Zero changes to any bounded context other than `iam`, and zero changes
+to RBAC or tenant-isolation code.
