@@ -1539,3 +1539,43 @@ mistyped `organization_id` in a scope-assignment grant produced a raw, uncaught
 confirmed systemic (`IntegrityError` is caught in exactly one place anywhere in this codebase),
 not something this item introduced or fully in scope to fix, recorded as `PROJECT_STATUS.md`
 Known Issue #16. 1236 unit tests + 10 architecture-gate tests pass with zero regressions.
+
+**Priority 1 Item 7 — Deployment & rollback runbook, VPS setup guide (complete).** Pure
+documentation, zero code changes: two new runbooks closing the two gaps this roadmap item's own
+name already specified. `docs/runbooks/vps-deployment.md` covers everything `docker/README.md`
+didn't — provisioning the machine itself, not running the stack once it exists: OS baseline,
+`ufw` firewall (default-deny, SSH/80/443 only — every other service, `postgres`/`redis`/
+`backend`/`prometheus`/etc., stays internal to the Docker network, matching `docker-compose.
+prod.yml`'s own existing `ports: !reset []` overrides), installing Docker, and a full
+`docker/.env` walkthrough naming exactly which values matter for a real deployment and why
+(`POSTGRES_PASSWORD`/`RAAD_AUTH__JWT_SECRET_KEY`/`REDIS_PASSWORD` all need real generated
+values; `RAAD_ENVIRONMENT=prod` is what makes `Settings.validate_on_startup()` actually enforce
+the JWT-secret one). First boot deliberately stays on plain HTTP (matching `docker-compose.
+prod.yml`'s own safe default) before the DNS/TLS handoff to `tls-setup.md`, and the guide's own
+"Step 8" end-to-end confirmation checklist deliberately exercises every other runbook this whole
+Priority 1 program produced (health checks, Redis persistence, metrics, a real backup/restore
+drill) rather than treating them as separate, disconnected concerns.
+
+`docs/runbooks/rollback.md` distinguishes the two independent things that can go wrong in a bad
+deploy — application code (reversible by checking out a known-good commit and rebuilding, no
+data touched) versus a database migration (reversible via `alembic downgrade`, but **only** when
+the migration was genuinely additive and no already-committed application code depends on the
+new schema). Explicitly names this codebase's own real precedent for a destructive migration
+(ADR-0016's billing cutover, `f4a1c9e7b302`, which dropped `organizations.billing_model` and
+two `subscriptions` columns outright) rather than asserting "every migration here is safely
+reversible" as a blanket, inaccurate claim — a downgrade of a genuinely destructive migration
+can lose data, and the runbook says so plainly, pointing at restoring from backup into a scratch
+database first to confirm exactly what would be discarded.
+
+**One real error was caught and fixed before either runbook shipped**, matching this whole
+program's own live-verification discipline even for a documentation-only item: the first draft
+of `vps-deployment.md`'s Founder-bootstrap command used an incorrect module path
+(`raad.interfaces.workers.bootstrap_founder`); cross-checked against `docker/README.md`'s own
+already-correct, previously-documented command and `backend/raad/interfaces/cli/
+bootstrap_founder.py`'s actual location, and corrected to `raad.interfaces.cli.
+bootstrap_founder` before commit. Every other command in both runbooks was similarly checked
+against this repository's actual current file paths, module names, and CLI flag names (`--full-
+name`, confirmed against the CLI's own `argparse` definition) rather than written from memory.
+Necessarily unverified against a real running VPS — none is provisioned in this sandbox — the
+same disclosed-limitation posture Items 2 (TLS) and 4 (Redis) already carry for their own
+mechanisms.

@@ -136,6 +136,15 @@ in full — DNS prerequisite, exact commands, verifying auto-renewal, troublesho
 in `docs/runbooks/tls-setup.md`. Once bootstrapped, the `certbot` service renews automatically;
 no further manual steps.
 
+## Deploying to a real VPS
+
+This section (and everything above it) assumes Docker and the repo already exist on a machine.
+Provisioning that machine in the first place — OS baseline, firewall, installing Docker itself,
+first boot, DNS/TLS handoff — is `docs/runbooks/vps-deployment.md` (Priority 1 Item 7). If a
+deployment goes bad, `docs/runbooks/rollback.md` covers application-code rollback, migration
+rollback (and when it's genuinely *not* safely reversible), and the last-resort full backup
+restore.
+
 ## Status
 
 Docker itself: implemented (ADR-0013). TLS: mechanism implemented (Priority 1 Item 2,

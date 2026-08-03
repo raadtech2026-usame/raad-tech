@@ -14,10 +14,10 @@ architecture; this file is the source of truth for progress and sequencing.
 
 | | |
 |---|---|
-| **Overall completion** | ~64% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Authorization/RBAC moved 🟡→✅ this item) |
-| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; three Priority-1 blockers remain open (Backups, TLS/HTTPS, Auth rate limiting + account lockout, Redis production hardening, Health checks + minimum monitoring, and RBAC grant/revoke all closed) — see Section 5. **Continuous-completion program in progress** (user directive 2026-08-03: complete the entire remaining Priority 1 roadmap without stopping for per-item approval) — this row is updated as each remaining item lands. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–6 complete, Item 7 (Deployment & rollback runbook, VPS setup guide) in progress. — see Section 2 for the full per-track breakdown. |
-| **Current git commit** | `c8fc819` — `feat(infra): implement Priority 1 Item 5 - real health checks + minimum monitoring` (branch `main`; this RBAC grant/revoke work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Overall completion** | ~65% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Deployment gained real runbook coverage this item, still 🟡 pending live VPS verification) |
+| **Production readiness** | **Not production-ready — two items remain, both with a genuine external dependency.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; Items 1–7 (Backups, TLS/HTTPS, Auth rate limiting + account lockout, Redis production hardening, Health checks + minimum monitoring, RBAC grant/revoke, Deployment/rollback runbooks) are all closed — see Section 5. **Continuous-completion program in progress** (user directive 2026-08-03) — Items 8 (Payment provider) and 9 (Mobile app) remain, each blocked on something this session cannot obtain or fully build in-session (a real payment-provider account; 4–8 weeks of Flutter development) — see each item's own entry for exactly what ships now versus what's a genuine external/scope blocker. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–7 complete, Item 8 (Payment provider integration) in progress. — see Section 2 for the full per-track breakdown. |
+| **Current git commit** | `756e8b2` — `feat(iam,organization): implement Priority 1 Item 6 - RBAC grant/revoke route` (branch `main`; this VPS/rollback runbook work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
 | **Last updated** | 2026-08-03 |
 
 ---
@@ -249,9 +249,9 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Dependencies:** A log-aggregation destination choice.
 
 #### Deployment — 🟡 Partial
-- **Implemented:** `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build` genuinely works, live-verified (ADR-0013). Automated backups (Priority 1 Item 1) and a TLS/HTTPS mechanism (Priority 1 Item 2, `docs/runbooks/tls-setup.md`) both now ship as part of this stack.
-- **Missing:** No monitoring, no secrets-manager integration, no deploy step in CI, no rollback runbook; `scripts/db/migrate.sh`/`seed.sh`/`scripts/dev/bootstrap.sh` are still literal 0-byte files. TLS itself is unverified against a real domain (Known Issue #13).
-- **Production blocker?** Yes — the umbrella item.
+- **Implemented:** `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build` genuinely works, live-verified (ADR-0013). Automated backups (Priority 1 Item 1), a TLS/HTTPS mechanism (Priority 1 Item 2), Redis hardening (Item 4), real health checks + monitoring (Item 5), and RBAC admin routes (Item 6) all now ship as part of this stack. **Priority 1 Item 7:** a full VPS provisioning guide (`docs/runbooks/vps-deployment.md` — OS baseline, firewall, Docker install, `.env` config, first boot, Founder bootstrap, DNS/TLS handoff) and a rollback runbook (`docs/runbooks/rollback.md` — application-code, migration, and frontend-only rollback, plus the last-resort full backup restore) close the two named gaps.
+- **Missing:** No secrets-manager integration, no deploy step in CI; `scripts/db/migrate.sh`/`seed.sh`/`scripts/dev/bootstrap.sh` are still literal 0-byte files. TLS itself is unverified against a real domain (Known Issue #13), and the VPS/rollback runbooks themselves are necessarily unverified against a real VPS in this sandbox (no VPS provisioned — same disclosed limitation as every other infra item this program shipped).
+- **Production blocker?** No longer, mechanism/documentation-wise — every documented gap in this row now has a real runbook.
 - **Dependencies:** Monitoring, Security.
 
 #### Backups — ✅ Complete (local mechanism; off-site not yet configured to a real destination)
@@ -367,8 +367,15 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
    migration, `f3d8b1a4e6c2`, drops `outbox.aggregate_id`'s `NOT NULL`) and passing `None` for
    these six events, full identity preserved in `payload`. Live-verified end-to-end over real
    HTTP/real Postgres both before and after the fix.
-7. **Deployment & rollback runbook, VPS setup guide** — the TLS half of this is now covered by `docs/runbooks/tls-setup.md` (item 2); still missing: a general VPS provisioning guide and a rollback runbook. *(1–2 days remaining)* ← **in progress**
-8. **Payment provider adapter** — no real payment has ever completed. *(1–2 weeks)*
+7. ~~**Deployment & rollback runbook, VPS setup guide**~~ — ✅ **Complete** (2026-08-03).
+   `docs/runbooks/vps-deployment.md` (fresh-VPS-to-running-platform, 8 steps: OS baseline,
+   firewall, Docker, `.env` config, first boot, Founder bootstrap, DNS/TLS handoff, end-to-end
+   confirmation) and `docs/runbooks/rollback.md` (application-code/migration/frontend rollback,
+   explicit guidance on when a migration downgrade is *not* safely reversible, last-resort
+   backup restore). Both are necessarily unverified against a real VPS (none provisioned in this
+   sandbox) — same disclosed limitation as TLS/Redis's own mechanism-built-not-live-tested
+   posture.
+8. **Payment provider adapter** — no real payment has ever completed. *(1–2 weeks)* ← **in progress**
 9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form. *(4–8 weeks)*
 
 ### Priority 2 — Recommended before first customer
@@ -449,11 +456,28 @@ first, not assumed away.
 **Currently Working On:**
 **Mode change, 2026-08-03**: the user directed a continuous completion program — implement every
 remaining Priority 1 item (5–9) back to back without stopping for per-item approval, ending in
-one consolidated Production Readiness report. Items 1–6 are complete; Item 7 (Deployment &
-rollback runbook, VPS setup guide) is the active item as this line is written. Each item still
-gets its own architecture review → implementation → tests → live verification (where a real
-dependency exists) → docs → this file/`CLAUDE.md` update, per the same rigor every prior item
-followed — only the between-items approval gate is removed for this program.
+one consolidated Production Readiness report. Items 1–7 are complete; Item 8 (Payment provider
+integration) is the active item as this line is written. Each item still gets its own
+architecture review → implementation → tests → live verification (where a real dependency
+exists) → docs → this file/`CLAUDE.md` update, per the same rigor every prior item followed —
+only the between-items approval gate is removed for this program.
+
+**Priority 1 Item 7 — Deployment & rollback runbook, VPS setup guide.** Two new runbooks, pure
+documentation (zero code changes): `docs/runbooks/vps-deployment.md` (a fresh-VPS-to-running-
+platform guide — OS baseline, `ufw` firewall locked to SSH/80/443 only, installing Docker,
+configuring every `docker/.env` value that actually matters for a real deployment with the exact
+reasoning for each, first boot, Founder bootstrap, DNS/TLS handoff, and an end-to-end
+confirmation checklist referencing every other runbook this program has produced) and
+`docs/runbooks/rollback.md` (application-code rollback, migration rollback — including explicit
+guidance on when a downgrade is genuinely *not* safely reversible, with ADR-0016's real
+destructive-migration precedent named directly rather than glossed over, frontend-only rollback,
+and the last-resort full backup restore). Both close the two gaps this roadmap item's own
+description named. Necessarily unverified against a real running VPS — no VPS is provisioned in
+this sandbox — the same disclosed-limitation posture every other infra item in this program
+(TLS, Redis) already carries; every command in both runbooks was still checked against this
+repository's actual current file paths/module names/CLI flags (one real error caught this way
+before it shipped: an incorrect Founder-bootstrap module path, corrected to match `docker/
+README.md`'s own already-verified command).
 
 **Priority 1 Item 6 — RBAC grant/revoke route.** New `GET/POST /roles/{role}/permissions`
 (+`/revoke`, `iam`) and `GET /scope-assignments/{user_id}` + `POST /scope-assignments/
@@ -612,6 +636,10 @@ ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user confirms o
 
 Reverse-chronological (most recent first):
 
+- **Priority 1 Item 7 — Deployment & rollback runbook, VPS setup guide** completed —
+  `docs/runbooks/vps-deployment.md` (fresh VPS to running platform) and `docs/runbooks/
+  rollback.md` (code/migration/frontend rollback). Documentation-only; not live-tested against a
+  real VPS.
 - **Priority 1 Item 6 — RBAC grant/revoke route** completed — new Founder-only
   `/roles/{role}/permissions` and `/scope-assignments/*` routes, live-verified over real HTTP/
   Postgres. Caught and fixed a real production bug along the way: six RBAC/scope-assignment
@@ -912,7 +940,9 @@ Live checklist for a real VPS deployment — update as each item closes.
 - [ ] **Object Storage** — not present anywhere in the repo (no S3-equivalent evaluated for
       report files, etc.).
 - [ ] **Secrets** — plain env vars only; no Vault/sealed-secrets/cloud secrets manager.
-- [ ] **Firewall** — not configured or documented anywhere in-repo.
+- [x] **Firewall** — documented (Priority 1 Item 7, `docs/runbooks/vps-deployment.md` Step 2):
+      `ufw` default-deny with only SSH/80/443 allowed. Not live-tested against a real VPS (none
+      provisioned in this sandbox).
 
 ---
 

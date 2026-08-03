@@ -28,3 +28,9 @@ real runbooks exist outside that original list:
 - [`monitoring.md`](monitoring.md) — the three `/health*` endpoints' distinct readiness policy,
   `/metrics`, and the `prometheus` Compose service (`PROJECT_STATUS.md` Priority 1 Item 5), added
   alongside `core/health/service.py` and `core/observability/metrics.py`.
+- [`vps-deployment.md`](vps-deployment.md) — provisioning a fresh VPS start to finish: OS
+  baseline, firewall, Docker install, `.env` configuration, first boot, Founder bootstrap, DNS/TLS
+  handoff (`PROJECT_STATUS.md` Priority 1 Item 7).
+- [`rollback.md`](rollback.md) — recovering from a bad deployment: application-code rollback,
+  migration rollback (and when it's *not* safely reversible), frontend-only rollback, and the
+  last-resort full backup restore (`PROJECT_STATUS.md` Priority 1 Item 7).
