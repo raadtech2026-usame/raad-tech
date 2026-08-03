@@ -29,11 +29,28 @@ class DbSettings(BaseModel):
     pool_size: int = 5
 
 
-class RedisSettings(BaseModel):
+class RedisConnectionSettings(BaseModel):
+    """Priority 1 Item 4 (`PROJECT_STATUS.md`, Redis production hardening) — connection-level
+    resilience shared by `RedisSettings`/`BrokerSettings` below. `redis.asyncio.Redis.from_url`
+    was previously called with no timeout kwargs at all (`core/di/bootstrap.py`) — redis-py's
+    own library defaults (5s connect/socket timeout, no periodic health check) are reasonable
+    but were undocumented and unconfigurable here; explicit, slightly tighter defaults suit this
+    codebase's request-scoped hot paths (e.g. `RateLimitMiddleware`, Priority 1 Item 3, must fail
+    fast rather than hang a login request). `health_check_interval` proactively pings idle pooled
+    connections — these clients are DI singletons living for the whole process lifetime, so a
+    connection gone stale (a mid-air network blip that doesn't raise immediately) would otherwise
+    only surface as a failure on the next real command."""
+
+    socket_connect_timeout_seconds: float = 3.0
+    socket_timeout_seconds: float = 3.0
+    health_check_interval_seconds: int = 30
+
+
+class RedisSettings(RedisConnectionSettings):
     url: str = ""
 
 
-class BrokerSettings(BaseModel):
+class BrokerSettings(RedisConnectionSettings):
     url: str = ""
 
 

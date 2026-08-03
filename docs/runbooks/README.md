@@ -22,3 +22,6 @@ real runbooks exist outside that original list:
   verification (`PROJECT_STATUS.md` Priority 1 Item 2), added alongside
   `infrastructure/nginx/conf.d/prod-tls.conf` and the `docker-compose.prod.yml` `certbot`
   service.
+- [`redis-operations.md`](redis-operations.md) — persistence, auth, memory limits, and the
+  broker-vs-cache reconstructability nuance (`PROJECT_STATUS.md` Priority 1 Item 4), added
+  alongside the hardened `redis` service in `docker-compose.yml`.

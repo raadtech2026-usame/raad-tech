@@ -327,8 +327,15 @@ def build_container(settings: Settings) -> Container:
     # adapter reads the key's value as a JSON *string* (`redis.asyncio.Redis.get` would
     # otherwise return `bytes`).
     if settings.redis.url:
+        # Priority 1 Item 4 (PROJECT_STATUS.md, Redis production hardening): explicit
+        # connection-level timeouts/health-check, previously absent entirely — see
+        # `RedisConnectionSettings`'s own docstring (`core/config/settings.py`).
         latest_position_redis_client = Redis.from_url(
-            settings.redis.url, decode_responses=True
+            settings.redis.url,
+            decode_responses=True,
+            socket_connect_timeout=settings.redis.socket_connect_timeout_seconds,
+            socket_timeout=settings.redis.socket_timeout_seconds,
+            health_check_interval=settings.redis.health_check_interval_seconds,
         )
         container.bind_singleton(
             LatestPositionPort,
@@ -377,7 +384,16 @@ def build_container(settings: Settings) -> Container:
     # independently configurable setting (ADR-0008's own reasoning), even though an MVP
     # deployment will typically point both at the same instance.
     if settings.broker.url:
-        broker_redis_client = Redis.from_url(settings.broker.url, decode_responses=True)
+        # Priority 1 Item 4: same connection-level hardening as latest_position_redis_client
+        # above, independently configurable via `settings.broker.*` (this client's own
+        # RedisConnectionSettings fields, not shared with `settings.redis.*`).
+        broker_redis_client = Redis.from_url(
+            settings.broker.url,
+            decode_responses=True,
+            socket_connect_timeout=settings.broker.socket_connect_timeout_seconds,
+            socket_timeout=settings.broker.socket_timeout_seconds,
+            health_check_interval=settings.broker.health_check_interval_seconds,
+        )
         broker_port = RedisStreamsBrokerPort(broker_redis_client)
         container.bind_singleton(BrokerPort, broker_port)
         container.bind_singleton(LockPort, RedisLockPort(broker_redis_client))

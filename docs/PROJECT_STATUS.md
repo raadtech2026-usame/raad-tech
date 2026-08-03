@@ -14,10 +14,10 @@ architecture; this file is the source of truth for progress and sequencing.
 
 | | |
 |---|---|
-| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Item 3 flips the Authentication row from 🟡 to ✅, but a single row's movement across 39 doesn't meaningfully shift this rounded figure) |
-| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; six Priority-1 blockers remain open (Backups, TLS/HTTPS, and Auth rate limiting + account lockout closed) — see Section 5. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–3 (Backups, TLS/HTTPS, Auth rate limiting + account lockout) complete, Item 4 (Redis production hardening) recommended next. — see Section 2 for the full per-track breakdown. |
-| **Current git commit** | `f70863a` — `feat(infra): implement Priority 1 Item 2 - TLS/HTTPS` (branch `main`; this auth rate-limiting/account-lockout work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Item 4 leaves the Redis row at 🟡 still — mechanism hardened, not live-tested in this sandbox, see below — so this rounded figure is unchanged) |
+| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; five Priority-1 blockers remain open (Backups, TLS/HTTPS, and Auth rate limiting + account lockout closed; Redis production hardening closed mechanism-wise) — see Section 5. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–4 (Backups, TLS/HTTPS, Auth rate limiting + account lockout, Redis production hardening) complete, Item 5 (Real health checks + minimum monitoring) recommended next. — see Section 2 for the full per-track breakdown. |
+| **Current git commit** | `6e61aa0` — `feat(iam): implement Priority 1 Item 3 - auth rate limiting + account lockout` (branch `main`; this Redis hardening work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
 | **Last updated** | 2026-08-03 |
 
 ---
@@ -32,7 +32,7 @@ it should never lag behind Section 3's detail.
 | **Backend** | ADR-0018 (Device Inventory & Allocation) complete. All ten bounded contexts implemented end-to-end. Next queued backend work is ADR-0019 (Session Cap) / ADR-0020 (Platform Analytics), but both are **paused** — see the Section 5 callout on why Priority-1 production-readiness work goes first. |
 | **Frontend** | Phases F0–F7 complete (design system, org/region/user/fleet/device/people management, live tracking). F8 (Notifications), F9 (Billing), F10 (Video), and reporting/analytics feature folders are empty — not started. |
 | **Mobile** | Pre-implementation. `mobile/` is a structural scaffold only — no Flutter SDK dependency declared in `pubspec.yaml`, `lib/main.dart` is a 0-byte file, no native Android/iOS project files exist. `flutter create` has never been run. |
-| **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Item 1 (Backups) complete.** **Priority 1 Item 2 (TLS/HTTPS) complete** — nginx `prod-tls.conf` + a `certbot` service (Let's Encrypt via webroot challenge, auto-renewal), mechanism built and carefully reviewed but not live-tested against a real domain (none provisioned yet — Known Issue #13). **Priority 1 Item 3 (Auth rate limiting + account lockout) complete** — account lockout fully live-verified (real Postgres round trip + real HTTP requests against a running server); IP-based rate limiting's counting logic unit-tested only (no reachable Redis in this sandbox — Known Issue #14), but its Redis-unreachable fail-open behavior *is* live-verified over real HTTP. Production monitoring and Redis persistence hardening remain open — two of the remaining Priority-1 blockers (Section 5). |
+| **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Item 1 (Backups) complete.** **Priority 1 Item 2 (TLS/HTTPS) complete** — nginx `prod-tls.conf` + a `certbot` service (Let's Encrypt via webroot challenge, auto-renewal), mechanism built and carefully reviewed but not live-tested against a real domain (none provisioned yet — Known Issue #13). **Priority 1 Item 3 (Auth rate limiting + account lockout) complete** — account lockout fully live-verified (real Postgres round trip + real HTTP requests against a running server); IP-based rate limiting's counting logic unit-tested only (no reachable Redis in this sandbox — Known Issue #14), but its Redis-unreachable fail-open behavior *is* live-verified over real HTTP. **Priority 1 Item 4 (Redis production hardening) complete, mechanism-wise** — `--requirepass`, AOF persistence with explicit `everysec` fsync, `--maxmemory`/`noeviction`, broker/cache split onto separate logical DBs, explicit connection timeouts on the backend's own Redis clients; carefully reviewed (YAML structural validation, DI-container smoke test) but not live-tested against a real running Redis process (no Docker/WSL2/redis-server available in this sandbox — Known Issue #15, the same disclosed limitation Item 2 already carries). Production monitoring remains open — the last infra-adjacent Priority-1 blocker (Section 5). |
 
 ---
 
@@ -145,10 +145,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Dependencies:** Devices, Redis.
 
 #### Live Tracking — 🟡 Partial
-- **Implemented:** `/ws/tracking` (JWT-authenticated, re-authorizes on every push); real F7 frontend page; geofence-crossing detection now wired into live ingestion.
-- **Missing:** One active vehicle subscription per WebSocket connection (no fleet-wide live map); hard-dependent on Redis, which has no production hardening.
+- **Implemented:** `/ws/tracking` (JWT-authenticated, re-authorizes on every push); real F7 frontend page; geofence-crossing detection now wired into live ingestion. Its Redis dependency is now hardened mechanism-wise (Priority 1 Item 4: auth, persistence, memory bounds) — see Redis below for the one remaining caveat (not live-tested against a real server in this sandbox).
+- **Missing:** One active vehicle subscription per WebSocket connection (no fleet-wide live map).
 - **Production blocker?** Partially — works today, not yet trustworthy at scale.
-- **Dependencies:** GPS ingestion, Redis (hardening).
+- **Dependencies:** GPS ingestion, Redis.
 
 #### Video — ❌ Missing
 - **Implemented:** The D5 authorization policy (parents get zero reachable path to video) is real and enforced even though nothing exists behind it.
@@ -225,9 +225,9 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Dependencies:** None.
 
 #### Redis — 🟡 Partial
-- **Implemented:** Event broker, live-position cache, geofence hysteresis state, both WS fan-out workers — all real, tested code.
-- **Missing:** Zero production hardening — `infrastructure/redis/redis.conf.template` is a placeholder comment; no persistence (AOF/RDB) config, no HA plan.
-- **Production blocker?** Yes.
+- **Implemented:** Event broker, live-position cache, geofence hysteresis state, both WS fan-out workers — all real, tested code. **Priority 1 Item 4:** AOF persistence (`--appendfsync everysec`) + RDB fallback on the image's stock schedule, `--requirepass` (previously unset entirely), `--maxmemory`/`--maxmemory-policy noeviction` (fail loud on memory pressure, never silently drop data — the broker DB holds real undelivered domain events, not just reconstructable cache), broker/cache split onto separate logical Redis DBs (0 vs. 1, matching `backend-pipeline.yml`'s own CI precedent), explicit connection timeouts (`socket_connect_timeout`/`socket_timeout`/`health_check_interval`) on the backend's own Redis clients (previously using undocumented library defaults). `infrastructure/redis/redis.conf.template`'s placeholder is resolved (deliberately not populated — see `docs/runbooks/redis-operations.md` for why Compose `command:` flags are used instead of a mounted conf file, the same pattern `infrastructure/backups/` already established).
+- **Missing:** Live verification against a real running Redis process — no Docker/WSL2/local `redis-server` binary in this sandbox (Known Issue #15). No HA/Sentinel/Cluster — a deliberate, documented MVP-scope decision (single-VPS topology), not an oversight.
+- **Production blocker?** No longer, mechanism-wise — treat "Redis hardening live-verified" as not yet true until Known Issue #15's first-real-deployment checklist has actually been run (same posture as TLS/Known Issue #13).
 - **Dependencies:** None.
 
 #### Background Workers — ✅ Complete
@@ -346,8 +346,8 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 1. ~~**Backups**~~ — ✅ **Complete** (2026-08-03). Local `pg_dump`/`pg_restore` mechanism, live-verified round trip, CI-covered, pluggable off-site hook (unconfigured — see Known Issue #12). `docs/runbooks/backup-and-restore.md`.
 2. ~~**TLS/HTTPS**~~ — ✅ **Complete** (2026-08-03). nginx `prod-tls.conf` + `certbot` service (Let's Encrypt via webroot challenge, auto-renewal via PID-namespace reload signal), two-phase bootstrap runbook. Mechanism built and carefully reviewed, **not live-tested against a real domain** (none provisioned — see Known Issue #13). `docs/runbooks/tls-setup.md`.
 3. ~~**Auth rate limiting + account lockout**~~ — ✅ **Complete** (2026-08-03). Account lockout (`User.record_failed_login`/`is_locked`, migration `d4fbe03f2b94`) fully live-verified — real Postgres round trip + real HTTP smoke test against a running server. IP-based rate limiting (`LoginRateLimiter`, `RateLimitMiddleware`) unit-tested against a fake Redis; its fail-open-when-Redis-unreachable path live-verified (a real bug caught and fixed during that verification — see Known Issue #14). `AccountLockedError`/`RateLimitedError` added to the documented error taxonomy.
-4. **Redis production hardening** — no persistence config; also closes Known Issue #14 (rate limiter's real-Redis round trip untested). *(1–2 days)* ← **recommended next**
-5. **Real health checks + minimum monitoring** — `/health/ready` doesn't check its dependencies. *(3–5 days)*
+4. ~~**Redis production hardening**~~ — ✅ **Complete, mechanism-wise** (2026-08-03). `--requirepass`, AOF persistence (`everysec` fsync) + RDB fallback, `--maxmemory`/`noeviction`, broker/cache split onto separate logical DBs, explicit backend-side connection timeouts. Carefully reviewed (YAML structural validation, DI-container smoke test) but **not live-tested against a real running Redis process** — no Docker/WSL2/`redis-server` in this sandbox (Known Issue #15, same disclosed limitation as Item 2/TLS). Does not itself close Known Issue #14 (rate limiter's real-Redis round trip) — that still needs an actual reachable Redis server, which this item hardens the mechanism for but doesn't provide in this sandbox. `docs/runbooks/redis-operations.md`.
+5. **Real health checks + minimum monitoring** — `/health/ready` doesn't check its dependencies. *(3–5 days)* ← **recommended next**
 6. **RBAC grant/revoke route** — RAAD can't onboard its own staff without hand-editing the DB. *(3–4 days)*
 7. **Deployment & rollback runbook, VPS setup guide** — the TLS half of this is now covered by `docs/runbooks/tls-setup.md` (item 2); still missing: a general VPS provisioning guide and a rollback runbook. *(1–2 days remaining)*
 8. **Payment provider adapter** — no real payment has ever completed. *(1–2 weeks)*
@@ -395,13 +395,13 @@ whenever a phase finishes.**
 | 1 | Architecture | ✅ Complete | Ten bounded contexts, Clean Architecture/DDD patterns, foundational ADRs (0001–0002, 0007–0008). |
 | 2 | Authentication | ✅ Complete | Core JWT/RBAC complete; rate limiting + account lockout shipped (Priority 1 Item 3). |
 | 3 | Organizations | ✅ Complete | Onboarding (ADR-0017), billing cutover (ADR-0016), tenant isolation (ADR-0021). |
-| 4 | Tracking | 🟡 In Progress | GPS ingestion + live tracking backend complete; blocked on Redis production hardening for launch. |
+| 4 | Tracking | 🟡 In Progress | GPS ingestion + live tracking backend complete; Redis hardened mechanism-wise (Priority 1 Item 4), not yet live-verified in this sandbox (Known Issue #15). |
 | 5 | Device Inventory | ✅ Complete | ADR-0018. |
 | 6 | ADR-0019 Session Cap | ⬜ Planned | Not started. |
 | 7 | ADR-0020 Platform Analytics | ⬜ Planned | Not started. |
 | 8 | Flutter Mobile App | ⬜ Planned | 0% built — structural scaffold only. |
 | 9 | Video Platform | ⬜ Planned | JT1078, 0% built — runtime not yet decided. |
-| 10 | Production Deployment | ⬜ Planned | Blocked on Section 5 Priority 1 (Redis hardening, monitoring, RBAC admin route, deployment docs, payments, mobile app). |
+| 10 | Production Deployment | ⬜ Planned | Blocked on Section 5 Priority 1 (monitoring, RBAC admin route, deployment docs, payments, mobile app). |
 
 ---
 
@@ -429,12 +429,47 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-Nothing in-progress — Priority 1 Item 3 (Auth rate limiting + account lockout) just closed out
-completely (architecture review → implementation → unit tests → live Postgres integration test
-→ live HTTP verification against a real running server → regression suite → docs → this update),
-per the user's explicit "one item at a time, fully finished" process.
+Nothing in-progress — Priority 1 Item 4 (Redis production hardening) just closed out completely
+(architecture review → implementation → DI/settings verification → Compose structural
+validation → regression suite → runbook → this update), per the user's explicit "one item at a
+time, fully finished" process. Disclosed honestly, not overstated: the mechanism itself is not
+live-tested in this sandbox (no Docker/WSL2/`redis-server` available) — see Known Issue #15.
 
 **Completed This Sprint:**
+- **Priority 1 Item 4 — Redis production hardening.** `docker/docker-compose.yml`'s `redis`
+  service: `--requirepass` (previously unset entirely — anyone reaching the port, even though
+  already un-published outside the Docker network in prod, could read/write with no credential),
+  `--appendfsync everysec` made explicit alongside the existing `--appendonly yes`, `--maxmemory`/
+  `--maxmemory-policy noeviction` (fails loud on memory pressure rather than silently evicting —
+  this instance holds not-yet-consumed broker Streams entries, real undelivered domain events,
+  not just reconstructable cache data; `maxmemory-policy` is server-wide, so "fail loud" is the
+  only safe choice without splitting broker/cache onto genuinely separate Redis processes, a
+  documented future step not attempted this phase). `RAAD_REDIS__URL`/`RAAD_BROKER__URL`/
+  `DEVICE_GATEWAY_BROKER_URL` now carry the password and split onto separate logical DBs (0
+  cache, 1 broker), matching `backend-pipeline.yml`'s own already-established CI convention.
+  Backend-side: new `RedisConnectionSettings` (`core/config/settings.py`) adds explicit
+  `socket_connect_timeout`/`socket_timeout`/`health_check_interval` to both of `core/di/
+  bootstrap.py`'s `Redis.from_url(...)` calls — previously called with zero connection-resilience
+  tuning at all, relying on undocumented redis-py library defaults. The stale
+  `infrastructure/redis/redis.conf.template` placeholder is resolved (deleted, `.gitkeep` left in
+  its place) by deliberately *not* mounting a config file — Compose `command:` flags cover every
+  tunable this deployment needs, the same "no dedicated infra subfolder needed" precedent
+  `infrastructure/backups/` already established for Item 1; `infrastructure/README.md` updated to
+  match. New runbook `docs/runbooks/redis-operations.md` — persistence verification, the
+  "Redis is reconstructable hot state" nuance (true for the cache DB, *not* fully true for the
+  broker DB once an event is published-but-unconsumed — traced through `SqlOutboxPublisher`'s
+  actual commit order, a real, disclosed qualification to Phase 2 §10's blanket framing),
+  password rotation, memory-pressure troubleshooting, and the documented single-instance/no-HA
+  scope decision. **Testing limitation disclosed, not hidden**: this sandbox has no Docker
+  daemon, no WSL2 distribution, and no local `redis-server` binary (confirmed: `docker`/
+  `wsl --list` both fail; no `Get-Command redis-server`) — the same category of gap Item 2 (TLS)
+  already carries. Verification was YAML structural validation of the merged Compose config (base
+  + dev, base + prod — confirming the hardened `redis` service survives both overlays unchanged
+  except `ports: !reset []` in prod) and a live Python-side smoke test: building the real DI
+  container and inspecting the actual `redis.asyncio.Redis` client's connection-pool kwargs
+  (password, db number, all three new timeouts) — valid without a reachable server since
+  `Redis.from_url` is lazy. 1203 unit + 10 architecture tests pass with zero regressions. Zero
+  changes to any bounded context, RBAC/tenant-isolation code, or database migration.
 - **Priority 1 Item 3 — Auth rate limiting + account lockout.** Account lockout: `User.
   record_failed_login`/`is_locked` (`modules/iam/domain/entities.py`) — 5 consecutive failed
   attempts locks the account for 15 minutes (both configurable via `LockoutSettings`); a prior
@@ -500,9 +535,10 @@ per the user's explicit "one item at a time, fully finished" process.
   Project Control Center (Sections 2, 6, 7, 12, 13).
 
 **Next Task:**
-**Recommended: Priority 1 Item 4 — Redis production hardening.** Directly closes Known Issue
-#14 (the rate limiter's untested-against-real-Redis gap) as a side effect, on top of its own
-persistence/HA scope. Per Section 14's rules, the next implementation session should not resume
+**Recommended: Priority 1 Item 5 — Real health checks + minimum monitoring.** `/health/ready`'s
+own docstring already admits it doesn't check DB/Redis reachability — closing this is now also
+the natural place to verify Item 4's hardened Redis config actually works once a real dependency
+check is wired in. Per Section 14's rules, the next implementation session should not resume
 ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user confirms or redirects.
 
 ---
@@ -511,6 +547,12 @@ ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user confirms o
 
 Reverse-chronological (most recent first):
 
+- **Priority 1 Item 4 — Redis production hardening** completed, mechanism-wise — `--requirepass`,
+  AOF `everysec` persistence, `--maxmemory`/`noeviction`, broker/cache split onto separate
+  logical DBs, explicit backend-side connection timeouts, the stale `redis.conf.template`
+  placeholder resolved. New runbook `docs/runbooks/redis-operations.md`, including the
+  "reconstructable hot state" nuance traced through the actual outbox-publish commit order. Not
+  live-tested against a real Redis process — no Docker/WSL2/`redis-server` in this sandbox.
 - **Priority 1 Item 3 — Auth rate limiting + account lockout** completed — account lockout
   (`User.record_failed_login`/`is_locked`, migration `d4fbe03f2b94`) fully live-verified against
   real Postgres and a real running server; IP-based rate limiting (`LoginRateLimiter`,
@@ -695,13 +737,39 @@ Reverse-chronological (most recent first):
   handled "unbound," not "bound but connection fails," which would otherwise have taken
   `/auth/login` down entirely the moment Redis was configured-but-down, exactly this sandbox's own
   condition).
-- **Recommended fix:** Once Priority 1 Item 4 (Redis production hardening) makes a real reachable
-  Redis instance available, re-run `tests/unit/test_login_rate_limiter.py`'s scenarios against it
+- **Recommended fix:** Priority 1 Item 4 (Redis production hardening, complete) hardened the
+  *mechanism* (auth, persistence, connection timeouts) but did not itself provide a reachable
+  Redis in this sandbox — see Known Issue #15. Once a real Docker host/VPS exists, re-run
+  `tests/unit/test_login_rate_limiter.py`'s scenarios against the actual hardened `redis` service
   (or add a dedicated live integration test) to confirm the real `INCR`/`EXPIRE` behavior matches
   the fake's.
 - **Blocking production?** No — the fail-open design means an unreachable/misconfigured Redis
   degrades to "rate limiting temporarily off," never to "login broken," and account lockout
   (Known Issue #1, resolved) is the higher-value, fully-live-verified control of the two.
+
+### 15. Redis hardening mechanism not live-tested against a real running server
+- **Severity:** Medium
+- **Description:** Priority 1 Item 4 shipped a complete, carefully-reviewed Redis hardening
+  mechanism (`--requirepass`, AOF `everysec` persistence + RDB fallback, `--maxmemory`/
+  `noeviction`, broker/cache split onto separate logical DBs, explicit backend-side connection
+  timeouts) — but it has never been run against a real Redis process, because this sandbox has no
+  Docker daemon, no WSL2 distribution installed, and no local `redis-server` binary (confirmed:
+  `docker`/`wsl --list --verbose` both fail; no `Get-Command redis-server`/`docker` resolves).
+  The exact same category of gap Known Issue #13 (TLS) already discloses for its own mechanism.
+  Verification was YAML structural validation of the merged Compose config (base+dev, base+prod)
+  and a live Python-side smoke test — building the real DI container and inspecting the actual
+  `redis.asyncio.Redis` client's connection-pool kwargs (password, db number, timeouts), valid
+  without a reachable server since `Redis.from_url` is lazy — rather than an actual boot/auth/
+  persistence-restart cycle.
+- **Recommended fix:** Follow `docs/runbooks/redis-operations.md`'s "First real verification"
+  section once a Docker host/VPS exists: confirm `--requirepass` is actually enforced (a bare
+  `redis-cli ping` should fail with `NOAUTH`), run the persistence-restart drill, and confirm
+  `backend`/`worker`/`device-gateway` all still connect with the new credential.
+- **Blocking production?** Not on its own (the design is the standard Redis hardening pattern —
+  password auth, bounded memory with a fail-loud eviction policy, AOF persistence — and the
+  previous, completely unhardened state was strictly worse) — but treat "Redis hardening
+  live-verified" as not yet true until that checklist has actually been run for real, the same
+  posture Known Issue #13 already establishes for TLS.
 
 ---
 
@@ -720,7 +788,11 @@ Live checklist for a real VPS deployment — update as each item closes.
 - [x] **Backups** — local `pg_dump`/`pg_restore` mechanism live-verified, CI-covered (Priority 1
       Item 1). Off-site copy is a configured-or-loud-warning hook, not yet pointed at a real
       destination (see Known Issue 12) — check this box again once `BACKUP_RCLONE_REMOTE` is set.
-- [ ] **Redis** — real in code, zero production hardening (no persistence config, no HA).
+- [x] **Redis** — hardened mechanism complete (Priority 1 Item 4): auth, AOF persistence,
+      bounded memory with fail-loud eviction, broker/cache DB split. Check this box again once
+      `docs/runbooks/redis-operations.md`'s "First real verification" has actually been run
+      (Known Issue #15) — no HA/Sentinel/Cluster, a deliberate single-VPS-scope decision, not
+      tracked as a checklist item here.
 - [x] **PostgreSQL** — schema/migrations solid, verified zero-drift.
 - [ ] **Monitoring** — only basic `/health*` endpoints; no real dependency checks, no
       Prometheus/Grafana/Sentry.

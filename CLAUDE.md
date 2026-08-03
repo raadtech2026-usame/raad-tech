@@ -1320,3 +1320,105 @@ pass with zero regressions; the only integration-suite failures are the pre-exis
 disclosed "no reachable Redis in this sandbox" gap in unrelated tracking/broker-fanout tests, not
 anything this item touched. Zero changes to any bounded context other than `iam`, and zero changes
 to RBAC or tenant-isolation code.
+
+**Priority 1 Item 4 — Redis production hardening (complete, mechanism-wise; not yet live-tested
+against a real running Redis process).** Closes what had been a real, unconditional production
+blocker: `docker-compose.yml`'s `redis` service ran with no password at all, no explicit
+persistence policy, and no memory ceiling — `infrastructure/redis/redis.conf.template` was a
+literal one-paragraph placeholder ("real values... to be set once the hot-state usage profile...
+has finalized"), and that profile has, in fact, finalized over the course of this session (event
+broker, latest-position cache, geofence hysteresis state, and — as of Item 3 — a login
+rate-limit counter, all sharing one instance).
+
+**Persistence and memory are one deliberately coupled decision**, not two independent tuning
+knobs: `--appendonly yes --appendfsync everysec` (AOF, at most one second of loss on a hard
+crash — the standard, documented durability/throughput tradeoff, RDB snapshotting left on the
+image's own stock schedule as a secondary fallback, not tuned) plus `--maxmemory ${REDIS_
+MAXMEMORY:-256mb} --maxmemory-policy noeviction`. The `noeviction` choice is the one genuinely
+non-obvious call this item made, traced by actually reading `core/events/outbox.py`'s
+`SqlOutboxPublisher.publish_pending`: an outbox row is marked `published_at` — meaning "never
+retry this" — in the same transaction as the broker publish call succeeding, *before* any
+consumer has read or acknowledged the resulting Stream entry. That means Phase 2 §10's own
+framing ("Redis is treated as reconstructable hot state") holds for the cache side (latest
+position, geofence state, rate-limit counters — all trivially rebuilt) but **not** for the
+broker side: a published-but-unconsumed Stream entry lost to eviction is a real domain event
+gone for good, not reconstructable from Postgres. Since `maxmemory-policy` is a server-wide
+Redis setting with no per-key-type override, and this MVP topology deliberately keeps broker and
+cache on one shared instance/`maxmemory` budget (splitting them onto genuinely separate
+processes — the only way to give the cache side a permissive `allkeys-lru` policy safely — is
+flagged as a documented future step, not attempted this phase per `.claude/rules/
+architecture.md` #7's "no premature microservices... driven by measured load, not speculation"),
+the only safe choice is "fail loudly on an OOM error," never silent data loss — the identical
+safety-over-convenience posture `.claude/rules/backend.md` #6 already establishes for
+safety-over-billing, extended here to safety-over-cache-flexibility.
+
+**Broker and cache now live on separate logical Redis DBs** (0 for `RAAD_REDIS__URL`'s cache/
+rate-limit/geofence keys, 1 for `RAAD_BROKER__URL`/`DEVICE_GATEWAY_BROKER_URL`'s event stream/
+lock/DLQ state) — not a new idea invented for this item, but adopted from
+`.github/workflows/backend-pipeline.yml`'s own CI service containers, which already split them
+this way and simply hadn't been carried into the dev/prod Compose defaults. `core/di/
+bootstrap.py`'s two `Redis.from_url(...)` calls already used two separate client objects for
+exactly this reason (ADR-0008's own "independently configurable settings" precedent), so the
+split needed no code change, only a URL/db-number change.
+
+**A real, previously-undiscovered gap was found and closed on the backend's own Redis client
+construction**: both `Redis.from_url(...)` calls in `core/di/bootstrap.py` were passing zero
+connection-level kwargs — no `socket_connect_timeout`, no `socket_timeout`, no
+`health_check_interval` — relying entirely on undocumented redis-py library defaults (confirmed:
+redis-py 8.0.1's own `AbstractConnection` defaults to a 5-second connect/socket timeout and no
+periodic health check unless explicitly configured). New `RedisConnectionSettings` (`core/
+config/settings.py`, shared by both `RedisSettings` and `BrokerSettings` via inheritance) makes
+these explicit and independently configurable per client, with slightly tighter defaults (3s/3s/
+30s) than the library's own — appropriate for this codebase's request-scoped hot paths (e.g.
+`RateLimitMiddleware`, Item 3) where a hung connection attempt is worse than a fast, clean
+failure into the "fail open" path Item 3 already built.
+
+**`--requirepass` was previously unset entirely** — the `redis` service accepted any connection
+with no credential, mitigated only by the port already being un-published outside the Docker
+network in prod (`docker-compose.prod.yml`'s existing `ports: !reset []`) but still a real gap
+for anything reachable *inside* that network (every other container in the stack, or a
+compromised host). `REDIS_PASSWORD` (`docker/.env`, default `dev-only-change-me`) is now
+required by the service's own `--requirepass` and threaded automatically into
+`RAAD_REDIS__URL`/`RAAD_BROKER__URL`/`DEVICE_GATEWAY_BROKER_URL` via Compose's own `${VAR}`
+substitution — the same convention `RAAD_AUTH__JWT_SECRET_KEY` already established, deliberately
+*not* backed by a `Settings.validate_on_startup()` prod-only rejection check, since
+`POSTGRES_PASSWORD` (the closest analogous secret) has no such check either — consistency with
+an existing precedent, not an inconsistency introduced here.
+
+**A real bug was caught by review before it could ship silently, matching this phase's own
+theme**: the original healthcheck (`redis-cli ping`, no credential) would have started failing
+with `NOAUTH` the instant `--requirepass` was added, marking every container in the stack
+"unhealthy" from that point on. Fixed by switching to `CMD-SHELL` (the only form that expands a
+shell variable at healthcheck-run time, not just at `docker compose up` time) and authenticating:
+`redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping`.
+
+**`infrastructure/redis/redis.conf.template` is resolved by deletion, not by finally being
+filled in** — a deliberate call, flagged rather than silently made: mounting a real `redis.conf`
+would need its own envsubst-capable entrypoint (Redis's stock image has no equivalent to
+nginx's own built-in templating mechanism, `infrastructure/nginx/`'s already-established
+pattern) for no benefit this deployment's tunable count actually needs, when Compose's own
+`${VAR}` substitution directly in `command:` already covers everything. This mirrors
+`infrastructure/backups/`'s own already-established precedent exactly (Priority 1 Item 1: "no
+configuration lives here — the actual mechanism lives in `docker/` instead") —
+`infrastructure/README.md` updated to describe `redis/` the same way.
+
+**Testing limitation, disclosed rather than hidden**: this sandbox has no Docker daemon, no WSL2
+distribution installed (`wsl --list --verbose` reports zero distributions), and no local
+`redis-server` binary — confirmed by direct check, not assumed — so the actual server behavior
+(`--requirepass` enforcement, AOF persistence surviving a real restart, `--maxmemory`/
+`noeviction` under real memory pressure) has never been exercised against a genuinely running
+Redis process, the same category of gap Item 2 (TLS) already carries for its own mechanism.
+Verification was YAML structural validation of the merged Compose config (base+dev leaves the
+`redis` service fully as the base file defines it; base+prod's existing `ports: !reset []`
+survives untouched alongside every new flag) and a live Python-side smoke test — building the
+real DI container and inspecting the actual `redis.asyncio.Redis` client's connection-pool
+kwargs (confirmed: correct password, correct db number per client, all three new timeout values
+present), valid without a reachable server since `Redis.from_url` is lazy and never opens a
+socket at construction time. New runbook `docs/runbooks/redis-operations.md` covers the
+reconstructability nuance above in full, persistence/auth verification commands, memory-pressure
+troubleshooting (`OOM command not allowed` → check `INFO memory` against `REDIS_MAXMEMORY`,
+check `XLEN raad:events` for a stuck consumer before assuming "just raise the limit"), password
+rotation, and the documented single-instance/no-HA scope decision — Phase 2 §13.3's own roadmap
+already names Redis HA as a later-scale concern, not attempted this phase. 1203 unit tests + 10
+architecture-gate tests pass with zero regressions. Zero changes to any bounded context, RBAC/
+tenant-isolation code, or database migration.

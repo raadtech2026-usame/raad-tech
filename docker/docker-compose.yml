@@ -25,8 +25,16 @@ x-backend-build: &backend-build
 x-backend-env: &backend-env
   RAAD_ENVIRONMENT: ${RAAD_ENVIRONMENT:-dev}
   RAAD_DB__URL: postgresql+asyncpg://${POSTGRES_USER:-raad}:${POSTGRES_PASSWORD:-raad}@postgres:5432/${POSTGRES_DB:-raad}
-  RAAD_REDIS__URL: redis://redis:6379/0
-  RAAD_BROKER__URL: redis://redis:6379/0
+  # Priority 1 Item 4 (PROJECT_STATUS.md, Redis production hardening): `redis://:PASSWORD@host/db`
+  # — empty username, password only, the standard form `redis.asyncio.Redis.from_url` (and the
+  # `redis` service's own `--requirepass` below) already expects, no code change needed to parse
+  # it. DB 0 (cache/rate-limit/geofence) vs DB 1 (event broker/lock/DLQ) mirrors
+  # `.github/workflows/backend-pipeline.yml`'s own already-established split (that workflow's
+  # `RAAD_REDIS__URL`/`RAAD_BROKER__URL` already differ by db number) — adopted here for the
+  # first time so a `FLUSHDB`/inspection on one logical namespace can never collide with the
+  # other's data, even though both still share the one Redis *process*/`maxmemory` budget below.
+  RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+  RAAD_BROKER__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
   RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
   RAAD_CORS__ALLOWED_ORIGINS: '${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}'
   RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
@@ -56,13 +64,57 @@ services:
     restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6379}:6379"
-    # Streams (ADR-0008) survive a container restart via AOF persistence — dev convenience only,
-    # not a durability guarantee.
-    command: ["redis-server", "--appendonly", "yes"]
+    # Priority 1 Item 4 (PROJECT_STATUS.md, Redis production hardening) — see
+    # docs/runbooks/redis-operations.md for the full reasoning behind each flag:
+    #   --appendonly yes / --appendfsync everysec: Streams (ADR-0008), the rate limiter, and
+    #     every other key here survive a container restart or crash via AOF, replayed at most
+    #     one second of writes short of the crash (the standard, documented durability/throughput
+    #     tradeoff — `always` gives zero loss at a severe per-write latency cost this workload
+    #     doesn't need, `no` relies on the OS page cache flush alone). RDB snapshotting stays on
+    #     Redis's own stock schedule (not overridden here) as a second, independent fallback.
+    #   --maxmemory / --maxmemory-policy noeviction: bounds memory use, but *refuses* new writes
+    #     with an OOM error once the ceiling is hit rather than silently evicting keys — this one
+    #     instance holds both reconstructable cache data (latest position, geofence state, rate
+    #     limits) *and* not-yet-consumed broker Streams entries (real, undelivered domain events)
+    #     in different logical DBs (see RAAD_BROKER__URL's own comment above); Redis's
+    #     maxmemory-policy is a server-wide setting; a per-key-type eviction policy isn't
+    #     available in a single-instance topology, and losing a notification/tracking event to
+    #     free cache space is never acceptable — so this errs toward "loud failure," never silent
+    #     data loss, the same posture `.claude/rules/backend.md` #6 already establishes for
+    #     safety-over-billing. Splitting broker/cache onto genuinely separate Redis processes
+    #     (enabling a real per-purpose eviction policy) is a documented future step if load ever
+    #     demands it, not attempted this phase (`.claude/rules/architecture.md` #7).
+    #   --requirepass: previously unset entirely — anyone reaching this port (already not
+    #     published outside the Docker network in prod, `docker-compose.prod.yml`'s own
+    #     `ports: !reset []`) could read/write arbitrary data with no credential at all. The
+    #     `dev-only-change-me` default here is the same convention `RAAD_AUTH__JWT_SECRET_KEY`
+    #     already establishes — never used in the actual "how does prod get a real secret"
+    #     decision, just a safe, obviously-not-production placeholder for a `docker/.env` that
+    #     hasn't been filled in yet.
+    command:
+      [
+        "redis-server",
+        "--appendonly", "yes",
+        "--appendfsync", "everysec",
+        "--maxmemory", "${REDIS_MAXMEMORY:-256mb}",
+        "--maxmemory-policy", "noeviction",
+        "--requirepass", "${REDIS_PASSWORD:-dev-only-change-me}",
+      ]
+    environment:
+      # Read by the healthcheck below (CMD-SHELL, not the exec-form CMD array — only a shell
+      # invocation expands `$REDIS_PASSWORD` from the *container's own* environment; Compose's
+      # own `${...}` substitution in `command:` above happens once, at `docker compose up` time,
+      # on the host, and doesn't help a healthcheck that re-runs on its own interval inside the
+      # already-started container).
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev-only-change-me}
     volumes:
-      - raad_redis_dev_data:/data
+      - raad_redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # A real bug caught by review, matching this phase's own theme: once --requirepass is set,
+      # a bare `redis-cli ping` fails with NOAUTH, which would have made every container in this
+      # stack "unhealthy" from the moment auth was enabled. `--no-auth-warning` only silences
+      # redis-cli's own stderr nag about passing a password on a command line, not a real check.
+      test: ["CMD-SHELL", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -155,7 +207,10 @@ services:
     container_name: raad-device-gateway
     restart: unless-stopped
     environment:
-      DEVICE_GATEWAY_BROKER_URL: redis://redis:6379/0
+      # Must match RAAD_BROKER__URL above exactly (password + db 1) — both deployables publish/
+      # consume the same `raad:events` stream (ADR-0010), so a mismatched password or db number
+      # here would silently split them onto two disjoint, unrelated streams.
+      DEVICE_GATEWAY_BROKER_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
     ports:
       - "${DEVICE_GATEWAY_JT808_PORT:-7808}:7808"
       - "${DEVICE_GATEWAY_MDVR_PORT:-7809}:7809"
@@ -221,5 +276,10 @@ services:
 
 volumes:
   raad_postgres_data:
-  raad_redis_dev_data:
+  # Renamed from raad_redis_dev_data (Priority 1 Item 4) — this same base file already backs
+  # both dev *and* prod (this file's own header comment: "same images, same services, same
+  # topology in both environments"), so the old "_dev_" name was a stale, misleading holdover
+  # from ADR-0012's original dev-only framing. Safe to rename outright: no VPS/production
+  # deployment exists yet to have real data under the old name.
+  raad_redis_data:
   raad_backups_data:
