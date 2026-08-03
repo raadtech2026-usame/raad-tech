@@ -1103,3 +1103,62 @@ Explicitly out of scope this phase, flagged rather than silently dropped: simult
 multi-vehicle live markers on one map (would need either N parallel WebSocket connections or a
 backend protocol change, neither attempted) and trip position history/playback
 (`GET /tracking/trips/{id}/positions`, a distinct scrubber-style feature, not "live" monitoring).
+
+## Production Readiness Hardening (Priority 1)
+
+A full, read-only production-readiness audit (2026-08-02, `docs/PROJECT_STATUS.md` §9) found the
+backend/frontend feature work above solid but identified nine concrete gaps standing between this
+repository and a real VPS deployment for real Organizations — tracked as `PROJECT_STATUS.md`
+§5's Priority 1 list, worked strictly one item at a time (architecture review → implementation →
+automated tests → live verification → docs → deployment changes → runbook →
+`PROJECT_STATUS.md`/this file updated), never skipping ahead, per the user's explicit process.
+`PROJECT_STATUS.md` is the live tracker for exactly where this stands; this section, like
+"Frontend Implementation Status" above, collects one paragraph per completed item as it lands.
+
+**Priority 1 Item 1 — Backups (complete).** Closes what had been a real, unconditional
+production blocker: zero backup mechanism existed anywhere in the repository
+(`infrastructure/backups/` was a single empty placeholder). A new `backup` Docker Compose
+service (`docker/backup.Dockerfile`, built `FROM postgres:16-alpine` — reuses its own
+`pg_dump`/`pg_restore` rather than installing a separate client toolchain, the same reasoning
+`backend.Dockerfile` already gives for `migrate`/`worker` reusing one image) runs continuously
+alongside the rest of the stack, calling `scripts/db/backup.sh` on a schedule
+(`scripts/db/backup-loop.sh`, `BACKUP_INTERVAL_HOURS`) — no cron daemon, one less moving part.
+`backup.sh` dumps via `pg_dump --format=custom` (chosen specifically because it enables
+`restore.sh`'s `pg_restore --clean --if-exists`, which a plain-SQL dump can't support as
+cleanly), verifies the dump is non-empty before declaring success, and prunes local dumps past
+`BACKUP_RETENTION_DAYS`. `scripts/db/restore.sh` is the destructive counterpart — requires an
+explicit `--target-url` (never an implicit "current" database) and `--confirm`, specifically so a
+mistyped invocation cannot silently wipe the wrong database.
+
+**Off-site copy is a deliberately pluggable, not-yet-wired hook** — the one new dependency this
+item adds, `rclone` (MIT license, a single static Go binary, `apk add`-ed only into
+`backup.Dockerfile`, never touching `pyproject.toml`/`package.json`), chosen because it speaks
+one config format across 40+ storage backends (S3, Backblaze B2, DigitalOcean Spaces, SFTP, ...)
+rather than committing this repo to one vendor's SDK before a real destination exists to test
+against. Confirmed with the user before building: no VPS or cloud storage account is provisioned
+yet, so this phase ships the local mechanism as fully real and live-verified, and leaves
+`BACKUP_RCLONE_REMOTE` unset/documented rather than faking an off-site guarantee that doesn't
+exist — the same "fail loudly, don't fake it" posture this codebase already applies to
+`PaymentProviderPort`/`VideoProviderPort`. An unconfigured remote produces a loud, repeated
+warning on every run, never a silent skip. Tracked as `PROJECT_STATUS.md` Known Issue #12, not
+left implicit.
+
+**A real bug was found and fixed during live verification, not just claimed passing**: both
+scripts originally logged their full connection string — including the plaintext password — on
+every run. Caught by actually executing `backup.sh`/`restore.sh` against a real PostgreSQL server
+(two disposable, uniquely-named throwaway databases, never the real dev database) rather than
+only reading the code; fixed by redacting `user:PASS@` down to `user:***@` for every log line in
+both scripts, verified by re-running the same live drill and confirming the redaction. That same
+live drill (seed a marker row → back up → restore into a second throwaway database → assert the
+row round-tripped → drop both databases) is now the automated, CI-enforced test:
+`testing/backups/test_backup_restore.sh` (a new top-level `testing/backups/` directory —
+deliberately not under `backend/tests/`, whose taxonomy is fixed to the `raad` Python package's
+own layers per `.claude/rules/testing.md` #1; this tests standalone shell tooling operating on a
+whole database, the same "cross-cutting operational concern" category `testing/load/` already
+established), wired into `.github/workflows/backend-pipeline.yml` reusing that job's existing
+live Postgres service container.
+
+Full operator guide — manual backup, restore drills, disaster recovery, configuring a real
+off-site remote: `docs/runbooks/backup-and-restore.md`. Zero changes to any bounded context, RBAC/
+tenant-isolation code, or database migration — this item touched only Docker/scripts/tests/docs,
+exactly its own scope.

@@ -14,11 +14,11 @@ architecture; this file is the source of truth for progress and sequencing.
 
 | | |
 |---|---|
-| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 40 subsystems in Section 3 — a rough gauge, not a precise metric) |
-| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; nine Priority-1 blockers are open — see Section 5. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. — see Section 2 for the full per-track breakdown. |
-| **Current git commit** | `3525d7f` — `docs(status): add PROJECT_STATUS.md as the living implementation-progress source of truth` (branch `main`, working tree clean) |
-| **Last updated** | 2026-08-02 |
+| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric) |
+| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; eight Priority-1 blockers remain open (Backups closed) — see Section 5. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is now active: Item 1 (Backups) complete, Item 2 (TLS/HTTPS) recommended next. — see Section 2 for the full per-track breakdown. |
+| **Current git commit** | `d8405a0` — `docs(status): expand PROJECT_STATUS.md into the permanent project control center` (branch `main`; this Backups work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Last updated** | 2026-08-03 |
 
 ---
 
@@ -32,7 +32,7 @@ it should never lag behind Section 3's detail.
 | **Backend** | ADR-0018 (Device Inventory & Allocation) complete. All ten bounded contexts implemented end-to-end. Next queued backend work is ADR-0019 (Session Cap) / ADR-0020 (Platform Analytics), but both are **paused** — see the Section 5 callout on why Priority-1 production-readiness work goes first. |
 | **Frontend** | Phases F0–F7 complete (design system, org/region/user/fleet/device/people management, live tracking). F8 (Notifications), F9 (Billing), F10 (Video), and reporting/analytics feature folders are empty — not started. |
 | **Mobile** | Pre-implementation. `mobile/` is a structural scaffold only — no Flutter SDK dependency declared in `pubspec.yaml`, `lib/main.dart` is a 0-byte file, no native Android/iOS project files exist. `flutter create` has never been run. |
-| **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. TLS, automated backups, production monitoring, and Redis persistence hardening remain open — all four are Priority-1 blockers (Section 5). |
+| **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Item 1 (Backups) complete** — a `backup` service, live-verified backup/restore round trip, CI coverage. TLS, production monitoring, and Redis persistence hardening remain open — three of the remaining Priority-1 blockers (Section 5). |
 
 ---
 
@@ -249,22 +249,35 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Dependencies:** A log-aggregation destination choice.
 
 #### Deployment — 🟡 Partial
-- **Implemented:** `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build` genuinely works, live-verified (ADR-0013).
-- **Missing:** No TLS, no automated backups, no monitoring, no secrets-manager integration, no deploy step in CI, no rollback runbook; `scripts/db/migrate.sh`/`seed.sh`/`scripts/dev/bootstrap.sh` are literal 0-byte files.
+- **Implemented:** `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build` genuinely works, live-verified (ADR-0013). Automated backups now run as part of this stack (Priority 1 Item 1, see Backups below).
+- **Missing:** No TLS, no monitoring, no secrets-manager integration, no deploy step in CI, no rollback runbook; `scripts/db/migrate.sh`/`seed.sh`/`scripts/dev/bootstrap.sh` are still literal 0-byte files.
 - **Production blocker?** Yes — the umbrella item.
-- **Dependencies:** TLS, Backups, Monitoring, Security.
+- **Dependencies:** TLS, Monitoring, Security.
 
-#### Backups — ❌ Missing
-- **Implemented:** Nothing. `infrastructure/backups/` holds a single empty placeholder.
-- **Missing:** An automated backup job, off-site storage, one tested restore procedure.
-- **Production blocker?** Yes, unconditionally.
-- **Dependencies:** None.
+#### Backups — ✅ Complete (local mechanism; off-site not yet configured to a real destination)
+- **Implemented:** Priority 1 Item 1. A `backup` Docker Compose service (`docker/backup.Dockerfile`,
+  `FROM postgres:16-alpine` + `rclone`) runs continuously, dumping via `scripts/db/backup.sh`
+  (`pg_dump --format=custom`) on a schedule (`BACKUP_INTERVAL_HOURS`), pruning local dumps past
+  `BACKUP_RETENTION_DAYS`. `scripts/db/restore.sh` is a tested, explicit-`--confirm`-required
+  restore path. Live-verified end-to-end against a real PostgreSQL server (seed → backup →
+  restore into a throwaway database → data round-trip confirmed), automated in
+  `testing/backups/test_backup_restore.sh`, wired into CI (`.github/workflows/backend-pipeline.yml`).
+  Runbook: `docs/runbooks/backup-and-restore.md`.
+- **Missing:** No off-site destination is actually provisioned yet — `BACKUP_RCLONE_REMOTE` is
+  an unset, documented, pluggable hook (rclone supports 40+ backends via one config); until a
+  real target is configured, the service logs a loud warning on every run rather than silently
+  claiming off-site protection it isn't providing.
+- **Production blocker?** No longer, for the local half. The off-site gap is still a real risk
+  (a lost VPS with no off-site copy is still total data loss) — tracked as Known Issue #12, not
+  re-opening this item.
+- **Dependencies:** None. (An off-site destination, once chosen, is configuration only — no code
+  change needed.)
 
 #### Security (composite) — 🟡 Partial
-- **Implemented:** Real tenant isolation (ADR-0021), real password hashing/policy, JWT with no hardcoded secrets, safe-by-default CORS, nothing secret committed to git.
+- **Implemented:** Real tenant isolation (ADR-0021), real password hashing/policy, JWT with no hardcoded secrets, safe-by-default CORS, nothing secret committed to git. Data-loss risk lowered by Priority 1 Item 1 (Backups, now local-complete).
 - **Missing:** Rate limiting, account lockout, TLS, in-repo encryption-at-rest, RBAC admin route, `/docs` exposed with no environment gating.
 - **Production blocker?** Yes.
-- **Dependencies:** Authentication, Authorization, Docker (TLS), Backups.
+- **Dependencies:** Authentication, Authorization, Docker (TLS).
 
 ### Completeness
 
@@ -330,8 +343,8 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 > clearing Priority 1 first; ADR-0019/0020 slot into Priority 2.
 
 ### Priority 1 — Critical blockers before production
-1. **Backups** — zero mechanism exists. *(1–2 days)*
-2. **TLS/HTTPS** — stack runs on plain HTTP today. *(0.5–1 day once domain/cert exist)*
+1. ~~**Backups**~~ — ✅ **Complete** (2026-08-03). Local `pg_dump`/`pg_restore` mechanism, live-verified round trip, CI-covered, pluggable off-site hook (unconfigured — see Known Issue #12). `docs/runbooks/backup-and-restore.md`.
+2. **TLS/HTTPS** — stack runs on plain HTTP today. *(0.5–1 day once domain/cert exist)* ← **recommended next**
 3. **Auth rate limiting + account lockout** — login is unthrottled. *(2–3 days)*
 4. **Redis production hardening** — no persistence config. *(1–2 days)*
 5. **Real health checks + minimum monitoring** — `/health/ready` doesn't check its dependencies. *(3–5 days)*
@@ -416,10 +429,20 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-Nothing in-progress — session paused, at the user's explicit request, to create this status
-document before any further implementation work begins.
+Nothing in-progress — Priority 1 Item 1 (Backups) just closed out completely (architecture
+review → implementation → automated tests → live verification → docs → deployment changes →
+runbook → this update), per the user's explicit "one item at a time, fully finished" process.
 
 **Completed This Sprint:**
+- **Priority 1 Item 1 — Backups.** New `backup` Docker Compose service
+  (`docker/backup.Dockerfile`), `scripts/db/{backup,restore,backup-loop}.sh`, local retention,
+  pluggable off-site `rclone` hook (unconfigured — Known Issue #12). Live-verified end-to-end
+  against a real PostgreSQL server using disposable throwaway databases (seed → backup → restore
+  → data-integrity check → cleanup); a real bug was found and fixed during that verification
+  (connection-string passwords were being logged in plaintext — now redacted in both scripts).
+  Automated round-trip test `testing/backups/test_backup_restore.sh`, wired into
+  `.github/workflows/backend-pipeline.yml`. New runbook `docs/runbooks/backup-and-restore.md`.
+  Zero changes to any bounded context, RBAC/tenant-isolation code, or migration.
 - ADR-0018 (Device Inventory & Allocation) — full vertical slice: domain, application, infra,
   API, 2 migrations, RBAC grants, 23 new unit tests, 5 new integration tests. Committed as
   `d13a5a8`.
@@ -429,9 +452,9 @@ document before any further implementation work begins.
   Project Control Center (Sections 2, 6, 7, 12, 13).
 
 **Next Task:**
-Awaiting a decision on which Priority 1 item (Section 5) to start with. Per Section 14's rules,
-the next implementation session should not resume ADR-0019/ADR-0020 until Priority 1 is
-addressed, unless explicitly redirected.
+**Recommended: Priority 1 Item 2 — TLS/HTTPS.** Per Section 14's rules, the next implementation
+session should not resume ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user
+confirms or redirects.
 
 ---
 
@@ -439,6 +462,9 @@ addressed, unless explicitly redirected.
 
 Reverse-chronological (most recent first):
 
+- **Priority 1 Item 1 — Backups** completed — local `pg_dump`/`pg_restore` mechanism, live
+  round-trip verified, CI-covered, runbook written; off-site copy shipped as a documented,
+  pluggable hook, not yet wired to a real destination.
 - **ADR-0018 — Device Inventory & Allocation** completed (backend, migrations, RBAC, tests).
 - **Production-readiness audit** completed (38 subsystems, read-only).
 - **Tenant Isolation Security Audit & Fix (ADR-0021)** completed — closed a live cross-org IDOR
@@ -475,10 +501,13 @@ Reverse-chronological (most recent first):
 - **Recommended fix:** Redis-backed attempt counter + IP/user throttle on `/auth/login`.
 - **Blocking production?** Yes.
 
-### 2. Zero backup mechanism
-- **Severity:** Critical
-- **Recommended fix:** `pg_dump` cron + off-site copy + one tested restore drill.
-- **Blocking production?** Yes.
+### 2. ~~Zero backup mechanism~~ — RESOLVED 2026-08-03
+- **Resolution:** Priority 1 Item 1. `docker-compose.yml`'s `backup` service, `scripts/db/
+  {backup,restore}.sh`, live-verified round trip, CI coverage, `docs/runbooks/
+  backup-and-restore.md`. See Known Issue #12 for the one remaining, lower-severity piece
+  (off-site destination not yet configured).
+- **Severity:** ~~Critical~~
+- **Blocking production?** No longer.
 
 ### 3. `/health/ready` doesn't check real dependencies
 - **Severity:** High
@@ -550,6 +579,19 @@ Reverse-chronological (most recent first):
 - **Recommended fix:** Either implement them or remove the misleading scaffolding.
 - **Blocking production?** No.
 
+### 12. Backup off-site destination not yet configured
+- **Severity:** Medium
+- **Description:** Priority 1 Item 1 shipped a fully working, live-verified local backup
+  mechanism plus a pluggable off-site hook (`BACKUP_RCLONE_REMOTE`, via `rclone`) — but no real
+  off-site destination (S3-compatible bucket, second server, etc.) is actually provisioned yet.
+  Every backup today lives only on the same disk as the database it protects. The service logs a
+  loud warning on every run rather than silently claiming protection it isn't providing.
+- **Recommended fix:** Provision a real destination and set `BACKUP_RCLONE_REMOTE` in
+  `docker/.env` — see `docs/runbooks/backup-and-restore.md`'s "Configuring off-site storage"
+  section. No code change needed, configuration only.
+- **Blocking production?** Not this item on its own, but a real risk until closed — a lost VPS
+  with only local backups is still total data loss.
+
 ---
 
 ## 11. Deployment Checklist
@@ -560,7 +602,9 @@ Live checklist for a real VPS deployment — update as each item closes.
 - [ ] **Domain** — no domain name assigned/configured yet.
 - [x] **Docker** — dev + prod compose overlays real and live-verified (ADR-0013); missing only a
       `services/jt1078/` container (tracked separately, see Video/JT1078).
-- [ ] **Backups** — no mechanism exists (see Known Issue 2).
+- [x] **Backups** — local `pg_dump`/`pg_restore` mechanism live-verified, CI-covered (Priority 1
+      Item 1). Off-site copy is a configured-or-loud-warning hook, not yet pointed at a real
+      destination (see Known Issue 12) — check this box again once `BACKUP_RCLONE_REMOTE` is set.
 - [ ] **Redis** — real in code, zero production hardening (no persistence config, no HA).
 - [x] **PostgreSQL** — schema/migrations solid, verified zero-drift.
 - [ ] **Monitoring** — only basic `/health*` endpoints; no real dependency checks, no

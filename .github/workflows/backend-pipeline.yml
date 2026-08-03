@@ -102,3 +102,20 @@ jobs:
 
       - name: Run integration tests (live Postgres + Redis service containers)
         run: python -m unittest discover -s tests/integration -v
+
+      - name: Run backup/restore round-trip test (Priority 1 Item 1)
+        # Reuses this same job's live Postgres service container — proves scripts/db/backup.sh
+        # and scripts/db/restore.sh keep working on every change, not just at the time they were
+        # written. testing/backups/ (not tests/integration/) deliberately: this tests standalone
+        # shell tooling operating on a whole database, not the raad Python package's own layers
+        # (.claude/rules/testing.md #1/#2).
+        working-directory: .
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: raad
+          PGPASSWORD: raad
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          sh testing/backups/test_backup_restore.sh

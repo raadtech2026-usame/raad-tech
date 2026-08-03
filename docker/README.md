@@ -16,6 +16,7 @@ and the production VPS, from the same files (ADR-0013: `docs/architecture/adr/
 | `backend` | built from `backend.Dockerfile` | The FastAPI Business API (`uvicorn raad.main:app`). |
 | `worker` | built from `backend.Dockerfile` (same image, different `command:`) | `python -m raad.interfaces.workers.bootstrap` — Notification/Report Workers, outbox relay, and the three scheduled jobs (Backend LLD §11.1). Not one of the platform pieces originally named, but required for those to actually run anywhere in this stack. |
 | `device-gateway` | built from `device-gateway.Dockerfile` | The multi-vendor device-plane gateway (ADR-0009/ADR-0010) — terminates bus terminal TCP connections on `7808` (dormant JT/T 808) and `7809` (LSZ MDVR, the actually-integrated hardware). |
+| `backup` | built from `backup.Dockerfile` | Priority 1 Item 1 (`PROJECT_STATUS.md`) — periodically `pg_dump`s `postgres` into the `raad_backups_data` volume, prunes local dumps past `BACKUP_RETENTION_DAYS`, and pushes off-site via `rclone` if `BACKUP_RCLONE_REMOTE` is configured. See `docs/runbooks/backup-and-restore.md`. |
 | `frontend` | built from `frontend.Dockerfile` | React web dashboard. Dev: Vite dev server w/ HMR on `5173`. Prod: its own `nginx:alpine` serving the built static bundle on `80`. |
 | `nginx` | stock `nginx:1.27-alpine` | The platform's single public entrypoint — reverse-proxies `/api`, `/ws`, `/health` to `backend` and everything else to `frontend`. No custom Dockerfile: its config is bind-mounted from `infrastructure/nginx/conf.d/` (`dev.conf` or `prod.conf`). |
 
@@ -37,6 +38,10 @@ runtime (`services/jt1078/README.md`), so there is nothing to containerize yet.
 - `frontend.Dockerfile` — multi-stage (`deps` → `dev` / `build` → `prod`); `target` picks dev
   vs. prod.
 - `device-gateway.Dockerfile` — builds the device-plane gateway image.
+- `backup.Dockerfile` — builds `FROM postgres:16-alpine` (reuses its `pg_dump`/`pg_restore`)
+  plus `rclone` for the optional off-site copy; the only Dockerfile here whose build context is
+  the repo root rather than one component's own directory, since `scripts/db/*.sh` live outside
+  any single deployable.
 
 There is no `jt808.Dockerfile`, `jt1078.Dockerfile`, `worker.Dockerfile`, or `nginx.Dockerfile`
 (all four were named in this file's original placeholder listing):
@@ -108,6 +113,16 @@ interrupted bootstrap: `docs/runbooks/founder-bootstrap.md`.
 The web login form (`frontend/src/app/LoginPage.tsx`) has no placeholder/example credentials on
 either field — there is nothing to type until you've run the command above with an email/password
 of your own choosing.
+
+## Backups
+
+The `backup` service runs continuously alongside the rest of the stack — no separate step is
+needed to get automated local dumps once `docker compose up` includes it (it always does; it's
+in the base file, not a prod-only overlay). It ships **local-only** by default: set
+`BACKUP_RCLONE_REMOTE` in `docker/.env` to also push each dump off-site, or the service logs a
+loud, repeated warning on every run reminding you it hasn't been configured. Full operator guide
+— manual backup/restore, disaster recovery, configuring off-site storage —
+`docs/runbooks/backup-and-restore.md`.
 
 ## Status
 

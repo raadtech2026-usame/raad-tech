@@ -122,6 +122,32 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  backup:
+    build:
+      context: ..
+      dockerfile: docker/backup.Dockerfile
+    container_name: raad-backup
+    restart: unless-stopped
+    entrypoint: []
+    # The image supplies the tools (pg_dump/pg_restore/rclone) and scripts; backup-loop.sh
+    # supplies the schedule — matches backend.Dockerfile's own "one image, Compose decides what
+    # runs" split (migrate/worker reuse one built image the same way).
+    command: ["/app/backup-loop.sh"]
+    environment:
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-raad}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-raad}
+      PGDATABASE: ${POSTGRES_DB:-raad}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE:-}
+    volumes:
+      - raad_backups_data:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   device-gateway:
     build:
       context: ../services/device-gateway
@@ -196,3 +222,4 @@ services:
 volumes:
   raad_postgres_data:
   raad_redis_dev_data:
+  raad_backups_data:
