@@ -14,10 +14,10 @@ architecture; this file is the source of truth for progress and sequencing.
 
 | | |
 |---|---|
-| **Overall completion** | ~65% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Deployment gained real runbook coverage this item, still 🟡 pending live VPS verification) |
-| **Production readiness** | **Not production-ready — two items remain, both with a genuine external dependency.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; Items 1–7 (Backups, TLS/HTTPS, Auth rate limiting + account lockout, Redis production hardening, Health checks + minimum monitoring, RBAC grant/revoke, Deployment/rollback runbooks) are all closed — see Section 5. **Continuous-completion program in progress** (user directive 2026-08-03) — Items 8 (Payment provider) and 9 (Mobile app) remain, each blocked on something this session cannot obtain or fully build in-session (a real payment-provider account; 4–8 weeks of Flutter development) — see each item's own entry for exactly what ships now versus what's a genuine external/scope blocker. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–7 complete, Item 8 (Payment provider integration) in progress. — see Section 2 for the full per-track breakdown. |
-| **Current git commit** | `756e8b2` — `feat(iam,organization): implement Priority 1 Item 6 - RBAC grant/revoke route` (branch `main`; this VPS/rollback runbook work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
+| **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against) — every Priority 1 item touching the backend/web/infra surface (1–7) is complete and either live-verified or mechanism-complete-with-disclosed-testing-limits. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **Item 8 (Payment):** audited, genuinely blocked on a real provider account + a webhook-actor design decision — see Section 5. This is the end state of the continuous-completion program (user directive 2026-08-03) — see Section 15 for the full final report. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. **All nine Priority 1 items are now closed or audited-and-documented** — see Section 2 for the full per-track breakdown and Section 15 for the consolidated final report. |
+| **Current git commit** | `11810b2` — `docs(billing): audit Priority 1 Item 8 - payment provider integration` (branch `main`; this Mobile App MVP work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
 | **Last updated** | 2026-08-03 |
 
 ---
@@ -190,11 +190,11 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** Yes, partially — a real customer hits a "being built" wall on day one.
 - **Dependencies:** Same as Platform Dashboard, plus Video.
 
-#### Mobile App — ❌ Missing
-- **Implemented:** Nothing. `pubspec.yaml` declares no Flutter SDK; `lib/main.dart` is a literal 0-byte file; `android/`/`ios/` hold only `.gitkeep`. `flutter create` has never been run.
-- **Missing:** Everything — auth, active-trip-only live GPS map, trip/payment history, push handling, offline states, native scaffolding.
-- **Production blocker?** Yes, unconditionally — this is the *only* channel Parents/Drivers have.
-- **Dependencies:** None technically (can start immediately); Notifications and Video are only meaningful to Parents once this exists.
+#### Mobile App — 🟡 Partial (code written, entirely unverified — see caveat below)
+- **Implemented (Priority 1 Item 9):** Phase M0 (Foundation) code-complete — Riverpod state management, `flutter_secure_storage`-backed refresh-token storage, a REST client mapping the backend's real error envelope, a protocol-correct `/ws/tracking` WebSocket client, role-based shell/routing. Phase M2 (Driver) code-complete: org-scoped trip list, real start/end actions against the real, ownership-enforced backend routes. Phase M3 (Parent): the live-tracking screen itself is code-complete and protocol-correct; the "assigned children" list is blocked on a real, newly-discovered backend gap (see Known Issue #17). A real `mobile-pipeline.yml` CI workflow and one widget test also ship.
+- **Missing:** Phase M4 (FCM push) — needs a real Firebase project (external dependency, same category as Payment's EVC Plus account). Phase M5 (offline caching, app-store release) — release process needs real store accounts; offline caching deferred until M2/M3 are verified-complete. Map rendering itself (a real Mapbox widget) — the live-tracking screen shows raw position data, not a rendered map, pending a chosen Flutter map package. **Most importantly: nothing in `mobile/` has been compiled, analyzed, or run — no Flutter SDK exists in this sandbox at all**, a categorically stronger unverified-state than any other Priority 1 item (every other item still had some independent verification path — real HTTP, real Postgres, real YAML parsing; this one has none). Treat every "code-complete" claim above as "written and carefully reviewed, not yet proven" until a real `flutter analyze`/`flutter test`/`flutter run` succeeds.
+- **Production blocker?** Yes, unconditionally — this is the *only* channel Parents/Drivers have, and it remains unverified and partially blocked on two genuine backend gaps.
+- **Dependencies:** A real Flutter SDK/build environment to verify any of this code at all; a backend fix for the Parent/Driver self-identity-resolution gap (Known Issue #17); a real Firebase project (M4); real app-store accounts (M5's release half).
 
 ### Insight
 
@@ -380,7 +380,20 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
    account/API docs; a resolved design decision for representing a signed-webhook caller in the
    `Principal`/audit model, via a new ADR). Application-layer code is fully built/tested and
    ready the moment either is resolved. Known Issue #4 has the full audit trail.
-9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form. *(4–8 weeks)* ← **in progress**
+9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form.
+   *(4–8 weeks)* — **partial, this session's honest limit reached.** Phase M0 (Foundation) and
+   M2 (Driver) code-complete; M3 (Parent)'s live-tracking screen code-complete, its "assigned
+   children" list blocked on a real backend gap (Known Issue #17, a new self-scoped identity-
+   resolution endpoint is needed, recommended via a short ADR). M4 (FCM)/M5 (release) need real
+   external accounts (Firebase, app stores) this engagement cannot obtain — the identical
+   category of blocker Item 8 (Payment) already carries. **The one categorical difference from
+   every other item in this whole program: zero Flutter/Dart SDK exists in this sandbox, so
+   none of this code has been compiled, analyzed, or run** — every other item retained some
+   independent verification path (real HTTP, real Postgres, real YAML parsing); this one has
+   none. `mobile/README.md`'s own "Testing limitation" section states this plainly. A genuine
+   4–8-week MVP is not achievable to completion, still less to verified completion, inside one
+   continuous session under these constraints — this is disclosed as the honest outcome, not
+   claimed as finished.
 
 ### Priority 2 — Recommended before first customer
 - Notifications web UI (F8) *(3–5 days)*
@@ -458,13 +471,41 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Mode change, 2026-08-03**: the user directed a continuous completion program — implement every
-remaining Priority 1 item (5–9) back to back without stopping for per-item approval, ending in
-one consolidated Production Readiness report. Items 1–8 are complete/audited; Item 9 (Mobile App
-MVP) is the active item as this line is written. Each item still gets its own architecture
-review → implementation → tests → live verification (where a real dependency
-exists) → docs → this file/`CLAUDE.md` update, per the same rigor every prior item followed —
-only the between-items approval gate is removed for this program.
+**Nothing — the continuous-completion program (user directive 2026-08-03) has reached the end
+of the Priority 1 roadmap.** All nine items are closed, audited, or built to the honest limit of
+what this session/sandbox could verify — see Section 15 for the full final report. Next actual
+implementation session should read Section 15 first, then decide with the user whether to
+pursue Item 8/9's remaining external-dependency work (a real payment account, a real Flutter
+build environment) or move to Priority 2/ADR-0019/ADR-0020.
+
+**Priority 1 Item 9 — Mobile App MVP (partial — the honest limit of this session).** Built
+against the already-approved `docs/architecture/frontend-flutter-master-roadmap.md` §5 (Phases
+M0–M5), not freelanced. **Phase M0 (Foundation) code-complete**: Riverpod state management,
+`flutter_secure_storage` refresh-token storage (access token in memory only), a REST client
+mapping the real backend error envelope, a protocol-correct `/ws/tracking` WebSocket client
+(the documented `{"type":"auth",...}` handshake + `{"channel":"vehicle",...}` subscribe frame),
+role-based shell. **Phase M2 (Driver) code-complete**: trip list + real start/end actions.
+**Phase M3 (Parent) partial**: the live-tracking screen is code-complete and protocol-correct;
+the "assigned children" list is blocked on a real backend gap discovered while building this
+exact screen (Known Issue #17 — no safe endpoint exists for a Parent to list their own children,
+and a parallel gap means a Driver mobile client can't filter trips to "mine" either). **Phases M4
+(FCM push)/M5 (release) not started** — both need real external accounts (Firebase; Play Store/
+App Store Connect) this engagement cannot obtain, the identical category of blocker Item 8
+already carries. A real `mobile-pipeline.yml` CI workflow (mirroring `backend-pipeline.yml`'s
+shape) and one widget test were also added.
+
+**The one categorical difference from every other item in this entire program**: no Flutter/Dart
+SDK exists in this sandbox at all (`flutter`/`dart` resolve to nothing) — every other Priority 1
+item retained *some* independent verification path even without its full target environment
+(YAML structurally parsed for Docker Compose, a live DI container built and inspected for backend
+wiring, real HTTP requests against a running server); this item has none. Every file was written
+and manually re-reviewed line by line against this repository's own actual backend API shapes
+(checked directly against the FastAPI schemas/routes, not assumed) and against each package's
+documented public API, but this is a categorically weaker guarantee than compiling — disclosed
+plainly in `mobile/README.md` rather than implied otherwise. One real bug was still caught this
+way: `/auth/logout` was originally called without the bearer token it actually requires
+(`Depends(get_current_user)`) — found during this same manual review and fixed before commit.
+`mobile/README.md` and `docs/PROJECT_STATUS.md` Known Issue #17 have the full detail.
 
 **Priority 1 Item 7 — Deployment & rollback runbook, VPS setup guide.** Two new runbooks, pure
 documentation (zero code changes): `docs/runbooks/vps-deployment.md` (a fresh-VPS-to-running-
@@ -663,6 +704,13 @@ ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user confirms o
 
 Reverse-chronological (most recent first):
 
+- **Priority 1 Item 9 — Mobile App MVP** partially built — Phase M0 (Foundation) and M2
+  (Driver) code-complete against the approved Flutter roadmap; M3 (Parent)'s live-tracking
+  screen code-complete, its children-list blocked on a real, newly-discovered backend gap
+  (Known Issue #17: no safe self-identity-resolution endpoint for Parent or Driver roles). M4/M5
+  need real external accounts. Zero Flutter SDK in this sandbox — nothing compiled or run, the
+  most severe disclosed-limitation of any item this program shipped. **This closes the Priority
+  1 continuous-completion program** — see Section 15 for the full final report.
 - **Priority 1 Item 8 — Payment provider integration** audited, not further built — both
   remaining blockers (no bound `PaymentProviderPort`; `POST /billing/payments/callback` not
   wired) confirmed genuinely external (a real EVC Plus account/API docs; a resolved Principal/
@@ -949,6 +997,48 @@ Reverse-chronological (most recent first):
   constraint still fires and the bad write is still rejected); this is purely a rough edge in
   the *error message* a caller sees, not a functional or security gap.
 
+### 17. Parent/Driver mobile roles have no safe way to resolve their own domain identity
+- **Severity:** High
+- **Description:** Discovered while building the mobile app (Priority 1 Item 9) and confirmed by
+  reading the actual route/RBAC-matrix code, not assumed. Both mobile-facing roles hit the
+  identical class of gap — an authenticated `Principal` (via `POST /auth/login`) has no safe
+  path to the domain-specific identity (`Parent.id`/`Driver.id`) that the rest of the API
+  actually keys on:
+  - **Parent**: `GET /parents/{parent_id}/students` (`transport_ops/api/routers.py`) requires
+    `transport_ops.student_parents.list` — the seeded RBAC matrix grants this to Org Admin only;
+    the `parent` role does not hold it (a real Parent principal gets 403 today). Even if granted,
+    the route has **no ownership check at all** — `parent_id` is taken directly from the path
+    with nothing verifying it matches the caller's own linked `Parent` record, so granting the
+    permission without also adding that check would let any parent pass any other parent's
+    `parent_id` and see their children: a real cross-parent privacy leak, the same family of
+    issue ADR-0021's tenant-isolation audit already fixed at the organization level.
+  - **Driver**: the `driver` role *does* hold `transport_ops.trips.list`/`.read`/`.start`/`.end`,
+    so a driver mobile client can list trips and (server-enforced, correctly) start/end their
+    own — but `Trip.driver_id` references the `Driver` aggregate's own id, not `Principal.
+    user_id`, and there is no endpoint reachable by the `driver` role to resolve one from the
+    other (`driver` holds no `transport_ops.drivers.*` permission at all, and `DriverSummaryResponse`
+    doesn't expose `user_id` even if it did). A driver mobile client can therefore list/act on
+    trips but cannot filter the list down to "assigned to me" — it must show every trip in the
+    org and rely on the server's own real ownership check at start/end time.
+- **Recommended fix:** A genuine backend change for each, likely as one small, coherent piece of
+  work: (1) a new, inherently self-scoped `GET /me/students` for Parent (resolving the caller's
+  own `Parent` record from `Principal.user_id` server-side, never trusting a client-supplied id —
+  avoiding the ownership-check gap entirely by construction, not patching around it), and (2) an
+  equivalent `GET /me/driver-profile` (or embedding `driver_id` directly into `PrincipalResponse`/
+  `GET /auth/me` for a `driver`-role principal) so a driver client can filter trips to their own
+  without needing a new RBAC grant that would otherwise leak other organizations'/drivers' data
+  shapes. This is a real design decision (which shape, which module owns it) — matching this
+  project's own established practice, it deserves a short ADR before implementation, not an
+  invented fix under time pressure inside a mobile-app task.
+- **Blocking production?** Yes, for a complete mobile MVP — the Parent "assigned children" flow
+  and the Driver "my trips only" flow (Phase M2/M3's own named scope) cannot be correctly and
+  safely finished without it. Not blocking the *rest* of the platform — every other bounded
+  context's own RBAC/tenant-isolation posture is unaffected, and this gap doesn't weaken any
+  existing enforcement (the Driver trip-ownership check IS real and correctly enforced server-
+  side today; this issue is about UX-level filtering and the Parent case's outright absent
+  ownership check, not a currently-exploitable hole in itself, since the vulnerable route is not
+  currently reachable by the `parent` role at all).
+
 ---
 
 ## 11. Deployment Checklist
@@ -1061,3 +1151,44 @@ and never remove valid architecture (Section 13) without the explicit approval i
 
 This document must always reflect the real repository, not planned work. Treat it as mandatory
 reading before every implementation session.
+
+---
+
+## 15. Priority 1 Final Report (2026-08-03 continuous-completion program)
+
+The user directed all nine remaining Priority 1 items be implemented back to back, without
+stopping for per-item approval, ending in one consolidated report. This section is that report's
+permanent record — the full version was delivered directly to the user; this is the durable
+summary.
+
+**Completed and live-verified**: Items 1 (Backups), 3 (Auth rate limiting + account lockout), 5
+(Health checks + monitoring), 6 (RBAC grant/revoke) — each proven against a real dependency
+(real Postgres, real HTTP requests against a running server) in this sandbox.
+
+**Completed, mechanism-complete but disclosed as not live-testable here** (no Docker daemon, no
+domain, no VPS in this sandbox): Items 2 (TLS/HTTPS), 4 (Redis production hardening), 7
+(Deployment/rollback runbooks).
+
+**Audited, correctly not built further — both blockers genuinely external**: Item 8 (Payment
+provider) — needs a real EVC Plus account/API docs and a webhook-actor design decision (ADR).
+
+**Partial, the one item where zero verification was possible at all**: Item 9 (Mobile App MVP) —
+M0/M2 code-complete, M3 partial, blocked in part on a real, newly-discovered backend gap (Known
+Issue #17), M4/M5 blocked on real external accounts (Firebase, app stores). No Flutter SDK exists
+in this sandbox, so none of this code has been compiled or run — disclosed plainly, not claimed
+as finished.
+
+**Real bugs caught and fixed during this program, not just asserted away**: a tz-aware/naive
+datetime bug and a Redis-unreachable-vs-unconfigured gap (Item 3); an oversized composite
+`aggregate_id` overflowing a shared `CHAR(26)` column across six event factories, requiring a
+schema migration (Item 6); an `/auth/logout` call missing its required bearer token (Item 9,
+caught by manual review since no compiler was available).
+
+**Is RAAD technically ready for a VPS deployment?** Yes, for the backend + web dashboard,
+contingent only on real external resources (a domain, a VPS, a real `docker/.env`) — every
+documented step is written and reviewed (`docs/runbooks/vps-deployment.md`), and no known
+backend/infra gap blocks it. **Are the backend and web platform production-ready?** Yes, with the
+same caveat — Payment (Item 8) is the one functional gap (no live payment can complete), tracked
+honestly as an external dependency, not a silently-skipped feature. **Mobile is not
+production-ready** — real, uncompiled code exists but has never been verified, and two role
+experiences are incomplete pending a backend fix and external accounts.

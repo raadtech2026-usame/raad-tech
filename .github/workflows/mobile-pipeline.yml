@@ -1,0 +1,60 @@
+# RAAD Flutter mobile app — CI gate (Priority 1 Item 9, PROJECT_STATUS.md; Phase M5's own
+# "real CI/release pipeline" exit criterion). Mirrors backend-pipeline.yml's shape exactly:
+# checkout -> setup toolchain -> static checks -> tests, no deploy step.
+#
+# Scope, deliberately: build -> analyze -> test only, matching backend-pipeline.yml's own
+# equivalent scope note almost word for word. No app-store release step — that needs real
+# Play Store/App Store Connect accounts this engagement doesn't have (Phase M5's own "a real
+# logistics/account decision, not a code one — flagged, not assumed").
+#
+# Not live-tested against a real GitHub Actions run in this sandbox (no Flutter SDK installed
+# here at all — see mobile/README.md's own disclosed limitation for the whole mobile/ directory)
+# — reviewed for correctness against subosito/flutter-action's documented usage and this
+# repository's own actual mobile/ layout, the same "mechanism built, not live-tested" posture
+# already applied to docker-compose.yml's prometheus service and every VPS-only runbook this
+# Priority 1 program produced.
+#
+# ci-cd/pipelines/mobile-pipeline.yml is this repo's own cross-deployable pipeline index entry
+# (still an empty placeholder, like its frontend/jt808/jt1078/infrastructure siblings) - GitHub
+# Actions only ever executes workflows under .github/workflows/, so this file is what actually
+# runs, matching backend-pipeline.yml's own identical note.
+
+name: Mobile CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile-pipeline.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile-pipeline.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.19.0"
+          channel: "stable"
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Static analysis
+        run: flutter analyze
+
+      - name: Verify formatting
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Run widget/unit tests
+        run: flutter test

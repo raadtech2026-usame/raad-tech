@@ -1646,3 +1646,90 @@ signed-webhook integration), matching this project's own established practice of
 exactly this kind of cross-cutting design decision before implementing against it
 (`.claude/rules/workflow.md` #7/#8). No code changed in this item; `PROJECT_STATUS.md`'s Known
 Issue #4 carries the full audit trail.
+
+**Priority 1 Item 9 — Mobile App MVP (partial; the honest limit of the continuous-completion
+program, and the last item in it).** Built directly against the already-approved
+`docs/architecture/frontend-flutter-master-roadmap.md` §5 (Phases M0–M5), not freelanced —
+verified that plan exists and is detailed (state-management choice, dependency choices, exit
+criteria per phase) before writing any Dart, matching this project's own "verify the design is
+approved before implementing" discipline.
+
+**Phase M0 (Foundation) code-complete**: hand-written `StateNotifier`-based Riverpod (not the
+`@riverpod` code-generation API, which needs `build_runner` — an unnecessary build-time
+dependency for an app this size with no code-gen SDK available to prove it works anyway),
+`flutter_secure_storage` holding only the refresh token (the access token stays in
+`ApiClient`'s in-memory field, mirroring the roadmap's own stated pattern and the web
+dashboard's identical in-memory-access-token posture), a REST client (`ApiClient`) that maps
+the backend's real `{error: {code, message, correlation_id, details}}` envelope into a typed
+`ApiException` rather than a raw HTTP exception, and a `/ws/tracking` client
+(`TrackingWebSocketClient`) implementing the documented protocol exactly — the
+`{"type":"auth","token":...}` first-frame handshake, then a `{"channel":"vehicle",
+"vehicle_id":...}` subscribe frame, decoding `{"type":"position",...}` pushes. Role-based
+routing (`app/app.dart`) uses Dart 3's pattern-matching `switch` expression on a sealed
+`AuthState`, branching on the real `principal.role` string `POST /auth/login` returns.
+
+**Phase M2 (Driver) code-complete, one disclosed UX limitation discovered while building it**:
+`driver` holds `transport_ops.trips.{list,read,start,end}` in the seeded RBAC matrix, so the
+full trip lifecycle is reachable — but `GET /trips` has no "assigned to me" filter, and there is
+no endpoint the `driver` role can reach to resolve their own `Driver.id` from their
+`Principal.user_id` at all (`driver` holds no `transport_ops.drivers.*` permission, and
+`DriverSummaryResponse` doesn't expose `user_id` even if it did). `DriverHomeScreen` therefore
+lists every trip in the driver's own organization (already tenant-scoped server-side, ADR-0021)
+rather than fabricating a "mine" filter that isn't actually possible — safety is not weakened by
+this, since the server independently, correctly enforces "Driver (own)" on start/end regardless
+of what the list displays (`_ensure_driver_owns_trip`, already-existing backend code).
+
+**Phase M3 (Parent) partially blocked on a real, previously-undiscovered backend gap, found
+specifically because this session tried to wire a real screen against real API contracts
+instead of assuming they'd support it.** `GET /parents/{parent_id}/students` requires
+`transport_ops.student_parents.list` — Org Admin only in the seeded matrix, not `parent` — and
+critically has **no ownership check at all**: `parent_id` comes straight from the path with
+nothing verifying it's the caller's own linked `Parent` record. Granting `parent` the permission
+without also adding that check would let any parent pass any other parent's `parent_id` and see
+their children — a real cross-parent privacy leak in the same family ADR-0021's tenant-isolation
+audit already closed at the organization level. `LiveTrackingScreen` itself is fully implemented
+and protocol-correct (it only needs a `vehicleId`, not a resolved Parent identity) — but
+`ParentHomeScreen` cannot safely wire a real "my children" list to it, so it says so plainly and
+offers a manually-entered vehicle-id field as an explicitly-labeled stand-in for testing, not the
+intended production UX. `PROJECT_STATUS.md`'s new Known Issue #17 records the recommended fix
+(a genuinely self-scoped `GET /me/students`, resolving identity server-side rather than trusting
+a client-supplied id) and recommends a short ADR before implementing it, matching this project's
+own established process for exactly this kind of design decision.
+
+**Phases M4 (FCM push notifications) and M5 (offline resilience + app-store release) were not
+attempted** — M4 needs a real Firebase project (`google-services.json`/
+`GoogleService-Info.plist`, real API keys), the identical category of external dependency Item 8
+already carries for a real EVC Plus account; M5's release half needs real Play Store/App Store
+Connect accounts, and its offline-caching half is only meaningful once M2/M3 are functionally
+complete against a resolved backend. A real `mobile-pipeline.yml` (`.github/workflows/`,
+mirroring `backend-pipeline.yml`'s exact shape: checkout → `subosito/flutter-action` → `flutter
+pub get` → `flutter analyze` → `dart format --set-exit-if-changed` → `flutter test`) and one
+widget test (`login_screen_test.dart`, covering the login form's static shape) were added so
+Phase M5's "real CI pipeline" exit criterion has something real to build toward.
+
+**The one categorical difference between this item and every other item in this entire
+program**: this sandbox has no Flutter/Dart SDK installed at all (`flutter`/`dart` resolve to
+nothing on `PATH`, confirmed directly, not assumed) — meaning **none of the ~19 Dart files
+written this item have been parsed, analyzed, compiled, or run in any way.** Every other
+Priority 1 item retained some independent verification path despite an incomplete target
+environment — YAML structurally parsed via a real Python YAML parser for every Docker Compose
+change, a live DI container actually built and inspected for backend wiring, real HTTP requests
+against a genuinely running `uvicorn` server for every backend behavior change — this item has
+none of that. What verification *was* possible: every request/response JSON shape used in the
+Dart code was checked directly against the actual FastAPI Pydantic schemas and route
+implementations (not assumed or half-remembered), and every file was manually re-read end to end
+for Dart syntax correctness against `flutter_riverpod`/`flutter_secure_storage`/
+`web_socket_channel`/`flutter_test`'s documented, stable public APIs. That manual review caught
+one real bug before commit: the first draft of `AuthRepository.logout()` called `POST
+/auth/logout` with `auth: false`, but that route requires `Depends(get_current_user)` — a valid
+bearer access token — in addition to the refresh token in its body; fixed to send the current
+access token, and ordered correctly in `AuthController.logout()` (revoke-on-server call happens
+*before* the local access token is cleared, not after). `mobile/README.md`'s own "Testing
+limitation" section states all of this plainly — every M0–M3 "code complete" claim in this
+codebase is "written and carefully reviewed, not yet verified" until a real `flutter analyze`/
+`flutter test`/`flutter run` actually succeeds against this code.
+
+**This closes the 2026-08-03 continuous-completion program** — all nine Priority 1 items are
+now either complete-and-live-verified, complete-with-a-disclosed-testing-limitation, correctly
+audited-and-left-unbuilt (external dependency), or built to the honest limit of what this
+session could verify. `PROJECT_STATUS.md` §15 carries the full final report.

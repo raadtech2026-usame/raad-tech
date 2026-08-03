@@ -1,6 +1,52 @@
 # RAAD Platform — Flutter mobile app (Parent + Driver).
-# Structural placeholder only. SDK constraints and dependencies are not yet decided.
+#
+# Priority 1 Item 9 (PROJECT_STATUS.md) / Phase M0 (docs/architecture/
+# frontend-flutter-master-roadmap.md §5). Dependency choices below follow that roadmap's own
+# M0 scope exactly — each one was already named and justified there, not freelanced here:
+#
+#   flutter_riverpod  - state management ("proposed - more testable than BLoC for a two-role
+#                       app this size, less ceremony, still enforces the same presentation ->
+#                       domain -> data layering `.claude/rules/flutter.md` #5 requires").
+#   flutter_secure_storage - "the standard, approved-by-necessity choice for 'tokens in secure
+#                       storage' per flutter.md #5" - refresh token lives here; the access
+#                       token stays in memory only (this app's own AuthController), mirroring
+#                       the roadmap's own stated pattern and the web dashboard's identical
+#                       in-memory-access-token posture.
+#   web_socket_channel - the official Dart team package for WebSocket clients - needed for
+#                       /ws/tracking (live position) exactly as documented (API Contracts §11).
+#   http              - the networking client the roadmap names generically ("networking
+#                       client") without picking a specific package; chosen over `dio` for the
+#                       same reason this backend's own core/observability/metrics.py prefers a
+#                       small primitive over a general-purpose framework where the actual need
+#                       (JSON REST calls, bearer auth header, one error envelope shape) doesn't
+#                       justify dio's extra surface (interceptors, transformers) this app
+#                       doesn't use.
+#
+# No Firebase/FCM dependency yet - Phase M4 (push notifications) needs a real Firebase project
+# (google-services.json / GoogleService-Info.plist, real API keys), which does not exist in
+# this engagement; adding the dependency without real config to point it at would be dead
+# weight, not a working feature. See mobile/README.md's own "Known gaps" section.
 name: raad_mobile
 description: RAAD Platform mobile app (Parent + Driver roles).
 publish_to: "none"
-version: 0.0.0
+version: 0.1.0
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.19.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.5.1
+  flutter_secure_storage: ^9.2.2
+  web_socket_channel: ^2.4.5
+  http: ^1.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
