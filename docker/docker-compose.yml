@@ -254,6 +254,23 @@ services:
       retries: 5
       start_period: 10s
 
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: raad-prometheus
+    restart: unless-stopped
+    # Priority 1 Item 5 (PROJECT_STATUS.md, "minimum monitoring") — scrapes the Business API's
+    # own /metrics (interfaces/http/health.py). Not published to a host port by default (no
+    # `ports:` here) — reachable inside the Docker network for now; expose a port or add it
+    # behind nginx/basic-auth before relying on it outside the host, the same "don't publish
+    # more than the deployment actually needs" posture already applied to postgres/redis/backend
+    # in docker-compose.prod.yml's own ports: !reset [] overrides.
+    volumes:
+      - ../infrastructure/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - raad_prometheus_data:/prometheus
+    depends_on:
+      backend:
+        condition: service_started
+
   nginx:
     image: nginx:1.27-alpine
     container_name: raad-nginx
@@ -283,3 +300,4 @@ volumes:
   # deployment exists yet to have real data under the old name.
   raad_redis_data:
   raad_backups_data:
+  raad_prometheus_data:

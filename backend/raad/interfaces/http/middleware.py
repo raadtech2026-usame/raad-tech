@@ -17,6 +17,7 @@ from starlette.responses import Response
 from raad.core.errors.exceptions import RateLimitedError
 from raad.core.logging.context import bind_context, reset_context
 from raad.core.logging.setup import get_logger
+from raad.core.observability.metrics import MetricsRegistry
 from raad.core.security.login_rate_limiter import LoginRateLimiter
 from raad.core.security.tokens import TokenService, resolve_principal_from_access_token
 from raad.core.tenancy.principal import Principal
@@ -51,7 +52,18 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """Emits one structured log line per completed request (§13.1). Must run *inside*
     `CorrelationIdMiddleware` (added to the app before it, per `main.create_app`) so the
-    request/correlation IDs are already bound when this log line is written."""
+    request/correlation IDs are already bound when this log line is written.
+
+    Also increments `raad_http_requests_total` (Priority 1 Item 5, "minimum monitoring") — the
+    same request/response pair this middleware already observes, no separate metrics middleware
+    needed. Labeled by the matched **route template** (`request.scope["route"].path`, e.g.
+    `/api/v1/vehicles/{vehicle_id}`), not the raw request path — populated by Starlette's own
+    routing by the time `call_next` returns, since `request`/`request.scope` are the same object
+    threaded through the whole ASGI call chain. Using the raw path instead would give every
+    distinct resource ID its own metric series, an unbounded-cardinality bug the route template
+    avoids; a genuinely unmatched path (404, no route object) falls back to the raw path, where
+    that risk is bounded by however many garbage/scanned paths a client actually tries.
+    """
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
@@ -68,6 +80,21 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 "duration_ms": duration_ms,
             },
         )
+
+        container = getattr(request.app.state, "container", None)
+        metrics = container.try_resolve(MetricsRegistry) if container is not None else None
+        if metrics is not None:
+            route = request.scope.get("route")
+            route_template = getattr(route, "path", None) or request.url.path
+            metrics.increment(
+                "raad_http_requests_total",
+                labels={
+                    "method": request.method,
+                    "route": route_template,
+                    "status": str(response.status_code),
+                },
+            )
+
         return response
 
 

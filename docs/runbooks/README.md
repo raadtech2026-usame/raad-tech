@@ -25,3 +25,6 @@ real runbooks exist outside that original list:
 - [`redis-operations.md`](redis-operations.md) — persistence, auth, memory limits, and the
   broker-vs-cache reconstructability nuance (`PROJECT_STATUS.md` Priority 1 Item 4), added
   alongside the hardened `redis` service in `docker-compose.yml`.
+- [`monitoring.md`](monitoring.md) — the three `/health*` endpoints' distinct readiness policy,
+  `/metrics`, and the `prometheus` Compose service (`PROJECT_STATUS.md` Priority 1 Item 5), added
+  alongside `core/health/service.py` and `core/observability/metrics.py`.

@@ -14,10 +14,10 @@ architecture; this file is the source of truth for progress and sequencing.
 
 | | |
 |---|---|
-| **Overall completion** | ~60% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Item 4 leaves the Redis row at 🟡 still — mechanism hardened, not live-tested in this sandbox, see below — so this rounded figure is unchanged) |
-| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; five Priority-1 blockers remain open (Backups, TLS/HTTPS, and Auth rate limiting + account lockout closed; Redis production hardening closed mechanism-wise) — see Section 5. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–4 (Backups, TLS/HTTPS, Auth rate limiting + account lockout, Redis production hardening) complete, Item 5 (Real health checks + minimum monitoring) recommended next. — see Section 2 for the full per-track breakdown. |
-| **Current git commit** | `6e61aa0` — `feat(iam): implement Priority 1 Item 3 - auth rate limiting + account lockout` (branch `main`; this Redis hardening work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Overall completion** | ~62% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Monitoring moved ❌→🟡 this item) |
+| **Production readiness** | **Not production-ready.** Core product (backend + web dashboard for Founder/Regional Manager/Support/Finance/Org Admin) is solid; four Priority-1 blockers remain open (Backups, TLS/HTTPS, Auth rate limiting + account lockout, Redis production hardening, and Health checks + minimum monitoring all closed) — see Section 5. **Continuous-completion program in progress** (user directive 2026-08-03: complete the entire remaining Priority 1 roadmap without stopping for per-item approval) — this row is updated as each remaining item lands. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: scaffold only, 0% built. Priority 1 work is active: Items 1–5 (Backups, TLS/HTTPS, Auth rate limiting + account lockout, Redis production hardening, Health checks + minimum monitoring) complete, Item 6 (RBAC grant/revoke route) in progress. — see Section 2 for the full per-track breakdown. |
+| **Current git commit** | `1e3fafd` — `feat(infra): implement Priority 1 Item 4 - Redis production hardening` (branch `main`; this health-checks/monitoring work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
 | **Last updated** | 2026-08-03 |
 
 ---
@@ -236,10 +236,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** No, on its own merits.
 - **Dependencies:** Redis.
 
-#### Monitoring — ❌ Missing
-- **Implemented:** `/health`, `/health/live`, `/health/ready` endpoints exist.
-- **Missing:** `/health/ready` doesn't check DB/Redis reachability (docstring admits this); no Prometheus/Grafana/Sentry/OpenTelemetry anywhere; `infrastructure/monitoring/` empty.
-- **Production blocker?** Yes.
+#### Monitoring — 🟡 Partial
+- **Implemented (Priority 1 Item 5):** `/health/ready` now runs real Postgres/Redis(cache)/Redis(broker) checks with a 3s-bounded timeout each (`core/health/service.py`) — closes Known Issue #3; live-verified against real Postgres (a genuinely reachable one and a genuinely unreachable one) and over real HTTP against a running server. New `/metrics` (Prometheus text format, hand-rolled — `core/observability/metrics.py`, no new Python dependency): request counts by method/route-template/status, dependency-up gauges, process-start-time gauge. New `prometheus` Docker Compose service scrapes it (`infrastructure/monitoring/prometheus/prometheus.yml`).
+- **Missing:** Grafana dashboards (no live Prometheus target existed to design panels against); Sentry/error tracking and OpenTelemetry tracing both need a real external account/DSN this session can't obtain — see `docs/runbooks/monitoring.md`'s "What's deliberately not built this phase". The `prometheus` service itself is not live-tested (no Docker in this sandbox — same disclosed limitation as TLS/Redis).
+- **Production blocker?** No longer, for the core "is this process actually healthy" signal — good enough for a single-VPS pilot's `docker compose ps`/orchestrator readiness gate. Full observability (dashboards, error tracking) remains a real gap for anything beyond a pilot.
 - **Dependencies:** None.
 
 #### Logging — 🟡 Partial
@@ -347,8 +347,14 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 2. ~~**TLS/HTTPS**~~ — ✅ **Complete** (2026-08-03). nginx `prod-tls.conf` + `certbot` service (Let's Encrypt via webroot challenge, auto-renewal via PID-namespace reload signal), two-phase bootstrap runbook. Mechanism built and carefully reviewed, **not live-tested against a real domain** (none provisioned — see Known Issue #13). `docs/runbooks/tls-setup.md`.
 3. ~~**Auth rate limiting + account lockout**~~ — ✅ **Complete** (2026-08-03). Account lockout (`User.record_failed_login`/`is_locked`, migration `d4fbe03f2b94`) fully live-verified — real Postgres round trip + real HTTP smoke test against a running server. IP-based rate limiting (`LoginRateLimiter`, `RateLimitMiddleware`) unit-tested against a fake Redis; its fail-open-when-Redis-unreachable path live-verified (a real bug caught and fixed during that verification — see Known Issue #14). `AccountLockedError`/`RateLimitedError` added to the documented error taxonomy.
 4. ~~**Redis production hardening**~~ — ✅ **Complete, mechanism-wise** (2026-08-03). `--requirepass`, AOF persistence (`everysec` fsync) + RDB fallback, `--maxmemory`/`noeviction`, broker/cache split onto separate logical DBs, explicit backend-side connection timeouts. Carefully reviewed (YAML structural validation, DI-container smoke test) but **not live-tested against a real running Redis process** — no Docker/WSL2/`redis-server` in this sandbox (Known Issue #15, same disclosed limitation as Item 2/TLS). Does not itself close Known Issue #14 (rate limiter's real-Redis round trip) — that still needs an actual reachable Redis server, which this item hardens the mechanism for but doesn't provide in this sandbox. `docs/runbooks/redis-operations.md`.
-5. **Real health checks + minimum monitoring** — `/health/ready` doesn't check its dependencies. *(3–5 days)* ← **recommended next**
-6. **RBAC grant/revoke route** — RAAD can't onboard its own staff without hand-editing the DB. *(3–4 days)*
+5. ~~**Real health checks + minimum monitoring**~~ — ✅ **Complete** (2026-08-03). `/health/ready`
+   runs real, timeout-bounded Postgres/Redis(cache)/Redis(broker) checks (`core/health/
+   service.py`); new `/metrics` (hand-rolled Prometheus text format) + a `prometheus` Compose
+   service scraping it. Both live-verified over real HTTP/real Postgres; the `prometheus`
+   container itself not live-tested (no Docker in this sandbox). Grafana/Sentry/OpenTelemetry
+   deliberately not built — each needs a real external account/target this session can't obtain.
+   `docs/runbooks/monitoring.md`.
+6. **RBAC grant/revoke route** — RAAD can't onboard its own staff without hand-editing the DB. *(3–4 days)* ← **in progress**
 7. **Deployment & rollback runbook, VPS setup guide** — the TLS half of this is now covered by `docs/runbooks/tls-setup.md` (item 2); still missing: a general VPS provisioning guide and a rollback runbook. *(1–2 days remaining)*
 8. **Payment provider adapter** — no real payment has ever completed. *(1–2 weeks)*
 9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form. *(4–8 weeks)*
@@ -429,13 +435,35 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-Nothing in-progress — Priority 1 Item 4 (Redis production hardening) just closed out completely
-(architecture review → implementation → DI/settings verification → Compose structural
-validation → regression suite → runbook → this update), per the user's explicit "one item at a
-time, fully finished" process. Disclosed honestly, not overstated: the mechanism itself is not
-live-tested in this sandbox (no Docker/WSL2/`redis-server` available) — see Known Issue #15.
+**Mode change, 2026-08-03**: the user directed a continuous completion program — implement every
+remaining Priority 1 item (5–9) back to back without stopping for per-item approval, ending in
+one consolidated Production Readiness report. Items 1–5 are complete; Item 6 (RBAC grant/revoke
+route) is the active item as this line is written. Each item still gets its own architecture
+review → implementation → tests → live verification (where a real dependency exists) → docs →
+this file/`CLAUDE.md` update, per the same rigor every prior item followed — only the
+between-items approval gate is removed for this program.
 
 **Completed This Sprint:**
+- **Priority 1 Item 5 — Real health checks + minimum monitoring.** New `HealthCheckService`
+  (`core/health/service.py`) runs real, 3-second-bounded Postgres/Redis(cache)/Redis(broker)
+  checks; `/health/ready` now returns 503 with a per-dependency breakdown (`{"database":"ok",
+  "redis":"down","broker":"down"}`) instead of always reporting ready once `Settings` loaded —
+  closes Known Issue #3. New `/metrics` (hand-rolled Prometheus text exposition, no new Python
+  dependency — `core/observability/metrics.py`): `raad_http_requests_total` (incremented by the
+  existing `RequestLoggingMiddleware`, labeled by *route template* not raw path to keep
+  cardinality bounded), `raad_dependency_up` (reuses `HealthCheckService`), and
+  `raad_process_start_time_seconds`. New `prometheus` Docker Compose service + scrape config
+  (`infrastructure/monitoring/prometheus/prometheus.yml`). **Live-verified**: a real running
+  `uvicorn` server against this sandbox's real Postgres and genuinely-unreachable Redis produced
+  exactly the expected `not_ready`/503 response and correct `/metrics` output; a dedicated live
+  integration test proves both a reachable and a deliberately-unreachable Postgres host are
+  correctly distinguished (not mocked). 14 new unit tests, 2 new live-Postgres integration tests,
+  1217 unit + 10 architecture tests pass with zero regressions. Grafana dashboards/Sentry/
+  OpenTelemetry deliberately not built — each needs a real external account/target this session
+  can't obtain, flagged in `docs/runbooks/monitoring.md` rather than faked. New dependency:
+  `prom/prometheus` (Docker image only, Apache 2.0, no new Python/JS package) — already the
+  implicitly-expected choice per this file's own pre-existing "no Prometheus/Grafana/Sentry"
+  gap language, not a new idea introduced here.
 - **Priority 1 Item 4 — Redis production hardening.** `docker/docker-compose.yml`'s `redis`
   service: `--requirepass` (previously unset entirely — anyone reaching the port, even though
   already un-published outside the Docker network in prod, could read/write with no credential),
@@ -547,6 +575,11 @@ ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user confirms o
 
 Reverse-chronological (most recent first):
 
+- **Priority 1 Item 5 — Real health checks + minimum monitoring** completed — real Postgres/
+  Redis dependency checks on `/health/ready` (closes Known Issue #3), a new hand-rolled
+  `/metrics` Prometheus endpoint, and a `prometheus` Compose service scraping it. Live-verified
+  over real HTTP and real Postgres. Grafana/Sentry/OpenTelemetry deliberately deferred (real
+  external accounts needed, not obtainable this session).
 - **Priority 1 Item 4 — Redis production hardening** completed, mechanism-wise — `--requirepass`,
   AOF `everysec` persistence, `--maxmemory`/`noeviction`, broker/cache split onto separate
   logical DBs, explicit backend-side connection timeouts, the stale `redis.conf.template`
@@ -621,10 +654,14 @@ Reverse-chronological (most recent first):
 - **Severity:** ~~Critical~~
 - **Blocking production?** No longer.
 
-### 3. `/health/ready` doesn't check real dependencies
-- **Severity:** High
-- **Recommended fix:** Add actual Postgres/Redis connectivity checks before reporting ready.
-- **Blocking production?** Yes.
+### 3. ~~`/health/ready` doesn't check real dependencies~~ — RESOLVED 2026-08-03
+- **Resolution:** Priority 1 Item 5. `HealthCheckService` (`core/health/service.py`) runs real,
+  3-second-bounded Postgres/Redis(cache)/Redis(broker) checks; `/health/ready` returns 503 with
+  a per-dependency breakdown when any configured dependency is down. Live-verified against real
+  Postgres (reachable and genuinely-unreachable cases) and over real HTTP against a running
+  server. `docs/runbooks/monitoring.md`.
+- **Severity:** ~~High~~
+- **Blocking production?** No longer.
 
 ### 4. `PaymentProviderPort`, `VideoProviderPort`, `ReportRendererPort` all unbound
 - **Severity:** High (Payment), Medium (Video, Reporting)
@@ -794,10 +831,12 @@ Live checklist for a real VPS deployment — update as each item closes.
       (Known Issue #15) — no HA/Sentinel/Cluster, a deliberate single-VPS-scope decision, not
       tracked as a checklist item here.
 - [x] **PostgreSQL** — schema/migrations solid, verified zero-drift.
-- [ ] **Monitoring** — only basic `/health*` endpoints; no real dependency checks, no
-      Prometheus/Grafana/Sentry.
+- [x] **Monitoring** — real dependency-checking `/health/ready`, `/metrics` (Prometheus format),
+      `prometheus` Compose service scraping it (Priority 1 Item 5). No Grafana/Sentry yet — each
+      needs a real external account/target (see `docs/runbooks/monitoring.md`).
 - [ ] **Logging** — real structured JSON, but stdout-only; no shipping/aggregation configured.
-- [ ] **Health Checks** — endpoints exist; `/health/ready` doesn't verify DB/Redis reachability.
+- [x] **Health Checks** — `/health/ready` verifies real DB/Redis(cache)/Redis(broker)
+      reachability with a bounded timeout each, live-verified (Priority 1 Item 5).
 - [ ] **Environment Variables** — `.env.example` templates exist for every service; real
       deployment still means hand-editing a `.env` on the host, no secrets manager.
 - [ ] **CI/CD** — backend test-only pipeline exists; no deploy step, no lint/security gate, no

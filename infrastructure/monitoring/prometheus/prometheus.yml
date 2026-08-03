@@ -1,0 +1,17 @@
+# Prometheus scrape configuration (Priority 1 Item 5, PROJECT_STATUS.md — "minimum monitoring").
+# Points at the Business API's own /metrics (interfaces/http/health.py), a hand-rolled
+# Prometheus-text-exposition endpoint (core/observability/metrics.py) — no prometheus-client
+# dependency, see that module's own docstring for why. Mounted into the `prometheus` service
+# (docker-compose.yml) at /etc/prometheus/prometheus.yml.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: raad-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          service: raad-backend

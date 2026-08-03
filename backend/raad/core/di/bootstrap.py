@@ -27,7 +27,9 @@ from raad.core.events.redis_streams import (
     RedisStreamsBrokerConsumer,
     RedisStreamsBrokerPort,
 )
+from raad.core.health.service import HealthCheckService
 from raad.core.ids.generator import IdGenerator, UlidGenerator
+from raad.core.observability.metrics import MetricsRegistry
 from raad.core.policies import SubscriptionAccessPolicy, VideoAccessPolicy
 from raad.core.security.login_rate_limiter import LoginRateLimiter
 from raad.core.security.password_hashing import PasswordHasher, Pbkdf2PasswordHasher
@@ -127,7 +129,17 @@ from raad.modules.platform_audit.infra.repositories import (
 
 def build_container(settings: Settings) -> Container:
     container = Container()
+    # Priority 1 Item 5 (PROJECT_STATUS.md, health checks): pre-declared here (rather than only
+    # inside their own `if settings.redis.url:`/`if settings.broker.url:` blocks below) so
+    # `HealthCheckService`'s construction at the very end of this function can reference them
+    # regardless of which combination of dependencies is actually configured.
+    latest_position_redis_client: Redis | None = None
+    broker_redis_client: Redis | None = None
     container.bind_singleton(Settings, settings)
+    # Priority 1 Item 5 (PROJECT_STATUS.md, "minimum monitoring") — always bound, no
+    # dependencies of its own; RequestLoggingMiddleware increments it on every request,
+    # `/metrics` (interfaces/http/health.py) renders it.
+    container.bind_singleton(MetricsRegistry, MetricsRegistry())
     container.bind_singleton(Clock, SystemClock())
     container.bind_singleton(PasswordHasher, Pbkdf2PasswordHasher())
     container.bind_singleton(
@@ -627,5 +639,19 @@ def build_container(settings: Settings) -> Container:
             container.bind_singleton(
                 OutboxPublisher, SqlOutboxPublisher(session_factory, broker)
             )
+
+    # HealthCheckService (Priority 1 Item 5) — always bound, referencing whichever of
+    # engine/latest_position_redis_client/broker_redis_client actually got constructed above
+    # (each independently optional); `container.try_resolve(AsyncEngine)` rather than a local
+    # variable since the DB engine, unlike the two Redis clients, is already bound to the
+    # container by the `if settings.db.url:` block earlier in this function.
+    container.bind_singleton(
+        HealthCheckService,
+        HealthCheckService(
+            engine=container.try_resolve(AsyncEngine),
+            redis_client=latest_position_redis_client,
+            broker_client=broker_redis_client,
+        ),
+    )
 
     return container

@@ -1422,3 +1422,55 @@ rotation, and the documented single-instance/no-HA scope decision — Phase 2 §
 already names Redis HA as a later-scale concern, not attempted this phase. 1203 unit tests + 10
 architecture-gate tests pass with zero regressions. Zero changes to any bounded context, RBAC/
 tenant-isolation code, or database migration.
+
+**Continuous completion program (2026-08-03).** The user directed all remaining Priority 1 items
+(5–9) be implemented back to back, without stopping for per-item approval, ending in one
+consolidated Production Readiness report — a mode change from the strict one-item-at-a-time
+cadence Items 1–4 followed. Each item below still gets its own architecture review →
+implementation → tests → live verification (wherever a real dependency exists) → docs →
+`PROJECT_STATUS.md`/this file update; only the between-items pause is removed.
+
+**Priority 1 Item 5 — Real health checks + minimum monitoring (complete).** Closed Known Issue
+#3: `/health/ready` previously only confirmed `Settings` had loaded, never touching the database
+or Redis — a broken DB connection would still report "ready", the worst failure mode for a
+readiness probe. New `HealthCheckService` (`core/health/service.py`) runs real,
+`asyncio.timeout`-bounded (3s) checks — `SELECT 1` for Postgres, `PING` for each of the two Redis
+clients (cache and broker, independently, matching Item 4's own DB-split) — always constructible
+so an unconfigured dependency reports `not_configured` rather than the service itself needing a
+null-check at the call site, the same "service always constructible, individual methods handle
+an unbound port" pattern `TrackingApplicationService` already established. Readiness policy: the
+database is mandatory (unconfigured or unreachable both fail); Redis/broker are only gating if
+actually configured, matching every other conditionally-bound Redis port's existing "fail loudly
+per-feature, don't crash the whole app" posture.
+
+**New `/metrics`, hand-rolled, no new Python dependency** (`core/observability/metrics.py`) — a
+purpose-built Prometheus-text-exposition renderer chosen over `prometheus-client` for the same
+reason `core/pagination`/`core/di` are hand-rolled rather than framework-based: the actual need
+(one counter, dependency gauges, a start-time gauge — no histograms/quantiles) doesn't justify a
+general-purpose library. `RequestLoggingMiddleware` (already observing every request/response
+pair for its own structured log line) increments `raad_http_requests_total` directly — no
+separate metrics middleware — labeled by the matched **route template**
+(`request.scope["route"].path`, populated by Starlette's own routing by the time `call_next`
+returns) rather than the raw request path, deliberately avoiding the unbounded-cardinality bug
+that labeling by raw path (one series per resource ID) would introduce.
+
+**Live-verified, not just unit-tested**: a real running `uvicorn` server against this sandbox's
+real, reachable Postgres and its genuinely-unreachable Redis produced exactly the designed
+`{"status":"not_ready","checks":{"database":"ok","redis":"down","broker":"down"}}` / HTTP 503
+response, and `/metrics` correctly accumulated real request counts with route-template labels
+(including a 404's raw-path fallback) across a live traffic sequence. A dedicated live
+integration test additionally proves `HealthCheckService` distinguishes a genuinely reachable
+Postgres host from a genuinely unreachable one (a real connection attempt to a nonexistent
+port, not a mock) — 1217 unit tests + 10 architecture-gate tests pass with zero regressions.
+
+**New `prometheus` Docker Compose service** (stock `prom/prometheus:v2.53.0`, no custom
+Dockerfile) scrapes `/metrics` via `infrastructure/monitoring/prometheus/prometheus.yml` — not
+published to a host port by default, matching every other non-`nginx` service's "don't expose
+more than the deployment needs" posture already established. **Grafana dashboards, Sentry error
+tracking, and OpenTelemetry tracing were deliberately not built this phase** — each needs a real
+external account/target (a live Prometheus instance with real traffic to design dashboard panels
+against; a real Sentry DSN; a service-to-service call graph OpenTelemetry would have something
+to trace) that this session cannot obtain or fabricate meaningfully, flagged explicitly in
+`docs/runbooks/monitoring.md` rather than shipped as dead/unverifiable code — the same "fail
+loudly, don't fake it" posture `PaymentProviderPort`/`VideoProviderPort` already establish.
+Zero changes to any bounded context, RBAC/tenant-isolation code, or database migration.
