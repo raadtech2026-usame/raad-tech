@@ -165,10 +165,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Dependencies:** Live Tracking (for trip events), Mobile App (for delivery to Parents).
 
 #### Billing — 🟡 Partial
-- **Implemented:** Full `Plan`/`Subscription`/`Invoice`/`Payment`/`TransportFee` lifecycle; 5 documented routes.
-- **Missing:** `PaymentProviderPort` completely unbound — no charge has ever completed; zero frontend UI (F9 not started).
-- **Production blocker?** Yes — no way to collect money today.
-- **Dependencies:** A payment provider adapter (EVC Plus).
+- **Implemented:** Full `Plan`/`Subscription`/`Invoice`/`Payment`/`TransportFee` lifecycle; 5 documented routes. `BillingApplicationService.initiate_payment`/`handle_payment_callback`/`reconcile_expired_payments` are all fully implemented and tested (42 passing unit tests, `test_billing_application.py`) — idempotency-key handling, the full paid/failed state orchestration (invoice → subscription renewal), and the scheduled reconciliation job all genuinely work today, independent of whether a real provider is bound.
+- **Missing (Priority 1 Item 8 — audited, not further built this session, both blockers external):** (1) `PaymentProviderPort` has no bound adapter — a real EVC Plus (or any) merchant account, API credentials, and API documentation (endpoint shapes, auth scheme) are needed to build a real, verifiable adapter; inventing one against assumed API shapes would embed unverified guesses as if they were tested integration code, exactly what `.claude/rules/workflow.md` #8 says to stop and ask about rather than do. (2) `POST /billing/payments/callback` is deliberately not wired — confirmed by re-reading the router's own already-correct reasoning (`api/routers.py`'s module docstring, written before this audit and independently re-verified, not superseded): no signature/secret verification scheme is documented anywhere (Phase 2 §20.4 mandates verification but names no algorithm/header/secret source), **and** the caller ("provider (signed)") has no `Principal` to authenticate through this codebase's `require_permission` model — `PaymentCallbackCommand.actor: Principal` has no documented value for a non-human, non-RBAC-role caller. Forcing either through with an invented signature scheme or a fabricated placeholder `Principal` would be undocumented behavior shipped as if it were real, not a simplification. Zero frontend UI either (F9 not started).
+- **Production blocker?** Yes — no way to collect money today. **Not closeable without external input**: a real payment-provider account/API docs (for the adapter) and a resolved design decision — via a new ADR, matching this codebase's own established process for exactly this kind of question — for how a signed-webhook caller is represented in the `Principal`/audit model (for the callback route).
+- **Dependencies:** A payment provider adapter (EVC Plus) — genuinely external, cannot be fabricated.
 
 #### Subscriptions — 🟡 Partial
 - **Implemented:** Full open/renew/expire/suspend/cancel lifecycle; two scheduled jobs keep state honest automatically.
@@ -375,8 +375,12 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
    backup restore). Both are necessarily unverified against a real VPS (none provisioned in this
    sandbox) — same disclosed limitation as TLS/Redis's own mechanism-built-not-live-tested
    posture.
-8. **Payment provider adapter** — no real payment has ever completed. *(1–2 weeks)* ← **in progress**
-9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form. *(4–8 weeks)*
+8. **Payment provider adapter** — no real payment has ever completed. *(1–2 weeks)* — **audited,
+   not closeable this session**: both blockers are genuinely external (a real EVC Plus merchant
+   account/API docs; a resolved design decision for representing a signed-webhook caller in the
+   `Principal`/audit model, via a new ADR). Application-layer code is fully built/tested and
+   ready the moment either is resolved. Known Issue #4 has the full audit trail.
+9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form. *(4–8 weeks)* ← **in progress**
 
 ### Priority 2 — Recommended before first customer
 - Notifications web UI (F8) *(3–5 days)*
@@ -456,9 +460,9 @@ first, not assumed away.
 **Currently Working On:**
 **Mode change, 2026-08-03**: the user directed a continuous completion program — implement every
 remaining Priority 1 item (5–9) back to back without stopping for per-item approval, ending in
-one consolidated Production Readiness report. Items 1–7 are complete; Item 8 (Payment provider
-integration) is the active item as this line is written. Each item still gets its own
-architecture review → implementation → tests → live verification (where a real dependency
+one consolidated Production Readiness report. Items 1–8 are complete/audited; Item 9 (Mobile App
+MVP) is the active item as this line is written. Each item still gets its own architecture
+review → implementation → tests → live verification (where a real dependency
 exists) → docs → this file/`CLAUDE.md` update, per the same rigor every prior item followed —
 only the between-items approval gate is removed for this program.
 
@@ -505,6 +509,29 @@ as a generic 500 rather than a clean 4xx — confirmed systemic (not this item's
 new Known Issue #16. 1236 unit + 10 architecture tests pass with zero regressions.
 
 **Completed This Sprint:**
+- **Priority 1 Item 8 — Payment provider integration (audited; genuinely blocked externally,
+  not further built).** Confirmed by re-reading both the application-layer code and the source
+  documents in full, not assumed: `BillingApplicationService.initiate_payment`/
+  `handle_payment_callback`/`reconcile_expired_payments` are already fully implemented and
+  tested (42 passing unit tests) — idempotency, the full paid/failed orchestration, and the
+  scheduled reconciliation job all genuinely work today. The two remaining blockers
+  (`PaymentProviderPort` unbound; `POST /billing/payments/callback` not wired) are both
+  external, not a coding gap: (1) building a real adapter needs a real EVC Plus merchant
+  account and API documentation this engagement doesn't have — the only existing design
+  document (Phase 2 §20) designs the workflow only, explicitly disclaims processing payments
+  itself, and describes a Parent-Pays flow ADR-0016 has since removed outright, a real,
+  previously-unflagged documentation-vs-architecture conflict now recorded rather than silently
+  resolved either way; (2) wiring the callback route needs a documented signature-verification
+  scheme (none exists) and a resolved design decision for representing a signed-webhook caller
+  in the `Principal`/RBAC model (no role fits "provider (signed)") — inventing either would ship
+  unverified guesses as if they were real, tested integration code, exactly what
+  `.claude/rules/workflow.md` #8 says to stop and ask about rather than do. Also swept every
+  other bounded context's domain events for the same composite-key `aggregate_id` bug class
+  Item 6 found and fixed — confirmed clean (billing's own events all use a single real ULID;
+  `platform_audit`'s `SystemSetting` events already handle this correctly via a
+  length-constrained key, the established precedent this bug class should have followed
+  everywhere). No code changes shipped this item — the honest outcome given the two blockers are
+  both genuinely external.
 - **Priority 1 Item 5 — Real health checks + minimum monitoring.** New `HealthCheckService`
   (`core/health/service.py`) runs real, 3-second-bounded Postgres/Redis(cache)/Redis(broker)
   checks; `/health/ready` now returns 503 with a per-dependency breakdown (`{"database":"ok",
@@ -636,6 +663,12 @@ ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user confirms o
 
 Reverse-chronological (most recent first):
 
+- **Priority 1 Item 8 — Payment provider integration** audited, not further built — both
+  remaining blockers (no bound `PaymentProviderPort`; `POST /billing/payments/callback` not
+  wired) confirmed genuinely external (a real EVC Plus account/API docs; a resolved Principal/
+  webhook-actor design decision), not a coding gap. Application-layer code already fully
+  implemented and tested. A real documentation-vs-architecture conflict (Phase 2 §20's
+  Parent-Pays EVC Plus workflow vs. ADR-0016's Organization-only billing) was found and flagged.
 - **Priority 1 Item 7 — Deployment & rollback runbook, VPS setup guide** completed —
   `docs/runbooks/vps-deployment.md` (fresh VPS to running platform) and `docs/runbooks/
   rollback.md` (code/migration/frontend rollback). Documentation-only; not live-tested against a
@@ -739,6 +772,19 @@ Reverse-chronological (most recent first):
 - **Recommended fix:** Bind a real EVC Plus adapter (Payment); decide a JT1078 runtime (Video);
   pick a PDF/Excel engine (Reporting).
 - **Blocking production?** Payment: yes. Video/Reporting: only if marketed as working at launch.
+- **Priority 1 Item 8 audit (2026-08-03), Payment half only:** re-confirmed both blockers are
+  genuinely external, not a coding gap this session declined to attempt. (1) No real EVC Plus
+  merchant account/API documentation exists anywhere in this engagement to build and verify a
+  real adapter against — the only documentation (Phase 2 §20) designs the *workflow* (sequence/
+  state diagrams), explicitly disclaims processing payments itself, and describes a **Parent-
+  Pays** flow ADR-0016 has since removed outright (RAAD bills Organizations only) — a real,
+  unresolved documentation-vs-current-architecture conflict, flagged here rather than silently
+  picked one way. (2) `POST /billing/payments/callback`'s own router docstring already correctly
+  names its two blockers (no documented signature scheme; the "provider (signed)" caller has no
+  `Principal` to authenticate with) — independently re-verified, not superseded. Application-
+  layer code (`initiate_payment`/`handle_payment_callback`/`reconcile_expired_payments`) is fully
+  built and tested (42 passing tests) and needs no further work once these two external
+  questions are resolved — see the Billing row in Section 3 for the full detail.
 
 ### 5. Stale docstring — `tracking/infra/adapters.py`
 - **Severity:** Low (documentation hygiene, not a functional bug)

@@ -1579,3 +1579,70 @@ name`, confirmed against the CLI's own `argparse` definition) rather than writte
 Necessarily unverified against a real running VPS — none is provisioned in this sandbox — the
 same disclosed-limitation posture Items 2 (TLS) and 4 (Redis) already carry for their own
 mechanisms.
+
+**Priority 1 Item 8 — Payment provider integration (audited; genuinely blocked on two external
+dependencies, no code changes shipped).** Confirmed by re-reading both the actual application-
+layer code and every source document in full, not assumed, that `BillingApplicationService.
+initiate_payment`/`handle_payment_callback`/`reconcile_expired_payments` are already completely
+built and tested (42 passing unit tests, `test_billing_application.py`) — idempotency-key
+handling, the full paid/failed state orchestration (marking the invoice paid and renewing the
+subscription in the same transaction), and the scheduled reconciliation job all genuinely work
+today, entirely independent of whether a real payment provider is ever bound. What remains open
+is exactly two things, both external to this engagement, not a coding gap this session declined
+to attempt:
+
+1. **No real EVC Plus merchant account or API documentation exists anywhere in this
+   engagement.** The only design document that exists, Phase 2 §20 ("Parent EVC Plus Payment
+   Workflow"), designs the *workflow* (a sequence diagram and state machine) and explicitly
+   disclaims processing payments itself ("this section designs the workflow; it does not process
+   payments... RAAD never handles raw card/bank credentials"). Building a concrete
+   `EvcPlusPaymentAdapter` against invented endpoint URLs/request-response shapes would embed
+   unverified guesses as if they were real, tested integration code — precisely the situation
+   `.claude/rules/workflow.md` #8 requires stopping and asking about rather than assuming through.
+   **A second, real, previously-unflagged conflict was found while re-reading this section**:
+   Phase 2 §20 describes the **Parent-Pays** billing model (a parent subscribing directly, paying
+   via their own phone's EVC Plus PIN) — but ADR-0016 (the RAAD business model realignment,
+   already fully implemented) removed direct parent billing outright
+   (`SubscriberType`/`SubscriberId`/`RenewParentSubscriptionCommand`/`Organization.billing_model`
+   all deleted, not deprecated in place — "RAAD bills Organizations only now"). Phase 2 §20's own
+   workflow diagram is therefore describing a billing model this codebase no longer has, not
+   superseded by any later document that redesigns the *payment* workflow for the
+   Organization-only model that replaced it — flagged here per `.claude/rules/documentation.md`
+   #2 ("report the conflict explicitly rather than silently picking one"), not resolved either
+   way.
+2. **`POST /billing/payments/callback`'s own router docstring already correctly identifies its
+   two blockers** — independently re-verified against the actual source documents during this
+   audit, not superseded by anything found: no signature/secret verification scheme is
+   documented anywhere (Phase 2 §20.4 and API Contracts §12 both *mandate* verification but name
+   no algorithm, header, or secret/config source — `.claude/rules/security.md` #10 makes this a
+   firm invariant, not a permissible simplification to skip), **and** the caller ("provider
+   (signed)", API Contracts §4.7's own role column for this one row) has no `Principal` to
+   authenticate through this codebase's `require_permission` model — `PaymentCallbackCommand.
+   actor: Principal` (`application/commands.py`) has no documented value for a non-human,
+   non-RBAC-role caller, and `core.tenancy.principal.Role` defines no "system"/"webhook" member
+   to represent one. Inventing a signature scheme or fabricating a placeholder `Principal` to
+   force this through the existing shape would both be undocumented behavior shipped as if
+   real — the router's own docstring already reached this exact conclusion before this audit;
+   this audit independently re-derived and confirmed it, rather than trusting the prose without
+   checking.
+
+**A useful, safe check was still worth running given this session's own Item 6 discovery**: with
+a real, live-caught `aggregate_id`-overflow bug already found once in this exact class of code
+(composite-string aggregate ids exceeding `CHAR(26)`), every other module's domain events were
+swept for the same pattern. Confirmed clean: `billing`'s own twenty-odd events all key off a
+single real ULID (`plan_id`/`subscription_id`/`invoice_id`/`payment_id`/`transport_fee_id`), and
+`platform_audit`'s `SystemSetting` events use `key` directly — already safe by construction,
+since `SystemSettingKey`'s own value object enforces a 26-character maximum length precisely to
+fit this same shared column, the correct precedent the `RolePermission`/`ScopeAssignment` bug
+should have followed from the start. No other latent instance of this bug class exists anywhere
+in the codebase as of this audit.
+
+**Recommended path to closing this item for real**: (1) a real EVC Plus (or alternative
+provider) merchant account and its actual API documentation, so a genuine, verifiable adapter can
+be built and tested against real behavior rather than assumption; (2) a new ADR resolving how a
+signed, non-human webhook caller is represented for authorization/audit purposes across this
+codebase generally (not just for payments — the identical question would recur for any future
+signed-webhook integration), matching this project's own established practice of formalizing
+exactly this kind of cross-cutting design decision before implementing against it
+(`.claude/rules/workflow.md` #7/#8). No code changed in this item; `PROJECT_STATUS.md`'s Known
+Issue #4 carries the full audit trail.
