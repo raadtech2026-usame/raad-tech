@@ -133,3 +133,7 @@ class RefreshTokenModel(UlidPrimaryKeyMixin, Base):
     )
     user_agent: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(VARCHAR(45), nullable=True)
+    #: ADR-0019: short, human-readable derivation of `user_agent` (`core.security.user_agent.
+    #: parse_device_label`), shown back to the user via `GET /auth/sessions` — matches
+    #: `parse_device_label`'s own `_MAX_LABEL_LENGTH = 64`.
+    device_label: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)

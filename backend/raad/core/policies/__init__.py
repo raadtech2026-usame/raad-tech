@@ -18,9 +18,13 @@ docstring for its full decision table/derivation and the documentation gaps flag
 way. `Policy`/`PolicyDecision` moved to `base.py` (this file no longer holds logic directly),
 matching `core/errors/__init__.py`/`core/tenancy/__init__.py`'s established thin-re-export-hub
 shape.
+
+**ADR-0019 addition:** `SessionLimitPolicy` (`session_limit.py`) — the concurrent-session-cap
+threshold check backing `iam.application.services.AuthApplicationService.login`/`refresh`.
 """
 
 from raad.core.policies.base import Policy, PolicyDecision
+from raad.core.policies.session_limit import SessionLimitPolicy
 from raad.core.policies.subscription_access import (
     AssignmentState,
     SubscriptionAccessPolicy,
@@ -32,6 +36,7 @@ __all__ = [
     "AssignmentState",
     "Policy",
     "PolicyDecision",
+    "SessionLimitPolicy",
     "SubscriptionAccessPolicy",
     "SubscriptionState",
     "VideoAccessPolicy",

@@ -122,6 +122,9 @@ def refresh_token_to_model(
     model.issued_at = _naive(token.issued_at)
     model.expires_at = _naive(token.expires_at)
     model.revoked_at = _naive(token.revoked_at)
+    model.user_agent = token.user_agent
+    model.ip_address = token.ip_address
+    model.device_label = token.device_label
     return model
 
 
@@ -133,4 +136,7 @@ def model_to_refresh_token(model: RefreshTokenModel) -> RefreshToken:
         issued_at=_aware_utc(model.issued_at),
         expires_at=_aware_utc(model.expires_at),
         revoked_at=_aware_utc(model.revoked_at),
+        user_agent=model.user_agent,
+        ip_address=model.ip_address,
+        device_label=model.device_label,
     )

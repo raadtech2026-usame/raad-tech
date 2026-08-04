@@ -60,6 +60,18 @@ class LogoutRequest(BaseModel):
     refresh_token: str
 
 
+class SessionResponse(BaseModel):
+    """ADR-0019: `GET /auth/sessions`. `ip_address` is already the masked form by the time it
+    reaches this schema (`SessionDTO`/`mask_ip_address`, `application/queries.py`) — never the
+    raw value."""
+
+    id: str
+    device_label: str | None
+    ip_address: str | None
+    issued_at: datetime
+    expires_at: datetime
+
+
 class UserResponse(BaseModel):
     id: str
     organization_id: str | None

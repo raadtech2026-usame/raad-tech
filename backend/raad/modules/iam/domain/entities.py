@@ -201,7 +201,20 @@ class User(_AggregateRoot):
             )
         )
 
-    def record_login(self, *, clock: Clock) -> None:
+    def record_login(
+        self,
+        *,
+        clock: Clock,
+        is_new_device: bool = False,
+        device_label: str | None = None,
+        ip_address: str | None = None,
+    ) -> None:
+        """ADR-0019: `is_new_device` is resolved by the caller (`AuthApplicationService.login`),
+        which already has DB access to compare this login's `(device_label, ip_address)` against
+        the user's currently-active sessions — a domain method must stay I/O-free, so it cannot
+        make that determination itself. When true, an additional `SuspiciousLoginDetected` event
+        is recorded alongside the normal `UserLoggedIn` one (visibility only, `security.md` #8 —
+        no automated block)."""
         now = clock.now()
         self.last_login_at = now
         self.updated_at = now
@@ -217,6 +230,16 @@ class User(_AggregateRoot):
                 occurred_at=now,
             )
         )
+        if is_new_device:
+            self._record(
+                iam_events.suspicious_login_detected(
+                    user_id=str(self.id),
+                    organization_id=self._org_id_value(),
+                    occurred_at=now,
+                    device_label=device_label,
+                    ip_address=ip_address,
+                )
+            )
 
     def is_locked(self, *, now: datetime) -> bool:
         """Priority 1 Item 3: pure computed check, no separate "unlock" write needed — once
@@ -348,6 +371,9 @@ class RefreshToken(_AggregateRoot):
         issued_at: datetime,
         expires_at: datetime,
         revoked_at: datetime | None = None,
+        user_agent: str | None = None,
+        ip_address: str | None = None,
+        device_label: str | None = None,
     ) -> None:
         super().__init__()
         validate_token_hash(token_hash)
@@ -359,6 +385,14 @@ class RefreshToken(_AggregateRoot):
         self.issued_at = issued_at
         self.expires_at = expires_at
         self.revoked_at = revoked_at
+        #: ADR-0019: captured from the issuing request for the first time — `user_agent`/
+        #: `ip_address` mirror `RefreshTokenModel`'s own already-existing (previously dead)
+        #: columns; `device_label` is the new, short, human-readable derivation of `user_agent`
+        #: shown back to the user via `GET /auth/sessions` (`core.security.user_agent.
+        #: parse_device_label`, computed by the caller — this entity just stores the result).
+        self.user_agent = user_agent
+        self.ip_address = ip_address
+        self.device_label = device_label
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, RefreshToken) and self.id == other.id
@@ -375,6 +409,9 @@ class RefreshToken(_AggregateRoot):
         token_hash: str,
         expires_at: datetime,
         clock: Clock,
+        user_agent: str | None = None,
+        ip_address: str | None = None,
+        device_label: str | None = None,
     ) -> "RefreshToken":
         issued_at = clock.now()
         token = cls(
@@ -383,6 +420,9 @@ class RefreshToken(_AggregateRoot):
             token_hash=token_hash,
             issued_at=issued_at,
             expires_at=expires_at,
+            user_agent=user_agent,
+            ip_address=ip_address,
+            device_label=device_label,
         )
         token._record(
             iam_events.refresh_token_issued(

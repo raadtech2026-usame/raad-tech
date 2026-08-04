@@ -264,6 +264,33 @@ class UserStateTransitionTests(unittest.TestCase):
         self.assertEqual(user.last_login_at, now)
         self.assertEqual(user.pull_domain_events()[0].event_type, "UserLoggedIn")
 
+    def test_record_login_without_is_new_device_records_only_user_logged_in(self) -> None:
+        """ADR-0019: `is_new_device` defaults `False` — the ordinary case."""
+        user = self.make_user()
+        user.record_login(clock=FixedClock(datetime(2026, 3, 1, tzinfo=timezone.utc)))
+        events = user.pull_domain_events()
+        self.assertEqual([e.event_type for e in events], ["UserLoggedIn"])
+
+    def test_record_login_with_is_new_device_also_records_suspicious_login(self) -> None:
+        """ADR-0019 Decision #6. The domain method itself never determines suspiciousness (it
+        has no I/O to compare against prior sessions) — `is_new_device` is resolved by the
+        caller and simply controls whether this second event is recorded."""
+        user = self.make_user()
+        user.record_login(
+            clock=FixedClock(datetime(2026, 3, 1, tzinfo=timezone.utc)),
+            is_new_device=True,
+            device_label="Chrome on Windows",
+            ip_address="203.0.113.10",
+        )
+        events = user.pull_domain_events()
+        self.assertEqual(
+            [e.event_type for e in events], ["UserLoggedIn", "SuspiciousLoginDetected"]
+        )
+        suspicious = events[1]
+        self.assertEqual(suspicious.payload["device_label"], "Chrome on Windows")
+        self.assertEqual(suspicious.payload["ip_address"], "203.0.113.10")
+        self.assertEqual(suspicious.payload["actor_id"], str(user.id))
+
     def test_change_password_hash_rejects_empty_hash(self) -> None:
         user = self.make_user()
         with self.assertRaises(DomainError):
@@ -531,6 +558,35 @@ class RefreshTokenTests(unittest.TestCase):
         events = token.pull_domain_events()
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].event_type, "RefreshTokenIssued")
+
+    def test_issue_defaults_device_fields_to_none(self) -> None:
+        token = RefreshToken.issue(
+            id=RefreshTokenId(VALID_TOKEN_ULID),
+            user_id=UserId(VALID_USER_ULID),
+            token_hash=VALID_TOKEN_HASH,
+            expires_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        self.assertIsNone(token.user_agent)
+        self.assertIsNone(token.ip_address)
+        self.assertIsNone(token.device_label)
+
+    def test_issue_stores_captured_device_fields(self) -> None:
+        """ADR-0019: `user_agent`/`ip_address` (previously dead ORM columns) and the new
+        `device_label` are captured from the issuing request for the first time."""
+        token = RefreshToken.issue(
+            id=RefreshTokenId(VALID_TOKEN_ULID),
+            user_id=UserId(VALID_USER_ULID),
+            token_hash=VALID_TOKEN_HASH,
+            expires_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            user_agent="Mozilla/5.0 (Windows NT 10.0) Chrome/120.0",
+            ip_address="203.0.113.10",
+            device_label="Chrome on Windows",
+        )
+        self.assertEqual(token.user_agent, "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0")
+        self.assertEqual(token.ip_address, "203.0.113.10")
+        self.assertEqual(token.device_label, "Chrome on Windows")
 
     def test_is_expired_true_after_expiry_time(self) -> None:
         token = RefreshToken(

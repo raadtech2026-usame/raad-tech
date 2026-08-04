@@ -78,11 +78,58 @@ implementation itself proceeds in milestones and is tracked here as each one lan
   to it — a narrow, explicit, flagged reversal of the Device Domain Overhaul's original
   zero-device-visibility posture for `org_admin`.
 - **Account-sharing protection**
-  (`docs/architecture/adr/0019-account-sharing-session-cap.md`): a concurrent-session cap on the
-  existing (previously dead) `refresh_tokens` table, configurable per role via the existing
-  `SystemSetting` store, plus self-service session list/revoke. Lightweight tier only, by
-  explicit user choice — no device fingerprinting/attestation this phase (blocked on the Flutter
-  app existing beyond its current empty scaffold).
+  (`docs/architecture/adr/0019-account-sharing-session-cap.md`, **landed**): a concurrent-session
+  cap on the existing (previously dead) `refresh_tokens` table, configurable per role via the
+  existing `SystemSetting` store, plus self-service session list/revoke. Lightweight tier only,
+  by explicit user choice — no device fingerprinting/attestation this phase (blocked on the
+  Flutter app existing beyond its current empty scaffold). **Implementation:** `core.policies.
+  session_limit.SessionLimitPolicy` (a pure threshold check, mirroring `SubscriptionAccessPolicy`'s
+  existing shape) is enforced inside `AuthApplicationService.login`/`.refresh` — after resolving
+  the caller's currently-active (non-revoked, non-expired) `RefreshToken`s, the oldest are
+  revoked until back under the cap; a refresh's own rotated token is deliberately excluded from
+  that count (a 1:1 replacement, not a net-new session — an early design mistake here would have
+  made every ordinary token refresh spuriously evict an unrelated session). **Two real gaps
+  between the ADR's own text and the actual repository, found by reading the code rather than
+  assumed from the ADR:** (1) `SystemSettingKey`'s enforced 26-character max
+  (`platform_audit/domain/value_objects.py`) cannot fit a per-role key like
+  `session_cap.regional_manager` — resolved by seeding a single row (`key="session_cap"`) whose
+  value is a `{role: max_sessions}` dict, rather than one row per role; `SystemSetting.value` was
+  already typed as an arbitrary dict, so this needed no schema change. (2) The ADR's own cited
+  precedent for "an org-configurable value already living in `SystemSetting`"
+  (ADR-0014's `approaching_distance_m`) turned out, on inspection, to actually be a column on
+  `Organization` itself, not a `SystemSetting` row at all — there was no existing example of one
+  module reading another's `SystemSetting` value live to copy the mechanism from. Resolved by
+  applying `.claude/rules/backend.md` #3 directly rather than inventing a new pattern: a new
+  `SessionCapPort` (`iam/application/ports.py`) that `iam` depends on only abstractly, with its
+  concrete adapter (`SystemSettingSessionCapAdapter`) placed in `core/di/session_cap_adapter.py`
+  — the composition root, not `iam` itself — specifically so it, not `iam`, is the thing reaching
+  into `platform_audit`'s application-layer facade
+  (`PlatformAuditApplicationService.get_system_setting`). `tests/architecture/
+  test_module_boundaries.py`'s existing Rule 1 gate (a module may reach another module's
+  application facade, never its `domain`/`infra`) independently confirms this design stays
+  clean — re-run after this change and still green, not just asserted clean by construction.
+  Previously-dead `refresh_tokens.user_agent`/`ip_address` columns (added before this ADR,
+  never populated) are captured for the first time; a new `device_label` column (migration
+  `4ef3fefb5e8d`, chained after `f3d8b1a4e6c2`) holds a short parsed label derived from
+  `user_agent` (`core/security/user_agent.py` — a small hand-rolled regex heuristic, no new
+  dependency per `.claude/rules/workflow.md` #1/#2; caught and fixed one real bug in its own
+  OS-detection ordering during testing: a genuine iOS Safari user-agent string contains the
+  literal compatibility token "like Mac OS X," so iOS/Android must be checked before the plainer
+  Mac OS X/Linux patterns they'd otherwise also match first). Self-service `GET`/
+  `DELETE /auth/sessions` return a **masked** `ip_address` (new `core/security/ip_mask.py`) —
+  never the raw value. A "login from an unrecognized device" signal (`SuspiciousLoginDetected`
+  domain event, visibility-only per `.claude/rules/security.md` #8, no automated block) is
+  deliberately skipped on a genuinely first-ever login — the ADR's own "not seen in the user's
+  last N sessions" leaves N undefined, and flagging the single most common, entirely legitimate
+  case (everyone's first login) would be noise, not signal; this is a flagged interpretive
+  choice, not silently invented. **Live-verified, not just unit-tested**: the migration
+  round-tripped (`upgrade`/`downgrade -1`/`upgrade`, `alembic check` clean); the *real*
+  `SystemSettingSessionCapAdapter` (not a test double) was confirmed reading the actual
+  migration-seeded values for every role against live Postgres; a live-Postgres integration test
+  proves a login past the cap revokes the oldest session in the database (re-fetched via a fresh
+  session/UoW, not just in-memory state) and that `GET`/`DELETE /auth/sessions` round-trip for
+  real. 1278 unit + 10 architecture-gate tests pass with zero regressions. Zero changes to any
+  other bounded context, RBAC, or tenant-isolation code.
 - **Platform Analytics dashboard**
   (`docs/architecture/adr/0020-platform-analytics-read-model.md`): a new, `platform_audit`-owned,
   cross-module (but never cross-module-DB-reading) stats read-model backing the Super Admin
@@ -98,9 +145,11 @@ billing deleted outright: `SubscriberType`/`SubscriberId`/`RenewParentSubscripti
 `SubscriptionAccessPolicy` (CR-1) amended per ADR-0006's own Amendment section; a migration
 drops `organizations.billing_model` and `subscriptions.subscriber_type`/`subscriber_id`).
 **Device inventory has landed** — see the Fleet Device bounded-context entry below for the full
-writeup. Session cap and platform analytics remain not-yet-implemented — each milestone's own
-entry will replace this line as it lands, following the same "update as it lands" discipline
-every other phase in this file already follows.
+writeup. **Session cap has landed** (2026-08-04, ADR-0019) — see this section's own
+"Account-sharing protection" bullet above for the full writeup. Platform analytics
+(ADR-0020) remains not-yet-implemented — its own entry will replace this line as it lands,
+following the same "update as it lands" discipline every other phase in this file already
+follows.
 
 ## Core Technical Domains
 

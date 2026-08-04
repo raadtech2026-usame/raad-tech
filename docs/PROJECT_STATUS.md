@@ -16,9 +16,9 @@ architecture; this file is the source of truth for progress and sequencing.
 |---|---|
 | **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
 | **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against) — every Priority 1 item touching the backend/web/infra surface (1–7) is complete and either live-verified or mechanism-complete-with-disclosed-testing-limits. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **Item 8 (Payment):** audited, genuinely blocked on a real provider account + a webhook-actor design decision — see Section 5. This is the end state of the continuous-completion program (user directive 2026-08-03) — see Section 15 for the full final report. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) just landed. ADR-0019 (Session Cap) and ADR-0020 (Platform Analytics) are next in the backend milestone sequence but **paused** pending Priority-1 production-readiness work (see Section 5's callout). Frontend: F0–F7 complete, F8–F13 not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. **All nine Priority 1 items are now closed or audited-and-documented** — see Section 2 for the full per-track breakdown and Section 15 for the consolidated final report. |
-| **Current git commit** | `11810b2` — `docs(billing): audit Priority 1 Item 8 - payment provider integration` (branch `main`; this Mobile App MVP work is uncommitted as this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
-| **Last updated** | 2026-08-03 |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) and **ADR-0019 (Account-Sharing Session Cap) have now landed**. ADR-0020 (Platform Analytics) is next in the backend milestone sequence — no longer "paused," since all nine Priority 1 items are closed. Frontend: F0–F7 complete, F8–F13 not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
+| **Current git commit** | `4bd244d` — `feat(mobile): implement Priority 1 Item 9 - Mobile App MVP (partial)` (branch `main`; ADR-0019's own commit is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Last updated** | 2026-08-04 |
 
 ---
 
@@ -43,7 +43,7 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 ### Identity & access
 
 #### Authentication — ✅ Complete
-- **Implemented:** From-scratch HS256 JWT service (`backend/raad/core/security/tokens.py`), refuses to boot in prod with an unset/default secret; refresh-token rotation on every `/auth/refresh`, hashed at rest; PBKDF2-HMAC-SHA256 password hashing (260k iterations); enforced password-strength policy. **Priority 1 Item 3:** account lockout (`User.record_failed_login`/`is_locked` — 5 failed attempts locks for 15 minutes, both configurable), fully live-verified against real Postgres and a real running server; IP-based login rate limiting (`RateLimitMiddleware` + `LoginRateLimiter`, Redis `INCR`+`EXPIRE` fixed window) with a live-verified fail-open path when Redis is unreachable — see Known Issue #14 for the one disclosed residual gap (counting logic itself untested against a real Redis server, no reachable instance in this sandbox).
+- **Implemented:** From-scratch HS256 JWT service (`backend/raad/core/security/tokens.py`), refuses to boot in prod with an unset/default secret; refresh-token rotation on every `/auth/refresh`, hashed at rest; PBKDF2-HMAC-SHA256 password hashing (260k iterations); enforced password-strength policy. **Priority 1 Item 3:** account lockout (`User.record_failed_login`/`is_locked` — 5 failed attempts locks for 15 minutes, both configurable), fully live-verified against real Postgres and a real running server; IP-based login rate limiting (`RateLimitMiddleware` + `LoginRateLimiter`, Redis `INCR`+`EXPIRE` fixed window) with a live-verified fail-open path when Redis is unreachable — see Known Issue #14 for the one disclosed residual gap (counting logic itself untested against a real Redis server, no reachable instance in this sandbox). **ADR-0019 (Account-Sharing Session Cap):** `SessionLimitPolicy` (`core/policies/session_limit.py`) enforced at both `login`/`refresh`, revoking the oldest non-revoked/non-expired `RefreshToken`(s) once a per-role cap is exceeded — a refresh's own rotated token is excluded from the count so an ordinary refresh never spuriously evicts an unrelated session. The cap is a single `platform_audit.SystemSetting` row (`key="session_cap"`, one `{role: max_sessions}` dict — a per-role key doesn't fit `SystemSettingKey`'s 26-char max, discovered while implementing, not assumed from the ADR text), read via a new `SessionCapPort`/`SystemSettingSessionCapAdapter` (`core/di/session_cap_adapter.py`) that reaches `platform_audit`'s application facade only — confirmed architecturally clean by the existing `tests/architecture/test_module_boundaries.py` gate, not just asserted. Previously-dead `refresh_tokens.user_agent`/`ip_address` columns are now populated; a new `device_label` column (migration `4ef3fefb5e8d`) holds a short parsed label (`core/security/user_agent.py`, no new dependency). Self-service `GET`/`DELETE /auth/sessions` (masked `ip_address` via `core/security/ip_mask.py`). A "login from an unrecognized device" signal (`SuspiciousLoginDetected`, visibility-only per `security.md` #8) is skipped on a genuinely first-ever login — flagged interpretive choice, the ADR's own "not seen in the last N sessions" leaves N undefined. Live-verified against real Postgres, including the real `SystemSettingSessionCapAdapter` reading the actual migration-seeded row per role (not just a test double).
 - **Missing:** Nothing blocking. Known Issue #14 (rate limiter's real-Redis round trip) is low-severity, non-blocking.
 - **Production blocker?** No longer.
 - **Dependencies:** None (foundational).
@@ -329,7 +329,7 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0016 | Organization-Only Billing Model | ✅ Complete |
 | 0017 | Organization Onboarding Orchestration | ✅ Complete |
 | 0018 | Device Inventory & Allocation | ✅ Complete |
-| 0019 | Account-Sharing Session Cap | ❌ Not Started |
+| 0019 | Account-Sharing Session Cap | ✅ Complete |
 | 0020 | Platform Analytics Read Model | ❌ Not Started |
 | 0021 | Tenant Scope Enforcement at Repository Layer | ✅ Complete |
 
@@ -337,10 +337,12 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 
 ## 5. Production Readiness Roadmap
 
-> **On ADR-0019 / ADR-0020:** both are well-specified and next in the backend milestone
-> sequence, but neither is a production blocker. Priority 1 below (backups, TLS, rate limiting,
-> mobile app, payments, monitoring) is where a real launch actually gets stopped — recommend
-> clearing Priority 1 first; ADR-0019/0020 slot into Priority 2.
+> **On ADR-0019 / ADR-0020:** neither was ever a production blocker — Priority 1 below (backups,
+> TLS, rate limiting, mobile app, payments, monitoring) is where a real launch actually gets
+> stopped, and it's now fully closed (see Section 15). **ADR-0019 (Session Cap) has since
+> landed** (2026-08-04, at the user's explicit request, ahead of its Priority 2 slot below) — see
+> Section 8/9 for the writeup. ADR-0020 (Platform Analytics) remains the one open Priority 2 item
+> from this pair.
 
 ### Priority 1 — Critical blockers before production
 1. ~~**Backups**~~ — ✅ **Complete** (2026-08-03). Local `pg_dump`/`pg_restore` mechanism, live-verified round trip, CI-covered, pluggable off-site hook (unconfigured — see Known Issue #12). `docs/runbooks/backup-and-restore.md`.
@@ -400,7 +402,8 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - Billing web UI (F9) *(3–5 days)*
 - Live video / JT1078 — only if video is part of the launch pitch *(3–6 weeks)*
 - Platform analytics (ADR-0020) *(1–2 weeks)*
-- Session cap (ADR-0019) *(3–5 days)*
+- ~~Session cap (ADR-0019)~~ — ✅ **Complete** (2026-08-04, done ahead of its Priority 2 slot at
+  the user's request — see Section 8/9).
 - Reporting renderer (PDF/Excel) *(~1 week)*
 - Load testing — plan exists, zero scripts *(3–5 days)*
 - Log shipping / aggregation *(1–2 days)*
@@ -439,7 +442,7 @@ whenever a phase finishes.**
 | 3 | Organizations | ✅ Complete | Onboarding (ADR-0017), billing cutover (ADR-0016), tenant isolation (ADR-0021). |
 | 4 | Tracking | 🟡 In Progress | GPS ingestion + live tracking backend complete; Redis hardened mechanism-wise (Priority 1 Item 4), not yet live-verified in this sandbox (Known Issue #15). |
 | 5 | Device Inventory | ✅ Complete | ADR-0018. |
-| 6 | ADR-0019 Session Cap | ⬜ Planned | Not started. |
+| 6 | ADR-0019 Session Cap | ✅ Complete | Concurrent-session cap, revoke-oldest, self-service `GET`/`DELETE /auth/sessions`. |
 | 7 | ADR-0020 Platform Analytics | ⬜ Planned | Not started. |
 | 8 | Flutter Mobile App | ⬜ Planned | 0% built — structural scaffold only. |
 | 9 | Video Platform | ⬜ Planned | JT1078, 0% built — runtime not yet decided. |
@@ -471,12 +474,57 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — the continuous-completion program (user directive 2026-08-03) has reached the end
-of the Priority 1 roadmap.** All nine items are closed, audited, or built to the honest limit of
-what this session/sandbox could verify — see Section 15 for the full final report. Next actual
-implementation session should read Section 15 first, then decide with the user whether to
-pursue Item 8/9's remaining external-dependency work (a real payment account, a real Flutter
-build environment) or move to Priority 2/ADR-0019/ADR-0020.
+**Nothing — ADR-0019 (Account-Sharing Session Cap) just landed (2026-08-04).** A review session
+(this same date) read this file + `CLAUDE.md`, verified the Priority 1 list against the actual
+repo (confirming all nine items still closed, and catching two stale doc spots — Section 2's
+Mobile row and the top-of-file commit pointer, both still needing a follow-up correction, not
+yet done), and recommended Known Issue #17 (self-scoped Parent/Driver identity resolution) as
+the next actionable, non-externally-blocked work. The user instead redirected to ADR-0019 — a
+Roadmap Priority (Section 6, Phase 6) item, not a Priority 1 blocker, which is the user's call to
+make. Implemented via a reviewed plan (per this project's own `.claude/rules/workflow.md` #8
+discipline for anything touching business logic), not freelanced.
+
+**ADR-0019 — Account-Sharing Session Cap.** `SessionLimitPolicy` (`core/policies/
+session_limit.py`) — a pure threshold check mirroring `SubscriptionAccessPolicy`'s existing
+shape — enforced at both `AuthApplicationService.login`/`.refresh`: after resolving the caller's
+current active (non-revoked, non-expired) `RefreshToken`s, revokes the oldest ones until back
+under a per-role cap. Refresh rotation deliberately excludes the token being rotated from the
+count (a 1:1 replacement, not a net-new session) — an early design check that, if missed, would
+have made every ordinary token refresh spuriously evict an unrelated session. **Two real gaps
+between the ADR's own text and the actual repo, found by reading the code rather than assumed
+from the ADR:** (1) `SystemSettingKey`'s enforced 26-character max (`platform_audit/domain/
+value_objects.py`) cannot fit a per-role key like `session_cap.regional_manager` — resolved by
+seeding one row (`key="session_cap"`) whose value is a `{role: max_sessions}` dict instead of one
+row per role. (2) The ADR's own cited precedent for "an org-configurable value living in
+`SystemSetting`" (ADR-0014's `approaching_distance_m`) turned out, on inspection, to actually be
+a column on `Organization` itself, not a `SystemSetting` row at all — there was no existing
+example of one module reading another's `SystemSetting` value live to copy from. Resolved by
+applying `.claude/rules/backend.md` #3 directly: a new `SessionCapPort` (`iam/application/
+ports.py`) that `iam` depends on abstractly, with its concrete adapter
+(`SystemSettingSessionCapAdapter`, `core/di/session_cap_adapter.py`) living in `core/di/` — the
+composition root — specifically so it, not `iam` itself, is the thing reaching into
+`platform_audit`'s application facade. `tests/architecture/test_module_boundaries.py`'s existing
+Rule 1 gate (module may reach another module's application facade, never its `domain`/`infra`)
+independently confirms this stays clean, re-run and still green. Previously-dead `refresh_tokens.
+user_agent`/`ip_address` columns are populated for the first time; a new `device_label` column
+(migration `4ef3fefb5e8d`, chained after `f3d8b1a4e6c2`) holds a short parsed label (`core/
+security/user_agent.py` — a small hand-rolled heuristic, no new dependency; caught and fixed one
+real bug in its own OS-detection order during testing: a genuine iOS Safari UA string contains
+the literal compatibility token "like Mac OS X," so iOS/Android must be checked before the plain
+Mac OS X/Linux patterns they'd otherwise also match). Self-service `GET`/`DELETE /auth/sessions`
+(masked `ip_address` via a new `core/security/ip_mask.py`). A "login from an unrecognized
+device" signal (`SuspiciousLoginDetected` event, visibility-only per `security.md` #8, no
+automated block) is deliberately skipped on a genuinely first-ever login — the ADR's own "not
+seen in the user's last N sessions" leaves N undefined, and flagging the single most common,
+entirely legitimate case (everyone's first login) would be noise, not signal. **Live-verified**:
+migration round-tripped (`upgrade`/`downgrade -1`/`upgrade`, `alembic check` clean); the real
+`SystemSettingSessionCapAdapter` (not a test double) confirmed reading the actual migration-
+seeded values per role against live Postgres; a live-Postgres integration test proves login past
+the cap revokes the oldest session in the database (re-fetched via a fresh session, not just
+in-memory state) and that `GET`/`DELETE /auth/sessions` round-trip for real. 1278 unit + 10
+architecture-gate tests pass with zero regressions (254 integration tests pass; the only 6
+failures are the pre-existing, already-disclosed no-reachable-Redis gap, unrelated to this
+change). Zero changes to any other bounded context, RBAC, or tenant-isolation code.
 
 **Priority 1 Item 9 — Mobile App MVP (partial — the honest limit of this session).** Built
 against the already-approved `docs/architecture/frontend-flutter-master-roadmap.md` §5 (Phases
@@ -550,6 +598,7 @@ as a generic 500 rather than a clean 4xx — confirmed systemic (not this item's
 new Known Issue #16. 1236 unit + 10 architecture tests pass with zero regressions.
 
 **Completed This Sprint:**
+- **ADR-0019 — Account-Sharing Session Cap.** Full writeup above, under "Currently Working On."
 - **Priority 1 Item 8 — Payment provider integration (audited; genuinely blocked externally,
   not further built).** Confirmed by re-reading both the application-layer code and the source
   documents in full, not assumed: `BillingApplicationService.initiate_payment`/
@@ -692,11 +741,14 @@ new Known Issue #16. 1236 unit + 10 architecture tests pass with zero regression
   Project Control Center (Sections 2, 6, 7, 12, 13).
 
 **Next Task:**
-**Recommended: Priority 1 Item 5 — Real health checks + minimum monitoring.** `/health/ready`'s
-own docstring already admits it doesn't check DB/Redis reachability — closing this is now also
-the natural place to verify Item 4's hardened Redis config actually works once a real dependency
-check is wired in. Per Section 14's rules, the next implementation session should not resume
-ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user confirms or redirects.
+**This note was stale** (left over from before Priority 1 Items 5–9 and ADR-0019 all landed —
+Section 15 has the Priority 1 program's own final report). Current recommendation, per the
+2026-08-04 review session: **Known Issue #17** (self-scoped Parent/Driver identity resolution —
+`GET /me/students`-shaped work, a short ADR first per `.claude/rules/workflow.md` #8) is the
+highest-priority remaining item that isn't blocked on an external dependency this engagement
+can't obtain. ADR-0020 (Platform Analytics) is the next well-specified backend milestone item if
+the user prefers roadmap sequencing over the Known Issue. Per Section 14's rules, don't start
+either without the user's confirmation.
 
 ---
 
@@ -704,6 +756,13 @@ ADR-0019/ADR-0020 or skip ahead in the Priority 1 list until the user confirms o
 
 Reverse-chronological (most recent first):
 
+- **ADR-0019 — Account-Sharing Session Cap** completed — `SessionLimitPolicy` enforced at
+  login/refresh (revoke-oldest once a per-role cap, read from a new `platform_audit.
+  SystemSetting` row via a new `SessionCapPort`/`SystemSettingSessionCapAdapter`, is exceeded),
+  `refresh_tokens.device_label` (migration `4ef3fefb5e8d`), self-service `GET`/
+  `DELETE /auth/sessions`, a visibility-only "unrecognized device" signal. Live-verified against
+  real Postgres, including the real adapter reading the real seeded row. See Section 8 for the
+  full writeup.
 - **Priority 1 Item 9 — Mobile App MVP** partially built — Phase M0 (Foundation) and M2
   (Driver) code-complete against the approved Flutter roadmap; M3 (Parent)'s live-tracking
   screen code-complete, its children-list blocked on a real, newly-discovered backend gap

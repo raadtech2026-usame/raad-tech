@@ -22,11 +22,18 @@ import uuid
 from datetime import timedelta
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from raad.core.audit.writer import AuditWriter
 from raad.core.config.settings import LockoutSettings, get_settings
 from raad.core.db.engine import build_engine, build_session_factory
-from raad.core.errors.exceptions import AccountLockedError, AuthenticationError, ValidationError
+from raad.core.di.bootstrap import build_container
+from raad.core.errors.exceptions import (
+    AccountLockedError,
+    AuthenticationError,
+    NotFoundError,
+    ValidationError,
+)
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
@@ -35,7 +42,9 @@ from raad.core.security.tokens import JwtTokenService
 from raad.core.tenancy.principal import Role
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import Clock, SystemClock
-from raad.modules.iam.application.commands import LoginCommand
+from raad.modules.iam.application.commands import LoginCommand, RevokeSessionCommand
+from raad.modules.iam.application.ports import SessionCapPort
+from raad.modules.iam.application.queries import ListSessionsQuery
 from raad.modules.iam.application.services import AuthApplicationService
 from raad.modules.iam.domain.entities import RefreshToken, User
 from raad.modules.iam.domain.value_objects import (
@@ -59,6 +68,19 @@ class _FixedClock(Clock):
 
     def set(self, now) -> None:  # type: ignore[no-untyped-def]
         self._now = now
+
+
+class _FixedSessionCapPort(SessionCapPort):
+    """ADR-0019. A controlled, per-test cap value — mirrors `LockoutSettings(max_attempts=3)`'s
+    own "deliberately tight, not the production default" reasoning for fast, deterministic
+    tests. `SessionCapAdapterLiveSettingTests` below separately proves the *real*
+    `SystemSettingSessionCapAdapter` reads the actual migration-seeded row correctly."""
+
+    def __init__(self, max_sessions: int = 100) -> None:
+        self._max_sessions = max_sessions
+
+    async def get_max_sessions(self, *, role: Role) -> int:
+        return self._max_sessions
 
 
 def _db_available() -> bool:
@@ -648,6 +670,7 @@ class AccountLockoutRepositoryTests(unittest.IsolatedAsyncioTestCase):
             id_generator=self.id_generator,
             token_service=token_service,
             password_hasher=self.hasher,
+            session_cap_port=_FixedSessionCapPort(),
             lockout_settings=LockoutSettings(
                 max_failed_attempts=max_attempts,
                 lockout_duration_minutes=lockout_minutes,
@@ -792,6 +815,197 @@ class AccountLockoutRepositoryTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(reloaded.failed_login_attempts, 0)
         self.assertIsNone(reloaded.locked_until)
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class SessionCapRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0019: the full concurrent-session-cap round trip against a real, migrated Postgres
+    database — `AuthApplicationService.login()`/`.refresh()`/`.list_sessions()`/
+    `.revoke_session()` driven by the real `SqlAlchemyIamUnitOfWork`, proving the new
+    `refresh_tokens.device_label` column (migration `4ef3fefb5e8d`) round-trips and that
+    eviction/self-service actually persist, not just that the in-memory logic is consistent."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.hasher = Pbkdf2PasswordHasher(iterations=1_000)
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_ids:
+                await conn.execute(
+                    text("DELETE FROM refresh_tokens WHERE user_id = ANY(:ids)"),
+                    {"ids": self._created_ids},
+                )
+                await conn.execute(
+                    text("DELETE FROM users WHERE id = ANY(:ids)"),
+                    {"ids": self._created_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyIamUnitOfWork:
+        return SqlAlchemyIamUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    def _make_service(
+        self, clock: Clock, *, max_sessions: int = 100
+    ) -> AuthApplicationService:
+        token_service = JwtTokenService(
+            secret_key="integration-test-secret-not-for-production",
+            algorithm="HS256",
+            access_token_ttl_seconds=900,
+            refresh_token_ttl_seconds=1_209_600,
+            clock=clock,
+        )
+        return AuthApplicationService(
+            clock=clock,
+            id_generator=self.id_generator,
+            token_service=token_service,
+            password_hasher=self.hasher,
+            session_cap_port=_FixedSessionCapPort(max_sessions=max_sessions),
+        )
+
+    async def _seed_active_user(self, *, password: str) -> UserId:
+        async with self._new_uow() as uow:
+            user = User.invite(
+                id=UserId(self.id_generator.new_id()),
+                organization_id=None,
+                role=Role.FOUNDER,
+                email=Email(f"session-cap-live-{self.tag}@example.com"),
+                phone=None,
+                full_name=f"Session Cap Live Test {self.tag}",
+                clock=SystemClock(),
+            )
+            user.activate(clock=SystemClock())
+            user.change_password_hash(self.hasher.hash(password), clock=SystemClock())
+            uow.users.add(user)
+            uow.record_events(user.pull_domain_events())
+            await uow.commit()
+            self._created_ids.append(str(user.id))
+            return user.id
+
+    async def _seed_refresh_token(
+        self, *, user_id: UserId, issued_at, expires_at
+    ) -> RefreshTokenId:
+        token = RefreshToken(
+            id=RefreshTokenId(self.id_generator.new_id()),
+            user_id=user_id,
+            token_hash=hashlib.sha256(uuid.uuid4().hex.encode()).hexdigest(),
+            issued_at=issued_at,
+            expires_at=expires_at,
+        )
+        async with self._new_uow() as uow:
+            uow.refresh_tokens.add(token)
+            await uow.commit()
+        return token.id
+
+    async def test_login_past_the_cap_revokes_the_oldest_session_in_the_database(
+        self,
+    ) -> None:
+        now = SystemClock().now()
+        user_id = await self._seed_active_user(password="correct-password")
+        oldest_id = await self._seed_refresh_token(
+            user_id=user_id, issued_at=now - timedelta(days=2), expires_at=now + timedelta(days=12)
+        )
+        newer_id = await self._seed_refresh_token(
+            user_id=user_id, issued_at=now - timedelta(days=1), expires_at=now + timedelta(days=13)
+        )
+        service = self._make_service(_FixedClock(now), max_sessions=2)
+
+        await service.login(
+            LoginCommand(
+                email=f"session-cap-live-{self.tag}@example.com",
+                phone=None,
+                plain_password="correct-password",
+            ),
+            uow=self._new_uow(),
+        )
+
+        # Re-fetched via a brand-new `SqlAlchemyIamUnitOfWork`/session (not the one `login()`
+        # itself used) — proves the revocation is real, persisted database state, not just an
+        # in-memory side effect of the call above.
+        async with self._new_uow() as uow:
+            oldest = await uow.refresh_tokens.get(oldest_id)
+            newer = await uow.refresh_tokens.get(newer_id)
+        self.assertTrue(oldest.is_revoked)
+        self.assertFalse(newer.is_revoked)
+
+    async def test_list_and_revoke_sessions_round_trip_through_real_postgres(self) -> None:
+        now = SystemClock().now()
+        user_id = await self._seed_active_user(password="correct-password")
+        token_id = await self._seed_refresh_token(
+            user_id=user_id, issued_at=now - timedelta(hours=1), expires_at=now + timedelta(days=14)
+        )
+        service = self._make_service(_FixedClock(now))
+
+        sessions = await service.list_sessions(
+            ListSessionsQuery(user_id=str(user_id)), uow=self._new_uow()
+        )
+        self.assertEqual([s.id for s in sessions], [str(token_id)])
+
+        await service.revoke_session(
+            RevokeSessionCommand(user_id=str(user_id), session_id=str(token_id)),
+            uow=self._new_uow(),
+        )
+
+        sessions_after = await service.list_sessions(
+            ListSessionsQuery(user_id=str(user_id)), uow=self._new_uow()
+        )
+        self.assertEqual(sessions_after, [])
+
+    async def test_revoke_session_for_another_user_raises_not_found_via_real_postgres(
+        self,
+    ) -> None:
+        now = SystemClock().now()
+        owner_id = await self._seed_active_user(password="correct-password")
+        token_id = await self._seed_refresh_token(
+            user_id=owner_id, issued_at=now - timedelta(hours=1), expires_at=now + timedelta(days=14)
+        )
+        service = self._make_service(_FixedClock(now))
+
+        with self.assertRaises(NotFoundError):
+            await service.revoke_session(
+                RevokeSessionCommand(user_id="01J8Z3K9G6X8YV5T4N2R7QW3ZZ", session_id=str(token_id)),
+                uow=self._new_uow(),
+            )
+
+        async with self._new_uow() as uow:
+            reloaded = await uow.refresh_tokens.get(token_id)
+        self.assertFalse(reloaded.is_revoked)
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class SessionCapAdapterLiveSettingTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0019: proves the *real* `SystemSettingSessionCapAdapter` (`core/di/
+    session_cap_adapter.py`) reads the actual migration-seeded `session_cap` `system_settings`
+    row (migration `4ef3fefb5e8d`) via the real DI-wired `PlatformAuditApplicationService` —
+    the one genuinely new cross-module read this ADR introduces, and the one piece
+    `SessionCapRepositoryTests` above deliberately doesn't exercise (it uses
+    `_FixedSessionCapPort` for precise, controlled cap values instead)."""
+
+    async def test_seeded_defaults_are_readable_per_role(self) -> None:
+        settings = get_settings()
+        container = build_container(settings)
+        try:
+            port = container.resolve(SessionCapPort)
+
+            self.assertEqual(await port.get_max_sessions(role=Role.PARENT), 3)
+            self.assertEqual(await port.get_max_sessions(role=Role.DRIVER), 3)
+            self.assertEqual(await port.get_max_sessions(role=Role.ORG_ADMIN), 10)
+            self.assertEqual(await port.get_max_sessions(role=Role.FOUNDER), 20)
+        finally:
+            # `build_container` binds its own `AsyncEngine` singleton (`core/di/bootstrap.py`) —
+            # every other engine this file creates is disposed in `asyncTearDown`; this test
+            # builds its own container ad hoc (the only one in this file), so it owns disposing
+            # it too, rather than leaking a connection pool.
+            await container.resolve(AsyncEngine).dispose()
 
 
 if __name__ == "__main__":

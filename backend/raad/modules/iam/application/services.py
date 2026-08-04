@@ -27,9 +27,12 @@ from raad.core.errors.exceptions import (
     NotFoundError,
     ValidationError,
 )
+from raad.core.events.base import DomainEvent
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
+from raad.core.policies.session_limit import SessionLimitPolicy
 from raad.core.security.claims import TokenType
+from raad.core.security.user_agent import parse_device_label
 from raad.core.tenancy.principal import Role
 from raad.core.security.password_hashing import PasswordHasher
 from raad.core.security.password_policy import PasswordPolicy
@@ -49,13 +52,17 @@ from raad.modules.iam.application.commands import (
     RefreshAccessTokenCommand,
     ResetPasswordToTemporaryCommand,
     RevokeRolePermissionCommand,
+    RevokeSessionCommand,
 )
-from raad.modules.iam.application.ports import IamUnitOfWork
+from raad.modules.iam.application.ports import IamUnitOfWork, SessionCapPort
 from raad.modules.iam.application.queries import (
     AuthResultDTO,
     GetUserByIdQuery,
+    ListSessionsQuery,
     ListUsersQuery,
+    SessionDTO,
     UserDTO,
+    refresh_token_to_session_dto,
     user_to_dto,
 )
 from raad.modules.iam.application.validators import (
@@ -362,12 +369,14 @@ class AuthApplicationService:
         id_generator: IdGenerator,
         token_service: TokenService,
         password_hasher: PasswordHasher,
+        session_cap_port: SessionCapPort,
         lockout_settings: LockoutSettings | None = None,
     ) -> None:
         self._clock = clock
         self._id_generator = id_generator
         self._token_service = token_service
         self._password_hasher = password_hasher
+        self._session_cap_port = session_cap_port
         # Defaulted, not required — every existing/future caller that constructs this service
         # without an explicit LockoutSettings (e.g. a test fixture predating Priority 1 Item 3)
         # still gets the documented default policy rather than a constructor break.
@@ -412,7 +421,43 @@ class AuthApplicationService:
             if user.status is not UserStatus.ACTIVE:
                 raise AuthenticationError("Account is not active.")
 
-            user.record_login(clock=self._clock)
+            # ADR-0019: resolved before `record_login`/token issuance, using data already
+            # available at this point — no extra query beyond what the cap check itself needs.
+            device_label = parse_device_label(command.user_agent)
+            existing_sessions = [
+                t
+                for t in await uow.refresh_tokens.list_by_user(user.id)
+                if not t.is_expired(clock=self._clock)
+            ]
+            # Flagged interpretive choice: "not seen in the user's last N sessions" (ADR-0019
+            # Decision #6) is only meaningful once there *is* session history to compare
+            # against — a brand-new user's very first login has none, so treating it as
+            # "suspicious" would flag the single most common, entirely legitimate case. Reusing
+            # the same `existing_sessions` list already fetched for the cap check below (no
+            # extra query, no separate "last N" history concept the ADR itself never defines).
+            is_new_device = bool(existing_sessions) and not any(
+                t.device_label == device_label and t.ip_address == command.ip_address
+                for t in existing_sessions
+            )
+
+            revoked_events: list[DomainEvent] = []
+            max_sessions = await self._session_cap_port.get_max_sessions(role=user.role)
+            decision = SessionLimitPolicy().evaluate(
+                active_session_count=len(existing_sessions) + 1,
+                max_sessions=max_sessions,
+            )
+            if not decision.allowed:
+                excess = len(existing_sessions) + 1 - max_sessions
+                for stale in sorted(existing_sessions, key=lambda t: t.issued_at)[:excess]:
+                    stale.revoke(clock=self._clock)
+                    revoked_events += stale.pull_domain_events()
+
+            user.record_login(
+                clock=self._clock,
+                is_new_device=is_new_device,
+                device_label=device_label,
+                ip_address=command.ip_address,
+            )
             token_pair = self._token_service.issue_token_pair(
                 subject=str(user.id),
                 role=user.role,
@@ -430,10 +475,15 @@ class AuthApplicationService:
                 token_hash=_hash_refresh_token(token_pair.refresh_token),
                 expires_at=refresh_claims.expires_at,
                 clock=self._clock,
+                user_agent=command.user_agent,
+                ip_address=command.ip_address,
+                device_label=device_label,
             )
             uow.refresh_tokens.add(refresh_entity)
             uow.record_events(
-                user.pull_domain_events() + refresh_entity.pull_domain_events()
+                user.pull_domain_events()
+                + revoked_events
+                + refresh_entity.pull_domain_events()
             )
             await uow.commit()
             return AuthResultDTO(
@@ -470,6 +520,33 @@ class AuthApplicationService:
                 raise AuthenticationError("Account is not active.")
 
             stored.revoke(clock=self._clock)
+
+            # ADR-0019: cap enforcement applies to refresh too ("At POST /auth/login and POST
+            # /auth/refresh... after issuing a new RefreshToken"), but rotation is a 1:1
+            # replacement, not a net-new session — `stored` (already revoked above, in-memory)
+            # is excluded from the count, otherwise every ordinary refresh would spuriously look
+            # like "+1 session" and could evict a legitimate, unrelated session. Deliberately no
+            # `is_new_device`/suspicious-login check here: Decision #6 names "a login," and a
+            # background token refresh (typically silent/automatic) isn't a user-facing sign-in
+            # event the way `login()` is — a flagged interpretive scoping choice.
+            device_label = parse_device_label(command.user_agent)
+            existing_sessions = [
+                t
+                for t in await uow.refresh_tokens.list_by_user(user.id)
+                if t.id != stored.id and not t.is_expired(clock=self._clock)
+            ]
+            revoked_events: list[DomainEvent] = []
+            max_sessions = await self._session_cap_port.get_max_sessions(role=user.role)
+            decision = SessionLimitPolicy().evaluate(
+                active_session_count=len(existing_sessions) + 1,
+                max_sessions=max_sessions,
+            )
+            if not decision.allowed:
+                excess = len(existing_sessions) + 1 - max_sessions
+                for stale in sorted(existing_sessions, key=lambda t: t.issued_at)[:excess]:
+                    stale.revoke(clock=self._clock)
+                    revoked_events += stale.pull_domain_events()
+
             new_pair = self._token_service.issue_token_pair(
                 subject=str(user.id),
                 role=user.role,
@@ -484,10 +561,15 @@ class AuthApplicationService:
                 token_hash=_hash_refresh_token(new_pair.refresh_token),
                 expires_at=new_claims.expires_at,
                 clock=self._clock,
+                user_agent=command.user_agent,
+                ip_address=command.ip_address,
+                device_label=device_label,
             )
             uow.refresh_tokens.add(new_refresh_entity)
             uow.record_events(
-                stored.pull_domain_events() + new_refresh_entity.pull_domain_events()
+                stored.pull_domain_events()
+                + revoked_events
+                + new_refresh_entity.pull_domain_events()
             )
             await uow.commit()
             return AuthResultDTO(
@@ -508,6 +590,32 @@ class AuthApplicationService:
                 return
             stored.revoke(clock=self._clock)
             uow.record_events(stored.pull_domain_events())
+            await uow.commit()
+
+    async def list_sessions(
+        self, query: ListSessionsQuery, *, uow: IamUnitOfWork
+    ) -> list[SessionDTO]:
+        """ADR-0019: `GET /auth/sessions`. Newest-first — no document specifies ordering (the
+        same flagged, no-document-specifies-it choice `GET /notifications` already established
+        for its own default ordering)."""
+        async with uow:
+            tokens = await uow.refresh_tokens.list_by_user(UserId(query.user_id))
+            active = [t for t in tokens if not t.is_expired(clock=self._clock)]
+            active.sort(key=lambda t: t.issued_at, reverse=True)
+            return [refresh_token_to_session_dto(t) for t in active]
+
+    async def revoke_session(
+        self, command: RevokeSessionCommand, *, uow: IamUnitOfWork
+    ) -> None:
+        """ADR-0019: `DELETE /auth/sessions/{id}` — the "secure device replacement flow." Never
+        a 403 on ownership mismatch (`NotFoundError` instead) — this codebase's established
+        404-over-403 posture for "don't confirm existence of another principal's data."""
+        async with uow:
+            token = await uow.refresh_tokens.get(RefreshTokenId(command.session_id))
+            if token is None or str(token.user_id) != command.user_id:
+                raise NotFoundError(f"Session {command.session_id} not found.")
+            token.revoke(clock=self._clock)
+            uow.record_events(token.pull_domain_events())
             await uow.commit()
 
     @staticmethod

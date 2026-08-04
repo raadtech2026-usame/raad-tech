@@ -88,16 +88,37 @@ class LoginCommand:
     email: str | None
     phone: str | None
     plain_password: str
+    #: ADR-0019: extracted by the router from the raw HTTP request (`User-Agent` header, the
+    #: same `x-real-ip`-then-`request.client.host` idiom `RateLimitMiddleware` already
+    #: establishes) — never resolved here, keeping this application layer framework-free.
+    user_agent: str | None = None
+    ip_address: str | None = None
 
 
 @dataclass(frozen=True)
 class RefreshAccessTokenCommand:
     refresh_token: str
+    #: ADR-0019: see `LoginCommand`'s identical fields — refresh also issues a new
+    #: `RefreshToken` (rotation), so the same session-cap enforcement and device capture apply.
+    user_agent: str | None = None
+    ip_address: str | None = None
 
 
 @dataclass(frozen=True)
 class LogoutCommand:
     refresh_token: str
+
+
+@dataclass(frozen=True)
+class RevokeSessionCommand:
+    """ADR-0019: `DELETE /auth/sessions/{id}`. `user_id` is always the caller's own — the
+    application service verifies the target `RefreshToken.user_id` matches it before revoking,
+    raising `NotFoundError` (never `AuthorizationError`) on any mismatch, the same 404-over-403
+    posture this codebase already uses everywhere else for "don't confirm existence of another
+    principal's data"."""
+
+    user_id: str
+    session_id: str
 
 
 @dataclass(frozen=True)

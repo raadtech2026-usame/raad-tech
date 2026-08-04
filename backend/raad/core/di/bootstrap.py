@@ -19,6 +19,7 @@ from raad.core.config.settings import Settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork, UnitOfWork
 from raad.core.di.container import Container
+from raad.core.di.session_cap_adapter import SystemSettingSessionCapAdapter
 from raad.core.events.outbox import OutboxWriter, SqlOutboxPublisher
 from raad.core.events.ports import BrokerConsumer, BrokerPort, OutboxPublisher
 from raad.core.events.processor import EventProcessorRegistry
@@ -42,7 +43,7 @@ from raad.core.workers.dlq import DeadLetterQueue
 from raad.core.workers.idempotency import IdempotencyStore, InMemoryIdempotencyStore
 from raad.core.workers.retry import ExponentialBackoffRetryPolicy, RetryPolicy
 from raad.core.workers.scheduler import LockPort, RedisLockPort
-from raad.modules.iam.application.ports import IamUnitOfWork
+from raad.modules.iam.application.ports import IamUnitOfWork, SessionCapPort
 from raad.modules.iam.application.services import (
     AuthApplicationService,
     PermissionApplicationService,
@@ -332,6 +333,14 @@ def build_container(settings: Settings) -> Container:
         PlatformAuditApplicationService(clock=container.resolve(Clock)),
     )
 
+    # SessionCapPort (ADR-0019): bound unconditionally — unlike TokenService/RedisLatestPosition
+    # Port below, this needs no external dependency beyond Postgres (already required), and
+    # `AuthApplicationService`'s own construction (below) requires it with no default. The
+    # adapter resolves `PlatformAuditApplicationService`/`PlatformAuditUnitOfWork` lazily, per
+    # call, so binding it here (before `PlatformAuditUnitOfWork` itself is bound, further down)
+    # is safe — nothing calls `get_max_sessions()` until an actual login/refresh request.
+    container.bind_singleton(SessionCapPort, SystemSettingSessionCapAdapter(container))
+
     # LatestPositionPort (Database Design §7.1: latest position is Redis-backed, not read from
     # the PostgreSQL history table) — RedisLatestPositionPort (Backend Stabilization phase)
     # needs a reachable `RAAD_REDIS__URL`; left unbound without one, same "fail loudly, don't
@@ -461,6 +470,7 @@ def build_container(settings: Settings) -> Container:
                 id_generator=container.resolve(IdGenerator),
                 token_service=container.resolve(TokenService),
                 password_hasher=container.resolve(PasswordHasher),
+                session_cap_port=container.resolve(SessionCapPort),
                 lockout_settings=settings.auth.lockout,
             ),
         )

@@ -63,6 +63,7 @@ from raad.modules.iam.api.schemas import (
     RefreshRequest,
     RolePermissionRequest,
     RolePermissionsResponse,
+    SessionResponse,
     TokenResponse,
     UpdateUserRequest,
     UserResponse,
@@ -80,12 +81,15 @@ from raad.modules.iam.application.commands import (
     RefreshAccessTokenCommand,
     ResetPasswordToTemporaryCommand,
     RevokeRolePermissionCommand,
+    RevokeSessionCommand,
 )
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.queries import (
     AuthResultDTO,
     GetUserByIdQuery,
+    ListSessionsQuery,
     ListUsersQuery,
+    SessionDTO,
     UserDTO,
 )
 from raad.modules.iam.application.services import (
@@ -141,6 +145,26 @@ def _auth_result_to_response(
     )
 
 
+def _client_ip(request: Request) -> str | None:
+    """ADR-0019. Same `x-real-ip`-then-`request.client.host` idiom `interfaces/http/
+    middleware.py`'s `RateLimitMiddleware` already establishes (this deployment sits behind
+    nginx, ADR-0013) — reused verbatim rather than re-derived."""
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip
+    return request.client.host if request.client else None
+
+
+def _session_dto_to_response(session: SessionDTO) -> SessionResponse:
+    return SessionResponse(
+        id=session.id,
+        device_label=session.device_label,
+        ip_address=session.ip_address,
+        issued_at=session.issued_at,
+        expires_at=session.expires_at,
+    )
+
+
 def _user_dto_to_response(user: UserDTO) -> UserResponse:
     return UserResponse(
         id=user.id,
@@ -173,7 +197,13 @@ async def login(
 ) -> TokenResponse:
     email = body.identifier if "@" in body.identifier else None
     phone = body.identifier if body.identifier.startswith("+") else None
-    command = LoginCommand(email=email, phone=phone, plain_password=body.password)
+    command = LoginCommand(
+        email=email,
+        phone=phone,
+        plain_password=body.password,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=_client_ip(request),
+    )
     result = await auth_service.login(command, uow=uow)
     region_ids = await _resolve_region_ids(result, container=get_container(request))
     return _auth_result_to_response(result, region_ids=region_ids)
@@ -195,7 +225,11 @@ async def refresh(
     auth_service: AuthApplicationService = Depends(get_auth_service),
     uow: IamUnitOfWork = Depends(get_iam_uow),
 ) -> TokenResponse:
-    command = RefreshAccessTokenCommand(refresh_token=body.refresh_token)
+    command = RefreshAccessTokenCommand(
+        refresh_token=body.refresh_token,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=_client_ip(request),
+    )
     result = await auth_service.refresh(command, uow=uow)
     region_ids = await _resolve_region_ids(result, container=get_container(request))
     return _auth_result_to_response(result, region_ids=region_ids)
@@ -218,6 +252,48 @@ async def logout(
 ) -> None:
     command = LogoutCommand(refresh_token=body.refresh_token)
     await auth_service.logout(command, uow=uow)
+
+
+@auth_router.get(
+    "/sessions",
+    response_model=list[SessionResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List the caller's own active sessions",
+    description=(
+        "Auth: bearer (ADR-0019). Self-service only — always the caller's own sessions, never "
+        "a client-supplied user id. Newest-first."
+    ),
+)
+async def list_sessions(
+    principal: Principal = Depends(get_current_user),
+    auth_service: AuthApplicationService = Depends(get_auth_service),
+    uow: IamUnitOfWork = Depends(get_iam_uow),
+) -> list[SessionResponse]:
+    sessions = await auth_service.list_sessions(
+        ListSessionsQuery(user_id=principal.user_id), uow=uow
+    )
+    return [_session_dto_to_response(s) for s in sessions]
+
+
+@auth_router.delete(
+    "/sessions/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke one of the caller's own sessions",
+    description=(
+        "Auth: bearer (ADR-0019). The \"secure device replacement flow\" — e.g. a user who "
+        "lost a phone revokes that session explicitly. A session_id that doesn't exist or "
+        "belongs to a different principal 404s (never 403), matching this codebase's "
+        "established 404-over-403 posture."
+    ),
+)
+async def revoke_session(
+    session_id: str,
+    principal: Principal = Depends(get_current_user),
+    auth_service: AuthApplicationService = Depends(get_auth_service),
+    uow: IamUnitOfWork = Depends(get_iam_uow),
+) -> None:
+    command = RevokeSessionCommand(user_id=principal.user_id, session_id=session_id)
+    await auth_service.revoke_session(command, uow=uow)
 
 
 @auth_router.post(

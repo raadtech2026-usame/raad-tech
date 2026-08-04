@@ -50,10 +50,12 @@ from raad.modules.iam.application.commands import (
     LogoutCommand,
     RefreshAccessTokenCommand,
     ResetPasswordToTemporaryCommand,
+    RevokeSessionCommand,
 )
-from raad.modules.iam.application.ports import IamUnitOfWork
+from raad.modules.iam.application.ports import IamUnitOfWork, SessionCapPort
 from raad.modules.iam.application.queries import (
     GetUserByIdQuery,
+    ListSessionsQuery,
     ListUsersQuery,
     UserDTO,
 )
@@ -194,6 +196,18 @@ class InMemoryRefreshTokenRepository(RefreshTokenRepository):
         self.by_id[str(refresh_token.id)] = refresh_token
 
 
+class FakeSessionCapPort(SessionCapPort):
+    """ADR-0019. Defaults to a generous cap so every pre-existing test in this file (written
+    before this port existed) keeps passing unmodified; tests exercising the cap itself pass a
+    small `max_sessions` explicitly."""
+
+    def __init__(self, max_sessions: int = 100) -> None:
+        self._max_sessions = max_sessions
+
+    async def get_max_sessions(self, *, role: Role) -> int:
+        return self._max_sessions
+
+
 class FakeIamUnitOfWork(IamUnitOfWork):
     def __init__(
         self,
@@ -261,7 +275,10 @@ class _PasswordPolicySettingsStub:
 
 
 def make_auth_service(
-    clock: Clock, *, lockout_settings: LockoutSettings | None = None
+    clock: Clock,
+    *,
+    lockout_settings: LockoutSettings | None = None,
+    session_cap_port: SessionCapPort | None = None,
 ) -> tuple[AuthApplicationService, FakeIamUnitOfWork, Pbkdf2PasswordHasher]:
     hasher = Pbkdf2PasswordHasher(iterations=1_000)
     token_service = JwtTokenService(
@@ -276,6 +293,7 @@ def make_auth_service(
         id_generator=SequentialIdGenerator(),
         token_service=token_service,
         password_hasher=hasher,
+        session_cap_port=session_cap_port or FakeSessionCapPort(),
         lockout_settings=lockout_settings,
     )
     uow = FakeIamUnitOfWork(InMemoryUserRepository(), InMemoryRefreshTokenRepository())
@@ -941,6 +959,318 @@ class RefreshTokenFlowTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(AuthenticationError):
             await service.refresh(
                 RefreshAccessTokenCommand(refresh_token=login_result.refresh_token),
+                uow=uow,
+            )
+
+
+def _seed_refresh_token(
+    uow: FakeIamUnitOfWork,
+    *,
+    ordinal: int,
+    user_id: UserId,
+    issued_at: datetime,
+    device_label: str | None = None,
+    ip_address: str | None = None,
+) -> RefreshToken:
+    """ADR-0019 test helper — constructs a `RefreshToken` directly (not via `.issue()`, which
+    derives `issued_at` from the clock) so cap-eviction/ordering tests can seed several tokens
+    with distinct, explicit `issued_at` values without juggling clock state."""
+    token = RefreshToken(
+        id=RefreshTokenId(f"01J8Z3K9G6X8YV5T4N2RSESS{ordinal:02d}"),
+        user_id=user_id,
+        token_hash=f"{ordinal:064x}",
+        issued_at=issued_at,
+        expires_at=issued_at + timedelta(days=14),
+        device_label=device_label,
+        ip_address=ip_address,
+    )
+    uow.refresh_tokens.add(token)
+    return token
+
+
+def _make_active_user(uow: FakeIamUnitOfWork, hasher: Pbkdf2PasswordHasher) -> User:
+    user = User(
+        id=UserId("01J8Z3K9G6X8YV5T4N2R7QW3S1"),
+        organization_id=None,
+        role=Role.FOUNDER,
+        email=Email("sessions@example.com"),
+        phone=None,
+        full_name="Sessions User",
+        status=UserStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        password_hash=hasher.hash("pw"),
+    )
+    uow.users.add(user)
+    return user
+
+
+class SessionCapEnforcementTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0019 Decisions #1/#2: `SessionLimitPolicy` + revoke-oldest, exercised through the
+    real enforcement point (`AuthApplicationService.login`/`refresh`), not the policy in
+    isolation (that's `test_session_limit_policy.py`'s job)."""
+
+    async def test_login_under_cap_does_not_evict_anything(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(
+            clock, session_cap_port=FakeSessionCapPort(max_sessions=3)
+        )
+        user = _make_active_user(uow, hasher)
+        _seed_refresh_token(
+            uow, ordinal=1, user_id=user.id, issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc)
+        )
+
+        await service.login(
+            LoginCommand(email="sessions@example.com", phone=None, plain_password="pw"),
+            uow=uow,
+        )
+
+        active = [t for t in uow.refresh_tokens.by_id.values() if not t.is_revoked]
+        self.assertEqual(len(active), 2)  # the seeded one + the new one, cap is 3
+
+    async def test_login_exceeding_cap_evicts_the_oldest_session_only(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(
+            clock, session_cap_port=FakeSessionCapPort(max_sessions=2)
+        )
+        user = _make_active_user(uow, hasher)
+        oldest = _seed_refresh_token(
+            uow, ordinal=1, user_id=user.id, issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc)
+        )
+        newer = _seed_refresh_token(
+            uow, ordinal=2, user_id=user.id, issued_at=datetime(2026, 1, 5, tzinfo=timezone.utc)
+        )
+
+        await service.login(
+            LoginCommand(email="sessions@example.com", phone=None, plain_password="pw"),
+            uow=uow,
+        )
+
+        self.assertTrue(oldest.is_revoked)
+        self.assertFalse(newer.is_revoked)
+        active = [t for t in uow.refresh_tokens.by_id.values() if not t.is_revoked]
+        self.assertEqual(len(active), 2)  # newer + the brand-new one, back at the cap
+
+    async def test_login_at_cap_of_one_evicts_the_only_existing_session(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(
+            clock, session_cap_port=FakeSessionCapPort(max_sessions=1)
+        )
+        user = _make_active_user(uow, hasher)
+        only_existing = _seed_refresh_token(
+            uow, ordinal=1, user_id=user.id, issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc)
+        )
+
+        await service.login(
+            LoginCommand(email="sessions@example.com", phone=None, plain_password="pw"),
+            uow=uow,
+        )
+
+        self.assertTrue(only_existing.is_revoked)
+        active = [t for t in uow.refresh_tokens.by_id.values() if not t.is_revoked]
+        self.assertEqual(len(active), 1)
+
+    async def test_refresh_rotation_does_not_spuriously_count_against_the_cap(self) -> None:
+        """The token being rotated is excluded from the active count — an ordinary refresh is a
+        1:1 replacement, not a net-new session, and must not evict an unrelated session."""
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(
+            clock, session_cap_port=FakeSessionCapPort(max_sessions=2)
+        )
+        user = _make_active_user(uow, hasher)
+        other_session = _seed_refresh_token(
+            uow, ordinal=1, user_id=user.id, issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc)
+        )
+        login_result = await service.login(
+            LoginCommand(email="sessions@example.com", phone=None, plain_password="pw"),
+            uow=uow,
+        )
+
+        await service.refresh(
+            RefreshAccessTokenCommand(refresh_token=login_result.refresh_token), uow=uow
+        )
+
+        self.assertFalse(other_session.is_revoked)
+
+    async def test_refresh_exceeding_cap_evicts_the_oldest_other_session(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(
+            clock, session_cap_port=FakeSessionCapPort(max_sessions=2)
+        )
+        user = _make_active_user(uow, hasher)
+        oldest_other = _seed_refresh_token(
+            uow, ordinal=1, user_id=user.id, issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc)
+        )
+        login_result = await service.login(
+            LoginCommand(email="sessions@example.com", phone=None, plain_password="pw"),
+            uow=uow,
+        )
+        # A second, unrelated pre-existing session pushes the account to 3 total once the
+        # about-to-be-issued refresh token is counted.
+        another_other = _seed_refresh_token(
+            uow, ordinal=2, user_id=user.id, issued_at=datetime(2026, 1, 6, tzinfo=timezone.utc)
+        )
+
+        await service.refresh(
+            RefreshAccessTokenCommand(refresh_token=login_result.refresh_token), uow=uow
+        )
+
+        self.assertTrue(oldest_other.is_revoked)
+        self.assertFalse(another_other.is_revoked)
+
+
+class SuspiciousLoginTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0019 Decision #6: visibility-only signal, no automated block."""
+
+    async def test_first_ever_login_is_not_flagged_suspicious(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(clock)
+        user = _make_active_user(uow, hasher)
+
+        await service.login(
+            LoginCommand(
+                email="sessions@example.com",
+                phone=None,
+                plain_password="pw",
+                user_agent="Mozilla/5.0 (Windows NT 10.0) Chrome/120.0",
+                ip_address="203.0.113.10",
+            ),
+            uow=uow,
+        )
+
+        event_types = [e.event_type for e in uow.recorded_events]
+        self.assertNotIn("SuspiciousLoginDetected", event_types)
+
+    async def test_login_from_an_unrecognized_device_is_flagged(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(clock)
+        user = _make_active_user(uow, hasher)
+        _seed_refresh_token(
+            uow,
+            ordinal=1,
+            user_id=user.id,
+            issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            device_label="Chrome on Windows",
+            ip_address="203.0.113.10",
+        )
+
+        await service.login(
+            LoginCommand(
+                email="sessions@example.com",
+                phone=None,
+                plain_password="pw",
+                user_agent="Mozilla/5.0 (iPhone) Safari/604.1 Version/17.0",
+                ip_address="198.51.100.5",
+            ),
+            uow=uow,
+        )
+
+        event_types = [e.event_type for e in uow.recorded_events]
+        self.assertIn("SuspiciousLoginDetected", event_types)
+
+    async def test_login_from_a_recognized_device_is_not_flagged(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(clock)
+        user = _make_active_user(uow, hasher)
+        _seed_refresh_token(
+            uow,
+            ordinal=1,
+            user_id=user.id,
+            issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            device_label="Chrome on Windows",
+            ip_address="203.0.113.10",
+        )
+
+        await service.login(
+            LoginCommand(
+                email="sessions@example.com",
+                phone=None,
+                plain_password="pw",
+                user_agent="Mozilla/5.0 (Windows NT 10.0) Chrome/120.0",
+                ip_address="203.0.113.10",
+            ),
+            uow=uow,
+        )
+
+        event_types = [e.event_type for e in uow.recorded_events]
+        self.assertNotIn("SuspiciousLoginDetected", event_types)
+
+
+class SessionSelfServiceTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0019 Decision #5: `GET`/`DELETE /auth/sessions`."""
+
+    async def test_list_sessions_returns_only_the_callers_own_active_sessions_newest_first(
+        self,
+    ) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(clock)
+        user = _make_active_user(uow, hasher)
+        other_user_id = UserId("01J8Z3K9G6X8YV5T4N2R7QW3S2")
+        older = _seed_refresh_token(
+            uow, ordinal=1, user_id=user.id, issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc)
+        )
+        newer = _seed_refresh_token(
+            uow, ordinal=2, user_id=user.id, issued_at=datetime(2026, 1, 5, tzinfo=timezone.utc)
+        )
+        _seed_refresh_token(
+            uow,
+            ordinal=3,
+            user_id=other_user_id,
+            issued_at=datetime(2026, 1, 6, tzinfo=timezone.utc),
+        )
+
+        sessions = await service.list_sessions(
+            ListSessionsQuery(user_id=str(user.id)), uow=uow
+        )
+
+        self.assertEqual([s.id for s in sessions], [str(newer.id), str(older.id)])
+
+    async def test_revoke_session_revokes_the_targeted_token(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(clock)
+        user = _make_active_user(uow, hasher)
+        token = _seed_refresh_token(
+            uow, ordinal=1, user_id=user.id, issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc)
+        )
+
+        await service.revoke_session(
+            RevokeSessionCommand(user_id=str(user.id), session_id=str(token.id)), uow=uow
+        )
+
+        self.assertTrue(token.is_revoked)
+
+    async def test_revoke_session_raises_not_found_for_another_users_session(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(clock)
+        user = _make_active_user(uow, hasher)
+        other_user_id = UserId("01J8Z3K9G6X8YV5T4N2R7QW3S3")
+        other_users_token = _seed_refresh_token(
+            uow,
+            ordinal=1,
+            user_id=other_user_id,
+            issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+        with self.assertRaises(NotFoundError):
+            await service.revoke_session(
+                RevokeSessionCommand(
+                    user_id=str(user.id), session_id=str(other_users_token.id)
+                ),
+                uow=uow,
+            )
+        self.assertFalse(other_users_token.is_revoked)
+
+    async def test_revoke_session_raises_not_found_for_unknown_session(self) -> None:
+        clock = FixedClock(datetime(2026, 1, 10, tzinfo=timezone.utc))
+        service, uow, hasher = make_auth_service(clock)
+        user = _make_active_user(uow, hasher)
+
+        with self.assertRaises(NotFoundError):
+            await service.revoke_session(
+                RevokeSessionCommand(
+                    user_id=str(user.id),
+                    session_id="01J8Z3K9G6X8YV5T4N2R7QW3ZZ",
+                ),
                 uow=uow,
             )
 

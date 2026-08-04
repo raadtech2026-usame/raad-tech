@@ -215,6 +215,34 @@ def user_mfa_disabled(
     )
 
 
+def suspicious_login_detected(
+    *,
+    user_id: str,
+    organization_id: str | None,
+    occurred_at: datetime,
+    device_label: str | None,
+    ip_address: str | None,
+) -> DomainEvent:
+    """ADR-0019 Decision #6: a login whose `(device_label, ip_address)` pair matches none of the
+    caller's currently-active sessions — visibility only (`.claude/rules/security.md` #8), no
+    automated block. `actor_id=user_id` (unlike `user_logged_in`'s empty payload): the account
+    itself is the natural "who" for this signal, and `core.audit.writer.AuditWriter` reads
+    `payload.get("actor_id")` for `audit_entries.actor_user_id`, so this is what makes the
+    resulting audit row attributable at all."""
+    return _new_event(
+        event_type="SuspiciousLoginDetected",
+        aggregate_type="User",
+        aggregate_id=user_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "actor_id": user_id,
+            "device_label": device_label,
+            "ip_address": ip_address,
+        },
+    )
+
+
 def refresh_token_issued(
     *, token_id: str, user_id: str, expires_at: datetime, occurred_at: datetime
 ) -> DomainEvent:

@@ -17,12 +17,31 @@ code never references it directly, and the LLD's own `application/ports.py` cont
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+
 from raad.core.db.unit_of_work import UnitOfWork
+from raad.core.tenancy.principal import Role
 from raad.modules.iam.domain.repositories import (
     RefreshTokenRepository,
     RolePermissionRepository,
     UserRepository,
 )
+
+
+class SessionCapPort(ABC):
+    """ADR-0019: resolves the per-role concurrent-session cap from `platform_audit`'s
+    `SystemSetting` store (`key="session_cap"`) — a live, admin-editable value (`PATCH
+    /admin/settings`), not a `Settings`-object default like `LockoutSettings`. `iam` depends
+    only on this abstract port, defined in its own application layer; the concrete adapter
+    (`core/di/session_cap_adapter.py`) is the one place that actually reaches into
+    `platform_audit`'s application facade, matching `.claude/rules/backend.md` #3's "cross-
+    context data comes from the owning module's application service" — never a cross-module DB
+    read, and never something `iam`'s own domain/infra/application code does directly.
+    """
+
+    @abstractmethod
+    async def get_max_sessions(self, *, role: Role) -> int:
+        raise NotImplementedError
 
 
 class IamUnitOfWork(UnitOfWork):
