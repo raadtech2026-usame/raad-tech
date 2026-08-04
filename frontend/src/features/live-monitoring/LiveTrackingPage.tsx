@@ -142,7 +142,14 @@ export function LiveTrackingPage() {
       lng: snapshotQuery.data.longitude,
       headingDeg: snapshotQuery.data.headingDeg,
     } : null);
-    if (!position) return;
+    // `position` is asserted `number` by TypeScript but originates from either a raw
+    // `JSON.parse(...) as T` WebSocket frame (useWebSocket.ts performs no runtime schema
+    // validation) or a REST response — a malformed/partial payload can carry `undefined`/`null`/
+    // non-numeric values here at runtime despite the type. Mapbox's own `LngLat` constructor
+    // throws "Invalid LngLat object: (NaN, NaN)" on exactly this input, so this guard turns a
+    // silent, unrecoverable map crash into a plain skipped update — the next valid position still
+    // renders normally.
+    if (!position || !Number.isFinite(position.lat) || !Number.isFinite(position.lng)) return;
 
     if (markerAddedRef.current) {
       provider.updateMarker(VEHICLE_MARKER_ID, { lat: position.lat, lng: position.lng }, position.headingDeg);
