@@ -46,3 +46,33 @@ export function buildOffsetListQuery(params: OffsetListParams): string {
 
   return qs.toString();
 }
+
+/** `?limit&cursor` (`.claude/rules/api.md` derives from API Contracts §7) — the cursor
+ * counterpart of `OffsetListParams`, used only by the two routes §7 documents as cursor-paginated
+ * (`GET /notifications`, `GET /tracking/trips/{id}/positions`). No `sort` field — cursor mode
+ * paginates over one fixed, server-chosen keyset, never a client-chosen sort (`core/pagination`'s
+ * own module docstring, mirrored here rather than inventing a sort option the backend rejects). */
+export interface CursorListParams {
+  limit: number;
+  /** `null` means "first page." Always a value previously returned as `page.nextCursor` — never
+   * constructed by this app itself (the backend's own cursor is opaque). */
+  cursor: string | null;
+  filters: Record<string, string>;
+}
+
+export function buildCursorListQuery(params: CursorListParams): string {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(params.limit));
+
+  if (params.cursor) {
+    qs.set("cursor", params.cursor);
+  }
+
+  for (const [field, value] of Object.entries(params.filters)) {
+    if (value !== "" && value !== undefined && value !== null) {
+      qs.set(`filter[${field}]`, value);
+    }
+  }
+
+  return qs.toString();
+}

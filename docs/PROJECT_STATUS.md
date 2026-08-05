@@ -16,8 +16,8 @@ architecture; this file is the source of truth for progress and sequencing.
 |---|---|
 | **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
 | **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against) — every Priority 1 item touching the backend/web/infra surface (1–7) is complete and either live-verified or mechanism-complete-with-disclosed-testing-limits. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **Item 8 (Payment):** audited, genuinely blocked on a real provider account + a webhook-actor design decision — see Section 5. This is the end state of the continuous-completion program (user directive 2026-08-03) — see Section 15 for the full final report. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), **ADR-0019 (Account-Sharing Session Cap), and ADR-0020 (Platform Analytics Read Model) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete. Frontend: F0–F7 complete plus the ADR-0020 KPI grid; F8/F9/F10/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
-| **Current git commit** | `07cd3e8` — `feat(iam): implement ADR-0019 - account-sharing concurrent session cap` (branch `main`; ADR-0020's own commit is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), **ADR-0019 (Account-Sharing Session Cap), and ADR-0020 (Platform Analytics Read Model) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete. Frontend: **F0–F8 complete** (F8: Notifications web UI — the first cursor-paginated page and the first live-WS-driven bell badge in this frontend) plus the ADR-0020 KPI grid and a fleet-ops-style dashboard redesign/polish pass; F9 (Billing)/F10 (Video)/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
+| **Current git commit** | This turn's own commit (`feat(frontend): F8 - Notifications web UI`) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; the field itself was last literally updated at `07cd3e8` (ADR-0019) and had already drifted several commits behind (ADR-0020, two dashboard phases) before this update, a real, disclosed instance of the exact staleness rule 2 warns about. |
 | **Last updated** | 2026-08-05 |
 
 ---
@@ -30,7 +30,7 @@ it should never lag behind Section 3's detail.
 | Track | Current phase |
 |---|---|
 | **Backend** | ADR-0018 (Device Inventory & Allocation) complete. All ten bounded contexts implemented end-to-end. Next queued backend work is ADR-0019 (Session Cap) / ADR-0020 (Platform Analytics), but both are **paused** — see the Section 5 callout on why Priority-1 production-readiness work goes first. |
-| **Frontend** | Phases F0–F7 complete (design system, org/region/user/fleet/device/people management, live tracking). F8 (Notifications), F9 (Billing), F10 (Video), and reporting/analytics feature folders are empty — not started. |
+| **Frontend** | Phases F0–F8 complete (design system, org/region/user/fleet/device/people management, live tracking, ADR-0020 KPI grid + fleet-ops dashboard redesign, notifications web UI). F9 (Billing), F10 (Video), and reporting feature folders are empty — not started. |
 | **Mobile** | Pre-implementation. `mobile/` is a structural scaffold only — no Flutter SDK dependency declared in `pubspec.yaml`, `lib/main.dart` is a 0-byte file, no native Android/iOS project files exist. `flutter create` has never been run. |
 | **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Item 1 (Backups) complete.** **Priority 1 Item 2 (TLS/HTTPS) complete** — nginx `prod-tls.conf` + a `certbot` service (Let's Encrypt via webroot challenge, auto-renewal), mechanism built and carefully reviewed but not live-tested against a real domain (none provisioned yet — Known Issue #13). **Priority 1 Item 3 (Auth rate limiting + account lockout) complete** — account lockout fully live-verified (real Postgres round trip + real HTTP requests against a running server); IP-based rate limiting's counting logic unit-tested only (no reachable Redis in this sandbox — Known Issue #14), but its Redis-unreachable fail-open behavior *is* live-verified over real HTTP. **Priority 1 Item 4 (Redis production hardening) complete, mechanism-wise** — `--requirepass`, AOF persistence with explicit `everysec` fsync, `--maxmemory`/`noeviction`, broker/cache split onto separate logical DBs, explicit connection timeouts on the backend's own Redis clients; carefully reviewed (YAML structural validation, DI-container smoke test) but not live-tested against a real running Redis process (no Docker/WSL2/redis-server available in this sandbox — Known Issue #15, the same disclosed limitation Item 2 already carries). Production monitoring remains open — the last infra-adjacent Priority-1 blocker (Section 5). |
 
@@ -159,9 +159,9 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 ### Engagement & revenue
 
 #### Notifications — 🟡 Partial
-- **Implemented:** `Notification`+`DeviceToken` aggregates, `/ws/notifications`, a real Notification Worker gating sends through CR-1 across 4 event types.
-- **Missing:** Zero frontend UI (`features/notifications/` empty — F8 not started); no mobile client to receive a push.
-- **Production blocker?** Yes, for the customer-facing promise.
+- **Implemented:** `Notification`+`DeviceToken` aggregates, `/ws/notifications`, a real Notification Worker gating sends through CR-1 across 4 event types. **Web UI (F8) now built**: `features/notifications/NotificationsPage.tsx`, mounted at both `/platform/notifications`/`/org/notifications` (one shared component — the route is scoped to `recipient_user_id`, not tenant, so it behaves identically regardless of which dashboard reaches it). Type filter chips, cursor-paginated "Load more" (`useInfiniteQuery` — the first cursor-paginated page in this frontend, backing new shared `CursorPageWire`/`toCursorPage`/`CursorListParams`/`buildCursorListQuery` utilities mirroring the existing offset equivalents), per-row mark-as-read, and a live refetch on every `/ws/notifications` push. `AppShell`'s topbar bell badge (`unreadNotifications`, previously always `undefined`/no badge) is now wired to a real, live-updating count (`useUnreadCount` — seeded from the most recent 50 notifications, incremented via the same WebSocket channel).
+- **Missing:** No mobile client to receive a push yet (Mobile MVP's own M4/FCM gap, Priority 1 Item 9) — the web inbox itself is real and live, but Parents/Drivers still have no channel at all.
+- **Production blocker?** Partially — the RAAD-staff/Org-Admin web experience is no longer missing; Parent/Driver delivery still is.
 - **Dependencies:** Live Tracking (for trip events), Mobile App (for delivery to Parents).
 
 #### Billing — 🟡 Partial
@@ -310,10 +310,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Dependencies:** None.
 
 #### Frontend Completeness — 🟡 Partial
-- **Implemented:** F0–F7 built and tested — 54 real test files, working production build, correct in-memory-only token handling, real Docker/nginx deployment path.
-- **Missing:** F8 (notifications), F9 (billing), F10 (video), reporting, analytics — all empty feature folders.
+- **Implemented:** F0–F8 built and tested — 58 real test files (361 tests), working production build, correct in-memory-only token handling, real Docker/nginx deployment path.
+- **Missing:** F9 (billing), F10 (video), reporting — still empty feature folders.
 - **Production blocker?** Partially.
-- **Dependencies:** Notifications, Billing, Video, Reporting, Analytics (backend halves).
+- **Dependencies:** Billing, Video, Reporting (backend halves already exist; only the frontend consumers are missing).
 
 #### CI/CD — 🟡 Partial
 - **Implemented:** `.github/workflows/backend-pipeline.yml` — real, runs unit/architecture/integration tests against live Postgres+Redis service containers on every backend PR.
@@ -420,7 +420,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
    claimed as finished.
 
 ### Priority 2 — Recommended before first customer
-- Notifications web UI (F8) *(3–5 days)*
+- ~~Notifications web UI (F8)~~ — ✅ **Complete** (2026-08-05). `NotificationsPage.tsx` (type
+  filter chips, cursor-paginated "Load more," mark-as-read, live `/ws/notifications` refresh) at
+  both `/platform/notifications`/`/org/notifications`; `AppShell`'s bell badge now shows a real,
+  live-updating unread count. See Section 8 for the full writeup.
 - Billing web UI (F9) *(3–5 days)*
 - Live video / JT1078 — only if video is part of the launch pitch *(3–6 weeks)*
 - ~~Platform analytics (ADR-0020)~~ — ✅ **Complete** (2026-08-05, done ahead of its Priority 2
@@ -497,12 +500,80 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — ADR-0020 (Platform Analytics Read Model) just landed (2026-08-05), immediately
-after ADR-0019 (2026-08-04).** Both were the user's own explicit redirect away from this
-session's Priority-1-scoped recommendations (Known Issue #17), each a Roadmap Priority item
-(Section 6), not a Priority 1 blocker — the user's call to make. Both implemented via a
-reviewed plan (per `.claude/rules/workflow.md` #8), not freelanced. Section 2's Mobile row and
-similar minor doc staleness are still outstanding, not yet corrected — noted, not forgotten.
+**Nothing — Phase F8 (Notifications web UI) just landed (2026-08-05), the user's own explicit
+approval of this session's own Section 5 recommendation** (the first-ever "propose, then wait
+for approval" cycle in this sprint's run of work — every item before it was either a direct user
+redirect or part of the continuous-completion program). Between ADR-0020 and F8, this session
+also did two frontend-only passes at the user's explicit request: a Dashboard Polish pass (KPI
+card layout/spacing/hover states) and a full fleet-ops-style Dashboard redesign (KPI row, Live
+Operations + live map preview, Recent Activity, Fleet/Device Health, Billing summary) — both
+UI-only, no backend/API change, so neither touched this document (no capability/status line's
+truth value changed). Section 2's Mobile row and similar minor doc staleness are still
+outstanding, not yet corrected — noted, not forgotten.
+
+**Phase F8 — Notifications Web UI.** `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md`
+§8/API Contracts §4.6/§11.3 already fully specify this surface; nothing here required a new ADR.
+**A real, load-bearing discovery made before writing any UI code, not assumed from the route
+list:** `GET /notifications` is scoped to `recipient_user_id = principal.user_id`, not
+`organization_id` — the first (and still only) list endpoint in this codebase scoped by personal
+ownership rather than tenant. That single fact shapes the whole page: it is one shared component
+mounted at both `/platform/notifications` and `/org/notifications` (matching every other
+Fleet/Ops entry's "one component, two mount points" precedent) because the response is identical
+regardless of which dashboard reaches it — there is no "all-organization" or "all-platform" view
+to build, by design.
+
+**First cursor-paginated frontend page.** Every other list page in this codebase is offset-paginated;
+`GET /notifications` (and `GET /tracking/trips/{id}/positions`, still unbuilt) are the only two
+cursor routes API Contracts §7 documents. New, general (not notifications-specific) shared
+utilities close that gap the same way `OffsetListParams`/`toOffsetPage` already did for offset:
+`shared/api/types.ts` gained `CursorPageWire`/`toCursorPage`, `shared/api/listParams.ts` gained
+`CursorListParams`/`buildCursorListQuery` (`?limit&cursor`, no `sort` — cursor mode paginates a
+fixed server keyset, never a client-chosen sort, per `core/pagination`'s own module docstring).
+`NotificationsPage` itself uses `@tanstack/react-query`'s `useInfiniteQuery` (already a
+dependency, built for exactly this "Load more" shape) rather than hand-rolling page-number state
+that wouldn't even fit a cursor-only contract.
+
+**Live-updated over `/ws/notifications`, already backend-implemented since the WebSocket phase
+but never previously consumed by any frontend.** Subscribe is implicit per API Contracts §11.3 —
+no frame to send, just a listener. A push **refetches** the list/unread-count rather than
+splicing the WS frame's own fields into the cache: `_notification_frame`
+(`notifications/api/ws.py`) deliberately carries no `status`/`read_at`/`organization_id`/`data`
+(only ever represents a brand-new, thus-unread notification), so treating it as a full row would
+mean inventing the missing fields.
+
+**`AppShell`'s topbar bell badge — previously always `undefined` (`TopBar.tsx`'s own
+`unreadNotifications` prop was declared but never once passed a value anywhere in the
+codebase, confirmed by search before assuming) — now shows a real, live count.** No dedicated
+"unread count" endpoint exists; `useUnreadCount` (`features/notifications/useUnreadCount.ts`)
+counts `status === "unread"` among the most recent 50 notifications (`GET /notifications`'s own
+max `limit`) and increments live on every `/ws/notifications` push, invalidated back down when
+`NotificationsPage`'s own mark-read mutation succeeds (both share one query key,
+`["notifications","unread-count"]`). A disclosed, real limitation, not a fabricated total: this
+undercounts only in the unlikely case of 50+ simultaneously unread items, and `IconButton`'s own
+badge already caps its displayed text at "9+" regardless. **A real, minor inefficiency accepted
+rather than engineered around:** `AppShell` (renders on every authenticated page) and
+`NotificationsPage` (one specific page) each open their own independent `/ws/notifications`
+connection when both are mounted — sharing one connection across both would need a
+connection-scoped context provider this codebase doesn't have yet, a bigger change than this
+widget warrants; the backend's `ConnectionManager` already supports multiple connections per
+user, so this is inefficient, not incorrect.
+
+**Testing:** `features/notifications/api.test.ts` (wire-shape mapping for both the cursor list
+and mark-read routes), `useUnreadCount.test.tsx`, `NotificationsPage.test.tsx` (empty/error
+states, type/title/body rendering, mark-as-read triggering a refetch, filter chips, Load More
+fetching a second page) — one real react-query v5 behavior learned while writing these:
+`mutationFn` is invoked with an internal context object as a second argument beyond the variable
+this code itself passes, so assertions check only the first argument rather than an exact call
+shape that would have been coupled to a react-query internal, not this code's own contract.
+`AppShell.test.tsx` updated to mock the new WS hook and `MapView` (the latter closes a
+pre-existing, unrelated stderr-noise gap from the Dashboard redesign: that test renders the real
+`DashboardHomePage`, which now embeds a live map preview jsdom has no canvas backend for — a
+real, harmless-but-noisy side effect from earlier in this session, cleaned up here since this
+item already touched the same file). `tsc` clean, full suite green (361/361 across 58 files, up
+from 350/350 — 11 new tests), production build clean. Browser extension unavailable in this
+sandbox for the whole of this session (disclosed repeatedly, not silently skipped) — verified
+statically rather than with a live screenshot, the same posture every frontend item this session
+has carried.
 
 **ADR-0020 — Platform Analytics Read Model.** Real KPIs for the Platform Dashboard, composed
 read-only from `organization`/`iam`/`fleet_device`/`billing`, owned by `platform_audit`, per the

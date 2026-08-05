@@ -22,6 +22,7 @@ import { DriversPage } from "../features/transport-ops/drivers/DriversPage";
 import { RoutesPage } from "../features/transport-ops/routes/RoutesPage";
 import { TripsPage } from "../features/transport-ops/trips/TripsPage";
 import { LiveTrackingPage } from "../features/live-monitoring/LiveTrackingPage";
+import { NotificationsPage } from "../features/notifications/NotificationsPage";
 
 const PLATFORM_ROLES: Role[] = ["founder", "regional_manager", "support_staff", "finance_staff"];
 const ORGANIZATION_ROLES: Role[] = ["org_admin"];
@@ -105,7 +106,13 @@ function buildFeatureRoutes(
  * `platformNav`, backed by RBAC migration `c4d9a2e6f813` revoking the underlying
  * `transport_ops.students.*`/`.parents.*` grants from every RAAD-staff role. `StudentsPage`/
  * `ParentsPage` remain exactly as built — only reachable via `/org/*` now, which was always the
- * correct shape per the business model; nothing about the component or the `/org` route changed. */
+ * correct shape per the business model; nothing about the component or the `/org` route changed.
+ *
+ * **Phase F8 (Notifications) graduates `/platform/notifications`/`/org/notifications` the same
+ * shared-component way** — but unlike every entry above, `NotificationsPage` isn't tenant- or
+ * platform-scoped at all: `GET /notifications` is scoped to the caller's own `recipient_user_id`,
+ * so this is one component showing each signed-in user their own personal inbox, identical
+ * regardless of which dashboard path reaches it. */
 const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/organizations": <OrganizationsPage />,
   "/platform/regions": <RegionsPage />,
@@ -116,6 +123,7 @@ const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/routes": <RoutesPage />,
   "/platform/trips": <TripsPage />,
   "/platform/tracking": <LiveTrackingPage />,
+  "/platform/notifications": <NotificationsPage />,
 };
 
 /** Org Admin's own dashboard equivalent of the Fleet & Device / Transport Ops entries above —
@@ -135,6 +143,7 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/routes": <RoutesPage />,
   "/org/trips": <TripsPage />,
   "/org/tracking": <LiveTrackingPage />,
+  "/org/notifications": <NotificationsPage />,
 };
 
 export const router = createBrowserRouter([

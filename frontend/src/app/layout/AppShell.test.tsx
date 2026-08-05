@@ -17,6 +17,21 @@ vi.mock("../../features/fleet-devices/devices/api", () => ({ listDevices: vi.fn(
 vi.mock("../../features/transport-ops/drivers/api", () => ({ listDrivers: vi.fn(() => new Promise(() => {})) }));
 vi.mock("../../features/transport-ops/students/api", () => ({ countStudents: vi.fn(() => new Promise(() => {})) }));
 vi.mock("../../features/transport-ops/parents/api", () => ({ countParents: vi.fn(() => new Promise(() => {})) }));
+vi.mock("../../features/transport-ops/trips/api", () => ({ listTrips: vi.fn(() => new Promise(() => {})) }));
+vi.mock("../../features/platform-analytics/api", () => ({
+  getPlatformStats: vi.fn(() => new Promise(() => {})),
+  listAuditEntries: vi.fn(() => new Promise(() => {})),
+}));
+// `AppShell` itself now opens a `/ws/notifications` connection (F8's unread bell badge,
+// `useUnreadCount`) — mocked the same way this whole codebase avoids ever constructing a real
+// `WebSocket` in jsdom (`DashboardHomePage.test.tsx`'s identical precedent).
+vi.mock("../../features/notifications/api", () => ({ listNotifications: vi.fn(() => new Promise(() => {})) }));
+vi.mock("../../shared/hooks/useWebSocket", () => ({
+  useWebSocketChannel: () => ({ status: "closed", lastCloseCode: null, send: vi.fn() }),
+}));
+// `DashboardHomePage`'s Live Operations panel embeds a real Mapbox map — jsdom has no canvas
+// implementation (`DashboardHomePage.test.tsx`'s identical precedent), so it's stubbed here too.
+vi.mock("../../shared/map/MapView", () => ({ MapView: () => null }));
 
 function renderDashboard() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

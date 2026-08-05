@@ -1,5 +1,6 @@
 import { Outlet } from "react-router-dom";
 import { useAuthStore } from "../../shared/stores/authStore";
+import { useUnreadCount } from "../../features/notifications/useUnreadCount";
 import { getNavForRole, type NavItem } from "./navConfig";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
@@ -17,6 +18,11 @@ export interface AppShellProps {
 export function AppShell({ nav, notificationsPath }: AppShellProps) {
   const principal = useAuthStore((s) => s.principal);
   const header = useCurrentPageHeader();
+  // Unconditional (not gated behind `principal` below) so its Hook order never depends on
+  // auth state — matches the Rules of Hooks; `useUnreadCount` itself only opens its
+  // `/ws/notifications` connection once a real access token exists (`useWebSocketChannel`'s own
+  // "no token yet" -> `closed` status).
+  const unreadNotifications = useUnreadCount();
 
   if (!principal) {
     return null;
@@ -32,6 +38,7 @@ export function AppShell({ nav, notificationsPath }: AppShellProps) {
           title={header.title}
           subtitle={header.subtitle}
           notificationsPath={notificationsPath}
+          unreadNotifications={unreadNotifications}
         />
         <div className={styles.content}>
           <Outlet />

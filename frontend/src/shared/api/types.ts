@@ -85,6 +85,31 @@ export function toOffsetPage<TWire, TApp>(
   };
 }
 
+/** Wire shape of `interfaces/http/pagination.py`'s `CursorPageResponse`/`CursorPageMeta` — the
+ * cursor counterpart of `OffsetPageWire` above, same "one implementation, not one per feature"
+ * reasoning. `next_cursor` is opaque (`core/pagination`'s own docstring: "a client must never
+ * construct or parse one itself") — this app only ever round-trips it back as `?cursor=`. */
+export interface CursorPageMetaWire {
+  limit: number;
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+export interface CursorPageWire<TWire> {
+  data: TWire[];
+  page: CursorPageMetaWire;
+}
+
+export function toCursorPage<TWire, TApp>(
+  wire: CursorPageWire<TWire>,
+  mapper: (item: TWire) => TApp,
+): CursorPage<TApp> {
+  return {
+    data: wire.data.map(mapper),
+    page: { limit: wire.page.limit, nextCursor: wire.page.next_cursor, hasMore: wire.page.has_more },
+  };
+}
+
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;

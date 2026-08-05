@@ -1201,6 +1201,66 @@ multi-vehicle live markers on one map (would need either N parallel WebSocket co
 backend protocol change, neither attempted) and trip position history/playback
 (`GET /tracking/trips/{id}/positions`, a distinct scrubber-style feature, not "live" monitoring).
 
+### Phase F8 — Notifications (complete)
+
+Lands after the Priority 1 production-readiness program and ADR-0019/ADR-0020 (both sections
+below) — the roadmap's own F0→F13 sequence simply continues from F7 once those took priority.
+`/platform/notifications` and `/org/notifications` are real now — `features/notifications/`
+(`NotificationsPage.tsx`, `api.ts`, `labels.ts`, `useUnreadCount.ts`), one shared component
+across both dashboards, matching every prior phase's two-dashboard pattern.
+
+**The one fact that shapes this whole phase, confirmed by reading the router before writing any
+UI, not assumed:** `GET /notifications` is scoped to `recipient_user_id = principal.user_id`,
+**not** `organization_id` — the first (and still only) list endpoint in this codebase scoped by
+personal ownership rather than tenant (`notifications/api/routers.py`'s own docstring: "the first
+list endpoint in this codebase scoped that way"). There is no "every notification in this
+organization" admin view to build here, by design — `NotificationsPage` is each signed-in user's
+own inbox, identical regardless of which dashboard path reaches it.
+
+**First cursor-paginated page in this frontend.** Every prior list page uses offset pagination;
+`GET /notifications` is one of only two cursor routes API Contracts §7 documents (the other,
+`GET /tracking/trips/{id}/positions`, remains unbuilt — F7's own documented scope cut). New,
+general-purpose (not notifications-specific) utilities close the gap the same way this codebase's
+existing offset helpers already do: `shared/api/types.ts` gained `CursorPageWire`/`toCursorPage`,
+`shared/api/listParams.ts` gained `CursorListParams`/`buildCursorListQuery` (`?limit&cursor`, no
+`sort` — cursor mode paginates one fixed server-chosen keyset, never a client-chosen sort, per
+`core/pagination`'s own module docstring, mirrored rather than inventing a sort option the
+backend would reject). The page itself uses `@tanstack/react-query`'s `useInfiniteQuery` (already
+a dependency) for "Load more," not hand-rolled page-number state that wouldn't fit a cursor-only
+contract anyway.
+
+**Live-updated over `/ws/notifications`** — implemented backend-side since the WebSocket phase
+but never previously consumed by any frontend page. Subscribe is implicit per API Contracts
+§11.3 (no frame to send); a push triggers a **refetch** of the list/unread-count rather than
+merging the WS frame's own fields into the cache, since `_notification_frame`
+(`notifications/api/ws.py`) deliberately carries no `status`/`read_at`/`organization_id`/`data` —
+only ever representing a brand-new, thus-unread notification, never a full row.
+
+**`AppShell`'s topbar bell badge goes live for the first time.** `TopBar.tsx`'s own
+`unreadNotifications` prop has existed since Phase F0 but was never once passed a value anywhere
+in the codebase (confirmed by search, not assumed) — the badge simply never rendered. New
+`useUnreadCount` counts `status === "unread"` among the most recent 50 notifications (`GET
+/notifications`'s own max `limit` — no dedicated count endpoint exists) and increments live on
+every WS push, invalidated back down when `NotificationsPage`'s own mark-read mutation succeeds
+(one shared query key, `["notifications","unread-count"]`, between the two). A disclosed real
+limitation, not a fabricated total: undercounts only past 50 simultaneously-unread items, and
+`IconButton`'s own badge already caps its displayed text at "9+" regardless. `AppShell` and
+`NotificationsPage` each open their own independent `/ws/notifications` connection when both are
+mounted — a real, accepted minor inefficiency (the backend's `ConnectionManager` already supports
+multiple connections per user, so this is wasteful, not incorrect), rather than building a
+connection-scoped context provider this codebase doesn't have yet for one bell badge.
+
+**Testing:** wire-mapping tests for both the cursor list and mark-read routes, a `useUnreadCount`
+hook test, and `NotificationsPage` coverage (empty/error states, rendering, mark-as-read
+triggering a refetch, type filter chips, Load More fetching a second page) — one real
+react-query v5 behavior learned while writing these: `mutationFn` is invoked with an internal
+context object as a second argument beyond the variable this code itself passes, so assertions
+check only the first argument. `AppShell.test.tsx` updated to mock the new WS hook and `MapView`
+(the latter closes a pre-existing, unrelated stderr-noise gap from the dashboard redesign work:
+that test renders the real `DashboardHomePage`, which now embeds a live map preview jsdom has no
+canvas backend for). `tsc` clean, full suite green (361/361 across 58 files), production build
+clean.
+
 ## Production Readiness Hardening (Priority 1)
 
 A full, read-only production-readiness audit (2026-08-02, `docs/PROJECT_STATUS.md` §9) found the
