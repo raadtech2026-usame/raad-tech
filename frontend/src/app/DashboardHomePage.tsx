@@ -16,7 +16,9 @@ import { getDashboardType } from "../shared/auth/dashboard";
 import { usePageHeader } from "./layout/PageHeaderContext";
 import { Badge } from "../shared/components/Badge/Badge";
 import { Card } from "../shared/components/Card/Card";
+import { EmptyState } from "../shared/components/EmptyState/EmptyState";
 import { Skeleton } from "../shared/components/Skeleton/Skeleton";
+import { ApiError } from "../shared/api/types";
 import type { OffsetListParams } from "../shared/api/listParams";
 import { listDrivers } from "../features/transport-ops/drivers/api";
 import { countStudents } from "../features/transport-ops/students/api";
@@ -101,16 +103,27 @@ const HEALTH_BADGE_VARIANT: Record<string, "success" | "danger" | "neutral"> = {
  * own Context names ("Live Vehicle Locations", "Active Drivers") are a real, flagged scope cut —
  * see `PlatformStats`'s own docstring — and simply don't appear here, not represented as a
  * fabricated zero.
+ *
+ * On failure, shows the same `EmptyState` "Could not load X" pattern every other feature page's
+ * list view already uses (`OrganizationsPage.tsx` etc.) — silently rendering `null` here would
+ * make any real failure (a permission change, the backend being briefly unreachable) look
+ * identical to "not built yet," with no way to tell the two apart from the UI alone.
  */
 function PlatformAnalyticsSection() {
-  const { data, isLoading, isError } = useQuery<PlatformStats>({
+  const { data, isLoading, isError, error } = useQuery<PlatformStats>({
     queryKey: ["platform-analytics-stats"],
     queryFn: getPlatformStats,
     staleTime: 60_000,
   });
 
   if (isError) {
-    return null;
+    return (
+      <EmptyState
+        icon={<Activity size={22} />}
+        title="Could not load platform analytics"
+        description={error instanceof ApiError ? error.message : "Something went wrong. Please try again."}
+      />
+    );
   }
 
   return (

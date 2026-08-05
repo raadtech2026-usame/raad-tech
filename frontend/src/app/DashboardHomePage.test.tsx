@@ -95,7 +95,7 @@ describe("DashboardHomePage", () => {
     await waitFor(() => expect(screen.getAllByText("—").length).toBeGreaterThan(0));
   });
 
-  it("renders nothing for the analytics grid (not a crash) when it fails to load", async () => {
+  it("shows a visible error (not a silent blank) when the analytics grid fails to load", async () => {
     vi.mocked(getPlatformStats).mockReset().mockRejectedValue(new Error("network down"));
     useAuthStore.setState({
       principal: { userId: "u1", role: "founder", organizationId: null, regionIds: [] },
@@ -109,9 +109,8 @@ describe("DashboardHomePage", () => {
 
     // The unrelated drivers/students/parents strip still renders normally.
     expect(await screen.findByText("Total drivers")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.queryByText("Organizations")).not.toBeInTheDocument(),
-    );
+    expect(await screen.findByText("Could not load platform analytics")).toBeInTheDocument();
+    expect(screen.queryByText("Organizations")).not.toBeInTheDocument();
   });
 
   it("hides both platform KPI sections entirely for an Org Admin", async () => {
