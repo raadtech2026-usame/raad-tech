@@ -1,0 +1,83 @@
+/* Shared layout primitives for the dashboard's own composed sections (`app/dashboard/*`) — kept
+ * here rather than duplicated per-file, matching every other cross-cutting `.module.css` in this
+ * codebase (e.g. `app/layout/AppShell.module.css`). Breakpoints are the two already documented in
+ * `styles/tokens.css` (900px tablet, 1280px desktop) — no third tier introduced. */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sectionLabel {
+  font-family: var(--font-body);
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+
+/* Two-column panel row (e.g. Recent Activity | Fleet & Device Health) — a wider left column,
+ * narrower right, both collapsing to full width once there isn't room for two real columns. */
+.panelRow {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.panelWide {
+  grid-column: span 7;
+}
+
+.panelNarrow {
+  grid-column: span 5;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+@media (max-width: 1280px) {
+  .panelWide,
+  .panelNarrow {
+    grid-column: span 12;
+  }
+}
+
+/* Even split (e.g. Subscriptions | Revenue). */
+.panelHalf {
+  grid-column: span 6;
+}
+
+@media (max-width: 900px) {
+  .panelHalf {
+    grid-column: span 12;
+  }
+}
+
+.panelBody {
+  padding: 0 var(--space-5) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.panelStat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.panelStatValue {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--text-4xl);
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.panelStatCaption {
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
