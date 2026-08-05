@@ -61,6 +61,13 @@ describe("DashboardHomePage", () => {
     expect(screen.getByText("Devices")).toBeInTheDocument();
     expect(screen.getByText("2 active · 1 new today")).toBeInTheDocument();
     expect(getPlatformStats).toHaveBeenCalled();
+
+    // System health now shows the actual status per dependency (not just the dependency name),
+    // so a viewer can tell what's wrong without relying on badge color alone.
+    expect(screen.getByText("Database")).toBeInTheDocument();
+    expect(screen.getByText("Operational")).toBeInTheDocument();
+    expect(screen.getByText("Broker")).toBeInTheDocument();
+    expect(screen.getByText("Down")).toBeInTheDocument();
   });
 
   it("still shows the drivers/students/parents strip alongside the new grid", async () => {

@@ -1,4 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
+import clsx from "clsx";
 import {
   Activity,
   Building2,
@@ -14,6 +15,7 @@ import { useAuthStore } from "../shared/stores/authStore";
 import { getRoleDisplay } from "../shared/auth/roleDisplay";
 import { getDashboardType } from "../shared/auth/dashboard";
 import { usePageHeader } from "./layout/PageHeaderContext";
+import { Avatar } from "../shared/components/Avatar/Avatar";
 import { Badge } from "../shared/components/Badge/Badge";
 import { Card } from "../shared/components/Card/Card";
 import { EmptyState } from "../shared/components/EmptyState/EmptyState";
@@ -97,6 +99,17 @@ const HEALTH_BADGE_VARIANT: Record<string, "success" | "danger" | "neutral"> = {
   not_configured: "neutral",
 };
 
+/** Human labels for `PlatformStats.systemHealth.{database,broker}` — the raw wire values
+ * (`"ok"|"down"|"not_configured"`) used to be the badge's own visible text, which meant a viewer
+ * could only tell a dependency's actual status from the dot color, never from what the badge
+ * said (the badge read "Database"/"Broker", the *row* label, not the *status*). Fixed so status
+ * is legible without relying on color alone. */
+const HEALTH_STATUS_LABEL: Record<string, string> = {
+  ok: "Operational",
+  down: "Down",
+  not_configured: "Not configured",
+};
+
 /**
  * ADR-0020 platform-wide KPI grid — `GET /admin/platform-stats`, one query backing every tile
  * here (unlike the six-separate-fetcher stopgap `PlatformStatsRow` above). Two KPIs the ADR's
@@ -118,130 +131,155 @@ function PlatformAnalyticsSection() {
 
   if (isError) {
     return (
-      <EmptyState
-        icon={<Activity size={22} />}
-        title="Could not load platform analytics"
-        description={error instanceof ApiError ? error.message : "Something went wrong. Please try again."}
-      />
+      <Card padded>
+        <EmptyState
+          icon={<Activity size={22} />}
+          title="Could not load platform analytics"
+          description={error instanceof ApiError ? error.message : "Something went wrong. Please try again."}
+        />
+      </Card>
     );
   }
 
+  // "down" (a real dependency failure) gets the alert treatment; "not_configured" (an expected,
+  // disclosed state in this dev/sandbox environment — see CLAUDE.md's Redis/broker notes) does
+  // not, so an optional, intentionally-unbound dependency never reads as an incident.
+  const health = data?.systemHealth;
+  const hasHealthIssue = !!health && (health.database === "down" || health.broker === "down");
+
   return (
-    <div className={styles.statsGrid}>
-      <Card padded className={styles.statCard}>
-        <span className={styles.statIcon}>
-          <Building2 size={18} />
-        </span>
-        <div className={styles.statText}>
-          <span className={styles.statLabel}>Organizations</span>
+    <div className={styles.section}>
+      <span className={styles.sectionLabel}>Platform overview</span>
+      <div className={styles.statsGrid}>
+        <Card padded className={clsx(styles.statCard, styles.tileWide)}>
+          <div className={styles.statCardHead}>
+            <span className={styles.statIcon}>
+              <Building2 size={18} />
+            </span>
+            <span className={styles.statLabel}>Organizations</span>
+          </div>
           {isLoading || !data ? (
-            <Skeleton width={48} height={24} />
+            <Skeleton width={64} height={30} />
           ) : (
-            <>
-              <span className={styles.statValue}>
-                {numberFormatter.format(data.organizations.total)}
-              </span>
-              <span className={styles.statSubtext}>
-                {data.organizations.byStatus.active ?? 0} active · {data.organizations.createdToday}{" "}
-                new today
-              </span>
-            </>
+            <span className={styles.statValue}>{numberFormatter.format(data.organizations.total)}</span>
           )}
-        </div>
-      </Card>
-
-      <Card padded className={styles.statCard}>
-        <span className={styles.statIcon}>
-          <Cpu size={18} />
-        </span>
-        <div className={styles.statText}>
-          <span className={styles.statLabel}>Devices</span>
           {isLoading || !data ? (
-            <Skeleton width={48} height={24} />
+            <Skeleton width={130} height={13} />
           ) : (
-            <>
-              <span className={styles.statValue}>{numberFormatter.format(data.devices.total)}</span>
-              <span className={styles.statSubtext}>
-                {data.devices.online} online · {data.devices.offline} offline
-              </span>
-            </>
+            <span className={styles.statSubtext}>
+              {data.organizations.byStatus.active ?? 0} active · {data.organizations.createdToday}{" "}
+              new today
+            </span>
           )}
-        </div>
-      </Card>
+        </Card>
 
-      <Card padded className={styles.statCard}>
-        <span className={styles.statIcon}>
-          <Truck size={18} />
-        </span>
-        <div className={styles.statText}>
-          <span className={styles.statLabel}>Vehicles</span>
+        <Card padded className={clsx(styles.statCard, styles.tileWide)}>
+          <div className={styles.statCardHead}>
+            <span className={styles.statIcon}>
+              <Cpu size={18} />
+            </span>
+            <span className={styles.statLabel}>Devices</span>
+          </div>
           {isLoading || !data ? (
-            <Skeleton width={48} height={24} />
+            <Skeleton width={64} height={30} />
+          ) : (
+            <span className={styles.statValue}>{numberFormatter.format(data.devices.total)}</span>
+          )}
+          {isLoading || !data ? (
+            <Skeleton width={130} height={13} />
+          ) : (
+            <span className={styles.statSubtext}>
+              {data.devices.online} online · {data.devices.offline} offline
+            </span>
+          )}
+        </Card>
+
+        <Card padded className={clsx(styles.statCard, styles.tileWide)}>
+          <div className={styles.statCardHead}>
+            <span className={styles.statIcon}>
+              <Truck size={18} />
+            </span>
+            <span className={styles.statLabel}>Vehicles</span>
+          </div>
+          {isLoading || !data ? (
+            <Skeleton width={64} height={30} />
           ) : (
             <span className={styles.statValue}>{numberFormatter.format(data.vehicles.total)}</span>
           )}
-        </div>
-      </Card>
+          <span className={styles.statSubtext}>&nbsp;</span>
+        </Card>
 
-      <Card padded className={styles.statCard}>
-        <span className={styles.statIcon}>
-          <Users size={18} />
-        </span>
-        <div className={styles.statText}>
-          <span className={styles.statLabel}>Users</span>
+        <Card padded className={clsx(styles.statCard, styles.tileWide)}>
+          <div className={styles.statCardHead}>
+            <span className={styles.statIcon}>
+              <Users size={18} />
+            </span>
+            <span className={styles.statLabel}>Users</span>
+          </div>
           {isLoading || !data ? (
-            <Skeleton width={48} height={24} />
+            <Skeleton width={64} height={30} />
           ) : (
-            <>
-              <span className={styles.statValue}>{numberFormatter.format(data.users.total)}</span>
-              <span className={styles.statSubtext}>
-                {numberFormatter.format(data.users.monthlyActive)} MAU · {data.users.createdToday}{" "}
-                new today
-              </span>
-            </>
+            <span className={styles.statValue}>{numberFormatter.format(data.users.total)}</span>
           )}
-        </div>
-      </Card>
-
-      <Card padded className={styles.statCard}>
-        <span className={styles.statIcon}>
-          <DollarSign size={18} />
-        </span>
-        <div className={styles.statText}>
-          <span className={styles.statLabel}>Revenue (month to date)</span>
           {isLoading || !data ? (
-            <Skeleton width={48} height={24} />
+            <Skeleton width={130} height={13} />
           ) : (
-            <>
-              <span className={styles.statValue}>{currencyFormatter.format(data.billing.revenue)}</span>
-              <span className={styles.statSubtext}>
-                {data.billing.expiringSoon} subscription(s) expiring soon
-              </span>
-            </>
+            <span className={styles.statSubtext}>
+              {numberFormatter.format(data.users.monthlyActive)} MAU · {data.users.createdToday}{" "}
+              new today
+            </span>
           )}
-        </div>
-      </Card>
+        </Card>
 
-      <Card padded className={styles.statCard}>
-        <span className={styles.statIcon}>
-          <Activity size={18} />
-        </span>
-        <div className={styles.statText}>
-          <span className={styles.statLabel}>System health</span>
+        <Card padded className={clsx(styles.statCard, styles.tileWide)}>
+          <div className={styles.statCardHead}>
+            <span className={styles.statIcon}>
+              <DollarSign size={18} />
+            </span>
+            <span className={styles.statLabel}>Revenue (month to date)</span>
+          </div>
           {isLoading || !data ? (
-            <Skeleton width={48} height={24} />
+            <Skeleton width={64} height={30} />
           ) : (
-            <div className={styles.healthBadges}>
-              <Badge variant={HEALTH_BADGE_VARIANT[data.systemHealth.database] ?? "neutral"} dot>
-                Database
-              </Badge>
-              <Badge variant={HEALTH_BADGE_VARIANT[data.systemHealth.broker] ?? "neutral"} dot>
-                Broker
-              </Badge>
+            <span className={styles.statValue}>{currencyFormatter.format(data.billing.revenue)}</span>
+          )}
+          {isLoading || !data ? (
+            <Skeleton width={130} height={13} />
+          ) : (
+            <span className={styles.statSubtext}>
+              {data.billing.expiringSoon} subscription(s) expiring soon
+            </span>
+          )}
+        </Card>
+
+        <Card padded className={clsx(styles.statCard, styles.tileWide, hasHealthIssue && styles.statCardAlert)}>
+          <div className={styles.statCardHead}>
+            <span className={styles.statIcon}>
+              <Activity size={18} />
+            </span>
+            <span className={styles.statLabel}>System health</span>
+          </div>
+          {isLoading || !data ? (
+            <Skeleton width={64} height={30} />
+          ) : (
+            <div className={styles.healthRows}>
+              <div className={styles.healthRow}>
+                <span className={styles.healthRowLabel}>Database</span>
+                <Badge variant={HEALTH_BADGE_VARIANT[data.systemHealth.database] ?? "neutral"} dot>
+                  {HEALTH_STATUS_LABEL[data.systemHealth.database] ?? data.systemHealth.database}
+                </Badge>
+              </div>
+              <div className={styles.healthRow}>
+                <span className={styles.healthRowLabel}>Broker</span>
+                <Badge variant={HEALTH_BADGE_VARIANT[data.systemHealth.broker] ?? "neutral"} dot>
+                  {HEALTH_STATUS_LABEL[data.systemHealth.broker] ?? data.systemHealth.broker}
+                </Badge>
+              </div>
             </div>
           )}
-        </div>
-      </Card>
+          <span className={styles.statSubtext}>&nbsp;</span>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -269,28 +307,32 @@ function PlatformStatsRow() {
   });
 
   return (
-    <div className={styles.statsGrid}>
-      {PLATFORM_STATS.map((stat, index) => {
-        const result = results[index];
-        const Icon = stat.icon;
-        return (
-          <Card key={stat.key} padded className={styles.statCard}>
-            <span className={styles.statIcon}>
-              <Icon size={18} />
-            </span>
-            <div className={styles.statText}>
-              <span className={styles.statLabel}>{stat.label}</span>
+    <div className={styles.section}>
+      <span className={styles.sectionLabel}>People</span>
+      <div className={styles.statsGrid}>
+        {PLATFORM_STATS.map((stat, index) => {
+          const result = results[index];
+          const Icon = stat.icon;
+          return (
+            <Card key={stat.key} padded className={clsx(styles.statCard, styles.tileNarrow)}>
+              <div className={styles.statCardHead}>
+                <span className={styles.statIcon}>
+                  <Icon size={18} />
+                </span>
+                <span className={styles.statLabel}>{stat.label}</span>
+              </div>
               {result.isLoading ? (
-                <Skeleton width={48} height={24} />
+                <Skeleton width={64} height={30} />
               ) : (
                 <span className={styles.statValue}>
                   {result.isError ? "—" : numberFormatter.format(result.data ?? 0)}
                 </span>
               )}
-            </div>
-          </Card>
-        );
-      })}
+              <span className={styles.statSubtext}>&nbsp;</span>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -313,14 +355,17 @@ export function DashboardHomePage() {
   );
 
   return (
-    <div className={styles.grid}>
+    <div className={clsx(styles.page, "raad-view-transition")}>
       <Card className={styles.welcomeCard}>
-        <div className={styles.welcomeTitle}>Welcome{roleDisplay ? `, ${roleDisplay.label}` : ""}</div>
-        <p className={styles.welcomeBody}>
-          {dashboardType === "platform"
-            ? "This is the RAAD platform console. Fleet, tracking, billing, and reporting summaries will appear here as each module comes online."
-            : "This is your organization's console. Fleet, tracking, and rider summaries for your organization will appear here as each module comes online."}
-        </p>
+        {roleDisplay && <Avatar initials={roleDisplay.abbreviation} color={roleDisplay.color} size="lg" />}
+        <div className={styles.welcomeText}>
+          <span className={styles.welcomeTitle}>Welcome{roleDisplay ? `, ${roleDisplay.label}` : ""}</span>
+          <p className={styles.welcomeBody}>
+            {dashboardType === "platform"
+              ? "This is the RAAD platform console. Fleet, tracking, billing, and reporting summaries will appear here as each module comes online."
+              : "This is your organization's console. Fleet, tracking, and rider summaries for your organization will appear here as each module comes online."}
+          </p>
+        </div>
       </Card>
 
       {dashboardType === "platform" && (
