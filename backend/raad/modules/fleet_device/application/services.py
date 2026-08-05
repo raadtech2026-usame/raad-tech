@@ -53,12 +53,14 @@ from raad.modules.fleet_device.application.queries import (
     DeviceAssignmentDTO,
     DeviceDTO,
     DeviceInventoryItemDTO,
+    DeviceStatsDTO,
     GetDeviceByIdQuery,
     GetVehicleByIdQuery,
     ListDevicesQuery,
     ListVehiclesQuery,
     TrackingStatusDTO,
     VehicleDTO,
+    VehicleStatsDTO,
     assignment_to_dto,
     device_to_dto,
     inventory_item_to_dto,
@@ -212,6 +214,12 @@ class VehicleApplicationService:
                 page_size=page.page_size,
             )
 
+    async def get_vehicle_stats(self, *, uow: FleetDeviceUnitOfWork) -> VehicleStatsDTO:
+        """ADR-0020: "Total Vehicles" KPI, backing `platform_audit.PlatformStatsApplicationService`."""
+        async with uow:
+            total = await uow.vehicles.count_total()
+            return VehicleStatsDTO(total=total)
+
     @staticmethod
     async def _get_vehicle_or_raise(
         uow: FleetDeviceUnitOfWork, vehicle_id: str
@@ -346,7 +354,7 @@ class DeviceApplicationService:
                     extra={"device_id": command.device_id},
                 )
                 return
-            device.record_last_seen(command.seen_at)
+            device.record_last_seen(command.seen_at, is_online=command.is_online)
             await uow.commit()
 
     async def register_camera(
@@ -391,6 +399,14 @@ class DeviceApplicationService:
                 page=page.page,
                 page_size=page.page_size,
             )
+
+    async def get_device_stats(self, *, uow: FleetDeviceUnitOfWork) -> DeviceStatsDTO:
+        """ADR-0020 §3: "Total/Online/Offline Devices" KPI, backing `platform_audit.
+        PlatformStatsApplicationService`."""
+        async with uow:
+            total = await uow.devices.count_total()
+            online = await uow.devices.count_online()
+            return DeviceStatsDTO(total=total, online=online, offline=total - online)
 
     # --- Device ↔ Vehicle assignment ----------------------------------------------------
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import string
+from datetime import datetime
 
 from raad.core.config.settings import LockoutSettings
 from raad.core.errors.exceptions import (
@@ -62,6 +63,7 @@ from raad.modules.iam.application.queries import (
     ListUsersQuery,
     SessionDTO,
     UserDTO,
+    UserStatsDTO,
     refresh_token_to_session_dto,
     user_to_dto,
 )
@@ -347,6 +349,25 @@ class UserApplicationService:
                 total=page.total,
                 page=page.page,
                 page_size=page.page_size,
+            )
+
+    async def get_user_stats(
+        self, *, since_today: datetime, mau_since: datetime, uow: IamUnitOfWork
+    ) -> UserStatsDTO:
+        """ADR-0020: active-user breakdown + MAU + "New Users Today" KPIs, backing
+        `platform_audit.PlatformStatsApplicationService`. Both date boundaries are resolved by
+        the caller once, for the whole composed response (`OrganizationApplicationService.
+        get_organization_stats`'s own docstring gives the full "policy resolved by caller"
+        reasoning)."""
+        async with uow:
+            by_status = await uow.users.count_by_status()
+            monthly_active = await uow.users.count_last_login_after(mau_since)
+            created_today = await uow.users.count_created_since(since_today)
+            return UserStatsDTO(
+                total=sum(by_status.values()),
+                by_status=by_status,
+                monthly_active=monthly_active,
+                created_today=created_today,
             )
 
     @staticmethod

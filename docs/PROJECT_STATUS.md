@@ -16,9 +16,9 @@ architecture; this file is the source of truth for progress and sequencing.
 |---|---|
 | **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
 | **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against) — every Priority 1 item touching the backend/web/infra surface (1–7) is complete and either live-verified or mechanism-complete-with-disclosed-testing-limits. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **Item 8 (Payment):** audited, genuinely blocked on a real provider account + a webhook-actor design decision — see Section 5. This is the end state of the continuous-completion program (user directive 2026-08-03) — see Section 15 for the full final report. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation) and **ADR-0019 (Account-Sharing Session Cap) have now landed**. ADR-0020 (Platform Analytics) is next in the backend milestone sequence — no longer "paused," since all nine Priority 1 items are closed. Frontend: F0–F7 complete, F8–F13 not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
-| **Current git commit** | `4bd244d` — `feat(mobile): implement Priority 1 Item 9 - Mobile App MVP (partial)` (branch `main`; ADR-0019's own commit is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
-| **Last updated** | 2026-08-04 |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), **ADR-0019 (Account-Sharing Session Cap), and ADR-0020 (Platform Analytics Read Model) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete. Frontend: F0–F7 complete plus the ADR-0020 KPI grid; F8/F9/F10/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
+| **Current git commit** | `07cd3e8` — `feat(iam): implement ADR-0019 - account-sharing concurrent session cap` (branch `main`; ADR-0020's own commit is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit) |
+| **Last updated** | 2026-08-05 |
 
 ---
 
@@ -198,11 +198,33 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 
 ### Insight
 
-#### Analytics — ❌ Missing
-- **Implemented:** Nothing beyond what already existed pre-ADR-0020 (`AuditEntry`, `SystemSetting`).
-- **Missing:** The entire ADR-0020 scope — an `is_online` read-model, a stats read-model, a platform-stats route, and the frontend KPI grid.
+#### Analytics — ✅ Complete
+- **Implemented:** ADR-0020 (2026-08-05), full scope. `devices.is_online` (migration
+  `b288c2e44aa5`) closes the Online/Offline gap by extending the *already-real*
+  `DeviceConnectivityProcessor` (`fleet_device/events/subscribers.py`) — confirmed this
+  consumer already existed and already populated `last_seen_at`, so no new event consumer was
+  needed, resolving Known Issue #9's own flagged ADR-vs-repo conflation. New, additive count/
+  sum query methods across four modules (`organization.count_by_status`/`count_created_since`,
+  `iam.count_by_status`/`count_last_login_after`/`count_created_since` — with a new
+  `ix_users__last_login_at` index — `fleet_device.count_total`/`count_online`,
+  `billing.count_by_status`/`count_expiring_between`/`sum_paid_amount_between`), composed by a
+  new `platform_audit.PlatformStatsApplicationService` (constructor-injected with all four
+  modules' own application services plus the existing `HealthCheckService` — no cross-module DB
+  read anywhere, confirmed by the existing `tests/architecture/test_module_boundaries.py` gate,
+  re-run green). `GET /admin/platform-stats`, gated by a new `admin.platform_stats.read`
+  permission (Founder/Regional Manager/Support Staff/Finance Staff) — a real RBAC gap found
+  while implementing: `finance_staff` doesn't hold `admin.audit.read`, contradicting the ADR's
+  own assumption. Frontend: `DashboardHomePage.tsx`'s `PlatformAnalyticsSection` replaces the
+  organizations/vehicles/devices tiles of the pre-existing six-tile stopgap with real
+  breakdowns (status splits, online/offline, MAU, revenue, system health); drivers/students/
+  parents tiles are untouched (outside this ADR's scope). Live-verified against real Postgres,
+  including the full four-module composition through the real DI container.
+- **Missing:** Two KPIs named in the ADR's own Context ("Live Vehicle Locations", "Active
+  Drivers") are a real, flagged scope cut — neither `tracking` nor `transport_ops` is named in
+  the ADR's own §1 Decision module list, and inventing either (an unsafe Redis `KEYS`/`SCAN`
+  scan; an undocumented cross-module reach) was avoided rather than silently built.
 - **Production blocker?** No.
-- **Dependencies:** ADR-0020 implementation.
+- **Dependencies:** None — closed.
 
 #### Reporting — ❌ Missing (functionally)
 - **Implemented:** `ReportRun` request/track lifecycle and a Report Worker that polls queued runs.
@@ -330,7 +352,7 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0017 | Organization Onboarding Orchestration | ✅ Complete |
 | 0018 | Device Inventory & Allocation | ✅ Complete |
 | 0019 | Account-Sharing Session Cap | ✅ Complete |
-| 0020 | Platform Analytics Read Model | ❌ Not Started |
+| 0020 | Platform Analytics Read Model | ✅ Complete |
 | 0021 | Tenant Scope Enforcement at Repository Layer | ✅ Complete |
 
 ---
@@ -339,10 +361,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 
 > **On ADR-0019 / ADR-0020:** neither was ever a production blocker — Priority 1 below (backups,
 > TLS, rate limiting, mobile app, payments, monitoring) is where a real launch actually gets
-> stopped, and it's now fully closed (see Section 15). **ADR-0019 (Session Cap) has since
-> landed** (2026-08-04, at the user's explicit request, ahead of its Priority 2 slot below) — see
-> Section 8/9 for the writeup. ADR-0020 (Platform Analytics) remains the one open Priority 2 item
-> from this pair.
+> stopped, and it's now fully closed (see Section 15). **Both have since landed**, ahead of
+> their Priority 2 slots below, at the user's explicit request: ADR-0019 (Session Cap,
+> 2026-08-04) and ADR-0020 (Platform Analytics, 2026-08-05) — see Section 8/9 for both
+> writeups.
 
 ### Priority 1 — Critical blockers before production
 1. ~~**Backups**~~ — ✅ **Complete** (2026-08-03). Local `pg_dump`/`pg_restore` mechanism, live-verified round trip, CI-covered, pluggable off-site hook (unconfigured — see Known Issue #12). `docs/runbooks/backup-and-restore.md`.
@@ -401,7 +423,8 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - Notifications web UI (F8) *(3–5 days)*
 - Billing web UI (F9) *(3–5 days)*
 - Live video / JT1078 — only if video is part of the launch pitch *(3–6 weeks)*
-- Platform analytics (ADR-0020) *(1–2 weeks)*
+- ~~Platform analytics (ADR-0020)~~ — ✅ **Complete** (2026-08-05, done ahead of its Priority 2
+  slot at the user's request — see Section 8/9).
 - ~~Session cap (ADR-0019)~~ — ✅ **Complete** (2026-08-04, done ahead of its Priority 2 slot at
   the user's request — see Section 8/9).
 - Reporting renderer (PDF/Excel) *(~1 week)*
@@ -443,7 +466,7 @@ whenever a phase finishes.**
 | 4 | Tracking | 🟡 In Progress | GPS ingestion + live tracking backend complete; Redis hardened mechanism-wise (Priority 1 Item 4), not yet live-verified in this sandbox (Known Issue #15). |
 | 5 | Device Inventory | ✅ Complete | ADR-0018. |
 | 6 | ADR-0019 Session Cap | ✅ Complete | Concurrent-session cap, revoke-oldest, self-service `GET`/`DELETE /auth/sessions`. |
-| 7 | ADR-0020 Platform Analytics | ⬜ Planned | Not started. |
+| 7 | ADR-0020 Platform Analytics | ✅ Complete | `GET /admin/platform-stats` + real KPI grid. |
 | 8 | Flutter Mobile App | ⬜ Planned | 0% built — structural scaffold only. |
 | 9 | Video Platform | ⬜ Planned | JT1078, 0% built — runtime not yet decided. |
 | 10 | Production Deployment | ⬜ Planned | Blocked on Section 5 Priority 1 (monitoring, RBAC admin route, deployment docs, payments, mobile app). |
@@ -474,15 +497,62 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — ADR-0019 (Account-Sharing Session Cap) just landed (2026-08-04).** A review session
-(this same date) read this file + `CLAUDE.md`, verified the Priority 1 list against the actual
-repo (confirming all nine items still closed, and catching two stale doc spots — Section 2's
-Mobile row and the top-of-file commit pointer, both still needing a follow-up correction, not
-yet done), and recommended Known Issue #17 (self-scoped Parent/Driver identity resolution) as
-the next actionable, non-externally-blocked work. The user instead redirected to ADR-0019 — a
-Roadmap Priority (Section 6, Phase 6) item, not a Priority 1 blocker, which is the user's call to
-make. Implemented via a reviewed plan (per this project's own `.claude/rules/workflow.md` #8
-discipline for anything touching business logic), not freelanced.
+**Nothing — ADR-0020 (Platform Analytics Read Model) just landed (2026-08-05), immediately
+after ADR-0019 (2026-08-04).** Both were the user's own explicit redirect away from this
+session's Priority-1-scoped recommendations (Known Issue #17), each a Roadmap Priority item
+(Section 6), not a Priority 1 blocker — the user's call to make. Both implemented via a
+reviewed plan (per `.claude/rules/workflow.md` #8), not freelanced. Section 2's Mobile row and
+similar minor doc staleness are still outstanding, not yet corrected — noted, not forgotten.
+
+**ADR-0020 — Platform Analytics Read Model.** Real KPIs for the Platform Dashboard, composed
+read-only from `organization`/`iam`/`fleet_device`/`billing`, owned by `platform_audit`, per the
+ADR's own §1. **Three real gaps between the ADR's text and the actual repo, found by reading the
+code rather than assumed** (matching the exact discipline ADR-0019 established a day earlier):
+(1) the ADR's own §3 was stale — Known Issue #9 had already flagged that
+`DeviceConnectivityProcessor` (`fleet_device/events/subscribers.py`) already consumed
+`DeviceOnline`/`DeviceOffline` and populated `last_seen_at`; confirmed true, so the "Online/
+Offline Devices" gap was closed by extending that *existing* processor with a new
+`devices.is_online` boolean (migration `b288c2e44aa5`) rather than building a second consumer —
+Known Issue #9 itself is now marked resolved. (2) The ADR names `interfaces/http/
+policy_guards.py` as "the precedent reused here," but that file lives outside any module
+specifically because CR-1/D5 have no single owning module — Platform Stats *does* (`platform_
+audit`, the ADR's own §1), so the four-module composition lives in a new `PlatformStats
+ApplicationService` there instead, constructor-injected with all four modules' own application
+services (legal per `backend.md` #3 — a module may import another module's application-layer
+symbols, never `domain`/`infra` — confirmed by the existing `test_module_boundaries.py` gate,
+re-run green). (3) `finance_staff` doesn't hold `admin.audit.read` in the seeded matrix,
+contradicting the ADR's claim that all four RAAD-staff roles already hold the `GET /admin/audit`
+grant — resolved with a new `admin.platform_stats.read` permission instead, the ADR's own
+anticipated fallback.
+
+New, additive count/sum query methods across the four modules (no existing method's behavior
+changed): `organization.count_by_status`/`count_created_since`; `iam.count_by_status`/
+`count_last_login_after`/`count_created_since` (MAU — a new `ix_users__last_login_at` index in
+the same migration, since this column had none); `fleet_device.Vehicle.count_total`,
+`Device.count_total`/`count_online`; `billing.count_by_status`/`count_expiring_between`/
+`sum_paid_amount_between` (a real SQL query, deliberately not a mirror of `sweep_expired_
+subscriptions`'s existing unfiltered `list_all()` scan). `GET /admin/platform-stats`
+(`platform_audit/api/routers.py`) composes all four via `PlatformStatsApplicationService`,
+scoped exactly like every other `/admin` route (`TenantRegionScope` — unrestricted for Founder,
+region-limited for Regional Manager). "System Health" reuses the existing `HealthCheckService`
+(Priority 1 Item 5) verbatim — zero new observability code. **Two KPIs from the ADR's own
+Context wishlist are a real, flagged scope cut, not silently dropped**: "Live Vehicle Locations"
+(`tracking`'s Redis state has no safe/cheap aggregate count — `KEYS`/`SCAN` over live position
+keys is exactly the kind of production-risk operation this platform avoids) and "Active
+Drivers" (`transport_ops.Driver` — neither module is named in the ADR's own §1 Decision scope).
+
+Frontend: `DashboardHomePage.tsx`'s pre-existing six-tile stopgap (`PlatformStatsRow`, already
+self-documented in-code as "superseded by ADR-0020 whenever that milestone lands") had its
+organizations/vehicles/devices tiles replaced by a new `PlatformAnalyticsSection` — one query
+backing a richer grid (status breakdowns, online/offline, MAU, revenue, system health) the old
+flat-total tiles never could show; drivers/students/parents tiles are untouched, correctly
+outside this ADR's scope. **Live-verified, not just unit-tested**: migration round-tripped
+clean; the real `DeviceConnectivityProcessor` (not a fake) confirmed flipping `is_online` in the
+database on a real `DeviceOnline`/`DeviceOffline` event; the real, DI-wired
+`PlatformStatsApplicationService` confirmed running the full four-module composition against
+real Postgres without error. 1294 unit + 10 architecture-gate tests pass (backend), 344 frontend
+tests pass, zero regressions. Zero changes to any bounded context's existing behavior, RBAC, or
+tenant-isolation code.
 
 **ADR-0019 — Account-Sharing Session Cap.** `SessionLimitPolicy` (`core/policies/
 session_limit.py`) — a pure threshold check mirroring `SubscriptionAccessPolicy`'s existing
@@ -598,6 +668,7 @@ as a generic 500 rather than a clean 4xx — confirmed systemic (not this item's
 new Known Issue #16. 1236 unit + 10 architecture tests pass with zero regressions.
 
 **Completed This Sprint:**
+- **ADR-0020 — Platform Analytics Read Model.** Full writeup above, under "Currently Working On."
 - **ADR-0019 — Account-Sharing Session Cap.** Full writeup above, under "Currently Working On."
 - **Priority 1 Item 8 — Payment provider integration (audited; genuinely blocked externally,
   not further built).** Confirmed by re-reading both the application-layer code and the source
@@ -741,14 +812,12 @@ new Known Issue #16. 1236 unit + 10 architecture tests pass with zero regression
   Project Control Center (Sections 2, 6, 7, 12, 13).
 
 **Next Task:**
-**This note was stale** (left over from before Priority 1 Items 5–9 and ADR-0019 all landed —
-Section 15 has the Priority 1 program's own final report). Current recommendation, per the
-2026-08-04 review session: **Known Issue #17** (self-scoped Parent/Driver identity resolution —
-`GET /me/students`-shaped work, a short ADR first per `.claude/rules/workflow.md` #8) is the
-highest-priority remaining item that isn't blocked on an external dependency this engagement
-can't obtain. ADR-0020 (Platform Analytics) is the next well-specified backend milestone item if
-the user prefers roadmap sequencing over the Known Issue. Per Section 14's rules, don't start
-either without the user's confirmation.
+**Recommended: Known Issue #17** (self-scoped Parent/Driver identity resolution —
+`GET /me/students`-shaped work, a short ADR first per `.claude/rules/workflow.md` #8). With
+ADR-0019 and ADR-0020 both now landed, it's the highest-priority remaining item that isn't
+blocked on an external dependency this engagement can't obtain — Item 8 (Payment) and the rest
+of Item 9 (Mobile) both are. Per Section 14's rules, don't start it without the user's
+confirmation.
 
 ---
 
@@ -756,6 +825,14 @@ either without the user's confirmation.
 
 Reverse-chronological (most recent first):
 
+- **ADR-0020 — Platform Analytics Read Model** completed — `GET /admin/platform-stats` composed
+  from `organization`/`iam`/`fleet_device`/`billing`'s own new count/sum query methods by a new
+  `platform_audit.PlatformStatsApplicationService`; `devices.is_online` closes the Online/
+  Offline gap by extending the already-real `DeviceConnectivityProcessor` (Known Issue #9 now
+  resolved); a new `admin.platform_stats.read` permission (Finance Staff didn't hold `admin.
+  audit.read`); System Health reuses `HealthCheckService` verbatim. Frontend KPI grid replaces
+  three tiles of the pre-existing stopgap. Live-verified against real Postgres, including the
+  full composition through the real DI container. See Section 8 for the full writeup.
 - **ADR-0019 — Account-Sharing Session Cap** completed — `SessionLimitPolicy` enforced at
   login/refresh (revoke-oldest once a per-role cap, read from a new `platform_audit.
   SystemSetting` row via a new `SessionCapPort`/`SystemSettingSessionCapAdapter`, is exceeded),
@@ -926,15 +1003,16 @@ Reverse-chronological (most recent first):
   etc.) before marketing any alarm-based safety feature.
 - **Blocking production?** No, unless alarms are marketed as working.
 
-### 9. ADR-0020's Context section conflates two different consumers
-- **Severity:** Low
-- **Description:** ADR-0020 frames the `DeviceOnline`/`DeviceOffline` consumer as something it
-  still needs to build — but the `last_seen_at`-populating consumer is already real (see Known
-  Issue 6). ADR-0020 actually needs a *second*, distinct consumer that additionally sets a new
-  `devices.is_online` boolean for the KPI grid.
-- **Recommended fix:** Amend ADR-0020's Context section to name the two consumers separately
-  before implementation starts.
-- **Blocking production?** No.
+### 9. ~~ADR-0020's Context section conflates two different consumers~~ — RESOLVED 2026-08-05
+- **Resolution:** Confirmed accurate during ADR-0020 implementation, not just filed and left:
+  `DeviceConnectivityProcessor` (`fleet_device/events/subscribers.py`) already consumed
+  `DeviceOnline`/`DeviceOffline` and populated `last_seen_at` — extended in place (not
+  duplicated into a second consumer) to also set the new `devices.is_online` boolean, since it
+  already receives both event types via the existing `EventProcessorRegistry` dispatch. No
+  amendment to the ADR's own text was made (out of scope for an implementation session), but
+  the actual code now reflects the correct, single-consumer reality this issue described.
+- **Severity:** ~~Low~~
+- **Blocking production?** No longer relevant — closed.
 
 ### 10. `infrastructure/mysql/` templates are orphaned
 - **Severity:** Low

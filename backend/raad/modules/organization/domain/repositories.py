@@ -12,6 +12,7 @@ to also satisfy `core.db.repository`'s interfaces if useful — an infra-layer d
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from raad.core.pagination import (
     FilterCondition,
@@ -69,6 +70,19 @@ class OrganizationRepository(ABC):
         """Backs `GET /organizations`'s paginated/filtered/sorted contract (API Contracts §7/
         §8). `core.pagination` is framework-free (no SQLAlchemy/FastAPI), so referencing its
         types here does not pull infra/transport concerns into the domain layer."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_by_status(self) -> dict[str, int]:
+        """ADR-0020: "Total/Active/Suspended Organizations" KPI — a single breakdown query
+        (`GROUP BY status`), not one query per status. Scoped like `list_page`."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_created_since(self, since: datetime) -> int:
+        """ADR-0020: "New Organizations Today" KPI — `since` is resolved by the caller (the
+        start of "today" in whatever timezone convention `platform_audit`'s composition uses),
+        never computed here; this method only counts."""
         raise NotImplementedError
 
 

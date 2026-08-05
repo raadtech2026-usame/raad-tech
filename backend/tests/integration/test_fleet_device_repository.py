@@ -221,13 +221,16 @@ class VehicleAndDeviceRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase)
         async with self._new_uow() as uow:
             loaded = await uow.devices.get(device_id)
             self.assertIsNone(loaded.last_seen_at)
-            loaded.record_last_seen(seen_at)
+            self.assertFalse(loaded.is_online)
+            loaded.record_last_seen(seen_at, is_online=True)
             await uow.commit()  # no uow.devices.add(loaded) - must still persist
 
         async with self._new_uow() as uow:
             refetched = await uow.devices.get(device_id)
 
         self.assertEqual(refetched.last_seen_at, seen_at.replace(tzinfo=None))
+        # ADR-0020 §3: `is_online` round-trips through the same identity-map/no-second-add path.
+        self.assertTrue(refetched.is_online)
 
     async def test_device_list_all_includes_newly_added_device(self) -> None:
         async with self._new_uow() as uow:

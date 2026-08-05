@@ -37,6 +37,7 @@ from datetime import datetime
 from sqlalchemy import (
     CHAR,
     VARCHAR,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -109,6 +110,8 @@ class DeviceModel(AuditedTableMixin, Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
     )
+    # ADR-0020 §3: never claimed True by default — only a real DeviceOnline event flips it.
+    is_online: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # ADR-0018: set only for a device created via `POST /device-inventory/{id}/allocate`; NULL
     # for every device registered the pre-existing way. In-context FK (both tables owned by
     # this same module), unlike `organization_id`'s deliberate cross-module id-only treatment.

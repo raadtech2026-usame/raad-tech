@@ -9,6 +9,10 @@ from datetime import datetime
 from typing import Any
 
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.modules.billing.application.queries import BillingStatsDTO
+from raad.modules.fleet_device.application.queries import DeviceStatsDTO, VehicleStatsDTO
+from raad.modules.iam.application.queries import UserStatsDTO
+from raad.modules.organization.application.queries import OrganizationStatsDTO
 from raad.modules.platform_audit.domain.entities import AuditEntry, SystemSetting
 
 
@@ -71,3 +75,38 @@ class SystemSettingDTO:
 
 def system_setting_to_dto(setting: SystemSetting) -> SystemSettingDTO:
     return SystemSettingDTO(key=str(setting.key), value=setting.value, scope=setting.scope)
+
+
+@dataclass(frozen=True)
+class SystemHealthDTO:
+    """ADR-0020 §4: deliberately conservative — database reachability and whether the broker
+    is bound, reusing `core.health.service.HealthCheckService` verbatim (Priority 1 Item 5),
+    never a new observability mechanism. `database`/`broker` are each one of
+    `HealthCheckService.DependencyStatus.label`'s three values ("ok"/"down"/"not_configured").
+    **Background-worker heartbeat status is a real, flagged scope cut**: the ADR names it, but
+    no existing heartbeat mechanism exists anywhere in this codebase to reuse (confirmed, not
+    assumed) — inventing one would be new observability infrastructure, exactly what §4's own
+    "not a new observability platform" scope limit rules out."""
+
+    database: str
+    broker: str
+
+
+@dataclass(frozen=True)
+class PlatformStatsDTO:
+    """ADR-0020: the full platform-wide KPI grid, composed from four modules' own stats DTOs —
+    `platform_audit` never reads another module's tables directly (`.claude/rules/backend.md`
+    #3), only their application-layer DTOs. **Two KPIs from the ADR's own Context wishlist are
+    a real, flagged scope cut, not silently dropped**: "Live Vehicle Locations" (would need
+    `tracking`'s Redis state — no safe/cheap aggregate count exists there, `KEYS`/`SCAN` over
+    live position keys is exactly the kind of production-risk operation this platform avoids)
+    and "Active Drivers" (would need `transport_ops.Driver` — neither module is named in the
+    ADR's own §1 Decision scope). Both are absent from this DTO entirely, not represented as a
+    fabricated zero."""
+
+    organizations: OrganizationStatsDTO
+    vehicles: VehicleStatsDTO
+    devices: DeviceStatsDTO
+    users: UserStatsDTO
+    billing: BillingStatsDTO
+    system_health: SystemHealthDTO

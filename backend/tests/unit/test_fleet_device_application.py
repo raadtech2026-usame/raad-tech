@@ -190,6 +190,9 @@ class InMemoryVehicleRepository(VehicleRepository):
             search_field="plate_no",
         )
 
+    async def count_total(self) -> int:
+        return len(self.by_id)
+
 
 class InMemoryDeviceRepository(DeviceRepository):
     def __init__(self) -> None:
@@ -247,6 +250,12 @@ class InMemoryDeviceRepository(DeviceRepository):
             search=search,
             search_field="terminal_id",
         )
+
+    async def count_total(self) -> int:
+        return len(self.by_id)
+
+    async def count_online(self) -> int:
+        return sum(1 for device in self.by_id.values() if device.is_online)
 
 
 class InMemoryDeviceAssignmentRepository(DeviceAssignmentRepository):
@@ -1130,6 +1139,42 @@ class DevicePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class FleetStatsApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0020: `get_vehicle_stats`/`get_device_stats`, backing `platform_audit.
+    PlatformStatsApplicationService`."""
+
+    async def test_get_vehicle_stats_reports_total(self) -> None:
+        vehicle_service, _device_service, uow = make_services()
+        for i in range(3):
+            await _register_vehicle(vehicle_service, uow, plate_no=f"STAT-{i}")
+
+        stats = await vehicle_service.get_vehicle_stats(uow=uow)
+
+        self.assertEqual(stats.total, 3)
+
+    async def test_get_device_stats_splits_online_and_offline(self) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        online_id = await _register_activated_device(
+            device_service, uow, terminal_id="TERM-ONLINE"
+        )
+        await _register_activated_device(device_service, uow, terminal_id="TERM-OFFLINE")
+        await device_service.record_device_seen(
+            RecordDeviceSeenCommand(
+                device_id=online_id,
+                seen_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+                is_online=True,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        stats = await device_service.get_device_stats(uow=uow)
+
+        self.assertEqual(stats.total, 2)
+        self.assertEqual(stats.online, 1)
+        self.assertEqual(stats.offline, 1)
+
+
 class DeviceLifecycleApplicationTests(unittest.IsolatedAsyncioTestCase):
     async def test_suspend_activated_device(self) -> None:
         _vehicle_service, device_service, uow = make_services()
@@ -1158,12 +1203,15 @@ class RecordDeviceSeenTests(unittest.IsolatedAsyncioTestCase):
         commit_count_before = uow.commit_count
 
         result = await device_service.record_device_seen(
-            RecordDeviceSeenCommand(device_id=device_id, seen_at=seen_at, actor=make_actor()),
+            RecordDeviceSeenCommand(
+                device_id=device_id, seen_at=seen_at, is_online=True, actor=make_actor()
+            ),
             uow=uow,
         )
 
         self.assertIsNone(result)
         self.assertEqual(uow.devices.by_id[device_id].last_seen_at, seen_at)
+        self.assertTrue(uow.devices.by_id[device_id].is_online)
         self.assertEqual(uow.commit_count, commit_count_before + 1)
 
     async def test_unknown_device_id_is_a_safe_no_op_not_an_error(self) -> None:
@@ -1175,7 +1223,10 @@ class RecordDeviceSeenTests(unittest.IsolatedAsyncioTestCase):
 
         await device_service.record_device_seen(
             RecordDeviceSeenCommand(
-                device_id=NON_EXISTENT_ULID, seen_at=seen_at, actor=make_actor()
+                device_id=NON_EXISTENT_ULID,
+                seen_at=seen_at,
+                is_online=True,
+                actor=make_actor(),
             ),
             uow=uow,
         )
@@ -1190,12 +1241,39 @@ class RecordDeviceSeenTests(unittest.IsolatedAsyncioTestCase):
             RecordDeviceSeenCommand(
                 device_id=device_id,
                 seen_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+                is_online=True,
                 actor=make_actor(),
             ),
             uow=uow,
         )
 
         self.assertEqual(uow.devices.by_id[device_id].lifecycle_state.value, "activated")
+
+    async def test_is_online_false_clears_the_flag(self) -> None:
+        """ADR-0020 §3: a `DeviceOffline` event flips `is_online` back off."""
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+
+        await device_service.record_device_seen(
+            RecordDeviceSeenCommand(
+                device_id=device_id,
+                seen_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+                is_online=True,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await device_service.record_device_seen(
+            RecordDeviceSeenCommand(
+                device_id=device_id,
+                seen_at=datetime(2026, 7, 25, 1, tzinfo=timezone.utc),
+                is_online=False,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        self.assertFalse(uow.devices.by_id[device_id].is_online)
 
 
 class ReceiveDeviceInventoryItemTests(unittest.IsolatedAsyncioTestCase):

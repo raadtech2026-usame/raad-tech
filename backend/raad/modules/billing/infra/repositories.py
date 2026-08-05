@@ -31,9 +31,9 @@ for the "not EXPIRED/CANCELLED" reading of "active" (ADR-0016: renamed from the 
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
@@ -69,6 +69,7 @@ from raad.modules.billing.domain.value_objects import (
     TransportFeeId,
 )
 from raad.modules.billing.infra.mappers import (
+    _to_naive_utc,
     invoice_to_model,
     model_to_invoice,
     model_to_payment,
@@ -251,6 +252,33 @@ class SqlAlchemySubscriptionRepository(
         result = await self._session.execute(statement)
         return self._track(result.scalars().first())
 
+    async def count_by_status(self) -> dict[str, int]:
+        """ADR-0020: "Subscription/Billing Status" KPI — one `GROUP BY status` query."""
+        statement = self._apply_scope(
+            select(SubscriptionModel.status, func.count())
+            .where(SubscriptionModel.deleted_at.is_(None))
+            .group_by(SubscriptionModel.status)
+        )
+        result = await self._session.execute(statement)
+        return dict(result.all())
+
+    async def count_expiring_between(self, *, start: datetime, end: datetime) -> int:
+        """ADR-0020: "Expiring Organizations" KPI — see the domain interface's own docstring
+        for why this is a real query, not a mirror of `sweep_expired_subscriptions`'s
+        unfiltered scan."""
+        statement = self._apply_scope(
+            select(SubscriptionModel).where(
+                SubscriptionModel.deleted_at.is_(None),
+                SubscriptionModel.status.in_(("trial", "active", "suspended")),
+                SubscriptionModel.current_period_end >= _to_naive_utc(start),
+                SubscriptionModel.current_period_end < _to_naive_utc(end),
+            )
+        )
+        result = await self._session.execute(
+            select(func.count()).select_from(statement.subquery())
+        )
+        return result.scalar_one()
+
     def flush_tracked_changes(self) -> None:
         for subscription, model in self._tracked.values():
             subscription_to_model(subscription, existing=model)
@@ -331,6 +359,20 @@ class SqlAlchemyInvoiceRepository(
             page=raw_page.page,
             page_size=raw_page.page_size,
         )
+
+    async def sum_paid_amount_between(self, *, start: datetime, end: datetime) -> float:
+        """ADR-0020: "Revenue" KPI — see the domain interface's own docstring for the
+        currency-naive scope call."""
+        statement = self._apply_scope(
+            select(func.coalesce(func.sum(InvoiceModel.amount), 0.0)).where(
+                InvoiceModel.deleted_at.is_(None),
+                InvoiceModel.status == "paid",
+                InvoiceModel.paid_at >= _to_naive_utc(start),
+                InvoiceModel.paid_at < _to_naive_utc(end),
+            )
+        )
+        result = await self._session.execute(statement)
+        return result.scalar_one()
 
     def flush_tracked_changes(self) -> None:
         for invoice, model in self._tracked.values():

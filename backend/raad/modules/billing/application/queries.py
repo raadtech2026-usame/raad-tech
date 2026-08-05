@@ -96,6 +96,17 @@ class ListSubscriptionsQuery:
 
 
 @dataclass(frozen=True)
+class BillingStatsDTO:
+    """ADR-0020: "Subscription/Billing Status", "Expiring Organizations", and "Revenue" KPIs.
+    `subscription_by_status` uses the same lower-case status strings `SubscriptionDTO.status`
+    already does."""
+
+    subscription_by_status: dict[str, int]
+    expiring_soon: int
+    revenue: float
+
+
+@dataclass(frozen=True)
 class SubscriptionDTO:
     id: str
     organization_id: str

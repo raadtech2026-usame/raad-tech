@@ -131,10 +131,58 @@ implementation itself proceeds in milestones and is tracked here as each one lan
   real. 1278 unit + 10 architecture-gate tests pass with zero regressions. Zero changes to any
   other bounded context, RBAC, or tenant-isolation code.
 - **Platform Analytics dashboard**
-  (`docs/architecture/adr/0020-platform-analytics-read-model.md`): a new, `platform_audit`-owned,
-  cross-module (but never cross-module-DB-reading) stats read-model backing the Super Admin
-  dashboard's KPI grid — including building the previously-missing `DeviceOnline`/`DeviceOffline`
-  consumer so Online/Offline Devices is a real number, not a fabricated one.
+  (`docs/architecture/adr/0020-platform-analytics-read-model.md`, **landed**): a new, `platform_
+  audit`-owned, cross-module (but never cross-module-DB-reading) stats read-model backing the
+  Super Admin dashboard's KPI grid — including closing the previously-missing Online/Offline
+  Devices gap so that number is real, not fabricated. **Implementation:** a new `platform_audit.
+  PlatformStatsApplicationService` (a distinct class from `PlatformAuditApplicationService`, per
+  the ADR's own §1 naming), constructor-injected with `organization`/`iam`/`fleet_device`/
+  `billing`'s own application services plus the existing `HealthCheckService` (Priority 1 Item
+  5, reused verbatim for "System Health" — no new observability code) — legal per
+  `.claude/rules/backend.md` #3/the architecture-gate Rule 1 (a module may import another
+  module's *application-layer* symbols, never `domain`/`infra`), confirmed by re-running
+  `tests/architecture/test_module_boundaries.py` after the change, still green. **Three real
+  gaps between the ADR's own text and the actual repository, found by reading the code rather
+  than assumed from the ADR — the identical discipline ADR-0019 established the day before:**
+  (1) the ADR's own §3 was stale, and `PROJECT_STATUS.md` Known Issue #9 had already flagged
+  it — `DeviceConnectivityProcessor` (`fleet_device/events/subscribers.py`) already consumed
+  `DeviceOnline`/`DeviceOffline` and populated `devices.last_seen_at`; no new event consumer
+  was needed, only a new `devices.is_online` boolean (migration `b288c2e44aa5`) on the
+  *existing* processor, extended in place — Known Issue #9 is now marked resolved, not just
+  described. (2) The ADR names `interfaces/http/policy_guards.py` as "the precedent reused
+  here," but that file lives outside any bounded-context module specifically because CR-1/D5
+  have no single owning module across three unrelated routes — Platform Stats *does* have one
+  (`platform_audit`, the ADR's own §1 Decision), so the four-module composition correctly
+  lives inside a new application service in that module instead, not a second `interfaces/
+  http/`-level file. (3) `finance_staff` does not hold `admin.audit.read` in the seeded RBAC
+  matrix, contradicting the ADR's claim that all four RAAD-staff roles already hold the
+  `GET /admin/audit` grant — resolved with a new, dedicated `admin.platform_stats.read`
+  permission (Founder/Regional Manager/Support Staff/Finance Staff), the ADR's own anticipated
+  fallback ("plus a new dedicated permission if the existing grant proves too coarse"), not a
+  workaround. New, additive count/sum query methods land in all four modules with no existing
+  method's behavior changed (`organization.count_by_status`/`count_created_since`; `iam.
+  count_by_status`/`count_last_login_after` (MAU) /`count_created_since`, with a new `ix_users
+  __last_login_at` index since that column had none; `fleet_device.Vehicle.count_total`,
+  `Device.count_total`/`count_online`; `billing.count_by_status`/`count_expiring_between`/
+  `sum_paid_amount_between` — deliberately a real SQL query, not a mirror of `sweep_expired_
+  subscriptions`'s existing unfiltered `list_all()` scan, which doesn't belong in a KPI hot
+  path). **Two KPIs from the ADR's own Context wishlist are a real, flagged scope cut, not
+  silently dropped**: "Live Vehicle Locations" (`tracking`'s Redis state has no safe/cheap
+  aggregate count — `KEYS`/`SCAN` over live position keys is exactly the kind of production-
+  risk operation this platform avoids) and "Active Drivers" (`transport_ops.Driver` — neither
+  module is named in the ADR's own §1 Decision scope). Frontend: `DashboardHomePage.tsx`'s
+  pre-existing six-tile stopgap (`PlatformStatsRow`, already self-documented in-code as "a
+  deliberate stopgap... superseded by ADR-0020 whenever that milestone lands") had its
+  organizations/vehicles/devices tiles replaced by a new `PlatformAnalyticsSection` — one query
+  backing status breakdowns, online/offline, MAU, revenue, and system health the old flat-total
+  tiles never could show; drivers/students/parents tiles are untouched, correctly outside this
+  ADR's scope. **Live-verified, not just unit-tested**: migration round-tripped clean
+  (`upgrade`/`downgrade -1`/`upgrade`, `alembic check` clean); the *real*
+  `DeviceConnectivityProcessor` (not a fake) confirmed flipping `is_online` in the database on a
+  real `DeviceOnline`/`DeviceOffline` event; the *real*, DI-wired `PlatformStatsApplicationService`
+  confirmed running the full four-module composition against real Postgres without error. 1294
+  unit + 10 architecture-gate tests pass (backend), 344 frontend tests pass, zero regressions.
+  Zero changes to any bounded context's existing behavior, RBAC, or tenant-isolation code.
 
 **Implementation status:** architecture accepted; milestone implementation (IAM provisioning
 port → org onboarding → billing cutover → device inventory → session cap → platform analytics)
@@ -146,10 +194,10 @@ billing deleted outright: `SubscriberType`/`SubscriberId`/`RenewParentSubscripti
 drops `organizations.billing_model` and `subscriptions.subscriber_type`/`subscriber_id`).
 **Device inventory has landed** — see the Fleet Device bounded-context entry below for the full
 writeup. **Session cap has landed** (2026-08-04, ADR-0019) — see this section's own
-"Account-sharing protection" bullet above for the full writeup. Platform analytics
-(ADR-0020) remains not-yet-implemented — its own entry will replace this line as it lands,
-following the same "update as it lands" discipline every other phase in this file already
-follows.
+"Account-sharing protection" bullet above for the full writeup. **Platform analytics has
+landed** (2026-08-05, ADR-0020) — see this section's own "Platform Analytics dashboard" bullet
+above for the full writeup. Every milestone in this originally-planned sequence is now
+complete.
 
 ## Core Technical Domains
 

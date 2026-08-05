@@ -30,7 +30,7 @@ behavior, and changing it would be a validation-behavior change outside that sco
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
@@ -151,6 +151,17 @@ class SqlAlchemyVehicleRepository(
             page_size=raw_page.page_size,
         )
 
+    async def count_total(self) -> int:
+        """ADR-0020: "Total Vehicles" KPI — scoped exactly like `list_page` (`_apply_scope`),
+        soft-delete-aware like every other query in this repository."""
+        statement = self._apply_scope(
+            select(VehicleModel).where(VehicleModel.deleted_at.is_(None))
+        )
+        result = await self._session.execute(
+            select(func.count()).select_from(statement.subquery())
+        )
+        return result.scalar_one()
+
     def flush_tracked_changes(self) -> None:
         for vehicle, model in self._tracked.values():
             vehicle_to_model(vehicle, existing=model)
@@ -260,6 +271,29 @@ class SqlAlchemyDeviceRepository(
             page=raw_page.page,
             page_size=raw_page.page_size,
         )
+
+    async def count_total(self) -> int:
+        """ADR-0020: "Total Devices" KPI — scoped exactly like `list_page`."""
+        statement = self._apply_scope(
+            select(DeviceModel).where(DeviceModel.deleted_at.is_(None))
+        )
+        result = await self._session.execute(
+            select(func.count()).select_from(statement.subquery())
+        )
+        return result.scalar_one()
+
+    async def count_online(self) -> int:
+        """ADR-0020 §3: "Online Devices" KPI, using the new `is_online` column — "Offline" is
+        computed by the caller as `count_total() - count_online()`, not a third query."""
+        statement = self._apply_scope(
+            select(DeviceModel).where(
+                DeviceModel.deleted_at.is_(None), DeviceModel.is_online.is_(True)
+            )
+        )
+        result = await self._session.execute(
+            select(func.count()).select_from(statement.subquery())
+        )
+        return result.scalar_one()
 
     def flush_tracked_changes(self) -> None:
         for device, model in self._tracked.values():

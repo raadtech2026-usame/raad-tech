@@ -325,20 +325,20 @@ class DeviceLifecycleTests(unittest.TestCase):
     def test_record_last_seen_sets_last_seen_at(self) -> None:
         device = self.make_device(DeviceLifecycleState.ACTIVATED)
         seen_at = datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
-        device.record_last_seen(seen_at)
+        device.record_last_seen(seen_at, is_online=True)
         self.assertEqual(device.last_seen_at, seen_at)
 
     def test_record_last_seen_emits_no_domain_event(self) -> None:
         """Deliberately breaks from every other mutator on this class - connectivity telemetry
         is not a business-state change (see the method's own docstring)."""
         device = self.make_device(DeviceLifecycleState.ACTIVATED)
-        device.record_last_seen(datetime(2026, 7, 25, tzinfo=timezone.utc))
+        device.record_last_seen(datetime(2026, 7, 25, tzinfo=timezone.utc), is_online=True)
         self.assertEqual(device.pull_domain_events(), [])
 
     def test_record_last_seen_does_not_bump_updated_at(self) -> None:
         device = self.make_device(DeviceLifecycleState.ACTIVATED)
         original_updated_at = device.updated_at
-        device.record_last_seen(datetime(2026, 7, 25, tzinfo=timezone.utc))
+        device.record_last_seen(datetime(2026, 7, 25, tzinfo=timezone.utc), is_online=True)
         self.assertEqual(device.updated_at, original_updated_at)
 
     def test_record_last_seen_works_regardless_of_lifecycle_state(self) -> None:
@@ -348,8 +348,25 @@ class DeviceLifecycleTests(unittest.TestCase):
             with self.subTest(state=state):
                 device = self.make_device(state)
                 seen_at = datetime(2026, 7, 25, tzinfo=timezone.utc)
-                device.record_last_seen(seen_at)
+                device.record_last_seen(seen_at, is_online=True)
                 self.assertEqual(device.last_seen_at, seen_at)
+
+    # --- record_last_seen is_online (ADR-0020 §3) ----------------------------------------
+
+    def test_new_device_defaults_to_not_online(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        self.assertFalse(device.is_online)
+
+    def test_record_last_seen_with_is_online_true_sets_is_online(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.record_last_seen(datetime(2026, 7, 25, tzinfo=timezone.utc), is_online=True)
+        self.assertTrue(device.is_online)
+
+    def test_record_last_seen_with_is_online_false_clears_is_online(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.record_last_seen(datetime(2026, 7, 25, tzinfo=timezone.utc), is_online=True)
+        device.record_last_seen(datetime(2026, 7, 25, 1, tzinfo=timezone.utc), is_online=False)
+        self.assertFalse(device.is_online)
 
     def test_mark_assigned_emits_no_event(self) -> None:
         """Regression: the assignment fact is emitted once, by DeviceAssignment.open - not

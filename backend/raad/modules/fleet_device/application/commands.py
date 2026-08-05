@@ -105,10 +105,14 @@ class RecordDeviceSeenCommand:
     """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A3 — the
     device-gateway's `DeviceOnline`/`DeviceOffline` connectivity events, consumed by
     `events/subscribers.py`. `actor` follows `notifications/events/subscribers.py`'s own
-    already-established `SYSTEM_PRINCIPAL` precedent for a broker-driven, non-HTTP caller."""
+    already-established `SYSTEM_PRINCIPAL` precedent for a broker-driven, non-HTTP caller.
+    `is_online` (ADR-0020 §3): `True` for a `DeviceOnline` event, `False` for `DeviceOffline` —
+    resolved by the caller (`events/subscribers.py`, which already knows the event type),
+    never guessed here."""
 
     device_id: str
     seen_at: datetime
+    is_online: bool
     actor: Principal
 
 

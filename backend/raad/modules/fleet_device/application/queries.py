@@ -83,6 +83,24 @@ class VehicleDTO:
 
 
 @dataclass(frozen=True)
+class VehicleStatsDTO:
+    """ADR-0020: "Total Vehicles" KPI."""
+
+    total: int
+
+
+@dataclass(frozen=True)
+class DeviceStatsDTO:
+    """ADR-0020 §3: "Total/Online/Offline Devices" KPI. `offline` is derived
+    (`total - online`), not a third query — see `DeviceRepository.count_online`'s own
+    docstring."""
+
+    total: int
+    online: int
+    offline: int
+
+
+@dataclass(frozen=True)
 class CameraDTO:
     id: str
     channel_no: int

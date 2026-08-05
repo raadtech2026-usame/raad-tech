@@ -1,31 +1,46 @@
-import { useQueries } from "@tanstack/react-query";
-import { Building2, Contact, Cpu, Truck, UserRound, Users, type LucideIcon } from "lucide-react";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import {
+  Activity,
+  Building2,
+  Contact,
+  Cpu,
+  DollarSign,
+  Truck,
+  UserRound,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 import { useAuthStore } from "../shared/stores/authStore";
 import { getRoleDisplay } from "../shared/auth/roleDisplay";
 import { getDashboardType } from "../shared/auth/dashboard";
 import { usePageHeader } from "./layout/PageHeaderContext";
+import { Badge } from "../shared/components/Badge/Badge";
 import { Card } from "../shared/components/Card/Card";
 import { Skeleton } from "../shared/components/Skeleton/Skeleton";
 import type { OffsetListParams } from "../shared/api/listParams";
-import { listOrganizations } from "../features/organizations/api";
-import { listVehicles } from "../features/fleet-devices/vehicles/api";
-import { listDevices } from "../features/fleet-devices/devices/api";
 import { listDrivers } from "../features/transport-ops/drivers/api";
 import { countStudents } from "../features/transport-ops/students/api";
 import { countParents } from "../features/transport-ops/parents/api";
+import { getPlatformStats, type PlatformStats } from "../features/platform-analytics/api";
 import styles from "./DashboardHomePage.module.css";
 
-/** `page_size=1` against organizations/vehicles/devices/drivers' own already-existing,
- * already-tested list endpoints, reading only `.page.total` — no new backend endpoint for
- * these four. `sort: null` deliberately (not a fixed field like `created_at`) since each
- * resource's own sortable-field whitelist differs and every list route already falls back to a
- * safe default ordering when `sort` is omitted.
+/** `page_size=1` against drivers' own already-existing, already-tested list endpoint, reading
+ * only `.page.total` — no new backend endpoint needed. `sort: null` deliberately (not a fixed
+ * field like `created_at`) since each resource's own sortable-field whitelist differs and every
+ * list route already falls back to a safe default ordering when `sort` is omitted.
  *
  * Students/parents are different: RAAD Platform roles no longer hold `transport_ops.students
  * .list`/`.parents.list` at all (migration `c4d9a2e6f813`) — reusing the list endpoint here
  * would 403. `countStudents`/`countParents` (`GET /students/count`/`GET /parents/count`) are
  * the new, narrower, count-only routes/permissions added specifically to satisfy this KPI tile
- * without exposing individual rows — see those functions' own docstrings. */
+ * without exposing individual rows — see those functions' own docstrings.
+ *
+ * Organizations/vehicles/devices previously lived in this same stopgap row (their own list
+ * endpoint's `.page.total`) — **superseded by ADR-0020** (`PlatformAnalyticsSection` below),
+ * which gets richer data (status breakdowns, online/offline) this flat-total approach never
+ * could. Drivers/students/parents stay here — outside ADR-0020's own four-module scope
+ * (`platform_audit.application.queries.PlatformStatsDTO`'s own docstring flags "Active Drivers"
+ * as a deliberate, named scope cut), so this remains the correct, only source for them. */
 const COUNT_ONLY_PARAMS: OffsetListParams = {
   page: 1,
   pageSize: 1,
@@ -42,24 +57,6 @@ interface PlatformStatDef {
 }
 
 const PLATFORM_STATS: PlatformStatDef[] = [
-  {
-    key: "organizations",
-    label: "Total organizations",
-    icon: Building2,
-    fetcher: async () => (await listOrganizations(COUNT_ONLY_PARAMS)).page.total,
-  },
-  {
-    key: "vehicles",
-    label: "Total vehicles",
-    icon: Truck,
-    fetcher: async () => (await listVehicles(COUNT_ONLY_PARAMS)).page.total,
-  },
-  {
-    key: "devices",
-    label: "Total devices",
-    icon: Cpu,
-    fetcher: async () => (await listDevices(COUNT_ONLY_PARAMS)).page.total,
-  },
   {
     key: "drivers",
     label: "Total drivers",
@@ -85,20 +82,169 @@ const numberFormatter = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 1,
 });
 
+const currencyFormatter = new Intl.NumberFormat(undefined, {
+  style: "currency",
+  currency: "USD",
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+const HEALTH_BADGE_VARIANT: Record<string, "success" | "danger" | "neutral"> = {
+  ok: "success",
+  down: "danger",
+  not_configured: "neutral",
+};
+
 /**
- * Platform-only KPI strip (`dashboardType === "platform"`) — a deliberate stopgap, not
- * ADR-0020 (Platform Analytics). ADR-0020 is a dedicated, `platform_audit`-owned, event-driven
- * read-model (real MAU, a genuine `DeviceOnline`/`DeviceOffline`-derived "online now" count) —
- * still not built. This strip is the much smaller thing: six plain counts. Four (organizations/
- * vehicles/devices/drivers) reuse each resource's own already-existing list endpoint's
- * `.page.total` — no new backend surface. Students/parents needed one small new backend
- * addition (`GET /students/count`/`GET /parents/count`, `transport_ops.students.count`/
- * `.parents.count`): RAAD Platform roles hold no `.list` permission for either anymore
- * (migration `c4d9a2e6f813`), so the count had to come from a narrower, list-free route —
- * see `countStudents`/`countParents`'s own docstrings. **No MAU, no "Platform Analytics"
- * section** — inventing either without an approved data model is exactly what
- * `.claude/rules/workflow.md` #8 forbids. Superseded by ADR-0020 whenever that milestone
- * lands; not a substitute for it.
+ * ADR-0020 platform-wide KPI grid — `GET /admin/platform-stats`, one query backing every tile
+ * here (unlike the six-separate-fetcher stopgap `PlatformStatsRow` above). Two KPIs the ADR's
+ * own Context names ("Live Vehicle Locations", "Active Drivers") are a real, flagged scope cut —
+ * see `PlatformStats`'s own docstring — and simply don't appear here, not represented as a
+ * fabricated zero.
+ */
+function PlatformAnalyticsSection() {
+  const { data, isLoading, isError } = useQuery<PlatformStats>({
+    queryKey: ["platform-analytics-stats"],
+    queryFn: getPlatformStats,
+    staleTime: 60_000,
+  });
+
+  if (isError) {
+    return null;
+  }
+
+  return (
+    <div className={styles.statsGrid}>
+      <Card padded className={styles.statCard}>
+        <span className={styles.statIcon}>
+          <Building2 size={18} />
+        </span>
+        <div className={styles.statText}>
+          <span className={styles.statLabel}>Organizations</span>
+          {isLoading || !data ? (
+            <Skeleton width={48} height={24} />
+          ) : (
+            <>
+              <span className={styles.statValue}>
+                {numberFormatter.format(data.organizations.total)}
+              </span>
+              <span className={styles.statSubtext}>
+                {data.organizations.byStatus.active ?? 0} active · {data.organizations.createdToday}{" "}
+                new today
+              </span>
+            </>
+          )}
+        </div>
+      </Card>
+
+      <Card padded className={styles.statCard}>
+        <span className={styles.statIcon}>
+          <Cpu size={18} />
+        </span>
+        <div className={styles.statText}>
+          <span className={styles.statLabel}>Devices</span>
+          {isLoading || !data ? (
+            <Skeleton width={48} height={24} />
+          ) : (
+            <>
+              <span className={styles.statValue}>{numberFormatter.format(data.devices.total)}</span>
+              <span className={styles.statSubtext}>
+                {data.devices.online} online · {data.devices.offline} offline
+              </span>
+            </>
+          )}
+        </div>
+      </Card>
+
+      <Card padded className={styles.statCard}>
+        <span className={styles.statIcon}>
+          <Truck size={18} />
+        </span>
+        <div className={styles.statText}>
+          <span className={styles.statLabel}>Vehicles</span>
+          {isLoading || !data ? (
+            <Skeleton width={48} height={24} />
+          ) : (
+            <span className={styles.statValue}>{numberFormatter.format(data.vehicles.total)}</span>
+          )}
+        </div>
+      </Card>
+
+      <Card padded className={styles.statCard}>
+        <span className={styles.statIcon}>
+          <Users size={18} />
+        </span>
+        <div className={styles.statText}>
+          <span className={styles.statLabel}>Users</span>
+          {isLoading || !data ? (
+            <Skeleton width={48} height={24} />
+          ) : (
+            <>
+              <span className={styles.statValue}>{numberFormatter.format(data.users.total)}</span>
+              <span className={styles.statSubtext}>
+                {numberFormatter.format(data.users.monthlyActive)} MAU · {data.users.createdToday}{" "}
+                new today
+              </span>
+            </>
+          )}
+        </div>
+      </Card>
+
+      <Card padded className={styles.statCard}>
+        <span className={styles.statIcon}>
+          <DollarSign size={18} />
+        </span>
+        <div className={styles.statText}>
+          <span className={styles.statLabel}>Revenue (month to date)</span>
+          {isLoading || !data ? (
+            <Skeleton width={48} height={24} />
+          ) : (
+            <>
+              <span className={styles.statValue}>{currencyFormatter.format(data.billing.revenue)}</span>
+              <span className={styles.statSubtext}>
+                {data.billing.expiringSoon} subscription(s) expiring soon
+              </span>
+            </>
+          )}
+        </div>
+      </Card>
+
+      <Card padded className={styles.statCard}>
+        <span className={styles.statIcon}>
+          <Activity size={18} />
+        </span>
+        <div className={styles.statText}>
+          <span className={styles.statLabel}>System health</span>
+          {isLoading || !data ? (
+            <Skeleton width={48} height={24} />
+          ) : (
+            <div className={styles.healthBadges}>
+              <Badge variant={HEALTH_BADGE_VARIANT[data.systemHealth.database] ?? "neutral"} dot>
+                Database
+              </Badge>
+              <Badge variant={HEALTH_BADGE_VARIANT[data.systemHealth.broker] ?? "neutral"} dot>
+                Broker
+              </Badge>
+            </div>
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/**
+ * Platform-only KPI strip (`dashboardType === "platform"`) — the remainder of what used to be a
+ * six-tile stopgap before ADR-0020 landed (`PlatformAnalyticsSection` above now covers
+ * organizations/devices/vehicles/users/billing/system-health with real breakdowns, not flat
+ * totals). What's left here — drivers/students/parents — stays on this same simple
+ * per-tile-fetcher shape: `listDrivers`'s own `.page.total` for drivers; `countStudents`/
+ * `countParents` (`GET /students/count`/`GET /parents/count`) for students/parents, since RAAD
+ * Platform roles hold no `transport_ops.students.list`/`.parents.list` permission (migration
+ * `c4d9a2e6f813`), so reusing the list endpoint would 403. Not superseded by ADR-0020 — its own
+ * `PlatformStatsDTO` docstring flags "Active Drivers" as a deliberate scope cut (no module
+ * named in the ADR's own §1 Decision covers it), and students/parents were never part of its
+ * scope at all.
  */
 function PlatformStatsRow() {
   const results = useQueries({
@@ -164,7 +310,12 @@ export function DashboardHomePage() {
         </p>
       </Card>
 
-      {dashboardType === "platform" && <PlatformStatsRow />}
+      {dashboardType === "platform" && (
+        <>
+          <PlatformAnalyticsSection />
+          <PlatformStatsRow />
+        </>
+      )}
     </div>
   );
 }

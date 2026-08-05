@@ -15,6 +15,7 @@ the two that need a dedicated finder).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from raad.core.pagination import (
     FilterCondition,
@@ -117,6 +118,22 @@ class SubscriptionRepository(ABC):
         on `organization_id` alone."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def count_by_status(self) -> dict[str, int]:
+        """ADR-0020: "Subscription/Billing Status" KPI — one `GROUP BY status` query."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_expiring_between(self, *, start: datetime, end: datetime) -> int:
+        """ADR-0020: "Expiring Organizations" KPI — a real SQL query, deliberately **not** a
+        mirror of `sweep_expired_subscriptions`'s existing `list_all()` + in-Python scan (that
+        loads every subscription unfiltered; fine for an infrequent sweep job, wrong for a KPI
+        read). Counts non-terminal subscriptions (`trial`/`active`/`suspended`) whose
+        `current_period_end` falls in `[start, end)` — both boundaries resolved by the caller
+        (never `datetime.now()` called here), matching every other new stats method this ADR
+        adds."""
+        raise NotImplementedError
+
 
 class InvoiceRepository(ABC):
     @abstractmethod
@@ -144,6 +161,15 @@ class InvoiceRepository(ABC):
     ) -> OffsetPage[Invoice]:
         """Backs `GET /billing/invoices`'s paginated/filtered/sorted contract (API Contracts
         §7/§8), added under the Pagination/Filtering/Sorting phase."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def sum_paid_amount_between(self, *, start: datetime, end: datetime) -> float:
+        """ADR-0020: "Revenue" KPI — sums `invoices.amount` for `status=paid` rows whose
+        `paid_at` falls in `[start, end)`. Deliberately currency-naive (a plain sum across
+        whatever `currency` values exist) — no document names a multi-currency aggregation
+        rule, and this platform's actual currency situation is out of this ADR's scope to
+        invent one for."""
         raise NotImplementedError
 
 

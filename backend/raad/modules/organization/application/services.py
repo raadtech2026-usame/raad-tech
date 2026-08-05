@@ -13,6 +13,8 @@ by `/auth/*` vs a user-management surface rather than by aggregate.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
@@ -44,6 +46,7 @@ from raad.modules.organization.application.queries import (
     ListOrganizationsQuery,
     ListRegionsQuery,
     OrganizationDTO,
+    OrganizationStatsDTO,
     RegionDTO,
     organization_to_dto,
     region_to_dto,
@@ -258,6 +261,23 @@ class OrganizationApplicationService:
                 total=page.total,
                 page=page.page,
                 page_size=page.page_size,
+            )
+
+    async def get_organization_stats(
+        self, *, since_today: datetime, uow: OrganizationUnitOfWork
+    ) -> OrganizationStatsDTO:
+        """ADR-0020: "Total/Active/Suspended Organizations" + "New Organizations Today" KPIs,
+        backing `platform_audit.PlatformStatsApplicationService`. `since_today` (the start of
+        "today") is resolved by the caller, once, for the whole composed response — not
+        re-derived per module — matching `SessionLimitPolicy`'s own "policy resolved by caller"
+        discipline (ADR-0019)."""
+        async with uow:
+            by_status = await uow.organizations.count_by_status()
+            created_today = await uow.organizations.count_created_since(since_today)
+            return OrganizationStatsDTO(
+                total=sum(by_status.values()),
+                by_status=by_status,
+                created_today=created_today,
             )
 
     @staticmethod

@@ -45,9 +45,10 @@ SYSTEM_PRINCIPAL = Principal(user_id="system", role=Role.FOUNDER, org_id=None)
 
 
 class DeviceConnectivityProcessor(EventProcessor):
-    """Handles both `DeviceOnline` and `DeviceOffline` identically — both exist, for this
-    backend's purposes, only to answer "when was this device last seen", so one processor class
-    (parameterized by `event_type`) covers both rather than two near-duplicate subclasses."""
+    """Handles both `DeviceOnline` and `DeviceOffline` with one processor class (parameterized
+    by `event_type`) rather than two near-duplicate subclasses — both answer "when was this
+    device last seen, and is it online right now" (ADR-0020 §3 added the second half; this
+    processor already received both event types, so no second consumer was needed)."""
 
     def __init__(self, event_type: str, container: Container) -> None:
         self.event_type = event_type
@@ -64,6 +65,10 @@ class DeviceConnectivityProcessor(EventProcessor):
             RecordDeviceSeenCommand(
                 device_id=device_id,
                 seen_at=event.occurred_at,
+                # ADR-0020 §3: this processor is registered once per event_type
+                # ("DeviceOnline"/"DeviceOffline", see `register_fleet_device_processors`
+                # below) — `self.event_type` already tells us which, no new signal needed.
+                is_online=self.event_type == "DeviceOnline",
                 actor=SYSTEM_PRINCIPAL,
             ),
             uow=uow,

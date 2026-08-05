@@ -18,7 +18,7 @@ domain object onto its row via the mapper immediately before commit — called b
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import datetime, timezone
@@ -41,6 +41,7 @@ from raad.modules.organization.domain.repositories import (
 )
 from raad.modules.organization.domain.value_objects import OrganizationId, RegionId
 from raad.modules.organization.infra.mappers import (
+    _naive,
     model_to_organization,
     model_to_region,
     organization_to_model,
@@ -139,6 +140,30 @@ class SqlAlchemyOrganizationRepository(
             page=raw_page.page,
             page_size=raw_page.page_size,
         )
+
+    async def count_by_status(self) -> dict[str, int]:
+        """ADR-0020: "Total/Active/Suspended Organizations" KPI — one `GROUP BY` query, scoped
+        like `list_page` (`scope_by_own_id`)."""
+        statement = self._apply_scope(
+            select(OrganizationModel.status, func.count())
+            .where(OrganizationModel.deleted_at.is_(None))
+            .group_by(OrganizationModel.status)
+        )
+        result = await self._session.execute(statement)
+        return dict(result.all())
+
+    async def count_created_since(self, since: datetime) -> int:
+        """ADR-0020: "New Organizations Today" KPI."""
+        statement = self._apply_scope(
+            select(OrganizationModel).where(
+                OrganizationModel.deleted_at.is_(None),
+                OrganizationModel.created_at >= _naive(since),
+            )
+        )
+        result = await self._session.execute(
+            select(func.count()).select_from(statement.subquery())
+        )
+        return result.scalar_one()
 
     def flush_tracked_changes(self) -> None:
         for organization, model in self._tracked.values():

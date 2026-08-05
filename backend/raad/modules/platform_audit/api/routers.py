@@ -10,9 +10,13 @@ every row this module's own `GET /admin/audit` reads was written by the shared-k
 `core.audit.writer.AuditWriter`, transactionally, from another module's own `UnitOfWork.commit()`;
 this router never writes an `AuditEntry`.
 
-Two routes, matching API Contracts §4.8's documented table (lines 190-191):
+Three routes. Two match API Contracts §4.8's documented table (lines 190-191):
 - `GET /admin/audit` — Founder / in-scope admin, "audit log (scoped, read-only)".
 - `GET /admin/settings` / `PATCH /admin/settings` — Founder / Org Admin, "system/org settings".
+
+The third, `GET /admin/platform-stats` (ADR-0020), has no API Contracts row — built directly on
+the ADR's own §2 route decision, the same "use-case exists, no approved endpoint yet, built on
+the architecture-decision authority" posture `/drivers` (`transport_ops`) already established.
 
 **No `/admin/integrations` route** — `domain/entities.py`'s own module docstring explains why
 `Integration` is not built this phase at all (no documented lifecycle, no API Contracts row).
@@ -42,14 +46,30 @@ from raad.interfaces.http.deps import (
     require_permission,
 )
 from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
+from raad.modules.billing.api.deps import get_billing_uow
+from raad.modules.billing.application.ports import BillingUnitOfWork
+from raad.modules.fleet_device.api.deps import get_fleet_device_uow
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.iam.api.deps import get_scoped_iam_uow
+from raad.modules.iam.application.ports import IamUnitOfWork
+from raad.modules.organization.api.deps import get_organization_uow
+from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.platform_audit.api.deps import (
     get_platform_audit_service,
     get_platform_audit_uow,
+    get_platform_stats_service,
 )
 from raad.modules.platform_audit.api.schemas import (
     AuditEntryResponse,
+    BillingStatsResponse,
+    DeviceStatsResponse,
+    OrganizationStatsResponse,
+    PlatformStatsResponse,
     SetSystemSettingRequest,
+    SystemHealthResponse,
     SystemSettingResponse,
+    UserStatsResponse,
+    VehicleStatsResponse,
 )
 from raad.modules.platform_audit.application.commands import SetSystemSettingCommand
 from raad.modules.platform_audit.application.ports import PlatformAuditUnitOfWork
@@ -57,9 +77,13 @@ from raad.modules.platform_audit.application.queries import (
     AuditEntryDTO,
     ListAuditEntriesQuery,
     ListSystemSettingsQuery,
+    PlatformStatsDTO,
     SystemSettingDTO,
 )
-from raad.modules.platform_audit.application.services import PlatformAuditApplicationService
+from raad.modules.platform_audit.application.services import (
+    PlatformAuditApplicationService,
+    PlatformStatsApplicationService,
+)
 
 admin_router = APIRouter()
 
@@ -81,6 +105,36 @@ def _audit_entry_dto_to_response(entry: AuditEntryDTO) -> AuditEntryResponse:
 
 def _system_setting_dto_to_response(setting: SystemSettingDTO) -> SystemSettingResponse:
     return SystemSettingResponse(key=setting.key, value=setting.value, scope=setting.scope)
+
+
+def _platform_stats_dto_to_response(stats: PlatformStatsDTO) -> PlatformStatsResponse:
+    return PlatformStatsResponse(
+        organizations=OrganizationStatsResponse(
+            total=stats.organizations.total,
+            by_status=stats.organizations.by_status,
+            created_today=stats.organizations.created_today,
+        ),
+        vehicles=VehicleStatsResponse(total=stats.vehicles.total),
+        devices=DeviceStatsResponse(
+            total=stats.devices.total,
+            online=stats.devices.online,
+            offline=stats.devices.offline,
+        ),
+        users=UserStatsResponse(
+            total=stats.users.total,
+            by_status=stats.users.by_status,
+            monthly_active=stats.users.monthly_active,
+            created_today=stats.users.created_today,
+        ),
+        billing=BillingStatsResponse(
+            subscription_by_status=stats.billing.subscription_by_status,
+            expiring_soon=stats.billing.expiring_soon,
+            revenue=stats.billing.revenue,
+        ),
+        system_health=SystemHealthResponse(
+            database=stats.system_health.database, broker=stats.system_health.broker
+        ),
+    )
 
 
 @admin_router.get(
@@ -164,3 +218,37 @@ async def set_system_setting(
     )
     setting = await service.set_system_setting(command, uow=uow)
     return _system_setting_dto_to_response(setting)
+
+
+@admin_router.get(
+    "/platform-stats",
+    response_model=PlatformStatsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Platform-wide KPI grid",
+    description=(
+        "ADR-0020. Founder / Regional Manager / Support Staff / Finance Staff (a new dedicated "
+        "`admin.platform_stats.read` permission — the ADR's own anticipated fallback once "
+        "`admin.audit.read` was confirmed not held by Finance Staff in the seeded matrix). "
+        "Scoped like every other route under `/admin` (`TenantRegionScope` — unrestricted for "
+        "Founder, region-limited for Regional Manager). Two KPIs named in the ADR's own Context "
+        "('Live Vehicle Locations', 'Active Drivers') are a real, flagged scope cut — see "
+        "`application/queries.py`'s `PlatformStatsDTO` docstring."
+    ),
+)
+async def get_platform_stats(
+    principal: Principal = Depends(
+        require_permission(Permission("admin.platform_stats.read"))
+    ),
+    service: PlatformStatsApplicationService = Depends(get_platform_stats_service),
+    org_uow: OrganizationUnitOfWork = Depends(get_organization_uow),
+    iam_uow: IamUnitOfWork = Depends(get_scoped_iam_uow),
+    fleet_device_uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+    billing_uow: BillingUnitOfWork = Depends(get_billing_uow),
+) -> PlatformStatsResponse:
+    stats = await service.get_platform_stats(
+        org_uow=org_uow,
+        iam_uow=iam_uow,
+        fleet_device_uow=fleet_device_uow,
+        billing_uow=billing_uow,
+    )
+    return _platform_stats_dto_to_response(stats)

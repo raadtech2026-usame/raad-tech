@@ -83,6 +83,16 @@ class VehicleRepository(ABC):
         """Backs `GET /vehicles`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def count_total(self) -> int:
+        """ADR-0020: "Total Vehicles" KPI. Scoped exactly like `list_page`/`list_all` (the
+        caller's resolved `TenantRegionScope` — unrestricted for Founder, region-limited for
+        Regional Manager, `security.md` #3's "region scoping is a second filter... for RAAD
+        staff") — a platform view still shouldn't let a Regional Manager's own request see
+        counts outside their assigned scope, matching `admin.audit.read`'s identical existing
+        posture (`AuditEntryRepository.list_page` scopes the same way)."""
+        raise NotImplementedError
+
 
 class DeviceRepository(ABC):
     @abstractmethod
@@ -132,6 +142,18 @@ class DeviceRepository(ABC):
         search: str | None,
     ) -> OffsetPage[Device]:
         """Backs `GET /devices`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_total(self) -> int:
+        """ADR-0020: "Total Devices" KPI — same scoping posture as `VehicleRepository.
+        count_total`."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_online(self) -> int:
+        """ADR-0020 §3: "Online Devices" KPI, backed by the new `is_online` column
+        (`DeviceConnectivityProcessor`, `events/subscribers.py`)."""
         raise NotImplementedError
 
 

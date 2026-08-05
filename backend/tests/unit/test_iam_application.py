@@ -166,6 +166,22 @@ class InMemoryUserRepository(UserRepository):
             page_size=page_request.page_size,
         )
 
+    async def count_by_status(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for user in self.by_id.values():
+            counts[user.status.value] = counts.get(user.status.value, 0) + 1
+        return counts
+
+    async def count_last_login_after(self, since) -> int:
+        return sum(
+            1
+            for user in self.by_id.values()
+            if user.last_login_at is not None and user.last_login_at >= since
+        )
+
+    async def count_created_since(self, since) -> int:
+        return sum(1 for user in self.by_id.values() if user.created_at >= since)
+
 
 def _field_text(value: object) -> str:
     value = getattr(value, "value", value)
@@ -1371,6 +1387,67 @@ class ListUsersPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(page.total, 1)
         self.assertEqual(page.data[0].full_name, "Founder One")
+
+
+class UserStatsApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0020: `get_user_stats`, backing `platform_audit.PlatformStatsApplicationService`."""
+
+    async def test_reports_total_status_breakdown_mau_and_created_today(self) -> None:
+        service, uow = make_user_service()
+        active_recent = await service.invite_user(
+            InviteUserCommand(
+                organization_id=None,
+                role=Role.FOUNDER,
+                email="active-recent@example.com",
+                phone=None,
+                full_name="Active Recent",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        active_stale = await service.invite_user(
+            InviteUserCommand(
+                organization_id=None,
+                role=Role.FOUNDER,
+                email="active-stale@example.com",
+                phone=None,
+                full_name="Active Stale",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.invite_user(
+            InviteUserCommand(
+                organization_id=None,
+                role=Role.FOUNDER,
+                email="never-logged-in@example.com",
+                phone=None,
+                full_name="Never Logged In",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        # Test-only direct mutation of the fake repository's stored aggregates — the same
+        # shortcut `LoginTests`/`AccountLockoutApplicationTests` already use elsewhere in this
+        # file (e.g. `user.status = UserStatus.DISABLED`) rather than driving a full login flow
+        # just to set `last_login_at`.
+        uow.users.by_id[active_recent.id].last_login_at = datetime(
+            2026, 1, 20, tzinfo=timezone.utc
+        )
+        uow.users.by_id[active_stale.id].last_login_at = datetime(
+            2025, 11, 1, tzinfo=timezone.utc
+        )
+
+        stats = await service.get_user_stats(
+            since_today=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            mau_since=datetime(2025, 12, 1, tzinfo=timezone.utc),
+            uow=uow,
+        )
+
+        self.assertEqual(stats.total, 3)
+        self.assertEqual(stats.by_status, {"invited": 3})
+        self.assertEqual(stats.monthly_active, 1)  # only active_recent is within mau_since
+        self.assertEqual(stats.created_today, 3)  # all invited "now" in this fixed-clock test
 
 
 def make_org_admin_actor(org_id: str = VALID_ORG_ULID) -> Principal:

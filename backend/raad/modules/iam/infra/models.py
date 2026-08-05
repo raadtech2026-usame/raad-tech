@@ -76,8 +76,10 @@ class UserModel(
         SqlEnum(*_STATUS_VALUES, name="user_status"), nullable=False, index=True
     )
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: ADR-0020: indexed (migration `b288c2e44aa5`) — backs the new MAU query
+    #: (`count_last_login_after`); previously unindexed.
     last_login_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=False), nullable=True, default=None
+        DateTime(timezone=False), nullable=True, default=None, index=True
     )
     is_password_change_required: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"

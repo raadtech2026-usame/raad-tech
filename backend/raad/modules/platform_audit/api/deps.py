@@ -10,7 +10,10 @@ from fastapi import Depends
 from raad.core.di.container import Container
 from raad.interfaces.http.deps import get_container
 from raad.modules.platform_audit.application.ports import PlatformAuditUnitOfWork
-from raad.modules.platform_audit.application.services import PlatformAuditApplicationService
+from raad.modules.platform_audit.application.services import (
+    PlatformAuditApplicationService,
+    PlatformStatsApplicationService,
+)
 
 
 def get_platform_audit_uow(
@@ -23,3 +26,9 @@ def get_platform_audit_service(
     container: Container = Depends(get_container),
 ) -> PlatformAuditApplicationService:
     return container.resolve(PlatformAuditApplicationService)
+
+
+def get_platform_stats_service(
+    container: Container = Depends(get_container),
+) -> PlatformStatsApplicationService:
+    return container.resolve(PlatformStatsApplicationService)

@@ -122,7 +122,10 @@ from raad.modules.video.application.ports import VideoProviderPort, VideoUnitOfW
 from raad.modules.video.application.services import VideoApplicationService
 from raad.modules.video.infra.repositories import SqlAlchemyVideoUnitOfWork
 from raad.modules.platform_audit.application.ports import PlatformAuditUnitOfWork
-from raad.modules.platform_audit.application.services import PlatformAuditApplicationService
+from raad.modules.platform_audit.application.services import (
+    PlatformAuditApplicationService,
+    PlatformStatsApplicationService,
+)
 from raad.modules.platform_audit.infra.repositories import (
     SqlAlchemyPlatformAuditUnitOfWork,
 )
@@ -663,5 +666,28 @@ def build_container(settings: Settings) -> Container:
             broker_client=broker_redis_client,
         ),
     )
+
+    # PlatformStatsApplicationService (ADR-0020) — bound last, here rather than alongside
+    # PlatformAuditApplicationService near the top of this function, because it depends on
+    # OrganizationApplicationService/UserApplicationService/VehicleApplicationService/
+    # DeviceApplicationService/BillingApplicationService (all bound only inside the
+    # `if settings.db.url:` block above) *and* HealthCheckService (just bound, unconditionally,
+    # directly above this). Re-checks `settings.db.url` rather than assuming those four are
+    # present — without a configured database none of them exist in the container at all, and
+    # `container.resolve(...)` would raise; the platform-stats route itself has no meaning
+    # without a database regardless.
+    if settings.db.url:
+        container.bind_singleton(
+            PlatformStatsApplicationService,
+            PlatformStatsApplicationService(
+                clock=container.resolve(Clock),
+                organization_service=container.resolve(OrganizationApplicationService),
+                user_service=container.resolve(UserApplicationService),
+                vehicle_service=container.resolve(VehicleApplicationService),
+                device_service=container.resolve(DeviceApplicationService),
+                billing_service=container.resolve(BillingApplicationService),
+                health_check_service=container.resolve(HealthCheckService),
+            ),
+        )
 
     return container

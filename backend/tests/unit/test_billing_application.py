@@ -76,11 +76,13 @@ from raad.modules.billing.domain.repositories import (
 )
 from raad.modules.billing.domain.value_objects import (
     InvoiceId,
+    InvoiceStatus,
     Money,
     OrganizationId,
     PaymentId,
     PlanId,
     SubscriptionId,
+    SubscriptionStatus,
     TransportFeeId,
 )
 
@@ -253,6 +255,21 @@ class InMemorySubscriptionRepository(SubscriptionRepository):
             None,
         )
 
+    async def count_by_status(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for sub in self.by_id.values():
+            counts[sub.status.value] = counts.get(sub.status.value, 0) + 1
+        return counts
+
+    async def count_expiring_between(self, *, start, end) -> int:
+        return sum(
+            1
+            for sub in self.by_id.values()
+            if sub.status.value in ("trial", "active", "suspended")
+            and sub.current_period_end is not None
+            and start <= sub.current_period_end < end
+        )
+
 
 class InMemoryInvoiceRepository(InvoiceRepository):
     def __init__(self) -> None:
@@ -282,6 +299,15 @@ class InMemoryInvoiceRepository(InvoiceRepository):
             filters=filters,
             search=search,
             search_field="number",
+        )
+
+    async def sum_paid_amount_between(self, *, start, end) -> float:
+        return sum(
+            invoice.amount.amount
+            for invoice in self.by_id.values()
+            if invoice.status.value == "paid"
+            and invoice.paid_at is not None
+            and start <= invoice.paid_at < end
         )
 
 
@@ -1666,6 +1692,112 @@ class InvoicePaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
             uow=uow,
         )
         self.assertEqual([inv.status for inv in page.data], ["void", "issued"])
+
+
+class BillingStatsApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0020: `get_billing_stats`, backing `platform_audit.PlatformStatsApplicationService`.
+    Subscriptions/invoices are constructed directly (not via the full command flow) — the same
+    "seed the fake repository straight" shortcut `AccountLockoutApplicationTests`-style tests
+    elsewhere in this codebase already use when the aggregate's own constructor is simple
+    enough to call directly."""
+
+    @staticmethod
+    def _make_subscription(
+        *, id_generator: IdGenerator, status: SubscriptionStatus, current_period_end: datetime | None
+    ) -> Subscription:
+        return Subscription(
+            id=SubscriptionId(id_generator.new_id()),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            plan_id=PlanId(VALID_ORG_ULID),
+            status=status,
+            current_period_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            current_period_end=current_period_end,
+            auto_renew=True,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+    @staticmethod
+    def _make_invoice(
+        *,
+        id_generator: IdGenerator,
+        status: InvoiceStatus,
+        amount: float,
+        paid_at: datetime | None,
+    ) -> Invoice:
+        invoice_id = id_generator.new_id()
+        return Invoice(
+            id=InvoiceId(invoice_id),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            subscription_id=SubscriptionId(id_generator.new_id()),
+            number=invoice_id,
+            amount=Money(amount=amount, currency="USD"),
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 1, 28),
+            status=status,
+            issued_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            due_at=None,
+            paid_at=paid_at,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+    async def test_reports_status_breakdown_expiring_and_revenue(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        ids = SequentialIdGenerator()
+        uow.subscriptions.add(
+            self._make_subscription(
+                id_generator=ids,
+                status=SubscriptionStatus.ACTIVE,
+                current_period_end=datetime(2026, 1, 15, tzinfo=timezone.utc),
+            )
+        )
+        uow.subscriptions.add(
+            self._make_subscription(
+                id_generator=ids,
+                status=SubscriptionStatus.ACTIVE,
+                current_period_end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            )
+        )
+        uow.subscriptions.add(
+            self._make_subscription(
+                id_generator=ids, status=SubscriptionStatus.CANCELLED, current_period_end=None
+            )
+        )
+        uow.invoices.add(
+            self._make_invoice(
+                id_generator=ids,
+                status=InvoiceStatus.PAID,
+                amount=100.0,
+                paid_at=datetime(2026, 1, 10, tzinfo=timezone.utc),
+            )
+        )
+        uow.invoices.add(
+            self._make_invoice(
+                id_generator=ids,
+                status=InvoiceStatus.PAID,
+                amount=50.0,
+                paid_at=datetime(2026, 2, 1, tzinfo=timezone.utc),  # outside the window
+            )
+        )
+        uow.invoices.add(
+            self._make_invoice(
+                id_generator=ids, status=InvoiceStatus.ISSUED, amount=75.0, paid_at=None
+            )
+        )
+
+        stats = await service.get_billing_stats(
+            expiring_window_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            expiring_window_end=datetime(2026, 1, 31, tzinfo=timezone.utc),
+            revenue_window_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            revenue_window_end=datetime(2026, 1, 31, tzinfo=timezone.utc),
+            uow=uow,
+        )
+
+        self.assertEqual(stats.subscription_by_status, {"active": 2, "cancelled": 1})
+        self.assertEqual(stats.expiring_soon, 1)  # only the Jan 15 one is within the window
+        self.assertEqual(stats.revenue, 100.0)  # only the Jan-paid invoice is within the window
 
 
 if __name__ == "__main__":

@@ -44,6 +44,17 @@ class ListRegionsQuery:
 
 
 @dataclass(frozen=True)
+class OrganizationStatsDTO:
+    """ADR-0020: "Total/Active/Suspended Organizations" + "New Organizations Today" KPIs.
+    `by_status` uses the same lower-case status strings `OrganizationDTO.status` already does
+    (`OrganizationStatus.value`) — never re-derived or re-cased here."""
+
+    total: int
+    by_status: dict[str, int]
+    created_today: int
+
+
+@dataclass(frozen=True)
 class OrganizationDTO:
     id: str
     name: str

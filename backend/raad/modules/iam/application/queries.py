@@ -36,6 +36,17 @@ class ListUsersQuery:
 
 
 @dataclass(frozen=True)
+class UserStatsDTO:
+    """ADR-0020: active-user breakdown + MAU + "New Users Today" KPIs. `by_status` uses the
+    same lower-case status strings `UserDTO.status` already does (`UserStatus.value`)."""
+
+    total: int
+    by_status: dict[str, int]
+    monthly_active: int
+    created_today: int
+
+
+@dataclass(frozen=True)
 class UserDTO:
     id: str
     organization_id: str | None

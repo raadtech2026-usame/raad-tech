@@ -18,7 +18,7 @@ onto its row via the mapper immediately before commit — called by
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
@@ -45,6 +45,7 @@ from raad.modules.iam.domain.value_objects import (
     UserId,
 )
 from raad.modules.iam.infra.mappers import (
+    _naive,
     model_to_refresh_token,
     model_to_user,
     refresh_token_to_model,
@@ -163,6 +164,45 @@ class SqlAlchemyUserRepository(SqlAlchemyRepositoryBase[UserModel], UserReposito
             page=raw_page.page,
             page_size=raw_page.page_size,
         )
+
+    async def count_by_status(self) -> dict[str, int]:
+        """ADR-0020: active-user KPI input — one `GROUP BY status` query, scoped like
+        `list_page`."""
+        statement = self._apply_scope(
+            select(UserModel.status, func.count())
+            .where(UserModel.deleted_at.is_(None))
+            .group_by(UserModel.status)
+        )
+        result = await self._session.execute(statement)
+        return dict(result.all())
+
+    async def count_last_login_after(self, since: datetime) -> int:
+        """ADR-0020: MAU. `last_login_at` has no index today — acceptable for a low-frequency
+        admin dashboard read, not a hot path; flagged in the migration adding
+        `ix_users__last_login_at` rather than silently left unindexed."""
+        statement = self._apply_scope(
+            select(UserModel).where(
+                UserModel.deleted_at.is_(None),
+                UserModel.last_login_at >= _naive(since),
+            )
+        )
+        result = await self._session.execute(
+            select(func.count()).select_from(statement.subquery())
+        )
+        return result.scalar_one()
+
+    async def count_created_since(self, since: datetime) -> int:
+        """ADR-0020: "New Users Today" KPI."""
+        statement = self._apply_scope(
+            select(UserModel).where(
+                UserModel.deleted_at.is_(None),
+                UserModel.created_at >= _naive(since),
+            )
+        )
+        result = await self._session.execute(
+            select(func.count()).select_from(statement.subquery())
+        )
+        return result.scalar_one()
 
     def flush_tracked_changes(self) -> None:
         for user, model in self._tracked.values():

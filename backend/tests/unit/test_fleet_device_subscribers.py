@@ -81,6 +81,7 @@ class DeviceConnectivityProcessorTests(unittest.IsolatedAsyncioTestCase):
         command = self.service.recorded[0]
         self.assertEqual(command.device_id, "device-1")
         self.assertEqual(command.seen_at, _OCCURRED_AT)
+        self.assertTrue(command.is_online)
         self.assertIs(command.actor, SYSTEM_PRINCIPAL)
 
     async def test_device_offline_also_records_seen(self) -> None:
@@ -103,6 +104,8 @@ class DeviceConnectivityProcessorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(self.service.recorded), 1)
         self.assertEqual(self.service.recorded[0].device_id, "device-1")
+        # ADR-0020 §3: DeviceOffline must record is_online=False, not just a timestamp.
+        self.assertFalse(self.service.recorded[0].is_online)
 
     async def test_missing_device_id_is_dropped_not_passed_through(self) -> None:
         processor = DeviceConnectivityProcessor("DeviceOnline", self.container)

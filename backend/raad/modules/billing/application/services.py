@@ -60,6 +60,7 @@ from raad.modules.billing.application.commands import (
 )
 from raad.modules.billing.application.ports import BillingUnitOfWork, PaymentProviderPort
 from raad.modules.billing.application.queries import (
+    BillingStatsDTO,
     GetInvoiceByIdQuery,
     GetPaymentByIdQuery,
     GetPlanByIdQuery,
@@ -402,6 +403,34 @@ class BillingApplicationService:
                 total=page.total,
                 page=page.page,
                 page_size=page.page_size,
+            )
+
+    async def get_billing_stats(
+        self,
+        *,
+        expiring_window_start: datetime,
+        expiring_window_end: datetime,
+        revenue_window_start: datetime,
+        revenue_window_end: datetime,
+        uow: BillingUnitOfWork,
+    ) -> BillingStatsDTO:
+        """ADR-0020: "Subscription/Billing Status" + "Expiring Organizations" + "Revenue" KPIs,
+        backing `platform_audit.PlatformStatsApplicationService`. All four boundaries are
+        resolved by the caller once, for the whole composed response — matching every other
+        new stats method this ADR adds (`OrganizationApplicationService.get_organization_stats`'s
+        own docstring gives the full "policy resolved by caller" reasoning)."""
+        async with uow:
+            subscription_by_status = await uow.subscriptions.count_by_status()
+            expiring_soon = await uow.subscriptions.count_expiring_between(
+                start=expiring_window_start, end=expiring_window_end
+            )
+            revenue = await uow.invoices.sum_paid_amount_between(
+                start=revenue_window_start, end=revenue_window_end
+            )
+            return BillingStatsDTO(
+                subscription_by_status=subscription_by_status,
+                expiring_soon=expiring_soon,
+                revenue=revenue,
             )
 
     async def get_active_subscription_for_organization(

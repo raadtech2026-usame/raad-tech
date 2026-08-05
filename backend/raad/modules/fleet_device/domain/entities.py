@@ -260,6 +260,7 @@ class Device(_AggregateRoot):
         updated_at: datetime,
         cameras: list[Camera] | None = None,
         inventory_id: InventoryItemId | None = None,
+        is_online: bool = False,
     ) -> None:
         super().__init__()
         self.id = id
@@ -274,6 +275,10 @@ class Device(_AggregateRoot):
         self.lifecycle_state = lifecycle_state
         self.auth_key_hash = auth_key_hash
         self.last_seen_at = last_seen_at
+        #: ADR-0020 §3: mirrors `last_seen_at` exactly — set only by `record_last_seen` (a real
+        #: `DeviceOnline`/`DeviceOffline` connectivity event), never claimed `True` by default.
+        #: Same "connectivity telemetry, not business state" reasoning as `last_seen_at` itself.
+        self.is_online = is_online
         self.created_at = created_at
         self.updated_at = updated_at
         self._cameras: list[Camera] = list(cameras) if cameras else []
@@ -443,7 +448,7 @@ class Device(_AggregateRoot):
         self.lifecycle_state = DeviceLifecycleState.ACTIVATED
         self.updated_at = clock.now()
 
-    def record_last_seen(self, seen_at: datetime) -> None:
+    def record_last_seen(self, seen_at: datetime, *, is_online: bool) -> None:
         """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A3: the
         durable mirror of device-gateway connectivity state this class's own module docstring
         already names (lines 23-27) — "written by an event consumer... not a domain behavior of
@@ -455,8 +460,14 @@ class Device(_AggregateRoot):
         heartbeat would make that column meaningless as "last business change". Callable
         regardless of `lifecycle_state` (Phase 2 §19.3: a device can be `Assigned` and
         connectivity-`Offline` simultaneously, and a stray/decommissioned terminal's event still
-        updates this durable record even mid-`Suspended`)."""
+        updates this durable record even mid-`Suspended`).
+
+        ADR-0020 §3: `is_online` is set from the caller's own already-known `event_type`
+        (`DeviceOnline` -> `True`, `DeviceOffline` -> `False`) — this method doesn't infer it
+        from `seen_at` itself, since a stale/replayed event should still faithfully record what
+        it actually reported, not a guess."""
         self.last_seen_at = seen_at
+        self.is_online = is_online
 
     def register_camera(
         self,

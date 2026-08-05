@@ -177,6 +177,15 @@ class InMemoryOrganizationRepository(OrganizationRepository):
             search=search,
         )
 
+    async def count_by_status(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for org in self.by_id.values():
+            counts[org.status.value] = counts.get(org.status.value, 0) + 1
+        return counts
+
+    async def count_created_since(self, since) -> int:
+        return sum(1 for org in self.by_id.values() if org.created_at >= since)
+
 
 class InMemoryScopeAssignmentRepository(ScopeAssignmentRepository):
     def __init__(self) -> None:
@@ -873,6 +882,76 @@ class OrganizationPaginationApplicationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(page.total, 2)
         self.assertEqual(len(page.data), 1)
+
+
+class OrganizationStatsApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0020: `get_organization_stats`, backing `platform_audit.PlatformStatsApplicationService`."""
+
+    async def test_reports_total_and_status_breakdown(self) -> None:
+        org_service, region_service, uow, _iam_provisioning = make_services()
+        region_id = await _seed_region(region_service, uow)
+        for name in ("Alpha", "Beta"):
+            await org_service.register_organization(
+                RegisterOrganizationCommand(
+                    name=name,
+                    org_type=OrgType.SCHOOL,
+                    region_id=region_id,
+                    parent_org_id=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+        suspended_dto = await org_service.register_organization(
+            RegisterOrganizationCommand(
+                name="Gamma",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                parent_org_id=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await org_service.suspend_organization(
+            SuspendOrganizationCommand(
+                organization_id=suspended_dto.id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        stats = await org_service.get_organization_stats(
+            since_today=datetime(2026, 1, 1, tzinfo=timezone.utc), uow=uow
+        )
+
+        self.assertEqual(stats.total, 3)
+        self.assertEqual(stats.by_status, {"active": 2, "suspended": 1})
+
+    async def test_created_today_only_counts_organizations_on_or_after_the_boundary(
+        self,
+    ) -> None:
+        org_service, region_service, uow, _iam_provisioning = make_services()
+        region_id = await _seed_region(region_service, uow)
+        await org_service.register_organization(
+            RegisterOrganizationCommand(
+                name="Alpha",
+                org_type=OrgType.SCHOOL,
+                region_id=region_id,
+                parent_org_id=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        # make_services()'s FixedClock is 2026-01-01 — a "today" boundary strictly after that
+        # excludes it.
+        stats_before_boundary = await org_service.get_organization_stats(
+            since_today=datetime(2026, 1, 1, tzinfo=timezone.utc), uow=uow
+        )
+        stats_after_boundary = await org_service.get_organization_stats(
+            since_today=datetime(2026, 1, 2, tzinfo=timezone.utc), uow=uow
+        )
+
+        self.assertEqual(stats_before_boundary.created_today, 1)
+        self.assertEqual(stats_after_boundary.created_today, 0)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ instead, matching the same conceptual shape as the LLD §7.2 contract skeleton. 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from raad.core.pagination import (
     FilterCondition,
@@ -76,6 +77,22 @@ class UserRepository(ABC):
         search: str | None,
     ) -> OffsetPage[User]:
         """Backs `GET /users`'s paginated/filtered/sorted contract (API Contracts §7/§8)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_by_status(self) -> dict[str, int]:
+        """ADR-0020: platform-wide active-user KPI input — one `GROUP BY status` query."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_last_login_after(self, since: datetime) -> int:
+        """ADR-0020: MAU ("Monthly Active Users") — `since` (the trailing-30-day boundary) is
+        resolved by the caller, never computed here."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_created_since(self, since: datetime) -> int:
+        """ADR-0020: "New Users Today" KPI."""
         raise NotImplementedError
 
 
