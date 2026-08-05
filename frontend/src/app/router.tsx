@@ -23,6 +23,7 @@ import { RoutesPage } from "../features/transport-ops/routes/RoutesPage";
 import { TripsPage } from "../features/transport-ops/trips/TripsPage";
 import { LiveTrackingPage } from "../features/live-monitoring/LiveTrackingPage";
 import { NotificationsPage } from "../features/notifications/NotificationsPage";
+import { BillingPage } from "../features/billing/BillingPage";
 
 const PLATFORM_ROLES: Role[] = ["founder", "regional_manager", "support_staff", "finance_staff"];
 const ORGANIZATION_ROLES: Role[] = ["org_admin"];
@@ -112,7 +113,14 @@ function buildFeatureRoutes(
  * shared-component way** — but unlike every entry above, `NotificationsPage` isn't tenant- or
  * platform-scoped at all: `GET /notifications` is scoped to the caller's own `recipient_user_id`,
  * so this is one component showing each signed-in user their own personal inbox, identical
- * regardless of which dashboard path reaches it. */
+ * regardless of which dashboard path reaches it.
+ *
+ * **Phase F9 (Billing) graduates `/platform/billing`/`/org/billing`** — one shared, read-only
+ * `BillingPage` (no write route exists for `Plan`/`Subscription`/`Invoice` this phase, and
+ * `POST /billing/payments` always fails with no bound provider, `features/billing/api.ts`'s own
+ * docstring). None of the three list routes are tenant-scoped server-side either (a real,
+ * pre-existing, already-flagged gap, not new to this phase), so — like F8 — this looks the same
+ * regardless of which dashboard reaches it. */
 const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/organizations": <OrganizationsPage />,
   "/platform/regions": <RegionsPage />,
@@ -124,6 +132,7 @@ const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/trips": <TripsPage />,
   "/platform/tracking": <LiveTrackingPage />,
   "/platform/notifications": <NotificationsPage />,
+  "/platform/billing": <BillingPage />,
 };
 
 /** Org Admin's own dashboard equivalent of the Fleet & Device / Transport Ops entries above —
@@ -144,6 +153,7 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/trips": <TripsPage />,
   "/org/tracking": <LiveTrackingPage />,
   "/org/notifications": <NotificationsPage />,
+  "/org/billing": <BillingPage />,
 };
 
 export const router = createBrowserRouter([

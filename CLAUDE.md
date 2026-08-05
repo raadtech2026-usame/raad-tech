@@ -1261,6 +1261,57 @@ that test renders the real `DashboardHomePage`, which now embeds a live map prev
 canvas backend for). `tsc` clean, full suite green (361/361 across 58 files), production build
 clean.
 
+### Phase F9 — Billing (complete)
+
+`/platform/billing` and `/org/billing` are real now — `features/billing/`
+(`BillingPage.tsx`, `api.ts`, `labels.ts`), one shared component across both dashboards, matching
+every prior phase's two-dashboard pattern. API Contracts §4.7 and `billing/api/routers.py`'s own
+already-extensive module docstring fully specify this surface; no new ADR was needed.
+
+**Read-only by design, confirmed before writing any UI code, not assumed:** the router's own
+docstring states plainly that no write route exists for `Plan`/`Subscription`/`Invoice` this
+phase — the backend phase that built this surface was explicitly scoped to forbid
+`POST/PATCH/DELETE` for any of the three. `BillingPage` accordingly never attempts a create/edit
+form the API couldn't serve.
+
+**The one real design decision this phase turned on: `POST /billing/payments`.** The route is
+fully reachable, but with no `PaymentProviderPort` bound it always persists a `PENDING` `Payment`
+row and then raises `NotImplementedError` (500) at the charge step — a guaranteed failure by the
+backend's own explicit "fail loudly, don't fake a charge" design. Wiring a "Pay now" control to
+it would mean every click both shows a broken action *and* leaves a real, permanently-`PENDING`
+database row behind as a side effect. `features/billing/api.ts` builds no `initiatePayment`
+client function at all this phase — a documented decision (that file's own docstring), not dead
+code nothing calls — extending this codebase's "fail loudly, don't fake it" *data* posture one
+step further, to *affordances*: don't offer a control guaranteed to fail either. Revisit once a
+real payment-provider account resolves Known Issue #4.
+
+**First tabbed page in this frontend.** Three independent paginated resources (Plans,
+Subscriptions, Invoices) don't fit one `DataTable` — a new, small, general-purpose `Tabs`
+component (`shared/components/Tabs/`) switches between entire panels, distinct from the
+already-existing `FilterChips` (which narrows one list's own rows, never swaps panels). Each tab
+reuses the existing `usePaginatedQuery` hook verbatim, gated by `enabled` so only the active tab
+fetches.
+
+**A real, confirmed RBAC gap shaped the page's own role-gating** — read directly from the seeded
+permission matrix, not inferred from route names: Regional Manager/Support Staff hold
+`billing.plans.list` alone, not `billing.subscriptions.list`/`.invoices.list`, which every other
+role reaching this page (Founder, Finance Staff, Org Admin) holds all three of. The tab switcher
+itself is omitted for that pair of roles and Plans renders directly, rather than three tabs where
+two would 403 — mirroring the Founder Dashboard's identical "omit what would 403" precedent
+already established for Finance Staff.
+
+**Name resolution reuses the established pattern, not a new one.** Neither `SubscriptionResponse`
+nor `InvoiceResponse` carries an organization or plan name, only an opaque id — both resolve via
+small, separate, unfiltered lookup reads (capped at 100 rows, falling back to the raw id past
+that), the same `regionsLookup`-style precedent `OrganizationsPage` already established.
+
+**Testing:** wire-mapping tests for all three list routes plus the organization-picker lookup,
+and `BillingPage` coverage (default Plans tab, tab switching with name resolution, row-click
+detail drawer, a visible error state, and — the one genuinely load-bearing test — Regional
+Manager seeing Plans-only with `listSubscriptions`/`listInvoices` never called, versus Org Admin
+correctly seeing all three tabs). `tsc` clean, full suite green (372/372 across 60 files),
+production build clean.
+
 ## Production Readiness Hardening (Priority 1)
 
 A full, read-only production-readiness audit (2026-08-02, `docs/PROJECT_STATUS.md` §9) found the

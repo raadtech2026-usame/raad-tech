@@ -16,8 +16,8 @@ architecture; this file is the source of truth for progress and sequencing.
 |---|---|
 | **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
 | **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against) — every Priority 1 item touching the backend/web/infra surface (1–7) is complete and either live-verified or mechanism-complete-with-disclosed-testing-limits. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **Item 8 (Payment):** audited, genuinely blocked on a real provider account + a webhook-actor design decision — see Section 5. This is the end state of the continuous-completion program (user directive 2026-08-03) — see Section 15 for the full final report. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), **ADR-0019 (Account-Sharing Session Cap), and ADR-0020 (Platform Analytics Read Model) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete. Frontend: **F0–F8 complete** (F8: Notifications web UI — the first cursor-paginated page and the first live-WS-driven bell badge in this frontend) plus the ADR-0020 KPI grid and a fleet-ops-style dashboard redesign/polish pass; F9 (Billing)/F10 (Video)/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
-| **Current git commit** | This turn's own commit (`feat(frontend): F8 - Notifications web UI`) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; the field itself was last literally updated at `07cd3e8` (ADR-0019) and had already drifted several commits behind (ADR-0020, two dashboard phases) before this update, a real, disclosed instance of the exact staleness rule 2 warns about. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), **ADR-0019 (Account-Sharing Session Cap), and ADR-0020 (Platform Analytics Read Model) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete. Frontend: **F0–F9 complete** (F8: Notifications web UI — the first cursor-paginated page and the first live-WS-driven bell badge; F9: Billing web UI — read-only Plans/Subscriptions/Invoices, the first tabbed page in this frontend) plus the ADR-0020 KPI grid and a fleet-ops-style dashboard redesign/polish pass; F10 (Video)/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
+| **Current git commit** | This turn's own commit (`feat(frontend): F9 - Billing web UI`) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; it was last literally updated at `07cd3e8` (ADR-0019) and has drifted several commits behind on every turn since (a real, disclosed, recurring instance of the exact staleness rule 2 warns about, not a one-time slip). |
 | **Last updated** | 2026-08-05 |
 
 ---
@@ -30,7 +30,7 @@ it should never lag behind Section 3's detail.
 | Track | Current phase |
 |---|---|
 | **Backend** | ADR-0018 (Device Inventory & Allocation) complete. All ten bounded contexts implemented end-to-end. Next queued backend work is ADR-0019 (Session Cap) / ADR-0020 (Platform Analytics), but both are **paused** — see the Section 5 callout on why Priority-1 production-readiness work goes first. |
-| **Frontend** | Phases F0–F8 complete (design system, org/region/user/fleet/device/people management, live tracking, ADR-0020 KPI grid + fleet-ops dashboard redesign, notifications web UI). F9 (Billing), F10 (Video), and reporting feature folders are empty — not started. |
+| **Frontend** | Phases F0–F9 complete (design system, org/region/user/fleet/device/people management, live tracking, ADR-0020 KPI grid + fleet-ops dashboard redesign, notifications web UI, billing web UI). F10 (Video) and reporting feature folders are empty — not started. |
 | **Mobile** | Pre-implementation. `mobile/` is a structural scaffold only — no Flutter SDK dependency declared in `pubspec.yaml`, `lib/main.dart` is a 0-byte file, no native Android/iOS project files exist. `flutter create` has never been run. |
 | **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Item 1 (Backups) complete.** **Priority 1 Item 2 (TLS/HTTPS) complete** — nginx `prod-tls.conf` + a `certbot` service (Let's Encrypt via webroot challenge, auto-renewal), mechanism built and carefully reviewed but not live-tested against a real domain (none provisioned yet — Known Issue #13). **Priority 1 Item 3 (Auth rate limiting + account lockout) complete** — account lockout fully live-verified (real Postgres round trip + real HTTP requests against a running server); IP-based rate limiting's counting logic unit-tested only (no reachable Redis in this sandbox — Known Issue #14), but its Redis-unreachable fail-open behavior *is* live-verified over real HTTP. **Priority 1 Item 4 (Redis production hardening) complete, mechanism-wise** — `--requirepass`, AOF persistence with explicit `everysec` fsync, `--maxmemory`/`noeviction`, broker/cache split onto separate logical DBs, explicit connection timeouts on the backend's own Redis clients; carefully reviewed (YAML structural validation, DI-container smoke test) but not live-tested against a real running Redis process (no Docker/WSL2/redis-server available in this sandbox — Known Issue #15, the same disclosed limitation Item 2 already carries). Production monitoring remains open — the last infra-adjacent Priority-1 blocker (Section 5). |
 
@@ -166,7 +166,8 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 
 #### Billing — 🟡 Partial
 - **Implemented:** Full `Plan`/`Subscription`/`Invoice`/`Payment`/`TransportFee` lifecycle; 5 documented routes. `BillingApplicationService.initiate_payment`/`handle_payment_callback`/`reconcile_expired_payments` are all fully implemented and tested (42 passing unit tests, `test_billing_application.py`) — idempotency-key handling, the full paid/failed state orchestration (invoice → subscription renewal), and the scheduled reconciliation job all genuinely work today, independent of whether a real provider is bound.
-- **Missing (Priority 1 Item 8 — audited, not further built this session, both blockers external):** (1) `PaymentProviderPort` has no bound adapter — a real EVC Plus (or any) merchant account, API credentials, and API documentation (endpoint shapes, auth scheme) are needed to build a real, verifiable adapter; inventing one against assumed API shapes would embed unverified guesses as if they were tested integration code, exactly what `.claude/rules/workflow.md` #8 says to stop and ask about rather than do. (2) `POST /billing/payments/callback` is deliberately not wired — confirmed by re-reading the router's own already-correct reasoning (`api/routers.py`'s module docstring, written before this audit and independently re-verified, not superseded): no signature/secret verification scheme is documented anywhere (Phase 2 §20.4 mandates verification but names no algorithm/header/secret source), **and** the caller ("provider (signed)") has no `Principal` to authenticate through this codebase's `require_permission` model — `PaymentCallbackCommand.actor: Principal` has no documented value for a non-human, non-RBAC-role caller. Forcing either through with an invented signature scheme or a fabricated placeholder `Principal` would be undocumented behavior shipped as if it were real, not a simplification. Zero frontend UI either (F9 not started).
+- **Web UI (F9) now built:** `features/billing/BillingPage.tsx`, mounted at both `/platform/billing`/`/org/billing` (one shared, read-only component — none of the three list routes are tenant-scoped server-side, a pre-existing gap noted below, not new). Tabbed Plans/Subscriptions/Invoices (this frontend's first `Tabs` component/pattern), each a full paginated/filtered/sorted `DataTable` + detail drawer via the existing `usePaginatedQuery` hook; organization/plan name resolution for Subscriptions/Invoices (neither response carries a name, only an opaque id). Regional Manager/Support Staff — confirmed via the seeded RBAC matrix to hold `billing.plans.list` alone, not `.subscriptions.list`/`.invoices.list` — see Plans only, no tab switcher, rather than three tabs where two would 403. **Deliberately no "Pay now" control anywhere**: `POST /billing/payments` always persists a `PENDING` row and then raises `NotImplementedError` (500) with no bound `PaymentProviderPort` — wiring a button to a guaranteed-failing, side-effect-creating action was judged the wrong call (`features/billing/api.ts`'s own docstring), extending this codebase's "fail loudly, don't fake it" data posture to mean "don't offer an affordance guaranteed to fail" too.
+- **Missing (Priority 1 Item 8 — audited, not further built this session, both blockers external):** (1) `PaymentProviderPort` has no bound adapter — a real EVC Plus (or any) merchant account, API credentials, and API documentation (endpoint shapes, auth scheme) are needed to build a real, verifiable adapter; inventing one against assumed API shapes would embed unverified guesses as if they were tested integration code, exactly what `.claude/rules/workflow.md` #8 says to stop and ask about rather than do. (2) `POST /billing/payments/callback` is deliberately not wired — confirmed by re-reading the router's own already-correct reasoning (`api/routers.py`'s module docstring, written before this audit and independently re-verified, not superseded): no signature/secret verification scheme is documented anywhere (Phase 2 §20.4 mandates verification but names no algorithm/header/secret source), **and** the caller ("provider (signed)") has no `Principal` to authenticate through this codebase's `require_permission` model — `PaymentCallbackCommand.actor: Principal` has no documented value for a non-human, non-RBAC-role caller. Forcing either through with an invented signature scheme or a fabricated placeholder `Principal` would be undocumented behavior shipped as if it were real, not a simplification.
 - **Production blocker?** Yes — no way to collect money today. **Not closeable without external input**: a real payment-provider account/API docs (for the adapter) and a resolved design decision — via a new ADR, matching this codebase's own established process for exactly this kind of question — for how a signed-webhook caller is represented in the `Principal`/audit model (for the callback route).
 - **Dependencies:** A payment provider adapter (EVC Plus) — genuinely external, cannot be fabricated.
 
@@ -310,10 +311,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Dependencies:** None.
 
 #### Frontend Completeness — 🟡 Partial
-- **Implemented:** F0–F8 built and tested — 58 real test files (361 tests), working production build, correct in-memory-only token handling, real Docker/nginx deployment path.
-- **Missing:** F9 (billing), F10 (video), reporting — still empty feature folders.
+- **Implemented:** F0–F9 built and tested — 60 real test files (372 tests), working production build, correct in-memory-only token handling, real Docker/nginx deployment path.
+- **Missing:** F10 (video), reporting — still empty feature folders.
 - **Production blocker?** Partially.
-- **Dependencies:** Billing, Video, Reporting (backend halves already exist; only the frontend consumers are missing).
+- **Dependencies:** Video, Reporting (backend halves already exist; only the frontend consumers are missing).
 
 #### CI/CD — 🟡 Partial
 - **Implemented:** `.github/workflows/backend-pipeline.yml` — real, runs unit/architecture/integration tests against live Postgres+Redis service containers on every backend PR.
@@ -424,7 +425,12 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
   filter chips, cursor-paginated "Load more," mark-as-read, live `/ws/notifications` refresh) at
   both `/platform/notifications`/`/org/notifications`; `AppShell`'s bell badge now shows a real,
   live-updating unread count. See Section 8 for the full writeup.
-- Billing web UI (F9) *(3–5 days)*
+- ~~Billing web UI (F9)~~ — ✅ **Complete** (2026-08-05). `BillingPage.tsx` (tabbed, read-only
+  Plans/Subscriptions/Invoices — this frontend's first `Tabs` pattern) at both
+  `/platform/billing`/`/org/billing`; Regional Manager/Support Staff see Plans only, matching
+  their actual RBAC grants. No payment-initiation control — `POST /billing/payments` always
+  fails with no bound provider (Priority 1 Item 8, still open). See Section 8 for the full
+  writeup.
 - Live video / JT1078 — only if video is part of the launch pitch *(3–6 weeks)*
 - ~~Platform analytics (ADR-0020)~~ — ✅ **Complete** (2026-08-05, done ahead of its Priority 2
   slot at the user's request — see Section 8/9).
@@ -500,16 +506,66 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — Phase F8 (Notifications web UI) just landed (2026-08-05), the user's own explicit
-approval of this session's own Section 5 recommendation** (the first-ever "propose, then wait
-for approval" cycle in this sprint's run of work — every item before it was either a direct user
-redirect or part of the continuous-completion program). Between ADR-0020 and F8, this session
-also did two frontend-only passes at the user's explicit request: a Dashboard Polish pass (KPI
-card layout/spacing/hover states) and a full fleet-ops-style Dashboard redesign (KPI row, Live
-Operations + live map preview, Recent Activity, Fleet/Device Health, Billing summary) — both
-UI-only, no backend/API change, so neither touched this document (no capability/status line's
-truth value changed). Section 2's Mobile row and similar minor doc staleness are still
+**Nothing — Phase F9 (Billing web UI) just landed (2026-08-05), immediately after Phase F8
+(Notifications web UI, same day), both the user's own explicit "go" approval of this session's
+own Section 5 recommendations in turn** — the pattern established with F8 (propose, wait for
+approval, build) repeated once more for F9 rather than a one-off. Between ADR-0020 and F8, this
+session also did two frontend-only passes at the user's explicit request: a Dashboard Polish
+pass (KPI card layout/spacing/hover states) and a full fleet-ops-style Dashboard redesign (KPI
+row, Live Operations + live map preview, Recent Activity, Fleet/Device Health, Billing summary)
+— both UI-only, no backend/API change, so neither touched this document (no capability/status
+line's truth value changed). Section 2's Mobile row and similar minor doc staleness are still
 outstanding, not yet corrected — noted, not forgotten.
+
+**Phase F9 — Billing Web UI.** API Contracts §4.7 and `billing/api/routers.py`'s own extensive
+module docstring already fully specify this surface's real shape; nothing here required a new
+ADR. **Read-only by design, confirmed before writing any UI code, not assumed:** the router's own
+docstring states plainly that no write route exists for `Plan`/`Subscription`/`Invoice` this
+phase (no `POST/PATCH/DELETE` for any of the three — the task scope for the backend phase that
+built this surface explicitly forbade them), so `BillingPage` never attempts to build a create/
+edit form the API couldn't actually serve.
+
+**The one real design decision this phase turned on: what to do about `POST /billing/payments`.**
+The route exists and is fully reachable, but with no `PaymentProviderPort` bound, it always
+persists a `PENDING` `Payment` row and then raises `NotImplementedError` (500) at the charge step
+— a guaranteed failure, by the backend's own explicit "fail loudly, don't fake a charge" design,
+not a bug to work around. Wiring a "Pay now" button to it would mean every click both shows the
+user a broken action *and* leaves behind a real, permanently-`PENDING` database row as a side
+effect — worse than simply not offering the control. `features/billing/api.ts` never builds an
+`initiatePayment` client function at all this phase, a documented decision (flagged in that
+file's own docstring, not silently dropped) rather than dead code nothing calls. This is this
+codebase's existing "fail loudly, don't fake it" *data* posture extended one step further, to
+*affordances*: don't offer a control that is guaranteed to fail either.
+
+**First tabbed page in this frontend.** Three independent paginated resources (Plans,
+Subscriptions, Invoices) don't fit one `DataTable` — a new, small, general-purpose `Tabs`
+component (`shared/components/Tabs/`) switches between entire panels, distinct from the
+already-existing `FilterChips` (which narrows *one* list's own rows, not swap panels). Each tab
+reuses the existing `usePaginatedQuery` hook verbatim — the same offset-pagination/sort/filter/
+search state machine every other list page in this codebase already shares — gated with
+`enabled` so only the active tab actually fetches.
+
+**A real, confirmed-not-assumed RBAC gap shaped the page's own role-gating.** Read directly from
+the seeded permission matrix rather than inferred from route names: Regional Manager/Support
+Staff hold `billing.plans.list` alone — not `billing.subscriptions.list`/`.invoices.list`, which
+every *other* role reaching this page (Founder, Finance Staff, Org Admin) holds all three of.
+Rather than rendering three tabs and letting two of them 403 for this one pair of roles, the tab
+switcher itself is omitted for them and Plans renders directly — mirroring the Founder
+Dashboard's identical "omit what would 403, don't render-then-error" precedent already
+established for Finance Staff there.
+
+**Name resolution, the same established pattern, not a new one.** Neither `SubscriptionResponse`
+nor `InvoiceResponse` carries an organization or plan *name* — only opaque ids — so both are
+resolved via small, separate, unfiltered lookup reads (capped at the first 100 rows, falling back
+to the raw id past that), the exact same `regionsLookup`-style precedent `OrganizationsPage`
+already established, not a new mechanism invented for this page.
+
+**Testing:** wire-mapping tests for all three list routes plus the organization-picker lookup,
+and `BillingPage` coverage (default Plans tab, tab switching with name resolution, row-click
+detail drawer, a visible error state, and — the one genuinely load-bearing test here — Regional
+Manager seeing Plans-only with `listSubscriptions`/`listInvoices` never even called, versus Org
+Admin correctly seeing all three tabs). `tsc` clean, full suite green (372/372 across 60 files,
+up from 361/350), production build clean.
 
 **Phase F8 — Notifications Web UI.** `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md`
 §8/API Contracts §4.6/§11.3 already fully specify this surface; nothing here required a new ADR.
