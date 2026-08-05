@@ -406,6 +406,40 @@ class PaymentTests(unittest.TestCase):
         events = payment.pull_domain_events()
         self.assertEqual(events[0].event_type, "PaymentFailed")
 
+    def test_mark_failed_records_reason(self) -> None:
+        """ADR-0022: a provider-supplied decline message now persists instead of being
+        discarded."""
+        payment = self._make_payment()
+        payment.mark_failed(clock=CLOCK, reason="Your card was declined.")
+        self.assertEqual(payment.failure_reason, "Your card was declined.")
+
+    def test_mark_paid_twice_is_idempotent_no_op(self) -> None:
+        """ADR-0022: the specific regression this ADR closes — a real payment provider retries
+        a webhook delivery until it gets a 200, so a duplicate 'paid' callback for an
+        already-PAID payment must be a no-op, not a second `PaymentConfirmed` event (which
+        `handle_payment_callback` would otherwise use to re-advance a subscription's billing
+        period a second time)."""
+        payment = self._make_payment()
+        payment.mark_paid(provider_ref="EVC-REF-123", clock=CLOCK)
+        payment.pull_domain_events()
+        confirmed_at = payment.confirmed_at
+
+        payment.mark_paid(provider_ref="EVC-REF-DIFFERENT", clock=CLOCK)
+
+        self.assertEqual(payment.provider_ref, "EVC-REF-123", "must not overwrite the original ref")
+        self.assertEqual(payment.confirmed_at, confirmed_at)
+        self.assertEqual(payment.pull_domain_events(), [], "must not raise a second PaymentConfirmed")
+
+    def test_mark_failed_twice_is_idempotent_no_op(self) -> None:
+        payment = self._make_payment()
+        payment.mark_failed(clock=CLOCK, reason="First reason")
+        payment.pull_domain_events()
+
+        payment.mark_failed(clock=CLOCK, reason="Second reason")
+
+        self.assertEqual(payment.failure_reason, "First reason", "must not overwrite the original reason")
+        self.assertEqual(payment.pull_domain_events(), [], "must not raise a second PaymentFailed")
+
     def test_mark_expired_when_already_expired_is_idempotent_no_op(self) -> None:
         payment = self._make_payment()
         payment.mark_expired(clock=CLOCK)

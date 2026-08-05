@@ -11,6 +11,7 @@ Streams at MVP) are now bound for real, conditional on their own settings being 
 
 from __future__ import annotations
 
+import httpx
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -108,6 +109,7 @@ from raad.modules.transport_ops.infra.repositories import (
 )
 from raad.modules.billing.application.ports import BillingUnitOfWork, PaymentProviderPort
 from raad.modules.billing.application.services import BillingApplicationService
+from raad.modules.billing.infra.adapters import StripePaymentAdapter
 from raad.modules.billing.infra.repositories import SqlAlchemyBillingUnitOfWork
 from raad.modules.notifications.application.ports import NotificationsUnitOfWork
 from raad.modules.notifications.application.services import NotificationApplicationService
@@ -279,12 +281,30 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
+    # ADR-0022: `PaymentProviderPort` -> `StripePaymentAdapter`, conditionally bound behind a
+    # real settings check — the exact `if settings.<x>.url:` conditional-binding shape
+    # `LatestPositionPort`/`BrokerPort` above already establish, not a new DI idiom. Unbound
+    # (stays a `LookupError` on a direct `resolve`, `None` from `try_resolve`) whenever the
+    # provider isn't `"stripe"` or its secret key is missing — EVC Plus/Zaad's own stub adapters
+    # are deliberately never bound here (`infra/adapters.py`'s own docstring: no real merchant
+    # account/API docs exist to build a verified integration against).
+    if settings.payment.provider == "stripe" and settings.payment.provider_credentials.get(
+        "secret_key"
+    ):
+        container.bind_singleton(
+            PaymentProviderPort,
+            StripePaymentAdapter(
+                http_client=httpx.AsyncClient(timeout=30.0),
+                secret_key=settings.payment.provider_credentials["secret_key"],
+                webhook_secret=settings.payment.provider_credentials.get("webhook_secret", ""),
+            ),
+        )
+
     # BillingApplicationService is always constructible too — `payment_provider` is optional
     # by design (see that class's own module docstring: only `initiate_payment`'s actual charge
-    # step needs it, and no `PaymentProviderPort` adapter exists yet — Phase 15's own scope
-    # explicitly forbids integrating a real one). `try_resolve` mirrors `LatestPositionPort`'s
-    # pattern above but, unlike Tracking, a `None` result here does not block binding the
-    # service — it is passed straight through to the optional constructor arg.
+    # step needs it). `try_resolve` mirrors `LatestPositionPort`'s pattern above but, unlike
+    # Tracking, a `None` result here does not block binding the service — it is passed straight
+    # through to the optional constructor arg.
     container.bind_singleton(
         BillingApplicationService,
         BillingApplicationService(

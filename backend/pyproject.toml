@@ -14,6 +14,12 @@
 # Dependency management tool (Poetry / PDM / plain pip) and dev tooling (pytest, ruff/black/
 # mypy) are not yet decided by approved documentation — this file uses the PEP 621 format,
 # installable with plain `pip install -e .` regardless of that later choice.
+#
+# ADR-0022 (Payment Provider Architecture) adds `httpx` — an async HTTP client, needed by
+# `billing.infra.adapters.StripePaymentAdapter` to call Stripe's REST API. Chosen over the
+# official `stripe` SDK to match this codebase's own established "hand-roll a narrow, well-
+# understood need" pattern rather than pull a heavier dependency; Stripe's REST API (Payment
+# Intents) is simple and well-documented enough to call directly. MIT license.
 
 [project]
 name = "raad-business-api"
@@ -29,6 +35,7 @@ dependencies = [
     "alembic>=1.13",
     "asyncpg>=0.29",
     "redis>=5.0",
+    "httpx>=0.27",
 ]
 
 [build-system]

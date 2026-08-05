@@ -112,26 +112,36 @@ class VoidInvoiceCommand:
 @dataclass(frozen=True)
 class InitiatePaymentCommand:
     """`POST /billing/payments` (API Contracts §4.7, documented request body verbatim, plus
-    `idempotency_key` from the required `Idempotency-Key` header, API rule #6)."""
+    `idempotency_key` from the required `Idempotency-Key` header, API rule #6). `msisdn`/
+    `payment_method_token` are both optional (ADR-0022): a mobile-money provider needs
+    `msisdn`, a card provider (Stripe) needs `payment_method_token` (a client-tokenized id -
+    the raw card number itself must never reach this backend); the bound
+    `PaymentProviderPort` validates that the field it actually needs is present."""
 
     invoice_id: str
     method: str
-    msisdn: str
     amount: float
     currency: str
     idempotency_key: str
     actor: Principal
+    msisdn: str | None = None
+    payment_method_token: str | None = None
 
 
 @dataclass(frozen=True)
 class PaymentCallbackCommand:
-    """`POST /billing/payments/callback` — see module docstring for why this shape is a
-    flagged, minimal placeholder, not a documented EVC Plus webhook contract."""
+    """`POST /billing/payments/callback`. `actor` is always `SYSTEM_PRINCIPAL` (ADR-0022,
+    `core/tenancy/principal.py`) — this command is only ever constructed after the caller's HMAC
+    webhook signature has already been verified (`PaymentProviderPort.verify_webhook_signature`),
+    never through `require_permission`/a bearer JWT, since a payment provider has no `Principal`
+    of its own. `failure_reason` (ADR-0022) is the provider's own decline message, when the
+    provider's webhook payload includes one."""
 
     payment_id: str
     status: str
     provider_ref: str | None
     actor: Principal
+    failure_reason: str | None = None
 
 
 @dataclass(frozen=True)

@@ -391,6 +391,24 @@ class SqlAlchemyPaymentRepository(
 ):
     model = PaymentModel
 
+    #: Whitelist for `GET /billing/payments` (ADR-0022) - limited to columns already on
+    #: `PaymentResponse`/`PaymentDTO`, mirroring `SqlAlchemyInvoiceRepository`'s identical
+    #: shape. No `searchable_fields` - `payments` has no free-text label column (`provider_ref`
+    #: is provider-controlled, not user-authored, the same "only opt in what actually exists"
+    #: posture `SqlAlchemySubscriptionRepository` already establishes).
+    filterable_fields = {
+        "organization_id": FilterField(column="organization_id"),
+        "invoice_id": FilterField(column="invoice_id"),
+        "status": FilterField(column="status"),
+    }
+    sortable_fields = {
+        "amount": "amount",
+        "status": "status",
+        "created_at": "created_at",
+        "confirmed_at": "confirmed_at",
+    }
+    searchable_fields = ()
+
     def __init__(
         self, session: AsyncSession, *, scope: TenantRegionScope | None = None
     ) -> None:
@@ -410,9 +428,39 @@ class SqlAlchemyPaymentRepository(
         rows = await self.list_scoped()
         return [model_to_payment(row) for row in rows]
 
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Payment]:
+        """Same unrestricted-`TenantRegionScope` posture `list_all` above already carries -
+        backs `GET /billing/payments`'s paginated/filtered/sorted contract (ADR-0022)."""
+        raw_page = await super().list_page(
+            page_request,
+            sort=sort,
+            filters=filters,
+            search=search,
+        )
+        return OffsetPage(
+            data=[self._track(row) for row in raw_page.data],  # type: ignore[misc]
+            total=raw_page.total,
+            page=raw_page.page,
+            page_size=raw_page.page_size,
+        )
+
     async def get_by_idempotency_key(self, idempotency_key: str) -> Payment | None:
         statement = select(PaymentModel).where(
             PaymentModel.idempotency_key == idempotency_key
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
+
+    async def get_by_provider_ref(self, provider: str, provider_ref: str) -> Payment | None:
+        statement = select(PaymentModel).where(
+            PaymentModel.provider == provider, PaymentModel.provider_ref == provider_ref
         )
         result = await self._session.execute(statement)
         return self._track(result.scalar_one_or_none())

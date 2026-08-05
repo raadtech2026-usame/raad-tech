@@ -48,18 +48,9 @@ input at all (RAAD bills Organizations only) — the gate is now the *organizati
 subscription state, resolved once per `vehicle_id` (not once per parent, since it no longer
 varies by parent), not a per-parent lookup.
 
-**`SYSTEM_PRINCIPAL` — a real, flagged gap, not a silent invention.** Every application command
-in this codebase requires `actor: Principal` (including `CreateNotificationCommand`), but no
-approved document defines a system/worker actor concept, and `core.tenancy.principal.Role` has
-no `SYSTEM` value among its seven documented roles (Project Brief Ch. 4). Adding an eighth role
-would touch the RBAC seed matrix (ADR-0004), `ScopeResolver` (ADR-0005), and every policy that
-switches on `Role` — a far larger, riskier change than this phase's own "prefer minimal changes"
-instruction allows for a single worker's actor field. `Principal(user_id="system", role=Role.
-FOUNDER, org_id=None)` is used instead — Founder is the closest existing role conceptually
-(unrestricted scope, matching what a background system process needs), not a claim that the
-worker "is" a Founder user; `audit_entries.actor_user_id` will read `"system"` for these rows,
-distinguishable from any real user id. Flagged here for a future ADR if a real `SYSTEM` role is
-ever formally adopted.
+**`SYSTEM_PRINCIPAL`** — moved to `core/tenancy/principal.py` (ADR-0022), since `billing`'s own
+webhook-callback path now needs the identical "*a* `Principal` for a non-human caller" constant
+this module already established; see that module's own docstring for the full reasoning.
 """
 
 from __future__ import annotations
@@ -74,7 +65,7 @@ from raad.core.policies.subscription_access import (
     SubscriptionAccessPolicy,
     SubscriptionState,
 )
-from raad.core.tenancy.principal import Principal, Role
+from raad.core.tenancy.principal import SYSTEM_PRINCIPAL
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.notifications.application.commands import CreateNotificationCommand
@@ -91,9 +82,6 @@ from raad.modules.transport_ops.application.services import (
     StudentParentApplicationService,
     TripApplicationService,
 )
-
-SYSTEM_PRINCIPAL = Principal(user_id="system", role=Role.FOUNDER, org_id=None)
-
 
 class _NotificationFanOut:
     """Shared recipient-resolution + CR-1-gating + dispatch logic for every D1 transport

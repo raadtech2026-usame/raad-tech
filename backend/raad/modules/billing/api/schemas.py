@@ -72,15 +72,19 @@ class InvoiceResponse(BaseModel):
 
 class InitiatePaymentRequest(BaseModel):
     """`POST /billing/payments` body — API Contracts §4.7's documented sample verbatim:
-    `{ "invoice_id","method","msisdn","amount","currency" }`. `idempotency_key` is **not** a
-    body field — it comes from the required `Idempotency-Key` header (API rule #6, API
-    Contracts §12), read directly in `routers.py`."""
+    `{ "invoice_id","method","msisdn","amount","currency" }`, extended by ADR-0022 with an
+    optional `payment_method_token` (a client-tokenized id, e.g. a Stripe `PaymentMethod` —
+    the raw card number itself must never reach this backend). `msisdn` is now optional too:
+    a card provider has none. `idempotency_key` is **not** a body field — it comes from the
+    required `Idempotency-Key` header (API rule #6, API Contracts §12), read directly in
+    `routers.py`."""
 
     invoice_id: str
     method: str
-    msisdn: str
     amount: float
     currency: str
+    msisdn: str | None = None
+    payment_method_token: str | None = None
 
 
 class PaymentResponse(BaseModel):
@@ -89,3 +93,23 @@ class PaymentResponse(BaseModel):
 
     payment_id: str
     status: str
+
+
+class PaymentListItemResponse(BaseModel):
+    """`GET /billing/payments` (ADR-0022 — "payment history," no prior list route existed).
+    Unlike `PaymentResponse` above (deliberately minimal, matching §4.7's one documented
+    literal sample), this is the full row shape — every other billing list route
+    (`PlanResponse`/`SubscriptionResponse`/`InvoiceResponse`) already returns its full DTO, and
+    a payment-history view needs more than just `payment_id`/`status` to be useful."""
+
+    id: str
+    organization_id: str
+    invoice_id: str
+    provider: str
+    provider_ref: str | None
+    amount: float
+    currency: str
+    status: str
+    failure_reason: str | None
+    created_at: datetime
+    confirmed_at: datetime | None

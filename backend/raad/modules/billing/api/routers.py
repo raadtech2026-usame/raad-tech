@@ -57,24 +57,49 @@ below exists (so the documented path itself isn't silently missing from the API 
 immediately raises `NotImplementedError`, mirroring `interfaces/http/deps.get_scope`'s identical
 "fail loudly rather than fake a pass" treatment for its own pending dependency.
 
-**Not exposed this phase** (uniform-CRUD `GET/PATCH/DELETE` for any of the five aggregates): no
-row in §4.7 documents any of them beyond the five above — `Plan`/`Subscription`/`Invoice` have no
-per-id `GET`, `Payment` has no list/get route, `TransportFee` has no HTTP route at all (confirmed
-absent from §4.7's table; `domain/entities.py`'s own docstring already flags this).
+**ADR-0022 wires `POST /billing/payments/callback` for real.** No `Depends(require_permission
+(...))`/`Depends(get_principal)` at all — a payment provider has no `Principal`, and the
+signature check below *is* this route's authentication (matching how Stripe's, and every
+mainstream provider's, own webhook documentation describes this exact model). The two blockers
+this docstring used to describe are resolved: the signature scheme is the bound
+`PaymentProviderPort`'s own `verify_webhook_signature` (Stripe's documented HMAC-SHA256 scheme,
+`infra/adapters.py`), and the actor is `SYSTEM_PRINCIPAL` (`core/tenancy/principal.py`) — the
+same "least-bad available role" constant `notifications`' own Notification Worker already uses
+for an identical gap, not a new RBAC concept. A missing/invalid signature is a `401`
+(`AuthenticationError`), logged (not a domain-event audit row — there is no aggregate mutation
+to attach one to for a *rejected* request, `.claude/rules/security.md` #8's own audit-logging
+requirement satisfied via structured logging here instead, the same posture the login-rate-
+limiter's own "log once, don't cascade-fail" precedent already established for a comparable
+no-aggregate-to-write-to situation). If no `PaymentProviderPort` is bound at all (no provider
+configured this deployment), the route still raises `NotImplementedError` exactly as before.
+
+**ADR-0022 also adds `GET /billing/payments`** — no list route existed for `Payment` at all
+before this; see `PaymentListItemResponse`'s own docstring (`api/schemas.py`) for why it's a
+fuller shape than `PaymentResponse`. Gated by a new `billing.payments.list` permission.
+
+**Not exposed this phase** (uniform-CRUD `GET/PATCH/DELETE` beyond what's listed above): no row
+in §4.7 documents a per-id `GET` for `Plan`/`Subscription`/`Invoice`, and `TransportFee` has no
+HTTP route at all (confirmed absent from §4.7's table; `domain/entities.py`'s own docstring
+already flags this).
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, status
+import logging
 
+from fastapi import APIRouter, Depends, Header, Request, Response, status
+
+from raad.core.di.container import Container
+from raad.core.errors.exceptions import AuthenticationError, NotFoundError
 from raad.core.pagination import (
     FilterCondition,
     OffsetPageRequest,
     SortSpec,
 )
 from raad.core.security.permissions import Permission
-from raad.core.tenancy.principal import Principal
+from raad.core.tenancy.principal import SYSTEM_PRINCIPAL, Principal
 from raad.interfaces.http.deps import (
+    get_container,
     get_filter_conditions,
     get_offset_page_request,
     get_search_query,
@@ -82,19 +107,29 @@ from raad.interfaces.http.deps import (
     require_permission,
 )
 from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_response
-from raad.modules.billing.api.deps import get_billing_service, get_billing_uow
+from raad.modules.billing.api.deps import (
+    get_billing_service,
+    get_billing_uow,
+    get_billing_uow_unscoped,
+)
 from raad.modules.billing.api.schemas import (
     InitiatePaymentRequest,
     InvoiceResponse,
+    PaymentListItemResponse,
     PaymentResponse,
     PlanResponse,
     SubscriptionResponse,
 )
 from raad.modules.billing.application.commands import InitiatePaymentCommand
-from raad.modules.billing.application.ports import BillingUnitOfWork
+from raad.modules.billing.application.ports import (
+    BillingUnitOfWork,
+    PaymentProviderPort,
+    UnhandledWebhookEventError,
+)
 from raad.modules.billing.application.queries import (
     InvoiceDTO,
     ListInvoicesQuery,
+    ListPaymentsQuery,
     ListPlansQuery,
     ListSubscriptionsQuery,
     PaymentDTO,
@@ -102,6 +137,8 @@ from raad.modules.billing.application.queries import (
     SubscriptionDTO,
 )
 from raad.modules.billing.application.services import BillingApplicationService
+
+logger = logging.getLogger(__name__)
 
 billing_router = APIRouter()
 
@@ -158,6 +195,22 @@ def _invoice_dto_to_response(invoice: InvoiceDTO) -> InvoiceResponse:
 
 def _payment_dto_to_response(payment: PaymentDTO) -> PaymentResponse:
     return PaymentResponse(payment_id=payment.id, status=payment.status)
+
+
+def _payment_dto_to_list_item_response(payment: PaymentDTO) -> PaymentListItemResponse:
+    return PaymentListItemResponse(
+        id=payment.id,
+        organization_id=payment.organization_id,
+        invoice_id=payment.invoice_id,
+        provider=payment.provider,
+        provider_ref=payment.provider_ref,
+        amount=payment.amount,
+        currency=payment.currency,
+        status=payment.status,
+        failure_reason=payment.failure_reason,
+        created_at=payment.created_at,
+        confirmed_at=payment.confirmed_at,
+    )
 
 
 @billing_router.get(
@@ -279,34 +332,107 @@ async def initiate_payment(
     command = InitiatePaymentCommand(
         invoice_id=body.invoice_id,
         method=body.method,
-        msisdn=body.msisdn,
         amount=body.amount,
         currency=body.currency,
         idempotency_key=idempotency_key,
         actor=principal,
+        msisdn=body.msisdn,
+        payment_method_token=body.payment_method_token,
     )
     payment = await billing_service.initiate_payment(command, uow=uow)
     return _payment_dto_to_response(payment)
 
 
-@billing_router.post(
-    "/payments/callback",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    summary="Payment provider webhook (not implemented — see module docstring)",
+@billing_router.get(
+    "/payments",
+    response_model=OffsetPageResponse[PaymentListItemResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List payments (payment history)",
     description=(
-        "API Contracts §4.7 line 174 — provider (signed) webhook. Deliberately not wired to "
-        "`BillingApplicationService.handle_payment_callback` this phase: no signature/secret "
-        "verification scheme is documented anywhere (a firm requirement per "
-        "`.claude/rules/security.md` #10, but with no specified mechanism to implement), and "
-        "the caller has no `Principal` to authenticate through this codebase's existing "
-        "`require_permission` model. See this file's module docstring for the full gap."
+        "ADR-0022 — no list route existed for `Payment` at all before this. Founder/Finance "
+        "Staff/Org Admin (mirrors `.subscriptions.list`'s existing grant set — not Regional "
+        "Manager/Support Staff, who hold only `billing.plans.list`). Paginated/filterable/"
+        "sortable per §7/§8: `?page&page_size`, `?filter[field]=value`, `?sort=field`."
     ),
 )
-async def payment_callback() -> None:
-    raise NotImplementedError(
-        "POST /billing/payments/callback is not implemented: no documented signature/secret "
-        "verification scheme exists (Phase-2 §20.4 / API Contracts §12 mandate verification "
-        "without specifying a mechanism), and the provider caller has no Principal to "
-        "authenticate through this codebase's require_permission model. See routers.py's "
-        "module docstring."
+async def list_payments(
+    principal: Principal = Depends(require_permission(Permission("billing.payments.list"))),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow),
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+) -> OffsetPageResponse[PaymentListItemResponse]:
+    page = await billing_service.list_payments(
+        ListPaymentsQuery(page_request=page_request, sort=sort, filters=filters),
+        uow=uow,
     )
+    return to_offset_page_response(page, _payment_dto_to_list_item_response)
+
+
+@billing_router.post(
+    "/payments/callback",
+    status_code=status.HTTP_200_OK,
+    summary="Payment provider webhook",
+    description=(
+        "API Contracts §4.7 line 174 — provider (signed) webhook (ADR-0022). No "
+        "`Depends(require_permission(...))` — the signature check below is this route's own "
+        "authentication, matching how mainstream payment providers document this exact model. "
+        "See this file's module docstring for the full design."
+    ),
+)
+async def payment_callback(
+    request: Request,
+    container: Container = Depends(get_container),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow_unscoped),
+) -> Response:
+    provider = container.try_resolve(PaymentProviderPort)
+    if provider is None:
+        raise NotImplementedError(
+            "POST /billing/payments/callback is not implemented: no PaymentProviderPort is "
+            "bound this deployment (RAAD_PAYMENT__PROVIDER is unset or missing credentials). "
+            "See routers.py's module docstring and core/di/bootstrap.py."
+        )
+
+    raw_body = await request.body()
+    # Header name is Stripe's own — the only currently-bound, real provider (ADR-0022). Becomes
+    # provider-aware (a header-name lookup per active provider) once EVC Plus/Zaad are ever
+    # real; not attempted now for two stub adapters that cannot receive a webhook at all.
+    signature_header = request.headers.get("Stripe-Signature", "")
+
+    if not signature_header or not provider.verify_webhook_signature(
+        payload=raw_body, signature_header=signature_header
+    ):
+        # `.claude/rules/security.md` #10: unverified callbacks are rejected and audited. No
+        # aggregate mutation happens for a rejected request, so there is nothing to attach an
+        # `audit_entries` row to (that table is written transactionally from a real domain
+        # event) — logged instead, the same "log loudly, don't cascade-fail" posture the login
+        # rate limiter's own Redis-unreachable path already established for a comparable
+        # no-aggregate-to-write-to situation.
+        logger.warning(
+            "payment_webhook_signature_rejected",
+            extra={"has_signature_header": bool(signature_header)},
+        )
+        raise AuthenticationError("Invalid or missing webhook signature.")
+
+    try:
+        event = provider.parse_webhook_event(payload=raw_body)
+    except UnhandledWebhookEventError:
+        # Stripe's own documentation: acknowledge (200) any event type this adapter doesn't
+        # act on, rather than erroring — a non-2xx response makes Stripe retry indefinitely.
+        return Response(status_code=status.HTTP_200_OK)
+
+    try:
+        await billing_service.handle_webhook_event(
+            event, provider="stripe", uow=uow, actor=SYSTEM_PRINCIPAL
+        )
+    except NotFoundError:
+        # A verified, well-formed event for a payment this system has no record of (e.g. a
+        # test-mode event replayed against a payment that was since deleted in a sandbox) —
+        # acknowledged rather than retried forever, the identical reasoning as the unhandled-
+        # event-type branch above.
+        logger.warning("payment_webhook_unknown_payment", extra={"provider": "stripe"})
+        return Response(status_code=status.HTTP_200_OK)
+
+    return Response(status_code=status.HTTP_200_OK)

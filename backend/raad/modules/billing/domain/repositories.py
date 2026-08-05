@@ -195,6 +195,16 @@ class PaymentRepository(ABC):
         `fleet_device.application.validators.ensure_terminal_id_available`)."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def get_by_provider_ref(self, provider: str, provider_ref: str) -> Payment | None:
+        """ADR-0022: resolves the webhook route's own `PaymentCallbackCommand.payment_id` from
+        the provider's own reference id (a Stripe webhook payload names only its own
+        `payment_intent.id`, never this system's internal ULID). `ux_payments__provider_
+        provider_ref` (Database Design §8.4, `infra/models.py`) is this method's DB-level
+        backstop, the same defense-in-depth pattern `get_by_idempotency_key` above already
+        establishes."""
+        raise NotImplementedError
+
 
 class TransportFeeRepository(ABC):
     @abstractmethod

@@ -188,6 +188,10 @@ class PaymentModel(UlidPrimaryKeyMixin, Base):
     # `model_to_payment` strips this back off; implemented as documented rather than silently
     # switched to VARCHAR, since the doc is unambiguous, not incomplete.
     idempotency_key: Mapped[str] = mapped_column(CHAR(64), nullable=False, unique=True)
+    # ADR-0022: records why a payment failed (a provider-supplied decline message, when one
+    # exists) - previously discarded entirely; `None` for payments that never failed or failed
+    # with no provider-supplied reason (e.g. a reconciliation-job timeout).
+    failure_reason: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
     confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True

@@ -46,7 +46,13 @@ from raad.modules.billing.application.commands import (
     VoidInvoiceCommand,
     WaiveTransportFeeCommand,
 )
-from raad.modules.billing.application.ports import BillingUnitOfWork, PaymentProviderPort
+from raad.modules.billing.application.ports import (
+    BillingUnitOfWork,
+    PaymentChargeRequest,
+    PaymentChargeResult,
+    PaymentProviderPort,
+    WebhookEvent,
+)
 from raad.modules.billing.application.queries import (
     GetInvoiceByIdQuery,
     GetPaymentByIdQuery,
@@ -329,6 +335,28 @@ class InMemoryPaymentRepository(PaymentRepository):
             (p for p in self.by_id.values() if p.idempotency_key == idempotency_key), None
         )
 
+    async def get_by_provider_ref(self, provider: str, provider_ref: str) -> Payment | None:
+        return next(
+            (
+                p
+                for p in self.by_id.values()
+                if p.provider == provider and p.provider_ref == provider_ref
+            ),
+            None,
+        )
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[Payment]:
+        return _paginate_in_memory(
+            list(self.by_id.values()), page_request, sort=sort, filters=filters, search=search
+        )
+
 
 class InMemoryTransportFeeRepository(TransportFeeRepository):
     def __init__(self) -> None:
@@ -373,15 +401,31 @@ class FakeBillingUnitOfWork(BillingUnitOfWork):
 
 
 class FakePaymentProvider(PaymentProviderPort):
-    def __init__(self, provider_ref: str = "EVC-REF-999") -> None:
+    def __init__(
+        self,
+        provider_ref: str = "EVC-REF-999",
+        *,
+        result_status: str = "pending",
+        failure_reason: str | None = None,
+    ) -> None:
         self.provider_ref = provider_ref
-        self.charge_calls: list[dict] = []
+        self.result_status = result_status
+        self.failure_reason = failure_reason
+        self.charge_calls: list[PaymentChargeRequest] = []
 
-    async def charge(self, *, amount: Money, msisdn: str, reference: str) -> str:
-        self.charge_calls.append(
-            {"amount": amount, "msisdn": msisdn, "reference": reference}
+    async def charge(self, request: PaymentChargeRequest) -> PaymentChargeResult:
+        self.charge_calls.append(request)
+        return PaymentChargeResult(
+            provider_ref=self.provider_ref,
+            status=self.result_status,  # type: ignore[arg-type]
+            failure_reason=self.failure_reason,
         )
-        return self.provider_ref
+
+    def verify_webhook_signature(self, *, payload: bytes, signature_header: str) -> bool:
+        return True
+
+    def parse_webhook_event(self, *, payload: bytes) -> WebhookEvent:
+        raise NotImplementedError("FakePaymentProvider does not model webhook parsing.")
 
 
 def make_uow() -> FakeBillingUnitOfWork:
@@ -877,6 +921,55 @@ class PaymentApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored_invoice.status.value, "paid")
         stored_subscription = await uow.subscriptions.get(stored_invoice.subscription_id)
         self.assertEqual(stored_subscription.status.value, "active")
+
+    async def test_handle_payment_callback_paid_replay_does_not_double_advance_subscription(
+        self,
+    ) -> None:
+        """ADR-0022's own named regression: a real payment provider retries a webhook delivery
+        until it receives a 200, so a duplicate 'paid' callback for an already-PAID payment is
+        normal traffic, not an error — and must not call `Subscription.renew` a second time."""
+        provider = FakePaymentProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+        invoice_id = await self._make_invoice(uow)
+        payment = await service.initiate_payment(
+            InitiatePaymentCommand(
+                invoice_id=invoice_id,
+                method="evcplus",
+                msisdn="+2526000000",
+                amount=25.00,
+                currency="USD",
+                idempotency_key="idem-key-replay",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        callback = PaymentCallbackCommand(
+            payment_id=payment.id,
+            status="paid",
+            provider_ref="EVC-CONFIRM-REPLAY",
+            actor=make_actor(),
+        )
+        await service.handle_payment_callback(callback, uow=uow)
+
+        stored_invoice = await uow.invoices.get(InvoiceId(invoice_id))
+        first_period_end = (
+            await uow.subscriptions.get(stored_invoice.subscription_id)
+        ).current_period_end
+
+        # A second, identical delivery of the exact same webhook event.
+        result = await service.handle_payment_callback(callback, uow=uow)
+
+        self.assertEqual(result.status, "paid")
+        second_period_end = (
+            await uow.subscriptions.get(stored_invoice.subscription_id)
+        ).current_period_end
+        self.assertEqual(
+            second_period_end,
+            first_period_end,
+            "a replayed webhook must not advance the billing period a second time",
+        )
 
     async def test_handle_payment_callback_failed_leaves_invoice_untouched(self) -> None:
         provider = FakePaymentProvider()

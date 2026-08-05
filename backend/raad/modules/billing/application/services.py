@@ -58,7 +58,12 @@ from raad.modules.billing.application.commands import (
     VoidInvoiceCommand,
     WaiveTransportFeeCommand,
 )
-from raad.modules.billing.application.ports import BillingUnitOfWork, PaymentProviderPort
+from raad.modules.billing.application.ports import (
+    BillingUnitOfWork,
+    PaymentChargeRequest,
+    PaymentProviderPort,
+    WebhookEvent,
+)
 from raad.modules.billing.application.queries import (
     BillingStatsDTO,
     GetInvoiceByIdQuery,
@@ -527,7 +532,17 @@ class BillingApplicationService:
         (`self._payment_provider.charge(...)`) is attempted only after the `Payment` row is
         durably persisted as `PENDING` — see this class's own module docstring for why a
         missing provider raises `NotImplementedError` at exactly this point rather than making
-        the whole service unreachable."""
+        the whole service unreachable.
+
+        **ADR-0022**: the charge result now has three outcomes, not one. `"succeeded"` (a card
+        charge is frequently synchronously final) marks the payment `PAID` immediately, running
+        the same invoice/subscription-renewal orchestration `handle_payment_callback` runs for
+        a `"paid"` webhook — both paths converge on the identical `_apply_paid_side_effects`
+        helper so the two can never drift. `"pending"` marks `PROCESSING`, awaiting the
+        provider's webhook (mobile-money's own documented shape). `"failed"` marks `FAILED`
+        with `PaymentChargeResult.failure_reason` recorded immediately, rather than only ever
+        learning about a failure from a callback that a synchronously-rejected charge will
+        never receive."""
         async with uow:
             existing = await uow.payments.get_by_idempotency_key(
                 command.idempotency_key
@@ -554,73 +569,143 @@ class BillingApplicationService:
 
         if self._payment_provider is None:
             raise NotImplementedError(
-                "No PaymentProviderPort is bound - this phase deliberately does not integrate "
-                "with a live EVC Plus (or any other) payment gateway. The Payment row above "
-                "was persisted as PENDING; charging it requires a future phase's concrete "
-                "adapter (see infra/adapters.py's module docstring)."
+                "No PaymentProviderPort is bound - RAAD_PAYMENT__PROVIDER is not configured "
+                "with valid credentials this deployment. The Payment row above was persisted "
+                "as PENDING; charging it requires a bound adapter (see infra/adapters.py)."
             )
 
-        provider_ref = await self._payment_provider.charge(
-            amount=payment.amount, msisdn=command.msisdn, reference=str(payment.id)
+        result = await self._payment_provider.charge(
+            PaymentChargeRequest(
+                amount=payment.amount,
+                reference=str(payment.id),
+                msisdn=command.msisdn,
+                payment_method_token=command.payment_method_token,
+            )
         )
+
         async with uow:
             payment = await self._get_payment_or_raise(uow, str(payment.id))
-            payment.mark_processing(clock=self._clock, actor_id=command.actor.user_id)
-            payment.provider_ref = provider_ref
-            uow.record_events(payment.pull_domain_events())
+            if result.status == "succeeded":
+                await self._apply_paid_side_effects(
+                    uow,
+                    payment=payment,
+                    provider_ref=result.provider_ref,
+                    actor_id=command.actor.user_id,
+                )
+            elif result.status == "failed":
+                payment.mark_failed(
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                    reason=result.failure_reason,
+                )
+                uow.record_events(payment.pull_domain_events())
+            else:
+                payment.mark_processing(clock=self._clock, actor_id=command.actor.user_id)
+                payment.provider_ref = result.provider_ref
+                uow.record_events(payment.pull_domain_events())
             await uow.commit()
             return payment_to_dto(payment)
+
+    async def _apply_paid_side_effects(
+        self, uow: BillingUnitOfWork, *, payment: Payment, provider_ref: str, actor_id: str | None
+    ) -> None:
+        """Shared by `initiate_payment`'s synchronous-success path and
+        `handle_payment_callback`'s asynchronous-webhook path (ADR-0022) — both mean the exact
+        same thing (a payment is now paid) and must run the exact same orchestration (Phase-2
+        §20.2: "Mark Invoice PAID, extend Subscription"), so there is exactly one place this
+        logic lives, not two that could drift. Caller is responsible for the idempotency guard
+        (`Payment.mark_paid` is itself a same-state no-op, but the caller decides whether to
+        even reach this method) and for committing."""
+        payment.mark_paid(provider_ref=provider_ref, clock=self._clock, actor_id=actor_id)
+        invoice = await ensure_invoice_exists(uow, payment.invoice_id)
+        invoice.mark_paid(clock=self._clock, actor_id=actor_id)
+        subscription = await ensure_subscription_exists(uow, invoice.subscription_id)
+        plan = await ensure_plan_exists(uow, subscription.plan_id)
+        period_start = subscription.current_period_end or self._clock.now()
+        period_end = _advance_period(period_start, plan.billing_cycle)
+        subscription.renew(
+            period_start=period_start, period_end=period_end, clock=self._clock, actor_id=actor_id
+        )
+        uow.record_events(payment.pull_domain_events())
+        uow.record_events(invoice.pull_domain_events())
+        uow.record_events(subscription.pull_domain_events())
 
     async def handle_payment_callback(
         self, command: PaymentCallbackCommand, *, uow: BillingUnitOfWork
     ) -> PaymentDTO:
-        """`POST /billing/payments/callback` (API Contracts §4.7/§12). See `commands.py`'s
-        module docstring for why `command`'s shape is a flagged placeholder, not a documented
-        EVC Plus webhook contract. On success: marks the `Payment` paid, then orchestrates the
-        two further documented side effects (Phase-2 §20.2: "Mark Invoice PAID, extend
-        Subscription") in the same transaction. On failure: marks only the `Payment` failed —
-        see `entities.py`'s module docstring for the resolved Invoice-vs-Payment "FAILED"
-        conflict; the invoice is deliberately left untouched."""
+        """`POST /billing/payments/callback` (API Contracts §4.7/§12). On success: marks the
+        `Payment` paid, then orchestrates the two further documented side effects (Phase-2
+        §20.2: "Mark Invoice PAID, extend Subscription") in the same transaction. On failure:
+        marks only the `Payment` failed — see `entities.py`'s module docstring for the resolved
+        Invoice-vs-Payment "FAILED" conflict; the invoice is deliberately left untouched.
+
+        **ADR-0022: idempotent against a replayed webhook delivery**, belt-and-suspenders with
+        `Payment.mark_paid`/`mark_failed`'s own same-state guards — short-circuits here, before
+        touching `Invoice`/`Subscription` at all, if the payment is already in a terminal state,
+        so a provider's retry of an already-processed callback does no work and never re-advances
+        a subscription's billing period a second time."""
         async with uow:
             payment = await self._get_payment_or_raise(uow, command.payment_id)
+
+            if payment.status in (PaymentStatus.PAID, PaymentStatus.FAILED):
+                return payment_to_dto(payment)
 
             if command.status == "paid":
                 if command.provider_ref is None:
                     raise DomainError(
                         "PaymentCallbackCommand.provider_ref is required when status='paid'."
                     )
-                payment.mark_paid(
+                await self._apply_paid_side_effects(
+                    uow,
+                    payment=payment,
                     provider_ref=command.provider_ref,
-                    clock=self._clock,
                     actor_id=command.actor.user_id,
                 )
-                invoice = await ensure_invoice_exists(uow, payment.invoice_id)
-                invoice.mark_paid(clock=self._clock, actor_id=command.actor.user_id)
-                subscription = await ensure_subscription_exists(
-                    uow, invoice.subscription_id
-                )
-                plan = await ensure_plan_exists(uow, subscription.plan_id)
-                period_start = subscription.current_period_end or self._clock.now()
-                period_end = _advance_period(period_start, plan.billing_cycle)
-                subscription.renew(
-                    period_start=period_start,
-                    period_end=period_end,
-                    clock=self._clock,
-                    actor_id=command.actor.user_id,
-                )
-                uow.record_events(invoice.pull_domain_events())
-                uow.record_events(subscription.pull_domain_events())
             elif command.status == "failed":
-                payment.mark_failed(clock=self._clock, actor_id=command.actor.user_id)
+                payment.mark_failed(
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                    reason=command.failure_reason,
+                )
+                uow.record_events(payment.pull_domain_events())
             else:
                 raise DomainError(
                     f"Unsupported PaymentCallbackCommand.status: {command.status!r} "
                     "(expected 'paid' or 'failed')."
                 )
 
-            uow.record_events(payment.pull_domain_events())
             await uow.commit()
             return payment_to_dto(payment)
+
+    async def handle_webhook_event(
+        self, event: WebhookEvent, *, provider: str, uow: BillingUnitOfWork, actor: Principal
+    ) -> PaymentDTO:
+        """`POST /billing/payments/callback` (ADR-0022) — the actual entry point the route
+        calls, keeping `routers.py` to its own "call exactly one `BillingApplicationService`
+        method" convention. Resolves the webhook's own `WebhookEvent.provider_ref` (all a
+        provider's payload ever names) back to this system's internal `Payment.id` via
+        `get_by_provider_ref` (`ux_payments__provider_provider_ref`'s own defense-in-depth
+        backstop), then delegates to `handle_payment_callback` — this method owns only the
+        provider_ref -> payment_id resolution, not the callback orchestration itself."""
+        async with uow:
+            payment = await uow.payments.get_by_provider_ref(provider, event.provider_ref)
+            if payment is None:
+                raise NotFoundError(
+                    f"No payment found for provider={provider!r} provider_ref="
+                    f"{event.provider_ref!r}."
+                )
+            payment_id = str(payment.id)
+
+        return await self.handle_payment_callback(
+            PaymentCallbackCommand(
+                payment_id=payment_id,
+                status=event.status,
+                provider_ref=event.provider_ref,
+                actor=actor,
+                failure_reason=event.failure_reason,
+            ),
+            uow=uow,
+        )
 
     async def mark_payment_expired(
         self, command: MarkPaymentExpiredCommand, *, uow: BillingUnitOfWork
@@ -669,10 +754,23 @@ class BillingApplicationService:
 
     async def list_payments(
         self, query: ListPaymentsQuery, *, uow: BillingUnitOfWork
-    ) -> list[PaymentDTO]:
+    ) -> OffsetPage[PaymentDTO]:
+        """Backs `GET /billing/payments` (ADR-0022 - "payment history," previously no list
+        route existed at all). Same paginated/filtered/sorted shape `list_invoices` already
+        establishes."""
         async with uow:
-            payments = await uow.payments.list_all()
-            return [payment_to_dto(payment) for payment in payments]
+            page = await uow.payments.list_page(
+                query.page_request,
+                sort=query.sort,
+                filters=query.filters,
+                search=query.search,
+            )
+            return OffsetPage(
+                data=[payment_to_dto(payment) for payment in page.data],
+                total=page.total,
+                page=page.page,
+                page_size=page.page_size,
+            )
 
     @staticmethod
     async def _get_payment_or_raise(uow: BillingUnitOfWork, payment_id: str) -> Payment:
@@ -761,11 +859,14 @@ class BillingApplicationService:
         return fee
 
 
-def _mask_msisdn(msisdn: str) -> str:
+def _mask_msisdn(msisdn: str | None) -> str | None:
     """API Contracts §4.7's own payment-request example shows a masked msisdn in the
     *response* context (`"+2526••••••"`) — no exact masking algorithm is documented (how many
     leading digits stay visible). Mirrors the example's own visible-prefix shape: keep the
     first 4 characters, mask the rest, flagged as an inferred-from-example algorithm, not a
-    specified one."""
+    specified one. `None` (ADR-0022: a card payment carries no msisdn at all) passes through
+    unchanged rather than being coerced into a fabricated masked value."""
+    if msisdn is None:
+        return None
     visible = msisdn[:4]
     return visible + "•" * max(len(msisdn) - 4, 0)

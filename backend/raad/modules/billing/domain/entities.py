@@ -93,6 +93,7 @@ _PLAN_NAME_MAX_LENGTH = 160  # Database Design §8.1 gives no explicit length (c
 _PROVIDER_MAX_LENGTH = 40  # Database Design §8.4: payments.provider VARCHAR(40)
 _PROVIDER_REF_MAX_LENGTH = 120  # §8.4: payments.provider_ref VARCHAR(120)
 _MSISDN_MASKED_MAX_LENGTH = 32  # §8.4: payments.msisdn_masked VARCHAR(32)
+_FAILURE_REASON_MAX_LENGTH = 255  # ADR-0022: payments.failure_reason VARCHAR(255)
 _IDEMPOTENCY_KEY_MAX_LENGTH = 64  # §8.4: payments.idempotency_key CHAR(64)
 
 
@@ -535,6 +536,7 @@ class Payment(_AggregateRoot):
         idempotency_key: str,
         created_at: datetime,
         confirmed_at: datetime | None,
+        failure_reason: str | None = None,
     ) -> None:
         super().__init__()
         if not provider:
@@ -554,6 +556,11 @@ class Payment(_AggregateRoot):
                 f"Payment msisdn_masked must be at most {_MSISDN_MASKED_MAX_LENGTH} "
                 f"characters: {len(msisdn_masked)}"
             )
+        if failure_reason is not None and len(failure_reason) > _FAILURE_REASON_MAX_LENGTH:
+            raise DomainError(
+                f"Payment failure_reason must be at most {_FAILURE_REASON_MAX_LENGTH} "
+                f"characters: {len(failure_reason)}"
+            )
         _validate_idempotency_key(idempotency_key)
         self.id = id
         self.organization_id = organization_id
@@ -566,6 +573,7 @@ class Payment(_AggregateRoot):
         self.idempotency_key = idempotency_key
         self.created_at = created_at
         self.confirmed_at = confirmed_at
+        self.failure_reason = failure_reason
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Payment) and self.id == other.id
@@ -646,7 +654,16 @@ class Payment(_AggregateRoot):
         """`PaymentConfirmed` — API Contracts §13.2 names the wire event `payment.confirmed`
         (dot-notation; this file uses this codebase's own enforced PascalCase convention,
         `.claude/rules/naming.md`, the same translation every prior phase's event catalogue
-        entries already apply)."""
+        entries already apply).
+
+        **ADR-0022: same-state idempotent, mirroring `mark_processing`/`mark_expired`'s existing
+        pattern** — every real payment provider retries a webhook delivery until it receives a
+        `200`, so a duplicate "paid" callback for an already-`PAID` payment is normal, expected
+        traffic, not an error. Without this guard, a replay would re-raise `PaymentConfirmed` and
+        the caller (`handle_payment_callback`) would re-advance the subscription's billing period
+        a second time — a real bug this ADR closes at its root, not just at the call site."""
+        if self.status == PaymentStatus.PAID:
+            return
         if len(provider_ref) > _PROVIDER_REF_MAX_LENGTH:
             raise DomainError(
                 f"Payment provider_ref must be at most {_PROVIDER_REF_MAX_LENGTH} "
@@ -666,13 +683,29 @@ class Payment(_AggregateRoot):
             )
         )
 
-    def mark_failed(self, *, clock: Clock, actor_id: str | None = None) -> None:
+    def mark_failed(
+        self, *, clock: Clock, actor_id: str | None = None, reason: str | None = None
+    ) -> None:
         """`PaymentFailed` (API Contracts §13.2's `payment.failed`, PascalCase). Phase-2 §20.5
         (D4): a failed payment "never disables live GPS during active trips or safety
         notifications" — this aggregate has no reachable path to tracking/notifications at all,
         so that invariant is upheld by omission (this method touches only `Payment`'s own
-        status), not by any check here."""
+        status), not by any check here.
+
+        **ADR-0022: same-state idempotent** (mirrors `mark_paid` above, same replay-safety
+        reasoning) **and now records why** — `reason` (e.g. a card decline message from
+        `PaymentChargeResult.failure_reason`/`WebhookEvent.failure_reason`) persists to the new
+        `failure_reason` column instead of being discarded, closing a real gap: "why did this
+        payment fail" previously had no answer anywhere on the aggregate."""
+        if self.status == PaymentStatus.FAILED:
+            return
+        if reason is not None and len(reason) > _FAILURE_REASON_MAX_LENGTH:
+            raise DomainError(
+                f"Payment failure_reason must be at most {_FAILURE_REASON_MAX_LENGTH} "
+                f"characters: {len(reason)}"
+            )
         self.status = PaymentStatus.FAILED
+        self.failure_reason = reason
         self._record(
             billing_events.payment_failed(
                 payment_id=str(self.id),
@@ -680,6 +713,7 @@ class Payment(_AggregateRoot):
                 invoice_id=str(self.invoice_id),
                 occurred_at=clock.now(),
                 actor_id=actor_id,
+                failure_reason=reason,
             )
         )
 

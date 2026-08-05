@@ -193,7 +193,13 @@ class GetPaymentByIdQuery:
 
 @dataclass(frozen=True)
 class ListPaymentsQuery:
-    pass
+    """Backs `GET /billing/payments` (ADR-0022 — no prior list route existed for `Payment` at
+    all). Same paginated/filterable/sortable shape `ListInvoicesQuery` already established."""
+
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None
 
 
 @dataclass(frozen=True)
@@ -210,6 +216,7 @@ class PaymentDTO:
     idempotency_key: str
     created_at: datetime
     confirmed_at: datetime | None
+    failure_reason: str | None = None  # ADR-0022
 
 
 def payment_to_dto(payment: Payment) -> PaymentDTO:
@@ -226,6 +233,7 @@ def payment_to_dto(payment: Payment) -> PaymentDTO:
         idempotency_key=payment.idempotency_key,
         created_at=payment.created_at,
         confirmed_at=payment.confirmed_at,
+        failure_reason=payment.failure_reason,
     )
 
 

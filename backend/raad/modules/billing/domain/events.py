@@ -357,15 +357,19 @@ def payment_failed(
     invoice_id: str,
     occurred_at: datetime,
     actor_id: str | None,
+    failure_reason: str | None = None,
 ) -> DomainEvent:
-    """`PaymentFailed` (API Contracts §13.2's `payment.failed`, PascalCase)."""
+    """`PaymentFailed` (API Contracts §13.2's `payment.failed`, PascalCase). `failure_reason`
+    (ADR-0022) is optional — a provider-supplied decline message when one exists, `None`
+    otherwise (e.g. `reconcile_expired_payments`' own timeout-driven failures have no provider
+    message to attach)."""
     return _new_event(
         event_type="PaymentFailed",
         aggregate_type="Payment",
         aggregate_id=payment_id,
         org_id=organization_id,
         occurred_at=occurred_at,
-        payload={"invoice_id": invoice_id, "actor_id": actor_id},
+        payload={"invoice_id": invoice_id, "actor_id": actor_id, "failure_reason": failure_reason},
     )
 
 

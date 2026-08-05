@@ -164,6 +164,7 @@ def payment_to_model(
     model.currency = payment.amount.currency
     model.status = payment.status.value
     model.idempotency_key = payment.idempotency_key
+    model.failure_reason = payment.failure_reason
     model.created_at = _to_naive_utc(payment.created_at)
     model.confirmed_at = _to_naive_utc(payment.confirmed_at)
     return model
@@ -188,6 +189,7 @@ def model_to_payment(model: PaymentModel) -> Payment:
         idempotency_key=model.idempotency_key.rstrip(),
         created_at=model.created_at,
         confirmed_at=model.confirmed_at,
+        failure_reason=model.failure_reason,
     )
 
 
