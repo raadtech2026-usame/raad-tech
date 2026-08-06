@@ -38,6 +38,12 @@ x-backend-env: &backend-env
   RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
   RAAD_CORS__ALLOWED_ORIGINS: '${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}'
   RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
+  # ADR-0022: env vars, composition-root only — never SystemSetting (org_admin holds
+  # admin.settings.read/.update too). Both default empty, leaving PaymentProviderPort unbound
+  # (core/di/bootstrap.py), the same "fail loudly at the one method that needs it, not the whole
+  # service" posture backend/.env.example's own comment on these two vars describes in full.
+  RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
+  RAAD_PAYMENT__PROVIDER_CREDENTIALS: '${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}'
 
 services:
   postgres:
@@ -241,6 +247,7 @@ services:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost/api/v1}
       VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost}
       VITE_MAPBOX_ACCESS_TOKEN: ${VITE_MAPBOX_ACCESS_TOKEN:-}
+      VITE_STRIPE_PUBLISHABLE_KEY: ${VITE_STRIPE_PUBLISHABLE_KEY:-}
     ports:
       - "${FRONTEND_PORT:-5173}:5173"
     healthcheck:

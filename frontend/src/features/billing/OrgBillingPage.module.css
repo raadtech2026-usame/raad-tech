@@ -1,0 +1,66 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.summaryRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+@media (max-width: 900px) {
+  .summaryRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Mirrors app/dashboard/dashboard.module.css's identical .panelBody/.panelStat/.panelStatValue/
+ * .panelStatCaption shape (that file's own docstring scopes it to app/dashboard/* specifically)
+ * — kept as a small, deliberate duplication here rather than an import across the feature/app
+ * boundary. */
+.panelBody {
+  padding: 0 var(--space-5) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.panelStat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.panelStatValue {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--text-2xl);
+  color: var(--color-text-primary);
+}
+
+.panelStatCaption {
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+
+.errorText {
+  font-size: var(--text-sm);
+  color: var(--color-danger-text);
+}
+
+.tableBody {
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+.providerLabel {
+  text-transform: capitalize;
+}
+
+.cardElementWrap {
+  padding: 10px 13px;
+  border: 1px solid var(--color-border-input);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+}

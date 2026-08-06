@@ -23,6 +23,10 @@ interface RequestOptions {
   /** Skip attaching `Authorization` (login/refresh themselves must not send a stale/absent
    * token) and skip the 401-triggers-refresh retry (refreshing itself can 401). */
   anonymous?: boolean;
+  /** Extra request headers beyond `Content-Type`/`Authorization` — e.g. `Idempotency-Key`
+   * (`.claude/rules/api.md` #6, `POST /billing/payments`). Merged in, never overrides
+   * `Content-Type`/`Authorization` above. */
+  headers?: Record<string, string>;
 }
 
 function toCamelCaseDetail(raw: {
@@ -60,7 +64,7 @@ async function parseErrorEnvelope(response: Response): Promise<ApiErrorDetail> {
 }
 
 async function rawRequest<T>(path: string, options: RequestOptions): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...options.headers };
   if (!options.anonymous) {
     const token = getAccessToken();
     if (token) {

@@ -33,36 +33,10 @@ import {
   subscriptionStatusLabel,
   subscriptionStatusTone,
 } from "./labels";
+import { formatAmount, formatDateOnly, formatDateTime } from "./format";
 import styles from "./BillingPage.module.css";
 
 const SEARCH_DEBOUNCE_MS = 300;
-
-function formatDateTime(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-}
-
-/** `Invoice.periodStart`/`periodEnd` are date-only (`YYYY-MM-DD`, no time component) — parsing
- * that through a plain `new Date(...)` and formatting in the viewer's local timezone can roll
- * the displayed day backward whenever the local offset is negative (a well-known JS gotcha for
- * date-only strings, which `Date` treats as UTC midnight). Formatting in UTC instead sidesteps
- * it, since there's no local "time of day" to convert in the first place. */
-function formatDateOnly(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  });
-}
-
-function formatAmount(amount: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(amount);
-  } catch {
-    return `${amount.toFixed(2)} ${currency}`;
-  }
-}
 
 const PLAN_STATUS_FILTERS: FilterChipOption[] = [
   { id: "all", label: "All", tone: "neutral" },

@@ -32,9 +32,13 @@ ARG VITE_WS_BASE_URL
 # key that ships inside the browser bundle by design (frontend/.env.example's own stance), not a
 # server-side credential.
 ARG VITE_MAPBOX_ACCESS_TOKEN
+# ADR-0022: Stripe's *publishable* key — like the Mapbox token above, a public, client-safe key
+# by design (never the secret key, which stays backend-only, RAAD_PAYMENT__PROVIDER_CREDENTIALS).
+ARG VITE_STRIPE_PUBLISHABLE_KEY
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL \
     VITE_WS_BASE_URL=$VITE_WS_BASE_URL \
-    VITE_MAPBOX_ACCESS_TOKEN=$VITE_MAPBOX_ACCESS_TOKEN
+    VITE_MAPBOX_ACCESS_TOKEN=$VITE_MAPBOX_ACCESS_TOKEN \
+    VITE_STRIPE_PUBLISHABLE_KEY=$VITE_STRIPE_PUBLISHABLE_KEY
 RUN npm run build
 
 FROM nginx:1.27-alpine AS prod

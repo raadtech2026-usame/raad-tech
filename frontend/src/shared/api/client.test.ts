@@ -47,6 +47,22 @@ describe("apiRequest", () => {
     expect(headers["Authorization"]).toBeUndefined();
   });
 
+  it("merges extra headers without overriding Content-Type/Authorization", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(202, { ok: true }));
+
+    await apiRequest("/billing/payments", {
+      method: "POST",
+      body: {},
+      headers: { "Idempotency-Key": "idem-123" },
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Idempotency-Key"]).toBe("idem-123");
+    expect(headers["Content-Type"]).toBe("application/json");
+    expect(headers["Authorization"]).toBe("Bearer test-access-token");
+  });
+
   it("parses the standard error envelope into an ApiError", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(404, {

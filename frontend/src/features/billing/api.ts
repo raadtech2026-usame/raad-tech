@@ -188,16 +188,140 @@ export async function listInvoices(params: OffsetListParams): Promise<OffsetPage
   return toOffsetPage(wire, toInvoice);
 }
 
-/** `POST /billing/payments` deliberately has no client here this phase. Confirmed by reading
- * `billing/api/routers.py`'s own module docstring before deciding, not assumed: with no
- * `PaymentProviderPort` bound, this route always persists a `PENDING` `Payment` row and then
- * raises `NotImplementedError` (500) at the charge step — a guaranteed failure on every call, by
- * design ("fail loudly, don't fake a charge"). Wiring a "Pay now" control to it would create a
- * real, permanently-`PENDING` row on every click while showing the user a broken action —
- * offering a control that's guaranteed to fail is the same anti-pattern this codebase's own
- * "fail loudly, don't fake it" posture already rules out for *data*, extended here to mean an
- * *affordance* too. Revisit once Known Issue #4 (a real payment-provider account) is resolved.
- * `POST /billing/payments/callback` is a provider-only webhook — never called from this UI. */
+/** `billing.domain.value_objects.PaymentStatus`. */
+export type PaymentStatus = "pending" | "processing" | "paid" | "failed" | "expired";
+
+export interface Payment {
+  id: string;
+  organizationId: string;
+  invoiceId: string;
+  provider: string;
+  providerRef: string | null;
+  amount: number;
+  currency: string;
+  status: PaymentStatus;
+  failureReason: string | null;
+  createdAt: string;
+  confirmedAt: string | null;
+}
+
+interface PaymentWire {
+  id: string;
+  organization_id: string;
+  invoice_id: string;
+  provider: string;
+  provider_ref: string | null;
+  amount: number;
+  currency: string;
+  status: string;
+  failure_reason: string | null;
+  created_at: string;
+  confirmed_at: string | null;
+}
+
+function toPayment(wire: PaymentWire): Payment {
+  return {
+    id: wire.id,
+    organizationId: wire.organization_id,
+    invoiceId: wire.invoice_id,
+    provider: wire.provider,
+    providerRef: wire.provider_ref,
+    amount: wire.amount,
+    currency: wire.currency,
+    status: wire.status as PaymentStatus,
+    failureReason: wire.failure_reason,
+    createdAt: wire.created_at,
+    confirmedAt: wire.confirmed_at,
+  };
+}
+
+/** `GET /billing/payments` (ADR-0022 — "payment history," no prior list route existed).
+ * Founder/Finance Staff/Org Admin (mirrors `listSubscriptions`'s grant set). Whitelist confirmed
+ * against `SqlAlchemyPaymentRepository`: filterable `organization_id`/`invoice_id`/`status`,
+ * sortable `amount`/`status`/`created_at`/`confirmed_at`, no searchable fields. */
+export async function listPayments(params: OffsetListParams): Promise<OffsetPage<Payment>> {
+  const wire = await apiRequest<OffsetPageWire<PaymentWire>>(`/billing/payments?${buildOffsetListQuery(params)}`);
+  return toOffsetPage(wire, toPayment);
+}
+
+export interface InitiatePaymentInput {
+  invoiceId: string;
+  /** `Payment.provider` on the backend — e.g. `"stripe"`, matching the active
+   * `billing_payment_provider` System Setting (see `getBillingProviderConfig` below). */
+  method: string;
+  amount: number;
+  currency: string;
+  /** A Stripe `PaymentMethod` id, tokenized client-side via Stripe Elements
+   * (`stripe.createPaymentMethod`) — the raw card number never reaches this backend (ADR-0022,
+   * PCI DSS SAQ A scope). */
+  paymentMethodToken?: string;
+  msisdn?: string;
+}
+
+export interface InitiatePaymentResult {
+  paymentId: string;
+  status: string;
+}
+
+/** `POST /billing/payments` (ADR-0022 — real now that a verified `StripePaymentAdapter` can be
+ * bound; previously this had no client at all, since a bound provider didn't exist). Requires
+ * `Idempotency-Key` (API rule #6, API Contracts §12) — generated fresh per call via
+ * `crypto.randomUUID()` (the same convention `Toast`'s own id generation already uses), so a
+ * genuine double-submit (e.g. a double click) before the first request resolves would still race
+ * to two distinct keys; `ConfirmDialog`'s own loading state is what actually prevents that, this
+ * header is the server-side backstop for network-level retries. */
+export async function initiatePayment(input: InitiatePaymentInput): Promise<InitiatePaymentResult> {
+  const wire = await apiRequest<{ payment_id: string; status: string }>("/billing/payments", {
+    method: "POST",
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    body: {
+      invoice_id: input.invoiceId,
+      method: input.method,
+      amount: input.amount,
+      currency: input.currency,
+      payment_method_token: input.paymentMethodToken,
+      msisdn: input.msisdn,
+    },
+  });
+  return { paymentId: wire.payment_id, status: wire.status };
+}
+
+interface SystemSettingWire {
+  key: string;
+  value: Record<string, unknown>;
+  scope: string;
+}
+
+export interface BillingProviderConfig {
+  /** `null` when no `PaymentProviderPort` is bound this deployment — `OrgBillingPage`'s "Pay
+   * Invoice" flow renders an honest "not available yet" state rather than a control guaranteed
+   * to fail, mirroring this same file's own established restraint before ADR-0022 existed. */
+  provider: string | null;
+}
+
+/** `GET /admin/settings` (`platform_audit`, already gated by `admin.settings.read` — both
+ * Founder and Org Admin hold it) — reads the one non-secret `billing_payment_provider` row
+ * ADR-0022 seeds (`{"provider":"stripe"}`), so this page can ask "is online payment available"
+ * without a new route. `key` is not a whitelisted filter server-side
+ * (`SqlAlchemySystemSettingRepository.filterable_fields` only has `scope`), so this filters by
+ * `scope=platform` and finds the row client-side, capped at the first 50 settings — the same
+ * "capped at N, honest fallback" pattern `listOrganizationsForPicker` below already establishes.
+ * Never returns a secret: the real provider credentials live only in the backend's own env vars,
+ * never serialized into this response (ADR-0022's own explicit design). */
+export async function getBillingProviderConfig(): Promise<BillingProviderConfig> {
+  const query = buildOffsetListQuery({
+    page: 1,
+    pageSize: 50,
+    sort: { field: "key", direction: "asc" },
+    filters: { scope: "platform" },
+    search: "",
+  });
+  const wire = await apiRequest<OffsetPageWire<SystemSettingWire>>(`/admin/settings?${query}`);
+  const row = wire.data.find((item) => item.key === "billing_payment_provider");
+  const provider = row?.value?.provider;
+  return { provider: typeof provider === "string" ? provider : null };
+}
+
 export interface OrganizationOption {
   id: string;
   name: string;

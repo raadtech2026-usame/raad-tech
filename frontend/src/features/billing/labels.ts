@@ -1,5 +1,5 @@
 import type { BadgeVariant } from "../../shared/components/Badge/Badge";
-import type { BillingCycle, InvoiceStatus, PlanStatus, SubscriptionStatus } from "./api";
+import type { BillingCycle, InvoiceStatus, PaymentStatus, PlanStatus, SubscriptionStatus } from "./api";
 
 /** Display copy for `billing` enums — kept in one place so the Plans/Subscriptions/Invoices
  * tabs and their detail drawers all render the exact same wording, mirroring
@@ -100,6 +100,42 @@ export function invoiceStatusTone(status: InvoiceStatus): BadgeVariant {
     case "paid":
       return "success";
     case "void":
+      return "danger";
+    default:
+      return "neutral";
+  }
+}
+
+/** ADR-0022 — `billing.domain.value_objects.PaymentStatus` (distinct from `InvoiceStatus`
+ * above: a payment can be `processing`/`expired` in ways an invoice never is). */
+export function paymentStatusLabel(status: PaymentStatus): string {
+  switch (status) {
+    case "pending":
+      return "Pending";
+    case "processing":
+      return "Processing";
+    case "paid":
+      return "Paid";
+    case "failed":
+      return "Failed";
+    case "expired":
+      return "Expired";
+    default:
+      return status;
+  }
+}
+
+export function paymentStatusTone(status: PaymentStatus): BadgeVariant {
+  switch (status) {
+    case "pending":
+      return "neutral";
+    case "processing":
+      return "info";
+    case "paid":
+      return "success";
+    case "failed":
+      return "danger";
+    case "expired":
       return "danger";
     default:
       return "neutral";

@@ -1,0 +1,47 @@
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--color-bg-overlay-scrim);
+  z-index: var(--z-drawer-scrim);
+}
+
+.dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - var(--space-6)));
+  max-height: calc(100vh - var(--space-8));
+  overflow-y: auto;
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+  z-index: var(--z-drawer);
+  padding: var(--space-6);
+  animation: raad-fade-in 0.15s ease;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-extrabold);
+  font-size: var(--text-xl);
+  color: var(--color-text-primary);
+}
+
+.description {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+.body {
+  margin-top: var(--space-4);
+}
+
+.actions {
+  margin-top: var(--space-6);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}

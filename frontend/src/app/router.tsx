@@ -24,6 +24,7 @@ import { TripsPage } from "../features/transport-ops/trips/TripsPage";
 import { LiveTrackingPage } from "../features/live-monitoring/LiveTrackingPage";
 import { NotificationsPage } from "../features/notifications/NotificationsPage";
 import { BillingPage } from "../features/billing/BillingPage";
+import { OrgBillingPage } from "../features/billing/OrgBillingPage";
 
 const PLATFORM_ROLES: Role[] = ["founder", "regional_manager", "support_staff", "finance_staff"];
 const ORGANIZATION_ROLES: Role[] = ["org_admin"];
@@ -115,12 +116,15 @@ function buildFeatureRoutes(
  * so this is one component showing each signed-in user their own personal inbox, identical
  * regardless of which dashboard path reaches it.
  *
- * **Phase F9 (Billing) graduates `/platform/billing`/`/org/billing`** — one shared, read-only
- * `BillingPage` (no write route exists for `Plan`/`Subscription`/`Invoice` this phase, and
- * `POST /billing/payments` always fails with no bound provider, `features/billing/api.ts`'s own
- * docstring). None of the three list routes are tenant-scoped server-side either (a real,
- * pre-existing, already-flagged gap, not new to this phase), so — like F8 — this looks the same
- * regardless of which dashboard reaches it. */
+ * **Phase F9 (Billing) graduated `/platform/billing`/`/org/billing`** as one shared, read-only
+ * `BillingPage` — no write route existed for `Plan`/`Subscription`/`Invoice` that phase, and
+ * `POST /billing/payments` always failed with no bound provider. **ADR-0022 splits this pair for
+ * the first time**: `/platform/billing` stays exactly `BillingPage` (still genuinely
+ * cross-organization and unscoped server-side, `features/billing/api.ts`'s own docstring — a
+ * real, pre-existing, already-flagged gap, not new here). `/org/billing` becomes a dedicated
+ * `OrgBillingPage` instead — an Org Admin's own current subscription/plan/invoices/payment
+ * history, scoped to `principal.organizationId`, plus a real "Pay Invoice" flow now that a
+ * verified `StripePaymentAdapter` can be bound. */
 const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/organizations": <OrganizationsPage />,
   "/platform/regions": <RegionsPage />,
@@ -153,7 +157,7 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/trips": <TripsPage />,
   "/org/tracking": <LiveTrackingPage />,
   "/org/notifications": <NotificationsPage />,
-  "/org/billing": <BillingPage />,
+  "/org/billing": <OrgBillingPage />,
 };
 
 export const router = createBrowserRouter([
