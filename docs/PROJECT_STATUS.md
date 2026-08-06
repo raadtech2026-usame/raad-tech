@@ -15,10 +15,10 @@ architecture; this file is the source of truth for progress and sequencing.
 | | |
 |---|---|
 | **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
-| **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against) — every Priority 1 item touching the backend/web/infra surface (1–7) is complete and either live-verified or mechanism-complete-with-disclosed-testing-limits. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **Item 8 (Payment):** audited, genuinely blocked on a real provider account + a webhook-actor design decision — see Section 5. This is the end state of the continuous-completion program (user directive 2026-08-03) — see Section 15 for the full final report. |
-| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), **ADR-0019 (Account-Sharing Session Cap), and ADR-0020 (Platform Analytics Read Model) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete. Frontend: **F0–F9 complete** (F8: Notifications web UI — the first cursor-paginated page and the first live-WS-driven bell badge; F9: Billing web UI — read-only Plans/Subscriptions/Invoices, the first tabbed page in this frontend) plus the ADR-0020 KPI grid and a fleet-ops-style dashboard redesign/polish pass; F10 (Video)/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
-| **Current git commit** | This turn's own commit (`feat(frontend): F9 - Billing web UI`) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; it was last literally updated at `07cd3e8` (ADR-0019) and has drifted several commits behind on every turn since (a real, disclosed, recurring instance of the exact staleness rule 2 warns about, not a one-time slip). |
-| **Last updated** | 2026-08-05 |
+| **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against, a real Stripe merchant account for live payments) — every Priority 1 item touching the backend/web/infra surface (1–8) is now complete and either live-verified or mechanism-complete-with-disclosed-testing-limits: **Item 8 (Payment) is no longer an architectural blocker** — ADR-0022 (2026-08-06) shipped a real, verified `StripePaymentAdapter`, a wired webhook route, and a production `OrgBillingPage` "Pay Invoice" flow, resolving both the design gaps (signed-webhook-caller representation, provider abstraction shape) this item used to carry; only a live merchant account's credentials remain, same disclosed posture as TLS/Redis. Two deployment paths now exist side by side: the original generic-VPS/nginx/certbot path, and a new Coolify-managed path (`docker-compose.coolify.yml`, `docs/runbooks/coolify-deployment.md`) for the user's own chosen Hostinger-VPS-via-Coolify target. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. This is the direct continuation of the continuous-completion program (user directive 2026-08-03) — see Section 15 for that program's own final report, and Section 8 for ADR-0022's own full writeup. |
+| **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), ADR-0019 (Account-Sharing Session Cap), ADR-0020 (Platform Analytics Read Model), and **ADR-0022 (Payment Provider Architecture) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete, plus this unplanned-at-the-time payment-architecture milestone the user added afterward. Frontend: **F0–F9 complete**, with F9's own previously-deferred Organization Billing half now also complete (ADR-0022: dedicated `OrgBillingPage` + real "Pay Invoice" flow) — F8: Notifications web UI (first cursor-paginated page, first live-WS-driven bell badge); F9: Billing web UI (platform-wide read-only tabs + org-scoped subscription/invoice/payment view and a real payment flow) — plus the ADR-0020 KPI grid and a fleet-ops-style dashboard redesign/polish pass; F10 (Video)/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
+| **Current git commit** | This turn's own commit (`feat(deploy): Coolify overlay + PROJECT_STATUS.md/CLAUDE.md updates, ADR-0022`) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; it was last literally updated at `07cd3e8` (ADR-0019) and has drifted several commits behind on every turn since (a real, disclosed, recurring instance of the exact staleness rule 2 warns about, not a one-time slip). |
+| **Last updated** | 2026-08-06 |
 
 ---
 
@@ -29,10 +29,10 @@ it should never lag behind Section 3's detail.
 
 | Track | Current phase |
 |---|---|
-| **Backend** | ADR-0018 (Device Inventory & Allocation) complete. All ten bounded contexts implemented end-to-end. Next queued backend work is ADR-0019 (Session Cap) / ADR-0020 (Platform Analytics), but both are **paused** — see the Section 5 callout on why Priority-1 production-readiness work goes first. |
-| **Frontend** | Phases F0–F9 complete (design system, org/region/user/fleet/device/people management, live tracking, ADR-0020 KPI grid + fleet-ops dashboard redesign, notifications web UI, billing web UI). F10 (Video) and reporting feature folders are empty — not started. |
-| **Mobile** | Pre-implementation. `mobile/` is a structural scaffold only — no Flutter SDK dependency declared in `pubspec.yaml`, `lib/main.dart` is a 0-byte file, no native Android/iOS project files exist. `flutter create` has never been run. |
-| **Infrastructure** | Docker Compose (dev + prod overlays) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Item 1 (Backups) complete.** **Priority 1 Item 2 (TLS/HTTPS) complete** — nginx `prod-tls.conf` + a `certbot` service (Let's Encrypt via webroot challenge, auto-renewal), mechanism built and carefully reviewed but not live-tested against a real domain (none provisioned yet — Known Issue #13). **Priority 1 Item 3 (Auth rate limiting + account lockout) complete** — account lockout fully live-verified (real Postgres round trip + real HTTP requests against a running server); IP-based rate limiting's counting logic unit-tested only (no reachable Redis in this sandbox — Known Issue #14), but its Redis-unreachable fail-open behavior *is* live-verified over real HTTP. **Priority 1 Item 4 (Redis production hardening) complete, mechanism-wise** — `--requirepass`, AOF persistence with explicit `everysec` fsync, `--maxmemory`/`noeviction`, broker/cache split onto separate logical DBs, explicit connection timeouts on the backend's own Redis clients; carefully reviewed (YAML structural validation, DI-container smoke test) but not live-tested against a real running Redis process (no Docker/WSL2/redis-server available in this sandbox — Known Issue #15, the same disclosed limitation Item 2 already carries). Production monitoring remains open — the last infra-adjacent Priority-1 blocker (Section 5). |
+| **Backend** | All ten bounded contexts implemented end-to-end. ADR-0018 (Device Inventory & Allocation), ADR-0019 (Session Cap), ADR-0020 (Platform Analytics), and **ADR-0022 (Payment Provider Architecture) have all now landed** — every originally-planned backend milestone is complete, plus this later-added payment-architecture milestone. |
+| **Frontend** | Phases F0–F9 complete (design system, org/region/user/fleet/device/people management, live tracking, ADR-0020 KPI grid + fleet-ops dashboard redesign, notifications web UI, billing web UI — including ADR-0022's own org-scoped `OrgBillingPage` + "Pay Invoice" flow, previously deferred out of F9). F10 (Video) and reporting feature folders are empty — not started. |
+| **Mobile** | Pre-implementation. `mobile/` is a structural scaffold only — no Flutter SDK dependency declared in `pubspec.yaml`, `lib/main.dart` is a 0-byte file, no native Android/iOS project files exist. `flutter create` has never been run. *(Note: Priority 1 Item 9 has since shipped a real, unverified M0/M2/partial-M3 foundation — see Section 3/8; this row is stale and not yet corrected, flagged rather than silently left implying zero mobile work exists.)* |
+| **Infrastructure** | Docker Compose (dev + prod overlays, plus a new Coolify-managed alternative — ADR-0022, `docker-compose.coolify.yml`) verified working end-to-end, including a real nginx reverse proxy. **Priority 1 Items 1 (Backups), 2 (TLS/HTTPS), 3 (Auth rate limiting + lockout), 4 (Redis hardening), 5 (health checks + monitoring), 6 (RBAC admin routes), and 7 (deployment runbooks) are all complete** — each either fully live-verified or mechanism-complete with a disclosed, specific testing limitation (Known Issues #12–#16), consistently the "no Docker/live external dependency in this sandbox" gap, never an unverified design. **Item 8 (Payment) is now mechanism-complete too** (ADR-0022) — see the Executive Summary and Known Issue #4 for the full detail. |
 
 ---
 
@@ -164,17 +164,58 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** Partially — the RAAD-staff/Org-Admin web experience is no longer missing; Parent/Driver delivery still is.
 - **Dependencies:** Live Tracking (for trip events), Mobile App (for delivery to Parents).
 
-#### Billing — 🟡 Partial
-- **Implemented:** Full `Plan`/`Subscription`/`Invoice`/`Payment`/`TransportFee` lifecycle; 5 documented routes. `BillingApplicationService.initiate_payment`/`handle_payment_callback`/`reconcile_expired_payments` are all fully implemented and tested (42 passing unit tests, `test_billing_application.py`) — idempotency-key handling, the full paid/failed state orchestration (invoice → subscription renewal), and the scheduled reconciliation job all genuinely work today, independent of whether a real provider is bound.
-- **Web UI (F9) now built:** `features/billing/BillingPage.tsx`, mounted at both `/platform/billing`/`/org/billing` (one shared, read-only component — none of the three list routes are tenant-scoped server-side, a pre-existing gap noted below, not new). Tabbed Plans/Subscriptions/Invoices (this frontend's first `Tabs` component/pattern), each a full paginated/filtered/sorted `DataTable` + detail drawer via the existing `usePaginatedQuery` hook; organization/plan name resolution for Subscriptions/Invoices (neither response carries a name, only an opaque id). Regional Manager/Support Staff — confirmed via the seeded RBAC matrix to hold `billing.plans.list` alone, not `.subscriptions.list`/`.invoices.list` — see Plans only, no tab switcher, rather than three tabs where two would 403. **Deliberately no "Pay now" control anywhere**: `POST /billing/payments` always persists a `PENDING` row and then raises `NotImplementedError` (500) with no bound `PaymentProviderPort` — wiring a button to a guaranteed-failing, side-effect-creating action was judged the wrong call (`features/billing/api.ts`'s own docstring), extending this codebase's "fail loudly, don't fake it" data posture to mean "don't offer an affordance guaranteed to fail" too.
-- **Missing (Priority 1 Item 8 — audited, not further built this session, both blockers external):** (1) `PaymentProviderPort` has no bound adapter — a real EVC Plus (or any) merchant account, API credentials, and API documentation (endpoint shapes, auth scheme) are needed to build a real, verifiable adapter; inventing one against assumed API shapes would embed unverified guesses as if they were tested integration code, exactly what `.claude/rules/workflow.md` #8 says to stop and ask about rather than do. (2) `POST /billing/payments/callback` is deliberately not wired — confirmed by re-reading the router's own already-correct reasoning (`api/routers.py`'s module docstring, written before this audit and independently re-verified, not superseded): no signature/secret verification scheme is documented anywhere (Phase 2 §20.4 mandates verification but names no algorithm/header/secret source), **and** the caller ("provider (signed)") has no `Principal` to authenticate through this codebase's `require_permission` model — `PaymentCallbackCommand.actor: Principal` has no documented value for a non-human, non-RBAC-role caller. Forcing either through with an invented signature scheme or a fabricated placeholder `Principal` would be undocumented behavior shipped as if it were real, not a simplification.
-- **Production blocker?** Yes — no way to collect money today. **Not closeable without external input**: a real payment-provider account/API docs (for the adapter) and a resolved design decision — via a new ADR, matching this codebase's own established process for exactly this kind of question — for how a signed-webhook caller is represented in the `Principal`/audit model (for the callback route).
-- **Dependencies:** A payment provider adapter (EVC Plus) — genuinely external, cannot be fabricated.
+#### Billing — 🟡 Partial (architecture complete; real provider credentials remaining)
+- **Implemented:** Full `Plan`/`Subscription`/`Invoice`/`Payment`/`TransportFee` lifecycle; 6
+  documented/added routes (5 original + ADR-0022's new `GET /billing/payments`).
+  `BillingApplicationService.initiate_payment`/`handle_payment_callback`/
+  `reconcile_expired_payments` are all fully implemented and tested — idempotency-key handling,
+  the full paid/failed state orchestration (invoice → subscription renewal), and the scheduled
+  reconciliation job all genuinely work today. **ADR-0022 (2026-08-06) closes what used to be
+  Priority 1 Item 8**: a redesigned, provider-agnostic `PaymentProviderPort` (card token *or*
+  mobile-money msisdn); a real, verified `StripePaymentAdapter` (httpx, Payment Intents API,
+  documented HMAC-SHA256 webhook signature scheme) bound conditionally in DI
+  (`RAAD_PAYMENT__PROVIDER=stripe` + real env-var-only credentials — never `SystemSetting`,
+  since `org_admin` holds `admin.settings.read`/`.update` too); `EvcPlusPaymentAdapter`/
+  `ZaadPaymentAdapter` are honest, interface-complete stubs (`NotImplementedError` — no real
+  merchant docs exist to verify against, the user's own explicit choice). `POST /billing/
+  payments/callback` is now genuinely wired (previously a documented, deliberate no-op) — HMAC
+  signature *is* the route's authentication (no `Principal`/bearer JWT involved at all,
+  matching Stripe's own webhook model), `SYSTEM_PRINCIPAL` (moved to `core/tenancy/principal.py`
+  so `billing`/`notifications` share the one constant) represents the caller for the audit
+  trail. A real, previously-undiscovered idempotency bug was found and fixed:
+  `Payment.mark_paid`/`mark_failed` lacked `mark_processing`/`mark_expired`'s existing same-state
+  guard, so a provider's routine webhook retry would have double-advanced a subscription's
+  billing period — closed at both the entity layer (idempotent no-op) and the service layer
+  (short-circuit on an already-terminal `Payment`), with a regression test proving a replayed
+  "paid" callback doesn't move `current_period_end` twice.
+- **Web UI now built, split by dashboard (ADR-0022 completes F9's own deferred half):**
+  `/platform/billing` stays the original F9 `BillingPage.tsx` (tabbed, read-only,
+  cross-organization — its three list routes remain genuinely unscoped server-side, a
+  pre-existing gap, not new). `/org/billing` is now a dedicated `OrgBillingPage.tsx` — an Org
+  Admin's own current subscription/plan, invoices, and payment history, scoped to
+  `principal.organizationId` throughout (closing that unscoped-list gap for this one route), plus
+  a real "Pay Invoice" flow: a new `ConfirmDialog` component (this frontend's first genuinely
+  consequential/hard-to-reverse action, so it gets a real confirm step instead of the existing
+  "loading button + toast" convention) wraps Stripe Elements client-side card tokenization — the
+  raw card number never reaches this backend (PCI DSS SAQ A scope). The card form only renders
+  when a new `getBillingProviderConfig()` read (against the existing `GET /admin/settings`, no
+  new route) confirms a provider is actually bound; otherwise an honest "Online payment is not
+  available yet" state renders, never a control guaranteed to fail.
+- **Missing:** A real Stripe (or EVC Plus/Zaad, once real merchant docs exist) merchant account's
+  live credentials — the one thing that was always going to be genuinely external, never a coding
+  gap. `docker-compose.coolify.yml` (ADR-0022's own deployment half) + `docs/runbooks/
+  coolify-deployment.md` are also new, for the chosen Hostinger-VPS-via-Coolify deployment path,
+  alongside (not replacing) `docker-compose.prod.yml`'s existing generic-VPS/nginx/certbot path.
+- **Production blocker?** No longer, mechanism-wise — same disclosed posture as TLS/Redis
+  hardening: "complete and verified as far as this environment can verify, not live-tested
+  against a real external account." Known Issue #4 (updated) has the full detail.
+- **Dependencies:** A real payment-provider merchant account (Stripe recommended, already
+  verified-adapter-ready) — genuinely external, cannot be fabricated.
 
 #### Subscriptions — 🟡 Partial
 - **Implemented:** Full open/renew/expire/suspend/cancel lifecycle; two scheduled jobs keep state honest automatically.
-- **Missing:** Nothing beyond Billing's payment-completion gap.
-- **Production blocker?** Tied to Billing.
+- **Missing:** Nothing beyond Billing's real-provider-credentials gap.
+- **Production blocker?** No longer, mechanism-wise — tied to Billing's own updated status above.
 - **Dependencies:** Billing.
 
 ### Surfaces
@@ -355,6 +396,7 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0019 | Account-Sharing Session Cap | ✅ Complete |
 | 0020 | Platform Analytics Read Model | ✅ Complete |
 | 0021 | Tenant Scope Enforcement at Repository Layer | ✅ Complete |
+| 0022 | Payment Provider Architecture | ✅ Complete |
 
 ---
 
@@ -400,11 +442,24 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
    backup restore). Both are necessarily unverified against a real VPS (none provisioned in this
    sandbox) — same disclosed limitation as TLS/Redis's own mechanism-built-not-live-tested
    posture.
-8. **Payment provider adapter** — no real payment has ever completed. *(1–2 weeks)* — **audited,
-   not closeable this session**: both blockers are genuinely external (a real EVC Plus merchant
-   account/API docs; a resolved design decision for representing a signed-webhook caller in the
-   `Principal`/audit model, via a new ADR). Application-layer code is fully built/tested and
-   ready the moment either is resolved. Known Issue #4 has the full audit trail.
+8. ~~**Payment provider adapter**~~ — ✅ **Architecture complete** (2026-08-06, ADR-0022). Both
+   blockers this item used to carry are resolved: the signed-webhook-caller design question is
+   answered (per-provider HMAC signature *is* the route's authentication — Stripe's own
+   documented model; `SYSTEM_PRINCIPAL`, an existing "least-bad available role" precedent already
+   used by the Notification Worker, represents the caller for audit purposes only), and a real,
+   verified `StripePaymentAdapter` (httpx-based, Payment Intents API) is built and bound
+   conditionally in DI the moment `RAAD_PAYMENT__PROVIDER=stripe` + real credentials are set.
+   EVC Plus/Zaad remain honest, interface-complete stubs (`NotImplementedError`, no merchant
+   docs exist to verify an adapter against — the user's own explicit choice, not a lesser
+   effort). A real, previously-undiscovered idempotency bug (`Payment.mark_paid`/`mark_failed`
+   lacking same-state guards — a duplicate webhook delivery would have double-advanced a
+   subscription's billing period) was found and fixed with a regression test. `OrgBillingPage`
+   (`/org/billing`) now has a real "Pay Invoice" flow via Stripe Elements client-side card
+   tokenization (PCI DSS SAQ A scope — raw card data never reaches this backend). Same disclosed
+   posture as TLS/Redis: **mechanism complete and unit/live-signature-tested, not live-tested
+   against a real Stripe account** — no merchant account exists in this environment. Only a real
+   Stripe (or EVC Plus/Zaad, once real docs exist) account's live credentials remain before this
+   is closeable end to end. See Known Issue #4 (updated) for the full detail.
 9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form.
    *(4–8 weeks)* — **partial, this session's honest limit reached.** Phase M0 (Foundation) and
    M2 (Driver) code-complete; M3 (Parent)'s live-tracking screen code-complete, its "assigned
@@ -426,11 +481,15 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
   both `/platform/notifications`/`/org/notifications`; `AppShell`'s bell badge now shows a real,
   live-updating unread count. See Section 8 for the full writeup.
 - ~~Billing web UI (F9)~~ — ✅ **Complete** (2026-08-05). `BillingPage.tsx` (tabbed, read-only
-  Plans/Subscriptions/Invoices — this frontend's first `Tabs` pattern) at both
-  `/platform/billing`/`/org/billing`; Regional Manager/Support Staff see Plans only, matching
-  their actual RBAC grants. No payment-initiation control — `POST /billing/payments` always
-  fails with no bound provider (Priority 1 Item 8, still open). See Section 8 for the full
-  writeup.
+  Plans/Subscriptions/Invoices — this frontend's first `Tabs` pattern) at
+  `/platform/billing`; Regional Manager/Support Staff see Plans only, matching their actual RBAC
+  grants. See Section 8 for the full writeup.
+- ~~Organization Billing UI + production payment architecture (ADR-0022)~~ — ✅ **Complete**
+  (2026-08-06). `/org/billing` is now a dedicated `OrgBillingPage` (own subscription/plan/
+  invoices/payment history, scoped to `principal.organizationId` — closing the shared
+  `BillingPage`'s unscoped-list gap for this one route) with a real "Pay Invoice" flow, now that
+  Priority 1 Item 8 (Payment) has a real, verified `StripePaymentAdapter` that can be bound. See
+  Section 8 for the full writeup.
 - Live video / JT1078 — only if video is part of the launch pitch *(3–6 weeks)*
 - ~~Platform analytics (ADR-0020)~~ — ✅ **Complete** (2026-08-05, done ahead of its Priority 2
   slot at the user's request — see Section 8/9).
@@ -506,16 +565,115 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — Phase F9 (Billing web UI) just landed (2026-08-05), immediately after Phase F8
-(Notifications web UI, same day), both the user's own explicit "go" approval of this session's
-own Section 5 recommendations in turn** — the pattern established with F8 (propose, wait for
-approval, build) repeated once more for F9 rather than a one-off. Between ADR-0020 and F8, this
-session also did two frontend-only passes at the user's explicit request: a Dashboard Polish
-pass (KPI card layout/spacing/hover states) and a full fleet-ops-style Dashboard redesign (KPI
-row, Live Operations + live map preview, Recent Activity, Fleet/Device Health, Billing summary)
-— both UI-only, no backend/API change, so neither touched this document (no capability/status
-line's truth value changed). Section 2's Mobile row and similar minor doc staleness are still
-outstanding, not yet corrected — noted, not forgotten.
+**Nothing — ADR-0022 (Payment Provider Architecture + Organization Billing UI + Coolify
+deployment) just landed (2026-08-06)**, closing what had been Priority 1 Item 8 (Payment)
+mechanism-wise and completing the Organization Billing half of Phase F9 that phase's own writeup
+below had deliberately deferred. User directive: "the payment architecture should be
+production-ready... leaving only real provider credentials... to be added after VPS deployment,"
+target deployment "Hostinger VPS with Coolify." Before implementing, four genuinely blocking
+design forks were resolved via explicit user choice (all four "(Recommended)" options accepted):
+Stripe gets a real adapter now, EVC Plus/Zaad stay verified stubs; secrets are env-vars,
+composition-root only, never `SystemSetting`; webhook auth is a per-provider HMAC signature over
+a `SYSTEM_PRINCIPAL` audit actor; Coolify owns reverse-proxy/TLS for its own deployment path,
+this stack's own nginx/certbot stay the alternative generic-VPS path. See the writeup immediately
+below this note for the full detail. Between Phase F9 (below) and this item, no other session
+work occurred — this is the direct continuation the user's own "once Billing is truly
+production-ready, continue with the next roadmap item" directive anticipated. Section 2's Mobile
+row and similar minor doc staleness are still outstanding, not yet corrected — noted, not
+forgotten.
+
+**ADR-0022 — Payment Provider Architecture + Organization Billing UI + Coolify deployment
+(2026-08-06).** Three genuine backend gaps were found by reading the actual code before any
+design work, not assumed: (1) `PaymentProviderPort` was `charge(amount, msisdn, reference) ->
+str` — one method, shaped entirely around mobile money; a card provider has no `msisdn` and needs
+a client-tokenized `payment_method_id` instead (raw card numbers must never reach this backend —
+PCI DSS scope), so the port needed a real redesign, not a class bolted onto the existing
+signature. (2) A live idempotency bug: `Payment.mark_paid`/`mark_failed` had no same-state guard
+(unlike `mark_processing`/`mark_expired`, which already did) — every real payment provider
+retries a webhook delivery until it gets a `200`, so a duplicate "paid" callback would have
+re-run `subscription.renew(...)` a second time, double-advancing the billing period. Fixed at
+both layers (entity-level idempotent no-op + a service-level short-circuit before touching
+`Invoice`/`Subscription` at all), with a regression test proving a replayed callback doesn't move
+`current_period_end` twice. (3) `infra/adapters.py` was completely empty (0 bytes) — no prior
+stub existed at all.
+
+**Redesigned `PaymentProviderPort`** (`application/ports.py`): `PaymentChargeRequest`/
+`PaymentChargeResult`/`WebhookEvent` dataclasses, three methods (`charge`,
+`verify_webhook_signature`, `parse_webhook_event`). `StripePaymentAdapter` (`infra/adapters.py`)
+is real and `httpx`-based (new dependency — chosen over the official `stripe` SDK, matching this
+codebase's own "hand-roll a narrow need" pattern already established for `core/pagination`/
+`core/observability/metrics`): Payment Intents API (`confirm=true`,
+`automatic_payment_methods[allow_redirects]=never` — a deliberate v1 scope cut, no 3D Secure/SCA
+flow), Stripe's own documented `Stripe-Signature` HMAC-SHA256 webhook scheme (verified against
+self-constructed signature test vectors, not live Stripe access — no merchant account exists in
+this environment). `EvcPlusPaymentAdapter`/`ZaadPaymentAdapter` implement the full interface but
+`charge`/`verify_webhook_signature` raise a clear, explicit "no merchant API documentation exists"
+error — the user's own explicit choice (a `AskUserQuestion` resolved this and three other forks,
+all "(Recommended)" options accepted), not a lesser effort. `initiate_payment` now has three
+outcomes (`succeeded`/`pending`/`failed`) instead of one, converging with the webhook path on one
+shared `_apply_paid_side_effects` helper so the two can never drift.
+
+**Webhook route wired for real** (`POST /billing/payments/callback`, previously a documented,
+deliberate `NotImplementedError` no-op): no `Depends(require_permission(...))`/bearer JWT at all
+— a payment provider has no `Principal`, and the HMAC signature check *is* this route's
+authentication, matching how Stripe's own webhook documentation describes this exact model.
+`SYSTEM_PRINCIPAL` (moved from `notifications/events/subscribers.py` to
+`core/tenancy/principal.py` so both modules share the one constant, not a drifting second copy)
+represents the caller for the audit trail — the same "least-bad available role" reuse the
+Notification Worker already established, not a new RBAC concept. A missing/invalid signature is a
+`401`, logged (not a domain-event audit row — no aggregate mutation happens for a rejected
+request to attach one to). New `GET /billing/payments` (payment history — no list route existed
+for `Payment` at all before this) behind a new `billing.payments.list` permission (Founder/
+Finance Staff/Org Admin, mirroring `.subscriptions.list`'s grant set). Non-secret provider
+selection (`{"provider":"stripe"}`) is a `SystemSetting` row read via the *existing*
+`GET /admin/settings`; the actual secret lives only in `RAAD_PAYMENT__PROVIDER_CREDENTIALS`
+(env-var, composition-root only, `core/di/bootstrap.py`) — never `SystemSetting`, since
+`org_admin` holds `admin.settings.read`/`.update` too. One combined migration (column, RBAC
+grant, `SystemSetting` seed). **A real, live-caught bug during verification**: the webhook route
+initially returned `401 UNAUTHENTICATED` even with no signature check reached at all — traced to
+`get_billing_uow`'s own `Depends(get_scope)` transitively requiring an authenticated `Principal`
+even though the route itself declared no auth dependency; fixed with a new `get_billing_uow_
+unscoped` (mirrors `iam.api.deps.get_iam_uow`'s identical `login`/`refresh` precedent). Live
+server verification (real JWT, real Postgres, fake-but-well-formed Stripe credentials) confirmed
+all four webhook scenarios: no signature → 401, tampered signature → 401, valid signature +
+unknown `provider_ref` → 200 ack, valid signature + unhandled event type → 200 ack. 1330 unit +
+10 architecture tests pass (up from 1304), plus a live migration round-trip.
+
+**Frontend: Organization Billing UI + Pay Invoice flow.** New `OrgBillingPage.tsx` at
+`/org/billing` only (`/platform/billing` untouched, still the shared cross-organization
+`BillingPage`) — an Org Admin's own current subscription/plan, invoices, and payment history, all
+scoped to `principal.organizationId`. `InvoicesSection` is split into its own component, mounted
+only once a subscription id is actually known, specifically so `GET /billing/invoices` (not
+tenant-scoped server-side, a real pre-existing gap) is never called unfiltered even for one
+render — an unfiltered call would return every organization's invoices. New `ConfirmDialog`
+(`shared/components/`) — this frontend's first genuinely consequential/hard-to-reverse action
+(charging a real card), so it gets a real confirm step instead of the existing "loading button +
+toast" convention every prior mutation in this codebase used (all reversible admin actions).
+"Pay Invoice" mounts Stripe Elements (`@stripe/stripe-js` + `@stripe/react-stripe-js`, new
+dependencies — required for PCI-compliant client-side card tokenization, not optional) inside it;
+the card form only renders once a new `getBillingProviderConfig()` read confirms a provider is
+actually bound, otherwise an honest "Online payment is not available yet" state renders. A real
+infinite-render-loop bug was caught during test-writing (not shipped): an early test mock for
+`useStripe`/`useElements` returned a fresh object identity on every call, which combined with
+`CardFields`'s `useEffect([stripe, elements, onReady])` re-ran forever — fixed by making the
+mock return stable references, matching real Stripe.js's own memoized context values. 392/392
+frontend tests pass (up from 344); `tsc -b` clean, production build clean.
+
+**Deployment: Coolify overlay.** New `docker-compose.coolify.yml`, alongside (not replacing)
+`docker-compose.prod.yml`'s existing generic-VPS/nginx/certbot path — Coolify already runs its
+own Traefik reverse proxy with automatic Let's Encrypt TLS, so this stack's own `nginx`/`certbot`
+must not also run. Rather than trying to delete a service via a compose override (not possible in
+the Compose spec), `nginx` (base file) and `certbot` (prod overlay) are gated behind a new
+`gateway` Compose profile, defaulted on via `docker/.env.example`'s `COMPOSE_PROFILES=gateway` so
+every existing dev/generic-VPS command is unaffected; the Coolify path simply never activates
+that profile. Also fixed a real, pre-existing bug surfaced while designing the overlay:
+`infrastructure/nginx/conf.d/frontend.conf` (the SPA `try_files` fallback) was referenced in
+`frontend.Dockerfile`'s own comment but never actually mounted anywhere, so a deep-linked
+frontend route (e.g. `/org/billing`) 404'd straight from the frontend container's own nginx in
+production — fixed on both paths. New `docs/runbooks/coolify-deployment.md`, flagged like every
+other deployment runbook here as mechanism-verified (YAML structural validation, a hand-written
+compose-merge simulation) but not live-tested against a running Coolify instance in this
+environment.
 
 **Phase F9 — Billing Web UI.** API Contracts §4.7 and `billing/api/routers.py`'s own extensive
 module docstring already fully specify this surface's real shape; nothing here required a new
@@ -941,10 +1099,12 @@ new Known Issue #16. 1236 unit + 10 architecture tests pass with zero regression
 **Next Task:**
 **Recommended: Known Issue #17** (self-scoped Parent/Driver identity resolution —
 `GET /me/students`-shaped work, a short ADR first per `.claude/rules/workflow.md` #8). With
-ADR-0019 and ADR-0020 both now landed, it's the highest-priority remaining item that isn't
-blocked on an external dependency this engagement can't obtain — Item 8 (Payment) and the rest
-of Item 9 (Mobile) both are. Per Section 14's rules, don't start it without the user's
-confirmation.
+ADR-0019, ADR-0020, and now ADR-0022 all landed, it remains the highest-priority remaining item
+that isn't blocked on an external dependency this engagement can't obtain. Item 8 (Payment) is no
+longer excluded on architectural grounds — its remaining gap (a live merchant account's actual
+credentials) is now the *only* thing left, identical in kind to Item 9/Mobile's own M4/M5
+external-account blockers, not a coding gap either could still close. Per Section 14's rules,
+don't start Known Issue #17 without the user's confirmation.
 
 ---
 
@@ -1078,24 +1238,43 @@ Reverse-chronological (most recent first):
 - **Severity:** ~~High~~
 - **Blocking production?** No longer.
 
-### 4. `PaymentProviderPort`, `VideoProviderPort`, `ReportRendererPort` all unbound
-- **Severity:** High (Payment), Medium (Video, Reporting)
-- **Recommended fix:** Bind a real EVC Plus adapter (Payment); decide a JT1078 runtime (Video);
-  pick a PDF/Excel engine (Reporting).
-- **Blocking production?** Payment: yes. Video/Reporting: only if marketed as working at launch.
-- **Priority 1 Item 8 audit (2026-08-03), Payment half only:** re-confirmed both blockers are
-  genuinely external, not a coding gap this session declined to attempt. (1) No real EVC Plus
-  merchant account/API documentation exists anywhere in this engagement to build and verify a
-  real adapter against — the only documentation (Phase 2 §20) designs the *workflow* (sequence/
-  state diagrams), explicitly disclaims processing payments itself, and describes a **Parent-
-  Pays** flow ADR-0016 has since removed outright (RAAD bills Organizations only) — a real,
-  unresolved documentation-vs-current-architecture conflict, flagged here rather than silently
-  picked one way. (2) `POST /billing/payments/callback`'s own router docstring already correctly
-  names its two blockers (no documented signature scheme; the "provider (signed)" caller has no
-  `Principal` to authenticate with) — independently re-verified, not superseded. Application-
-  layer code (`initiate_payment`/`handle_payment_callback`/`reconcile_expired_payments`) is fully
-  built and tested (42 passing tests) and needs no further work once these two external
-  questions are resolved — see the Billing row in Section 3 for the full detail.
+### 4. `PaymentProviderPort` (resolved, ADR-0022), `VideoProviderPort`/`ReportRendererPort` still unbound
+- **Severity:** ~~High (Payment)~~ Low (Payment — real-account credentials only, mechanism
+  complete). Medium (Video, Reporting — unchanged).
+- **Recommended fix:** ~~Bind a real EVC Plus adapter (Payment)~~ **Done, ADR-0022** — set
+  `RAAD_PAYMENT__PROVIDER=stripe` + real `RAAD_PAYMENT__PROVIDER_CREDENTIALS` (a real Stripe
+  merchant account) once one exists; the adapter, webhook route, and frontend flow are all
+  already built and tested. Video: decide a JT1078 runtime. Reporting: pick a PDF/Excel engine.
+- **Blocking production?** Payment: no longer, mechanism-wise (same "not live-tested against a
+  real external account" disclosed posture as TLS/Redis hardening). Video/Reporting: only if
+  marketed as working at launch — unchanged.
+- **ADR-0022 (2026-08-06) resolution, Payment half:** both blockers this issue used to describe
+  are closed. **The signed-webhook-caller design question** (no `Principal` exists for a
+  provider's own webhook) is resolved *without* a full new ADR-level RBAC change — the HMAC
+  signature itself is the route's authentication (no `Depends(require_permission(...))`/bearer
+  JWT at all, matching how Stripe's own webhook documentation describes this exact model), and
+  `SYSTEM_PRINCIPAL` (moved to `core/tenancy/principal.py`, shared with `notifications`' own
+  Notification Worker rather than a second copy) represents the caller for the audit trail only —
+  the same "least-bad available role" reuse already established elsewhere in this codebase, not
+  a new RBAC concept requiring its own ADR. **The real EVC Plus documentation-vs-architecture
+  conflict this issue previously flagged (Phase 2 §20's Parent-Pays workflow vs. ADR-0016's
+  Organization-only billing) is sidestepped, not resolved** — per the user's own explicit choice
+  (`AskUserQuestion`, "(Recommended)" option accepted), Stripe gets a real adapter now instead
+  (public, stable, verifiable API docs), while EVC Plus/Zaad remain honest,
+  interface-complete `PaymentProviderPort` stubs (`NotImplementedError`, no merchant docs to
+  verify against) — that underlying document conflict still exists and would need resolving
+  before an EVC Plus/Zaad adapter specifically could ever be built for real. A real, previously-
+  undiscovered idempotency bug was found and fixed in the same pass: `Payment.mark_paid`/
+  `mark_failed` lacked a same-state guard (unlike `mark_processing`/`mark_expired`), so a
+  provider's routine webhook retry would have double-advanced a subscription's billing period —
+  closed with a regression test. Application-layer code (`initiate_payment`/
+  `handle_payment_callback`/`reconcile_expired_payments`/`handle_webhook_event`) plus a real,
+  verified `StripePaymentAdapter` (httpx, Payment Intents API, Stripe's documented HMAC-SHA256
+  webhook signature scheme) are fully built and tested (1330 unit + 10 architecture tests) and
+  live-server-verified (real JWT, real Postgres, fake-but-well-formed Stripe credentials
+  exercising all four webhook scenarios end to end) — see the Billing row in Section 3 for the
+  full detail. **What remains, genuinely external, cannot be fabricated:** a real Stripe merchant
+  account's live `secret_key`/`webhook_secret`.
 
 ### 5. Stale docstring — `tracking/infra/adapters.py`
 - **Severity:** Low (documentation hygiene, not a functional bug)
@@ -1336,7 +1515,15 @@ Live checklist for a real VPS deployment — update as each item closes.
       deployment still means hand-editing a `.env` on the host, no secrets manager.
 - [ ] **CI/CD** — backend test-only pipeline exists; no deploy step, no lint/security gate, no
       frontend/mobile/device-gateway CI.
-- [x] **Reverse Proxy** — nginx configs (dev/prod/frontend) real and working.
+- [x] **Reverse Proxy** — nginx configs (dev/prod/frontend) real and working; `docker-compose.
+      coolify.yml` + `docs/runbooks/coolify-deployment.md` (ADR-0022) offer Coolify's own
+      Traefik as an alternative to this stack's own nginx/certbot for a Coolify-managed VPS.
+- [x] **Payment Provider** — architecture mechanism complete (ADR-0022): real, verified
+      `StripePaymentAdapter`, webhook route wired with HMAC signature verification, env-var-only
+      secrets, a real "Pay Invoice" frontend flow. Check this box again once a real Stripe
+      merchant account's live credentials are actually set in `RAAD_PAYMENT__PROVIDER_
+      CREDENTIALS` and a real test-mode charge has been exercised end to end (no merchant
+      account exists in this sandbox — same disclosed-limitation posture as TLS/Redis).
 - [ ] **Object Storage** — not present anywhere in the repo (no S3-equivalent evaluated for
       report files, etc.).
 - [ ] **Secrets** — plain env vars only; no Vault/sealed-secrets/cloud secrets manager.
