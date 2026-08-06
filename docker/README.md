@@ -30,13 +30,22 @@ runtime (`services/jt1078/README.md`), so there is nothing to containerize yet.
 - `docker-compose.yml` — the base file. Alone, it fully starts a working dev stack.
 - `docker-compose.dev.yml` — hot-reload/DX overrides (bind-mounted source, `uvicorn --reload`).
   Optional — the base file already runs correctly without it, just without live-reload.
-- `docker-compose.prod.yml` — VPS overrides: `frontend` builds its static bundle instead of
-  running the Vite dev server, `nginx` serves `prod.conf`/`prod-tls.conf` instead of `dev.conf`
+- `docker-compose.prod.yml` — generic-VPS overrides: `frontend` builds its static bundle instead
+  of running the Vite dev server, `nginx` serves `prod.conf`/`prod-tls.conf` instead of `dev.conf`
   (plus a `certbot` service and its two volumes, Priority 1 Item 2), and only `nginx` keeps a
   published host port (`80` always, `443` once TLS is bootstrapped). A real `docker/.env` on the
   VPS (same shape as `.env.example`, never committed) is all that's needed; see that file's own
   comments for `RAAD_ENVIRONMENT=prod`'s fail-loud JWT-secret check.
+- `docker-compose.coolify.yml` — **alternative** to `docker-compose.prod.yml` (ADR-0022), for a
+  Coolify-managed deployment (Coolify's own Traefik owns reverse-proxy/TLS instead of this
+  stack's `nginx`/`certbot`, which never start on this path — see the `gateway` Compose profile
+  below). Pick exactly one of `docker-compose.prod.yml` / `docker-compose.coolify.yml`, never
+  both. Full guide: `docs/runbooks/coolify-deployment.md`.
 - `.env.example` — the one Compose-level env template. Copy to `docker/.env` before first run.
+  Sets `COMPOSE_PROFILES=gateway` by default — Compose's own mechanism (read automatically from
+  `.env`, no flag needed) for including `nginx` (and, in `docker-compose.prod.yml`, `certbot`) in
+  every command below; the Coolify path (its own separate environment-variables UI, never this
+  file) deliberately leaves it unset instead, since Coolify already runs its own reverse proxy.
 - `backend.Dockerfile` — builds the Business API image; also reused for `migrate`/`worker`.
 - `frontend.Dockerfile` — multi-stage (`deps` → `dev` / `build` → `prod`); `target` picks dev
   vs. prod.
@@ -140,10 +149,13 @@ no further manual steps.
 
 This section (and everything above it) assumes Docker and the repo already exist on a machine.
 Provisioning that machine in the first place — OS baseline, firewall, installing Docker itself,
-first boot, DNS/TLS handoff — is `docs/runbooks/vps-deployment.md` (Priority 1 Item 7). If a
-deployment goes bad, `docs/runbooks/rollback.md` covers application-code rollback, migration
-rollback (and when it's genuinely *not* safely reversible), and the last-resort full backup
-restore.
+first boot, DNS/TLS handoff — is `docs/runbooks/vps-deployment.md` (Priority 1 Item 7), for the
+generic-VPS/nginx/certbot path above. For a Coolify-managed deployment (Hostinger VPS or any other)
+instead, see `docs/runbooks/coolify-deployment.md` — installing Coolify itself, connecting this
+repo, and its own UI-driven environment-variable/domain assignment replace Steps 2–7 of the
+generic guide. If a deployment goes bad, `docs/runbooks/rollback.md` covers application-code
+rollback, migration rollback (and when it's genuinely *not* safely reversible), and the
+last-resort full backup restore — identically for either deployment path.
 
 ## Status
 

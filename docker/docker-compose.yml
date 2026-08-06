@@ -282,6 +282,13 @@ services:
     image: nginx:1.27-alpine
     container_name: raad-nginx
     restart: unless-stopped
+    # `gateway` profile (docker/.env.example's COMPOSE_PROFILES, on by default so every existing
+    # dev/generic-VPS command below is unaffected) — lets docker-compose.coolify.yml's deployment
+    # path exclude this service entirely just by NOT activating the profile, rather than needing
+    # to (impossible) delete a service via a later override file. Coolify owns reverse-proxy/TLS
+    # itself (its own Traefik) there, so running this nginx alongside it would be a second,
+    # conflicting proxy.
+    profiles: ["gateway"]
     ports:
       - "${NGINX_PORT:-80}:80"
     volumes:

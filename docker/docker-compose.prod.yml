@@ -47,6 +47,15 @@ services:
         VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost}
         VITE_MAPBOX_ACCESS_TOKEN: ${VITE_MAPBOX_ACCESS_TOKEN:-}
         VITE_STRIPE_PUBLISHABLE_KEY: ${VITE_STRIPE_PUBLISHABLE_KEY:-}
+    # A real, previously-shipped gap, closed here: frontend.Dockerfile's `prod` stage builds a
+    # plain nginx:alpine with no SPA fallback (its stock default.conf has none), so a deep-linked
+    # client-side route (e.g. /org/billing) 404'd straight from this container — nginx's own gateway
+    # above just proxies to it verbatim, it never bridges that gap. frontend.conf (already
+    # referenced in frontend.Dockerfile's own comment, never actually mounted anywhere until now)
+    # is the fix. Also mounted by docker-compose.coolify.yml's own standalone `frontend` service,
+    # which has no gateway nginx in front of it at all.
+    volumes:
+      - ../infrastructure/nginx/conf.d/frontend.conf:/etc/nginx/conf.d/default.conf:ro
     ports: !reset []
 
   nginx:
@@ -83,6 +92,12 @@ services:
     image: certbot/certbot:latest
     container_name: raad-certbot
     restart: unless-stopped
+    # Same "gateway" profile as the base file's own `nginx` service (docker-compose.yml) — this
+    # container's only job is renewing the cert *that* nginx serves, so it must never start
+    # without it. Without this, running docker-compose.coolify.yml's Coolify path (which never
+    # activates the gateway profile) would otherwise still try to start certbot and fail on its
+    # `depends_on: nginx` below, since nginx itself would be excluded.
+    profiles: ["gateway"]
     # Shares nginx's PID namespace so certbot-renew-loop.sh's --deploy-hook can `kill -HUP 1` to
     # reload nginx after a real renewal, without mounting the Docker socket (the lower-privilege
     # alternative to `docker exec nginx nginx -s reload` from a sibling container).

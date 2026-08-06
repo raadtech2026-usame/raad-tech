@@ -1,0 +1,53 @@
+# RAAD Platform — Coolify (Hostinger VPS) deployment overlay (ADR-0022:
+# docs/architecture/adr/0022-payment-provider-architecture.md, Coolify vs nginx decision). An
+# alternative to docker-compose.prod.yml, not a replacement — docker-compose.prod.yml's own
+# generic-VPS/nginx/certbot path stays fully valid; pick exactly one, never combine both.
+#
+# The one architectural difference from docker-compose.prod.yml: Coolify already runs its own
+# Traefik instance as the platform's reverse proxy/TLS terminator (Let's Encrypt, automatic
+# renewal, all managed through Coolify's own UI). This stack's own `nginx`/`certbot` services
+# would be a second, conflicting proxy in front of the same containers — so this overlay never
+# activates them at all, rather than trying to disable a service Compose has no "delete via
+# override" mechanism for. docker-compose.yml's own `nginx` (and docker-compose.prod.yml's
+# `certbot`) are gated behind the `gateway` Compose profile specifically so this overlay can
+# exclude them just by not activating that profile — see docker/.env.example's own
+# COMPOSE_PROFILES comment. Run this stack's own .env with COMPOSE_PROFILES unset/empty (Coolify's
+# environment-variables UI, not a committed file).
+#
+# Run with (or let Coolify itself invoke the equivalent, per its own "Docker Compose" resource
+# type — see docs/runbooks/coolify-deployment.md):
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.coolify.yml up -d --build
+#
+# `postgres`/`redis`/`backend` un-publish their host ports here for the identical reason
+# docker-compose.prod.yml's own `ports: !reset []` already gives on those same three services —
+# Coolify's Traefik (and, for `backend`, this overlay's own `frontend` service proxying to it)
+# reaches them over the Docker network, they need no host-published port at all. `device-gateway`
+# is deliberately NOT touched — its 7808/7809 are a raw TCP protocol (bus terminals dialing in
+# directly, ADR-0009/ADR-0010), not HTTP, so Traefik/Coolify's routing doesn't apply to it; it
+# keeps the base file's own published host ports unchanged, same as every other overlay.
+
+services:
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  backend:
+    ports: !reset []
+
+  frontend:
+    build:
+      target: prod
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL}
+        VITE_MAPBOX_ACCESS_TOKEN: ${VITE_MAPBOX_ACCESS_TOKEN:-}
+        VITE_STRIPE_PUBLISHABLE_KEY: ${VITE_STRIPE_PUBLISHABLE_KEY:-}
+    # Same SPA-fallback fix docker-compose.prod.yml's own `frontend` service now carries (see
+    # that file's comment on this exact mount) — load-bearing here specifically, since this
+    # overlay has no gateway nginx of its own in front of this container at all; Coolify's
+    # Traefik proxies straight to it.
+    volumes:
+      - ../infrastructure/nginx/conf.d/frontend.conf:/etc/nginx/conf.d/default.conf:ro
+    ports: !reset []
