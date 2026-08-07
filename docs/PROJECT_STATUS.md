@@ -15,10 +15,10 @@ architecture; this file is the source of truth for progress and sequencing.
 | | |
 |---|---|
 | **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
-| **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against, a real Stripe merchant account for live payments) — every Priority 1 item touching the backend/web/infra surface (1–8) is now complete and either live-verified or mechanism-complete-with-disclosed-testing-limits: **Item 8 (Payment) is no longer an architectural blocker** — ADR-0022 (2026-08-06) shipped a real, verified `StripePaymentAdapter`, a wired webhook route, and a production `OrgBillingPage` "Pay Invoice" flow, resolving both the design gaps (signed-webhook-caller representation, provider abstraction shape) this item used to carry; only a live merchant account's credentials remain, same disclosed posture as TLS/Redis. Two deployment paths now exist side by side: the original generic-VPS/nginx/certbot path, and a new Coolify-managed path (`docker-compose.coolify.yml`, `docs/runbooks/coolify-deployment.md`) for the user's own chosen Hostinger-VPS-via-Coolify target. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. This is the direct continuation of the continuous-completion program (user directive 2026-08-03) — see Section 15 for that program's own final report, and Section 8 for ADR-0022's own full writeup. |
+| **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against, a real Stripe merchant account for live payments) — every Priority 1 item touching the backend/web/infra surface (1–8) is now complete and either live-verified or mechanism-complete-with-disclosed-testing-limits: **Item 8 (Payment) is no longer an architectural blocker** — ADR-0022 (2026-08-06) shipped a real, verified `StripePaymentAdapter`, a wired webhook route, and a production `OrgBillingPage` "Pay Invoice" flow, resolving both the design gaps (signed-webhook-caller representation, provider abstraction shape) this item used to carry; only a live merchant account's credentials remain, same disclosed posture as TLS/Redis. Two deployment paths now exist side by side: the original generic-VPS/nginx/certbot path, and a new Coolify-managed path (`docker-compose.coolify.yml`, `docs/runbooks/coolify-deployment.md`) for the user's own chosen Hostinger-VPS-via-Coolify target. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **ADR-0023 (2026-08-07)** closed Known Issue #17 on the backend side (a canonical `GET /me`/`GET /me/students`/`GET /me/driver-profile` self-service identity capability) — M3's own blocking backend gap is resolved, though the mobile client itself is not yet wired to it (same missing-SDK limitation as the rest of Item 9). This is the direct continuation of the continuous-completion program (user directive 2026-08-03) — see Section 15 for that program's own final report, and Section 8 for ADR-0022's/ADR-0023's own full writeups. |
 | **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), ADR-0019 (Account-Sharing Session Cap), ADR-0020 (Platform Analytics Read Model), and **ADR-0022 (Payment Provider Architecture) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete, plus this unplanned-at-the-time payment-architecture milestone the user added afterward. Frontend: **F0–F9 complete**, with F9's own previously-deferred Organization Billing half now also complete (ADR-0022: dedicated `OrgBillingPage` + real "Pay Invoice" flow) — F8: Notifications web UI (first cursor-paginated page, first live-WS-driven bell badge); F9: Billing web UI (platform-wide read-only tabs + org-scoped subscription/invoice/payment view and a real payment flow) — plus the ADR-0020 KPI grid and a fleet-ops-style dashboard redesign/polish pass; F10 (Video)/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
 | **Current git commit** | This turn's own commit (`feat(deploy): Coolify overlay + PROJECT_STATUS.md/CLAUDE.md updates, ADR-0022`) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; it was last literally updated at `07cd3e8` (ADR-0019) and has drifted several commits behind on every turn since (a real, disclosed, recurring instance of the exact staleness rule 2 warns about, not a one-time slip). |
-| **Last updated** | 2026-08-06 |
+| **Last updated** | 2026-08-07 |
 
 ---
 
@@ -236,7 +236,7 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Implemented (Priority 1 Item 9):** Phase M0 (Foundation) code-complete — Riverpod state management, `flutter_secure_storage`-backed refresh-token storage, a REST client mapping the backend's real error envelope, a protocol-correct `/ws/tracking` WebSocket client, role-based shell/routing. Phase M2 (Driver) code-complete: org-scoped trip list, real start/end actions against the real, ownership-enforced backend routes. Phase M3 (Parent): the live-tracking screen itself is code-complete and protocol-correct; the "assigned children" list is blocked on a real, newly-discovered backend gap (see Known Issue #17). A real `mobile-pipeline.yml` CI workflow and one widget test also ship.
 - **Missing:** Phase M4 (FCM push) — needs a real Firebase project (external dependency, same category as Payment's EVC Plus account). Phase M5 (offline caching, app-store release) — release process needs real store accounts; offline caching deferred until M2/M3 are verified-complete. Map rendering itself (a real Mapbox widget) — the live-tracking screen shows raw position data, not a rendered map, pending a chosen Flutter map package. **Most importantly: nothing in `mobile/` has been compiled, analyzed, or run — no Flutter SDK exists in this sandbox at all**, a categorically stronger unverified-state than any other Priority 1 item (every other item still had some independent verification path — real HTTP, real Postgres, real YAML parsing; this one has none). Treat every "code-complete" claim above as "written and carefully reviewed, not yet proven" until a real `flutter analyze`/`flutter test`/`flutter run` succeeds.
 - **Production blocker?** Yes, unconditionally — this is the *only* channel Parents/Drivers have, and it remains unverified and partially blocked on two genuine backend gaps.
-- **Dependencies:** A real Flutter SDK/build environment to verify any of this code at all; a backend fix for the Parent/Driver self-identity-resolution gap (Known Issue #17); a real Firebase project (M4); real app-store accounts (M5's release half).
+- **Dependencies:** A real Flutter SDK/build environment to verify any of this code at all (the backend fix for the Parent/Driver self-identity-resolution gap, Known Issue #17, is now resolved — ADR-0023 — but the mobile screens still need wiring to it, itself blocked on the same missing-SDK dependency); a real Firebase project (M4); real app-store accounts (M5's release half).
 
 ### Insight
 
@@ -397,6 +397,7 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0020 | Platform Analytics Read Model | ✅ Complete |
 | 0021 | Tenant Scope Enforcement at Repository Layer | ✅ Complete |
 | 0022 | Payment Provider Architecture | ✅ Complete |
+| 0023 | Canonical `/me` Self-Service Identity Resolution | ✅ Complete |
 
 ---
 
@@ -463,8 +464,12 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 9. **Mobile app MVP** — Parents/Drivers have no way to use the system, in any form.
    *(4–8 weeks)* — **partial, this session's honest limit reached.** Phase M0 (Foundation) and
    M2 (Driver) code-complete; M3 (Parent)'s live-tracking screen code-complete, its "assigned
-   children" list blocked on a real backend gap (Known Issue #17, a new self-scoped identity-
-   resolution endpoint is needed, recommended via a short ADR). M4 (FCM)/M5 (release) need real
+   children" list was blocked on a real backend gap — **now closed, backend-side, by ADR-0023
+   (2026-08-07, Known Issue #17 resolved)**: `GET /me/students`/`GET /me/driver-profile` exist
+   and are tested. The mobile screens themselves (`parent_home_screen.dart` and the Driver
+   trip-filter UX) are **not yet wired** to these new endpoints — still blocked on this
+   environment having no Flutter SDK to verify any mobile change against, the same limitation
+   named two paragraphs below. M4 (FCM)/M5 (release) need real
    external accounts (Firebase, app stores) this engagement cannot obtain — the identical
    category of blocker Item 8 (Payment) already carries. **The one categorical difference from
    every other item in this whole program: zero Flutter/Dart SDK exists in this sandbox, so
@@ -565,22 +570,85 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — ADR-0022 (Payment Provider Architecture + Organization Billing UI + Coolify
-deployment) just landed (2026-08-06)**, closing what had been Priority 1 Item 8 (Payment)
-mechanism-wise and completing the Organization Billing half of Phase F9 that phase's own writeup
-below had deliberately deferred. User directive: "the payment architecture should be
-production-ready... leaving only real provider credentials... to be added after VPS deployment,"
-target deployment "Hostinger VPS with Coolify." Before implementing, four genuinely blocking
-design forks were resolved via explicit user choice (all four "(Recommended)" options accepted):
-Stripe gets a real adapter now, EVC Plus/Zaad stay verified stubs; secrets are env-vars,
-composition-root only, never `SystemSetting`; webhook auth is a per-provider HMAC signature over
-a `SYSTEM_PRINCIPAL` audit actor; Coolify owns reverse-proxy/TLS for its own deployment path,
-this stack's own nginx/certbot stay the alternative generic-VPS path. See the writeup immediately
-below this note for the full detail. Between Phase F9 (below) and this item, no other session
-work occurred — this is the direct continuation the user's own "once Billing is truly
-production-ready, continue with the next roadmap item" directive anticipated. Section 2's Mobile
-row and similar minor doc staleness are still outstanding, not yet corrected — noted, not
-forgotten.
+**Nothing — ADR-0023 (Canonical `/me` Self-Service Identity Resolution) just landed
+(2026-08-07)**, closing Known Issue #17 at the user's explicit direction: "Implement Known Issue
+#17 by introducing a single canonical self-service identity API rather than isolated endpoints."
+Per that direction, an ADR (`docs/architecture/adr/0023-canonical-me-identity-resolution.md`) was
+written and accepted before any implementation, per `.claude/rules/workflow.md` #8. See the
+writeup immediately below this note for the full detail. Section 2's Mobile row and similar minor
+doc staleness are still outstanding, not yet corrected — noted, not forgotten.
+
+**ADR-0023 — Canonical `/me` Self-Service Identity Resolution (2026-08-07).** Closes Known Issue
+#17 (§10 below): neither `parent` nor `driver` had any safe way to resolve its own domain
+identity (`Parent.id`/`Driver.id`) from an authenticated `Principal`. `GET /parents/{parent_id}/
+students` took `parent_id` straight from the URL path with **no ownership check at all** —
+confirmed, while researching this ADR, to actually be reachable by `founder`/`regional_manager`/
+`support_staff`/`org_admin` too (a later RBAC migration revoked `.students.{list,read}`/
+`.parents.{list,read}` from RAAD-staff roles but never touched `.student_parents.list` — a real,
+previously unflagged finding, recorded in the ADR itself rather than silently corrected in
+place), though never by `parent`/`driver`, so this change closes no *currently reachable* hole,
+only the one that would have opened the moment either role was ever granted that permission.
+
+**One canonical capability, not two unrelated endpoints**: `GET /me` resolves the caller's own
+cross-module identity (`user_id`/`role`/`organization_id`, plus `parent_id`/`driver_id` only when
+the role matches and a linked row resolves) — `GET /me/students` and `GET /me/driver-profile` are
+thin, dedicated views built on that same resolution, not one-off lookups each reinventing it.
+Owned by `iam` (already owns `Principal`/`User`/`GET /auth/me`) via a new
+`MeApplicationService` (`iam/application/services.py`), constructor-injected with `transport_ops`'s
+own `ParentApplicationService`/`DriverApplicationService`/`StudentParentApplicationService` — the
+same legal cross-module composition `platform_audit.PlatformStatsApplicationService` (ADR-0020)
+already established (application-layer only, never `domain`/`infra`; re-confirmed by re-running
+`tests/architecture/test_module_boundaries.py`, still green). Two small, additive mirror-methods
+were needed first: `DriverRepository.get_by_user_id` (domain + infra) and
+`DriverApplicationService.get_driver_by_user_id` — `ParentRepository`/`ParentApplicationService`
+already had the equivalent; `Driver` simply never had. **No client-supplied `parent_id`/
+`driver_id` anywhere** — every `MeApplicationService` method takes only a `Principal`, by
+construction, not a runtime check bolted on after the fact. Self-scoped via
+`Depends(get_current_user)` alone, no `require_permission` — mirrors `GET /auth/me`'s existing
+posture exactly, since `parent`/`driver` hold none of the relevant `transport_ops.*` permissions
+today and granting one wouldn't help (these routes never accept the id it would gate anyway).
+`NotFoundError` (404, not 403) when no linked Parent/Driver row resolves, covering both a genuine
+role mismatch and a data-inconsistency case with one honest code path — mirrors this codebase's
+established 404-over-403 posture for personal-ownership routes. Zero migration: no schema change,
+no RBAC grant.
+
+Routes: `GET /me`, `GET /me/students`, `GET /me/driver-profile` (new `me_router`,
+`iam/api/routers.py`, mounted at `/api/v1/me` in `interfaces/http/api_v1.py`) — no documented API
+Contracts surface, the same "built directly on schema authority" posture already established for
+`/roles/{role}/permissions`/`/scope-assignments`/`GET /billing/payments`. Verified by forcing
+`app.openapi()` schema generation (this FastAPI version's route registration is lazy —
+`app.routes` alone doesn't show included-router paths until the OpenAPI schema is built) and
+confirming all three paths and their response schemas resolve correctly.
+
+**Testing**: 10 new unit tests (`tests/unit/test_me_application.py`, fake-constructor-argument
+doubles mirroring `test_platform_stats_application.py`'s pattern — covering every role's identity
+resolution, the "no secondary lookup for roles that can't have one" efficiency property, and both
+404 paths) plus 2 new live-Postgres integration tests on the existing driver-repository suite
+(`get_by_user_id` round trip) plus a new dedicated integration file
+(`tests/integration/test_me_application_integration.py`, 4 tests) proving the actual security
+property against a real database: two real Parents, two real linked Students, `MeApplicationService.
+get_my_students` genuinely cannot cross from one to the other — the regression proof a fake-backed
+unit test alone cannot provide. **One real bug caught while writing the integration test, not
+shipped**: the test's first draft wrapped each `MeApplicationService` call in its own `async with
+uow:` block at the test level — but `MeApplicationService`'s own methods already open/close their
+own `async with uow:` internally (twice, sequentially, since `get_my_students` calls two different
+sub-services), so the outer wrapper's own `__aexit__` hit `SqlAlchemyUnitOfWork.session`'s
+`RuntimeError` guard ("used outside of `async with`") — fixed by passing each call an un-entered
+`UnitOfWork`, exactly matching how the real router hands one over via `Depends(get_transport_ops_
+uow)`. 1330 unit + 10 architecture-gate tests pass (up from 1320), zero regressions; the full
+live-Postgres integration suite (270 tests) passes except the 6 pre-existing, already-disclosed
+"no reachable Redis in this sandbox" failures (`test_realtime_broker_fanout.py`/
+`test_tracking_redis_latest_position.py`) — unrelated to this change, the same standing gap every
+other item in this program has carried.
+
+**Not done in this pass, flagged rather than silently implied finished**: wiring
+`mobile/lib/features/parent/parent_home_screen.dart` (and the equivalent Driver trip-filter UX)
+to these new endpoints — the mobile app has no Flutter SDK in this environment to verify any
+change against (the same disclosed Mobile testing limitation Priority 1 Item 9 already carries),
+so the backend capability is real and tested, but the client that would consume it is a follow-up.
+`GET /parents/{parent_id}/students`'s own pre-existing missing-ownership-check gap is also
+unchanged — still tracked, still only reachable by roles that can already see cross-organization
+data by design, explicitly out of scope for this ADR (see the ADR's own Consequences section).
 
 **ADR-0022 — Payment Provider Architecture + Organization Billing UI + Coolify deployment
 (2026-08-06).** Three genuine backend gaps were found by reading the actual code before any
@@ -1097,14 +1165,15 @@ new Known Issue #16. 1236 unit + 10 architecture tests pass with zero regression
   Project Control Center (Sections 2, 6, 7, 12, 13).
 
 **Next Task:**
-**Recommended: Known Issue #17** (self-scoped Parent/Driver identity resolution —
-`GET /me/students`-shaped work, a short ADR first per `.claude/rules/workflow.md` #8). With
-ADR-0019, ADR-0020, and now ADR-0022 all landed, it remains the highest-priority remaining item
-that isn't blocked on an external dependency this engagement can't obtain. Item 8 (Payment) is no
-longer excluded on architectural grounds — its remaining gap (a live merchant account's actual
-credentials) is now the *only* thing left, identical in kind to Item 9/Mobile's own M4/M5
-external-account blockers, not a coding gap either could still close. Per Section 14's rules,
-don't start Known Issue #17 without the user's confirmation.
+**Nothing prescribed — awaiting user direction.** Known Issue #17 is now resolved (ADR-0023,
+above). Every Priority 1 item (1–9) is now either complete, mechanism-complete pending only a
+genuinely external credential/account, or (Mobile, Item 9) built-but-unverified for the same
+external-SDK reason. Real remaining candidates, none blocking on this engagement's own effort:
+wiring the new `/me` endpoints into the mobile Parent/Driver screens (still blocked on no Flutter
+SDK in this sandbox to verify against); Reporting's `ReportRendererPort` (a PDF/Excel engine
+choice); the Priority 2 backlog (load testing, log shipping, secrets-manager integration, CI
+hardening, `/docs` gating, SOS/overspeed alarm mapping — see Section 5). Per Section 14's rules,
+don't start any of these without the user's confirmation.
 
 ---
 
@@ -1112,6 +1181,18 @@ don't start Known Issue #17 without the user's confirmation.
 
 Reverse-chronological (most recent first):
 
+- **ADR-0023 — Canonical `/me` Self-Service Identity Resolution** completed — closes Known Issue
+  #17. New `GET /me`/`GET /me/students`/`GET /me/driver-profile` (`iam/api/routers.py`, mounted
+  at `/api/v1/me`), backed by a new `MeApplicationService` (`iam`) composing `transport_ops`'s
+  own `ParentApplicationService`/`DriverApplicationService`/`StudentParentApplicationService` —
+  the same legal cross-module composition ADR-0020's `PlatformStatsApplicationService` already
+  established. Resolves the caller's own `Parent`/`Driver` id from `Principal.user_id` alone —
+  no client-supplied `parent_id`/`driver_id` anywhere. New `DriverRepository.get_by_user_id`
+  (domain + infra) mirrors `ParentRepository`'s existing equivalent. Self-scoped by
+  `Depends(get_current_user)` alone, no RBAC grant, zero migration. 10 new unit tests + 2 new
+  driver-repository integration tests + 4 new dedicated live-Postgres integration tests (the
+  actual cross-parent isolation proof) — 1330 unit + 10 architecture tests pass, zero
+  regressions. See Section 8 for the full writeup.
 - **ADR-0020 — Platform Analytics Read Model** completed — `GET /admin/platform-stats` composed
   from `organization`/`iam`/`fleet_device`/`billing`'s own new count/sum query methods by a new
   `platform_audit.PlatformStatsApplicationService`; `devices.is_online` closes the Online/
@@ -1440,47 +1521,26 @@ Reverse-chronological (most recent first):
   constraint still fires and the bad write is still rejected); this is purely a rough edge in
   the *error message* a caller sees, not a functional or security gap.
 
-### 17. Parent/Driver mobile roles have no safe way to resolve their own domain identity
-- **Severity:** High
-- **Description:** Discovered while building the mobile app (Priority 1 Item 9) and confirmed by
-  reading the actual route/RBAC-matrix code, not assumed. Both mobile-facing roles hit the
-  identical class of gap — an authenticated `Principal` (via `POST /auth/login`) has no safe
-  path to the domain-specific identity (`Parent.id`/`Driver.id`) that the rest of the API
-  actually keys on:
-  - **Parent**: `GET /parents/{parent_id}/students` (`transport_ops/api/routers.py`) requires
-    `transport_ops.student_parents.list` — the seeded RBAC matrix grants this to Org Admin only;
-    the `parent` role does not hold it (a real Parent principal gets 403 today). Even if granted,
-    the route has **no ownership check at all** — `parent_id` is taken directly from the path
-    with nothing verifying it matches the caller's own linked `Parent` record, so granting the
-    permission without also adding that check would let any parent pass any other parent's
-    `parent_id` and see their children: a real cross-parent privacy leak, the same family of
-    issue ADR-0021's tenant-isolation audit already fixed at the organization level.
-  - **Driver**: the `driver` role *does* hold `transport_ops.trips.list`/`.read`/`.start`/`.end`,
-    so a driver mobile client can list trips and (server-enforced, correctly) start/end their
-    own — but `Trip.driver_id` references the `Driver` aggregate's own id, not `Principal.
-    user_id`, and there is no endpoint reachable by the `driver` role to resolve one from the
-    other (`driver` holds no `transport_ops.drivers.*` permission at all, and `DriverSummaryResponse`
-    doesn't expose `user_id` even if it did). A driver mobile client can therefore list/act on
-    trips but cannot filter the list down to "assigned to me" — it must show every trip in the
-    org and rely on the server's own real ownership check at start/end time.
-- **Recommended fix:** A genuine backend change for each, likely as one small, coherent piece of
-  work: (1) a new, inherently self-scoped `GET /me/students` for Parent (resolving the caller's
-  own `Parent` record from `Principal.user_id` server-side, never trusting a client-supplied id —
-  avoiding the ownership-check gap entirely by construction, not patching around it), and (2) an
-  equivalent `GET /me/driver-profile` (or embedding `driver_id` directly into `PrincipalResponse`/
-  `GET /auth/me` for a `driver`-role principal) so a driver client can filter trips to their own
-  without needing a new RBAC grant that would otherwise leak other organizations'/drivers' data
-  shapes. This is a real design decision (which shape, which module owns it) — matching this
-  project's own established practice, it deserves a short ADR before implementation, not an
-  invented fix under time pressure inside a mobile-app task.
-- **Blocking production?** Yes, for a complete mobile MVP — the Parent "assigned children" flow
-  and the Driver "my trips only" flow (Phase M2/M3's own named scope) cannot be correctly and
-  safely finished without it. Not blocking the *rest* of the platform — every other bounded
-  context's own RBAC/tenant-isolation posture is unaffected, and this gap doesn't weaken any
-  existing enforcement (the Driver trip-ownership check IS real and correctly enforced server-
-  side today; this issue is about UX-level filtering and the Parent case's outright absent
-  ownership check, not a currently-exploitable hole in itself, since the vulnerable route is not
-  currently reachable by the `parent` role at all).
+### 17. ~~Parent/Driver mobile roles have no safe way to resolve their own domain identity~~ — RESOLVED 2026-08-07
+- **Resolution:** ADR-0023 (`docs/architecture/adr/0023-canonical-me-identity-resolution.md`).
+  New `GET /me` (canonical cross-module identity: `role`/`organization_id`/`parent_id`/
+  `driver_id`), `GET /me/students`, `GET /me/driver-profile` — all self-scoped from
+  `Principal.user_id` alone via a new `iam.MeApplicationService`, never a client-supplied
+  `parent_id`/`driver_id`. Closes both halves of this issue: Parent now has a safe,
+  ownership-correct-by-construction "my children" endpoint (no RBAC grant needed, so the
+  cross-parent leak this issue described never becomes reachable), and Driver can now resolve
+  its own `driver_id` (new `DriverRepository.get_by_user_id`, mirroring `ParentRepository`'s
+  existing equivalent) to filter `GET /trips?filter[driver_id]=...` to "assigned to me." 10 new
+  unit tests + 6 new live-Postgres integration tests, including a dedicated two-parent isolation
+  proof against a real database. `GET /parents/{parent_id}/students`'s own pre-existing
+  missing-ownership-check gap is intentionally unchanged (still Org-Admin/RAAD-staff-only,
+  explicitly out of scope for ADR-0023 — see that ADR's own Consequences section). **Not yet
+  done**: wiring the mobile Parent/Driver screens to actually call these new endpoints — still
+  blocked on this environment having no Flutter SDK to verify any mobile change against (the
+  same disclosed limitation Priority 1 Item 9 already carries).
+- **Severity:** ~~High~~
+- **Blocking production?** No longer, on the backend side. Mobile client wiring remains open,
+  tracked under Item 9's own Mobile App status, not re-opened here.
 
 ---
 

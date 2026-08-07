@@ -309,7 +309,11 @@ raad.interfaces.cli.bootstrap_founder`) closes that gap as a one-time, operator-
   (would need to be reachable unauthenticated, a new public attack surface) — see
   `docs/runbooks/founder-bootstrap.md` for the full guide and ADR-0013's own follow-up entry for
   how this surfaced (a fresh Docker deployment had no documented way to invoke it until that
-  ADR's `docker/README.md` was corrected).
+  ADR's `docker/README.md` was corrected). **ADR-0023 (2026-08-07)** adds `GET /me`/`GET /me/
+  students`/`GET /me/driver-profile` — a new `me_router` composing `transport_ops`'s own
+  application services to resolve a `Principal` to its own `Parent`/`Driver` domain identity,
+  self-scoped with no RBAC grant — see "Canonical `/me` Self-Service Identity Resolution" below
+  for the full writeup.
 - **Organization** — organizations, regions, tenant hierarchy, and (ADR-0005) `region_assignments`/
   `support_assignments` backing a real `ScopeResolver` (`interfaces/http/deps.get_scope` resolves
   for real now too).
@@ -2066,3 +2070,132 @@ documentation exists, EVC Plus/Zaad) merchant account's live `secret_key`/`webho
 real Hostinger VPS + Coolify instance to exercise the new deployment path against. Everything
 else this initiative touched is built, tested, and live-verified as far as this environment
 allows. `PROJECT_STATUS.md`'s Known Issue #4 and Section 8 carry the full audit trail.
+
+## Canonical `/me` Self-Service Identity Resolution (ADR-0023, 2026-08-07)
+
+At the user's explicit direction — "Implement Known Issue #17 by introducing a single canonical
+self-service identity API rather than isolated endpoints" — closes `PROJECT_STATUS.md` Known
+Issue #17, discovered while building the Mobile App MVP (Priority 1 Item 9): neither `parent`
+nor `driver` had any safe way to resolve its own domain identity (`Parent.id`/`Driver.id`) from
+an authenticated `Principal`. `GET /parents/{parent_id}/students` took `parent_id` straight from
+the URL path with no ownership check comparing it to the caller's own linked `Parent.user_id`.
+Per `.claude/rules/workflow.md` #8, `docs/architecture/adr/0023-canonical-me-identity-resolution.
+md` was written and accepted before any implementation, exactly as the Known Issue's own
+"recommended fix" had specified.
+
+**One canonical capability, not two unrelated endpoints.** `GET /me` resolves the caller's own
+cross-module identity in one place (`user_id`/`role`/`organization_id`, plus `parent_id`/
+`driver_id` only when the role matches and a linked row resolves) — `GET /me/students` and
+`GET /me/driver-profile` are thin, dedicated views built on that same resolution, not two
+one-off lookups each reinventing "how do I find my own `Parent`/`Driver` row." Org Admin (and
+every other RAAD-staff role) needs no separate lookup at all — `organization_id` is already on
+`Principal` directly, and none of those roles has a second aggregate distinct from `iam.User`
+the way Parent/Driver do; closed by construction, flagged explicitly rather than silently
+assumed, since the user's own request named "Org Admin, etc." directly.
+
+**Ownership: `iam`, composing `transport_ops`'s own application services — the same legal
+cross-module shape ADR-0020's `PlatformStatsApplicationService` already established.** A new
+`MeApplicationService` (`iam/application/services.py`) is constructor-injected with
+`transport_ops`'s `ParentApplicationService`/`DriverApplicationService`/
+`StudentParentApplicationService` — application-layer only, never that module's `domain`/
+`infra`, confirmed by re-running `tests/architecture/test_module_boundaries.py` Rule 1 after
+implementation, still green. `iam` was chosen as the owning module (not `transport_ops`, even
+though every DB read this capability performs happens there) because it already owns
+`Principal`/`User`/`GET /auth/me` — the natural conceptual home for "who am I, across the whole
+platform," not a `transport_ops`-specific concern that happens to have two current consumers.
+`MeApplicationService` needs no `IamUnitOfWork` at all — `Principal` already carries
+`user_id`/`role`/`org_id` directly from the verified JWT, no DB round-trip required for the base
+fields; its methods take only a `TransportOpsUnitOfWork` per call, resolved via that module's own
+already-scoped `get_transport_ops_uow` (imported directly into `iam/api/routers.py`, mirroring
+`platform_audit.api.routers`'s existing precedent of importing another module's own `api/deps.py`
+function directly).
+
+**Two small, additive mirror-methods, both already precedented 1:1 by an existing sibling
+method.** `ParentRepository.get_by_user_id`/`ParentApplicationService.get_parent_by_user_id`
+already existed (added during the Backend Stabilization phase for CR-1 enforcement); `Driver`
+simply never had the equivalent. New `DriverRepository.get_by_user_id` (domain interface +
+`SqlAlchemyDriverRepository` infra implementation — identical non-unique `user_id` filter shape,
+`deleted_at IS NULL` scoping) and `DriverApplicationService.get_driver_by_user_id` (returns
+`DriverDTO | None`, never raises — "no Driver profile" is an expected, non-exceptional outcome
+for a non-driver caller, mirroring `get_parent_by_user_id`'s identical reasoning) close the gap.
+`/me/students` reuses `StudentParentApplicationService.list_students_for_parent` **unchanged** —
+`MeApplicationService` resolves `parent_id` server-side first, then calls the existing,
+already-tested query with that resolved id, rather than duplicating its logic.
+
+**No client-supplied `parent_id`/`driver_id` — structural, not a runtime check.** Every method
+`MeApplicationService` exposes takes a `Principal` (or its bare `user_id`) as its only identity
+input; the route signatures have no `parent_id`/`driver_id` parameter to accept in the first
+place, so there is nothing for a caller to override. This directly closes the class of bug Known
+Issue #17 described in `GET /parents/{parent_id}/students` by construction. That existing route
+is left exactly as-is — still gated by `transport_ops.student_parents.list`, still unreachable by
+`parent`/`driver` today — fixing its own missing ownership check was explicitly out of scope for
+this ADR (a materially different risk, since it's usable only by roles that can already see any
+organization's data by design). **One real, previously unflagged finding surfaced while
+researching this ADR**, recorded rather than silently corrected in place: `transport_ops.
+student_parents.list` is not actually Org-Admin-only as CLAUDE.md had previously stated —
+`founder`/`regional_manager`/`support_staff` also hold it (a later RBAC migration revoked
+`.students.{list,read}`/`.parents.{list,read}` from RAAD-staff roles but never touched
+`.student_parents.list`), though `parent`/`driver` still hold neither, so no new exposure results
+from this ADR either way.
+
+**Authorization: self-scoping, not RBAC — matching `GET /auth/me`'s existing posture.** Confirmed
+against every RBAC migration in the chain: `parent`/`driver` hold no `transport_ops.parents.*`/
+`.drivers.*`/`.students.*`/`.student_parents.*` permission today. `/me`, `/me/students`,
+`/me/driver-profile` are gated by `Depends(get_current_user)` alone — no `require_permission` —
+safe specifically because every response is derived from `principal.user_id` alone, so no
+permission grant could make these routes return anyone else's data even if one existed. **Zero
+RBAC migration, zero schema migration** — no new column, no new grant.
+
+**404-over-403 when no linked domain record resolves.** `/me/students`/`/me/driver-profile`
+raise the existing `NotFoundError` (404) when resolution comes back empty — covering both "this
+role has no such profile" and "a role that should have one doesn't, due to a data inconsistency"
+with one honest code path, mirroring this codebase's established personal-ownership 404 pattern
+(`GET /notifications/{id}`'s non-owner 404). `/me` itself never 404s — `parent_id`/`driver_id`
+are simply left `null` when not applicable, since the root identity is always resolvable from a
+valid, already-authenticated `Principal`.
+
+**Routes**: `GET /me`, `GET /me/students`, `GET /me/driver-profile` (new `me_router`,
+`iam/api/routers.py`, mounted at `/api/v1/me` in `interfaces/http/api_v1.py`) — no documented API
+Contracts surface, the same "built directly on schema authority" posture already established for
+`/roles/{role}/permissions`/`/scope-assignments`/`GET /billing/payments`. Verified by forcing
+`app.openapi()` schema generation (this FastAPI version registers included-router routes lazily —
+`app.routes` alone doesn't surface them until the OpenAPI schema is actually built) and
+confirming all three paths and response schemas resolve correctly against the real, fully-wired
+DI container.
+
+**Testing.** 10 new unit tests (`tests/unit/test_me_application.py`) — plain constructor-argument
+fakes mirroring `tests/unit/test_platform_stats_application.py`'s pattern (this service takes its
+dependencies directly, not resolved from a `Container`, so no DI-binding trick is needed) —
+covering every role's identity resolution, the "no secondary lookup for a role that structurally
+can't have one" efficiency property, and both 404 paths. 2 new live-Postgres integration tests
+extend the existing driver-repository suite (`get_by_user_id` round trip). A new dedicated
+integration file, `tests/integration/test_me_application_integration.py` (4 tests), proves the
+actual security property against a real database — the regression proof a fake-backed unit test
+alone cannot provide: two real Parents, two real linked Students, `MeApplicationService.
+get_my_students` genuinely cannot cross from one to the other. **One real bug caught while
+writing that integration test, never shipped**: the first draft wrapped each
+`MeApplicationService` call in its own `async with uow:` block at the test level, but the
+service's own methods already open/close their own `async with uow:` internally (twice,
+sequentially, since `get_my_students` calls two different sub-services on the same `uow`
+instance) — `SqlAlchemyUnitOfWork.__aenter__` creates a fresh session on every entry and
+`__aexit__` closes and nulls it, so the outer test-level wrapper's own `__aexit__` hit
+`SqlAlchemyUnitOfWork.session`'s `RuntimeError` guard ("used outside of `async with`"); fixed by
+passing each call an un-entered `UnitOfWork`, exactly matching how the real router hands one over
+via `Depends(get_transport_ops_uow)`. Adding the new abstract `DriverRepository.get_by_user_id`
+method also broke three pre-existing in-memory `InMemoryDriverRepository` test fakes (`test_
+transport_ops_driver_application.py`, `test_transport_ops_trip_application.py`, `test_
+transport_ops_driver_domain.py`) that implement the ABC without it — each fixed with the same
+`get_by_user_id` mirror already established for the equivalent `InMemoryParentRepository` fake.
+1330 unit + 10 architecture-gate tests pass (up from 1320), zero regressions; the full
+live-Postgres integration suite (270 tests) passes except the 6 pre-existing, already-disclosed
+"no reachable Redis in this sandbox" failures (`test_realtime_broker_fanout.py`/`test_tracking_
+redis_latest_position.py`) — unrelated to this change, the same standing gap every other Priority
+1 item in this program has carried.
+
+**What remains, not done in this pass, flagged rather than silently implied finished:** wiring
+`mobile/lib/features/parent/parent_home_screen.dart` (and the equivalent Driver trip-filter UX)
+to these new endpoints — the mobile app has no Flutter SDK in this environment to verify any
+change against, the same disclosed Mobile testing limitation Priority 1 Item 9 already carries.
+The backend capability itself is real, tested, and live-verified against Postgres; the client
+that would consume it is a follow-up. `PROJECT_STATUS.md`'s Known Issue #17 and Section 8 carry
+the full audit trail.
