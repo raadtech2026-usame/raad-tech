@@ -12,9 +12,11 @@
 # already-approved code for reasons unrelated to this change, not a real regression gate.
 #
 # `ci-cd/pipelines/backend-pipeline.yml` is this repo's own cross-deployable pipeline index
-# (frontend/mobile/jt808/jt1078/infrastructure siblings, all still empty placeholders since none
-# of those deployables exist yet) — GitHub Actions only ever executes workflows under
-# `.github/workflows/`, so this file, not that one, is what actually runs.
+# (frontend/mobile/jt808 (device-gateway) siblings are now real too — mobile since Priority 1
+# Item 9, frontend/jt808 since Priority 2 "CI hardening", 2026-08-07; jt1078/infrastructure
+# remain empty placeholders since neither deployable/target exists yet) — GitHub Actions only
+# ever executes workflows under `.github/workflows/`, so this file, not that one, is what
+# actually runs.
 
 name: Backend CI
 

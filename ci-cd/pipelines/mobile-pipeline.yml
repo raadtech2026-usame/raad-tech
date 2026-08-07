@@ -1,0 +1,15 @@
+# RAAD Flutter Mobile App — pipeline index entry, not an executable workflow.
+#
+# The actual, executable CI gate lives at `.github/workflows/mobile-pipeline.yml` — GitHub
+# Actions only ever runs workflows placed under `.github/workflows/`, so a second copy of the
+# same YAML here would just be an unenforced, driftable duplicate. This file exists only as
+# this repo's own organizational placeholder alongside its four siblings
+# (backend/frontend/jt808-pipeline.yml, `jt1078/infrastructure-pipeline.yml`), so all five
+# deployables' pipeline status can be found in one place — see that real workflow file for the
+# actual build -> analyze -> test stages and the reasoning behind its current scope (no
+# app-store release step, explained in its own header comment).
+#
+# Status: mobile's own CI gate is implemented (Priority 1 Item 9). Populated here (2026-08-07,
+# alongside the Priority 2 "CI hardening" backlog item) for consistency with the
+# backend/frontend/jt808 (device-gateway) siblings — this file had lagged empty even after the
+# real workflow landed.

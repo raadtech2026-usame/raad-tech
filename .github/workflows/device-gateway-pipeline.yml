@@ -1,0 +1,63 @@
+# RAAD Device Gateway (`services/device-gateway/`, renamed from `services/jt808/` — ADR-0010) —
+# CI gate (Priority 2 "CI hardening" backlog item, `PROJECT_STATUS.md` Section 5). Mirrors
+# `backend-pipeline.yml`/`mobile-pipeline.yml`'s shape exactly: checkout -> setup toolchain ->
+# install -> test, no deploy step.
+#
+# Scope, deliberately: install -> test only, no lint/security-scan step - this deployable's own
+# `pyproject.toml` documents its dependency-management tool as "not yet decided by approved
+# documentation," and no lint (ruff/mypy) or security-scanning tool is an approved dependency
+# anywhere in this repository (`.claude/rules/workflow.md` #1/#2, the same reasoning
+# `backend-pipeline.yml`'s own header comment already gives for the Business API). `redis>=5.0`
+# is this deployable's only third-party dependency (already approved, device-gateway Redis
+# integration, ADR-0010) - everything else is Python standard library, so `pip install -e .`
+# needs no extra CI-only credentials or service containers (no live Redis is required for this
+# suite: the 333 tests here exercise the protocol parser/dispatcher/session/registry layers
+# against fakes, not a real broker - `test_realtime_broker_fanout.py`'s equivalent live-Redis
+# proof lives in the Business API's own `backend/tests/integration/`, not here).
+#
+# `ci-cd/pipelines/jt808-pipeline.yml` is this repo's own cross-deployable pipeline index entry
+# for this deployable, named before ADR-0010's rename - GitHub Actions only ever executes
+# workflows under `.github/workflows/`, so this file, not that one, is what actually runs; see
+# that file's own comment for the same note and the naming-lag explanation.
+#
+# Not live-tested against a real GitHub Actions run in this sandbox (no way to trigger one here)
+# - the exact commands below were run directly in this sandbox against the current
+# `services/device-gateway/` tree and confirmed passing (333/333 tests) before this workflow was
+# written, the same "mechanism verified locally, not via a live CI run" posture already applied
+# to every other GitHub Actions workflow in this repository.
+
+name: Device Gateway CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/device-gateway/**"
+      - ".github/workflows/device-gateway-pipeline.yml"
+  pull_request:
+    paths:
+      - "services/device-gateway/**"
+      - ".github/workflows/device-gateway-pipeline.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/device-gateway
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install device-gateway package
+        run: pip install -e .
+
+      - name: Compile-check every source file
+        run: python -m compileall -q src tests
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v

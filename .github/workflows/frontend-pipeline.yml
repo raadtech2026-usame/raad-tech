@@ -1,0 +1,60 @@
+# RAAD Web Dashboard — CI gate (Priority 2 "CI hardening" backlog item, `PROJECT_STATUS.md`
+# Section 5). Mirrors `backend-pipeline.yml`/`mobile-pipeline.yml`'s shape exactly: checkout ->
+# setup toolchain -> build (includes type-check) -> test, no deploy step.
+#
+# Scope, deliberately: build -> test only, matching backend-pipeline.yml's own scope note almost
+# word for word. No lint step (`eslint` has no config anywhere in `frontend/` today - confirmed
+# by checking for `.eslintrc*`/`eslint.config.*`, neither exists) and no security-scan step (no
+# scanning tool is an approved dependency anywhere in this repository, `.claude/rules/
+# workflow.md` #1/#2) - both would be new tooling this file does not invent speculatively. `npm
+# run build` already runs `tsc -b` before `vite build` (`package.json`'s own script), so a type
+# error is still a hard CI failure even without a separate lint step.
+#
+# `ci-cd/pipelines/frontend-pipeline.yml` is this repo's own cross-deployable pipeline index
+# entry - GitHub Actions only ever executes workflows under `.github/workflows/`, so this file,
+# not that one, is what actually runs; see that file's own comment for the same note.
+#
+# Not live-tested against a real GitHub Actions run in this sandbox (no way to trigger one here)
+# - the exact commands below (`npm ci`, `npm run build`, `npm test -- --run`) were run directly
+# in this sandbox against the current `frontend/` tree and confirmed passing (392/392 tests,
+# clean production build) before this workflow was written, the same "mechanism verified
+# locally, not via a live CI run" posture already applied to every other GitHub Actions workflow
+# in this repository.
+
+name: Frontend CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-pipeline.yml"
+  pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-pipeline.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (includes tsc type-check)
+        run: npm run build
+
+      - name: Run unit/component tests
+        run: npm test -- --run

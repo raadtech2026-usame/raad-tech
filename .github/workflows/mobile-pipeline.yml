@@ -15,9 +15,10 @@
 # Priority 1 program produced.
 #
 # ci-cd/pipelines/mobile-pipeline.yml is this repo's own cross-deployable pipeline index entry
-# (still an empty placeholder, like its frontend/jt808/jt1078/infrastructure siblings) - GitHub
-# Actions only ever executes workflows under .github/workflows/, so this file is what actually
-# runs, matching backend-pipeline.yml's own identical note.
+# (populated 2026-08-07 alongside the Priority 2 "CI hardening" backlog item, matching its now-
+# also-populated backend/frontend/jt808 siblings; jt1078/infrastructure remain empty - neither
+# deployable exists yet) - GitHub Actions only ever executes workflows under .github/workflows/,
+# so this file is what actually runs, matching backend-pipeline.yml's own identical note.
 
 name: Mobile CI
 

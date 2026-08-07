@@ -1,0 +1,21 @@
+# RAAD Device Gateway — pipeline index entry, not an executable workflow.
+#
+# Named `jt808-pipeline.yml` from before ADR-0010 renamed the deployable itself
+# (`services/jt808/` -> `services/device-gateway/`, once it grew a second vendor protocol
+# adapter) — left as-is here rather than renamed, since the original JT/T 808 code still lives
+# on inside `services/device-gateway/src/vendors/jt808/` (dormant, kept for a possible future
+# genuinely-compliant vendor); this stub's own filename lagging the rename is disclosed here
+# rather than silently fixed by a rename that isn't otherwise in scope.
+#
+# The actual, executable CI gate for this deployable lives at `.github/workflows/
+# device-gateway-pipeline.yml` — GitHub Actions only ever runs workflows placed under
+# `.github/workflows/`, so a second copy of the same YAML here would just be an unenforced,
+# driftable duplicate. This file exists only as this repo's own organizational placeholder
+# alongside its four siblings (backend/frontend/mobile-pipeline.yml, `jt1078-pipeline.yml`,
+# `infrastructure-pipeline.yml`), so all five deployables' pipeline status can be found in one
+# place — see that real workflow file for the actual install -> test stages and the reasoning
+# behind its current scope (no lint step, no security-scan step — both explained in its own
+# header comment).
+#
+# Status: device-gateway's own CI gate is implemented (Priority 2 "CI hardening" backlog item,
+# `PROJECT_STATUS.md` Section 5, 2026-08-07).
