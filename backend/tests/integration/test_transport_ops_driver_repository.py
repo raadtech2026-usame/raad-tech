@@ -173,6 +173,38 @@ class DriverRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
             result = await uow.drivers.get(DriverId(self.id_generator.new_id()))
         self.assertIsNone(result)
 
+    async def test_get_by_user_id_returns_the_matching_driver(self) -> None:
+        """ADR-0023: `get_by_user_id` is the real DB round trip `MeApplicationService.
+        get_my_driver_profile` depends on to resolve a Principal to its own Driver record —
+        mirrors `SqlAlchemyParentRepository.get_by_user_id`'s identical query shape."""
+        org_id = self.id_generator.new_id()
+        user_id = self.id_generator.new_id()
+        async with self._new_uow() as uow:
+            driver = Driver.register(
+                id=DriverId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                user_id=UserId(user_id),
+                license_no=f"BYUSER-{self.tag}",
+                clock=self.clock,
+            )
+            uow.drivers.add(driver)
+            uow.record_events(driver.pull_domain_events())
+            await uow.commit()
+            self._created_ids.append(str(driver.id))
+            driver_id = driver.id
+
+        async with self._new_uow() as uow:
+            fetched = await uow.drivers.get_by_user_id(UserId(user_id))
+
+        self.assertIsNotNone(fetched)
+        self.assertEqual(str(fetched.id), str(driver_id))
+        self.assertEqual(str(fetched.user_id), user_id)
+
+    async def test_get_by_user_id_returns_none_for_an_unknown_user_id(self) -> None:
+        async with self._new_uow() as uow:
+            result = await uow.drivers.get_by_user_id(UserId(self.id_generator.new_id()))
+        self.assertIsNone(result)
+
 
 @unittest.skipUnless(_db_available(), _SKIP_REASON)
 class DriverPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):

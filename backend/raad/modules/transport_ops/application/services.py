@@ -675,6 +675,18 @@ class DriverApplicationService:
             driver = await self._get_driver_or_raise(uow, query.driver_id)
             return driver_to_dto(driver)
 
+    async def get_driver_by_user_id(
+        self, user_id: str, *, uow: TransportOpsUnitOfWork
+    ) -> DriverDTO | None:
+        """Resolves an authenticated `Principal.user_id` to this module's own `Driver`
+        aggregate — ADR-0023's `/me/driver-profile`. Mirrors `ParentApplicationService.
+        get_parent_by_user_id` exactly: returns `None` rather than raising, since "this
+        authenticated user has no `Driver` profile" is an expected, non-exceptional outcome for
+        a non-driver caller."""
+        async with uow:
+            driver = await uow.drivers.get_by_user_id(UserId(user_id))
+            return driver_to_dto(driver) if driver is not None else None
+
     async def list_drivers(
         self, query: ListDriversQuery, *, uow: TransportOpsUnitOfWork
     ) -> OffsetPage[DriverSummaryDTO]:

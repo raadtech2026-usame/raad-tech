@@ -1,5 +1,14 @@
 """HTTP surface of the `iam` module (C1) — Phase 5.4. `auth_router` mounts at `/api/v1/auth`,
-`users_router` at `/api/v1/users` (`interfaces/http/api_v1.py`).
+`users_router` at `/api/v1/users`, `me_router` at `/api/v1/me` (`interfaces/http/api_v1.py`).
+
+**`me_router` (ADR-0023) — no documented API Contracts surface**, the same "built directly on
+schema authority" posture already established for `roles_router`/`scope_assignments_router`.
+`GET /me`/`/me/students`/`/me/driver-profile` compose `transport_ops`'s own application services
+(`MeApplicationService`, `application/services.py`) to close Known Issue #17 (`PROJECT_STATUS.md`)
+— a Parent/Driver principal previously had no safe way to resolve its own domain identity. Every
+route is self-scoped by `Depends(get_current_user)` alone (no `require_permission` — `parent`/
+`driver` hold none of the relevant `transport_ops.*` permissions today, and adding one wouldn't
+help since these routes never take a client-supplied `parent_id`/`driver_id` in the first place).
 
 Thin controllers only (Backend LLD §16.2): parse the request DTO, call exactly one
 application-service method, return the response DTO. No business logic, no repository/
@@ -49,6 +58,7 @@ from raad.interfaces.http.pagination import OffsetPageResponse, to_offset_page_r
 from raad.modules.iam.api.deps import (
     get_auth_service,
     get_iam_uow,
+    get_me_service,
     get_permission_service,
     get_scoped_iam_uow,
     get_user_service,
@@ -58,6 +68,9 @@ from raad.modules.iam.api.schemas import (
     CreateUserRequest,
     LoginRequest,
     LogoutRequest,
+    MeDriverProfileResponse,
+    MeIdentityResponse,
+    MeStudentResponse,
     PasswordResetResponse,
     PrincipalResponse,
     RefreshRequest,
@@ -89,18 +102,29 @@ from raad.modules.iam.application.queries import (
     GetUserByIdQuery,
     ListSessionsQuery,
     ListUsersQuery,
+    MeDriverProfileDTO,
+    MeIdentityDTO,
+    MeStudentDTO,
     SessionDTO,
     UserDTO,
 )
 from raad.modules.iam.application.services import (
     AuthApplicationService,
+    MeApplicationService,
     PermissionApplicationService,
     UserApplicationService,
 )
+# ADR-0023: /me/students, /me/driver-profile resolve a TransportOpsUnitOfWork the same way
+# platform_audit.api.routers already imports another module's own api/deps.py function
+# directly (get_billing_uow from billing.api.deps) — an established, legal cross-module
+# api-layer wiring pattern, not a new one invented here.
+from raad.modules.transport_ops.api.deps import get_transport_ops_uow
+from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 
 auth_router = APIRouter()
 users_router = APIRouter()
 roles_router = APIRouter()
+me_router = APIRouter()
 
 
 def _parse_role(value: str) -> Role:
@@ -585,3 +609,99 @@ async def revoke_role_permission(
         role=_parse_role(role), permission=body.permission, actor=principal
     )
     await permission_service.revoke_role_permission(command, uow=uow)
+
+
+def _me_identity_dto_to_response(dto: MeIdentityDTO) -> MeIdentityResponse:
+    return MeIdentityResponse(
+        user_id=dto.user_id,
+        role=dto.role.lower(),
+        organization_id=dto.organization_id,
+        parent_id=dto.parent_id,
+        driver_id=dto.driver_id,
+    )
+
+
+def _me_student_dto_to_response(dto: MeStudentDTO) -> MeStudentResponse:
+    return MeStudentResponse(
+        student_id=dto.student_id,
+        full_name=dto.full_name,
+        status=dto.status,
+        relationship=dto.relationship,
+        is_primary=dto.is_primary,
+    )
+
+
+def _me_driver_profile_dto_to_response(
+    dto: MeDriverProfileDTO,
+) -> MeDriverProfileResponse:
+    return MeDriverProfileResponse(
+        driver_id=dto.driver_id,
+        organization_id=dto.organization_id,
+        license_no=dto.license_no,
+        status=dto.status,
+    )
+
+
+@me_router.get(
+    "",
+    response_model=MeIdentityResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Resolve the current principal's own cross-module identity",
+    description=(
+        "ADR-0023. No documented API Contracts route — self-scoped only (`Depends"
+        "(get_current_user)`, no RBAC permission), mirroring `GET /auth/me`'s existing posture. "
+        "`parent_id`/`driver_id` are populated only for the matching role; every other role's "
+        "identity is already fully captured by `organization_id` alone."
+    ),
+)
+async def get_my_identity(
+    principal: Principal = Depends(get_current_user),
+    me_service: MeApplicationService = Depends(get_me_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> MeIdentityResponse:
+    dto = await me_service.get_my_identity(principal, uow=uow)
+    return _me_identity_dto_to_response(dto)
+
+
+@me_router.get(
+    "/students",
+    response_model=list[MeStudentResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List the current Parent principal's own linked children",
+    description=(
+        "ADR-0023 — closes `PROJECT_STATUS.md` Known Issue #17. Resolves the caller's own "
+        "`Parent` record from `Principal.user_id` server-side; never accepts a `parent_id` "
+        "anywhere on this route. Raises 404 (not 403) when no `Parent` record links to this "
+        "user, matching this codebase's existing 404-over-403 posture for personal-ownership "
+        "routes."
+    ),
+)
+async def get_my_students(
+    principal: Principal = Depends(get_current_user),
+    me_service: MeApplicationService = Depends(get_me_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[MeStudentResponse]:
+    results = await me_service.get_my_students(principal, uow=uow)
+    return [_me_student_dto_to_response(dto) for dto in results]
+
+
+@me_router.get(
+    "/driver-profile",
+    response_model=MeDriverProfileResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Resolve the current Driver principal's own Driver profile",
+    description=(
+        "ADR-0023 — closes `PROJECT_STATUS.md` Known Issue #17's parallel Driver gap (no way "
+        "to resolve `driver_id` to filter `GET /trips?filter[driver_id]=...` to 'assigned to "
+        "me'). Resolves the caller's own `Driver` record from `Principal.user_id` server-side; "
+        "never accepts a `driver_id` anywhere on this route. Raises 404 when no `Driver` "
+        "record links to this user."
+    ),
+)
+async def get_my_driver_profile(
+    principal: Principal = Depends(get_current_user),
+    me_service: MeApplicationService = Depends(get_me_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> MeDriverProfileResponse:
+    dto = await me_service.get_my_driver_profile(principal, uow=uow)
+    return _me_driver_profile_dto_to_response(dto)

@@ -146,6 +146,11 @@ class InMemoryDriverRepository(DriverRepository):
     async def get(self, driver_id: DriverId) -> Driver | None:
         return self.by_id.get(str(driver_id))
 
+    async def get_by_user_id(self, user_id) -> Driver | None:
+        return next(
+            (d for d in self.by_id.values() if str(d.user_id) == str(user_id)), None
+        )
+
     def add(self, driver: Driver) -> None:
         self.by_id[str(driver.id)] = driver
 

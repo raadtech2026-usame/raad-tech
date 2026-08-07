@@ -47,6 +47,7 @@ from raad.core.workers.scheduler import LockPort, RedisLockPort
 from raad.modules.iam.application.ports import IamUnitOfWork, SessionCapPort
 from raad.modules.iam.application.services import (
     AuthApplicationService,
+    MeApplicationService,
     PermissionApplicationService,
     UserApplicationService,
 )
@@ -707,6 +708,22 @@ def build_container(settings: Settings) -> Container:
                 device_service=container.resolve(DeviceApplicationService),
                 billing_service=container.resolve(BillingApplicationService),
                 health_check_service=container.resolve(HealthCheckService),
+            ),
+        )
+
+    # MeApplicationService (ADR-0023) — bound last, same reasoning as
+    # PlatformStatsApplicationService immediately above: depends on
+    # ParentApplicationService/DriverApplicationService/StudentParentApplicationService, all
+    # bound only inside the `if settings.db.url:` block above (the first two require
+    # UserProvisioningPort, itself DB-backed). Re-checks `settings.db.url` rather than assuming
+    # they're present — the /me routes have no meaning without a database regardless.
+    if settings.db.url:
+        container.bind_singleton(
+            MeApplicationService,
+            MeApplicationService(
+                parent_service=container.resolve(ParentApplicationService),
+                driver_service=container.resolve(DriverApplicationService),
+                student_parent_service=container.resolve(StudentParentApplicationService),
             ),
         )
 

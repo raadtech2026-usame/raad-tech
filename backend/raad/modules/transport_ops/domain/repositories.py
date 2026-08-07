@@ -230,6 +230,14 @@ class DriverRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_by_user_id(self, user_id: UserId) -> Driver | None:
+        """Resolves an authenticated `Principal.user_id` (an `iam.User`) to this module's own
+        `Driver` aggregate id — ADR-0023's `/me/driver-profile`. Mirrors `ParentRepository.
+        get_by_user_id` exactly: not a uniqueness-backing lookup (no `UX` on `user_id`), a plain
+        finder."""
+        raise NotImplementedError
+
+    @abstractmethod
     def add(self, driver: Driver) -> None:
         """Persistence of changes is flushed by the Unit of Work, not the repository (§7.1)."""
         raise NotImplementedError

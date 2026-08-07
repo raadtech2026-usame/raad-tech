@@ -96,6 +96,47 @@ def refresh_token_to_session_dto(token: RefreshToken) -> SessionDTO:
     )
 
 
+@dataclass(frozen=True)
+class MeIdentityDTO:
+    """ADR-0023: `GET /me`'s canonical cross-module identity resolution. `parent_id`/
+    `driver_id` are populated only when `role` is `PARENT`/`DRIVER` and a linked `transport_ops`
+    row actually resolves — every other role's domain identity is already fully captured by
+    `organization_id` alone (Org Admin, Founder, Regional Manager, Support Staff, Finance Staff
+    have no second aggregate distinct from `iam.User`), so no further lookup applies to them."""
+
+    user_id: str
+    role: str
+    organization_id: str | None
+    parent_id: str | None
+    driver_id: str | None
+
+
+@dataclass(frozen=True)
+class MeStudentDTO:
+    """ADR-0023: one row of `GET /me/students` — mirrors `transport_ops.application.queries.
+    StudentForParentDTO` exactly (same fields, same source query), redeclared here rather than
+    imported so `iam`'s own HTTP contract stays self-contained (the same reasoning `platform_
+    audit.PlatformStatsResponse` already applies: an aggregating module owns its own response
+    shape rather than re-exporting a dependency's)."""
+
+    student_id: str
+    full_name: str
+    status: str
+    relationship: str | None
+    is_primary: bool
+
+
+@dataclass(frozen=True)
+class MeDriverProfileDTO:
+    """ADR-0023: `GET /me/driver-profile`'s response — the caller's own `Driver` aggregate,
+    resolved server-side from `Principal.user_id` alone, never a client-supplied `driver_id`."""
+
+    driver_id: str
+    organization_id: str
+    license_no: str
+    status: str
+
+
 def user_to_dto(user: User) -> UserDTO:
     """Shared mapper — the only place a `User` aggregate is projected into its DTO, used by
     both `UserApplicationService` and `AuthApplicationService` (`services.py`)."""

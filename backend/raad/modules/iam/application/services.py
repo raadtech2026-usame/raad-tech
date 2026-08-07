@@ -34,7 +34,7 @@ from raad.core.pagination import OffsetPage
 from raad.core.policies.session_limit import SessionLimitPolicy
 from raad.core.security.claims import TokenType
 from raad.core.security.user_agent import parse_device_label
-from raad.core.tenancy.principal import Role
+from raad.core.tenancy.principal import Principal, Role
 from raad.core.security.password_hashing import PasswordHasher
 from raad.core.security.password_policy import PasswordPolicy
 from raad.core.security.tokens import TokenService
@@ -61,6 +61,9 @@ from raad.modules.iam.application.queries import (
     GetUserByIdQuery,
     ListSessionsQuery,
     ListUsersQuery,
+    MeDriverProfileDTO,
+    MeIdentityDTO,
+    MeStudentDTO,
     SessionDTO,
     UserDTO,
     UserStatsDTO,
@@ -80,6 +83,19 @@ from raad.modules.iam.domain.value_objects import (
     RefreshTokenId,
     UserId,
     UserStatus,
+)
+
+# ADR-0023: MeApplicationService composes transport_ops's own application-layer services only
+# (never its domain/infra) — the same legal cross-module composition
+# platform_audit.PlatformStatsApplicationService (ADR-0020) already established, confirmed by
+# tests/architecture/test_module_boundaries.py Rule 1 (application-layer imports are unflagged;
+# only domain/infra reaches are).
+from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
+from raad.modules.transport_ops.application.queries import ListStudentsForParentQuery
+from raad.modules.transport_ops.application.services import (
+    DriverApplicationService,
+    ParentApplicationService,
+    StudentParentApplicationService,
 )
 
 
@@ -702,3 +718,99 @@ class PermissionApplicationService:
     ) -> frozenset[str]:
         async with uow:
             return await uow.role_permissions.list_permissions_for_role(role)
+
+
+class MeApplicationService:
+    """ADR-0023: `GET /me`, `GET /me/students`, `GET /me/driver-profile` — the canonical
+    self-service identity-resolution capability behind Known Issue #17's fix. Composes
+    `transport_ops`'s own application services only (never its `domain`/`infra`), the same
+    legal cross-module shape `platform_audit.PlatformStatsApplicationService` (ADR-0020) already
+    established. Every method takes a `Principal` (or its bare `user_id`) as its *only* identity
+    input — there is no `parent_id`/`driver_id` parameter anywhere in this class for a caller to
+    supply, by construction, not by a runtime check bolted on afterward."""
+
+    def __init__(
+        self,
+        *,
+        parent_service: ParentApplicationService,
+        driver_service: DriverApplicationService,
+        student_parent_service: StudentParentApplicationService,
+    ) -> None:
+        self._parent_service = parent_service
+        self._driver_service = driver_service
+        self._student_parent_service = student_parent_service
+
+    async def get_my_identity(
+        self, principal: Principal, *, uow: TransportOpsUnitOfWork
+    ) -> MeIdentityDTO:
+        """Always resolves — `user_id`/`role`/`organization_id` come straight from the
+        already-verified `Principal`, no DB read needed for them. `parent_id`/`driver_id` are
+        resolved only for the role that could possibly have one, avoiding two pointless queries
+        for every other role (Founder/Regional Manager/Support Staff/Finance Staff/Org Admin)."""
+        parent_id: str | None = None
+        driver_id: str | None = None
+        if principal.role == Role.PARENT:
+            parent = await self._parent_service.get_parent_by_user_id(
+                principal.user_id, uow=uow
+            )
+            parent_id = parent.id if parent is not None else None
+        elif principal.role == Role.DRIVER:
+            driver = await self._driver_service.get_driver_by_user_id(
+                principal.user_id, uow=uow
+            )
+            driver_id = driver.id if driver is not None else None
+        return MeIdentityDTO(
+            user_id=principal.user_id,
+            role=principal.role.value,
+            organization_id=principal.org_id,
+            parent_id=parent_id,
+            driver_id=driver_id,
+        )
+
+    async def get_my_students(
+        self, principal: Principal, *, uow: TransportOpsUnitOfWork
+    ) -> list[MeStudentDTO]:
+        """`GET /me/students`. Resolves the caller's own `Parent` row from `principal.user_id`
+        first — never a client-supplied `parent_id` — then reuses the existing, already-tested
+        `StudentParentApplicationService.list_students_for_parent` unchanged with that
+        server-resolved id. Raises `NotFoundError` (404, not 403) when no `Parent` row links to
+        this user — covers both "this role has no such profile" and "a data inconsistency",
+        with one honest code path rather than branching on `principal.role` first."""
+        parent = await self._parent_service.get_parent_by_user_id(
+            principal.user_id, uow=uow
+        )
+        if parent is None:
+            raise NotFoundError("No Parent profile is linked to this account.")
+        results = await self._student_parent_service.list_students_for_parent(
+            ListStudentsForParentQuery(parent_id=parent.id), uow=uow
+        )
+        return [
+            MeStudentDTO(
+                student_id=dto.student_id,
+                full_name=dto.full_name,
+                status=dto.status,
+                relationship=dto.relationship,
+                is_primary=dto.is_primary,
+            )
+            for dto in results
+        ]
+
+    async def get_my_driver_profile(
+        self, principal: Principal, *, uow: TransportOpsUnitOfWork
+    ) -> MeDriverProfileDTO:
+        """`GET /me/driver-profile`. Resolves the caller's own `Driver` row from
+        `principal.user_id` — never a client-supplied `driver_id` — closing the mobile Driver
+        client's own "learn my own `driver_id` to filter `GET /trips?filter[driver_id]=...`"
+        gap (Known Issue #17). Raises `NotFoundError` (404) when no `Driver` row links to this
+        user, the same posture as `get_my_students` above."""
+        driver = await self._driver_service.get_driver_by_user_id(
+            principal.user_id, uow=uow
+        )
+        if driver is None:
+            raise NotFoundError("No Driver profile is linked to this account.")
+        return MeDriverProfileDTO(
+            driver_id=driver.id,
+            organization_id=driver.organization_id,
+            license_no=driver.license_no,
+            status=driver.status,
+        )

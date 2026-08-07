@@ -413,6 +413,13 @@ class SqlAlchemyDriverRepository(
         row = await self.get_by_id(str(driver_id))
         return self._track(row)
 
+    async def get_by_user_id(self, user_id: UserId) -> Driver | None:
+        statement = select(DriverModel).where(
+            DriverModel.user_id == str(user_id), DriverModel.deleted_at.is_(None)
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
+
     def add(self, driver: Driver) -> None:
         model = driver_to_model(driver)
         super().add(model)

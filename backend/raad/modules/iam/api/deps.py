@@ -14,6 +14,7 @@ from raad.interfaces.http.deps import get_container, get_scope
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.services import (
     AuthApplicationService,
+    MeApplicationService,
     PermissionApplicationService,
     UserApplicationService,
 )
@@ -72,3 +73,10 @@ def get_permission_service(
     container: Container = Depends(get_container),
 ) -> PermissionApplicationService:
     return container.resolve(PermissionApplicationService)
+
+
+def get_me_service(
+    container: Container = Depends(get_container),
+) -> MeApplicationService:
+    """ADR-0023."""
+    return container.resolve(MeApplicationService)

@@ -31,7 +31,12 @@ from raad.modules.fleet_device.api.routers import (
     devices_router,
     vehicles_router,
 )
-from raad.modules.iam.api.routers import auth_router, roles_router, users_router
+from raad.modules.iam.api.routers import (
+    auth_router,
+    me_router,
+    roles_router,
+    users_router,
+)
 from raad.modules.notifications.api.routers import notifications_router
 from raad.modules.organization.api.routers import (
     organizations_router,
@@ -67,6 +72,9 @@ api_router.include_router(users_router, prefix="/users", tags=["users"])
 # Priority 1 Item 6 (PROJECT_STATUS.md) — RBAC role/permission matrix management, no documented
 # API Contracts surface (see roles_router's own module-level comment in iam/api/routers.py).
 api_router.include_router(roles_router, prefix="/roles", tags=["users"])
+# ADR-0023 — canonical self-service identity resolution (closes Known Issue #17), no documented
+# API Contracts surface (see me_router's own module-level comment in iam/api/routers.py).
+api_router.include_router(me_router, prefix="/me", tags=["me"])
 
 api_router.include_router(
     organizations_router, prefix="/organizations", tags=["organizations"]

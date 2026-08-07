@@ -143,3 +143,36 @@ class RolePermissionRequest(BaseModel):
 class RolePermissionsResponse(BaseModel):
     role: str
     permissions: list[str]
+
+
+class MeIdentityResponse(BaseModel):
+    """ADR-0023: `GET /me`. `parent_id`/`driver_id` are `null` unless `role` is `PARENT`/
+    `DRIVER` and a linked `transport_ops` row actually resolves — every other role's domain
+    identity is already fully captured by `organization_id` alone."""
+
+    user_id: str
+    role: str
+    organization_id: str | None = None
+    parent_id: str | None = None
+    driver_id: str | None = None
+
+
+class MeStudentResponse(BaseModel):
+    """ADR-0023: one row of `GET /me/students` — the caller's own linked children, resolved
+    server-side from `Principal.user_id`. Never accepts a `parent_id` anywhere on this route."""
+
+    student_id: str
+    full_name: str
+    status: str
+    relationship: str | None = None
+    is_primary: bool
+
+
+class MeDriverProfileResponse(BaseModel):
+    """ADR-0023: `GET /me/driver-profile`. Never accepts a `driver_id` anywhere on this route —
+    resolved server-side from `Principal.user_id` alone."""
+
+    driver_id: str
+    organization_id: str
+    license_no: str
+    status: str
