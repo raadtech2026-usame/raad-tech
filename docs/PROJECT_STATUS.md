@@ -358,8 +358,8 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Dependencies:** Video, Reporting (backend halves already exist; only the frontend consumers are missing).
 
 #### CI/CD — 🟡 Partial
-- **Implemented:** `.github/workflows/backend-pipeline.yml` — real, runs unit/architecture/integration tests against live Postgres+Redis service containers on every backend PR.
-- **Missing:** No lint/security-scan gate, no deploy step, no frontend/mobile/device-gateway CI at all (`ci-cd/pipelines/*.yml` are empty placeholders except the backend one, which just points at the real workflow).
+- **Implemented:** `.github/workflows/backend-pipeline.yml` — real, runs unit/architecture/integration tests against live Postgres+Redis service containers on every backend PR. `mobile-pipeline.yml` (Priority 1 Item 9). **New (2026-08-07, Priority 2 "CI hardening"):** `frontend-pipeline.yml` (`npm ci` → `npm run build`, which runs `tsc -b` type-check before `vite build`, → `npm test -- --run`) and `device-gateway-pipeline.yml` (`pip install -e .` → `python -m compileall` → `python -m unittest discover`) — both mirror `backend-pipeline.yml`'s exact build→test-only scope discipline. The exact commands each workflow runs were run directly in this sandbox against the current trees before either file was written: frontend 392/392 tests + a clean production build; device-gateway 333/333 tests. All four `ci-cd/pipelines/*.yml` index stubs (backend/mobile/frontend/jt808) now correctly point at their real workflow, closing a real, pre-existing drift where mobile's own stub had lagged empty even after `mobile-pipeline.yml` itself was built.
+- **Missing:** No lint/security-scan gate anywhere (`ruff`/`mypy`/`eslint`/a security scanner are all still "not yet formally approved" dependencies, `.claude/rules/workflow.md` #1/#2 — deliberately not invented speculatively), no deploy step, no `jt1078`/`infrastructure` CI (neither deployable/target exists yet). Not live-tested against a real GitHub Actions run in this sandbox (no way to trigger one here) — the same disclosed "mechanism verified locally, not via a live CI run" posture every other workflow in this repository already carries.
 - **Production blocker?** No, but blocks safe automated deploys.
 - **Dependencies:** None.
 
@@ -500,11 +500,33 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
   slot at the user's request — see Section 8/9).
 - ~~Session cap (ADR-0019)~~ — ✅ **Complete** (2026-08-04, done ahead of its Priority 2 slot at
   the user's request — see Section 8/9).
-- Reporting renderer (PDF/Excel) *(~1 week)*
-- Load testing — plan exists, zero scripts *(3–5 days)*
-- Log shipping / aggregation *(1–2 days)*
-- Secrets-manager integration, replacing hand-edited `.env` *(2–3 days)*
-- CI hardening — lint/security scan + frontend/mobile/device-gateway CI *(2–3 days)*
+- Reporting renderer (PDF/Excel) *(~1 week)* — **not started, genuinely blocked**: picking a
+  library needs `.claude/rules/workflow.md` #1/#2 explicit go-ahead before installing anything,
+  *and* actual report content generation is separately blocked on the still-unresolved
+  `ReportDefinition`/`report_definitions` documentation gap (Section 10, the Reporting-Phase-17
+  finding) — binding a renderer without that would mean inventing report content no document
+  specifies, not implementing an approved design.
+- Load testing — plan exists, zero scripts *(3–5 days)* — **not started, genuinely blocked**:
+  `testing/load/README.md` names three structural blockers (no deployed environment to test
+  against, §13.1's own NFR targets are explicitly provisional pending doc-owner sign-off, no
+  load-testing tool is an approved dependency) — writing scripts against unconfirmed targets
+  would silently promote a proposal to a requirement, per that file's own reasoning.
+- Log shipping / aggregation *(1–2 days)* — **not started, genuinely blocked**: needs a
+  log-aggregation destination choice (Section 3's own "Logging" row) — a real design fork, not
+  yet resolved.
+- Secrets-manager integration, replacing hand-edited `.env` *(2–3 days)* — **not started,
+  genuinely blocked**: needs a real external secrets-manager service/account (Vault, AWS Secrets
+  Manager, or similar) this engagement cannot obtain.
+- ~~CI hardening~~ — 🟡 **Partial** (2026-08-07). New `frontend-pipeline.yml`/
+  `device-gateway-pipeline.yml` (`.github/workflows/`) — build→test only, mirroring
+  `backend-pipeline.yml`'s exact scope discipline; the exact commands each runs were verified
+  passing directly in this sandbox first (frontend 392/392 tests + clean build; device-gateway
+  333/333 tests). All four now-real `ci-cd/pipelines/*.yml` index stubs updated to match,
+  closing a real pre-existing drift (mobile's stub had lagged empty). **Still missing**:
+  lint/security-scan gate (`ruff`/`mypy`/`eslint`/a scanner are all still unapproved
+  dependencies — deliberately not invented), a deploy step, and `jt1078`/`infrastructure` CI
+  (neither deployable/target exists yet). See Section 3's CI/CD row and Section 8 for the full
+  writeup.
 - `/docs` gating for production *(&lt; 1 day)*
 - SOS/overspeed alarm mapping + notification triggers *(3–5 days)*
 
@@ -570,13 +592,108 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — ADR-0023 (Canonical `/me` Self-Service Identity Resolution) just landed
-(2026-08-07)**, closing Known Issue #17 at the user's explicit direction: "Implement Known Issue
-#17 by introducing a single canonical self-service identity API rather than isolated endpoints."
-Per that direction, an ADR (`docs/architecture/adr/0023-canonical-me-identity-resolution.md`) was
-written and accepted before any implementation, per `.claude/rules/workflow.md` #8. See the
+**Nothing — CI hardening (frontend + device-gateway CI, Priority 2 backlog item) just landed
+(2026-08-07)**, picked per the Development Rules process (Section 14): re-verified the
+repository and every Priority 1 item (1–9), confirmed Known Issue #17/ADR-0023 already committed,
+then walked Section 5's Priority 2 backlog in listed order. Five items (Live video/JT1078,
+Reporting renderer, Load testing, Log shipping, Secrets-manager integration) were each confirmed
+genuinely blocked — either an unresolved architecture/documentation gap, a new-dependency
+decision requiring `.claude/rules/workflow.md` #1/#2 explicit go-ahead, or a real external
+account/service this engagement cannot obtain — and skipped with reasons recorded in Section 5
+itself, not silently passed over. CI hardening was the first Priority 2 item with no such
+blocker: frontend and device-gateway CI needed zero new dependencies (both already have a full,
+passing test suite using only already-approved tooling) and zero external accounts. See the
 writeup immediately below this note for the full detail. Section 2's Mobile row and similar minor
 doc staleness are still outstanding, not yet corrected — noted, not forgotten.
+
+**CI hardening — frontend + device-gateway CI (2026-08-07, Priority 2 backlog item,
+`PROJECT_STATUS.md` Section 5).** `ci-cd/pipelines/*.yml` had five placeholder index stubs;
+`.github/workflows/` had only `backend-pipeline.yml` and `mobile-pipeline.yml` as real, executable
+gates — `frontend`/`device-gateway` had none, despite both deployables having a full, currently
+passing test suite. No new ADR needed — this is CI/tooling wiring, not business logic or a
+bounded-context change, the same "no ADR" posture `backend-pipeline.yml`/`mobile-pipeline.yml`
+themselves were built under.
+
+**Why the other five Priority 2 items were skipped, not silently passed over:**
+1. **Live video/JT1078** — no runtime decision exists (`.claude/rules/jt1078.md`: "the runtime
+   isn't decided"), a genuine open architecture question, not a coding gap; 3–6 weeks of scope
+   and likely new media-server dependencies. Starting this would mean inventing an architecture
+   decision, not implementing an approved one.
+2. **Reporting renderer** — two independent blockers, not one: picking a PDF/Excel library needs
+   `.claude/rules/workflow.md` #1/#2's explicit go-ahead before installing anything, *and*
+   report *content* generation is separately blocked on the still-unresolved `ReportDefinition`/
+   `report_definitions` documentation gap (Section 10) — binding a renderer without that would
+   mean inventing report content no document specifies.
+3. **Load testing** — `testing/load/README.md` (already on record, not written new this turn)
+   names three structural blockers: no deployed environment to test against, §13.1's own NFR
+   targets are explicitly provisional pending doc-owner confirmation, and no load-testing tool
+   is an approved dependency. Writing scripts against unconfirmed targets would silently promote
+   a proposal to a requirement.
+4. **Log shipping/aggregation** — needs a log-aggregation destination choice (Section 3's own
+   "Logging" row already names this as the blocking dependency) — an unresolved design fork.
+5. **Secrets-manager integration** — needs a real external secrets-manager service/account
+   (Vault, AWS Secrets Manager, or similar) this engagement cannot obtain.
+
+**What was actually built.** New `.github/workflows/frontend-pipeline.yml`: checkout →
+`actions/setup-node@v4` (Node 20, `npm` cache keyed off `frontend/package-lock.json`) → `npm ci`
+→ `npm run build` (runs `tsc -b` type-check before `vite build` — a type error is still a hard
+CI failure with no separate lint step needed) → `npm test -- --run` (Vitest). New
+`.github/workflows/device-gateway-pipeline.yml`: checkout → `actions/setup-python@v5` (3.11,
+matching `pyproject.toml`'s own `requires-python`) → `pip install -e .` → `python -m compileall`
+→ `python -m unittest discover -s tests`. Both mirror `backend-pipeline.yml`'s exact scope
+discipline (documented in each file's own header comment, matching that file's own wording
+almost verbatim): build/install → test only, **no lint step** (frontend has no `eslint` config
+anywhere — confirmed by checking for `.eslintrc*`/`eslint.config.*`, neither exists; backend/
+device-gateway's own `ruff`/`mypy` are still "not yet formally approved" per `backend/
+pyproject.toml`'s own tracked-as-open-item comment) and **no security-scan step** (no scanning
+tool is an approved dependency anywhere in this repository). Neither gap is silently invented
+around — both are named explicitly in the new workflows' own header comments as the honest
+remaining scope of "CI hardening," matching this backlog item's own bullet in Section 5.
+
+**A real, pre-existing documentation drift was found and fixed while touching this exact area,
+not left for a future session to rediscover**: `ci-cd/pipelines/backend-pipeline.yml`'s own
+"Status" comment still said "The other four siblings remain empty — none of those deployables
+(frontend, mobile, jt808, jt1078, infrastructure) exist in this repository yet" — false for
+`mobile` since Priority 1 Item 9 shipped `mobile-pipeline.yml` as a real workflow, and
+`.github/workflows/mobile-pipeline.yml`'s own header comment independently repeated the same
+stale claim ("still an empty placeholder, like its frontend/jt808/jt1078/infrastructure
+siblings"). Both corrected, and `ci-cd/pipelines/mobile-pipeline.yml`/`frontend-pipeline.yml`/
+`jt808-pipeline.yml` (all previously 0-byte files) are now populated with the same
+"organizational index, see the real workflow" comment `backend-pipeline.yml`'s own stub already
+established — closing this drift across all four now-real deployables' index entries in one
+pass, not just the two this item's own scope strictly required. `jt808-pipeline.yml`'s filename
+itself is left as-is (not renamed to `device-gateway-pipeline.yml`) — its own new comment
+explains why: the original JT/T 808 code still lives on inside `services/device-gateway/src/
+vendors/jt808/` (dormant, ADR-0009/0010), so the name isn't wrong, just historically lagging;
+renaming it wasn't otherwise in this item's scope.
+
+**Verification — every command the two new workflows run was executed directly in this sandbox
+against the current tree, before either YAML file was written, not assumed to pass:**
+frontend: `npm test -- --run` → 392/392 tests passed (63 files); `npm run build` → clean
+production build (`tsc -b` type-check + `vite build`, no errors, only a pre-existing informational
+chunk-size warning unrelated to this change). device-gateway: `python -m compileall -q src tests`
+→ clean; `python -m unittest discover -s tests -p "test_*.py" -v` → 333/333 tests passed;
+`pip install -e .` → clean, no errors. Backend's own unit (1330) and architecture-gate (10) suites
+were re-run as a final sanity check (untouched by this change — only YAML/comment files were
+edited on the backend side) and still pass with zero regressions. All four new/edited workflow
+YAML files (`frontend-pipeline.yml`, `device-gateway-pipeline.yml`, plus the edited
+`backend-pipeline.yml`/`mobile-pipeline.yml` comments) were structurally validated with a real
+YAML parser (`yaml.safe_load`), confirming correct `on`/`jobs`/`steps` shape. **Not live-tested
+against a real GitHub Actions run** — no way to trigger one in this sandbox — the same disclosed
+"mechanism verified locally, not via live CI" posture every other workflow file in this
+repository already carries (and the same posture `backend-pipeline.yml`'s own header comment
+already modeled for this exact kind of gap).
+
+**No new automated test file was added for the CI configuration itself.** Considered and
+declined, not overlooked: `.claude/rules/testing.md` #1/#2 fixes this repository's test
+taxonomy to `backend/tests/{unit,integration,contract,architecture}/` (none of which fit "does a
+GitHub Actions YAML file have the right shape" — none of these files touch the `raad` Python
+package) and `testing/{e2e,load,fixtures}/` (reserved for flows spanning more than one
+deployable, not CI-config shape checks). Inventing a new test category for this one narrow
+concern would be a larger, less-precedented addition than the two YAML files it would test —
+the one-off local verification above (the actual commands, actually run, actually passing) is
+the same level of rigor already accepted for every prior "mechanism verified, not live-CI-tested"
+infra item in this program (Docker Compose overlays, Redis hardening, TLS).
 
 **ADR-0023 — Canonical `/me` Self-Service Identity Resolution (2026-08-07).** Closes Known Issue
 #17 (§10 below): neither `parent` nor `driver` had any safe way to resolve its own domain
@@ -1165,15 +1282,18 @@ new Known Issue #16. 1236 unit + 10 architecture tests pass with zero regression
   Project Control Center (Sections 2, 6, 7, 12, 13).
 
 **Next Task:**
-**Nothing prescribed — awaiting user direction.** Known Issue #17 is now resolved (ADR-0023,
-above). Every Priority 1 item (1–9) is now either complete, mechanism-complete pending only a
-genuinely external credential/account, or (Mobile, Item 9) built-but-unverified for the same
-external-SDK reason. Real remaining candidates, none blocking on this engagement's own effort:
-wiring the new `/me` endpoints into the mobile Parent/Driver screens (still blocked on no Flutter
-SDK in this sandbox to verify against); Reporting's `ReportRendererPort` (a PDF/Excel engine
-choice); the Priority 2 backlog (load testing, log shipping, secrets-manager integration, CI
-hardening, `/docs` gating, SOS/overspeed alarm mapping — see Section 5). Per Section 14's rules,
-don't start any of these without the user's confirmation.
+**Nothing prescribed — awaiting user direction.** Known Issue #17 (ADR-0023) and CI hardening's
+frontend/device-gateway half are both now resolved. Every Priority 1 item (1–9) is complete or
+mechanism-complete pending only a genuinely external credential/account/SDK. Of Priority 2:
+CI hardening is partial (lint/security-scan gate still needs a new-tool approval); Live video,
+Reporting, Load testing, Log shipping, and Secrets-manager integration are all genuinely blocked
+(see Section 5 for each one's specific reason — an unresolved architecture/documentation gap, a
+new-dependency decision, or a real external account this engagement cannot obtain). The one
+remaining **fully actionable, no-new-dependency, no-external-account** Priority 2 item is
+`/docs` gating for production (&lt; 1 day) — the next candidate if this session continues.
+Mobile's `/me`-endpoint wiring remains open too, still blocked on no Flutter SDK in this sandbox
+to verify against. Per Section 14's rules, don't start any of these without the user's
+confirmation.
 
 ---
 
@@ -1181,6 +1301,20 @@ don't start any of these without the user's confirmation.
 
 Reverse-chronological (most recent first):
 
+- **CI hardening — frontend + device-gateway CI** completed (Priority 2 backlog item). New
+  `.github/workflows/frontend-pipeline.yml` (`npm ci` → `npm run build` → `npm test -- --run`)
+  and `device-gateway-pipeline.yml` (`pip install -e .` → `compileall` →
+  `unittest discover`), both build→test-only mirroring `backend-pipeline.yml`'s scope discipline
+  — no lint/security-scan step (unapproved tooling, not invented). Every command verified
+  passing locally first (frontend 392/392 + clean build; device-gateway 333/333). Fixed a real,
+  pre-existing drift: `mobile-pipeline.yml`'s own header comment and `ci-cd/pipelines/
+  backend-pipeline.yml`'s status note both still claimed mobile's CI didn't exist yet, though it
+  had since Priority 1 Item 9 — corrected, and all four now-real deployables' `ci-cd/pipelines/`
+  index stubs populated to match. Five other Priority 2 items (Live video, Reporting, Load
+  testing, Log shipping, Secrets-manager) were evaluated and skipped with reasons recorded in
+  Section 5 — each genuinely blocked (unresolved architecture/documentation gap, a
+  new-dependency decision, or a real external account this engagement cannot obtain), not
+  silently passed over. See Section 8 for the full writeup.
 - **ADR-0023 — Canonical `/me` Self-Service Identity Resolution** completed — closes Known Issue
   #17. New `GET /me`/`GET /me/students`/`GET /me/driver-profile` (`iam/api/routers.py`, mounted
   at `/api/v1/me`), backed by a new `MeApplicationService` (`iam`) composing `transport_ops`'s

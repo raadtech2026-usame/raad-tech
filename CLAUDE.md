@@ -2199,3 +2199,45 @@ change against, the same disclosed Mobile testing limitation Priority 1 Item 9 a
 The backend capability itself is real, tested, and live-verified against Postgres; the client
 that would consume it is a follow-up. `PROJECT_STATUS.md`'s Known Issue #17 and Section 8 carry
 the full audit trail.
+
+## CI Hardening — Frontend + Device Gateway CI (2026-08-07)
+
+`PROJECT_STATUS.md` Development Rules (Section 14) — re-verify the repository, read `CLAUDE.md`,
+determine the highest-priority unfinished work, continue only the next approved roadmap item —
+led here: every Priority 1 item was complete or externally blocked, so the next actionable item
+was Priority 2's "CI hardening" backlog entry, the first of six remaining Priority 2 items with
+no genuine blocker (the other five — Live video/JT1078, Reporting renderer, Load testing, Log
+shipping, Secrets-manager integration — are each blocked on an unresolved architecture/
+documentation gap, a new-dependency decision needing `.claude/rules/workflow.md` #1/#2's
+explicit go-ahead, or a real external account, and are recorded as such in `PROJECT_STATUS.md`
+Section 5 rather than silently skipped). No new ADR — this is CI/tooling wiring, not business
+logic or a bounded-context change, the same posture `backend-pipeline.yml`/`mobile-pipeline.yml`
+were themselves built under.
+
+New `.github/workflows/frontend-pipeline.yml` and `device-gateway-pipeline.yml`, both mirroring
+`backend-pipeline.yml`'s exact scope discipline (build/install → test only, no lint/security-scan
+gate — `eslint` has no config anywhere in `frontend/` yet, and `ruff`/`mypy` remain "not yet
+formally approved" per `backend/pyproject.toml`'s own tracked-as-open-item comment, so neither is
+invented here) and using only already-approved tooling (`npm`/Vitest for frontend, stdlib
+`unittest` + the already-approved `redis>=5.0` for device-gateway) — zero new dependencies, zero
+new external accounts. Every command each workflow runs was executed directly in this sandbox
+against the current tree before either file was written: frontend 392/392 tests + a clean
+production build; device-gateway 333/333 tests. Backend's own unit (1330) and architecture-gate
+(10) suites were re-run as a final regression check (untouched by this change) and still pass.
+
+A real, pre-existing documentation drift was found and fixed in the same pass: `mobile-pipeline.
+yml`'s own header comment and `ci-cd/pipelines/backend-pipeline.yml`'s status note both still
+claimed the frontend/mobile/device-gateway deployables' CI didn't exist, though mobile's own gate
+had shipped under Priority 1 Item 9 — both corrected, and all four now-real deployables'
+`ci-cd/pipelines/*.yml` index stubs (previously 0-byte files) populated with the same
+"organizational index, see the real workflow" comment `backend-pipeline.yml`'s own stub already
+established. `jt808-pipeline.yml`'s filename is left as-is (not renamed to
+`device-gateway-pipeline.yml`) — the original JT/T 808 code still lives on inside `services/
+device-gateway/src/vendors/jt808/` (dormant, ADR-0009/0010), so the name lags the ADR-0010
+rename without being outright wrong; renaming it wasn't otherwise in this item's scope.
+
+Not live-tested against a real GitHub Actions run — no way to trigger one in this sandbox — the
+same disclosed "mechanism verified locally, not via live CI" posture every other workflow file
+in this repository already carries. `PROJECT_STATUS.md`'s CI/CD row (Section 3) and Section 8
+carry the full audit trail, including why each of the five other Priority 2 items was skipped
+rather than attempted.
