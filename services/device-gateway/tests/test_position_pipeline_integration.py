@@ -6,6 +6,13 @@ task's own manual-verification scenario end to end: authenticate, then send `0x0
 and confirm the position reaches the publisher — matching the resolved architecture (JT808
 publishes `DevicePositionReported`, never calls `TrackingApplicationService` directly; see
 `src/handlers/location_handler.py`'s module docstring for the conflict record).
+
+**`RecordingEventPublisher` now also observes `DeviceOnline`** (JT808 device-plane integration
+gap): `LocationHandler` calls `touch()` on every accepted position (mirroring `vendors.lsz.
+handlers.position_handler.MdvrPositionHandler`'s identical precedent), so the *first* position
+report after authentication promotes the session `AUTHENTICATED -> ONLINE` and publishes a real
+`DeviceOnline` event over this same injected publisher — `.positions` filters that out for
+assertions that only care about `DevicePositionReported`.
 """
 
 import asyncio
@@ -13,6 +20,7 @@ import unittest
 from datetime import datetime, timezone
 
 from src.vendors.jt808.config import ServerConfig
+from src.events.device_online import DeviceOnline
 from src.events.device_position_reported import DevicePositionReported
 from src.vendors.jt808.handlers.provisioning_port import (
     AuthenticationResult,
@@ -70,10 +78,18 @@ class GrantingProvisioningPort(DeviceProvisioningPort):
 
 class RecordingEventPublisher:
     def __init__(self) -> None:
-        self.published: list[DevicePositionReported] = []
+        self.published: list[object] = []
 
-    async def publish(self, event: DevicePositionReported) -> None:
+    async def publish(self, event: object) -> None:
         self.published.append(event)
+
+    @property
+    def positions(self) -> list[DevicePositionReported]:
+        return [e for e in self.published if isinstance(e, DevicePositionReported)]
+
+    @property
+    def online_events(self) -> list[DeviceOnline]:
+        return [e for e in self.published if isinstance(e, DeviceOnline)]
 
 
 class PositionPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -119,11 +135,33 @@ class PositionPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         await asyncio.sleep(0.1)
 
-        self.assertEqual(len(self.publisher.published), 1)
-        event = self.publisher.published[0]
+        self.assertEqual(len(self.publisher.positions), 1)
+        event = self.publisher.positions[0]
         self.assertEqual(event.vehicle_id, "vehicle-1")
         self.assertEqual(event.organization_id, "org-1")
         self.assertFalse(event.is_backfill)
+
+    async def test_single_position_report_promotes_session_online(self) -> None:
+        """JT808 device-plane integration gap: the first accepted position report after
+        authentication now promotes `AUTHENTICATED -> ONLINE` and publishes a real `DeviceOnline`
+        event over the same injected publisher (mirrors `MdvrPositionHandler`'s identical,
+        already-established `touch()`-on-every-position precedent for the sibling vendor)."""
+        reader, writer = await self._open_client()
+        await self._authenticate(writer, reader)
+
+        writer.write(build_wire_frame(0x0200, TERMINAL_PHONE, 2, body=_build_body()))
+        await writer.drain()
+        await asyncio.sleep(0.1)
+
+        self.assertEqual(len(self.publisher.online_events), 1)
+        online_event = self.publisher.online_events[0]
+        self.assertEqual(online_event.terminal_id, TERMINAL_PHONE)
+        self.assertEqual(online_event.device_id, "device-1")
+        self.assertEqual(online_event.vehicle_id, "vehicle-1")
+        self.assertEqual(online_event.organization_id, "org-1")
+
+        session = self.server.device_sessions.resolve(TERMINAL_PHONE)
+        self.assertEqual(session.state.value, "online")
 
     async def test_batch_position_report_reaches_publisher_as_backfill(self) -> None:
         reader, writer = await self._open_client()
@@ -134,8 +172,8 @@ class PositionPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         await asyncio.sleep(0.1)
 
-        self.assertEqual(len(self.publisher.published), 3)
-        self.assertTrue(all(event.is_backfill for event in self.publisher.published))
+        self.assertEqual(len(self.publisher.positions), 3)
+        self.assertTrue(all(event.is_backfill for event in self.publisher.positions))
 
     async def test_position_report_sends_no_wire_response(self) -> None:
         reader, writer = await self._open_client()
@@ -171,7 +209,7 @@ class PositionPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         await asyncio.sleep(0.1)
 
-        self.assertEqual(self.publisher.published, [])
+        self.assertEqual(self.publisher.positions, [])
         self.assertEqual(self.server.manager.connection_count, 1)
 
     async def test_malformed_but_checksum_valid_position_body_does_not_crash_connection(
@@ -184,7 +222,12 @@ class PositionPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         await asyncio.sleep(0.1)
 
-        self.assertEqual(self.publisher.published, [])
+        # `touch()` runs before body parsing (see `LocationHandler`'s own docstring) — a
+        # malformed-but-authenticated position report still proves liveness, so `DeviceOnline`
+        # legitimately fires here even though the position body itself never reaches the
+        # publisher.
+        self.assertEqual(self.publisher.positions, [])
+        self.assertEqual(len(self.publisher.online_events), 1)
         self.assertEqual(
             self.server.manager.connection_count, 1
         )  # survives the handler error
@@ -193,7 +236,10 @@ class PositionPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         writer.write(build_wire_frame(0x0200, TERMINAL_PHONE, 3, body=_build_body()))
         await writer.drain()
         await asyncio.sleep(0.1)
-        self.assertEqual(len(self.publisher.published), 1)
+        self.assertEqual(len(self.publisher.positions), 1)
+        # already ONLINE from the first (malformed-body) report — touch() does not re-fire
+        # DeviceOnline on an already-online session.
+        self.assertEqual(len(self.publisher.online_events), 1)
 
     async def test_event_ordering_preserved_across_a_batch(self) -> None:
         reader, writer = await self._open_client()
@@ -209,7 +255,7 @@ class PositionPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         await asyncio.sleep(0.1)
 
-        latitudes = [round(event.latitude) for event in self.publisher.published]
+        latitudes = [round(event.latitude) for event in self.publisher.positions]
         self.assertEqual(latitudes, [1, 2, 3, 4, 5])
 
     async def test_graceful_shutdown_after_position_reports_leaves_no_connections(

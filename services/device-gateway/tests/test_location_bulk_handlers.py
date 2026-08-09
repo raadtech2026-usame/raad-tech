@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from src.vendors.jt808.dispatcher.handler import HandlerContext
 from src.events.device_position_reported import DevicePositionReported
+from src.session.device_session import DeviceConnectivityState
 from src.vendors.jt808.handlers.bulk_location_handler import BulkLocationHandler
 from src.vendors.jt808.handlers.location_handler import LocationHandler
 from src.vendors.jt808.protocol.exceptions import MalformedFrameError
@@ -88,6 +89,22 @@ class LocationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.vehicle_id, "veh-42")
         self.assertEqual(event.organization_id, "org-42")
         self.assertEqual(event.terminal_id, TERMINAL_ID)
+
+    async def test_accepted_position_report_promotes_session_online(self) -> None:
+        """JT808 device-plane integration gap: `LocationHandler` now calls `touch()` on every
+        accepted position, mirroring `MdvrPositionHandler`'s identical, already-established
+        precedent — a terminal reporting GPS but never sending a heartbeat must still be
+        promoted `AUTHENTICATED -> ONLINE`, not left to expire under the idle-timeout sweep
+        while actively transmitting."""
+        publisher = RecordingEventPublisher()
+        handler = LocationHandler(publisher)
+        context = await self._authenticated_context()
+        session = context.device_sessions.resolve(TERMINAL_ID)
+        self.assertEqual(session.state, DeviceConnectivityState.AUTHENTICATED)
+
+        await handler.handle(_make_message(0x0200, body=_build_body()), context)
+
+        self.assertEqual(session.state, DeviceConnectivityState.ONLINE)
 
     async def test_position_report_is_not_flagged_as_backfill(self) -> None:
         publisher = RecordingEventPublisher()

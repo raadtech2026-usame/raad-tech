@@ -44,6 +44,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from src.registry.device_registry_projection import DeviceRegistryProjection
+
 if TYPE_CHECKING:
     from src.vendors.jt808.handlers.registration_body import RegistrationRequest
 
@@ -103,4 +105,73 @@ class NullDeviceProvisioningPort(DeviceProvisioningPort):
     async def verify_auth_code(
         self, *, terminal_phone: str, auth_code: str
     ) -> AuthenticationResult:
+        return AuthenticationResult(is_valid=False)
+
+
+class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
+    """The real, non-interim implementation of the *identity/provisioning* half of this port —
+    resolves a JT/T 808 terminal phone (`InboundMessage.terminal_id`, header `BCD[6]`, the only
+    field this codebase ever uses for identity — see `registration_body.py`'s own docstring on
+    why the body's separate `manufacturer_terminal_id` is parsed but not used for lookup) against
+    the shared `registry.device_registry_projection.DeviceRegistryProjection` — the same
+    vendor-agnostic projection `vendors.lsz.handlers.provisioning_port.
+    ProjectionBackedMdvrProvisioningPort` already resolves LSZ serial numbers against
+    (`DeviceRegistryProjection` has always indexed by both `terminal_id` and `serial_number` for
+    exactly this reason). Replaces `NullDeviceProvisioningPort` as `DeviceGateway`'s actual
+    default for JT808 whenever a broker is configured — see `gateway.py`.
+
+    A device must be `is_provisionable` (`DeviceRegistryProjection.DeviceRecord`'s own join
+    condition: active *and* assigned to a vehicle) to authorize — anything else (unknown
+    terminal_id, registered-but-not-yet-activated, activated-but-unassigned, suspended, retired)
+    collapses to `RegistrationResult.TERMINAL_NOT_FOUND` — the one JT/T 808-2013 §8.6 result code
+    this port has a basis to return; the other three rejection codes (`VEHICLE_ALREADY_
+    REGISTERED`/`VEHICLE_NOT_FOUND`/`TERMINAL_ALREADY_REGISTERED`) describe conditions this
+    projection cannot evaluate. This mirrors `ProjectionBackedMdvrProvisioningPort`'s own
+    identical "collapse to the one code this port can actually determine" precedent exactly.
+
+    **`authorize_registration`'s `auth_code` is deliberately always `None` on a `SUCCESS` result
+    — this is the exact, currently-unresolvable boundary this module's own docstring above (and
+    `docs/architecture/adr/0009-mdvr-vendor-protocol-device-plane.md`'s sibling reasoning for the
+    device-plane generally) already flags: JT808 Technical Design, the primary JT/T 808-2013
+    spec's own text, and Backend LLD describe three structurally different mechanisms for what
+    this string is and where it comes from (a device-held static secret checked against `Device.
+    auth_key_hash`; a platform-minted code issued here and echoed back in `0x0102`; a
+    Redis-held, rotating session token) — the repository does not contain enough authoritative
+    information to pick one, and the supplier has confirmed standalone JT808 documentation is
+    forthcoming specifically for this. Registering `None` here (rather than inventing a value)
+    means `registration_response.build_registration_response_body` sends an empty auth-code
+    field on success (wire-safe — the field is a length-prefixed `STRING`, so an empty one is
+    syntactically valid — but not meaningfully correct for a real device under any of the three
+    readings above) — a real device can be *identified and provisioned* at the registration step
+    today, but cannot complete a real `0x0102` round trip until this is resolved.**
+
+    **`verify_auth_code` deliberately always returns `is_valid=False` for the identical reason —
+    not a bug, not a fail-closed oversight left over from `NullDeviceProvisioningPort`, but this
+    port's own explicit, documented refusal to guess which of the three models above to check
+    against.** Do not implement this method's real comparison logic without the supplier's JT808
+    documentation resolving which mechanism RAAD's actual procured terminals use.
+    """
+
+    def __init__(self, projection: DeviceRegistryProjection) -> None:
+        self._projection = projection
+
+    async def authorize_registration(
+        self, *, terminal_phone: str, request: "RegistrationRequest"
+    ) -> RegistrationAuthorization:
+        record = self._projection.lookup_by_terminal_id(terminal_phone)
+        if record is None or not record.is_provisionable:
+            return RegistrationAuthorization(result=RegistrationResult.TERMINAL_NOT_FOUND)
+        return RegistrationAuthorization(
+            result=RegistrationResult.SUCCESS,
+            auth_code=None,  # see class docstring — the unresolved authentication blocker
+            device_id=record.device_id,
+            vehicle_id=record.vehicle_id,
+            organization_id=record.organization_id,
+        )
+
+    async def verify_auth_code(
+        self, *, terminal_phone: str, auth_code: str
+    ) -> AuthenticationResult:
+        # Deliberately fail-closed pending the supplier's JT808 documentation — see class
+        # docstring. Never guess a comparison here.
         return AuthenticationResult(is_valid=False)

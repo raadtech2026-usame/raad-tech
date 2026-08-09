@@ -75,6 +75,7 @@ from src.events.device_online import DeviceOnline
 from src.events.publisher_port import EventPublisher, LoggingEventPublisher
 from src.vendors.jt808.handlers.authentication_handler import TerminalAuthenticationHandler
 from src.vendors.jt808.handlers.bulk_location_handler import BulkLocationHandler
+from src.vendors.jt808.handlers.heartbeat_handler import HeartbeatHandler
 from src.vendors.jt808.handlers.location_handler import LocationHandler
 from src.vendors.jt808.handlers.provisioning_port import (
     DeviceProvisioningPort,
@@ -94,11 +95,10 @@ logger = get_logger("jt808.server")
 
 # JT808 Technical Design §7/§8's named handler set that stays a placeholder this phase — see
 # dispatcher/message_ids.py's module docstring for the per-message-ID primary-spec citation.
-# REGISTRATION, AUTHENTICATION, LOCATION_REPORT, and BULK_LOCATION_REPORT are deliberately
-# absent: they get real handlers below.
+# REGISTRATION, AUTHENTICATION, HEARTBEAT, LOCATION_REPORT, and BULK_LOCATION_REPORT are
+# deliberately absent: they get real handlers below.
 _PLACEHOLDER_HANDLER_NAMES = {
     message_ids.TERMINAL_GENERAL_RESPONSE: "CommandAck",
-    message_ids.HEARTBEAT: "Heartbeat",
     message_ids.LOGOUT: "Logout",
     message_ids.MULTIMEDIA_EVENT_UPLOAD: "Alarm",
 }
@@ -139,6 +139,10 @@ class Jt808Server(DeviceProtocolAdapter):
             TerminalAuthenticationHandler(self._device_provisioning),
         )
         self._handler_registry.register(
+            message_ids.HEARTBEAT,
+            HeartbeatHandler(),
+        )
+        self._handler_registry.register(
             message_ids.LOCATION_REPORT,
             LocationHandler(self._event_publisher),
         )
@@ -176,10 +180,14 @@ class Jt808Server(DeviceProtocolAdapter):
     async def _on_device_online(self, session: DeviceSession) -> None:
         """Wired into `DeviceSessionManager` (device-gateway Redis integration) so the
         `AUTHENTICATED -> ONLINE` transition actually publishes a `DeviceOnline` event, not just
-        a log line. In practice this never fires for JT/T 808 today — no handler in this stack
-        calls `touch()` yet (real heartbeat/location-driven promotion remains unimplemented, see
-        this module's own "Not yet implemented" list) — kept wired anyway so it activates for
-        free the moment that gap closes, with zero further change here."""
+        a log line. `HeartbeatHandler`/`LocationHandler` both now call `touch()` (JT808
+        device-plane integration gap, `handlers/heartbeat_handler.py`), so this genuinely fires
+        the moment a real `DeviceSession` exists — the one remaining reason it still never fires
+        for a real terminal today is that no `DeviceSession` is ever created in the first place:
+        `0x0102` authentication is deliberately unresolved pending the supplier's JT808
+        documentation (`handlers/provisioning_port.py`'s own docstring has the full reasoning).
+        Kept wired anyway so it activates for free the moment that gap closes, with zero further
+        change here."""
         now = datetime.now(timezone.utc)
         log_with_fields(logger, 20, "device_online", terminal_id=session.terminal_id)
         await self._event_publisher.publish(

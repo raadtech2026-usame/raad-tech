@@ -1,9 +1,10 @@
 """Full-stack Phase 9.5 integration: real loopback TCP client, real `Jt808Server` (transport +
 codec + dispatcher + registration/authentication handlers), a scriptable `DeviceProvisioningPort`
-double standing in for the not-yet-built real provisioning implementation. Exercises the task's
-own manual-verification scenario end to end: Register -> Authenticate -> Heartbeat-ready state,
-plus registration response encoding, authentication response encoding over the wire, and clean
-shutdown with a bound device session.
+double standing in for the still-unresolved real authentication mechanism (JT808 device-plane
+integration gap — see `handlers/provisioning_port.py`'s own docstring). Exercises the task's own
+manual-verification scenario end to end: Register -> Authenticate -> Heartbeat (now a real
+handler, promoting the session ONLINE), plus registration response encoding, authentication
+response encoding over the wire, and clean shutdown with a bound device session.
 """
 
 import asyncio
@@ -141,12 +142,20 @@ class AuthenticationRegistrationIntegrationTests(unittest.IsolatedAsyncioTestCas
         self.assertEqual(auth_response.body[4], 0)  # RESULT_SUCCESS
 
         # Heartbeat-ready: a bound, AUTHENTICATED DeviceSession exists and the connection is
-        # still open (not torn down) - the state a real Heartbeat handler (future phase) would
-        # `touch()` to promote to ONLINE.
+        # still open (not torn down).
         session = self.server.device_sessions.resolve(TERMINAL_PHONE)
         self.assertIsNotNone(session)
         self.assertEqual(session.state.value, "authenticated")
         self.assertEqual(self.server.manager.connection_count, 1)
+
+        # JT808 device-plane integration gap: a real Heartbeat handler now exists and promotes
+        # this AUTHENTICATED session to ONLINE.
+        writer.write(build_wire_frame(0x0002, TERMINAL_PHONE, 3))
+        await writer.drain()
+        heartbeat_response = await self._read_frame(reader)
+        self.assertEqual(heartbeat_response.message_id, 0x8001)
+        self.assertEqual(heartbeat_response.body[4], 0)  # RESULT_SUCCESS
+        self.assertEqual(session.state.value, "online")
 
     async def test_registration_rejection_sends_response_then_closes_socket(
         self,

@@ -28,12 +28,15 @@ from sqlalchemy import text
 from raad.core.audit.writer import AuditWriter
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
-from raad.core.errors.exceptions import ValidationError
+from raad.core.errors.exceptions import ConflictError, ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.core.tenancy.principal import SYSTEM_PRINCIPAL
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
+from raad.modules.fleet_device.application.commands import RegisterDeviceCommand
+from raad.modules.fleet_device.application.services import DeviceApplicationService
 from raad.modules.fleet_device.domain.entities import Device, DeviceInventoryItem, Vehicle
 from raad.modules.fleet_device.domain.value_objects import (
     DeviceId,
@@ -678,6 +681,114 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         visible_ids = {str(v.id) for v in visible}
         self.assertIn(vehicle_a, visible_ids)
         self.assertIn(vehicle_b, visible_ids)
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class CrossOrganizationTerminalIdTests(unittest.IsolatedAsyncioTestCase):
+    """JT808 device-plane integration gap — closes a real, previously-untested gap: Database
+    Design §5.2's `terminal_id` uniqueness is *global* (`ux_devices__terminal_id`, no
+    `organization_id` in the constraint), enforced at the application layer by
+    `ensure_terminal_id_available` before `DeviceApplicationService.register_device` ever
+    reaches the database. `tests/unit/test_fleet_device_application.py::
+    test_duplicate_terminal_id_is_rejected` already proves this for a *single* organization
+    registering the same terminal_id twice (a fake repository, no real DB); this class is the
+    missing cross-organization proof, against a real, live-migrated Postgres, matching the
+    security-testing standard `TenantIsolationRepositoryTests` above already establishes for
+    this same module — the concrete answer to "can two organizations ever accidentally claim
+    the same JT/T 808 terminal ID."
+    """
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self.org_a = self.id_generator.new_id()
+        self.org_b = self.id_generator.new_id()
+        self.service = DeviceApplicationService(
+            clock=self.clock, id_generator=self.id_generator
+        )
+        self._created_device_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_device_ids:
+                await conn.execute(
+                    text("DELETE FROM devices WHERE id = ANY(:ids)"),
+                    {"ids": self._created_device_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyFleetDeviceUnitOfWork:
+        return SqlAlchemyFleetDeviceUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def _register(self, *, organization_id: str, terminal_id: str) -> str:
+        dto = await self.service.register_device(
+            RegisterDeviceCommand(
+                organization_id=organization_id,
+                terminal_id=terminal_id,
+                model=None,
+                vendor=None,
+                sim_msisdn=None,
+                imei=None,
+                iccid=None,
+                serial_number=None,
+                actor=SYSTEM_PRINCIPAL,
+            ),
+            uow=self._new_uow(),
+        )
+        self._created_device_ids.append(dto.id)
+        return dto.id
+
+    async def test_org_a_registers_terminal_id_successfully(self) -> None:
+        terminal_id = f"CROSSORG-{self.tag}"
+        device_id = await self._register(
+            organization_id=self.org_a, terminal_id=terminal_id
+        )
+        self.assertIsNotNone(device_id)
+
+    async def test_org_b_cannot_register_the_same_terminal_id_org_a_already_holds(
+        self,
+    ) -> None:
+        """The real proof: two genuinely distinct organizations, a real Postgres unique
+        constraint underneath, and the clean `ConflictError` the application layer is supposed
+        to surface *before* that constraint would otherwise raise a raw `IntegrityError`."""
+        terminal_id = f"CROSSORG-{self.tag}"
+        await self._register(organization_id=self.org_a, terminal_id=terminal_id)
+
+        with self.assertRaises(ConflictError):
+            await self._register(organization_id=self.org_b, terminal_id=terminal_id)
+
+        # Confirm org B genuinely has no device at all — the rejected attempt left nothing
+        # behind for either organization to accidentally see.
+        uow_b = self._new_uow()
+        uow_b.scope = TenantRegionScope(organization_ids=frozenset({self.org_b}))
+        async with uow_b as uow:
+            visible = await uow.devices.list_all()
+        self.assertEqual(
+            [d for d in visible if str(d.terminal_id) == terminal_id], []
+        )
+
+    async def test_terminal_id_resolves_to_the_organization_that_actually_registered_it(
+        self,
+    ) -> None:
+        terminal_a = f"OWNERA-{self.tag}"
+        terminal_b = f"OWNERB-{self.tag}"
+        device_a = await self._register(organization_id=self.org_a, terminal_id=terminal_a)
+        device_b = await self._register(organization_id=self.org_b, terminal_id=terminal_b)
+
+        async with self._new_uow() as uow:
+            fetched_a = await uow.devices.get(DeviceId(device_a))
+            fetched_b = await uow.devices.get(DeviceId(device_b))
+
+        self.assertEqual(str(fetched_a.organization_id), self.org_a)
+        self.assertEqual(str(fetched_b.organization_id), self.org_b)
 
 
 @unittest.skipUnless(_db_available(), _SKIP_REASON)

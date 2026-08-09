@@ -150,13 +150,30 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.body[2:4], (0x9999).to_bytes(2, "big"))
 
     async def test_known_placeholder_handler_sends_no_wire_response(self) -> None:
+        # HEARTBEAT now has a real handler (JT808 device-plane integration gap) — LOGOUT stays
+        # a placeholder, matching this test's own original intent.
         reader, writer = await self._open_client()
-        frame = build_wire_frame(message_ids.HEARTBEAT, "013800138000", 1)
+        frame = build_wire_frame(message_ids.LOGOUT, "013800138000", 1)
         writer.write(frame)
         await writer.drain()
 
         with self.assertRaises(asyncio.TimeoutError):
             await asyncio.wait_for(reader.read(64), timeout=0.3)
+
+    async def test_heartbeat_gets_a_real_wire_response(self) -> None:
+        reader, writer = await self._open_client()
+        frame = build_wire_frame(message_ids.HEARTBEAT, "013800138000", 9)
+        writer.write(frame)
+        await writer.drain()
+
+        data = await asyncio.wait_for(reader.read(64), timeout=2.0)
+        response = PacketParser().parse(
+            data[1:-1], received_at=datetime.now(timezone.utc)
+        )
+        self.assertEqual(response.message_id, 0x8001)
+        self.assertEqual(response.body[0:2], (9).to_bytes(2, "big"))
+        self.assertEqual(response.body[2:4], message_ids.HEARTBEAT.to_bytes(2, "big"))
+        self.assertEqual(response.body[4], 0)  # RESULT_SUCCESS
 
     async def test_malformed_frame_never_reaches_dispatcher(self) -> None:
         dispatched = []

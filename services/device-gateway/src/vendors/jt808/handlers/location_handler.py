@@ -41,6 +41,15 @@ alarm bits, not others, per Table 24) — building that fine-grained ack-timing 
 notification/business-response territory this phase's own scope list excludes ("Do NOT
 implement: ... Notification delivery"), so this handler follows the documented Handler table
 literally and sends nothing.
+
+**Calls `touch()` on every accepted position, not just on `0x0002` heartbeats** (JT808
+device-plane integration gap — mirrors `vendors.lsz.handlers.position_handler.
+MdvrPositionHandler`'s identical, already-established bug-fix precedent exactly: a terminal
+sending only `0x0200` position reports and no heartbeats would otherwise never be promoted
+`AUTHENTICATED -> ONLINE`, and would eventually be swept `session_expired` by the idle-timeout
+sweep while actively transmitting GPS). `touch()` is safe to call unconditionally here: it is a
+no-op on an unknown `terminal_id`, and this handler already requires a resolved session before
+reaching this point, so the call always targets a real one.
 """
 
 from __future__ import annotations
@@ -79,6 +88,8 @@ class LocationHandler(MessageHandler):
                 terminal_id=message.terminal_id,
             )
             return HandlerResult.no_response()
+
+        await context.device_sessions.touch(message.terminal_id)
 
         report = parse_position_report_body(message.body)
 

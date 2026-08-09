@@ -18,12 +18,16 @@ any given one.
 "fail loudly, don't fake it" pattern the Business API's own `core/di/bootstrap.py` already
 applies to every broker-dependent binding:** when a broker URL is configured (or a `redis_client`
 is injected directly, the seam tests use), this gateway constructs one shared `RedisEventPublisher`
-(passed to every adapter) and one shared `DeviceRegistryProjection` fed by a
-`RedisDeviceRegistryConsumer` background task, wiring the LSZ adapter's real
-`ProjectionBackedMdvrProvisioningPort` in place of the interim in-memory allow-list. Without a
-broker configured, every adapter falls back to exactly what it already defaulted to
-(`LoggingEventPublisher`, `NullMdvrDeviceProvisioningPort`) — nothing about the unconfigured path
-changes.
+(passed to every adapter) and **one shared `DeviceRegistryProjection`** fed by a
+`RedisDeviceRegistryConsumer` background task — vendor-agnostic by design (indexed by both
+`terminal_id` and `serial_number`), so the same projection instance backs **both** the LSZ
+adapter's real `ProjectionBackedMdvrProvisioningPort` **and** the JT808 adapter's real
+`ProjectionBackedJt808ProvisioningPort` (JT808 device-plane integration gap — closes the identity/
+provisioning half; `0x0102` authentication verification itself remains deliberately unresolved,
+see `vendors/jt808/handlers/provisioning_port.py`'s own docstring). Without a broker configured,
+every adapter falls back to exactly what it already defaulted to (`LoggingEventPublisher`,
+`NullMdvrDeviceProvisioningPort`/`NullDeviceProvisioningPort`) — nothing about the unconfigured
+path changes.
 
 Each adapter's own `serve_forever()` remains for standalone single-adapter use (its own tests, or
 running just one adapter in isolation) — this composition root calls `start()`/`stop()` on each
@@ -49,6 +53,7 @@ from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.registry.device_registry_projection import DeviceRegistryProjection
 from src.registry.redis_device_registry_consumer import RedisDeviceRegistryConsumer
 from src.vendors.jt808.config import ServerConfig as Jt808Config
+from src.vendors.jt808.handlers.provisioning_port import ProjectionBackedJt808ProvisioningPort
 from src.vendors.jt808.server import Jt808Server
 from src.vendors.lsz.config import MdvrServerConfig as LszConfig
 from src.vendors.lsz.handlers.provisioning_port import ProjectionBackedMdvrProvisioningPort
@@ -76,10 +81,15 @@ class DeviceGateway:
 
         self._event_publisher = event_publisher or self._build_event_publisher()
         self._latest_position_writer = self._build_latest_position_writer()
+        jt808_provisioning = self._build_jt808_provisioning()
         lsz_provisioning = self._build_lsz_provisioning()
 
         self._adapters: list[DeviceProtocolAdapter] = [
-            Jt808Server(jt808_config, event_publisher=self._event_publisher),
+            Jt808Server(
+                jt808_config,
+                device_provisioning=jt808_provisioning,
+                event_publisher=self._event_publisher,
+            ),
             MdvrServer(
                 lsz_config,
                 device_provisioning=lsz_provisioning,
@@ -107,14 +117,32 @@ class DeviceGateway:
             return RedisLatestPositionWriter(self._redis_client)
         return LoggingLatestPositionWriter()
 
-    def _build_lsz_provisioning(self):
+    def _build_registry_projection(self) -> DeviceRegistryProjection | None:
+        """The shared, vendor-agnostic device-registry read-model (device-gateway Redis
+        integration) — built once and handed to every vendor's own `ProjectionBacked*
+        ProvisioningPort`, since `DeviceRegistryProjection` has always indexed by both
+        `terminal_id` (JT808) and `serial_number` (LSZ) for exactly this reason. `None` when no
+        broker is configured (see `_build_lsz_provisioning`'s original docstring, now shared)."""
         if self._redis_client is None:
+            return None
+        if self._registry_projection is None:
+            self._registry_projection = DeviceRegistryProjection()
+            self._registry_consumer = RedisDeviceRegistryConsumer(
+                self._redis_client, projection=self._registry_projection
+            )
+        return self._registry_projection
+
+    def _build_jt808_provisioning(self):
+        projection = self._build_registry_projection()
+        if projection is None:
+            return None  # Jt808Server falls back to its own NullDeviceProvisioningPort default
+        return ProjectionBackedJt808ProvisioningPort(projection)
+
+    def _build_lsz_provisioning(self):
+        projection = self._build_registry_projection()
+        if projection is None:
             return None  # MdvrServer falls back to its own NullMdvrDeviceProvisioningPort default
-        self._registry_projection = DeviceRegistryProjection()
-        self._registry_consumer = RedisDeviceRegistryConsumer(
-            self._redis_client, projection=self._registry_projection
-        )
-        return ProjectionBackedMdvrProvisioningPort(self._registry_projection)
+        return ProjectionBackedMdvrProvisioningPort(projection)
 
     @property
     def adapters(self) -> tuple[DeviceProtocolAdapter, ...]:

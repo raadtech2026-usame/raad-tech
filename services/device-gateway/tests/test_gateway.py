@@ -126,8 +126,10 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         """No `redis_client`/`broker_config.url` given -- must fall back exactly as before this
-        phase, not silently require Redis."""
+        phase, not silently require Redis. Covers both vendors (JT808 device-plane integration
+        gap added the jt808 half of this assertion)."""
         from src.events.publisher_port import LoggingEventPublisher
+        from src.vendors.jt808.handlers.provisioning_port import NullDeviceProvisioningPort
         from src.vendors.lsz.handlers.provisioning_port import NullMdvrDeviceProvisioningPort
 
         gateway = DeviceGateway(
@@ -138,6 +140,9 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(
             gateway.adapter("lsz").device_provisioning, NullMdvrDeviceProvisioningPort
         )
+        self.assertIsInstance(
+            gateway.adapter("jt808").device_provisioning, NullDeviceProvisioningPort
+        )
         self.assertIsNone(gateway.registry_projection)
 
 
@@ -145,7 +150,9 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
     """Proves the Redis-wired path end to end: injecting a fake Redis client (no real server,
     no `DEVICE_GATEWAY_BROKER_URL`) is enough to get a real `RedisEventPublisher`, a real
     `DeviceRegistryProjection` fed by a real `RedisDeviceRegistryConsumer` background task, and
-    the LSZ adapter's real `ProjectionBackedMdvrProvisioningPort` — not the interim defaults."""
+    both vendors' real `ProjectionBacked*ProvisioningPort` — not the interim defaults. JT808's
+    half (`ProjectionBackedJt808ProvisioningPort`) is the JT808 device-plane integration gap this
+    suite closes; LSZ's own coverage is unchanged."""
 
     async def test_redis_client_wires_redis_event_publisher(self) -> None:
         redis = FakeRedis()
@@ -169,6 +176,118 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
             gateway.adapter("lsz").device_provisioning, ProjectionBackedMdvrProvisioningPort
         )
         self.assertIsNotNone(gateway.registry_projection)
+
+    async def test_redis_client_wires_projection_backed_jt808_provisioning(self) -> None:
+        from src.vendors.jt808.handlers.provisioning_port import (
+            ProjectionBackedJt808ProvisioningPort,
+        )
+
+        redis = FakeRedis()
+        gateway = DeviceGateway(
+            redis_client=redis,
+            jt808_config=Jt808Config(host="127.0.0.1", port=0),
+            lsz_config=LszConfig(host="127.0.0.1", port=0),
+        )
+        self.assertIsInstance(
+            gateway.adapter("jt808").device_provisioning, ProjectionBackedJt808ProvisioningPort
+        )
+        self.assertIsNotNone(gateway.registry_projection)
+
+    async def test_jt808_and_lsz_provisioning_share_one_registry_projection(self) -> None:
+        """A single `DeviceRegistered` event (carrying both `terminal_id` and `serial_number`)
+        must be resolvable through *both* vendors' provisioning ports — proving they share one
+        `DeviceRegistryProjection` instance, not two independently-fed copies."""
+        redis = FakeRedis()
+        redis.entries.append(
+            (
+                "1",
+                {
+                    "data": json.dumps(
+                        {
+                            "event_id": "evt-1",
+                            "event_type": "DeviceRegistered",
+                            "version": 1,
+                            "occurred_at": "2026-08-09T10:00:00+00:00",
+                            "org_id": "org-1",
+                            "correlation_id": None,
+                            "payload": {
+                                "terminal_id": "013800138000",
+                                "serial_number": "00007",
+                            },
+                            "aggregate_type": "Device",
+                            "aggregate_id": "device-1",
+                        }
+                    )
+                },
+            )
+        )
+        for event_type in ("DeviceActivated",):
+            redis.entries.append(
+                (
+                    str(len(redis.entries) + 1),
+                    {
+                        "data": json.dumps(
+                            {
+                                "event_id": f"evt-{event_type}",
+                                "event_type": event_type,
+                                "version": 1,
+                                "occurred_at": "2026-08-09T10:00:01+00:00",
+                                "org_id": "org-1",
+                                "correlation_id": None,
+                                "payload": {},
+                                "aggregate_type": "Device",
+                                "aggregate_id": "device-1",
+                            }
+                        )
+                    },
+                )
+            )
+        redis.entries.append(
+            (
+                str(len(redis.entries) + 1),
+                {
+                    "data": json.dumps(
+                        {
+                            "event_id": "evt-assigned",
+                            "event_type": "DeviceAssignedToVehicle",
+                            "version": 1,
+                            "occurred_at": "2026-08-09T10:00:02+00:00",
+                            "org_id": "org-1",
+                            "correlation_id": None,
+                            "payload": {"device_id": "device-1", "vehicle_id": "vehicle-1"},
+                            "aggregate_type": "DeviceAssignment",
+                            "aggregate_id": "assignment-1",
+                        }
+                    )
+                },
+            )
+        )
+        redis._next_id = len(redis.entries) + 1
+
+        gateway = DeviceGateway(
+            redis_client=redis,
+            jt808_config=Jt808Config(host="127.0.0.1", port=0),
+            lsz_config=LszConfig(host="127.0.0.1", port=0),
+        )
+        await gateway.start()
+        try:
+            await asyncio.sleep(0.05)
+
+            jt808_result = await gateway.adapter("jt808").device_provisioning.authorize_registration(
+                terminal_phone="013800138000", request=None
+            )
+            self.assertEqual(jt808_result.result.value, "success")
+            self.assertEqual(jt808_result.organization_id, "org-1")
+            self.assertEqual(jt808_result.vehicle_id, "vehicle-1")
+
+            lsz_result = await gateway.adapter("lsz").device_provisioning.authorize_registration(
+                device_serial_number="00007"
+            )
+            self.assertEqual(lsz_result.result.value, "success")
+            self.assertEqual(lsz_result.organization_id, "org-1")
+            self.assertEqual(lsz_result.vehicle_id, "vehicle-1")
+        finally:
+            await gateway.stop()
 
     async def test_registry_consumer_runs_in_the_background_after_start(self) -> None:
         redis = FakeRedis()
