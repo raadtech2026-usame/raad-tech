@@ -167,6 +167,38 @@ forthcoming documentation will change that conclusion, and do not build or plan 
 808/1078 compliance for this vendor before that documentation exists and has actually been
 reviewed against the codebase, the same way `HARDWARE_ANALYSIS.md` was.
 
+**JT808 device-plane provisioning/identity gap closed (2026-08-09) — the dormant JT/T 808 code
+path (above) can now genuinely identify a real device, independent of the LSZ/compliance question.**
+A source-code audit (not doc-inference) confirmed the JT808 registration/authentication/location
+handler stack (`services/device-gateway/src/vendors/jt808/`) was real and tested but permanently
+wired to a fail-closed `NullDeviceProvisioningPort` — unlike LSZ, which already had a real
+`ProjectionBackedMdvrProvisioningPort`. A new `ProjectionBackedJt808ProvisioningPort` (mirroring
+LSZ's exact pattern) now resolves a device's `terminal_id` against the same shared, vendor-
+agnostic `DeviceRegistryProjection` (`services/device-gateway/src/registry/
+device_registry_projection.py`, already indexed by both `terminal_id` and `serial_number`,
+already fed by `fleet_device`'s own `DeviceRegistered`/`DeviceActivated`/`DeviceAssignedToVehicle`
+events over the broker) — a real, pre-provisioned device (registered → activated → assigned to a
+vehicle in `fleet_device`, the same dashboard flow `RegisterDeviceWizard.tsx` already provides) is
+now correctly identified and resolved to its `device_id`/`vehicle_id`/`organization_id` at
+`0x0100`; unknown/inactive/unassigned/suspended/retired devices all correctly reject
+(`TERMINAL_NOT_FOUND`, connection closed — never auto-created, never pending). A new
+`HeartbeatHandler` (`0x0002`) and a `touch()` call added to `LocationHandler` (`0x0200`) now
+actually trigger `DeviceSessionManager`'s pre-existing `AUTHENTICATED → ONLINE` promotion and
+`DeviceOnline`/`DeviceOffline` publishing — both were already fully built and wired into
+`Jt808Server`'s own callbacks, just never triggered because nothing called `touch()`.
+
+**`0x0102` authentication verification remains deliberately unimplemented — an explicit stop, not
+a guess.** JT808 Technical Design, the primary JT/T 808-2013 spec's own text, and Backend LLD
+describe three structurally different, mutually exclusive auth-code mechanisms (a device-held
+static secret checked against `Device.auth_key_hash`; a platform-minted code issued at
+registration and echoed back; a Redis-held, rotating session token) — the repository does not
+contain enough authoritative information to pick one. `ProjectionBackedJt808ProvisioningPort.
+authorize_registration` returns `SUCCESS` with `auth_code=None`; `verify_auth_code` always
+returns `is_valid=False` — both explicitly documented in code as the deliberate boundary, not a
+fail-closed oversight. **Do not implement this without the supplier's forthcoming standalone
+JT808 documentation resolving which mechanism RAAD's actual procured terminals use** — the same
+unresolved verification point named above, now scoped to this one specific method.
+
 ## Domain Vocabulary
 
 - **Fleet** — the set of buses/vehicles operated by a school or transport operator.

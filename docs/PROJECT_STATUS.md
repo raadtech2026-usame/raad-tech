@@ -17,8 +17,8 @@ architecture; this file is the source of truth for progress and sequencing.
 | **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
 | **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against, a real Stripe merchant account for live payments) — every Priority 1 item touching the backend/web/infra surface (1–8) is now complete and either live-verified or mechanism-complete-with-disclosed-testing-limits: **Item 8 (Payment) is no longer an architectural blocker** — ADR-0022 (2026-08-06) shipped a real, verified `StripePaymentAdapter`, a wired webhook route, and a production `OrgBillingPage` "Pay Invoice" flow, resolving both the design gaps (signed-webhook-caller representation, provider abstraction shape) this item used to carry; only a live merchant account's credentials remain, same disclosed posture as TLS/Redis. Two deployment paths now exist side by side: the original generic-VPS/nginx/certbot path, and a new Coolify-managed path (`docker-compose.coolify.yml`, `docs/runbooks/coolify-deployment.md`) for the user's own chosen Hostinger-VPS-via-Coolify target. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **ADR-0023 (2026-08-07)** closed Known Issue #17 on the backend side (a canonical `GET /me`/`GET /me/students`/`GET /me/driver-profile` self-service identity capability) — M3's own blocking backend gap is resolved, though the mobile client itself is not yet wired to it (same missing-SDK limitation as the rest of Item 9). This is the direct continuation of the continuous-completion program (user directive 2026-08-03) — see Section 15 for that program's own final report, and Section 8 for ADR-0022's/ADR-0023's own full writeups. |
 | **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), ADR-0019 (Account-Sharing Session Cap), ADR-0020 (Platform Analytics Read Model), and **ADR-0022 (Payment Provider Architecture) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete, plus this unplanned-at-the-time payment-architecture milestone the user added afterward. Frontend: **F0–F9 complete**, with F9's own previously-deferred Organization Billing half now also complete (ADR-0022: dedicated `OrgBillingPage` + real "Pay Invoice" flow) — F8: Notifications web UI (first cursor-paginated page, first live-WS-driven bell badge); F9: Billing web UI (platform-wide read-only tabs + org-scoped subscription/invoice/payment view and a real payment flow) — plus the ADR-0020 KPI grid and a fleet-ops-style dashboard redesign/polish pass; F10 (Video)/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
-| **Current git commit** | This turn's own commit (`feat(deploy): Coolify overlay + PROJECT_STATUS.md/CLAUDE.md updates, ADR-0022`) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; it was last literally updated at `07cd3e8` (ADR-0019) and has drifted several commits behind on every turn since (a real, disclosed, recurring instance of the exact staleness rule 2 warns about, not a one-time slip). |
-| **Last updated** | 2026-08-07 |
+| **Current git commit** | This turn's own commit (`docs: record JT808 device-plane provisioning/identity gap in PROJECT_STATUS.md/CLAUDE.md`) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; the actual JT808 device-gateway work was committed at `c2550a1` (JT808 device-plane provisioning/identity integration gap), which is itself already one commit behind by the time this line is read (the same real, disclosed, recurring staleness rule 2 warns about, not a one-time slip). |
+| **Last updated** | 2026-08-09 |
 
 ---
 
@@ -125,9 +125,9 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Dependencies:** Device Inventory, Organizations.
 
 #### JT808 — ⏸ Deferred (dormant by design)
-- **Implemented:** Fully built, parsed, tested (`services/device-gateway/src/vendors/jt808/`), still instantiated live in the gateway.
-- **Missing:** No procured hardware speaks it — kept ready for a future genuinely-compliant vendor.
-- **Production blocker?** No.
+- **Implemented:** Fully built, parsed, tested (`services/device-gateway/src/vendors/jt808/`), still instantiated live in the gateway. **Device-plane provisioning/identity now real (2026-08-09)**: `ProjectionBackedJt808ProvisioningPort` resolves a device's `terminal_id` against the same shared `DeviceRegistryProjection` LSZ uses — a real, pre-provisioned device (registered → activated → assigned to a vehicle) is correctly identified/resolved at `0x0100`, and unknown/inactive/unassigned/suspended/retired devices correctly reject. New `HeartbeatHandler` + a `touch()` call in `LocationHandler` mean the pre-existing `AUTHENTICATED → ONLINE` promotion and `DeviceOnline`/`DeviceOffline` publishing actually fire now.
+- **Missing:** `0x0102` authentication verification — deliberately unimplemented, not guessed (three mutually exclusive documented mechanisms; see Known Issue #18). No procured hardware speaks JT808 today regardless — kept ready for a future genuinely-compliant vendor.
+- **Production blocker?** No (still dormant — no compliant hardware procured; the auth gap would block real use even if one were).
 - **Dependencies:** None.
 
 #### JT1078 — ❌ Missing
@@ -592,19 +592,88 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — CI hardening (frontend + device-gateway CI, Priority 2 backlog item) just landed
-(2026-08-07)**, picked per the Development Rules process (Section 14): re-verified the
-repository and every Priority 1 item (1–9), confirmed Known Issue #17/ADR-0023 already committed,
-then walked Section 5's Priority 2 backlog in listed order. Five items (Live video/JT1078,
-Reporting renderer, Load testing, Log shipping, Secrets-manager integration) were each confirmed
-genuinely blocked — either an unresolved architecture/documentation gap, a new-dependency
-decision requiring `.claude/rules/workflow.md` #1/#2 explicit go-ahead, or a real external
-account/service this engagement cannot obtain — and skipped with reasons recorded in Section 5
-itself, not silently passed over. CI hardening was the first Priority 2 item with no such
-blocker: frontend and device-gateway CI needed zero new dependencies (both already have a full,
-passing test suite using only already-approved tooling) and zero external accounts. See the
-writeup immediately below this note for the full detail. Section 2's Mobile row and similar minor
-doc staleness are still outstanding, not yet corrected — noted, not forgotten.
+**Nothing — the JT808 device-plane provisioning/identity integration gap just closed
+(2026-08-09)**, at the user's explicit direction, not picked via the usual Section 14 process:
+a source-code audit (real `.py` files only, explicitly not the old `mdvrdocs/` proprietary
+documentation) first answered ten specific questions about the actual current device/video
+protocol state — what's really implemented vs. dormant vs. scaffold-only for JT808, JT1078, and
+LSZ. That audit found JT/T 808's registration/authentication/location handler stack is real and
+tested but was permanently wired to a fail-closed `NullDeviceProvisioningPort` (unlike LSZ, which
+already had a real `ProjectionBackedMdvrProvisioningPort`). A follow-up turn closed exactly the
+resolvable half of that gap and explicitly stopped at `0x0102` authentication verification, per
+the user's own instruction not to guess given a genuine, pre-existing, three-way documented
+conflict over what that auth code even is. See the writeup immediately below this note for the
+full detail, and Section 2's Mobile row and similar minor doc staleness — still outstanding, not
+yet corrected, noted, not forgotten.
+
+**JT808 device-plane provisioning/identity integration gap (2026-08-09, user-directed audit +
+targeted implementation, not a Section 14 pick).** New `ProjectionBackedJt808ProvisioningPort`
+(`vendors/jt808/handlers/provisioning_port.py`) resolves a device's `terminal_id` against the
+same shared, vendor-agnostic `DeviceRegistryProjection` LSZ already uses (it was already indexed
+by both `terminal_id` and `serial_number` for exactly this reason, confirmed by reading the
+projection's own code before writing anything) — a real, pre-provisioned device (registered in
+`fleet_device` → activated → assigned to a vehicle) is now correctly identified and resolved to
+its `device_id`/`vehicle_id`/`organization_id` at `0x0100`; unknown, registered-but-inactive,
+activated-but-unassigned, suspended, and retired devices all correctly collapse to
+`TERMINAL_NOT_FOUND` — no automatic `Device` creation, no pending state, connection rejected,
+mirroring LSZ's own identical precedent exactly. New `HeartbeatHandler` (`0x0002 → 0x8001`,
+replacing the placeholder that message ID previously fell to) plus a `touch()` call added to
+`LocationHandler` (`0x0200`) — both wire the pre-existing, previously-never-triggered
+`DeviceSessionManager.touch()` (`AUTHENTICATED → ONLINE` promotion) and `Jt808Server.
+_on_device_online`/`_on_device_offline` (real `DeviceOnline`/`DeviceOffline` publishing, already
+built, never fired for JT808 before this), the same bug-fix precedent `MdvrPositionHandler`
+already established for LSZ (a device reporting only positions, never heartbeats, must not expire
+under the idle-timeout sweep while actively transmitting). `gateway.py` now builds one shared
+`DeviceRegistryProjection` and hands it to both vendors' own provisioning ports, via the same
+DI/composition-root pattern LSZ already used.
+
+**`0x0102` authentication verification deliberately NOT implemented.** Re-reading `provisioning_
+port.py`'s own pre-existing docstring confirmed the conflict was already flagged before this
+turn, not newly discovered: JT808 Technical Design §4 reads as a device-held static secret
+checked against `Device.auth_key_hash`; the primary JT/T 808-2013 spec's own text (§8.6/§8.8/
+§21.1, verbatim) reads as a platform-minted code issued in `0x8100` and echoed back in `0x0102`;
+Backend LLD adds a third, only-partially-compatible reading (a short-lived, Redis-held, rotating
+session token). These are not close readings of the same idea — they're three different security
+mechanisms requiring different persisted state and different comparison logic, and picking wrong
+risks either rejecting every real device forever or implementing a check real hardware never
+actually performs. `authorize_registration` returns `SUCCESS` with `auth_code=None` (a real
+device is genuinely identified/provisioned, but the wire response's auth-code field can't be
+filled in correctly); `verify_auth_code` always returns `is_valid=False` — both explicitly
+documented in code as the deliberate, currently-unresolvable boundary, not a fail-closed
+oversight left over from the old `NullDeviceProvisioningPort`. Blocks on the supplier's
+forthcoming standalone JT808 documentation — tracked as Known Issue #18, not silently left
+implicit.
+
+**Testing.** 18 new device-gateway tests: `ProjectionBackedJt808ProvisioningPort`'s full
+accept/reject matrix (provisionable, unknown, unactivated, unassigned, suspended, retired, plus a
+two-device cross-organization/cross-vehicle resolution proof and a dedicated test confirming
+`auth_code` is never fabricated); `HeartbeatHandler` (ack shape, online promotion, unknown-
+terminal safe no-op, no double-fire on a second heartbeat); `gateway.py` wiring (both vendors'
+Null fallback with no broker configured, both vendors' real `ProjectionBacked*` port with one
+injected, a dedicated proof both vendors resolve identity through the *same* shared projection
+instance, not two independently-fed copies). 3 existing test files needed real fixes, not just
+additions, because `touch()` now genuinely fires `DeviceOnline` where it previously silently
+didn't: `test_position_pipeline_integration.py`'s `RecordingEventPublisher` gained `.positions`/
+`.online_events` filtering properties so existing count/index assertions on "the position event"
+still find the right one now that a `DeviceOnline` legitimately precedes it; `test_server_
+dispatch_integration.py`'s "known placeholder sends no response" test moved off `HEARTBEAT`
+(which now correctly *does* respond) onto `LOGOUT` (still a real placeholder); `test_
+authentication_registration_integration.py`'s existing register→authenticate scenario was
+extended with a real heartbeat frame proving the wire-level promotion to `online` now actually
+happens. device-gateway: 351/351 (was 333). 3 new live-Postgres integration tests in `backend/
+tests/integration/test_fleet_device_repository.py` close a real, previously-untested gap flagged
+during the original audit ("can two organizations ever accidentally claim the same JT/T 808
+terminal ID?") — the existing unit test (`test_duplicate_terminal_id_is_rejected`) only ever
+proved same-organization duplication against a fake repository; the new `CrossOrganizationTerminalIdTests`
+class proves the cross-organization case against a real, live-migrated Postgres database, through
+the actual `DeviceApplicationService.register_device` application-layer call, matching the
+security-testing standard `TenantIsolationRepositoryTests` (ADR-0021) already established in this
+same file. `fleet_device` integration: 32/32 (was 29). Backend unit (1330) and architecture-gate
+(10) suites re-run as a regression check — unchanged, zero regressions. No ADR written: this
+closes an implementation gap inside an already-accepted design (ADR-0009/0010's own multi-vendor
+`DeviceProtocolAdapter` architecture), it doesn't create a new architectural decision — the same
+"wiring/integration, not a new ADR" posture CI hardening (below) was itself built under. JT1078
+and video work were explicitly untouched, per the user's own scope instruction.
 
 **CI hardening — frontend + device-gateway CI (2026-08-07, Priority 2 backlog item,
 `PROJECT_STATUS.md` Section 5).** `ci-cd/pipelines/*.yml` had five placeholder index stubs;
@@ -1301,6 +1370,42 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **JT808 device-plane provisioning/identity integration gap** closed (2026-08-09), at the user's
+  explicit direction, in two phases. **Audit phase (source code only, no doc-of-record
+  inference):** confirmed JT/T 808's full registration/authentication/location handler stack
+  (`services/device-gateway/src/vendors/jt808/`) is real, tested, and running (port 7808)
+  alongside LSZ (port 7809), but permanently wired to a fail-closed `NullDeviceProvisioningPort`
+  — `gateway.py` never even passed a `device_provisioning=` argument to `Jt808Server`, unlike
+  LSZ, which already had a real `ProjectionBackedMdvrProvisioningPort`; also confirmed
+  `services/jt1078/` is a pure scaffold (zero `.py` files) and the LSZ media/video channel
+  (`C508`/`C701`/`C702`/`0x6011`-`0x6013`) has zero implementation anywhere, doc-only.
+  **Implementation phase, scoped to exactly the resolvable half of that gap:** new
+  `ProjectionBackedJt808ProvisioningPort` resolves `terminal_id` against the same shared,
+  vendor-agnostic `DeviceRegistryProjection` LSZ already uses (a real, pre-provisioned device —
+  registered → activated → assigned to a vehicle — is now correctly identified/resolved to its
+  `device_id`/`vehicle_id`/`organization_id` at `0x0100`; unknown/inactive/unassigned/suspended/
+  retired devices all correctly collapse to `TERMINAL_NOT_FOUND`, mirroring LSZ's own precedent
+  exactly); new `HeartbeatHandler` (`0x0002 → 0x8001`) plus a `touch()` call added to
+  `LocationHandler` (`0x0200`) wire the pre-existing, previously-never-triggered
+  `DeviceSessionManager.touch()` (`AUTHENTICATED → ONLINE`) and `DeviceOnline`/`DeviceOffline`
+  publishing, the same bug-fix precedent `MdvrPositionHandler` already established for LSZ;
+  `gateway.py` now shares one `DeviceRegistryProjection` between both vendor adapters. **`0x0102`
+  authentication verification was deliberately left unimplemented — an explicit stop, not an
+  oversight or a guess**: JT808 Technical Design, the primary JT/T 808-2013 spec's own text, and
+  Backend LLD describe three structurally different, mutually exclusive auth-code mechanisms (see
+  Known Issue #18); `authorize_registration` returns `SUCCESS` with `auth_code=None`,
+  `verify_auth_code` always returns `is_valid=False`, both explicitly documented as the
+  deliberate boundary pending the supplier's forthcoming standalone JT808 documentation. 18 new
+  device-gateway tests plus 3 existing test files updated for the new, correct `DeviceOnline`
+  side effect a position/heartbeat report now legitimately produces (device-gateway: 351/351, was
+  333); 3 new live-Postgres integration tests close a real, previously-untested gap — two
+  organizations cannot register a `Device` with the same `terminal_id` (only same-org duplication
+  had a test before this; `fleet_device` integration: 32/32, was 29). Backend unit (1330) and
+  architecture-gate (10) suites re-run as a regression check, unchanged. No ADR written — this
+  closes an implementation gap in an already-accepted design (ADR-0009/0010), the same
+  "wiring/integration, not a new architecture decision" posture CI hardening (below) was itself
+  built under. JT1078/video work untouched, per explicit scope. See Section 8 for the full
+  writeup, Section 3's JT808 row, and Known Issue #18.
 - **CI hardening — frontend + device-gateway CI** completed (Priority 2 backlog item). New
   `.github/workflows/frontend-pipeline.yml` (`npm ci` → `npm run build` → `npm test -- --run`)
   and `device-gateway-pipeline.yml` (`pip install -e .` → `compileall` →
@@ -1675,6 +1780,34 @@ Reverse-chronological (most recent first):
 - **Severity:** ~~High~~
 - **Blocking production?** No longer, on the backend side. Mobile client wiring remains open,
   tracked under Item 9's own Mobile App status, not re-opened here.
+
+### 18. JT808 `0x0102` authentication-code semantics are unresolved — deliberately not guessed
+- **Found:** 2026-08-09, during a user-directed source-code audit of the actual current device/
+  video protocol state, confirmed by re-reading `services/device-gateway/src/vendors/jt808/
+  handlers/provisioning_port.py`'s own pre-existing docstring (the conflict was already flagged
+  there before this audit, not newly discovered by it).
+- **The conflict:** three source documents describe structurally different, mutually exclusive
+  mechanisms for the `0x0102` auth code — JT808 Technical Design §4 reads as a device-held static
+  secret checked against `Device.auth_key_hash`; the primary JT/T 808-2013 spec's own text (§8.6/
+  §8.8/§21.1, verbatim) reads as a platform-minted code issued in `0x8100` and echoed back in
+  `0x0102`; Backend LLD adds a third, only-partially-compatible reading (a short-lived,
+  Redis-held, rotating session token). Picking wrong has real consequences — either rejecting
+  every real device forever, or implementing a check that isn't actually what real hardware does.
+- **Current state:** `ProjectionBackedJt808ProvisioningPort.authorize_registration` (new,
+  2026-08-09) correctly resolves and returns a device's real `device_id`/`vehicle_id`/
+  `organization_id` on success, but `auth_code` is deliberately always `None`; `verify_auth_code`
+  deliberately always returns `is_valid=False`. A real, pre-provisioned device is now correctly
+  *identified* at `0x0100` but cannot complete a real `0x0102` round trip.
+- **Recommended fix:** the supplier has confirmed standalone JT808 documentation is forthcoming
+  specifically for this hardware — once received and reviewed, resolve which of the three
+  mechanisms RAAD's actual procured terminals use, then implement `verify_auth_code`'s real
+  comparison logic and `authorize_registration`'s real `auth_code` value together (they must
+  agree — see `provisioning_port.py`'s own class docstring for the full reasoning).
+- **Severity:** Medium — does not block anything already shipped (LSZ, the actually-procured
+  hardware, doesn't use JT808 at all); blocks JT808 specifically becoming usable for any future
+  genuinely-compliant vendor.
+- **Blocking production?** No — JT808 remains dormant-by-design regardless (Section 3's own JT808
+  row), same as before this item.
 
 ---
 
