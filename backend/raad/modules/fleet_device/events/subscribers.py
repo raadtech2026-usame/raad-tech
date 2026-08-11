@@ -37,7 +37,10 @@ from raad.core.di.container import Container
 from raad.core.events.base import DomainEvent
 from raad.core.events.processor import EventProcessor, EventProcessorRegistry
 from raad.core.tenancy.principal import Principal, Role
-from raad.modules.fleet_device.application.commands import RecordDeviceSeenCommand
+from raad.modules.fleet_device.application.commands import (
+    RecordAuthKeyHashCommand,
+    RecordDeviceSeenCommand,
+)
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.services import DeviceApplicationService
 
@@ -75,6 +78,35 @@ class DeviceConnectivityProcessor(EventProcessor):
         )
 
 
+class DeviceAuthCodeProcessor(EventProcessor):
+    """ADR-0025 §3 — handles `DeviceAuthCodeIssued`, the device-gateway's own `0x0102`
+    credential-hash mint event (`services/device-gateway/src/events/device_auth_code_issued.py`).
+    Mirrors `DeviceConnectivityProcessor`'s identical shape: resolve `device_id` from the
+    payload, call the corresponding application-service command, `SYSTEM_PRINCIPAL` actor."""
+
+    event_type = "DeviceAuthCodeIssued"
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def process(self, event: DomainEvent) -> None:
+        device_id = event.payload.get("device_id")
+        auth_key_hash = event.payload.get("auth_key_hash")
+        if not device_id or not auth_key_hash:
+            return
+
+        service = self._container.resolve(DeviceApplicationService)
+        uow = self._container.resolve(FleetDeviceUnitOfWork)
+        await service.record_auth_key_hash(
+            RecordAuthKeyHashCommand(
+                device_id=device_id,
+                auth_key_hash=auth_key_hash,
+                actor=SYSTEM_PRINCIPAL,
+            ),
+            uow=uow,
+        )
+
+
 def register_fleet_device_processors(
     registry: EventProcessorRegistry, container: Container
 ) -> None:
@@ -82,3 +114,4 @@ def register_fleet_device_processors(
     events.subscribers.register_tracking_processors`'s identical shape exactly."""
     registry.register(DeviceConnectivityProcessor("DeviceOnline", container))
     registry.register(DeviceConnectivityProcessor("DeviceOffline", container))
+    registry.register(DeviceAuthCodeProcessor(container))

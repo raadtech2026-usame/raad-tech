@@ -48,6 +48,7 @@ from typing import Any
 from redis.asyncio import Redis
 
 from src.events.device_alarm_raised import DeviceAlarmRaised
+from src.events.device_auth_code_issued import DeviceAuthCodeIssued
 from src.events.device_offline import DeviceOffline
 from src.events.device_online import DeviceOnline
 from src.events.device_position_reported import DevicePositionReported
@@ -148,6 +149,21 @@ def _fields_for(event: DeviceEvent) -> dict[str, str]:
                 "terminal_id": event.terminal_id,
                 "alarm_type": event.alarm_type,
                 "alarm_flags": event.alarm_flags,
+            },
+        )
+    if isinstance(event, DeviceAuthCodeIssued):
+        return _envelope(
+            event_type="DeviceAuthCodeIssued",
+            org_id=event.organization_id,
+            aggregate_type="Device",
+            aggregate_id=event.device_id,
+            occurred_at=event.event_time,
+            payload={
+                "organization_id": event.organization_id,
+                "vehicle_id": event.vehicle_id,
+                "device_id": event.device_id,
+                "terminal_id": event.terminal_id,
+                "auth_key_hash": event.auth_key_hash,
             },
         )
     raise TypeError(f"Unrecognized device-plane event type: {type(event)!r}")

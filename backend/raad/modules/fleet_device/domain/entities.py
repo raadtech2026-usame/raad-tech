@@ -469,6 +469,16 @@ class Device(_AggregateRoot):
         self.last_seen_at = seen_at
         self.is_online = is_online
 
+    def record_auth_key_hash(self, auth_key_hash: str) -> None:
+        """ADR-0025 §3: the durable mirror of the `0x0102` credential hash the device-gateway
+        process mints and verifies against locally (`Device.auth_key_hash`'s own class-level
+        docstring: "stored, never verified here"). Mirrors `record_last_seen`'s identical
+        break from every other mutator on this class — no lifecycle check, no `updated_at`
+        bump, no recorded `DomainEvent`: this is a durable record of a fact the device-gateway
+        process already decided and acted on, not a business decision made here. Callable
+        regardless of `lifecycle_state`, same reasoning as `record_last_seen`."""
+        self.auth_key_hash = auth_key_hash
+
     def register_camera(
         self,
         *,

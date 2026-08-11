@@ -12,6 +12,7 @@ import asyncio
 import unittest
 from datetime import datetime, timezone
 
+from src.events.publisher_port import LoggingEventPublisher
 from src.vendors.jt808.dispatcher.general_response import RESULT_FAILURE, RESULT_SUCCESS
 from src.vendors.jt808.dispatcher.handler import HandlerContext
 from src.vendors.jt808.handlers.authentication_handler import TerminalAuthenticationHandler
@@ -29,23 +30,35 @@ from src.session.device_session import DeviceConnectivityState
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
 
+_PHONE = "00000000013800138000"
+
 
 def _valid_registration_body(vehicle_identifier: bytes = b"PLATE01") -> bytes:
     return (
         (11).to_bytes(2, "big")
         + (100).to_bytes(2, "big")
-        + b"MFR01"
-        + b"MODEL-X".ljust(20, b"\x00")
-        + b"TERM001"
+        + b"MFR01".ljust(11, b"\x00")
+        + b"MODEL-X".ljust(30, b"\x00")
+        + b"TERM001".ljust(30, b"\x00")
         + bytes([2])
         + vehicle_identifier
+    )
+
+
+def _auth_body(code: str, *, imei: bytes = b"1" * 15, software_version: bytes = b"") -> bytes:
+    encoded = code.encode("gbk")
+    return (
+        bytes([len(encoded)])
+        + encoded
+        + imei.ljust(15, b"\x00")[:15]
+        + software_version.ljust(20, b"\x00")[:20]
     )
 
 
 def _make_message(
     message_id: int,
     *,
-    terminal_id: str = "013800138000",
+    terminal_id: str = _PHONE,
     serial_no: int = 1,
     body: bytes = b"",
 ) -> InboundMessage:
@@ -108,10 +121,10 @@ class RegistrationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         port = FakeProvisioningPort()
-        port.registration_decisions["013800138000"] = RegistrationAuthorization(
+        port.registration_decisions[_PHONE] = RegistrationAuthorization(
             result=RegistrationResult.SUCCESS, auth_code="AUTHCODE1"
         )
-        handler = TerminalRegistrationHandler(port)
+        handler = TerminalRegistrationHandler(port, LoggingEventPublisher())
         message = _make_message(0x0100, serial_no=5, body=_valid_registration_body())
 
         result = await handler.handle(message, _make_context())
@@ -126,10 +139,10 @@ class RegistrationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         port = FakeProvisioningPort()
-        port.registration_decisions["013800138000"] = RegistrationAuthorization(
+        port.registration_decisions[_PHONE] = RegistrationAuthorization(
             result=RegistrationResult.TERMINAL_ALREADY_REGISTERED
         )
-        handler = TerminalRegistrationHandler(port)
+        handler = TerminalRegistrationHandler(port, LoggingEventPublisher())
         message = _make_message(0x0100, body=_valid_registration_body())
 
         result = await handler.handle(message, _make_context())
@@ -145,7 +158,7 @@ class RegistrationHandlerTests(unittest.IsolatedAsyncioTestCase):
         port = (
             FakeProvisioningPort()
         )  # no decision registered -> falls back to TERMINAL_NOT_FOUND
-        handler = TerminalRegistrationHandler(port)
+        handler = TerminalRegistrationHandler(port, LoggingEventPublisher())
         message = _make_message(0x0100, body=_valid_registration_body())
 
         result = await handler.handle(message, _make_context())
@@ -157,10 +170,10 @@ class RegistrationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         port = FakeProvisioningPort()
-        handler = TerminalRegistrationHandler(port)
+        handler = TerminalRegistrationHandler(port, LoggingEventPublisher())
         message = _make_message(
             0x0100, body=b"\x00" * 10
-        )  # short of 37-byte fixed portion
+        )  # short of 76-byte fixed portion
 
         with self.assertRaises(MalformedFrameError):
             await handler.handle(message, _make_context())
@@ -169,16 +182,16 @@ class RegistrationHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_registration_does_not_create_a_device_session(self) -> None:
         port = FakeProvisioningPort()
-        port.registration_decisions["013800138000"] = RegistrationAuthorization(
+        port.registration_decisions[_PHONE] = RegistrationAuthorization(
             result=RegistrationResult.SUCCESS, auth_code="X"
         )
-        handler = TerminalRegistrationHandler(port)
+        handler = TerminalRegistrationHandler(port, LoggingEventPublisher())
         context = _make_context()
         message = _make_message(0x0100, body=_valid_registration_body())
 
         await handler.handle(message, context)
 
-        self.assertIsNone(context.device_sessions.resolve("013800138000"))
+        self.assertIsNone(context.device_sessions.resolve(_PHONE))
 
 
 class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
@@ -186,10 +199,10 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         port = FakeProvisioningPort()
-        port.valid_auth_codes["013800138000"] = "SECRET"
+        port.valid_auth_codes[_PHONE] = "SECRET"
         handler = TerminalAuthenticationHandler(port)
         context = _make_context("conn-1")
-        message = _make_message(0x0102, serial_no=7, body="SECRET".encode("gbk"))
+        message = _make_message(0x0102, serial_no=7, body=_auth_body("SECRET"))
 
         result = await handler.handle(message, context)
 
@@ -198,11 +211,11 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_body[4], RESULT_SUCCESS)
         self.assertFalse(result.close_connection_after)
 
-        session = context.device_sessions.resolve("013800138000")
+        session = context.device_sessions.resolve(_PHONE)
         self.assertIsNotNone(session)
         self.assertEqual(session.connection_id, "conn-1")
-        self.assertEqual(session.device_id, "device-013800138000")
-        self.assertEqual(session.vehicle_id, "vehicle-013800138000")
+        self.assertEqual(session.device_id, f"device-{_PHONE}")
+        self.assertEqual(session.vehicle_id, f"vehicle-{_PHONE}")
         self.assertEqual(session.organization_id, "org-1")
         self.assertEqual(session.state, DeviceConnectivityState.AUTHENTICATED)
 
@@ -210,24 +223,24 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         port = FakeProvisioningPort()
-        port.valid_auth_codes["013800138000"] = "SECRET"
+        port.valid_auth_codes[_PHONE] = "SECRET"
         handler = TerminalAuthenticationHandler(port)
         context = _make_context("conn-1")
-        message = _make_message(0x0102, body="WRONG".encode("gbk"))
+        message = _make_message(0x0102, body=_auth_body("WRONG"))
 
         result = await handler.handle(message, context)
 
         self.assertEqual(result.response_body[4], RESULT_FAILURE)
         self.assertTrue(result.close_connection_after)
         self.assertEqual(result.close_reason, "authentication_failed")
-        self.assertIsNone(context.device_sessions.resolve("013800138000"))
+        self.assertIsNone(context.device_sessions.resolve(_PHONE))
 
     async def test_invalid_authentication_code_for_unregistered_terminal_fails(
         self,
     ) -> None:
         port = FakeProvisioningPort()  # no valid codes registered at all
         handler = TerminalAuthenticationHandler(port)
-        message = _make_message(0x0102, body="ANYTHING".encode("gbk"))
+        message = _make_message(0x0102, body=_auth_body("ANYTHING"))
 
         result = await handler.handle(message, _make_context())
 
@@ -238,7 +251,7 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         port = FakeProvisioningPort()
-        port.valid_auth_codes["013800138000"] = "SECRET"
+        port.valid_auth_codes[_PHONE] = "SECRET"
         handler = TerminalAuthenticationHandler(port)
 
         superseded = []
@@ -257,23 +270,23 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         for serial in (1, 2, 3):
             result = await handler.handle(
-                _make_message(0x0102, serial_no=serial, body="SECRET".encode("gbk")),
+                _make_message(0x0102, serial_no=serial, body=_auth_body("SECRET")),
                 context,
             )
             self.assertFalse(result.close_connection_after)
 
-        self.assertEqual(port.auth_calls, [("013800138000", "SECRET")] * 3)
+        self.assertEqual(port.auth_calls, [(_PHONE, "SECRET")] * 3)
         self.assertEqual(
             superseded, []
         )  # same connection re-authenticating is not a supersede
-        session = device_sessions.resolve("013800138000")
+        session = device_sessions.resolve(_PHONE)
         self.assertEqual(session.connection_id, "conn-1")
 
     async def test_duplicate_authentication_from_a_different_connection_supersedes(
         self,
     ) -> None:
         port = FakeProvisioningPort()
-        port.valid_auth_codes["013800138000"] = "SECRET"
+        port.valid_auth_codes[_PHONE] = "SECRET"
         handler = TerminalAuthenticationHandler(port)
 
         closed: list[str] = []
@@ -286,23 +299,23 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await handler.handle(
-            _make_message(0x0102, body="SECRET".encode("gbk")),
+            _make_message(0x0102, body=_auth_body("SECRET")),
             HandlerContext(connection_id="conn-A", device_sessions=device_sessions),
         )
         await handler.handle(
-            _make_message(0x0102, body="SECRET".encode("gbk")),
+            _make_message(0x0102, body=_auth_body("SECRET")),
             HandlerContext(connection_id="conn-B", device_sessions=device_sessions),
         )
 
         self.assertEqual(closed, ["conn-A"])  # older connection superseded and closed
-        session = device_sessions.resolve("013800138000")
+        session = device_sessions.resolve(_PHONE)
         self.assertEqual(session.connection_id, "conn-B")
 
     async def test_reconnect_after_authentication_creates_fresh_session_on_new_connection(
         self,
     ) -> None:
         port = FakeProvisioningPort()
-        port.valid_auth_codes["013800138000"] = "SECRET"
+        port.valid_auth_codes[_PHONE] = "SECRET"
         handler = TerminalAuthenticationHandler(port)
 
         async def noop_close(cid, reason):
@@ -313,17 +326,17 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await handler.handle(
-            _make_message(0x0102, body="SECRET".encode("gbk")),
+            _make_message(0x0102, body=_auth_body("SECRET")),
             HandlerContext(connection_id="conn-1", device_sessions=device_sessions),
         )
-        await device_sessions.close("013800138000", reason="connection_closed")
-        self.assertIsNone(device_sessions.resolve("013800138000"))
+        await device_sessions.close(_PHONE, reason="connection_closed")
+        self.assertIsNone(device_sessions.resolve(_PHONE))
 
         await handler.handle(
-            _make_message(0x0102, body="SECRET".encode("gbk")),
+            _make_message(0x0102, body=_auth_body("SECRET")),
             HandlerContext(connection_id="conn-2", device_sessions=device_sessions),
         )
-        session = device_sessions.resolve("013800138000")
+        session = device_sessions.resolve(_PHONE)
         self.assertIsNotNone(session)
         self.assertEqual(session.connection_id, "conn-2")
 
@@ -331,7 +344,7 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         port = FakeProvisioningPort()
-        terminal_ids = [f"01380013{i:04d}" for i in range(10)]
+        terminal_ids = [f"01380013{i:04d}".rjust(20, "0") for i in range(10)]
         for terminal_id in terminal_ids:
             port.valid_auth_codes[terminal_id] = "SECRET"
         handler = TerminalAuthenticationHandler(port)
@@ -347,7 +360,7 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
             *[
                 handler.handle(
                     _make_message(
-                        0x0102, terminal_id=terminal_id, body="SECRET".encode("gbk")
+                        0x0102, terminal_id=terminal_id, body=_auth_body("SECRET")
                     ),
                     HandlerContext(
                         connection_id=f"conn-{terminal_id}",

@@ -132,7 +132,7 @@ class Jt808Server(DeviceProtocolAdapter):
             )
         self._handler_registry.register(
             message_ids.REGISTRATION,
-            TerminalRegistrationHandler(self._device_provisioning),
+            TerminalRegistrationHandler(self._device_provisioning, self._event_publisher),
         )
         self._handler_registry.register(
             message_ids.AUTHENTICATION,

@@ -45,6 +45,11 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from src.registry.device_registry_projection import DeviceRegistryProjection
+from src.vendors.jt808.handlers.auth_code_hashing import (
+    generate_code,
+    hash_code,
+    verify_code,
+)
 
 if TYPE_CHECKING:
     from src.vendors.jt808.handlers.registration_body import RegistrationRequest
@@ -66,7 +71,8 @@ class RegistrationResult(str, Enum):
 @dataclass(frozen=True)
 class RegistrationAuthorization:
     result: RegistrationResult
-    auth_code: str | None = None  # present only when result == SUCCESS, §8.6
+    auth_code: str | None = None  # present only when result == SUCCESS, §8.6 — plaintext, wire-bound
+    auth_key_hash: str | None = None  # ADR-0025 §3 — the hash to persist to Device.auth_key_hash
     device_id: str | None = None
     vehicle_id: str | None = None
     organization_id: str | None = None
@@ -110,8 +116,9 @@ class NullDeviceProvisioningPort(DeviceProvisioningPort):
 
 class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
     """The real, non-interim implementation of the *identity/provisioning* half of this port —
-    resolves a JT/T 808 terminal phone (`InboundMessage.terminal_id`, header `BCD[6]`, the only
-    field this codebase ever uses for identity — see `registration_body.py`'s own docstring on
+    resolves a JT/T 808 terminal phone (`InboundMessage.terminal_id`, header `BCD[10]` per the
+    2019 field-width rework, ADR-0025 §2 — the only field this codebase ever uses for identity;
+    see `registration_body.py`'s own docstring on
     why the body's separate `manufacturer_terminal_id` is parsed but not used for lookup) against
     the shared `registry.device_registry_projection.DeviceRegistryProjection` — the same
     vendor-agnostic projection `vendors.lsz.handlers.provisioning_port.
@@ -129,27 +136,33 @@ class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
     projection cannot evaluate. This mirrors `ProjectionBackedMdvrProvisioningPort`'s own
     identical "collapse to the one code this port can actually determine" precedent exactly.
 
-    **`authorize_registration`'s `auth_code` is deliberately always `None` on a `SUCCESS` result
-    — this is the exact, currently-unresolvable boundary this module's own docstring above (and
-    `docs/architecture/adr/0009-mdvr-vendor-protocol-device-plane.md`'s sibling reasoning for the
-    device-plane generally) already flags: JT808 Technical Design, the primary JT/T 808-2013
-    spec's own text, and Backend LLD describe three structurally different mechanisms for what
-    this string is and where it comes from (a device-held static secret checked against `Device.
-    auth_key_hash`; a platform-minted code issued here and echoed back in `0x0102`; a
-    Redis-held, rotating session token) — the repository does not contain enough authoritative
-    information to pick one, and the supplier has confirmed standalone JT808 documentation is
-    forthcoming specifically for this. Registering `None` here (rather than inventing a value)
-    means `registration_response.build_registration_response_body` sends an empty auth-code
-    field on success (wire-safe — the field is a length-prefixed `STRING`, so an empty one is
-    syntactically valid — but not meaningfully correct for a real device under any of the three
-    readings above) — a real device can be *identified and provisioned* at the registration step
-    today, but cannot complete a real `0x0102` round trip until this is resolved.**
+    **`0x0102` auth-code lifecycle now implemented per ADR-0025 §3** (the three-way conflict this
+    module's own docstring used to flag — JT808 Technical Design's device-held-static-secret
+    reading, the primary spec's platform-issued-code reading, Backend LLD's Redis-rotating-token
+    reading — is resolved by that ADR in favor of the platform-issued/echoed-back model,
+    corroborated directly by the new supplier specification's own §5.1.6/§5.1.7/§7.1.1/§7.1.2):
+    `authorize_registration` mints a fresh, cryptographically random code
+    (`auth_code_hashing.generate_code`) on every `SUCCESS` result, hashes it
+    (`auth_code_hashing.hash_code`, PBKDF2-HMAC-SHA256) into the projection record's own
+    `auth_key_hash` field — the *local*, in-process copy this port's `verify_auth_code` checks
+    against, matching `Device.auth_key_hash`'s own docstring ("device authentication happens in
+    the JT808 service against the device-registry projection," not against Postgres directly).
+    The plaintext code is returned once, embedded in `0x8100`'s wire response
+    (`RegistrationAuthorization.auth_code`); the hash is returned too
+    (`RegistrationAuthorization.auth_key_hash`) so the calling handler can publish a
+    `DeviceAuthCodeIssued` event, letting `fleet_device`'s own `Device.auth_key_hash` column stay
+    a durable mirror of this record (`events/subscribers.py`-side, backend). **Every successful
+    `0x0100` mints a brand-new code, unconditionally** — this is the literal reading of ADR-0025
+    §3's "rotates only on a fresh, successful `0x0100` registration": a normal reconnect never
+    resends `0x0100` at all under the 2019 spec's own §3.5.3 semantics (echoes the previously
+    issued code straight to `0x0102`), so any `0x0100` this port sees again *is* by definition a
+    fresh registration (e.g. a factory reset) — no extra "is this the first time" state is
+    tracked, since ADR-0025 §3 defines none.
 
-    **`verify_auth_code` deliberately always returns `is_valid=False` for the identical reason —
-    not a bug, not a fail-closed oversight left over from `NullDeviceProvisioningPort`, but this
-    port's own explicit, documented refusal to guess which of the three models above to check
-    against.** Do not implement this method's real comparison logic without the supplier's JT808
-    documentation resolving which mechanism RAAD's actual procured terminals use.
+    `verify_auth_code` hashes the presented code with the same algorithm and compares it
+    (`hmac.compare_digest`, inside `auth_code_hashing.verify_code`) against the projection
+    record's stored `auth_key_hash` — a terminal with no record, an unprovisionable record, or no
+    `auth_key_hash` yet minted (never registered through this port) all fail closed.
     """
 
     def __init__(self, projection: DeviceRegistryProjection) -> None:
@@ -161,9 +174,15 @@ class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
         record = self._projection.lookup_by_terminal_id(terminal_phone)
         if record is None or not record.is_provisionable:
             return RegistrationAuthorization(result=RegistrationResult.TERMINAL_NOT_FOUND)
+
+        auth_code = generate_code()
+        auth_key_hash = hash_code(auth_code)
+        record.auth_key_hash = auth_key_hash
+
         return RegistrationAuthorization(
             result=RegistrationResult.SUCCESS,
-            auth_code=None,  # see class docstring — the unresolved authentication blocker
+            auth_code=auth_code,
+            auth_key_hash=auth_key_hash,
             device_id=record.device_id,
             vehicle_id=record.vehicle_id,
             organization_id=record.organization_id,
@@ -172,6 +191,16 @@ class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
     async def verify_auth_code(
         self, *, terminal_phone: str, auth_code: str
     ) -> AuthenticationResult:
-        # Deliberately fail-closed pending the supplier's JT808 documentation — see class
-        # docstring. Never guess a comparison here.
-        return AuthenticationResult(is_valid=False)
+        record = self._projection.lookup_by_terminal_id(terminal_phone)
+        if record is None or not record.is_provisionable or record.auth_key_hash is None:
+            return AuthenticationResult(is_valid=False)
+
+        if not verify_code(auth_code, record.auth_key_hash):
+            return AuthenticationResult(is_valid=False)
+
+        return AuthenticationResult(
+            is_valid=True,
+            device_id=record.device_id,
+            vehicle_id=record.vehicle_id,
+            organization_id=record.organization_id,
+        )

@@ -1,5 +1,6 @@
-"""Terminal Registration Response (`0x8100`) body encoding — JT/T 808-2013 §8.6 Table 8,
-verbatim:
+"""Terminal Registration Response (`0x8100`) body encoding — confirmed unchanged between
+JT/T 808-2013 §8.6 Table 8 and JT/T 808-2019 (`mdvrdocs/MDVR-808-1078-spec.pdf` §5.1.6
+Table 5.5, ADR-0025 §2) — verbatim:
 
 | Offset | Field              | Type   | Notes |
 |--------|--------------------|--------|-------|

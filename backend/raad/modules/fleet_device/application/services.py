@@ -40,6 +40,7 @@ from raad.modules.fleet_device.application.commands import (
     ReactivateDeviceCommand,
     ReassignDeviceCommand,
     ReceiveDeviceInventoryItemCommand,
+    RecordAuthKeyHashCommand,
     RecordDeviceSeenCommand,
     RegisterCameraCommand,
     RegisterDeviceCommand,
@@ -355,6 +356,26 @@ class DeviceApplicationService:
                 )
                 return
             device.record_last_seen(command.seen_at, is_online=command.is_online)
+            await uow.commit()
+
+    async def record_auth_key_hash(
+        self, command: RecordAuthKeyHashCommand, *, uow: FleetDeviceUnitOfWork
+    ) -> None:
+        """ADR-0025 §3 — the application-layer entry point `events/subscribers.py`'s
+        `DeviceAuthCodeIssued` processor calls. No-ops for an unknown `device_id`, mirroring
+        `record_device_seen`'s identical reasoning: the device-gateway process resolved this
+        `device_id` from its own projection at the moment of minting, but that projection can
+        race ahead of or fall behind this backend's own view in principle. Returns `None` — no
+        HTTP route calls this."""
+        async with uow:
+            device = await uow.devices.get(DeviceId(command.device_id))
+            if device is None:
+                logger.info(
+                    "auth_code_issued_event_for_unknown_device",
+                    extra={"device_id": command.device_id},
+                )
+                return
+            device.record_auth_key_hash(command.auth_key_hash)
             await uow.commit()
 
     async def register_camera(

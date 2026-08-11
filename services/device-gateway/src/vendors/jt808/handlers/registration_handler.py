@@ -18,10 +18,21 @@ code — none of §8.6's five documented codes mean "malformed" — so `parse_re
 is allowed to raise, and that exception reaches `MessageDispatcher`'s existing handler-error
 catch-all (Phase 9.4: logged, no response, connection untouched), rather than this handler
 inventing an undocumented sixth result code.
+
+**Publishes `DeviceAuthCodeIssued` on a successful registration** (ADR-0025 §3) — the
+provisioning port already minted and hashed a fresh `0x0102` credential into its own projection
+record (`provisioning_port.py`); this handler is the one with an injected `EventPublisher`
+(mirroring `LocationHandler`'s identical shape), so it publishes the resulting hash onward so
+`fleet_device`'s own `Device.auth_key_hash` column can mirror it durably
+(`backend/raad/modules/fleet_device/events/subscribers.py`'s new `DeviceAuthCodeProcessor`).
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+from src.events.device_auth_code_issued import DeviceAuthCodeIssued
+from src.events.publisher_port import EventPublisher
 from src.vendors.jt808.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
 from src.vendors.jt808.handlers.provisioning_port import DeviceProvisioningPort, RegistrationResult
 from src.vendors.jt808.handlers.registration_body import parse_registration_request
@@ -36,8 +47,11 @@ logger = get_logger("jt808.handlers.registration")
 
 
 class TerminalRegistrationHandler(MessageHandler):
-    def __init__(self, provisioning: DeviceProvisioningPort) -> None:
+    def __init__(
+        self, provisioning: DeviceProvisioningPort, event_publisher: EventPublisher
+    ) -> None:
         self._provisioning = provisioning
+        self._event_publisher = event_publisher
 
     async def handle(
         self, message: InboundMessage, context: HandlerContext
@@ -56,6 +70,24 @@ class TerminalRegistrationHandler(MessageHandler):
             terminal_id=message.terminal_id,
             result=authorization.result.value,
         )
+
+        if (
+            authorization.result == RegistrationResult.SUCCESS
+            and authorization.auth_key_hash is not None
+            and authorization.device_id is not None
+        ):
+            now = datetime.now(timezone.utc)
+            await self._event_publisher.publish(
+                DeviceAuthCodeIssued(
+                    terminal_id=message.terminal_id,
+                    organization_id=authorization.organization_id,
+                    vehicle_id=authorization.vehicle_id,
+                    device_id=authorization.device_id,
+                    auth_key_hash=authorization.auth_key_hash,
+                    event_time=now,
+                    received_at=now,
+                )
+            )
 
         body = build_registration_response_body(
             original_serial_no=message.serial_no,

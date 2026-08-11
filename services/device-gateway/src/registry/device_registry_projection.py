@@ -44,6 +44,15 @@ class DeviceRecord:
     serial_number: str | None
     is_active: bool
     vehicle_id: str | None
+    #: ADR-0025 §3: the JT/T 808 `0x0102` credential's hash, minted and set locally by
+    #: `ProjectionBackedJt808ProvisioningPort.authorize_registration` on a successful `0x0100` —
+    #: never fed by a broker event the way every other field on this record is (`fleet_device`
+    #: has no reason to ever originate this value; the device-gateway process is the one that
+    #: mints it). `None` until a first successful registration mints one. Same durability
+    #: characteristics as every other field here: lost on a device-gateway process restart,
+    #: same as `is_active`/`vehicle_id` (this projection's own module docstring already accepts
+    #: that as a self-healing characteristic, not a gap this ADR needed to close).
+    auth_key_hash: str | None = None
 
     @property
     def is_provisionable(self) -> bool:

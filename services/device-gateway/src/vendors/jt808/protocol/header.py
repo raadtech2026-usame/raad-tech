@@ -1,52 +1,41 @@
-"""JT/T 808-2013 message header parsing (§4.4.3, Table 2 + Fig. 2). Fixed 12-byte base layout,
-big-endian (§4.3: "协议采用大端模式(big-endian)的网络字节序来传递字和双字" — words/dwords
-transmitted big-endian), plus an optional 4-byte subpackage block when the body-attributes
-subpackage bit is set:
+"""JT/T 808-2019 message header parsing (confirmed against `mdvrdocs/MDVR-808-1078-spec.pdf`
+§4.1 Table 4.1, §4.2 Table 4.2/4.3 — ADR-0025 §2). Fixed 17-byte base layout, big-endian (§4.3:
+words/dwords transmitted big-endian), plus an optional 4-byte subpackage block when the body-
+attributes subpackage bit is set:
 
 | Offset | Field                | Type    | Notes |
 |--------|----------------------|---------|-------|
 | 0      | message ID           | WORD    | |
-| 2      | body attributes      | WORD    | bit layout below |
-| 4      | terminal phone       | BCD[6]  | 12 packed BCD digits — §5's decoding note |
-| 10     | serial no            | WORD    | |
-| 12     | total packages       | WORD    | only present if body-attributes bit 13 is set |
-| 14     | package sequence     | WORD    | only present if body-attributes bit 13 is set; starts at 1 |
+| 2      | body attributes      | WORD    | bit layout below, Table 4.3 |
+| 4      | protocol version     | BYTE    | 2019 initial version number is 0x01 |
+| 5      | terminal phone       | BCD[10] | 20 packed BCD digits, left-zero-padded |
+| 15     | serial no            | WORD    | sender-maintained, cyclic from 0 |
+| 17     | total packages       | WORD    | only present if body-attributes bit 13 is set |
+| 19     | package sequence     | WORD    | only present if body-attributes bit 13 is set; starts at 1 |
 
-**Body-attributes bit layout (§4.4.2 Fig. 2, cross-checked against the prose immediately
-below it, which explicitly names bits 10-12 and bit 13 — the diagram's column order for the
-remaining two labels then fixes bits 0-9 and 14-15 unambiguously):**
-- bits 0-9 (10 bits): body length (max 1023 — a real protocol ceiling, distinct from
-  `protocol/framing.py`'s `max_frame_size`, which is this service's own defensive buffer cap)
-- bits 10-12 (3 bits): encryption method — prose verbatim: "bit10~bit12 为数据加密标识位；当此
-  三位都为0，表示消息体不加密；当第10位为1，表示消息体经过RSA算法加密；其他保留" ("bits
-  10-12 are the encryption flag; all-zero means unencrypted; bit 10 = 1 means RSA-encrypted;
-  other combinations reserved")
-- bit 13 (1 bit): subpackage flag — prose verbatim: "当消息体属性中第13位为1时表示消息体为长
-  消息，进行分包发送处理" ("when bit 13 is 1, the body is a long message, sent as subpackages")
-- bits 14-15 (2 bits): reserved
+**Body-attributes bit layout (Table 4.3, confirmed verbatim):**
+- bits 0-9 (10 bits): body length (max 1023)
+- bits 10-12 (3 bits): encryption method — 000 unencrypted, 001 RSA-encrypted, other reserved
+- bit 13 (1 bit): subpackage flag
+- bit 14 (1 bit): version flag — "JT/T 808-2019 固定为1" (fixed to 1 for 2019). Decoded and
+  exposed (`MessageHeader.is_2019_version`) but not enforced — a device sending bit14=0 is not
+  rejected by this parser (no approved document specifies that behavior; see module docstring
+  discipline elsewhere in this deployable: don't invent validation beyond what's specified).
+- bit 15 (1 bit): reserved, should be 0
 
-**Terminal phone decoding (§4.4.3 Table 2's own note, restated at §5):** "根据安装后终端自身的
-手机号转换。手机号不足12位，则在前补充数字" — the BCD[6] field is the terminal's own phone
-number, left-zero-padded to 12 digits by the terminal itself; this parser only decodes the 6
-packed-BCD bytes into their 12 decimal digits (each byte = 2 digits, per §4.2's "BCD[n]: 8421
-码" = standard packed BCD), it does not (and cannot) recover which padding convention the
-terminal applied.
+**This is a straight rework to the 2019 shape, not a dual-mode 2013/2019 parser.** ADR-0025
+confirms the procured hardware is JT/T 808-2019; no approved document asks this parser to also
+accept 2013-shaped frames, and `vendors/lsz/` remains the fallback adapter for any device that
+turns out not to speak this shape.
 
 **This module deliberately parses no message *body* — only the header.** Message-specific body
-layouts (§8, e.g. 0x0100 registration, 0x0102 auth, 0x0200 location) are a Handler's job
-(JT808 Technical Design §8), a later phase.
+layouts (§5/§6, e.g. 0x0100 registration, 0x0102 auth, 0x0200 location, JT/T 1078 signaling) are
+a Handler's job, not this one's.
 
 **Encryption is recorded, never decrypted.** RSA body decryption is a security/business
-capability this phase does not build (no key material, no RSA implementation) — `encryption_
-method` is surfaced on the parsed header/`InboundMessage` precisely so a later phase never
-mistakes an encrypted body for plaintext; this phase passes the (possibly encrypted) body
-bytes through unexamined either way.
-
-**2013 edition only.** The attached primary spec is JT/T 808-2013; this parser does not attempt
-JT/T 808-2019 compatibility (different terminal-ID width/scheme — flagged as a [PROPOSED],
-not-yet-adopted delta in the unadopted Device Plane draft's own ADR-808-3 discussion). Vendor/
-edition detection is the Anti-Corruption Layer's job (Phase 2 §5.1, Backend LLD §6's vendor
-ACL), not this base parser's.
+capability not built here — `encryption_method` is surfaced on the parsed header/`InboundMessage`
+precisely so a later phase never mistakes an encrypted body for plaintext; this phase passes the
+(possibly encrypted) body bytes through unexamined either way.
 """
 
 from __future__ import annotations
@@ -55,15 +44,18 @@ from dataclasses import dataclass
 
 from src.vendors.jt808.protocol.exceptions import MalformedFrameError
 
-_HEADER_BASE_LENGTH = (
-    12  # message_id(2) + body_attributes(2) + terminal_phone(6) + serial_no(2)
-)
+_HEADER_BASE_LENGTH = 17  # message_id(2) + body_attributes(2) + protocol_version(1) + terminal_phone(10) + serial_no(2)
 _SUBPACKAGE_BLOCK_LENGTH = 4  # total_packages(2) + package_sequence(2)
+_TERMINAL_PHONE_BYTES = 10
+_TERMINAL_PHONE_DIGITS = 20
 
 _BODY_LENGTH_MASK = 0b0000_0011_1111_1111  # bits 0-9
 _ENCRYPTION_MASK = 0b0001_1100_0000_0000  # bits 10-12
 _ENCRYPTION_SHIFT = 10
 _SUBPACKAGE_BIT = 0b0010_0000_0000_0000  # bit 13
+_VERSION_FLAG_BIT = 0b0100_0000_0000_0000  # bit 14
+
+JT808_2019_PROTOCOL_VERSION = 0x01  # §4.2 Table 4.2's own stated initial version number
 
 
 @dataclass(frozen=True)
@@ -72,6 +64,8 @@ class MessageHeader:
     body_length: int
     encryption_method: int
     is_subpackaged: bool
+    protocol_version: int
+    is_2019_version: bool
     terminal_phone: str
     serial_no: int
     total_packages: int | None
@@ -79,27 +73,23 @@ class MessageHeader:
 
 
 def encode_bcd_phone(terminal_phone: str) -> bytes:
-    """12 decimal digits -> BCD[6] (Phase 9.4 addition — the encode-side mirror of
-    `_decode_bcd_phone`, needed to address outbound response frames back to the same
-    terminal, §4.4.3 Table 2). Not private (`encode_`, not `_encode_`): `protocol/encoder.py`
-    is this function's only caller, mirroring `_decode_bcd_phone`'s privacy within this
-    module — but since it is used cross-module, it is named without the leading underscore.
-    """
-    if len(terminal_phone) != 12 or not terminal_phone.isdigit():
+    """20 decimal digits -> BCD[10] (the encode-side mirror of `_decode_bcd_phone`, needed to
+    address outbound response/command frames back to the same terminal, Table 4.2)."""
+    if len(terminal_phone) != _TERMINAL_PHONE_DIGITS or not terminal_phone.isdigit():
         raise MalformedFrameError(
-            f"terminal_phone must be exactly 12 decimal digits: {terminal_phone!r}."
+            f"terminal_phone must be exactly {_TERMINAL_PHONE_DIGITS} decimal digits: "
+            f"{terminal_phone!r}."
         )
     result = bytearray()
-    for i in range(0, 12, 2):
+    for i in range(0, _TERMINAL_PHONE_DIGITS, 2):
         high, low = int(terminal_phone[i]), int(terminal_phone[i + 1])
         result.append((high << 4) | low)
     return bytes(result)
 
 
 def _decode_bcd_phone(data: bytes) -> str:
-    """BCD[6] -> 12 decimal digits (§4.2: "BCD[n]: 8421 码, n 字节" — standard packed BCD, each
-    nibble one decimal digit, most-significant nibble first per byte, most-significant byte
-    first per §4.3's big-endian convention)."""
+    """BCD[10] -> 20 decimal digits (§4.2's packed-BCD convention: each nibble one decimal
+    digit, most-significant nibble first per byte, most-significant byte first)."""
     digits = []
     for byte in data:
         high, low = (byte >> 4) & 0x0F, byte & 0x0F
@@ -114,7 +104,7 @@ def _decode_bcd_phone(data: bytes) -> str:
 
 def parse_header(data: bytes) -> tuple[MessageHeader, int]:
     """Returns `(header, header_length)` — `header_length` is the byte offset where the body
-    begins (12, or 16 if subpackaged), so the caller (`parser.py`) knows where to slice.
+    begins (17, or 21 if subpackaged), so the caller (`parser.py`) knows where to slice.
     """
     if len(data) < _HEADER_BASE_LENGTH:
         raise MalformedFrameError(
@@ -127,8 +117,10 @@ def parse_header(data: bytes) -> tuple[MessageHeader, int]:
     body_length = body_attributes & _BODY_LENGTH_MASK
     encryption_method = (body_attributes & _ENCRYPTION_MASK) >> _ENCRYPTION_SHIFT
     is_subpackaged = bool(body_attributes & _SUBPACKAGE_BIT)
-    terminal_phone = _decode_bcd_phone(data[4:10])
-    serial_no = int.from_bytes(data[10:12], "big")
+    is_2019_version = bool(body_attributes & _VERSION_FLAG_BIT)
+    protocol_version = data[4]
+    terminal_phone = _decode_bcd_phone(data[5 : 5 + _TERMINAL_PHONE_BYTES])
+    serial_no = int.from_bytes(data[15:17], "big")
 
     header_length = _HEADER_BASE_LENGTH
     total_packages: int | None = None
@@ -149,6 +141,8 @@ def parse_header(data: bytes) -> tuple[MessageHeader, int]:
         body_length=body_length,
         encryption_method=encryption_method,
         is_subpackaged=is_subpackaged,
+        protocol_version=protocol_version,
+        is_2019_version=is_2019_version,
         terminal_phone=terminal_phone,
         serial_no=serial_no,
         total_packages=total_packages,

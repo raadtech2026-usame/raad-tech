@@ -1,8 +1,14 @@
-"""`TerminalAuthenticationHandler` (`0x0102`, Phase 9.5; JT808 Technical Design §4/§5/§8, JT/T
-808-2013 §8.8). Decodes the auth code (§4.2: `STRING`, GBK), asks the injected
-`DeviceProvisioningPort` to verify it, and replies via the general response (`0x8001`,
-`dispatcher/general_response.py` — Phase 9.4 infrastructure, reused as-is: §8's handler table
-says Auth replies `0x8001`, not a dedicated message type the way Registration's `0x8100` is).
+"""`TerminalAuthenticationHandler` (`0x0102`, JT808 Technical Design §4/§5/§8; wire shape per
+JT/T 808-2019, `mdvrdocs/MDVR-808-1078-spec.pdf` §5.1.7 Table 5.6, ADR-0025 §2/§3). Parses the
+length-prefixed auth code + IMEI + software version (`authentication_body.py`), asks the
+injected `DeviceProvisioningPort` to verify the auth code, and replies via the general response
+(`0x8001`, `dispatcher/general_response.py` — reused as-is: §8's handler table says Auth replies
+`0x8001`, not a dedicated message type the way Registration's `0x8100` is).
+
+**IMEI/software version are logged, not authorization inputs** — see `authentication_body.py`'s
+own module docstring for why cross-checking IMEI against `fleet_device.Device.imei` is
+deliberately not built (no approved document specifies it; ADR-0025 §3 is the sole authorization
+design this phase implements).
 
 **On success:** binds the session — `context.device_sessions.create(...)` (Phase 9.2's
 `DeviceSessionManager`, "after auth" per its own contract) — this *is* "session binding after
@@ -41,10 +47,10 @@ from src.vendors.jt808.dispatcher.general_response import (
     build_general_response_body,
 )
 from src.vendors.jt808.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
+from src.vendors.jt808.handlers.authentication_body import parse_authentication_request
 from src.vendors.jt808.handlers.provisioning_port import DeviceProvisioningPort
 from src.logging_setup import get_logger, log_with_fields
 from src.vendors.jt808.protocol.message import InboundMessage
-from src.vendors.jt808.protocol.strings import decode_gbk_string
 
 logger = get_logger("jt808.handlers.authentication")
 
@@ -56,10 +62,10 @@ class TerminalAuthenticationHandler(MessageHandler):
     async def handle(
         self, message: InboundMessage, context: HandlerContext
     ) -> HandlerResult:
-        auth_code = decode_gbk_string(message.body)
+        request = parse_authentication_request(message.body)
 
         result = await self._provisioning.verify_auth_code(
-            terminal_phone=message.terminal_id, auth_code=auth_code
+            terminal_phone=message.terminal_id, auth_code=request.auth_code
         )
 
         if not result.is_valid:
@@ -69,6 +75,8 @@ class TerminalAuthenticationHandler(MessageHandler):
                 "authentication_failed",
                 connection_id=context.connection_id,
                 terminal_id=message.terminal_id,
+                imei=request.imei,
+                software_version=request.software_version,
             )
             body = build_general_response_body(
                 original_serial_no=message.serial_no,
@@ -95,6 +103,8 @@ class TerminalAuthenticationHandler(MessageHandler):
             "authentication_succeeded",
             connection_id=context.connection_id,
             terminal_id=message.terminal_id,
+            imei=request.imei,
+            software_version=request.software_version,
         )
         body = build_general_response_body(
             original_serial_no=message.serial_no,

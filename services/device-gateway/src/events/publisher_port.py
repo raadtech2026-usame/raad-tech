@@ -31,6 +31,7 @@ from abc import ABC, abstractmethod
 from typing import Union
 
 from src.events.device_alarm_raised import DeviceAlarmRaised
+from src.events.device_auth_code_issued import DeviceAuthCodeIssued
 from src.events.device_offline import DeviceOffline
 from src.events.device_online import DeviceOnline
 from src.events.device_position_reported import DevicePositionReported
@@ -38,7 +39,13 @@ from src.logging_setup import get_logger, log_with_fields
 
 logger = get_logger("device_gateway.events.publisher")
 
-DeviceEvent = Union[DevicePositionReported, DeviceOnline, DeviceOffline, DeviceAlarmRaised]
+DeviceEvent = Union[
+    DevicePositionReported,
+    DeviceOnline,
+    DeviceOffline,
+    DeviceAlarmRaised,
+    DeviceAuthCodeIssued,
+]
 
 
 class EventPublisher(ABC):
@@ -103,5 +110,16 @@ class LoggingEventPublisher(EventPublisher):
                 terminal_id=event.terminal_id,
                 alarm_type=event.alarm_type,
                 alarm_flags=event.alarm_flags,
+                event_time=event.event_time.isoformat(),
+            )
+        elif isinstance(event, DeviceAuthCodeIssued):
+            log_with_fields(
+                logger,
+                20,
+                "device_auth_code_issued",
+                organization_id=event.organization_id,
+                vehicle_id=event.vehicle_id,
+                device_id=event.device_id,
+                terminal_id=event.terminal_id,
                 event_time=event.event_time.isoformat(),
             )

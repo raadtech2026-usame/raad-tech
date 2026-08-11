@@ -35,23 +35,29 @@ from src.vendors.jt808.protocol.strings import encode_gbk_string
 from src.vendors.jt808.server import Jt808Server
 from tests.test_position_body import _build_body
 
-TERMINAL_PHONE = "013800138000"
+TERMINAL_PHONE = "00000000013800138000"
 AUTH_CODE = "GRANTED-CODE-1"
 
 
 def build_wire_frame(
     message_id: int, terminal_phone: str, serial_no: int, body: bytes = b""
 ) -> bytes:
-    body_attrs = len(body) & 0x03FF
+    body_attrs = (len(body) & 0x03FF) | (1 << 14)  # version flag, JT/T 808-2019 fixed to 1
     header = (
         message_id.to_bytes(2, "big")
         + body_attrs.to_bytes(2, "big")
+        + bytes([0x01])  # protocol version
         + encode_bcd_phone(terminal_phone)
         + serial_no.to_bytes(2, "big")
     )
     payload = header + body
     checksum = compute_checksum(payload)
     return bytes([0x7E]) + escape(payload + bytes([checksum])) + bytes([0x7E])
+
+
+def auth_body(code: str) -> bytes:
+    encoded = encode_gbk_string(code)
+    return bytes([len(encoded)]) + encoded + b"\x00" * 15 + b"\x00" * 20
 
 
 def bulk_body(item_bodies: list[bytes], *, position_data_type: int = 1) -> bytes:
@@ -121,7 +127,7 @@ class PositionPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         writer.write(
             build_wire_frame(
-                0x0102, TERMINAL_PHONE, 1, body=encode_gbk_string(AUTH_CODE)
+                0x0102, TERMINAL_PHONE, 1, body=auth_body(AUTH_CODE)
             )
         )
         await writer.drain()

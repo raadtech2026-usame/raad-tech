@@ -25,17 +25,18 @@ from src.vendors.jt808.protocol.parser import PacketParser
 from src.vendors.jt808.protocol.strings import encode_gbk_string
 from src.vendors.jt808.server import Jt808Server
 
-TERMINAL_PHONE = "013800138000"
+TERMINAL_PHONE = "00000000013800138000"
 AUTH_CODE = "GRANTED-CODE-1"
 
 
 def build_wire_frame(
     message_id: int, terminal_phone: str, serial_no: int, body: bytes = b""
 ) -> bytes:
-    body_attrs = len(body) & 0x03FF
+    body_attrs = (len(body) & 0x03FF) | (1 << 14)  # version flag, JT/T 808-2019 fixed to 1
     header = (
         message_id.to_bytes(2, "big")
         + body_attrs.to_bytes(2, "big")
+        + bytes([0x01])  # protocol version
         + encode_bcd_phone(terminal_phone)
         + serial_no.to_bytes(2, "big")
     )
@@ -48,12 +49,17 @@ def registration_body(vehicle_identifier: bytes = b"PLATE01") -> bytes:
     return (
         (11).to_bytes(2, "big")
         + (100).to_bytes(2, "big")
-        + b"MFR01"
-        + b"MODEL-X".ljust(20, b"\x00")
-        + b"TERM001"
+        + b"MFR01".ljust(11, b"\x00")
+        + b"MODEL-X".ljust(30, b"\x00")
+        + b"TERM001".ljust(30, b"\x00")
         + bytes([2])
         + vehicle_identifier
     )
+
+
+def auth_body(code: str) -> bytes:
+    encoded = encode_gbk_string(code)
+    return bytes([len(encoded)]) + encoded + b"\x00" * 15 + b"\x00" * 20
 
 
 class ScriptedProvisioningPort(DeviceProvisioningPort):
@@ -133,7 +139,7 @@ class AuthenticationRegistrationIntegrationTests(unittest.IsolatedAsyncioTestCas
 
         writer.write(
             build_wire_frame(
-                0x0102, TERMINAL_PHONE, 2, body=encode_gbk_string(granted_code)
+                0x0102, TERMINAL_PHONE, 2, body=auth_body(granted_code)
             )
         )
         await writer.drain()
@@ -182,7 +188,7 @@ class AuthenticationRegistrationIntegrationTests(unittest.IsolatedAsyncioTestCas
         reader, writer = await self._open_client()
         writer.write(
             build_wire_frame(
-                0x0102, TERMINAL_PHONE, 1, body=encode_gbk_string("WRONG-CODE")
+                0x0102, TERMINAL_PHONE, 1, body=auth_body("WRONG-CODE")
             )
         )
         await writer.drain()
@@ -204,7 +210,7 @@ class AuthenticationRegistrationIntegrationTests(unittest.IsolatedAsyncioTestCas
         reader_a, writer_a = await self._open_client()
         writer_a.write(
             build_wire_frame(
-                0x0102, TERMINAL_PHONE, 1, body=encode_gbk_string(AUTH_CODE)
+                0x0102, TERMINAL_PHONE, 1, body=auth_body(AUTH_CODE)
             )
         )
         await writer_a.drain()
@@ -213,7 +219,7 @@ class AuthenticationRegistrationIntegrationTests(unittest.IsolatedAsyncioTestCas
         reader_b, writer_b = await self._open_client()
         writer_b.write(
             build_wire_frame(
-                0x0102, TERMINAL_PHONE, 1, body=encode_gbk_string(AUTH_CODE)
+                0x0102, TERMINAL_PHONE, 1, body=auth_body(AUTH_CODE)
             )
         )
         await writer_b.drain()
@@ -254,7 +260,7 @@ class AuthenticationRegistrationIntegrationTests(unittest.IsolatedAsyncioTestCas
         reader, writer = await self._open_client()
         writer.write(
             build_wire_frame(
-                0x0102, TERMINAL_PHONE, 1, body=encode_gbk_string(AUTH_CODE)
+                0x0102, TERMINAL_PHONE, 1, body=auth_body(AUTH_CODE)
             )
         )
         await writer.drain()

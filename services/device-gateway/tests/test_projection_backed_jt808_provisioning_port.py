@@ -4,12 +4,12 @@ provisioning port, backed directly by a `DeviceRegistryProjection` instance. Mir
 specific rejection paths (retired, activated-but-unassigned) that file's own suite doesn't need
 to enumerate separately.
 
-**Does not test `verify_auth_code`'s real semantics** — it has none yet, deliberately: JT808
-Technical Design, the primary JT/T 808-2013 spec's own text, and Backend LLD describe three
-different, mutually exclusive auth-code mechanisms, and the repository does not contain enough
-authoritative information to pick one (see `provisioning_port.py`'s own class-level docstring).
-The one test here for `verify_auth_code` documents that deliberate, fail-closed gap — it is not a
-placeholder for future real coverage of a *guessed* mechanism.
+**`verify_auth_code`'s real semantics are now resolved and tested (ADR-0025 §3)** — the earlier
+three-way conflict (JT808 Technical Design, the primary JT/T 808 spec, Backend LLD) is resolved
+in favor of the platform-issued/echoed-back model: `authorize_registration` mints and hashes a
+fresh code on every `SUCCESS`, `verify_auth_code` checks a presented code against that hash. This
+suite covers the full mint -> verify round trip, a wrong code failing closed, and a terminal that
+was never registered through this port (no `auth_key_hash` minted yet) also failing closed.
 """
 
 import unittest
@@ -52,15 +52,17 @@ class ProjectionBackedJt808ProvisioningPortTests(unittest.IsolatedAsyncioTestCas
         self.assertEqual(result.vehicle_id, "vehicle-1")
         self.assertEqual(result.organization_id, "org-1")
 
-    async def test_success_never_fabricates_an_auth_code(self) -> None:
-        """The deliberate authentication blocker — see module/class docstring. `auth_code` must
-        stay `None` here, never a guessed value, until the supplier's JT808 documentation
-        resolves which of the three documented mechanisms RAAD's terminals actually use."""
+    async def test_success_mints_a_fresh_auth_code_and_its_hash(self) -> None:
+        """ADR-0025 §3: a successful registration mints a plaintext code (for the `0x8100` wire
+        response) and its hash (`RegistrationAuthorization.auth_key_hash`, for the
+        `DeviceAuthCodeIssued` event) — never `None` for either on `SUCCESS`."""
         port = ProjectionBackedJt808ProvisioningPort(_provisionable_projection())
         result = await port.authorize_registration(
             terminal_phone="013800138000", request=None
         )
-        self.assertIsNone(result.auth_code)
+        self.assertIsNotNone(result.auth_code)
+        self.assertIsNotNone(result.auth_key_hash)
+        self.assertNotEqual(result.auth_code, result.auth_key_hash)
 
     async def test_unknown_terminal_id_is_rejected(self) -> None:
         port = ProjectionBackedJt808ProvisioningPort(_provisionable_projection())
@@ -166,14 +168,47 @@ class ProjectionBackedJt808ProvisioningPortTests(unittest.IsolatedAsyncioTestCas
         self.assertEqual(result_b.organization_id, "org-B")
         self.assertEqual(result_b.vehicle_id, "vehicle-B")
 
-    async def test_verify_auth_code_is_deliberately_unresolved_and_always_fails_closed(
-        self,
-    ) -> None:
-        """Not a bug, not a placeholder for guessed logic — see class docstring. Must stay
-        fail-closed until the supplier's JT808 documentation resolves the auth-code mechanism."""
+    async def test_verify_auth_code_with_the_correct_minted_code_succeeds(self) -> None:
+        """ADR-0025 §3's full mint -> verify round trip: the plaintext code
+        `authorize_registration` returned is exactly what a real terminal echoes back on
+        `0x0102`, and it must verify successfully against the hash minted moments before."""
+        port = ProjectionBackedJt808ProvisioningPort(_provisionable_projection())
+        registration = await port.authorize_registration(
+            terminal_phone="013800138000", request=None
+        )
+
+        result = await port.verify_auth_code(
+            terminal_phone="013800138000", auth_code=registration.auth_code
+        )
+
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.device_id, "device-1")
+        self.assertEqual(result.vehicle_id, "vehicle-1")
+        self.assertEqual(result.organization_id, "org-1")
+
+    async def test_verify_auth_code_with_the_wrong_code_fails_closed(self) -> None:
+        port = ProjectionBackedJt808ProvisioningPort(_provisionable_projection())
+        await port.authorize_registration(terminal_phone="013800138000", request=None)
+
+        result = await port.verify_auth_code(
+            terminal_phone="013800138000", auth_code="WRONG-CODE"
+        )
+
+        self.assertFalse(result.is_valid)
+
+    async def test_verify_auth_code_before_any_registration_fails_closed(self) -> None:
+        """A terminal never seen by `authorize_registration` has no `auth_key_hash` minted yet —
+        must fail closed, not raise."""
         port = ProjectionBackedJt808ProvisioningPort(_provisionable_projection())
         result = await port.verify_auth_code(
             terminal_phone="013800138000", auth_code="ANYTHING"
+        )
+        self.assertFalse(result.is_valid)
+
+    async def test_verify_auth_code_for_unknown_terminal_fails_closed(self) -> None:
+        port = ProjectionBackedJt808ProvisioningPort(_provisionable_projection())
+        result = await port.verify_auth_code(
+            terminal_phone="never-seen", auth_code="ANYTHING"
         )
         self.assertFalse(result.is_valid)
 

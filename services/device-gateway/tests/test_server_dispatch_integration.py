@@ -19,14 +19,17 @@ from src.vendors.jt808.protocol.header import encode_bcd_phone
 from src.vendors.jt808.protocol.parser import PacketParser
 from src.vendors.jt808.server import Jt808Server
 
+_PHONE = "00000000013800138000"
+
 
 def build_wire_frame(
     message_id: int, terminal_phone: str, serial_no: int, body: bytes = b""
 ) -> bytes:
-    body_attrs = len(body) & 0x03FF
+    body_attrs = (len(body) & 0x03FF) | (1 << 14)  # version flag, JT/T 808-2019 fixed to 1
     header = (
         message_id.to_bytes(2, "big")
         + body_attrs.to_bytes(2, "big")
+        + bytes([0x01])  # protocol version
         + encode_bcd_phone(terminal_phone)
         + serial_no.to_bytes(2, "big")
     )
@@ -86,33 +89,37 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
             message_ids.BULK_LOCATION_REPORT,
             message_ids.MULTIMEDIA_EVENT_UPLOAD,
         ]:
-            frame = build_wire_frame(msg_id, "013800138000", 1)
+            frame = build_wire_frame(msg_id, _PHONE, 1)
             writer.write(frame)
             await writer.drain()
 
-        # Well-formed fixed-length (37-byte) registration body so it parses and dispatches
-        # (province_id, city_county_id, manufacturer_id[5], terminal_model[20],
-        # manufacturer_terminal_id[7], plate_color) - content is otherwise irrelevant, since
-        # the default fail-closed port rejects every registration regardless.
+        # Well-formed fixed-length (76-byte) registration body so it parses and dispatches
+        # (province_id, city_county_id, manufacturer_id[11], terminal_model[30],
+        # terminal_id[30], plate_color) - content is otherwise irrelevant, since the default
+        # fail-closed port rejects every registration regardless.
         registration_body = (
             (0).to_bytes(2, "big")
             + (0).to_bytes(2, "big")
-            + b"\x00" * 5
-            + b"\x00" * 20
-            + b"\x00" * 7
+            + b"\x00" * 11
+            + b"\x00" * 30
+            + b"\x00" * 30
             + b"\x00"
         )
         _, registration_writer = await self._open_client()
         registration_writer.write(
             build_wire_frame(
-                message_ids.REGISTRATION, "013800138000", 1, body=registration_body
+                message_ids.REGISTRATION, _PHONE, 1, body=registration_body
             )
         )
         await registration_writer.drain()
 
+        # Well-formed authentication body (auth-code-length prefix=0, empty auth code,
+        # IMEI[15], software_version[20]) so it parses and dispatches - the default
+        # fail-closed port rejects the (empty) auth code regardless.
+        auth_body = bytes([0]) + b"\x00" * 15 + b"\x00" * 20
         _, auth_writer = await self._open_client()
         auth_writer.write(
-            build_wire_frame(message_ids.AUTHENTICATION, "013800138000", 1)
+            build_wire_frame(message_ids.AUTHENTICATION, _PHONE, 1, body=auth_body)
         )
         await auth_writer.drain()
 
@@ -136,7 +143,7 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_message_id_gets_a_real_wire_response(self) -> None:
         reader, writer = await self._open_client()
-        frame = build_wire_frame(0x9999, "013800138000", 5)
+        frame = build_wire_frame(0x9999, _PHONE, 5)
         writer.write(frame)
         await writer.drain()
 
@@ -153,7 +160,7 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
         # HEARTBEAT now has a real handler (JT808 device-plane integration gap) — LOGOUT stays
         # a placeholder, matching this test's own original intent.
         reader, writer = await self._open_client()
-        frame = build_wire_frame(message_ids.LOGOUT, "013800138000", 1)
+        frame = build_wire_frame(message_ids.LOGOUT, _PHONE, 1)
         writer.write(frame)
         await writer.drain()
 
@@ -162,7 +169,7 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_heartbeat_gets_a_real_wire_response(self) -> None:
         reader, writer = await self._open_client()
-        frame = build_wire_frame(message_ids.HEARTBEAT, "013800138000", 9)
+        frame = build_wire_frame(message_ids.HEARTBEAT, _PHONE, 9)
         writer.write(frame)
         await writer.drain()
 
@@ -187,7 +194,7 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         _, writer = await self._open_client()
         good_frame = bytearray(
-            build_wire_frame(message_ids.HEARTBEAT, "013800138000", 1)
+            build_wire_frame(message_ids.HEARTBEAT, _PHONE, 1)
         )
         good_frame[
             -2
@@ -216,7 +223,7 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         _, writer = await self._open_client()
         writer.write(
-            build_wire_frame(0x9999, "013800138000", 1)
+            build_wire_frame(0x9999, _PHONE, 1)
         )  # triggers a real response
         await writer.drain()
         await asyncio.sleep(0.1)

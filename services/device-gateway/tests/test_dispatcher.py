@@ -20,7 +20,7 @@ from src.session.device_session_registry import DeviceSessionRegistry
 
 
 def make_message(
-    message_id: int, terminal_id: str = "013800138000", serial_no: int = 1
+    message_id: int, terminal_id: str = "00000000013800138000", serial_no: int = 1
 ) -> InboundMessage:
     return InboundMessage(
         message_id=message_id,
@@ -223,10 +223,10 @@ class ResponsePropagationTests(unittest.IsolatedAsyncioTestCase):
         dispatcher, _, sender = make_dispatcher(registry=registry)
 
         await dispatcher.dispatch(
-            "conn-A", make_message(0x0002, terminal_id="013800138000")
+            "conn-A", make_message(0x0002, terminal_id="00000000013800138000")
         )
         await dispatcher.dispatch(
-            "conn-B", make_message(0x0002, terminal_id="013900139000")
+            "conn-B", make_message(0x0002, terminal_id="00000000013900139000")
         )
 
         self.assertEqual(len(sender.sent), 2)
@@ -271,7 +271,7 @@ class ConcurrentDispatchTests(unittest.IsolatedAsyncioTestCase):
             *[
                 dispatcher.dispatch(
                     f"conn-{i}",
-                    make_message(0x0002, terminal_id="013800138000", serial_no=i),
+                    make_message(0x0002, terminal_id="00000000013800138000", serial_no=i),
                 )
                 for i in range(20)
             ]
@@ -304,7 +304,7 @@ class ConcurrentDispatchTests(unittest.IsolatedAsyncioTestCase):
             from src.vendors.jt808.protocol.escaping import unescape
 
             unescaped = unescape(unescaped_minus_delims)
-            header_serials.append(int.from_bytes(unescaped[10:12], "big"))
+            header_serials.append(int.from_bytes(unescaped[15:17], "big"))
         self.assertEqual(len(set(header_serials)), 30)
 
 

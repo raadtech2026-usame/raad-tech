@@ -116,6 +116,20 @@ class RecordDeviceSeenCommand:
     actor: Principal
 
 
+@dataclass(frozen=True)
+class RecordAuthKeyHashCommand:
+    """ADR-0025 §3 — the device-gateway's `DeviceAuthCodeIssued` event, consumed by
+    `events/subscribers.py`'s new `DeviceAuthCodeProcessor`. Mirrors `RecordDeviceSeenCommand`'s
+    identical shape/precedent: a broker-driven fact about a device this backend does not
+    originate, using the same `SYSTEM_PRINCIPAL` actor. `auth_key_hash` is always already a hash
+    (`services/device-gateway/src/vendors/jt808/handlers/auth_code_hashing.py`'s
+    PBKDF2-HMAC-SHA256 output) — this command never carries a plaintext credential."""
+
+    device_id: str
+    auth_key_hash: str
+    actor: Principal
+
+
 # --- Device ↔ Vehicle assignment ----------------------------------------------------------
 
 
