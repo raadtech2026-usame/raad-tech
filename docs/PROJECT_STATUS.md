@@ -17,8 +17,8 @@ architecture; this file is the source of truth for progress and sequencing.
 | **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
 | **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against, a real Stripe merchant account for live payments) — every Priority 1 item touching the backend/web/infra surface (1–8) is now complete and either live-verified or mechanism-complete-with-disclosed-testing-limits: **Item 8 (Payment) is no longer an architectural blocker** — ADR-0022 (2026-08-06) shipped a real, verified `StripePaymentAdapter`, a wired webhook route, and a production `OrgBillingPage` "Pay Invoice" flow, resolving both the design gaps (signed-webhook-caller representation, provider abstraction shape) this item used to carry; only a live merchant account's credentials remain, same disclosed posture as TLS/Redis. Two deployment paths now exist side by side: the original generic-VPS/nginx/certbot path, and a new Coolify-managed path (`docker-compose.coolify.yml`, `docs/runbooks/coolify-deployment.md`) for the user's own chosen Hostinger-VPS-via-Coolify target. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **ADR-0023 (2026-08-07)** closed Known Issue #17 on the backend side (a canonical `GET /me`/`GET /me/students`/`GET /me/driver-profile` self-service identity capability) — M3's own blocking backend gap is resolved, though the mobile client itself is not yet wired to it (same missing-SDK limitation as the rest of Item 9). This is the direct continuation of the continuous-completion program (user directive 2026-08-03) — see Section 15 for that program's own final report, and Section 8 for ADR-0022's/ADR-0023's own full writeups. |
 | **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), ADR-0019 (Account-Sharing Session Cap), ADR-0020 (Platform Analytics Read Model), and **ADR-0022 (Payment Provider Architecture) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete, plus this unplanned-at-the-time payment-architecture milestone the user added afterward. Frontend: **F0–F9 complete**, with F9's own previously-deferred Organization Billing half now also complete (ADR-0022: dedicated `OrgBillingPage` + real "Pay Invoice" flow) — F8: Notifications web UI (first cursor-paginated page, first live-WS-driven bell badge); F9: Billing web UI (platform-wide read-only tabs + org-scoped subscription/invoice/payment view and a real payment flow) — plus the ADR-0020 KPI grid and a fleet-ops-style dashboard redesign/polish pass; F10 (Video)/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
-| **Current git commit** | This turn's own commit (`docs: record JT808 device-plane provisioning/identity gap in PROJECT_STATUS.md/CLAUDE.md`) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; the actual JT808 device-gateway work was committed at `c2550a1` (JT808 device-plane provisioning/identity integration gap), which is itself already one commit behind by the time this line is read (the same real, disclosed, recurring staleness rule 2 warns about, not a one-time slip). |
-| **Last updated** | 2026-08-09 |
+| **Current git commit** | This turn's own commit (recording ADR-0025's native JT/T 808-2019 + JT/T 1078-2016 protocol-compliance architecture update in PROJECT_STATUS.md/CLAUDE.md/the two rule files/ADR-0024) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; the two prior commits were `9e2ae9f` (docs: record JT808 device-plane provisioning/identity gap) and, before that, `c2550a1` (JT808 device-plane provisioning/identity integration gap itself) — each already one commit behind by the time this line is read (the same real, disclosed, recurring staleness rule 2 warns about, not a one-time slip). |
+| **Last updated** | 2026-08-10 |
 
 ---
 
@@ -124,17 +124,17 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** No.
 - **Dependencies:** Device Inventory, Organizations.
 
-#### JT808 — ⏸ Deferred (dormant by design)
-- **Implemented:** Fully built, parsed, tested (`services/device-gateway/src/vendors/jt808/`), still instantiated live in the gateway. **Device-plane provisioning/identity now real (2026-08-09)**: `ProjectionBackedJt808ProvisioningPort` resolves a device's `terminal_id` against the same shared `DeviceRegistryProjection` LSZ uses — a real, pre-provisioned device (registered → activated → assigned to a vehicle) is correctly identified/resolved at `0x0100`, and unknown/inactive/unassigned/suspended/retired devices correctly reject. New `HeartbeatHandler` + a `touch()` call in `LocationHandler` mean the pre-existing `AUTHENTICATED → ONLINE` promotion and `DeviceOnline`/`DeviceOffline` publishing actually fire now.
-- **Missing:** `0x0102` authentication verification — deliberately unimplemented, not guessed (three mutually exclusive documented mechanisms; see Known Issue #18). No procured hardware speaks JT808 today regardless — kept ready for a future genuinely-compliant vendor.
-- **Production blocker?** No (still dormant — no compliant hardware procured; the auth gap would block real use even if one were).
+#### JT808 — 🟡 Partial (now the live, primary GPS target — ADR-0025, 2026-08-10)
+- **Implemented:** Fully built, parsed, tested (`services/device-gateway/src/vendors/jt808/`), instantiated live in the gateway. Device-plane provisioning/identity real (2026-08-09): `ProjectionBackedJt808ProvisioningPort` resolves a device's `terminal_id` against the same shared `DeviceRegistryProjection` the LSZ adapter uses — a real, pre-provisioned device (registered → activated → assigned to a vehicle) is correctly identified/resolved at `0x0100`, and unknown/inactive/unassigned/suspended/retired devices correctly reject. New `HeartbeatHandler` + a `touch()` call in `LocationHandler` mean the pre-existing `AUTHENTICATED → ONLINE` promotion and `DeviceOnline`/`DeviceOffline` publishing fire correctly. **`0x0102` auth-code design now decided (ADR-0025 §3)**: platform-issued/echoed-back model, hashed at rest in `Device.auth_key_hash`, confirmed by new supplier documentation — closes Known Issue #18.
+- **Missing:** The confirmed JT/T 808-2019 field-width rework (`BCD[10]` terminal phone, protocol-version byte, wider manufacturer/model/terminal-ID fields, IMEI+software-version parsing in `0x0102`) — the parser is still built to the 2013 shape and would misparse a real 2019 device today. `authorize_registration`/`verify_auth_code`'s real hashing implementation, per the now-decided §3 design. Neither started yet — a following, separately-authorized implementation phase, not part of ADR-0025 itself.
+- **Production blocker?** No longer architecturally blocked — the remaining gap is implementation work against an approved design, not an unresolved decision.
 - **Dependencies:** None.
 
-#### JT1078 — ❌ Missing
-- **Implemented:** Nothing. `services/jt1078/` is empty folders; README states the runtime isn't decided.
-- **Missing:** Everything — session management, ingest, repackaging to WebRTC/HLS, a runtime decision, and LSZ-specific signaling (LSZ isn't JT/T 1078-compliant either).
+#### JT1078 — ❌ Missing (target confirmed native, ADR-0025 — not yet built)
+- **Implemented:** Nothing. `services/jt1078/` is empty folders; README states the runtime isn't decided. **The vendor-protocol question is resolved (ADR-0025)**: the procured hardware is confirmed JT/T 1078-2016 compliant, signaled as standard JT808-enveloped messages (`0x9101`/`0x9102`/`0x9201`/`0x9202`/`0x9205`) on the existing device-gateway connection — no LSZ-proprietary translation adapter is needed (`docs/architecture/adr/0024-jt1078-video-relay-architecture.md`'s §1 revised accordingly).
+- **Missing:** Session management, ingest (now: a standard JT/T 1078 extended-RTP demuxer, not a proprietary-opcode one), repackaging to WebRTC/HLS, and the runtime/language decision for `services/jt1078/` itself — that decision remains open regardless of the protocol question being resolved.
 - **Production blocker?** Only if live video is required for launch.
-- **Dependencies:** A runtime/vendor decision.
+- **Dependencies:** A runtime decision (the vendor-protocol question is no longer a dependency).
 
 ### Live operations
 
@@ -592,19 +592,83 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — the JT808 device-plane provisioning/identity integration gap just closed
-(2026-08-09)**, at the user's explicit direction, not picked via the usual Section 14 process:
-a source-code audit (real `.py` files only, explicitly not the old `mdvrdocs/` proprietary
-documentation) first answered ten specific questions about the actual current device/video
-protocol state — what's really implemented vs. dormant vs. scaffold-only for JT808, JT1078, and
-LSZ. That audit found JT/T 808's registration/authentication/location handler stack is real and
-tested but was permanently wired to a fail-closed `NullDeviceProvisioningPort` (unlike LSZ, which
-already had a real `ProjectionBackedMdvrProvisioningPort`). A follow-up turn closed exactly the
-resolvable half of that gap and explicitly stopped at `0x0102` authentication verification, per
-the user's own instruction not to guess given a genuine, pre-existing, three-way documented
-conflict over what that auth code even is. See the writeup immediately below this note for the
-full detail, and Section 2's Mobile row and similar minor doc staleness — still outstanding, not
-yet corrected, noted, not forgotten.
+**Nothing — the native-protocol architecture update (ADR-0025, 2026-08-10) just closed**, at the
+user's explicit direction, not picked via the usual Section 14 process: after receiving two new
+official supplier documents for the exact procured hardware (a JT/T 808-2019 + JT/T 1078-2016
+combined spec, and a model-specific Compliance Confirmation Letter), the user first asked for a
+full protocol-source-of-truth review (no code changes) answering 18 questions across every
+device/video-adjacent part of the repository, then, once satisfied ("verification is complete"),
+directed the architecture itself be updated to reflect native JT/T 808-2019 + JT/T 1078-2016
+compliance rather than the prior proprietary-hardware finding (ADR-0009). This turn's work is
+documentation/decision-records only — a new ADR-0025, a same-commit revision of ADR-0024 §1
+(video signaling design), both `.claude/rules/jt808.md`/`jt1078.md`, and CLAUDE.md — explicitly
+not a code change; see the writeup immediately below this note for the full detail. The actual
+JT/T 808-2019 field-width rework and the `0x0102` auth-code implementation this ADR's own design
+now specifies (§3) remain a following, separately-authorized implementation phase, not started.
+Section 2's Mobile row and similar minor doc staleness remain outstanding, not yet corrected,
+noted, not forgotten.
+
+**Native JT/T 808-2019 + JT/T 1078-2016 protocol compliance — architecture update (2026-08-10,
+user-directed, ADR-0025).** Reverses ADR-0009's core finding for this specific procured hardware
+(`LSZ-C5804DG-Q-F`) only — everything else ADR-0009 decided (the parallel-stack pattern itself,
+the device-gateway rename per ADR-0010, the identity-only trust model per ADR-0015 for any vendor
+that genuinely lacks a credential) is untouched. New `docs/architecture/adr/
+0025-jt808-2019-jt1078-2016-native-protocol-compliance.md`: §1 records the reversal and its
+basis (the two new supplier documents, reviewed in the prior turn's own 18-question review, with
+that review's own flagged authenticity gap — mismatched company names between the spec and the
+compliance letter, no model number inside the spec, an unsigned same-day-dated letter — carried
+forward honestly rather than silently dropped now that the user has confirmed "verification is
+complete" out-of-band); §2 tabulates the confirmed JT/T 808-2013→2019 wire-format deltas (header
+terminal-phone `BCD[6]`→`BCD[10]`, a new protocol-version byte, wider manufacturer/terminal-model/
+terminal-ID fields in `0x0100`, added IMEI+software-version fields in `0x0102`); §3 **resolves**
+the previously-open `0x0102` auth-code *lifecycle* question (Known Issue #18) with a concrete
+design — a platform-minted random code on `0x0100` success, hashed at rest in the existing,
+previously-unused `Device.auth_key_hash` column, verified by hash comparison on `0x0102`, no
+time-expiry, rotating only on a fresh registration — explicitly flagged in the ADR's own text as
+"a reasoned design recommendation... not independently re-confirmed with the user," distinct in
+confidence from the wire-format finding itself; §4 makes `vendors/jt808/` the live/primary GPS
+adapter going forward, keeps `vendors/lsz/` dormant (not deleted — mirrors exactly how `vendors/
+jt808/` itself was kept dormant before this reversal); §5 supersedes ADR-0024 §1's LSZ-proprietary
+video-signaling design with native JT/T 1078 signaling (confirmed by spec §6 to ride the same
+JT808 envelope/connection, not a separate proprietary media-channel handshake); §6 retires the
+"Reality check" disclaimer preambles `.claude/rules/jt808.md`/`jt1078.md` have carried since
+ADR-0009. A "What this ADR does not do" section is explicit: no `.py` file changed, no migration
+(the `auth_key_hash` column already exists), no `0x0200`/`AlarmFlags` byte-for-byte diff, no
+JT1078 runtime/language decision, no new dependency approved.
+
+**ADR-0024 (JT1078 Video Relay Architecture) revised in place, same commit** — surgical edits, not
+a rewrite, since most of that document (D5 enforcement, concurrency bounding, audit, transport
+choice reasoning) is protocol-agnostic policy the reversal doesn't touch. §1 rewritten: the old
+LSZ-proprietary signaling design (`C508`/`V102`/`0x6000`/`0x6002`/`0x6011-13`/`C701`/`C702`/`V103`/
+`0x6102`) is replaced by native JT/T 1078 messages (`0x9101`/`0x9102`/`0x9105` live,
+`0x9201`/`0x9202`/`0x9205`/`0x1205` playback) — `0x9202`/`0x9205` are noted as genuinely richer
+capabilities the old proprietary design lacked (native seek, resource browsing), not just a
+renaming; §2/§6/§7/§8/§14/§16/Consequences/Verification/References sections updated to match
+throughout (ingest becomes a standard extended-RTP demuxer per spec §6.2.1.1, not a proprietary-
+opcode one; no second vendor-adapter needed — `vendors/jt808/` gains the forwarding responsibility
+directly, no translation step). A final repo-wide grep for every old LSZ video opcode and the
+phrases "LSZ proprietary"/"LSZ media" confirmed all remaining occurrences are either intentional
+"supersedes X" citations or were themselves fixed (a stale `C701`/`C702` citation in §2, and "the
+most LSZ-specific failure mode" wording in §16, both corrected to their native-protocol
+equivalents).
+
+**Rule files and CLAUDE.md updated to match.** `.claude/rules/jt808.md`/`jt1078.md`: each
+"Reality check" preamble (which disclaimed the file as describing a hypothetical future compliant
+vendor, not the actual hardware) replaced with a "Status" paragraph confirming compliance and
+pointing at what's still unbuilt (the field-width rework, the auth-code implementation, the
+JT1078 runtime decision) — the numbered rules themselves needed no change, since they were already
+written against the compliant-vendor target. CLAUDE.md's "Core Technical Domains" section
+rewritten: the old "vendor doesn't implement either protocol" framing and the "0x0102 remains
+deliberately unimplemented" framing are both replaced with paragraphs recording the reversal, the
+current live/dormant adapter roles, and an explicit flag that the field-width rework and
+auth-code implementation are "not yet implemented, per ADR-0025 §2/§4" and "§3" respectively — not
+silently implied as done. Verified CLAUDE.md's post-edit size (64,708 chars) stays well under the
+150,000-char operating budget established in this session's own earlier cleanup phase.
+
+**Nothing deleted.** The mdvrdocs/ classification conclusion from the prior review turn (nothing
+classified safe to delete — all six files, including the two new PDFs, are still referenced by
+name in currently-authoritative repo docs) stands, and ADR-0025's own Consequences section
+reconfirms it explicitly ("No file is deleted by this ADR").
 
 **JT808 device-plane provisioning/identity integration gap (2026-08-09, user-directed audit +
 targeted implementation, not a Section 14 pick).** New `ProjectionBackedJt808ProvisioningPort`
@@ -1370,6 +1434,36 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Native JT/T 808-2019 + JT/T 1078-2016 protocol compliance — architecture update** (2026-08-10,
+  ADR-0025), at the user's explicit direction, following a prior, code-change-free
+  protocol-source-of-truth review of two new official supplier documents (a JT/T 808-2019 + JT/T
+  1078-2016 combined spec, and a model-specific Compliance Confirmation Letter). **Reverses
+  ADR-0009's core finding for the procured `LSZ-C5804DG-Q-F` hardware only** — every other
+  ADR-0009 decision (the parallel-stack pattern, ADR-0010's device-gateway rename, ADR-0015's
+  identity-only trust model for any genuinely no-credential vendor) is unchanged. New ADR-0025:
+  §2 tabulates the confirmed JT/T 808-2013→2019 wire-format deltas (header terminal-phone
+  `BCD[6]`→`BCD[10]`, a new protocol-version byte, wider manufacturer/model/terminal-ID fields,
+  added IMEI+software-version fields in `0x0102`); §3 **resolves Known Issue #18**'s previously
+  open `0x0102` auth-code lifecycle question with a concrete, reasoned design (platform-minted
+  code hashed into the existing `Device.auth_key_hash` column, verified by comparison on
+  `0x0102`, no time-expiry, rotates only on fresh registration) — explicitly flagged as a design
+  recommendation, not independently re-confirmed beyond the ADR's own review; §4 makes
+  `vendors/jt808/` the live/primary GPS adapter, keeps `vendors/lsz/` dormant, not deleted; §5
+  supersedes ADR-0024 §1's LSZ-proprietary video-signaling design with native JT/T 1078 signaling
+  over the existing JT808 connection; §6 retires both rule files' "Reality check" disclaimers.
+  **ADR-0024 revised in place, same commit**: §1's signaling design replaced (`0x9101`/`0x9102`/
+  `0x9105`/`0x9201`/`0x9202`/`0x9205`/`0x1205` supersede the old `C508`/`V102`/`0x6000`/`0x6002`/
+  `C701`/`C702`/`V103`/`0x6102` design), with §2/§6/§7/§8/§14/§16/Consequences/Verification/
+  References sections updated to match; the D5/concurrency/audit/transport-choice policy content
+  (~80% of the document) is unchanged, since none of it was protocol-specific. `.claude/rules/
+  jt808.md`/`jt1078.md` and CLAUDE.md's "Core Technical Domains" updated to match — CLAUDE.md
+  verified still at 64,708 chars, well under its 150,000-char budget. **This is a
+  documentation/decision-records update only** — no `.py` file changed, no migration, no test run
+  — the confirmed JT/T 808-2019 field-width rework and the now-decided `0x0102` auth-code
+  implementation remain a following, separately-authorized implementation phase. Nothing in
+  `mdvrdocs/` was deleted — the prior review turn's "nothing safe to delete" conclusion stands,
+  reconfirmed in ADR-0025's own Consequences section. See Section 8 for the full writeup and
+  Section 3's JT808/JT1078 rows.
 - **JT808 device-plane provisioning/identity integration gap** closed (2026-08-09), at the user's
   explicit direction, in two phases. **Audit phase (source code only, no doc-of-record
   inference):** confirmed JT/T 808's full registration/authentication/location handler stack
@@ -1781,33 +1875,47 @@ Reverse-chronological (most recent first):
 - **Blocking production?** No longer, on the backend side. Mobile client wiring remains open,
   tracked under Item 9's own Mobile App status, not re-opened here.
 
-### 18. JT808 `0x0102` authentication-code semantics are unresolved — deliberately not guessed
+### 18. JT808 `0x0102` authentication-code semantics — design resolved (ADR-0025 §3, 2026-08-10), implementation still pending
 - **Found:** 2026-08-09, during a user-directed source-code audit of the actual current device/
   video protocol state, confirmed by re-reading `services/device-gateway/src/vendors/jt808/
   handlers/provisioning_port.py`'s own pre-existing docstring (the conflict was already flagged
   there before this audit, not newly discovered by it).
-- **The conflict:** three source documents describe structurally different, mutually exclusive
-  mechanisms for the `0x0102` auth code — JT808 Technical Design §4 reads as a device-held static
-  secret checked against `Device.auth_key_hash`; the primary JT/T 808-2013 spec's own text (§8.6/
-  §8.8/§21.1, verbatim) reads as a platform-minted code issued in `0x8100` and echoed back in
-  `0x0102`; Backend LLD adds a third, only-partially-compatible reading (a short-lived,
-  Redis-held, rotating session token). Picking wrong has real consequences — either rejecting
-  every real device forever, or implementing a check that isn't actually what real hardware does.
-- **Current state:** `ProjectionBackedJt808ProvisioningPort.authorize_registration` (new,
-  2026-08-09) correctly resolves and returns a device's real `device_id`/`vehicle_id`/
-  `organization_id` on success, but `auth_code` is deliberately always `None`; `verify_auth_code`
-  deliberately always returns `is_valid=False`. A real, pre-provisioned device is now correctly
-  *identified* at `0x0100` but cannot complete a real `0x0102` round trip.
-- **Recommended fix:** the supplier has confirmed standalone JT808 documentation is forthcoming
-  specifically for this hardware — once received and reviewed, resolve which of the three
-  mechanisms RAAD's actual procured terminals use, then implement `verify_auth_code`'s real
-  comparison logic and `authorize_registration`'s real `auth_code` value together (they must
-  agree — see `provisioning_port.py`'s own class docstring for the full reasoning).
-- **Severity:** Medium — does not block anything already shipped (LSZ, the actually-procured
-  hardware, doesn't use JT808 at all); blocks JT808 specifically becoming usable for any future
-  genuinely-compliant vendor.
-- **Blocking production?** No — JT808 remains dormant-by-design regardless (Section 3's own JT808
-  row), same as before this item.
+- **The original conflict:** three source documents described structurally different, mutually
+  exclusive mechanisms for the `0x0102` auth code — JT808 Technical Design §4 reads as a
+  device-held static secret checked against `Device.auth_key_hash`; the primary JT/T 808-2013
+  spec's own text (§8.6/§8.8/§21.1, verbatim) reads as a platform-minted code issued in `0x8100`
+  and echoed back in `0x0102`; Backend LLD adds a third, only-partially-compatible reading (a
+  short-lived, Redis-held, rotating session token). Picking wrong had real consequences — either
+  rejecting every real device forever, or implementing a check that isn't actually what real
+  hardware does.
+- **Resolution (2026-08-10):** the two new supplier documents reviewed and accepted per the
+  user's own "verification is complete" instruction (JT/T 808-2019 + JT/T 1078-2016 spec PDF, and
+  the model-specific Compliance Confirmation Letter) settle the *wire format* question — this
+  hardware speaks standard JT/T 808-2019. The auth-code *lifecycle* itself (which of the three
+  readings above governs) is not settled by the new documents directly; `docs/architecture/adr/
+  0025-jt808-2019-jt1078-2016-native-protocol-compliance.md` §3 resolves it as a reasoned design
+  recommendation instead — a platform-minted random code on `0x0100` success, hashed at rest in
+  the existing (previously always-`None`) `Device.auth_key_hash` column, verified by hash
+  comparison on `0x0102`, no time-expiry, rotating only on a fresh registration (e.g. a factory
+  reset) — flagged in the ADR's own text as "not independently re-confirmed with the user beyond
+  this ADR's own review," not a claim of certainty equal to the wire-format finding.
+- **Current state:** `ProjectionBackedJt808ProvisioningPort.authorize_registration` still
+  correctly resolves and returns a device's real `device_id`/`vehicle_id`/`organization_id` on
+  success, but `auth_code` is still always `None`; `verify_auth_code` still always returns
+  `is_valid=False`. The design that would replace both is now decided (ADR-0025 §3); the code
+  itself has not been changed to implement it — a following, separately-authorized implementation
+  phase, not part of ADR-0025.
+- **Recommended fix:** implement `authorize_registration`'s real `auth_code` minting +
+  `Device.auth_key_hash` write, and `verify_auth_code`'s real hash-comparison logic, together
+  (they must agree — see `provisioning_port.py`'s own class docstring), to the design ADR-0025 §3
+  now specifies.
+- **Severity:** Medium — unchanged. Does not block anything already shipped (the LSZ adapter,
+  which real, procured hardware previously routed through under the assumption of proprietary
+  non-compliance, remains dormant per ADR-0025 §4, kept rather than deleted); blocks `vendors/
+  jt808/` from handling a real device end-to-end until implemented.
+- **Blocking production?** No live traffic depends on this yet — no device is currently connected
+  through `vendors/jt808/` in production; see Section 3's JT808 row for the fuller status (now
+  🟡 Partial, not ⏸ Deferred, per ADR-0025).
 
 ---
 

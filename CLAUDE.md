@@ -127,77 +127,78 @@ GPS ingestion, video, and device-communication code:
 
 Treat both as first-class architectural concerns: most "real-time tracking" and "live video" work
 in this codebase is ultimately about correctly implementing, parsing, or relaying JT808/JT1078
-traffic — for a device-plane vendor that is genuinely JT/T 808/1078-compliant. **The first
-procured hardware vendor is not** — see below before assuming either protocol applies to the
-actual current integration.
+traffic. **The procured hardware is now confirmed genuinely JT/T 808-2019 + JT/T 1078-2016
+compliant (ADR-0025, 2026-08-10)** — see below for how that reverses the earlier, since-superseded
+non-compliance finding, and exactly what still needs implementation work as a result.
 
-**Real hardware vendor decision (ADR-0009), device gateway rename (ADR-0010).**
-`docs/vendor/HARDWARE_ANALYSIS.md` (tracing only to the vendor's own documentation, `mdvrdocs/`)
-found that the actually-procured MDVR hardware (Shenzhen Tianyou Security Technology Co., Ltd,
-brand "LSZ", model `LSZ-C5804DG-Q-F`) does not implement JT/T 808 or JT/T 1078 at all — it speaks
-its own proprietary ASCII/binary protocol (different framing, different message-identity scheme,
-no checksum/escaping, different media transport), confirmed against the codebase's existing,
-tested JT/T 808-2013 parser, which cannot parse a single frame this hardware sends.
-`docs/architecture/adr/0009-mdvr-vendor-protocol-device-plane.md` records the resulting decision:
-RAAD terminates this vendor's protocol directly, in the same device-plane deployable, via a new,
-parallel protocol/dispatcher/handlers stack — not a patched JT/T 808 "dialect," and not by
-integrating through the vendor's own separate CMS server product. **That deployable was
-subsequently renamed `services/jt808/` → `services/device-gateway/` and reorganized into
-`src/vendors/{jt808,lsz,teltonika,queclink,ruptela}/` behind a common `DeviceProtocolAdapter`
-interface (ADR-0010)** — a single multi-vendor entry point for every GPS/MDVR integration, not a
-JT808-specific service; `teltonika`/`queclink`/`ruptela` are structural placeholders only (no
-hardware procured, no vendor docs, no code invented ahead of either). ADR-0010 also wires a real
-Redis-backed event bus (`RedisEventPublisher`, shared by every vendor adapter) and a
-broker-driven device registry projection, replacing the interim in-memory stand-ins ADR-0009 had
-explicitly deferred. The existing JT/T 808 implementation (`src/vendors/jt808/`) is kept,
-untouched, dormant, for a possible future genuinely-compliant vendor; the architectural
-principles below (separate plane, event-only communication with the business plane, same
-`DevicePositionReported`/`DeviceOnline`/`DeviceOffline`/`DeviceAlarmRaised` event contract, now
-all real, published events per ADR-0010) apply identically regardless of which vendor adapter is
-active. `.claude/rules/jt808.md`/`.claude/rules/jt1078.md` remain this architecture's *target*
-framing for device-plane work in general; they no longer describe the currently-integrated
-hardware specifically — see ADR-0009/ADR-0010 (and ADR-0015 for how device-plane trust/auth is
-adapted for a vendor with no credential mechanism) for the full reasoning.
+**Native protocol compliance confirmed (ADR-0025), superseding the original vendor-protocol
+finding (ADR-0009).** ADR-0009 originally found, from `docs/vendor/HARDWARE_ANALYSIS.md` (tracing
+only to the vendor's own `mdvrdocs/` documentation available at the time), that the procured MDVR
+hardware (Shenzhen Tianyou Security Technology Co., Ltd, brand "LSZ", model `LSZ-C5804DG-Q-F`)
+spoke a proprietary ASCII/binary protocol, not JT/T 808/1078 — confirmed at the time against the
+codebase's own JT/T 808-2013 parser, which couldn't parse a single frame that hardware sent. Two
+new supplier documents received 2026-08-10 (`mdvrdocs/MDVR-808-1078-spec.pdf`, a 70-page
+message-by-message JT/T 808-2019 + JT/T 1078-2016 specification, and `mdvrdocs/
+LSZ-C5804DG-Q-F_Compliance_Confirmation_RAAD-TECH.pdf`) establish, and the user has confirmed
+verification of, genuine compliance for this exact model. **`docs/architecture/adr/
+0025-jt808-2019-jt1078-2016-native-protocol-compliance.md` records the reversal and its concrete
+consequences** — ADR-0009 itself is not edited (this codebase keeps ADRs as historical records;
+ADR-0025 is where a reader following ADR-0009 forward should land for the current finding), and
+ADR-0009's *other* decisions (deployable separation, event-only device/business-plane
+communication, the Anti-Corruption Layer principle, keeping the dormant JT/T 808 code rather than
+deleting it) are unchanged and are exactly what make this reversal cheap to absorb.
 
-**Unresolved verification point — flagged per `.claude/rules/documentation.md` #2, do not
-silently resolve.** The supplier has confirmed that standalone JT808 and JT1078 documentation
-will be provided for this hardware. Until that documentation is received and reviewed, ADR-0009's
-non-compliance finding is the only verified fact about this vendor's protocol. Do not assume the
-forthcoming documentation will change that conclusion, and do not build or plan against JT/T
-808/1078 compliance for this vendor before that documentation exists and has actually been
-reviewed against the codebase, the same way `HARDWARE_ANALYSIS.md` was.
+**Device gateway rename (ADR-0010) and current adapter roles.** The device-plane deployable was
+renamed `services/jt808/` → `services/device-gateway/` and reorganized into `src/vendors/
+{jt808,lsz,teltonika,queclink,ruptela}/` behind a common `DeviceProtocolAdapter` interface — a
+single multi-vendor entry point for every GPS/MDVR integration, not a JT808-specific service;
+`teltonika`/`queclink`/`ruptela` remain structural placeholders only (no hardware procured, no
+vendor docs, no code invented ahead of either). ADR-0010 also wires a real Redis-backed event bus
+(`RedisEventPublisher`, shared by every vendor adapter) and a broker-driven device registry
+projection. **`src/vendors/jt808/` is now the live, primary GPS adapter for this vendor
+relationship (ADR-0025 §4)** — it needs the field-width rework named below before a real device
+can complete a handshake against it. **`src/vendors/lsz/` (the proprietary-protocol adapter) is
+kept, dormant** — the same "kept, untouched, for a possible future case" posture `vendors/jt808/`
+itself held before this reversal, not deleted, in case a specific unit or firmware batch ever
+turns out to need it after all. The architectural principles (separate plane, event-only
+communication with the business plane, same `DevicePositionReported`/`DeviceOnline`/
+`DeviceOffline`/`DeviceAlarmRaised` event contract) apply identically regardless of which adapter
+is live. `.claude/rules/jt808.md`/`.claude/rules/jt1078.md` no longer carry a "Reality check"
+disclaimer (ADR-0025 §6) — they describe the actual, current target again, not a hypothetical
+future vendor's.
 
-**JT808 device-plane provisioning/identity gap closed (2026-08-09) — the dormant JT/T 808 code
-path (above) can now genuinely identify a real device, independent of the LSZ/compliance question.**
-A source-code audit (not doc-inference) confirmed the JT808 registration/authentication/location
+**JT808 device-plane provisioning/identity gap closed (2026-08-09), now targeting the confirmed
+2019 wire shape.** A source-code audit found the JT808 registration/authentication/location
 handler stack (`services/device-gateway/src/vendors/jt808/`) was real and tested but permanently
-wired to a fail-closed `NullDeviceProvisioningPort` — unlike LSZ, which already had a real
-`ProjectionBackedMdvrProvisioningPort`. A new `ProjectionBackedJt808ProvisioningPort` (mirroring
-LSZ's exact pattern) now resolves a device's `terminal_id` against the same shared, vendor-
-agnostic `DeviceRegistryProjection` (`services/device-gateway/src/registry/
-device_registry_projection.py`, already indexed by both `terminal_id` and `serial_number`,
-already fed by `fleet_device`'s own `DeviceRegistered`/`DeviceActivated`/`DeviceAssignedToVehicle`
-events over the broker) — a real, pre-provisioned device (registered → activated → assigned to a
-vehicle in `fleet_device`, the same dashboard flow `RegisterDeviceWizard.tsx` already provides) is
-now correctly identified and resolved to its `device_id`/`vehicle_id`/`organization_id` at
-`0x0100`; unknown/inactive/unassigned/suspended/retired devices all correctly reject
+wired to a fail-closed `NullDeviceProvisioningPort`. A new `ProjectionBackedJt808ProvisioningPort`
+(mirroring the LSZ adapter's own equivalent pattern) resolves a device's `terminal_id` against the
+shared, vendor-agnostic `DeviceRegistryProjection` (already indexed by both `terminal_id` and
+`serial_number`, fed by `fleet_device`'s own `DeviceRegistered`/`DeviceActivated`/
+`DeviceAssignedToVehicle` events over the broker) — a real, pre-provisioned device (registered →
+activated → assigned to a vehicle, the same dashboard flow `RegisterDeviceWizard.tsx` already
+provides) is correctly identified and resolved to its `device_id`/`vehicle_id`/`organization_id`
+at `0x0100`; unknown/inactive/unassigned/suspended/retired devices all correctly reject
 (`TERMINAL_NOT_FOUND`, connection closed — never auto-created, never pending). A new
-`HeartbeatHandler` (`0x0002`) and a `touch()` call added to `LocationHandler` (`0x0200`) now
-actually trigger `DeviceSessionManager`'s pre-existing `AUTHENTICATED → ONLINE` promotion and
-`DeviceOnline`/`DeviceOffline` publishing — both were already fully built and wired into
-`Jt808Server`'s own callbacks, just never triggered because nothing called `touch()`.
+`HeartbeatHandler` (`0x0002`) and a `touch()` call added to `LocationHandler` (`0x0200`) trigger
+`DeviceSessionManager`'s pre-existing `AUTHENTICATED → ONLINE` promotion and `DeviceOnline`/
+`DeviceOffline` publishing — both were already fully built, just never triggered before this.
+**Not yet implemented, per ADR-0025 §2/§4** (a following, separately-authorized phase, not
+started by ADR-0025 itself): the header/`0x0100`/`0x0102` field-width rework to the confirmed
+JT/T 808-2019 shape (`BCD[10]` terminal phone, a protocol-version byte, wider manufacturer-ID/
+terminal-model/terminal-ID fields, IMEI + software-version parsing in `0x0102`) — the parser as it
+stands today is still built to the 2013 shape and would misparse a real 2019 device's header.
 
-**`0x0102` authentication verification remains deliberately unimplemented — an explicit stop, not
-a guess.** JT808 Technical Design, the primary JT/T 808-2013 spec's own text, and Backend LLD
-describe three structurally different, mutually exclusive auth-code mechanisms (a device-held
-static secret checked against `Device.auth_key_hash`; a platform-minted code issued at
-registration and echoed back; a Redis-held, rotating session token) — the repository does not
-contain enough authoritative information to pick one. `ProjectionBackedJt808ProvisioningPort.
-authorize_registration` returns `SUCCESS` with `auth_code=None`; `verify_auth_code` always
-returns `is_valid=False` — both explicitly documented in code as the deliberate boundary, not a
-fail-closed oversight. **Do not implement this without the supplier's forthcoming standalone
-JT808 documentation resolving which mechanism RAAD's actual procured terminals use** — the same
-unresolved verification point named above, now scoped to this one specific method.
+**`0x0102` authentication now has a decided design (ADR-0025 §3), ending the earlier deliberate
+stop.** The prior three-way conflict (JT808 Technical Design's device-held-static-secret reading,
+the primary JT/T 808 spec's platform-issued-code reading, Backend LLD's Redis-rotating-token
+reading) is resolved in favor of the platform-issued/echoed-back model, now corroborated directly
+by the new specification's own §5.1.6/§5.1.7/§7.1.1/§7.1.2. Design: the platform mints a random
+code on `0x0100` success, hashed at rest in `Device.auth_key_hash` (an existing column, previously
+always `None`), verified by hash comparison on `0x0102`; the code does not time-expire, and
+rotates only on a fresh registration (e.g. after a factory reset). `ProjectionBackedJt808
+ProvisioningPort.authorize_registration`/`verify_auth_code` still need implementing to this
+design — not yet built as of this section's own last update, tracked as part of the same
+following implementation phase as the field-width rework above.
 
 ## Domain Vocabulary
 
