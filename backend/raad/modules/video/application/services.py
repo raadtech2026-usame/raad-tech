@@ -92,6 +92,8 @@ class VideoApplicationService:
         stream_url = await self._video_provider.start_live(
             device_id=command.device_id,
             camera_id=command.camera_id,
+            terminal_id=command.terminal_id,
+            channel_no=command.channel_no,
             reference=str(session.id),
         )
         async with uow:
@@ -129,6 +131,8 @@ class VideoApplicationService:
         stream_url = await self._video_provider.start_playback(
             device_id=command.device_id,
             camera_id=command.camera_id,
+            terminal_id=command.terminal_id,
+            channel_no=command.channel_no,
             window_start=command.window_start,
             window_end=command.window_end,
             reference=str(session.id),

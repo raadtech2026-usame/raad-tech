@@ -103,9 +103,17 @@ class FakeVideoProvider(VideoProviderPort):
         self.start_playback_calls: list[dict] = []
         self.stop_calls: list[dict] = []
 
-    async def start_live(self, *, device_id: str, camera_id: str, reference: str) -> str:
+    async def start_live(
+        self, *, device_id: str, camera_id: str, terminal_id: str, channel_no: int, reference: str
+    ) -> str:
         self.start_live_calls.append(
-            {"device_id": device_id, "camera_id": camera_id, "reference": reference}
+            {
+                "device_id": device_id,
+                "camera_id": camera_id,
+                "terminal_id": terminal_id,
+                "channel_no": channel_no,
+                "reference": reference,
+            }
         )
         return self.stream_url
 
@@ -114,6 +122,8 @@ class FakeVideoProvider(VideoProviderPort):
         *,
         device_id: str,
         camera_id: str,
+        terminal_id: str,
+        channel_no: int,
         window_start: datetime,
         window_end: datetime,
         reference: str,
@@ -122,6 +132,8 @@ class FakeVideoProvider(VideoProviderPort):
             {
                 "device_id": device_id,
                 "camera_id": camera_id,
+                "terminal_id": terminal_id,
+                "channel_no": channel_no,
                 "window_start": window_start,
                 "window_end": window_end,
                 "reference": reference,
@@ -154,6 +166,8 @@ class RequestLiveVideoTests(unittest.IsolatedAsyncioTestCase):
                     organization_id=VALID_ORG_ULID,
                     device_id="device-ref-1",
                     camera_id="camera-ref-1",
+                    terminal_id="00000000013800138000",
+                    channel_no=1,
                     actor=make_actor(),
                 ),
                 uow=uow,
@@ -172,6 +186,8 @@ class RequestLiveVideoTests(unittest.IsolatedAsyncioTestCase):
                 organization_id=VALID_ORG_ULID,
                 device_id="device-ref-2",
                 camera_id="camera-ref-2",
+                terminal_id="00000000013800138000",
+                channel_no=1,
                 actor=make_actor(),
             ),
             uow=uow,
@@ -194,6 +210,8 @@ class RequestPlaybackVideoTests(unittest.IsolatedAsyncioTestCase):
                     organization_id=VALID_ORG_ULID,
                     device_id="device-ref-3",
                     camera_id="camera-ref-3",
+                    terminal_id="00000000013800138000",
+                    channel_no=1,
                     window_start=start,
                     window_end=end,
                     actor=make_actor(),
@@ -216,6 +234,8 @@ class RequestPlaybackVideoTests(unittest.IsolatedAsyncioTestCase):
                 organization_id=VALID_ORG_ULID,
                 device_id="device-ref-4",
                 camera_id="camera-ref-4",
+                terminal_id="00000000013800138000",
+                channel_no=1,
                 window_start=start,
                 window_end=end,
                 actor=make_actor(),
@@ -237,6 +257,8 @@ class StopVideoSessionTests(unittest.IsolatedAsyncioTestCase):
                     organization_id=VALID_ORG_ULID,
                     device_id="device-ref-5",
                     camera_id="camera-ref-5",
+                    terminal_id="00000000013800138000",
+                    channel_no=1,
                     actor=make_actor(),
                 ),
                 uow=uow,
@@ -257,6 +279,8 @@ class StopVideoSessionTests(unittest.IsolatedAsyncioTestCase):
                 organization_id=VALID_ORG_ULID,
                 device_id="device-ref-6",
                 camera_id="camera-ref-6",
+                terminal_id="00000000013800138000",
+                channel_no=1,
                 actor=make_actor(),
             ),
             uow=uow,

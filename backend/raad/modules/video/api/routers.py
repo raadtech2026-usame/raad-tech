@@ -20,18 +20,24 @@ Three routes, exactly API Contracts §4.5's documented table:
 **Camera-ownership cross-check, a defense-in-depth addition beyond the literal documented
 behavior — flagged, not silently assumed.** `DeviceApplicationService.get_device_by_id` already
 returns the device's own embedded `cameras` tuple (`fleet_device.application.queries.DeviceDTO`)
-at no extra cross-module read; `request_live_video`/`request_playback_video` verify
-`camera_id` actually belongs to the resolved `device_id` before ever calling the application
-service, the same "no invented cross-module DB access, only already-loaded-DTO checks" posture
+at no extra cross-module read; `request_live_video`/`request_playback_video` verify `camera_id`
+actually belongs to the resolved `device_id` before ever calling the application service, the
+same "no invented cross-module DB access, only already-loaded-DTO checks" posture
 `interfaces/http/policy_guards.find_owned_student_id_for_vehicle` already establishes.
+`_resolve_camera_or_raise` (JT1078 backend-integration phase, formerly `_ensure_camera_belongs_
+to_device`) also returns the matched `CameraDTO` — its `terminal_id`/`channel_no` are resolved
+here, once, and threaded through the command into `VideoProviderPort.start_live`/`start_playback`
+(`application/ports.py`'s own module docstring has the full reasoning for resolving them at this
+layer rather than re-resolving inside the provider adapter).
 
-**With no `VideoProviderPort` bound this phase** (`core/di/bootstrap.py` — this phase's own
-explicit instruction: "Native JT1078 implementation is intentionally postponed"), calling
-`POST /video/live` or `POST /video/playback` **persists the `VideoSession` as `REQUESTED` and
-then raises `NotImplementedError`** (500) at the activation step — see
-`VideoApplicationService`'s own module docstring; this is the documented, intentional "fail
-loudly, don't fake a stream" behavior, not a bug. `POST /video/sessions/{id}/stop` still
-succeeds locally (ends the control record) even with no provider bound.
+**`VideoProviderPort` is now conditionally bound** (`core/di/bootstrap.py` — `Jt1078RelayAdapter`,
+JT1078 backend-integration phase, bound whenever both the broker and `device_plane.
+jt1078_signaling_url` are configured). Without one bound (the original MVP-era default posture),
+calling `POST /video/live` or `POST /video/playback` still **persists the `VideoSession` as
+`REQUESTED` and then raises `NotImplementedError`** (500) at the activation step — see
+`VideoApplicationService`'s own module docstring; this remains the documented, intentional "fail
+loudly, don't fake a stream" behavior for an unconfigured deployment, not a bug. `POST /video/
+sessions/{id}/stop` still succeeds locally (ends the control record) even with no provider bound.
 """
 
 from __future__ import annotations
@@ -46,7 +52,11 @@ from raad.interfaces.http.deps import get_container, require_permission
 from raad.interfaces.http.policy_guards import enforce_d5
 from raad.modules.fleet_device.api.deps import get_device_service, get_fleet_device_uow
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
-from raad.modules.fleet_device.application.queries import DeviceDTO, GetDeviceByIdQuery
+from raad.modules.fleet_device.application.queries import (
+    CameraDTO,
+    DeviceDTO,
+    GetDeviceByIdQuery,
+)
 from raad.modules.fleet_device.application.services import DeviceApplicationService
 from raad.modules.video.api.deps import get_video_service, get_video_uow
 from raad.modules.video.api.schemas import (
@@ -95,9 +105,11 @@ async def _resolve_device_or_raise(
     )
 
 
-def _ensure_camera_belongs_to_device(device: DeviceDTO, camera_id: str) -> None:
-    if not any(camera.id == camera_id for camera in device.cameras):
-        raise NotFoundError(f"Camera {camera_id} not found on device {device.id}.")
+def _resolve_camera_or_raise(device: DeviceDTO, camera_id: str) -> CameraDTO:
+    for camera in device.cameras:
+        if camera.id == camera_id:
+            return camera
+    raise NotFoundError(f"Camera {camera_id} not found on device {device.id}.")
 
 
 @video_router.post(
@@ -107,9 +119,9 @@ def _ensure_camera_belongs_to_device(device: DeviceDTO, camera_id: str) -> None:
     summary="Request a live video stream",
     description=(
         "Org Admin (+ permitted RAAD) (API Contracts §4.5 line 152). D5-enforced "
-        "(`VideoAccessPolicy`) before any session is created. With no `VideoProviderPort` "
-        "bound this phase, persists the `VideoSession` as `REQUESTED` and then raises "
-        "`NotImplementedError` (500) — see this file's module docstring."
+        "(`VideoAccessPolicy`) before any session is created. Requires `VideoProviderPort` "
+        "to be bound (see this file's module docstring) - without one, persists the "
+        "`VideoSession` as `REQUESTED` and then raises `NotImplementedError` (500)."
     ),
 )
 async def request_live_video(
@@ -124,7 +136,7 @@ async def request_live_video(
     device = await _resolve_device_or_raise(
         body.device_id, device_service=device_service, device_uow=device_uow
     )
-    _ensure_camera_belongs_to_device(device, body.camera_id)
+    camera = _resolve_camera_or_raise(device, body.camera_id)
 
     container: Container = get_container(request)
     await enforce_d5(
@@ -137,6 +149,8 @@ async def request_live_video(
         organization_id=device.organization_id,
         device_id=body.device_id,
         camera_id=body.camera_id,
+        terminal_id=device.terminal_id,
+        channel_no=camera.channel_no,
         actor=principal,
     )
     session = await video_service.request_live_video(command, uow=uow)
@@ -150,7 +164,7 @@ async def request_live_video(
     summary="Request a playback video stream",
     description=(
         "Org Admin (API Contracts §4.5 line 153). D5-enforced before any session is created. "
-        "Same `VideoProviderPort`-unbound posture as `POST /video/live`."
+        "Same `VideoProviderPort` binding posture as `POST /video/live`."
     ),
 )
 async def request_playback_video(
@@ -165,7 +179,7 @@ async def request_playback_video(
     device = await _resolve_device_or_raise(
         body.device_id, device_service=device_service, device_uow=device_uow
     )
-    _ensure_camera_belongs_to_device(device, body.camera_id)
+    camera = _resolve_camera_or_raise(device, body.camera_id)
 
     container: Container = get_container(request)
     await enforce_d5(
@@ -178,6 +192,8 @@ async def request_playback_video(
         organization_id=device.organization_id,
         device_id=body.device_id,
         camera_id=body.camera_id,
+        terminal_id=device.terminal_id,
+        channel_no=camera.channel_no,
         window_start=body.window_start,
         window_end=body.window_end,
         actor=principal,

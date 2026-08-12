@@ -6,6 +6,12 @@ every command carries the calling `Principal` as `actor`, identifiers are plain 
 resolved server-side from the referenced `device_id` (`fleet_device`'s own application service,
 via `api/routers.py`, never a cross-module DB read) before the command is built, so a caller
 cannot claim a different organization than the device actually belongs to.
+
+**`terminal_id`/`channel_no` (JT1078 backend-integration phase)** — likewise resolved server-side
+by `api/routers.py` from the same already-loaded `DeviceDTO`/`CameraDTO`, never accepted from the
+caller. `VideoApplicationService` threads them straight through to `VideoProviderPort.start_live`/
+`start_playback` (`application/ports.py`'s own module docstring has the full reasoning for why
+they're resolved once here rather than re-resolved inside the provider adapter).
 """
 
 from __future__ import annotations
@@ -23,6 +29,8 @@ class RequestLiveVideoCommand:
     organization_id: str
     device_id: str
     camera_id: str
+    terminal_id: str
+    channel_no: int
     actor: Principal
 
 
@@ -34,6 +42,8 @@ class RequestPlaybackVideoCommand:
     organization_id: str
     device_id: str
     camera_id: str
+    terminal_id: str
+    channel_no: int
     window_start: datetime
     window_end: datetime
     actor: Principal

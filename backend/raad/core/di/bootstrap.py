@@ -123,6 +123,8 @@ from raad.modules.reporting.application.services import ReportingApplicationServ
 from raad.modules.reporting.infra.repositories import SqlAlchemyReportingUnitOfWork
 from raad.modules.video.application.ports import VideoProviderPort, VideoUnitOfWork
 from raad.modules.video.application.services import VideoApplicationService
+from raad.modules.video.infra.adapters import Jt1078RelayAdapter
+from raad.modules.video.infra.jt1078_relay_client import Jt1078RelayRpcClient
 from raad.modules.video.infra.repositories import SqlAlchemyVideoUnitOfWork
 from raad.modules.platform_audit.application.ports import PlatformAuditUnitOfWork
 from raad.modules.platform_audit.application.services import (
@@ -335,19 +337,11 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
-    # VideoApplicationService is always constructible too — `video_provider` is optional by
-    # design (see that class's own module docstring), identical to `BillingApplicationService.
-    # payment_provider` above. No `VideoProviderPort` adapter exists this phase — the user's own
-    # task scope explicitly forbids implementing native JT1078 or integrating a real vendor
-    # video API this phase ("Implement only the abstraction layer if needed").
-    container.bind_singleton(
-        VideoApplicationService,
-        VideoApplicationService(
-            clock=container.resolve(Clock),
-            id_generator=container.resolve(IdGenerator),
-            video_provider=container.try_resolve(VideoProviderPort),
-        ),
-    )
+    # VideoApplicationService's own bind_singleton call is deliberately *not* here — it needs
+    # `container.try_resolve(VideoProviderPort)` to see whatever the broker block below
+    # conditionally binds, so it's positioned immediately after that block instead (same
+    # dependency-ordering reasoning `PlatformStatsApplicationService`'s own comment gives for its
+    # own late position, further down this file).
 
     # PlatformAuditApplicationService needs no id_generator (AuditEntry is never created
     # through this module; SystemSetting is keyed by its own `key`, not a minted id) or
@@ -472,6 +466,40 @@ def build_container(settings: Settings) -> Container:
         # never consumed anywhere on this backend before now) onto `devices.last_seen_at` - see
         # `modules/fleet_device/events/subscribers.py`'s own module docstring.
         register_fleet_device_processors(container.resolve(EventProcessorRegistry), container)
+
+        # JT1078 backend-integration phase: `VideoProviderPort` -> `Jt1078RelayAdapter`, real and
+        # native (not a hardware/vendor-API stub) - reuses this exact `broker_redis_client`/
+        # `broker_port` for both the session-creation RPC to `services/jt1078` and the
+        # device-start signal to `device-gateway` (`infra/adapters.py`'s own module docstring has
+        # the full request-flow reasoning). Gated additionally on `device_plane.
+        # jt1078_signaling_url` (the relay's own public-facing viewer base URL, e.g.
+        # `ws://jt1078-relay:7911`) - without a real value there, the adapter could still call the
+        # relay, but every returned `stream_url` would be malformed, so both must be configured
+        # together or neither binds, matching `PaymentProviderPort`'s own "fail loudly, don't
+        # half-configure" posture.
+        if settings.device_plane.jt1078_signaling_url:
+            container.bind_singleton(
+                VideoProviderPort,
+                Jt1078RelayAdapter(
+                    rpc_client=Jt1078RelayRpcClient(broker_redis_client),
+                    broker=broker_port,
+                    viewer_base_url=settings.device_plane.jt1078_signaling_url,
+                ),
+            )
+
+    # VideoApplicationService — `video_provider` is optional by design (see that class's own
+    # module docstring), identical to `BillingApplicationService.payment_provider`'s posture.
+    # Positioned here (after the broker block above) specifically so `container.try_resolve(
+    # VideoProviderPort)` sees whatever that block just conditionally bound - see the comment
+    # left in this function's own earlier video section for why the binding isn't there instead.
+    container.bind_singleton(
+        VideoApplicationService,
+        VideoApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+            video_provider=container.try_resolve(VideoProviderPort),
+        ),
+    )
 
     # TokenService needs a non-empty signing secret. In `dev`/`staging` without one configured
     # (e.g. no .env populated yet) it is left unbound — same "fail loudly, don't fake it"
