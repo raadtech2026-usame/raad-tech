@@ -17,8 +17,8 @@ architecture; this file is the source of truth for progress and sequencing.
 | **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
 | **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against, a real Stripe merchant account for live payments) — every Priority 1 item touching the backend/web/infra surface (1–8) is now complete and either live-verified or mechanism-complete-with-disclosed-testing-limits: **Item 8 (Payment) is no longer an architectural blocker** — ADR-0022 (2026-08-06) shipped a real, verified `StripePaymentAdapter`, a wired webhook route, and a production `OrgBillingPage` "Pay Invoice" flow, resolving both the design gaps (signed-webhook-caller representation, provider abstraction shape) this item used to carry; only a live merchant account's credentials remain, same disclosed posture as TLS/Redis. Two deployment paths now exist side by side: the original generic-VPS/nginx/certbot path, and a new Coolify-managed path (`docker-compose.coolify.yml`, `docs/runbooks/coolify-deployment.md`) for the user's own chosen Hostinger-VPS-via-Coolify target. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **ADR-0023 (2026-08-07)** closed Known Issue #17 on the backend side (a canonical `GET /me`/`GET /me/students`/`GET /me/driver-profile` self-service identity capability) — M3's own blocking backend gap is resolved, though the mobile client itself is not yet wired to it (same missing-SDK limitation as the rest of Item 9). This is the direct continuation of the continuous-completion program (user directive 2026-08-03) — see Section 15 for that program's own final report, and Section 8 for ADR-0022's/ADR-0023's own full writeups. |
 | **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), ADR-0019 (Account-Sharing Session Cap), ADR-0020 (Platform Analytics Read Model), and **ADR-0022 (Payment Provider Architecture) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete, plus this unplanned-at-the-time payment-architecture milestone the user added afterward. Frontend: **F0–F9 complete**, with F9's own previously-deferred Organization Billing half now also complete (ADR-0022: dedicated `OrgBillingPage` + real "Pay Invoice" flow) — F8: Notifications web UI (first cursor-paginated page, first live-WS-driven bell badge); F9: Billing web UI (platform-wide read-only tabs + org-scoped subscription/invoice/payment view and a real payment flow) — plus the ADR-0020 KPI grid and a fleet-ops-style dashboard redesign/polish pass; F10 (Video)/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
-| **Current git commit** | This turn's own commit (recording ADR-0025's native JT/T 808-2019 + JT/T 1078-2016 protocol-compliance architecture update in PROJECT_STATUS.md/CLAUDE.md/the two rule files/ADR-0024) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; the two prior commits were `9e2ae9f` (docs: record JT808 device-plane provisioning/identity gap) and, before that, `c2550a1` (JT808 device-plane provisioning/identity integration gap itself) — each already one commit behind by the time this line is read (the same real, disclosed, recurring staleness rule 2 warns about, not a one-time slip). |
-| **Last updated** | 2026-08-11 |
+| **Current git commit** | This turn's own commit (recording the Business API `VideoProviderPort` → JT1078 relay wiring in PROJECT_STATUS.md/the two rule files) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; the two prior commits were `8212f1e` (feat(video): wire VideoProviderPort to the JT1078 relay) and, before that, `224afd4` (feat(jt1078-relay): add Redis RPC session-request server) — each already one commit behind by the time this line is read (the same real, disclosed, recurring staleness rule 2 warns about, not a one-time slip). |
+| **Last updated** | 2026-08-12 |
 
 ---
 
@@ -124,17 +124,17 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** No.
 - **Dependencies:** Device Inventory, Organizations.
 
-#### JT808 — 🟡 Partial (live, primary GPS target — ADR-0025; field-width rework + video signaling now built, 2026-08-11)
-- **Implemented:** Fully built, parsed, tested (`services/device-gateway/src/vendors/jt808/`), instantiated live in the gateway. Device-plane provisioning/identity real (2026-08-09): `ProjectionBackedJt808ProvisioningPort` resolves a device's `terminal_id` against the same shared `DeviceRegistryProjection` the LSZ adapter uses. **JT/T 808-2019 field-width rework complete** (2026-08-11): header now `BCD[10]` terminal phone + protocol-version byte (`header.py`), `0x0100`/`0x0102` bodies widened to the confirmed 76-/variable-byte 2019 shapes (`registration_body.py`/`authentication_body.py`), `0x0200`'s own basic-info layout confirmed byte-for-byte unchanged from 2013 against the supplier spec (`position_body.py` — no code change needed, only citation). **`0x0102` auth-code lifecycle implemented** (ADR-0025 §3): `ProjectionBackedJt808ProvisioningPort` mints + PBKDF2-hashes a fresh code on every successful `0x0100` (`auth_code_hashing.py`), verifies by hash comparison on `0x0102`, publishes `DeviceAuthCodeIssued` so `fleet_device.Device.auth_key_hash` mirrors it — closes Known Issue #18. **JT/T 1078 video-signaling-forwarding built** (ADR-0024 §1/§8, ADR-0025 §5, 2026-08-11): `commands/video_signaling.py` encodes/decodes `0x9101`/`0x9102`/`0x9105`/`0x9205`/`0x9201`/`0x9202` (downlink) and `0x1205` (uplink, resource list); a new `CommandAckHandler` (`0x0001`, replacing a placeholder) + `PendingCommandTracker` give every platform-initiated command real correlation-ID tracking (`jt808.md` #6); `RedisVideoSignalingConsumer` receives structured command requests from the broker and forwards them, unmodified in wire terms, on the terminal's already-open connection. 405→471 device-gateway tests, all green.
-- **Missing:** Nothing architecturally blocking. A real Business-API-facing publisher of `Jt1078SignalCommandRequested` (the relay/device-gateway consumer side is built and tested; no backend `VideoProviderPort` adapter publishes to it yet — not part of this phase's task list).
-- **Production blocker?** No.
-- **Dependencies:** None.
+#### JT808 — 🟡 Partial (live, primary GPS target — ADR-0025; field-width rework, auth-code lifecycle, and video signaling all built, 2026-08-11/12)
+- **Implemented:** Fully built, parsed, tested (`services/device-gateway/src/vendors/jt808/`), instantiated live in the gateway. Device-plane provisioning/identity real (2026-08-09): `ProjectionBackedJt808ProvisioningPort` resolves a device's `terminal_id` against the same shared `DeviceRegistryProjection` the LSZ adapter uses. **JT/T 808-2019 field-width rework complete** (2026-08-11, commit `f5e9fae`): header now `BCD[10]` terminal phone + protocol-version byte (`header.py`), `0x0100`/`0x0102` bodies widened to the confirmed 76-/variable-byte 2019 shapes (`registration_body.py`/`authentication_body.py`), `0x0200`/`AlarmFlags`'s own basic-info layout confirmed byte-for-byte identical between the 2013 citation already implemented and the 2019 supplier spec, table-by-table/offset-by-offset (`position_body.py` — no code change needed, only citation) — closes the "0x0200/AlarmFlags byte-level diff" ADR-0025 §2 flagged as outstanding. **`0x0102` auth-code lifecycle implemented** (ADR-0025 §3, commit `f5e9fae`): `ProjectionBackedJt808ProvisioningPort` mints + PBKDF2-hashes a fresh code on every successful `0x0100` (`auth_code_hashing.py`), verifies by hash comparison on `0x0102`, publishes `DeviceAuthCodeIssued` so `fleet_device.Device.auth_key_hash` mirrors it — closes Known Issue #18 for real (see that issue's own resolution note). **JT/T 1078 video-signaling-forwarding built** (ADR-0024 §1/§8, ADR-0025 §5, 2026-08-11): `commands/video_signaling.py` encodes/decodes `0x9101`/`0x9102`/`0x9105`/`0x9205`/`0x9201`/`0x9202` (downlink) and `0x1205` (uplink, resource list); a new `CommandAckHandler` (`0x0001`, replacing a placeholder) + `PendingCommandTracker` give every platform-initiated command real correlation-ID tracking (`jt808.md` #6); `RedisVideoSignalingConsumer` receives structured command requests from the broker and forwards them, unmodified in wire terms, on the terminal's already-open connection. **The real Business-API-side publisher of those requests now exists too** (2026-08-12, see Video/JT1078 rows below) — the command path is exercised end to end in tests, from `Jt1078RelayAdapter` through to this consumer. 405→471 device-gateway tests, all green (unchanged this turn — no device-gateway code was touched by the 2026-08-12 phase).
+- **Missing:** Nothing architecturally blocking and no backend-side integration gap remaining. The one genuine remaining gap across this entire JT808 row is verification: every field-width, auth-code, and signaling claim above is specification-verified and unit/integration-tested against synthetic fixtures only — **none of it has been exercised against a real, physical MDVR**, and none of this row should be read as claiming otherwise.
+- **Production blocker?** No, mechanism-wise. Yes, if "launch" is read as "verified against real hardware" — that verification has not happened.
+- **Dependencies:** A real device, for the one remaining verification step.
 
-#### JT1078 — 🟡 Partial (relay built and tested, 2026-08-11 — never live-device-verified)
-- **Implemented:** New deployable `services/jt1078/`, Python 3.11 asyncio, stdlib + `redis>=5.0` only (evidence-based runtime choice — see `services/jt1078/pyproject.toml`'s own header comment; zero new dependency). JT/T 1078 extended-RTP ingest demux + subpackaged-frame reassembly, spec-verified against `mdvrdocs/MDVR-808-1078-spec.pdf` §6.2.1.1. Session lifecycle (VSM): `SessionManager` — create → active → ended/failed, viewer-count tracking, idle-timeout + ingest-timeout sweeps, device stop-signal (reuses `device-gateway`'s own `Jt1078SignalCommandRequested` wire contract, `0x9102`/`0x9202` control=close). Signed, single-use, session-scoped viewer tokens (HMAC-SHA256; in-memory or Redis-backed single-use guard) — D5 enforced structurally (the relay does no RBAC of its own; a viewer with no valid token never reaches a media byte). Hand-rolled FLV muxer (repackage-only) and a minimal RFC 6455 WebSocket server (no new dependency) for WS-FLV live delivery. Full device→ingest→repackage→viewer path proven end to end over real loopback sockets with synthetic frames (82 jt1078 tests, all green). Redis-backed session-lifecycle event publishing on the shared `raad:events` stream, conditional on a broker being configured, mirroring `device-gateway`'s own pattern. Docker: `docker/jt1078-relay.Dockerfile` + a `jt1078-relay` service block in `docker-compose.yml`/`.dev.yml`, `.env.example` entries, `.coolify.yml` note — mirrors `device-gateway`'s exact deployment shape (own container, own published ports 7910/7911, same Redis instance).
-- **Missing:** No Business-API-facing control endpoint — session creation is a plain Python API (`Jt1078Relay.create_live_session`/`create_playback_session`); no approved document specifies the backend↔relay transport, so no `VideoProviderPort` adapter binds this relay yet (a real, disclosed gap, not silently invented around). AVC/HEVC sequence-header (SPS/PPS) delivery — the muxer exposes the seam (`build_avc_sequence_header_tag`) but isn't populated from a real device's own parameter sets. HLS (the playback transport ADR-0024 §14 also names) — live/WS-FLV only this phase; playback signaling (`0x9201`/`0x9202`/`0x9205`/`0x1205`) is fully built on the device-gateway side, but the relay's own playback viewer-delivery transport is not. **Never tested against the physical MDVR** — every piece above is verified against the supplier's own written specification and synthetic byte fixtures only.
-- **Production blocker?** Yes, for real live video — the backend control-endpoint wiring, SPS/PPS handling, and physical-device verification are all still required before this is launch-ready.
-- **Dependencies:** None architecturally (the runtime/dependency decisions are made); a real device for verification.
+#### JT1078 — 🟡 Partial (relay built and tested 2026-08-11; backend wired to it 2026-08-12 — never live-device-verified)
+- **Implemented:** New deployable `services/jt1078/`, Python 3.11 asyncio, stdlib + `redis>=5.0` only (evidence-based runtime choice — see `services/jt1078/pyproject.toml`'s own header comment; zero new dependency). JT/T 1078 extended-RTP ingest demux + subpackaged-frame reassembly, spec-verified against `mdvrdocs/MDVR-808-1078-spec.pdf` §6.2.1.1. Session lifecycle (VSM): `SessionManager` — create → active → ended/failed, viewer-count tracking, idle-timeout + ingest-timeout sweeps, device stop-signal (reuses `device-gateway`'s own `Jt1078SignalCommandRequested` wire contract, `0x9102`/`0x9202` control=close). Signed, single-use, session-scoped viewer tokens (HMAC-SHA256; in-memory or Redis-backed single-use guard) — D5 enforced structurally (the relay does no RBAC of its own; a viewer with no valid token never reaches a media byte). Hand-rolled FLV muxer (repackage-only) and a minimal RFC 6455 WebSocket server (no new dependency) for WS-FLV live delivery. Full device→ingest→repackage→viewer path proven end to end over real loopback sockets with synthetic frames. Redis-backed session-lifecycle event publishing on the shared `raad:events` stream, conditional on a broker being configured, mirroring `device-gateway`'s own pattern. Docker: `docker/jt1078-relay.Dockerfile` + a `jt1078-relay` service block in `docker-compose.yml`/`.dev.yml`, `.env.example` entries, `.coolify.yml` note — mirrors `device-gateway`'s exact deployment shape (own container, own published ports 7910/7911, same Redis instance). **Backend-facing control endpoint built (2026-08-12)**: a new `SessionRequestServer` answers a Redis list-based BLPOP/RPUSH RPC (`raad:jt1078:session_requests`/`raad:jt1078:session_responses:{request_id}`) from the Business API's own new `Jt1078RelayRpcClient` — see the Video row below for the full flow. `SessionManager.create_session` gained an optional `session_id` passthrough so the Business API's own `VideoSession` ULID is the one identifier used everywhere (Postgres, relay session tracking, Redis event `correlation_id`). 82→90 jt1078 tests, all green.
+- **Missing:** AVC/HEVC sequence-header (SPS/PPS) delivery — the muxer exposes the seam (`build_avc_sequence_header_tag`) but isn't populated from a real device's own parameter sets. HLS (the playback transport ADR-0024 §14 also names) — live/WS-FLV only this phase; playback signaling (`0x9201`/`0x9202`/`0x9205`/`0x1205`) is fully built on the device-gateway side, but the relay's own playback viewer-delivery transport is not. Per-org/global max-concurrent-stream ceiling (rule #4) — per-device mutual exclusivity holds structurally, but no ceiling is enforced. `audit_entries` writes for session open/close (rule #6) — the relay publishes the lifecycle events; no Business-API consumer writes them to `audit_entries` yet. **The relay's own session-lifecycle events (`VideoSessionActivated`/`Ended`/`Failed`) are not consumed back into the Business API's `VideoSession` row either** (`backend/raad/modules/video/events/subscribers.py` is still empty, pre-existing, unchanged by the 2026-08-12 phase) — `VideoSession` transitions to `ACTIVE` once the RPC call + device signal succeed, not on a real "media is flowing" signal, and an automatic relay-side teardown (idle timeout, viewer disconnect, device drop) has no path back into Postgres; ADR-0024 §16's own "defensive reconciliation timeout" safety net for a `VideoSession` stuck in `REQUESTED`/`ACTIVE` does not exist yet either. **Never tested against the physical MDVR** — every piece above, old and new, is verified against the supplier's own written specification and synthetic byte fixtures/fakes only.
+- **Production blocker?** Yes, for real live video — SPS/PPS handling, the relay-event-to-`VideoSession` reconciliation gap, and physical-device verification are all still required before this is launch-ready. The backend control-endpoint wiring itself is no longer a blocker.
+- **Dependencies:** None architecturally (the runtime/dependency/backend-transport decisions are all made); a real device for verification.
 
 ### Live operations
 
@@ -150,11 +150,11 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** Partially — works today, not yet trustworthy at scale.
 - **Dependencies:** GPS ingestion, Redis.
 
-#### Video — ❌ Missing (relay exists now; backend never wired to it)
-- **Implemented:** The D5 authorization policy (parents get zero reachable path to video) is real and enforced. The JT1078 relay itself is built and tested (see JT1078 above) — the Business API's own `video` module (`VideoSession`, `VideoProviderPort`, the three routes) is unchanged by this phase, still with zero bound adapter.
-- **Missing:** A `Jt1078RelayAdapter` implementing `VideoProviderPort`, and whatever transport it uses to actually reach the relay (not specified by any approved document yet — see JT1078's own "Missing"). Frontend player (F10) not started.
-- **Production blocker?** Yes, for launch with live video.
-- **Dependencies:** JT1078 (now built), the backend adapter (not built).
+#### Video — 🟡 Partial (backend wired to the JT1078 relay, 2026-08-12 — never live-device-verified)
+- **Implemented:** The D5 authorization policy (parents get zero reachable path to video) is real and enforced, unchanged by this phase — `enforce_d5()` still runs before any of the below. **`VideoProviderPort` now has a real implementation**: `Jt1078RelayAdapter` (`backend/raad/modules/video/infra/adapters.py`), conditionally bound in `core/di/bootstrap.py` only when both a broker and `device_plane.jt1078_signaling_url` are configured (fixed a real DI-ordering bug found while wiring this in — `VideoApplicationService` used to be bound *before* the conditional block, so it would have silently resolved `video_provider=None` even with a broker configured; relocated after the block, mirroring `PlatformStatsApplicationService`'s own documented precedent for the identical constraint). `VideoProviderPort.start_live`/`start_playback` widened to take `terminal_id`/`channel_no`, resolved once in `routers.py` from `fleet_device`'s own DTOs (no second cross-module lookup inside the adapter). The three existing routes are otherwise unchanged — no new route was added. Full flow: `VideoApplicationService` → `Jt1078RelayAdapter` → `Jt1078RelayRpcClient` (new Redis list RPC to the relay's new `SessionRequestServer`, JT1078 row above) → a `Jt1078SignalCommandRequested` event on the existing `raad:events` broker stream → device-gateway's already-built `RedisVideoSignalingConsumer` → the real `0x9101`/`0x9201` JT808 command on the device's connection. The returned `stream_url` is a `ws://.../viewer?token=...` URL the frontend connects to directly — no media byte ever transits the FastAPI process.
+- **Missing:** Frontend player (F10) not started — nothing in this phase touched the frontend. The relay-event-to-`VideoSession` reconciliation gap named in the JT1078 row above (session state can drift from what the relay actually observes). SPS/PPS, HLS, the concurrency ceiling, and `audit_entries` writes (JT1078 row above) all remain open. **Physical-MDVR verification** — this wiring is unit/integration-tested against fakes only; no real device has exercised any part of this path.
+- **Production blocker?** Yes, for launch with live video — the frontend player doesn't exist yet, and nothing here has been verified against real hardware.
+- **Dependencies:** JT1078 (built), the backend adapter (now built), the frontend player (not built), a real device for verification.
 
 ### Engagement & revenue
 
@@ -398,6 +398,8 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0021 | Tenant Scope Enforcement at Repository Layer | ✅ Complete |
 | 0022 | Payment Provider Architecture | ✅ Complete |
 | 0023 | Canonical `/me` Self-Service Identity Resolution | ✅ Complete |
+| 0024 | JT1078 Video Relay Architecture | 🟡 Partial (device-gateway signaling, relay, and Business API wiring all built and tested against fakes/synthetic fixtures; SPS/PPS, HLS, concurrency ceiling, `audit_entries`, and relay→`VideoSession` reconciliation still open; physical-MDVR verification pending) |
+| 0025 | JT/T 808-2019 + JT/T 1078-2016 Native Protocol Compliance | 🟡 Partial (architecture accepted and every named implementation item — field-width rework, `0x0102` auth-code lifecycle, `0x0200` byte-diff — is built and tested; physical-MDVR verification pending) |
 
 ---
 
@@ -596,21 +598,21 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — the native-protocol architecture update (ADR-0025, 2026-08-10) just closed**, at the
-user's explicit direction, not picked via the usual Section 14 process: after receiving two new
-official supplier documents for the exact procured hardware (a JT/T 808-2019 + JT/T 1078-2016
-combined spec, and a model-specific Compliance Confirmation Letter), the user first asked for a
-full protocol-source-of-truth review (no code changes) answering 18 questions across every
-device/video-adjacent part of the repository, then, once satisfied ("verification is complete"),
-directed the architecture itself be updated to reflect native JT/T 808-2019 + JT/T 1078-2016
-compliance rather than the prior proprietary-hardware finding (ADR-0009). This turn's work is
-documentation/decision-records only — a new ADR-0025, a same-commit revision of ADR-0024 §1
-(video signaling design), both `.claude/rules/jt808.md`/`jt1078.md`, and CLAUDE.md — explicitly
-not a code change; see the writeup immediately below this note for the full detail. The actual
-JT/T 808-2019 field-width rework and the `0x0102` auth-code implementation this ADR's own design
-now specifies (§3) remain a following, separately-authorized implementation phase, not started.
-Section 2's Mobile row and similar minor doc staleness remain outstanding, not yet corrected,
-noted, not forgotten.
+**Nothing — the JT1078 video-integration program (ADR-0024/ADR-0025) is now closed end to end,
+mechanism-wise.** Four back-to-back, user-directed phases (2026-08-10 through 2026-08-12): the
+native-protocol architecture reversal (ADR-0025, same-commit ADR-0024 §1 revision); the JT/T
+808-2019 field-width rework + `0x0102` auth-code lifecycle + `0x0200`/`AlarmFlags` byte-diff
+resolution (commit `f5e9fae`); the JT/T 1078 video-signaling forwarding on device-gateway plus the
+`services/jt1078` relay build-out (commits `297153e`/`7e4e77d`/`258a10c`); and finally the Business
+API `VideoProviderPort` → relay wiring (this turn, commits `224afd4`/`8212f1e`) — see each phase's
+own dated write-up below for full detail. **What remains, genuinely external and not fabricable in
+this sandbox: a physical MDVR to verify any of the above against.** Every phase above is
+specification-verified and unit/integration-tested against synthetic fixtures/fakes only, never
+against real device bytes — this document does not claim otherwise anywhere. What also remains,
+disclosed not silently dropped: the frontend video player (F10), SPS/PPS population, HLS, the
+relay concurrency ceiling, `audit_entries` writes for video sessions, and the relay-event-to-
+`VideoSession` reconciliation gap (JT1078/Video rows, Section 3). Section 2's Mobile row and
+similar minor doc staleness remain outstanding, not yet corrected, noted, not forgotten.
 
 **Native JT/T 808-2019 + JT/T 1078-2016 protocol compliance — architecture update (2026-08-10,
 user-directed, ADR-0025).** Reverses ADR-0009's core finding for this specific procured hardware
@@ -816,6 +818,85 @@ frames, never against a real terminal's actual bytes; the relay's AVC sequence-h
 handling and the Annex-B-delimiter assumption in the FLV muxer are explicitly unverified
 (`services/jt1078/src/repackager/flv_muxer.py`'s own module docstring has the full detail); HLS
 playback delivery and a real Business-API-facing control endpoint for the relay are not built.
+
+**Business API `VideoProviderPort` → JT1078 relay integration (2026-08-12, user-directed, closing
+the "no backend control-endpoint transport" / "no `VideoProviderPort` adapter" gap the phase
+above's own report flagged).** Connects the pieces the prior three phases built but never wired
+together — `VideoApplicationService` could already run the full `VideoSession` state machine, and
+`services/jt1078` could already accept a session and relay media, but nothing called the relay:
+
+1. **`Jt1078RelayAdapter`** (`backend/raad/modules/video/infra/adapters.py`), the first real
+   `VideoProviderPort` implementation. `start_live`/`start_playback` each: (a) call a new
+   `Jt1078RelayRpcClient` (`backend/raad/modules/video/infra/jt1078_relay_client.py`) — a Redis
+   list-based BLPOP/RPUSH RPC, `raad:jt1078:session_requests` /
+   `raad:jt1078:session_responses:{request_id}` — to ask the relay to allocate ingest coordinates
+   and mint a viewer token; (b) publish a `Jt1078SignalCommandRequested` `DomainEvent` on the
+   **existing** `BrokerPort`/`raad:events` stream, the exact wire contract device-gateway's
+   already-built `RedisVideoSignalingConsumer` expects (asserted byte-for-byte in
+   `test_video_jt1078_relay_adapter.py`). `stop` only calls the relay — the relay's own
+   `SessionManager.end_session` already publishes the device stop-signal, so this adapter does not
+   duplicate it. **A new, additive RPC channel, not a replacement for ADR-0024 §8**: device-gateway
+   ↔ relay coordination stays broker-only, unchanged; the RPC exists solely because the backend ↔
+   relay session-request/response shape doesn't fit the broker's fan-out Stream model.
+2. **`SessionRequestServer`** (`services/jt1078/src/session/session_request_server.py`, new),
+   answering that RPC — creates the relay-side `VideoSession`, mints the signed viewer token,
+   replies with `{ingest_host, ingest_port, viewer_token}`. `SessionManager.create_session` gained
+   an optional `session_id` passthrough so the Business API's own `VideoSession` ULID is the one
+   identifier used across Postgres, the relay's own session tracking, and the Redis event
+   `correlation_id` — no separate id-mapping table needed. `RelayConfig` gained
+   `public_ingest_host`, distinct from the bind-address `ingest_host`, since a device on the public
+   network needs a reachable address, not `0.0.0.0`.
+3. **`VideoProviderPort.start_live`/`start_playback` widened** to take `terminal_id`/`channel_no` —
+   resolved once in `routers.py` from `fleet_device`'s own `DeviceDTO`/`CameraDTO` (no cross-module
+   DB read, no second adapter-internal lookup for the same identifiers — a deliberate, minimal port
+   evolution, the same shape ADR-0022 already established a precedent for). No new route; the three
+   existing `/video/*` routes are otherwise unchanged, and `enforce_d5()` still runs first, before
+   any of this is reached.
+4. **`Jt1078RelayAdapter` conditionally bound** in `core/di/bootstrap.py`, only when both a broker
+   and `device_plane.jt1078_signaling_url` are configured. **A real DI-ordering bug was found and
+   fixed while wiring this in**: `VideoApplicationService`'s own `bind_singleton` call used to run
+   *before* the broker block that conditionally binds `VideoProviderPort`, so
+   `container.try_resolve(VideoProviderPort)` would have silently resolved to `None` even with a
+   broker configured — relocated the binding to after the broker block, mirroring
+   `PlatformStatsApplicationService`'s own already-documented precedent for the identical
+   constraint. Caught and verified via `build_container()` itself (not a hand-rolled substitute)
+   before any test was written for it.
+
+**Two things flagged, not silently resolved, per this codebase's own documentation discipline**:
+- **ADR-0024 §5 point 2 reads "a... signed viewer token minted by the backend."** The
+  implementation has the **relay** mint it — the backend never holds
+  `JT1078_RELAY_VIEWER_TOKEN_SECRET` (relay-only config, by design). The security property that
+  section actually protects (no session-authorization decision happens outside the backend's own
+  D5/RBAC check, which runs before the RPC call is ever made) is unchanged; only which process
+  computes the token's bytes differs from the literal text.
+- **The relay's own session-lifecycle events are not consumed back into `VideoSession`.**
+  `backend/raad/modules/video/events/subscribers.py` is still empty (pre-existing, unchanged by
+  this phase) — `VideoSession` transitions to `ACTIVE` once the RPC call + device signal succeed,
+  not on a real "media is flowing" signal from the relay (ADR-0024 §5 point 3); an automatic
+  relay-side teardown (idle timeout, viewer disconnect, device drop) has no path back into
+  Postgres, and ADR-0024 §16's own "defensive reconciliation timeout" safety net for a
+  `VideoSession` stuck in `REQUESTED`/`ACTIVE` does not exist yet either. Directly relevant to how
+  far this integration should be trusted, so recorded here rather than left implicit.
+
+**Testing.** 4 new backend test files: `test_video_jt1078_relay_client.py` (4 tests — request
+shape, `ok:false` → `Jt1078RelayError`, timeout → `Jt1078RelayTimeoutError`, distinct request IDs
+per call, against a genuinely-polling fake Redis `blpop`, not a single-check stub);
+`test_video_jt1078_relay_adapter.py` (6 tests — request shape, viewer-URL construction, exact
+published-event shape, RPC-before-signal ordering, `stop`'s single-call behavior);
+`test_video_provider_di_wiring.py` (6 tests, against the real `build_container()` — unbound with
+no broker/signaling URL, unbound with only one of the two, bound with both, and
+`VideoApplicationService` resolving the *same* adapter instance); `test_video_application.py`
+updated (8 existing tests, widened `FakeVideoProvider`/command fixtures for the new
+`terminal_id`/`channel_no` fields). 2 new `services/jt1078` test files/additions:
+`test_session_request_server.py` (7 tests) and `test_relay_redis_wiring.py` extended (+2, including
+a fake-Redis gap this pass found: without a working `blpop`/`rpush`/`expire` on the test double,
+`relay.start()`'s new background `SessionRequestServer` task would have died silently on its first
+poll). **Results**: `services/jt1078` 82→90, all green. Backend `tests/unit`+`tests/architecture`:
+1356 passed, 5 subtests, all green. `tests/contract`: 1 pre-existing, unrelated failure
+(`NoSilentUndocumentedRoutesTests` — the same ADR-0018/0019/0020/0023/RBAC/`/metrics` documentation
+gap the prior phase's own report already named, confirmed present before this phase and containing
+no `/video` route). `services/device-gateway` (regression check, untouched by this phase): 408
+passed, unchanged.
 
 **CI hardening — frontend + device-gateway CI (2026-08-07, Priority 2 backlog item,
 `PROJECT_STATUS.md` Section 5).** `ci-cd/pipelines/*.yml` had five placeholder index stubs;
@@ -1730,16 +1811,27 @@ Reverse-chronological (most recent first):
 - **Severity:** ~~High~~
 - **Blocking production?** No longer.
 
-### 4. `PaymentProviderPort` (resolved, ADR-0022), `VideoProviderPort`/`ReportRendererPort` still unbound
+### 4. `PaymentProviderPort` (resolved, ADR-0022), `VideoProviderPort` (resolved, mechanism-wise, 2026-08-12), `ReportRendererPort` still unbound
 - **Severity:** ~~High (Payment)~~ Low (Payment — real-account credentials only, mechanism
-  complete). Medium (Video, Reporting — unchanged).
+  complete). ~~Medium (Video)~~ Low (Video — same "mechanism complete, real-world verification
+  pending" posture as Payment, since 2026-08-12; no real merchant-account equivalent blocks it,
+  only a physical MDVR). Medium (Reporting — unchanged).
 - **Recommended fix:** ~~Bind a real EVC Plus adapter (Payment)~~ **Done, ADR-0022** — set
   `RAAD_PAYMENT__PROVIDER=stripe` + real `RAAD_PAYMENT__PROVIDER_CREDENTIALS` (a real Stripe
   merchant account) once one exists; the adapter, webhook route, and frontend flow are all
-  already built and tested. Video: decide a JT1078 runtime. Reporting: pick a PDF/Excel engine.
+  already built and tested. ~~Video: decide a JT1078 runtime, then build a `VideoProviderPort`
+  adapter~~ **Done** — see below. Reporting: pick a PDF/Excel engine.
 - **Blocking production?** Payment: no longer, mechanism-wise (same "not live-tested against a
-  real external account" disclosed posture as TLS/Redis hardening). Video/Reporting: only if
-  marketed as working at launch — unchanged.
+  real external account" disclosed posture as TLS/Redis hardening). Video: no longer
+  architecturally — see below for what's still open. Reporting: only if marketed as working at
+  launch — unchanged.
+- **Video half resolved (2026-08-12):** `Jt1078RelayAdapter` is a real, tested `VideoProviderPort`
+  implementation, conditionally bound in `core/di/bootstrap.py` — see Section 3's Video/JT1078 rows
+  and Section 8's own dated write-up for the full architecture, tests, and the two flagged,
+  disclosed gaps (viewer-token minting happens relay-side, not backend-side as ADR-0024 §5 point 2
+  literally reads; the relay's own session-lifecycle events aren't yet consumed back into
+  `VideoSession`). **What remains, not fabricable in this sandbox:** a physical MDVR to verify any
+  of it against — this entry does not claim live-hardware compatibility.
 - **ADR-0022 (2026-08-06) resolution, Payment half:** both blockers this issue used to describe
   are closed. **The signed-webhook-caller design question** (no `Principal` exists for a
   provider's own webhook) is resolved *without* a full new ADR-level RBAC change — the HMAC
@@ -1953,47 +2045,36 @@ Reverse-chronological (most recent first):
 - **Blocking production?** No longer, on the backend side. Mobile client wiring remains open,
   tracked under Item 9's own Mobile App status, not re-opened here.
 
-### 18. JT808 `0x0102` authentication-code semantics — design resolved (ADR-0025 §3, 2026-08-10), implementation still pending
-- **Found:** 2026-08-09, during a user-directed source-code audit of the actual current device/
-  video protocol state, confirmed by re-reading `services/device-gateway/src/vendors/jt808/
-  handlers/provisioning_port.py`'s own pre-existing docstring (the conflict was already flagged
-  there before this audit, not newly discovered by it).
-- **The original conflict:** three source documents described structurally different, mutually
-  exclusive mechanisms for the `0x0102` auth code — JT808 Technical Design §4 reads as a
-  device-held static secret checked against `Device.auth_key_hash`; the primary JT/T 808-2013
-  spec's own text (§8.6/§8.8/§21.1, verbatim) reads as a platform-minted code issued in `0x8100`
-  and echoed back in `0x0102`; Backend LLD adds a third, only-partially-compatible reading (a
-  short-lived, Redis-held, rotating session token). Picking wrong had real consequences — either
-  rejecting every real device forever, or implementing a check that isn't actually what real
-  hardware does.
-- **Resolution (2026-08-10):** the two new supplier documents reviewed and accepted per the
-  user's own "verification is complete" instruction (JT/T 808-2019 + JT/T 1078-2016 spec PDF, and
-  the model-specific Compliance Confirmation Letter) settle the *wire format* question — this
-  hardware speaks standard JT/T 808-2019. The auth-code *lifecycle* itself (which of the three
-  readings above governs) is not settled by the new documents directly; `docs/architecture/adr/
-  0025-jt808-2019-jt1078-2016-native-protocol-compliance.md` §3 resolves it as a reasoned design
-  recommendation instead — a platform-minted random code on `0x0100` success, hashed at rest in
-  the existing (previously always-`None`) `Device.auth_key_hash` column, verified by hash
+### 18. ~~JT808 `0x0102` authentication-code semantics~~ — RESOLVED 2026-08-11
+- **The original conflict (found 2026-08-09):** three source documents described structurally
+  different, mutually exclusive mechanisms for the `0x0102` auth code — JT808 Technical Design §4
+  reads as a device-held static secret checked against `Device.auth_key_hash`; the primary JT/T
+  808-2013 spec's own text (§8.6/§8.8/§21.1, verbatim) reads as a platform-minted code issued in
+  `0x8100` and echoed back in `0x0102`; Backend LLD adds a third, only-partially-compatible reading
+  (a short-lived, Redis-held, rotating session token). Picking wrong had real consequences —
+  either rejecting every real device forever, or implementing a check that isn't actually what
+  real hardware does.
+- **Design resolution (2026-08-10):** `docs/architecture/adr/
+  0025-jt808-2019-jt1078-2016-native-protocol-compliance.md` §3 settled the lifecycle question as
+  a reasoned design recommendation — a platform-minted random code on `0x0100` success, hashed at
+  rest in the existing (previously always-`None`) `Device.auth_key_hash` column, verified by hash
   comparison on `0x0102`, no time-expiry, rotating only on a fresh registration (e.g. a factory
-  reset) — flagged in the ADR's own text as "not independently re-confirmed with the user beyond
-  this ADR's own review," not a claim of certainty equal to the wire-format finding.
-- **Current state:** `ProjectionBackedJt808ProvisioningPort.authorize_registration` still
-  correctly resolves and returns a device's real `device_id`/`vehicle_id`/`organization_id` on
-  success, but `auth_code` is still always `None`; `verify_auth_code` still always returns
-  `is_valid=False`. The design that would replace both is now decided (ADR-0025 §3); the code
-  itself has not been changed to implement it — a following, separately-authorized implementation
-  phase, not part of ADR-0025.
-- **Recommended fix:** implement `authorize_registration`'s real `auth_code` minting +
-  `Device.auth_key_hash` write, and `verify_auth_code`'s real hash-comparison logic, together
-  (they must agree — see `provisioning_port.py`'s own class docstring), to the design ADR-0025 §3
-  now specifies.
-- **Severity:** Medium — unchanged. Does not block anything already shipped (the LSZ adapter,
-  which real, procured hardware previously routed through under the assumption of proprietary
-  non-compliance, remains dormant per ADR-0025 §4, kept rather than deleted); blocks `vendors/
-  jt808/` from handling a real device end-to-end until implemented.
-- **Blocking production?** No live traffic depends on this yet — no device is currently connected
-  through `vendors/jt808/` in production; see Section 3's JT808 row for the fuller status (now
-  🟡 Partial, not ⏸ Deferred, per ADR-0025).
+  reset).
+- **Implementation resolution (2026-08-11, commit `f5e9fae`):** `ProjectionBackedJt808
+  ProvisioningPort.authorize_registration` now mints a fresh code and PBKDF2-HMAC-SHA256-hashes it
+  (new `auth_code_hashing.py`) on every successful `0x0100`, writing it via a new
+  `DeviceAuthCodeIssued` event so `fleet_device.Device.auth_key_hash` (previously always `None`)
+  mirrors it (new `DeviceAuthCodeProcessor` subscriber); `verify_auth_code` now verifies by real
+  hash comparison on `0x0102`. **A real bug was found and fixed during this pass**:
+  `DeviceAuthCodeProcessor` never set `self.event_type`, so `EventProcessorRegistry.register()`
+  (keyed by that attribute) would have raised `AttributeError` the instant a real deployment wired
+  up its processors — confirmed fixed by direct registration; no test had exercised that
+  registration path before this pass.
+- **Severity:** ~~Medium~~
+- **Blocking production?** No longer. `vendors/jt808/` now has a real, tested, end-to-end
+  identity + credential lifecycle (registration → resolution → auth-code mint/hash → `0x0102`
+  verification) — see Section 3's JT808 row for the fuller status. Physical-MDVR verification
+  remains open, tracked there, not re-opened as a separate issue here.
 
 ---
 
