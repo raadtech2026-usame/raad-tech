@@ -210,8 +210,9 @@ deployable (the Anti-Corruption-Layer principle ADR-0009 established, unchanged)
 family-agnostic `PendingCommandTracker`/`CommandSender` give every platform-initiated command real
 correlation-ID tracking (`.claude/rules/jt808.md` #6); `TERMINAL_GENERAL_RESPONSE` (`0x0001`) is
 now a real `CommandAckHandler` (previously a placeholder). A new `RedisVideoSignalingConsumer`
-receives command requests from the broker and forwards them — no Business-API-side publisher of
-those requests exists yet, out of this phase's scope.
+receives command requests from the broker and forwards them. **A real Business-API-side publisher
+of those requests now exists too (2026-08-12)** — see the `VideoProviderPort` paragraph below;
+this consumer was built and tested against that publisher's exact wire contract.
 
 `services/jt1078/` is now a real, tested relay, not an empty scaffold — **runtime: Python 3.11+,
 asyncio, stdlib + the already-approved `redis>=5.0` only, zero new dependency** (evidence-based:
@@ -225,15 +226,47 @@ viewer-count tracking, idle/ingest-timeout sweeps, a device stop-signal reusing 
 single-use, session-scoped viewer tokens (D5 — the relay performs no RBAC of its own, structurally
 never reaches a media byte without one); a repackage-only FLV muxer; the WS-FLV viewer delivery
 server. Full ingest → repackage → viewer path proven over real loopback sockets with synthetic
-frames. **Not built this phase, disclosed not silently assumed:** a Business-API-facing control
-endpoint to actually request a session (session creation is a plain Python API on `Jt1078Relay`;
-no approved document specifies the backend↔relay transport, so no `VideoProviderPort` adapter
-binds this relay yet); AVC/HEVC sequence-header (SPS/PPS) population from a real device's own
-parameter sets; HLS (live/WS-FLV only this phase). **Never tested against the physical MDVR** —
-everything above is verified against the supplier's own written specification and synthetic byte
-fixtures only. Docker: new `jt1078-relay.Dockerfile` + a `jt1078-relay` service block mirroring
-`device-gateway`'s exact shape (own container, own published ports 7910/7911, same Redis
-instance).
+frames. **Not built this phase, disclosed not silently assumed:** AVC/HEVC sequence-header
+(SPS/PPS) population from a real device's own parameter sets; HLS (live/WS-FLV only this phase).
+**Never tested against the physical MDVR** — everything above is verified against the supplier's
+own written specification and synthetic byte fixtures only. Docker: new `jt1078-relay.Dockerfile`
++ a `jt1078-relay` service block mirroring `device-gateway`'s exact shape (own container, own
+published ports 7910/7911, same Redis instance).
+
+**Business API `VideoProviderPort` → JT1078 relay wiring implemented (2026-08-12).** Closes the
+"no Business-API-facing control endpoint" gap the paragraph above originally flagged, connecting
+the three previously-independent pieces into one working request path: `VideoApplicationService`
+→ `Jt1078RelayAdapter` (`backend/raad/modules/video/infra/adapters.py`, the first real
+`VideoProviderPort` implementation) → `Jt1078RelayRpcClient` (`infra/jt1078_relay_client.py`), a
+new Redis list-based BLPOP/RPUSH RPC (`raad:jt1078:session_requests` /
+`raad:jt1078:session_responses:{request_id}`) → `services/jt1078`'s new `SessionRequestServer`
+(allocates ingest coordinates, mints the signed viewer token) → the adapter publishes a
+`Jt1078SignalCommandRequested` event on the **existing** `raad:events` broker stream, the exact
+wire contract `RedisVideoSignalingConsumer` (above) already expects → the real `0x9101`/`0x9201`
+JT808 command reaches the device. **This RPC channel is new and additive, not a replacement for
+ADR-0024 §8**: device-gateway ↔ relay coordination stays broker-only, unchanged; the RPC exists
+only because the backend ↔ relay session-request/response shape doesn't fit the broker's fan-out
+Stream model. `VideoProviderPort.start_live`/`start_playback` were widened to take
+`terminal_id`/`channel_no`, resolved once in `routers.py` from `fleet_device`'s own DTOs (no
+second, adapter-internal cross-module lookup) — the same deliberate, minimal port-evolution shape
+ADR-0022 already established a precedent for. No new route; the existing three `/video/*` routes
+are unchanged, and `enforce_d5()` still runs first, before any of this is reached — no media byte
+ever transits the FastAPI process, and no new authentication model was introduced.
+`Jt1078RelayAdapter` is conditionally bound in `core/di/bootstrap.py` only when both a broker and
+`device_plane.jt1078_signaling_url` are configured (a real DI-ordering bug — `VideoApplicationService`
+bound before the conditional block, silently resolving `video_provider=None` even with a broker
+configured — was found and fixed while wiring this in, mirroring `PlatformStatsApplicationService`'s
+own documented precedent for the identical constraint). **Two things flagged, not silently
+resolved**: the **relay**, not the backend, mints the viewer token (ADR-0024 §5 point 2 reads
+"minted by the backend") — the backend never holds `JT1078_RELAY_VIEWER_TOKEN_SECRET`, so it
+structurally cannot mint one itself; the authorization property that section actually protects (no
+session decision happens outside the backend's own D5/RBAC check, which runs before the RPC is
+ever made) is unchanged. And the relay's own session-lifecycle events are not yet consumed back
+into `VideoSession` (`video/events/subscribers.py` is still empty, pre-existing, unchanged by this
+phase) — `VideoSession` reaches `ACTIVE` once the RPC + device signal succeed, not on a confirmed
+"media is flowing" signal, and ADR-0024 §16's own reconciliation-timeout safety net for a session
+stuck in `REQUESTED`/`ACTIVE` does not exist yet. **Never tested against the physical MDVR** —
+this wiring is unit/integration-tested against fakes only.
 
 ## Domain Vocabulary
 
