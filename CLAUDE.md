@@ -182,23 +182,58 @@ at `0x0100`; unknown/inactive/unassigned/suspended/retired devices all correctly
 `HeartbeatHandler` (`0x0002`) and a `touch()` call added to `LocationHandler` (`0x0200`) trigger
 `DeviceSessionManager`'s pre-existing `AUTHENTICATED → ONLINE` promotion and `DeviceOnline`/
 `DeviceOffline` publishing — both were already fully built, just never triggered before this.
-**Not yet implemented, per ADR-0025 §2/§4** (a following, separately-authorized phase, not
-started by ADR-0025 itself): the header/`0x0100`/`0x0102` field-width rework to the confirmed
-JT/T 808-2019 shape (`BCD[10]` terminal phone, a protocol-version byte, wider manufacturer-ID/
-terminal-model/terminal-ID fields, IMEI + software-version parsing in `0x0102`) — the parser as it
-stands today is still built to the 2013 shape and would misparse a real 2019 device's header.
+**Field-width rework and `0x0102` auth-code lifecycle implemented (2026-08-11).** The
+header/`0x0100`/`0x0102` field-width rework to the confirmed JT/T 808-2019 shape (`BCD[10]`
+terminal phone, a protocol-version byte, wider manufacturer-ID/terminal-model/terminal-ID fields,
+IMEI + software-version parsing in `0x0102`) is complete — `header.py`/`registration_body.py`/
+`authentication_body.py` now parse the real 2019 shape. `0x0200`'s own basic-info layout was
+confirmed byte-for-byte identical between the 2013 citation already implemented and the confirmed
+2019 supplier spec (a citation-only fix, no parsing-logic change). The prior three-way `0x0102`
+auth-code conflict (JT808 Technical Design's device-held-static-secret reading, the primary JT/T
+808 spec's platform-issued-code reading, Backend LLD's Redis-rotating-token reading) is resolved
+in favor of the platform-issued/echoed-back model per ADR-0025 §3 and now **implemented**:
+`ProjectionBackedJt808ProvisioningPort.authorize_registration` mints a random code on `0x0100`
+success, hashes it at rest in `Device.auth_key_hash` (an existing column, previously always
+`None`) via a new `auth_code_hashing.py` (PBKDF2-HMAC-SHA256), `verify_auth_code` checks it by
+hash comparison on `0x0102`; a new `DeviceAuthCodeIssued` event keeps `fleet_device`'s own
+`Device.auth_key_hash` column mirrored via a new `DeviceAuthCodeProcessor` subscriber.
 
-**`0x0102` authentication now has a decided design (ADR-0025 §3), ending the earlier deliberate
-stop.** The prior three-way conflict (JT808 Technical Design's device-held-static-secret reading,
-the primary JT/T 808 spec's platform-issued-code reading, Backend LLD's Redis-rotating-token
-reading) is resolved in favor of the platform-issued/echoed-back model, now corroborated directly
-by the new specification's own §5.1.6/§5.1.7/§7.1.1/§7.1.2. Design: the platform mints a random
-code on `0x0100` success, hashed at rest in `Device.auth_key_hash` (an existing column, previously
-always `None`), verified by hash comparison on `0x0102`; the code does not time-expire, and
-rotates only on a fresh registration (e.g. after a factory reset). `ProjectionBackedJt808
-ProvisioningPort.authorize_registration`/`verify_auth_code` still need implementing to this
-design — not yet built as of this section's own last update, tracked as part of the same
-following implementation phase as the field-width rework above.
+**JT/T 1078 video-signaling forwarding + the `services/jt1078/` relay build-out implemented
+(2026-08-11), per ADR-0024 §1/§8 and ADR-0025 §5.** `device-gateway`'s `vendors/jt808/` adapter
+gained a new `commands/` package: `video_signaling.py` encodes/decodes `0x9101`/`0x9102`/
+`0x9105`/`0x9205`/`0x9201`/`0x9202` (downlink, platform → terminal) and `0x1205` (uplink resource-
+list report) against the confirmed supplier spec's own §6.2/§6.3 tables — a deliberate refinement
+of ADR-0024 §8's literal "backend publishes already-encoded body" wording: the Business API
+publishes structured, business-meaningful fields only, and device-gateway itself owns the wire
+encoding, keeping every byte of JT/T 808/1078 protocol knowledge inside the device-plane
+deployable (the Anti-Corruption-Layer principle ADR-0009 established, unchanged). A new, command-
+family-agnostic `PendingCommandTracker`/`CommandSender` give every platform-initiated command real
+correlation-ID tracking (`.claude/rules/jt808.md` #6); `TERMINAL_GENERAL_RESPONSE` (`0x0001`) is
+now a real `CommandAckHandler` (previously a placeholder). A new `RedisVideoSignalingConsumer`
+receives command requests from the broker and forwards them — no Business-API-side publisher of
+those requests exists yet, out of this phase's scope.
+
+`services/jt1078/` is now a real, tested relay, not an empty scaffold — **runtime: Python 3.11+,
+asyncio, stdlib + the already-approved `redis>=5.0` only, zero new dependency** (evidence-based:
+the direct device-plane sibling of `device-gateway`, same deployment/Redis precedent, and
+`device-gateway` itself already proves stdlib-only asyncio can hand-roll a closed wire protocol at
+production quality — applied identically here to the JT/T 1078 extended-RTP payload and a minimal
+hand-rolled WS-FLV server, RFC 6455, no WebSocket library). Implements: spec-verified extended-RTP
+ingest demux + subpackaged-frame reassembly; session lifecycle (create → active → ended/failed,
+viewer-count tracking, idle/ingest-timeout sweeps, a device stop-signal reusing the same
+`Jt1078SignalCommandRequested` wire contract `device-gateway`'s consumer expects); signed,
+single-use, session-scoped viewer tokens (D5 — the relay performs no RBAC of its own, structurally
+never reaches a media byte without one); a repackage-only FLV muxer; the WS-FLV viewer delivery
+server. Full ingest → repackage → viewer path proven over real loopback sockets with synthetic
+frames. **Not built this phase, disclosed not silently assumed:** a Business-API-facing control
+endpoint to actually request a session (session creation is a plain Python API on `Jt1078Relay`;
+no approved document specifies the backend↔relay transport, so no `VideoProviderPort` adapter
+binds this relay yet); AVC/HEVC sequence-header (SPS/PPS) population from a real device's own
+parameter sets; HLS (live/WS-FLV only this phase). **Never tested against the physical MDVR** —
+everything above is verified against the supplier's own written specification and synthetic byte
+fixtures only. Docker: new `jt1078-relay.Dockerfile` + a `jt1078-relay` service block mirroring
+`device-gateway`'s exact shape (own container, own published ports 7910/7911, same Redis
+instance).
 
 ## Domain Vocabulary
 
