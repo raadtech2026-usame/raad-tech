@@ -15,11 +15,13 @@ handler-execution step exactly as Phase 9.3 applies it to malformed frames) and 
 `response_message_id`/`response_body`, the dispatcher encodes it (`protocol/encoder.py`) and
 sends it back over the *same* connection (`send`, injected — resolved to
 `ConnectionManager.send_to_connection`, a Phase 9.4 addition to Phase 9.1's connection layer)
-using the platform's own outbound serial-number counter (`_OutboundSerialCounter` — a single
+using the platform's own outbound serial-number counter (`OutboundSerialCounter` — a single
 counter shared across every connection; JT/T 808-2013 §4.4.3's "从0开始循环累加" ("cyclically
 accumulate from 0") is a per-*sender* rule with no documented requirement that different
 terminals be tracked separately, so one shared, 16-bit-wrapping counter is the simplest
-protocol-plausible choice, not a per-connection state/cleanup problem this phase invents).
+protocol-plausible choice, not a per-connection state/cleanup problem this phase invents — now
+also shared with `commands/command_sender.py`'s platform-initiated command sends, see
+`OutboundSerialCounter`'s own docstring).
 
 **Metrics/hooks:** `on_dispatched`/`on_unknown_message`/`on_handler_error` are injected
 callbacks, defaulting to structured logging — the same "framework only, no real metrics
@@ -56,7 +58,14 @@ OnHandlerError = Callable[[InboundMessage, Exception], None]
 _SERIAL_NO_WRAP = 0x10000  # WORD — 16 bits
 
 
-class _OutboundSerialCounter:
+class OutboundSerialCounter:
+    """Not private (`Outbound`, not `_Outbound`): the JT/T 1078 video-signaling-forwarding phase
+    needs the *same* counter instance shared between this dispatcher's own automatic-response
+    sends and `commands/command_sender.py`'s platform-initiated command sends — one shared,
+    16-bit-wrapping counter across every connection *and* every outbound-sending component, for
+    the identical "one shared, protocol-plausible counter" reasoning this class's own module
+    docstring already gives for the dispatcher's own responses alone."""
+
     def __init__(self) -> None:
         self._next = 0
 
@@ -109,6 +118,7 @@ class MessageDispatcher:
         on_dispatched: OnDispatched | None = None,
         on_unknown_message: OnUnknownMessage | None = None,
         on_handler_error: OnHandlerError | None = None,
+        serial_counter: OutboundSerialCounter | None = None,
     ) -> None:
         self._registry = registry
         self._unknown_handler = unknown_handler
@@ -118,7 +128,7 @@ class MessageDispatcher:
         self._on_dispatched = on_dispatched or _default_on_dispatched
         self._on_unknown_message = on_unknown_message or _default_on_unknown_message
         self._on_handler_error = on_handler_error or _default_on_handler_error
-        self._serial_counter = _OutboundSerialCounter()
+        self._serial_counter = serial_counter or OutboundSerialCounter()
 
     async def dispatch(self, connection_id: str, message: InboundMessage) -> None:
         handler = self._registry.resolve(message.message_id)

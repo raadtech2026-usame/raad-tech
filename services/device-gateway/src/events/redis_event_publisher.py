@@ -49,9 +49,11 @@ from redis.asyncio import Redis
 
 from src.events.device_alarm_raised import DeviceAlarmRaised
 from src.events.device_auth_code_issued import DeviceAuthCodeIssued
+from src.events.device_command_result import DeviceCommandResult
 from src.events.device_offline import DeviceOffline
 from src.events.device_online import DeviceOnline
 from src.events.device_position_reported import DevicePositionReported
+from src.events.device_resource_list_reported import DeviceResourceListReported
 from src.events.publisher_port import DeviceEvent, EventPublisher
 
 DEFAULT_STREAM_NAME = "raad:events"
@@ -65,6 +67,7 @@ def _envelope(
     aggregate_id: str,
     occurred_at: datetime,
     payload: dict[str, Any],
+    correlation_id: str | None = None,
 ) -> dict[str, str]:
     return {
         "data": json.dumps(
@@ -74,7 +77,7 @@ def _envelope(
                 "version": 1,
                 "occurred_at": occurred_at.isoformat(),
                 "org_id": org_id,
-                "correlation_id": None,
+                "correlation_id": correlation_id,
                 "payload": payload,
                 "aggregate_type": aggregate_type,
                 "aggregate_id": aggregate_id,
@@ -164,6 +167,43 @@ def _fields_for(event: DeviceEvent) -> dict[str, str]:
                 "device_id": event.device_id,
                 "terminal_id": event.terminal_id,
                 "auth_key_hash": event.auth_key_hash,
+            },
+        )
+    if isinstance(event, DeviceCommandResult):
+        return _envelope(
+            event_type="DeviceCommandResult",
+            org_id=event.organization_id,
+            aggregate_type="Device",
+            aggregate_id=event.terminal_id,
+            occurred_at=event.event_time,
+            correlation_id=event.correlation_id,
+            payload={
+                "organization_id": event.organization_id,
+                "vehicle_id": event.vehicle_id,
+                "device_id": event.device_id,
+                "terminal_id": event.terminal_id,
+                "correlation_id": event.correlation_id,
+                "message_id": event.message_id,
+                "success": event.success,
+                "reason": event.reason,
+            },
+        )
+    if isinstance(event, DeviceResourceListReported):
+        return _envelope(
+            event_type="DeviceResourceListReported",
+            org_id=event.organization_id,
+            aggregate_type="Device",
+            aggregate_id=event.terminal_id,
+            occurred_at=event.event_time,
+            correlation_id=event.correlation_id,
+            payload={
+                "organization_id": event.organization_id,
+                "vehicle_id": event.vehicle_id,
+                "device_id": event.device_id,
+                "terminal_id": event.terminal_id,
+                "correlation_id": event.correlation_id,
+                "total_resource_count": event.total_resource_count,
+                "items": list(event.items),
             },
         )
     raise TypeError(f"Unrecognized device-plane event type: {type(event)!r}")

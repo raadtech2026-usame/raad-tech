@@ -1,16 +1,24 @@
-"""Position report basic-info parsing — JT/T 808-2013 §8.18 Table 23 ("位置基本信息数据格式"),
-shared verbatim by `0x0200` (whose whole body *is* this structure, plus an optional trailing
-additional-info item list) and by each item inside `0x0704`'s batch (§8.49 Table 77: "位置汇报
-数据体" = "定义见8.12 位置信息汇报" — literally "defined by [the same as] 8.12/8.18 Location
-Report").
+"""Position report basic-info parsing — confirmed byte-for-byte identical between the originally-
+cited JT/T 808-2013 §8.18 Table 23 ("位置基本信息数据格式") and the confirmed JT/T 808-2019
+supplier spec (`mdvrdocs/MDVR-808-1078-spec.pdf` §5.2.1 Table 5.7 "消息体结构" / Table 5.8
+"位置信息汇报基本信息格式" — ADR-0025 §2's own "0x0200/AlarmFlags byte-level diff" item,
+flagged as outstanding verification work in that ADR's "What this ADR does not do," now
+resolved: **no field, offset, width, or byte order differs between the two editions for this
+message** — the implementation below was already correct and needed no code change, only this
+citation update). Shared verbatim by `0x0200` (whose whole body *is* this structure, plus an
+optional trailing additional-info item list, Table 5.11) and by each item inside `0x0704`'s
+batch (identical basic-info structure per the batch item format).
 
-Fixed 28-byte layout, big-endian (§4.3), Table 23 verbatim:
+Fixed 28-byte layout, big-endian (§4.3), Table 5.8 verbatim (offsets/types cross-checked 1:1
+against the original Table 23 citation below — unchanged):
 
 | Offset | Field       | Type    | Notes |
 |--------|-------------|---------|-------|
-| 0      | alarm flag  | DWORD   | bit definitions Table 24 — opaque bitfield, not decoded here |
-| 4      | status      | DWORD   | bit definitions Table 25 — decoded only for the two bits this |
-|        |             |         | parser needs: bit 2 (0=N/1=S), bit 3 (0=E/1=W) |
+| 0      | alarm flag  | DWORD   | bit definitions Table 24 / Table 5.10 (32 bits, cross-checked |
+|        |             |         | 1:1 against the supplier spec — identical) — opaque bitfield, |
+|        |             |         | not decoded here |
+| 4      | status      | DWORD   | bit definitions Table 25 / Table 5.9 — decoded only for the |
+|        |             |         | two bits this parser needs: bit 2 (0=N/1=S), bit 3 (0=E/1=W) |
 | 8      | latitude    | DWORD   | degrees * 10^6, unsigned magnitude (sign from status bit 2) |
 | 12     | longitude   | DWORD   | degrees * 10^6, unsigned magnitude (sign from status bit 3) |
 | 16     | altitude    | WORD    | meters |
@@ -50,16 +58,15 @@ downstream consumers (Tracking) never see or reason about GMT+8.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
+from src.vendors.jt808.protocol.bcd_datetime import decode_bcd_datetime
 from src.vendors.jt808.protocol.exceptions import MalformedFrameError
 
 _FIXED_BODY_LENGTH = 28
 
 _STATUS_BIT_SOUTH_LATITUDE = 0b0100  # bit 2
 _STATUS_BIT_WEST_LONGITUDE = 0b1000  # bit 3
-
-_DEVICE_TIMEZONE = timezone(timedelta(hours=8))  # GMT+8, §4.2's own stated convention
 
 
 @dataclass(frozen=True)
@@ -72,34 +79,6 @@ class PositionReportBody:
     speed_kph: int
     heading_deg: int
     event_time: datetime  # UTC
-
-
-def _decode_bcd_datetime(data: bytes) -> datetime:
-    """BCD[6] -> `YYMMDDHHMMSS` (device-local GMT+8) -> UTC `datetime` (§4.2's packed-BCD
-    convention, same nibble decoding `header.py`'s `_decode_bcd_phone` uses for the terminal
-    phone, applied here to a date/time field instead)."""
-    digits = []
-    for byte in data:
-        high, low = (byte >> 4) & 0x0F, byte & 0x0F
-        if high > 9 or low > 9:
-            raise MalformedFrameError(
-                f"Invalid BCD nibble in position time byte 0x{byte:02x}."
-            )
-        digits.append(high)
-        digits.append(low)
-    year = 2000 + digits[0] * 10 + digits[1]
-    month = digits[2] * 10 + digits[3]
-    day = digits[4] * 10 + digits[5]
-    hour = digits[6] * 10 + digits[7]
-    minute = digits[8] * 10 + digits[9]
-    second = digits[10] * 10 + digits[11]
-    try:
-        local = datetime(
-            year, month, day, hour, minute, second, tzinfo=_DEVICE_TIMEZONE
-        )
-    except ValueError as exc:
-        raise MalformedFrameError(f"Invalid position report timestamp: {exc}") from exc
-    return local.astimezone(timezone.utc)
 
 
 def parse_position_report_body(body: bytes) -> PositionReportBody:
@@ -116,7 +95,7 @@ def parse_position_report_body(body: bytes) -> PositionReportBody:
     altitude_m = int.from_bytes(body[16:18], "big")
     raw_speed = int.from_bytes(body[18:20], "big")
     heading_deg = int.from_bytes(body[20:22], "big")
-    event_time = _decode_bcd_datetime(body[22:28])
+    event_time = decode_bcd_datetime(body[22:28])
 
     latitude = raw_latitude / 1_000_000
     if status & _STATUS_BIT_SOUTH_LATITUDE:

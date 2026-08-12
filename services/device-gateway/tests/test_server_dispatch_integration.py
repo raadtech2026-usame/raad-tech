@@ -74,7 +74,12 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
         *after* the response is sent and `on_dispatched` fires (registration only dispatches at
         all if its body parses, so a well-formed fixed-length body is sent here). Each is sent
         on its own throwaway connection so its close doesn't cut off the other message IDs
-        sharing the main connection."""
+        sharing the main connection.
+
+        **JT/T 1078 video-signaling-forwarding phase note:** `TERMINAL_GENERAL_RESPONSE`
+        (`0x0001`) is also now a real handler (`CommandAckHandler`), requiring its own 5-byte
+        fixed body to parse - sent separately below with a well-formed (if unmatched-to-any-
+        pending-command) body, same reasoning as registration/auth above."""
         dispatched: list[int] = []
         self.server.dispatcher._on_dispatched = lambda message: dispatched.append(
             message.message_id
@@ -82,7 +87,6 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         _, writer = await self._open_client()
         for msg_id in [
-            message_ids.TERMINAL_GENERAL_RESPONSE,
             message_ids.HEARTBEAT,
             message_ids.LOGOUT,
             message_ids.LOCATION_REPORT,
@@ -92,6 +96,17 @@ class ServerDispatchIntegrationTests(unittest.IsolatedAsyncioTestCase):
             frame = build_wire_frame(msg_id, _PHONE, 1)
             writer.write(frame)
             await writer.drain()
+
+        # Well-formed 0x0001 body (original_serial_no=0, original_message_id=0, result=0) -
+        # content is otherwise irrelevant, since CommandAckHandler no-ops on an unmatched
+        # pending-command correlation (this test never sent a command to correlate against).
+        general_response_body = (0).to_bytes(2, "big") + (0).to_bytes(2, "big") + bytes([0])
+        writer.write(
+            build_wire_frame(
+                message_ids.TERMINAL_GENERAL_RESPONSE, _PHONE, 1, body=general_response_body
+            )
+        )
+        await writer.drain()
 
         # Well-formed fixed-length (76-byte) registration body so it parses and dispatches
         # (province_id, city_county_id, manufacturer_id[11], terminal_model[30],

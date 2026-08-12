@@ -39,9 +39,19 @@ here once one is built (a later phase, with real device-provisioning-workflow ac
 (`0x0704`) — parse the position body, resolve device/vehicle/org identity from the terminal's
 `DeviceSession`, and publish `DevicePositionReported` via `event_publisher` (below). Neither
 calls `TrackingApplicationService` or imports `tracking` — see `handlers/location_handler.py`'s
-module docstring for the conflict this resolved and why. Every other named `message_id` still
-resolves to a no-op `PlaceholderMessageHandler` (`dispatcher/placeholder_handler.py`'s module
-docstring) — Heartbeat/Alarm/CommandAck/Logout business logic remains a later phase's job.
+module docstring for the conflict this resolved and why. `Logout`/`Alarm` still resolve to a
+no-op `PlaceholderMessageHandler` (`dispatcher/placeholder_handler.py`'s module docstring) —
+that business logic remains a later phase's job.
+
+**Handlers registered this phase (JT/T 1078 video-signaling forwarding, ADR-0024 §1/§8,
+ADR-0025 §5):** `CommandAckHandler` (`0x0001`, replacing the former `"CommandAck"` placeholder)
+and `ResourceListHandler` (`0x1205`) — see `commands/__init__.py`'s own docstring for the full
+downlink-command architecture (`OutboundSerialCounter` now shared between the dispatcher's
+automatic responses and `CommandSender`'s platform-initiated commands; `PendingCommandTracker`
+correlates a terminal's later `0x0001`/`0x1205` back to the command that caused it). A periodic
+sweep (`_command_timeout_sweep_loop`, mirroring `DeviceSessionManager`'s own sweep-task shape)
+publishes a `DeviceCommandResult(reason="timed_out")` for any command that never got a response
+within its own bounded wait (ADR-0024 §16).
 
 **`event_publisher` (Phase 9.6, constructor parameter):** the port `LocationHandler`/
 `BulkLocationHandler` use to publish `DevicePositionReported` (`events/publisher_port.py` — no
@@ -65,8 +75,10 @@ from datetime import datetime, timezone
 from src.adapter import DeviceProtocolAdapter
 from src.vendors.jt808.config import ServerConfig
 from src.connection.manager import ConnectionManager
+from src.vendors.jt808.commands.command_sender import CommandSender
+from src.vendors.jt808.commands.pending_commands import PendingCommandTracker
 from src.vendors.jt808.dispatcher import message_ids
-from src.vendors.jt808.dispatcher.dispatcher import MessageDispatcher
+from src.vendors.jt808.dispatcher.dispatcher import MessageDispatcher, OutboundSerialCounter
 from src.vendors.jt808.dispatcher.placeholder_handler import PlaceholderMessageHandler
 from src.vendors.jt808.dispatcher.registry import HandlerRegistry
 from src.vendors.jt808.dispatcher.unknown_handler import UnknownMessageHandler
@@ -75,6 +87,7 @@ from src.events.device_online import DeviceOnline
 from src.events.publisher_port import EventPublisher, LoggingEventPublisher
 from src.vendors.jt808.handlers.authentication_handler import TerminalAuthenticationHandler
 from src.vendors.jt808.handlers.bulk_location_handler import BulkLocationHandler
+from src.vendors.jt808.handlers.command_ack_handler import CommandAckHandler
 from src.vendors.jt808.handlers.heartbeat_handler import HeartbeatHandler
 from src.vendors.jt808.handlers.location_handler import LocationHandler
 from src.vendors.jt808.handlers.provisioning_port import (
@@ -82,6 +95,7 @@ from src.vendors.jt808.handlers.provisioning_port import (
     NullDeviceProvisioningPort,
 )
 from src.vendors.jt808.handlers.registration_handler import TerminalRegistrationHandler
+from src.vendors.jt808.handlers.resource_list_handler import ResourceListHandler
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.vendors.jt808.protocol.exceptions import ProtocolError
 from src.vendors.jt808.protocol.framing import FrameBuffer
@@ -93,12 +107,14 @@ from src.session.registry import SessionRegistry
 
 logger = get_logger("jt808.server")
 
+_COMMAND_TIMEOUT_SWEEP_INTERVAL_SECONDS = 5.0
+
 # JT808 Technical Design §7/§8's named handler set that stays a placeholder this phase — see
 # dispatcher/message_ids.py's module docstring for the per-message-ID primary-spec citation.
-# REGISTRATION, AUTHENTICATION, HEARTBEAT, LOCATION_REPORT, and BULK_LOCATION_REPORT are
-# deliberately absent: they get real handlers below.
+# REGISTRATION, AUTHENTICATION, HEARTBEAT, LOCATION_REPORT, BULK_LOCATION_REPORT,
+# TERMINAL_GENERAL_RESPONSE, and RESOURCE_LIST_REPORT are deliberately absent: they get real
+# handlers below (the latter two added by the JT/T 1078 video-signaling-forwarding phase).
 _PLACEHOLDER_HANDLER_NAMES = {
-    message_ids.TERMINAL_GENERAL_RESPONSE: "CommandAck",
     message_ids.LOGOUT: "Logout",
     message_ids.MULTIMEDIA_EVENT_UPLOAD: "Alarm",
 }
@@ -125,6 +141,18 @@ class Jt808Server(DeviceProtocolAdapter):
         )
         self._parser = PacketParser()
 
+        # Shared with the dispatcher's own automatic responses (OutboundSerialCounter's own
+        # docstring) — one counter across every outbound send this server ever makes.
+        self._serial_counter = OutboundSerialCounter()
+        self._pending_commands = PendingCommandTracker()
+        self._command_sender = CommandSender(
+            device_sessions=self._device_sessions,
+            send=self._send_frame,
+            serial_counter=self._serial_counter,
+            pending=self._pending_commands,
+            event_publisher=self._event_publisher,
+        )
+
         self._handler_registry = HandlerRegistry()
         for handler_message_id, name in _PLACEHOLDER_HANDLER_NAMES.items():
             self._handler_registry.register(
@@ -150,12 +178,21 @@ class Jt808Server(DeviceProtocolAdapter):
             message_ids.BULK_LOCATION_REPORT,
             BulkLocationHandler(self._event_publisher),
         )
+        self._handler_registry.register(
+            message_ids.TERMINAL_GENERAL_RESPONSE,
+            CommandAckHandler(self._pending_commands, self._event_publisher),
+        )
+        self._handler_registry.register(
+            message_ids.RESOURCE_LIST_REPORT,
+            ResourceListHandler(self._pending_commands, self._event_publisher),
+        )
         self._dispatcher = MessageDispatcher(
             registry=self._handler_registry,
             unknown_handler=UnknownMessageHandler(),
             device_sessions=self._device_sessions,
             send=self._send_frame,
             close_connection=self._close_connection,
+            serial_counter=self._serial_counter,
         )
 
         self._manager = ConnectionManager(
@@ -170,6 +207,7 @@ class Jt808Server(DeviceProtocolAdapter):
             ),
         )
         self._server: asyncio.base_events.Server | None = None
+        self._command_timeout_sweep_task: asyncio.Task | None = None
 
     async def _close_connection(self, connection_id: str, reason: str) -> None:
         await self._manager.close_connection(connection_id, reason=reason)
@@ -284,6 +322,14 @@ class Jt808Server(DeviceProtocolAdapter):
         return self._event_publisher
 
     @property
+    def command_sender(self) -> CommandSender:
+        """The seam `commands/redis_video_signaling_consumer.RedisVideoSignalingConsumer`
+        forwards Business-API-originated JT/T 1078 signaling commands through — exposed publicly
+        for `gateway.py`'s composition root and for tests/manual verification to send a command
+        directly."""
+        return self._command_sender
+
+    @property
     def session_count(self) -> int:
         return len(self._sessions)
 
@@ -297,6 +343,14 @@ class Jt808Server(DeviceProtocolAdapter):
             raise RuntimeError("Server is not started.")
         return self._server.sockets[0].getsockname()[1]
 
+    async def _command_timeout_sweep_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(_COMMAND_TIMEOUT_SWEEP_INTERVAL_SECONDS)
+                await self._command_sender.sweep_timeouts()
+        except asyncio.CancelledError:
+            raise
+
     async def start(self) -> None:
         self._server = await asyncio.start_server(
             self._manager.handle_client, host=self._config.host, port=self._config.port
@@ -305,6 +359,9 @@ class Jt808Server(DeviceProtocolAdapter):
         self._device_sessions.start_sweep(
             timeout_seconds=self._config.device_session_timeout_seconds,
             interval_seconds=self._config.device_session_sweep_interval_seconds,
+        )
+        self._command_timeout_sweep_task = asyncio.create_task(
+            self._command_timeout_sweep_loop()
         )
         sockets = ", ".join(
             str(sock.getsockname()) for sock in self._server.sockets or []
@@ -319,6 +376,13 @@ class Jt808Server(DeviceProtocolAdapter):
             active_connections=self._manager.connection_count,
             active_device_sessions=self._device_sessions.session_count,
         )
+        if self._command_timeout_sweep_task is not None:
+            self._command_timeout_sweep_task.cancel()
+            try:
+                await self._command_timeout_sweep_task
+            except asyncio.CancelledError:
+                pass
+            self._command_timeout_sweep_task = None
         await self._manager.shutdown()
         await self._device_sessions.shutdown()
         if self._server is not None:
