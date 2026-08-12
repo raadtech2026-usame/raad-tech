@@ -236,6 +236,39 @@ services:
       retries: 5
       start_period: 5s
 
+  jt1078-relay:
+    build:
+      context: ../services/jt1078
+      dockerfile: ../../docker/jt1078-relay.Dockerfile
+    container_name: raad-jt1078-relay
+    restart: unless-stopped
+    environment:
+      # Must match RAAD_BROKER__URL/DEVICE_GATEWAY_BROKER_URL exactly (password + db 1) — all
+      # three deployables coordinate over the same `raad:events` stream (ADR-0024 §8/§9).
+      JT1078_RELAY_BROKER_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      # Must match whatever secret a future Business API Jt1078RelayAdapter mints viewer tokens
+      # with (ADR-0022's own "secrets are environment variables" precedent) — no default in
+      # production; left as the dev-only placeholder here since no such adapter exists yet.
+      JT1078_RELAY_VIEWER_TOKEN_SECRET: ${JT1078_RELAY_VIEWER_TOKEN_SECRET:-dev-only-change-me}
+    ports:
+      - "${JT1078_RELAY_INGEST_PORT:-7910}:7910"
+      - "${JT1078_RELAY_VIEWER_PORT:-7911}:7911"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; socket.create_connection(('localhost', 7911), 2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   frontend:
     build:
       context: ../frontend

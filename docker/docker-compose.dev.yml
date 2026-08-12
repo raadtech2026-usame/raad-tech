@@ -26,6 +26,10 @@ services:
     volumes:
       - ../services/device-gateway:/app
 
+  jt1078-relay:
+    volumes:
+      - ../services/jt1078:/app
+
   frontend:
     volumes:
       - ../frontend:/app

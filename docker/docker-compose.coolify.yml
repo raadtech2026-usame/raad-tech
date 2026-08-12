@@ -25,6 +25,9 @@
 # is deliberately NOT touched — its 7808/7809 are a raw TCP protocol (bus terminals dialing in
 # directly, ADR-0009/ADR-0010), not HTTP, so Traefik/Coolify's routing doesn't apply to it; it
 # keeps the base file's own published host ports unchanged, same as every other overlay.
+# `jt1078-relay` (ADR-0024 §12/§17) is identically NOT touched here, for the identical reason —
+# its own 7910/7911 are raw TCP (device ingest) and WS-over-TCP (viewer delivery), not
+# Traefik-routable HTTP, so it keeps its base-file host ports unchanged too.
 
 services:
   postgres:

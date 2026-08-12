@@ -1,0 +1,222 @@
+"""`SessionManager` — the relay's own Video Session Manager (VSM, ADR-0024 §5). Owns
+`VideoSession` lifecycle end to end: creation (`REQUESTED`), activation on first ingested frame
+(`ACTIVE`), viewer join/leave, idle-timeout teardown, explicit stop, and the resulting
+`VideoSessionActivated`/`VideoSessionEnded`/`VideoSessionFailed` events + device stop-signal
+command (ADR-0024 §5 point 4).
+
+**Correlates an inbound ingest connection to a session by `terminal_id` alone** — the JT/T 1078
+media socket itself carries no session token (ADR-0024 §1: "the relay's own correctness anchor
+for *that* socket remains identity/session correlation... never by trusting the connection's
+source IP alone"). `resolve_ingest_by_terminal_id` only ever returns a session in `REQUESTED` or
+`ACTIVE` state — an `ENDED`/`FAILED` session (or one this manager never created) correlates to
+nothing, so a stray/unsolicited media connection is rejected by the caller
+(`ingest/ingest_server.py`), not silently accepted.
+
+**`on_session_created`/`on_session_removed`** — sync hooks `relay.py`'s composition root uses to
+keep its own `session_id -> SessionBroadcastHub` dict in lockstep with session lifecycle (a hub
+must exist the moment a session is `REQUESTED`, so a viewer's token can be honored even before the
+device's first frame arrives, and must be torn down the instant the session is). Kept as plain
+sync callables, not events on the broker — this is in-process coordination between two objects
+this composition root owns directly, not a cross-service fact.
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime, timezone
+from typing import Callable
+
+from src.events.publisher_port import SessionEventPublisher
+from src.events.session_events import VideoSessionActivated, VideoSessionEnded, VideoSessionFailed
+from src.session.video_session import VideoSession, VideoSessionKind, VideoSessionState, new_session_id
+
+DEFAULT_VIEWER_GRACE_SECONDS = 15.0
+DEFAULT_ABSOLUTE_IDLE_SECONDS = 60.0
+DEFAULT_INGEST_TIMEOUT_SECONDS = 30.0
+
+OnSessionCreated = Callable[[VideoSession], None]
+OnSessionRemoved = Callable[[str], None]
+
+
+def _default_on_session_created(_session: VideoSession) -> None:
+    return None
+
+
+def _default_on_session_removed(_session_id: str) -> None:
+    return None
+
+
+class SessionManager:
+    def __init__(
+        self,
+        *,
+        event_publisher: SessionEventPublisher,
+        viewer_grace_seconds: float = DEFAULT_VIEWER_GRACE_SECONDS,
+        absolute_idle_seconds: float = DEFAULT_ABSOLUTE_IDLE_SECONDS,
+        ingest_timeout_seconds: float = DEFAULT_INGEST_TIMEOUT_SECONDS,
+        on_session_created: OnSessionCreated | None = None,
+        on_session_removed: OnSessionRemoved | None = None,
+    ) -> None:
+        self._event_publisher = event_publisher
+        self._viewer_grace_seconds = viewer_grace_seconds
+        self._absolute_idle_seconds = absolute_idle_seconds
+        self._ingest_timeout_seconds = ingest_timeout_seconds
+        self._on_session_created = on_session_created or _default_on_session_created
+        self._on_session_removed = on_session_removed or _default_on_session_removed
+        self._sessions: dict[str, VideoSession] = {}
+
+    def create_session(
+        self,
+        *,
+        terminal_id: str,
+        kind: VideoSessionKind,
+        correlation_id: str,
+        logical_channel: int,
+        device_id: str | None = None,
+        vehicle_id: str | None = None,
+        organization_id: str | None = None,
+    ) -> VideoSession:
+        session = VideoSession(
+            session_id=new_session_id(),
+            terminal_id=terminal_id,
+            kind=kind,
+            device_id=device_id,
+            vehicle_id=vehicle_id,
+            organization_id=organization_id,
+            correlation_id=correlation_id,
+            logical_channel=logical_channel,
+        )
+        self._sessions[session.session_id] = session
+        self._on_session_created(session)
+        return session
+
+    def resolve(self, session_id: str) -> VideoSession | None:
+        return self._sessions.get(session_id)
+
+    def resolve_ingest_by_terminal_id(self, terminal_id: str) -> VideoSession | None:
+        for session in self._sessions.values():
+            if session.terminal_id == terminal_id and session.state in (
+                VideoSessionState.REQUESTED,
+                VideoSessionState.ACTIVE,
+            ):
+                return session
+        return None
+
+    async def mark_ingest_active(self, session_id: str) -> None:
+        session = self._sessions.get(session_id)
+        if session is None or session.state == VideoSessionState.ACTIVE:
+            return
+        was_requested = session.state == VideoSessionState.REQUESTED
+        session.activate()
+        if was_requested:
+            await self._event_publisher.publish(
+                VideoSessionActivated(
+                    session_id=session.session_id,
+                    terminal_id=session.terminal_id,
+                    organization_id=session.organization_id,
+                    vehicle_id=session.vehicle_id,
+                    device_id=session.device_id,
+                    correlation_id=session.correlation_id,
+                    event_time=datetime.now(timezone.utc),
+                )
+            )
+
+    def touch_ingest(self, session_id: str) -> None:
+        session = self._sessions.get(session_id)
+        if session is not None:
+            session.touch()
+
+    def add_viewer(self, session_id: str) -> None:
+        session = self._sessions.get(session_id)
+        if session is not None:
+            session.add_viewer()
+
+    def remove_viewer(self, session_id: str) -> None:
+        session = self._sessions.get(session_id)
+        if session is not None:
+            session.remove_viewer()
+
+    async def end_session(self, session_id: str, *, reason: str) -> None:
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return
+        self._on_session_removed(session_id)
+        await self._signal_device_stop(session)
+        await self._event_publisher.publish(
+            VideoSessionEnded(
+                session_id=session.session_id,
+                terminal_id=session.terminal_id,
+                organization_id=session.organization_id,
+                vehicle_id=session.vehicle_id,
+                device_id=session.device_id,
+                correlation_id=session.correlation_id,
+                reason=reason,
+                event_time=datetime.now(timezone.utc),
+            )
+        )
+
+    async def fail_session(self, session_id: str, *, reason: str) -> None:
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return
+        self._on_session_removed(session_id)
+        await self._event_publisher.publish(
+            VideoSessionFailed(
+                session_id=session.session_id,
+                terminal_id=session.terminal_id,
+                organization_id=session.organization_id,
+                vehicle_id=session.vehicle_id,
+                device_id=session.device_id,
+                correlation_id=session.correlation_id,
+                reason=reason,
+                event_time=datetime.now(timezone.utc),
+            )
+        )
+
+    async def _signal_device_stop(self, session: VideoSession) -> None:
+        """ADR-0024 §5 point 4: the relay itself signals the device to stop, via the same
+        `Jt1078SignalCommandRequested` coordination path `device-gateway`'s
+        `RedisVideoSignalingConsumer` already consumes from the Business API (`events/
+        publisher_port.py`'s own module docstring has the full reasoning)."""
+        if session.kind == VideoSessionKind.LIVE:
+            command, fields = "live_video_control", {
+                "logical_channel": session.logical_channel,
+                "control": 0,  # close A/V transmission, Table 6.4
+            }
+        else:
+            command, fields = "playback_control", {
+                "av_channel": session.logical_channel,
+                "control": 2,  # end playback, Table 6.11
+            }
+        await self._event_publisher.publish_stop_command(
+            terminal_id=session.terminal_id,
+            correlation_id=session.correlation_id,
+            command=command,
+            fields=fields,
+        )
+
+    async def sweep_idle_sessions(self) -> list[str]:
+        """Called periodically by the relay's own composition root (mirrors `device-gateway`'s
+        `DeviceSessionManager._sweep_loop` shape) — ends every session past its own idle bound
+        (`VideoSession.is_idle_past`, ADR-0024 §5 point 3's two independent conditions) or its
+        ingest timeout (still `REQUESTED`, the device never connected within
+        `ingest_timeout_seconds` — ADR-0024 §16's "the relay's own allocation times out"). Returns
+        the ended/failed session ids, mainly for test observability."""
+        acted_on: list[str] = []
+        for session_id, session in list(self._sessions.items()):
+            if session.state == VideoSessionState.REQUESTED:
+                if time.monotonic() - session.created_at > self._ingest_timeout_seconds:
+                    await self.fail_session(session_id, reason="ingest_timeout")
+                    acted_on.append(session_id)
+                continue
+            if session.state == VideoSessionState.ACTIVE and session.is_idle_past(
+                viewer_grace_seconds=self._viewer_grace_seconds,
+                absolute_idle_seconds=self._absolute_idle_seconds,
+            ):
+                await self.end_session(session_id, reason="viewer_idle_timeout")
+                acted_on.append(session_id)
+        return acted_on
+
+    @property
+    def active_session_count(self) -> int:
+        return len(self._sessions)

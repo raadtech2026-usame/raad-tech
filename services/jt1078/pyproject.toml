@@ -1,0 +1,44 @@
+# JT1078 Media Relay — package configuration (ADR-0024: docs/architecture/adr/
+# 0024-jt1078-video-relay-architecture.md, revised by ADR-0025 §5). Runtime/language decision
+# (this file's own existence) and the "zero new dependency this phase" decision are both
+# documented in this repo's final implementation report for the JT1078 phase — summarized here:
+#
+# **Runtime: Python 3.11+, asyncio, stdlib-only.** Evidence-based, not invented: (1) this service
+# is the direct architectural sibling of `services/device-gateway` — same device-plane category
+# (`.claude/rules/architecture.md` #2), same deployment precedent (ADR-0024 §12/§17: "own
+# container... own published host ports... same Redis instance", mirroring device-gateway's
+# established 7808/7809 pattern exactly); (2) it reuses the *same* Redis client/event-publisher
+# pattern already written, tested, and approved in `services/device-gateway` (`redis>=5.0`,
+# ADR-0008/ADR-0010/ADR-0012), not a new integration technique; (3) `services/device-gateway`
+# already proves stdlib-only asyncio can hand-roll a closed, well-specified binary wire protocol
+# (the full JT/T 808 codec) at production quality with full test coverage — JT/T 1078's own
+# extended-RTP payload (spec §6.2.1.1) and a minimal WS-FLV delivery path are the same class of
+# problem, not a materially different one; (4) avoids standing up an entirely new language
+# runtime's build/CI/base-image surface for an MVP explicitly scoped against premature
+# microservices (`.claude/rules/architecture.md` #7).
+#
+# **Dependencies: `redis>=5.0` only** — the same version pin as `device-gateway/pyproject.toml`,
+# for the identical reason (ADR-0008 broker + this relay's own session-lifecycle event
+# coordination, ADR-0024 §8/§9). No RTP/media-server/WebSocket library was added: the RTP-
+# extended demux (`src/ingest/extended_rtp.py`), the FLV muxer (`src/repackager/flv_muxer.py`),
+# and the WS-FLV delivery server (`src/viewer/websocket_server.py`) are all hand-rolled against
+# their own published/derived byte-format specifications, mirroring device-gateway's own "hand-
+# roll a narrow, well-specified protocol need" precedent rather than pulling in a framework for
+# it. `.claude/rules/workflow.md` #1/#2 applies in full to any *future* addition (e.g. a real
+# WebRTC/TURN stack, per ADR-0024 §14's own documented follow-on) — none is proposed here.
+
+[project]
+name = "raad-jt1078-relay-service"
+version = "0.1.0"
+description = "RAAD Platform — JT/T 1078 video relay (live + playback, ephemeral, no storage)"
+requires-python = ">=3.11"
+dependencies = [
+    "redis>=5.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
