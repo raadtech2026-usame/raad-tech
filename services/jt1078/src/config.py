@@ -23,12 +23,21 @@ class RelayConfig:
     absolute_idle_seconds: float = 60.0
     ingest_timeout_seconds: float = 30.0
     idle_sweep_interval_seconds: float = 5.0
+    #: The address a device dials to reach `ingest_port` — distinct from `ingest_host` (a bind
+    #: address, typically "0.0.0.0", never a valid destination for a device to connect *to*).
+    #: `SessionRequestServer` echoes this back to the Business API's `Jt1078RelayAdapter` as part
+    #: of a session's own ingest coordinates, which the adapter embeds directly in the `0x9101`/
+    #: `0x9201` signaling body it publishes (ADR-0024 §6 step 3). Falls back to `ingest_host`
+    #: when unset, correct only for same-host dev/test use (a real deployment must set this to
+    #: the VPS's real reachable IP/hostname).
+    public_ingest_host: str = ""
 
     @classmethod
     def from_env(cls) -> "RelayConfig":
         secret = os.environ.get("JT1078_RELAY_VIEWER_TOKEN_SECRET", "")
+        ingest_host = os.environ.get("JT1078_RELAY_INGEST_HOST", "0.0.0.0")
         return cls(
-            ingest_host=os.environ.get("JT1078_RELAY_INGEST_HOST", "0.0.0.0"),
+            ingest_host=ingest_host,
             ingest_port=int(os.environ.get("JT1078_RELAY_INGEST_PORT", "7910")),
             viewer_host=os.environ.get("JT1078_RELAY_VIEWER_HOST", "0.0.0.0"),
             viewer_port=int(os.environ.get("JT1078_RELAY_VIEWER_PORT", "7911")),
@@ -40,4 +49,11 @@ class RelayConfig:
             ingest_timeout_seconds=float(
                 os.environ.get("JT1078_RELAY_INGEST_TIMEOUT_SECONDS", "30")
             ),
+            public_ingest_host=os.environ.get(
+                "JT1078_RELAY_PUBLIC_INGEST_HOST", ingest_host
+            ),
         )
+
+    @property
+    def effective_public_ingest_host(self) -> str:
+        return self.public_ingest_host or self.ingest_host

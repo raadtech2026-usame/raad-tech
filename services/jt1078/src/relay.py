@@ -7,12 +7,14 @@ a broker is configured.
 session lifecycle** via `on_session_created`/`on_session_removed` hooks — a hub exists exactly
 while its session does, never longer (ADR-0024 §4: no state survives beyond an active session).
 
-**Session *creation* is a plain Python API on `SessionManager`/this class
-(`create_live_session`/`create_playback_session`), not a network endpoint** — no HTTP/broker
-control surface for the Business API to actually call `VideoProviderPort.start_live(...)` against
-this relay is built in this phase (see this phase's own implementation report: ADR-0024 never
-specifies that transport, and binding a `VideoProviderPort` adapter was not part of this phase's
-task list). A future phase wires that in without needing to change anything below this line.
+**Session *creation* is a Redis list-based RPC (`session/session_request_server.
+SessionRequestServer`, bound below whenever a broker is configured)** — the Business API's own
+`Jt1078RelayAdapter` (`backend/raad/modules/video/infra/`) is that transport's real caller,
+closing the gap the prior phase's own implementation report flagged ("no approved document
+specifies the backend<->relay transport"). `Jt1078Relay.create_live_session`/
+`create_playback_session` remain as a direct, in-process Python API too (used by this class's own
+tests and any future in-process caller) — the RPC server is a thin wrapper around the identical
+`SessionManager.create_session` call, not a second code path with different behavior.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from src.ingest.frame_reassembly import ReassembledFrame
 from src.ingest.ingest_server import IngestServer
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.session.session_manager import SessionManager
+from src.session.session_request_server import SessionRequestServer
 from src.session.video_session import VideoSession, VideoSessionKind
 from src.session.viewer_token import (
     InMemorySingleUseTokenGuard,
@@ -82,6 +85,16 @@ class Jt1078Relay:
             session_manager=self._session_manager,
             hubs=self._hubs,
         )
+        self._session_request_server: SessionRequestServer | None = None
+        if self._redis_client is not None:
+            self._session_request_server = SessionRequestServer(
+                self._redis_client,
+                session_manager=self._session_manager,
+                viewer_token_secret=self._config.viewer_token_secret,
+                public_ingest_host=self._config.effective_public_ingest_host,
+                ingest_port=self._config.ingest_port,
+            )
+        self._session_request_task: asyncio.Task | None = None
         self._idle_sweep_task: asyncio.Task | None = None
 
     def _build_redis_client(self) -> Redis | None:
@@ -181,6 +194,11 @@ class Jt1078Relay:
     def viewer_server(self) -> ViewerServer:
         return self._viewer_server
 
+    @property
+    def session_request_server(self) -> SessionRequestServer | None:
+        """`None` unless a broker is configured — see class docstring."""
+        return self._session_request_server
+
     async def _idle_sweep_loop(self) -> None:
         try:
             while True:
@@ -193,15 +211,27 @@ class Jt1078Relay:
         await self._ingest_server.start()
         await self._viewer_server.start()
         self._idle_sweep_task = asyncio.create_task(self._idle_sweep_loop())
+        if self._session_request_server is not None:
+            self._session_request_task = asyncio.create_task(
+                self._session_request_server.run_forever()
+            )
         log_with_fields(
             logger,
             20,
             "relay_started",
             ingest_port=self._ingest_server.bound_port,
             viewer_port=self._viewer_server.bound_port,
+            session_request_server_active=self._session_request_server is not None,
         )
 
     async def stop(self) -> None:
+        if self._session_request_task is not None:
+            self._session_request_task.cancel()
+            try:
+                await self._session_request_task
+            except asyncio.CancelledError:
+                pass
+            self._session_request_task = None
         if self._idle_sweep_task is not None:
             self._idle_sweep_task.cancel()
             try:

@@ -15,8 +15,14 @@ from src.session.viewer_token import InMemorySingleUseTokenGuard, RedisSingleUse
 
 
 class FakeRedis:
+    """Also backs `SessionRequestServer`'s `blpop`/`rpush`/`expire` calls (its background task
+    starts for real the instant `relay.start()` runs with a Redis client wired) - without these,
+    that task would hit a silent `AttributeError` on its very first poll and die unnoticed,
+    masking a broken background task rather than genuinely proving it runs cleanly."""
+
     def __init__(self) -> None:
         self.entries: list[tuple[str, dict[str, str]]] = []
+        self.lists: dict[str, list[str]] = {}
 
     async def xadd(self, name: str, fields: dict[str, str]) -> str:
         message_id = str(len(self.entries) + 1)
@@ -28,6 +34,20 @@ class FakeRedis:
         # semantics (the `SET NX` atomicity) need a real Redis to prove, out of scope for this
         # file's own conditional-binding focus; `test_viewer_token.py` covers the in-memory
         # guard's single-use logic instead.
+        return True
+
+    async def blpop(self, keys, timeout: int = 0):
+        for key in keys:
+            values = self.lists.get(key)
+            if values:
+                return key, values.pop(0)
+        return None
+
+    async def rpush(self, name: str, *values: str) -> int:
+        self.lists.setdefault(name, []).extend(values)
+        return len(self.lists[name])
+
+    async def expire(self, name: str, time: int) -> bool:
         return True
 
 
@@ -52,6 +72,11 @@ class Jt1078RelayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         relay = Jt1078Relay(config=_config(), redis_client=redis)
         self.assertIsInstance(relay._event_publisher, RedisSessionEventPublisher)
         self.assertIsInstance(relay._token_guard, RedisSingleUseTokenGuard)
+        self.assertIsNotNone(relay.session_request_server)
+
+    async def test_without_a_broker_no_session_request_server_is_built(self) -> None:
+        relay = Jt1078Relay(config=_config())
+        self.assertIsNone(relay.session_request_server)
 
     async def test_ending_a_session_with_redis_wired_publishes_onto_the_shared_stream(
         self,

@@ -75,9 +75,15 @@ class SessionManager:
         device_id: str | None = None,
         vehicle_id: str | None = None,
         organization_id: str | None = None,
+        session_id: str | None = None,
     ) -> VideoSession:
+        """`session_id` is optional and defaults to a fresh id (`new_session_id()`) — a caller
+        that already has its own correlation identity (the Business API's `SessionRequestServer`
+        adapter, pinning this relay's own session to the Business API's `VideoSession.id` so one
+        id traces the whole request end to end) may pass it in instead of letting this manager
+        mint an unrelated second one."""
         session = VideoSession(
-            session_id=new_session_id(),
+            session_id=session_id or new_session_id(),
             terminal_id=terminal_id,
             kind=kind,
             device_id=device_id,
