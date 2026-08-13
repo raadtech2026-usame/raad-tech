@@ -268,6 +268,76 @@ class ParentStatusTransitionTests(unittest.TestCase):
         self.assertEqual(event.occurred_at, self.clock.now())
 
 
+class ParentVideoAccessTransitionTests(unittest.TestCase):
+    """ADR-0026 SS1/SS2 - mirrors `ParentStatusTransitionTests`'s exact shape."""
+
+    def setUp(self) -> None:
+        self.clock = FixedClock(datetime(2026, 7, 17, tzinfo=timezone.utc))
+
+    def test_new_parent_has_no_video_access_by_default(self) -> None:
+        parent = make_parent()
+        self.assertFalse(parent.has_video_live_access)
+        self.assertFalse(parent.has_video_playback_access)
+
+    def test_register_never_grants_video_access(self) -> None:
+        parent = Parent.register(
+            id=ParentId(VALID_PARENT_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            user_id=UserId(VALID_USER_ULID),
+            full_name="Fatima Hassan",
+            clock=self.clock,
+        )
+        self.assertFalse(parent.has_video_live_access)
+        self.assertFalse(parent.has_video_playback_access)
+
+    def test_grant_video_live_access_sets_flag_and_records_event(self) -> None:
+        parent = make_parent(has_video_live_access=False)
+        parent.grant_video_live_access(clock=self.clock, actor_id="admin-1")
+        self.assertTrue(parent.has_video_live_access)
+        events = parent.pull_domain_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "ParentVideoLiveAccessGranted")
+        self.assertEqual(events[0].payload, {"actor_id": "admin-1"})
+
+    def test_revoke_video_live_access_clears_flag_and_records_event(self) -> None:
+        parent = make_parent(has_video_live_access=True)
+        parent.revoke_video_live_access(clock=self.clock, actor_id="admin-1")
+        self.assertFalse(parent.has_video_live_access)
+        events = parent.pull_domain_events()
+        self.assertEqual(events[0].event_type, "ParentVideoLiveAccessRevoked")
+
+    def test_grant_video_live_access_when_already_granted_is_idempotent_no_op(self) -> None:
+        parent = make_parent(has_video_live_access=True)
+        parent.grant_video_live_access(clock=self.clock)
+        self.assertEqual(parent.pull_domain_events(), [])
+
+    def test_revoke_video_live_access_when_already_revoked_is_idempotent_no_op(self) -> None:
+        parent = make_parent(has_video_live_access=False)
+        parent.revoke_video_live_access(clock=self.clock)
+        self.assertEqual(parent.pull_domain_events(), [])
+
+    def test_grant_video_playback_access_sets_flag_and_records_event(self) -> None:
+        parent = make_parent(has_video_playback_access=False)
+        parent.grant_video_playback_access(clock=self.clock, actor_id="admin-1")
+        self.assertTrue(parent.has_video_playback_access)
+        events = parent.pull_domain_events()
+        self.assertEqual(events[0].event_type, "ParentVideoPlaybackAccessGranted")
+
+    def test_revoke_video_playback_access_clears_flag_and_records_event(self) -> None:
+        parent = make_parent(has_video_playback_access=True)
+        parent.revoke_video_playback_access(clock=self.clock, actor_id="admin-1")
+        self.assertFalse(parent.has_video_playback_access)
+        events = parent.pull_domain_events()
+        self.assertEqual(events[0].event_type, "ParentVideoPlaybackAccessRevoked")
+
+    def test_live_and_playback_access_are_independent(self) -> None:
+        """The core ADR-0026 SS3 invariant: granting one must never imply the other."""
+        parent = make_parent(has_video_live_access=False, has_video_playback_access=False)
+        parent.grant_video_live_access(clock=self.clock)
+        self.assertTrue(parent.has_video_live_access)
+        self.assertFalse(parent.has_video_playback_access)
+
+
 class ParentUpdateDetailsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.clock = FixedClock(datetime(2026, 7, 17, tzinfo=timezone.utc))

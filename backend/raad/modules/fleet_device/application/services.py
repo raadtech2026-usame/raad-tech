@@ -402,6 +402,21 @@ class DeviceApplicationService:
             device = await self._get_device_or_raise(uow, query.device_id)
             return device_to_dto(device)
 
+    async def get_active_vehicle_assignment_for_device(
+        self, device_id: str, *, uow: FleetDeviceUnitOfWork
+    ) -> DeviceAssignmentDTO | None:
+        """Resolves "which vehicle is this device currently on," the reverse direction of
+        `VehicleApplicationService.get_vehicle_by_id`'s own existing `device_assignments.
+        active_for_vehicle` embedding (`application/services.py` line ~183) — added for
+        ADR-0026 SS3's parent video-access chain (`interfaces/http/policy_guards`), which starts
+        from a video route's `device_id`, not a `vehicle_id`. Mirrors `DriverApplicationService.
+        get_driver_by_user_id`'s "return `None`, not raise" precedent for an absent, expected,
+        non-exceptional resolution (an unassigned device has no vehicle to resolve, a normal
+        state, not an error)."""
+        async with uow:
+            assignment = await uow.device_assignments.active_for_device(DeviceId(device_id))
+            return assignment_to_dto(assignment) if assignment is not None else None
+
     async def list_devices(
         self, query: ListDevicesQuery, *, uow: FleetDeviceUnitOfWork
     ) -> OffsetPage[DeviceDTO]:

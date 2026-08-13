@@ -7,15 +7,27 @@ never invoked anywhere).** Every route below resolves `device_organization_id` f
 `fleet_device`'s own `DeviceApplicationService` — never a cross-module DB read,
 `.claude/rules/backend.md` #3) and then calls `interfaces.http.policy_guards.enforce_d5` —
 `.claude/rules/jt1078.md` #1: "Authorization is enforced in the Business API before any
-signaling reaches this service" — **before** any `VideoApplicationService` call, so the Parent
-role (and every other ineligible role/scope) never reaches a `VideoProviderPort` call or a
-persisted `VideoSession` row at all, matching `.claude/rules/security.md` #5's "Video is
-Org-Admin-only, by construction, not by a runtime flag."
+signaling reaches this service" — **before** any `VideoApplicationService` call, so an
+ineligible role/scope never reaches a `VideoProviderPort` call or a persisted `VideoSession` row
+at all.
 
-Three routes, exactly API Contracts §4.5's documented table:
-- `POST /video/live` — Org Admin (+ permitted RAAD staff).
-- `POST /video/playback` — Org Admin.
-- `POST /video/sessions/{id}/stop` — Org Admin, teardown.
+**ADR-0026 (2026-08-12): a Parent may now reach these three routes, narrowly.** RBAC grants
+Parent the same three permissions Org Admin holds (`video.live.start`/`video.playback.start`/
+`video.sessions.stop`) — that alone lets a Parent *attempt* the route; `enforce_d5` (now passed
+`device_id`/`purpose`, both new required params) is what actually decides, via a four-link
+chain unique to Parent callers (self identity, explicit `has_video_live_access`/
+`has_video_playback_access`, and child/device ownership — `policy_guards.resolve_d5_decision`'s
+own docstring has the full chain). The **default parent experience is unchanged** — off unless
+an org_admin explicitly grants it (`PATCH /parents/{id}/video-access`,
+`transport_ops/api/routers.py`) — and `.claude/rules/security.md` #5's "Video is... by
+construction, not by a runtime flag" still holds: this is a structural, server-side chain, not a
+client-visible toggle.
+
+Three routes, API Contracts §4.5's documented table plus ADR-0026's own narrow Parent addition:
+- `POST /video/live` — Org Admin (+ permitted RAAD staff), or a Parent with
+  `has_video_live_access` on their own child's device.
+- `POST /video/playback` — Org Admin, or a Parent with `has_video_playback_access`.
+- `POST /video/sessions/{id}/stop` — Org Admin, teardown, or the owning/granted Parent.
 
 **Camera-ownership cross-check, a defense-in-depth addition beyond the literal documented
 behavior — flagged, not silently assumed.** `DeviceApplicationService.get_device_by_id` already
@@ -142,6 +154,8 @@ async def request_live_video(
     await enforce_d5(
         principal=principal,
         device_organization_id=device.organization_id,
+        device_id=device.id,
+        purpose="live",
         container=container,
     )
 
@@ -185,6 +199,8 @@ async def request_playback_video(
     await enforce_d5(
         principal=principal,
         device_organization_id=device.organization_id,
+        device_id=device.id,
+        purpose="playback",
         container=container,
     )
 
@@ -224,6 +240,8 @@ async def stop_video_session(
     await enforce_d5(
         principal=principal,
         device_organization_id=existing.organization_id,
+        device_id=existing.device_id,
+        purpose=existing.purpose,
         container=container,
     )
 

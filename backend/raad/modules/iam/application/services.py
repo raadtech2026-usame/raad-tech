@@ -749,11 +749,22 @@ class MeApplicationService:
         for every other role (Founder/Regional Manager/Support Staff/Finance Staff/Org Admin)."""
         parent_id: str | None = None
         driver_id: str | None = None
+        has_video_live_access = False
+        has_video_playback_access = False
         if principal.role == Role.PARENT:
             parent = await self._parent_service.get_parent_by_user_id(
                 principal.user_id, uow=uow
             )
-            parent_id = parent.id if parent is not None else None
+            if parent is not None:
+                parent_id = parent.id
+                # ADR-0026 §5: the mobile client's *only* way to know whether to show the
+                # video affordance at all - the server-side chain (`interfaces/http.
+                # policy_guards.resolve_d5_decision`) is what actually protects the media
+                # relay regardless of what this response says, so surfacing the real,
+                # current flags here is presentation only, never a second authorization
+                # system (`.claude/rules/frontend.md` #2, extended to mobile).
+                has_video_live_access = parent.has_video_live_access
+                has_video_playback_access = parent.has_video_playback_access
         elif principal.role == Role.DRIVER:
             driver = await self._driver_service.get_driver_by_user_id(
                 principal.user_id, uow=uow
@@ -765,6 +776,8 @@ class MeApplicationService:
             organization_id=principal.org_id,
             parent_id=parent_id,
             driver_id=driver_id,
+            has_video_live_access=has_video_live_access,
+            has_video_playback_access=has_video_playback_access,
         )
 
     async def get_my_students(

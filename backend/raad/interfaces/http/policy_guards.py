@@ -42,11 +42,15 @@ from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import GetVehicleByIdQuery
-from raad.modules.fleet_device.application.services import VehicleApplicationService
+from raad.modules.fleet_device.application.services import (
+    DeviceApplicationService,
+    VehicleApplicationService,
+)
 from raad.modules.tracking.application.queries import GetCurrentVehiclePositionQuery
 from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
+    GetParentByIdQuery,
     GetTripByIdQuery,
     ListStudentsForParentQuery,
 )
@@ -186,6 +190,31 @@ async def find_owned_student_id_for_vehicle(
     return None
 
 
+async def find_owned_student_id_for_device(
+    *, principal: Principal, device_id: str, container: Container
+) -> str | None:
+    """ADR-0026 §3: resolves "which of this Parent's children is this *device* about" — the
+    video routes are identified by `device_id`, not `vehicle_id` (unlike the tracking routes
+    `find_owned_student_id_for_vehicle` above already serves). Resolves `device_id ->
+    vehicle_id` via `fleet_device`'s own `DeviceApplicationService.
+    get_active_vehicle_assignment_for_device` (the reverse direction of `resolve_vehicle_
+    tracking_context`'s existing vehicle-to-device embedding), then delegates to
+    `find_owned_student_id_for_vehicle` unchanged — no duplicated ownership logic. Returns
+    `None` (never raises) for an unassigned device or a device/vehicle none of this Parent's
+    children is currently assigned to — same "expected, non-exceptional" contract as the
+    function it delegates to."""
+    device_service = container.resolve(DeviceApplicationService)
+    device_uow = container.resolve(FleetDeviceUnitOfWork)
+    assignment = await device_service.get_active_vehicle_assignment_for_device(
+        device_id, uow=device_uow
+    )
+    if assignment is None:
+        return None
+    return await find_owned_student_id_for_vehicle(
+        principal=principal, vehicle_id=assignment.vehicle_id, container=container
+    )
+
+
 async def resolve_tracking_decision(
     *,
     principal: Principal,
@@ -244,34 +273,78 @@ async def resolve_tracking_decision(
 
 
 async def resolve_d5_decision(
-    *, principal: Principal, device_organization_id: str, container: Container
+    *,
+    principal: Principal,
+    device_organization_id: str,
+    device_id: str,
+    purpose: str,
+    container: Container,
 ) -> PolicyDecision:
-    """D5 (Backend LLD §5.2/§5.4; `.claude/rules/jt1078.md` #1: "Parents have zero reachable
-    path to video, anywhere, ever"). Resolves `org_scope` via the same `ScopeResolver` used
-    everywhere else (`interfaces/http/deps.get_scope`'s identical resolution), then evaluates
-    `VideoAccessPolicy` — a pure role + scope check, no cross-module orchestration needed
-    beyond scope resolution itself.
+    """D5 (Backend LLD §5.2/§5.4; `.claude/rules/jt1078.md` #1). Resolves `org_scope` via the
+    same `ScopeResolver` used everywhere else, then evaluates `VideoAccessPolicy` — a pure
+    role + scope check.
+
+    **ADR-0026, Parent only**: `VideoAccessPolicy` alone is no longer sufficient once
+    `Role.PARENT` is in its eligible set — a granted parent must *additionally* own a child
+    currently assigned to `device_id`'s vehicle, and hold the explicit permission matching
+    `purpose` (`"live"` or `"playback"`, `VideoPurpose`'s own two values). **A parent who does
+    not own the device/child at all raises `NotFoundError` directly (404, not 403)** — this
+    codebase's established cross-tenant-probing-avoidance convention
+    (`find_owned_student_id_for_vehicle`'s own precedent, extended here) — so this function is
+    not purely a `PolicyDecision` factory for that one case, the same "mostly returns a
+    decision, but raises directly for the not-owned-at-all case" shape `resolve_cr1_decision`
+    already establishes for students. Every other role is entirely unaffected by this addition —
+    `device_id`/`purpose` are accepted but not consulted for them.
     """
     resolver = container.resolve(ScopeResolver)
     org_scope: TenantRegionScope = await resolver.effective_org_scope(principal)
     policy = VideoAccessPolicy()
-    return policy.evaluate(
+    decision = policy.evaluate(
         principal=principal,
         device_organization_id=device_organization_id,
         org_scope=org_scope,
     )
+    if principal.role != Role.PARENT or not decision.allowed:
+        return decision
+
+    student_id = await find_owned_student_id_for_device(
+        principal=principal, device_id=device_id, container=container
+    )
+    if student_id is None:
+        raise NotFoundError(f"Device {device_id} not found.")
+
+    parent_id = await _resolve_parent_id(principal, container)
+    parent_service = container.resolve(ParentApplicationService)
+    parent = await parent_service.get_parent_by_id(
+        GetParentByIdQuery(parent_id=parent_id), uow=container.resolve(TransportOpsUnitOfWork)
+    )
+    has_permission = (
+        parent.has_video_live_access
+        if purpose == "live"
+        else parent.has_video_playback_access
+    )
+    return PolicyDecision(allowed=has_permission)
 
 
 async def enforce_d5(
-    *, principal: Principal, device_organization_id: str, container: Container
+    *,
+    principal: Principal,
+    device_organization_id: str,
+    device_id: str,
+    purpose: str,
+    container: Container,
 ) -> None:
     """Raises `VideoForbiddenError` (403, `VIDEO_FORBIDDEN` per API Contracts §5.2) on a D5
-    denial. Unlike CR-1, this applies unconditionally — D5 is not role-scoped the way CR-1 is;
-    `VideoAccessPolicy.evaluate` itself already returns `denied` for every non-eligible role
-    (Parent/Driver included), so no role short-circuit is needed here."""
+    denial, or `NotFoundError` (404) for a Parent caller with no ownership relationship to
+    `device_id` at all — see `resolve_d5_decision`'s own docstring (ADR-0026). Applies
+    unconditionally — D5 is not role-scoped the way CR-1 is; `VideoAccessPolicy.evaluate`
+    itself already returns `denied` for every non-eligible role (Driver still included), so no
+    role short-circuit is needed here."""
     decision = await resolve_d5_decision(
         principal=principal,
         device_organization_id=device_organization_id,
+        device_id=device_id,
+        purpose=purpose,
         container=container,
     )
     if not decision.allowed:

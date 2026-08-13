@@ -101,6 +101,8 @@ from raad.modules.transport_ops.application.commands import (
     EnrollStudentCommand,
     GraduateStudentAssignmentCommand,
     GraduateStudentCommand,
+    GrantParentVideoLiveAccessCommand,
+    GrantParentVideoPlaybackAccessCommand,
     InterruptTripCommand,
     LinkParentToStudentCommand,
     MoveStopCommand,
@@ -109,6 +111,8 @@ from raad.modules.transport_ops.application.commands import (
     RemoveStopFromRouteCommand,
     RemoveStudentAssignmentCommand,
     ResumeTripCommand,
+    RevokeParentVideoLiveAccessCommand,
+    RevokeParentVideoPlaybackAccessCommand,
     ScheduleTripCommand,
     StartTripCommand,
     TransferStudentAssignmentCommand,
@@ -453,6 +457,49 @@ class ParentApplicationService:
         async with uow:
             parent = await self._get_parent_or_raise(uow, command.parent_id)
             parent.disable(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(parent.pull_domain_events())
+            await uow.commit()
+            return parent_to_dto(parent)
+
+    async def grant_parent_video_live_access(
+        self, command: GrantParentVideoLiveAccessCommand, *, uow: TransportOpsUnitOfWork
+    ) -> ParentDTO:
+        """ADR-0026 §2. `uow.parents.get` is already tenant-scoped (ADR-0021) - an org_admin
+        from another organization gets `NotFoundError` here, the same protection
+        `activate_parent`/`disable_parent` already rely on with no separate check."""
+        async with uow:
+            parent = await self._get_parent_or_raise(uow, command.parent_id)
+            parent.grant_video_live_access(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(parent.pull_domain_events())
+            await uow.commit()
+            return parent_to_dto(parent)
+
+    async def revoke_parent_video_live_access(
+        self, command: RevokeParentVideoLiveAccessCommand, *, uow: TransportOpsUnitOfWork
+    ) -> ParentDTO:
+        async with uow:
+            parent = await self._get_parent_or_raise(uow, command.parent_id)
+            parent.revoke_video_live_access(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(parent.pull_domain_events())
+            await uow.commit()
+            return parent_to_dto(parent)
+
+    async def grant_parent_video_playback_access(
+        self, command: GrantParentVideoPlaybackAccessCommand, *, uow: TransportOpsUnitOfWork
+    ) -> ParentDTO:
+        async with uow:
+            parent = await self._get_parent_or_raise(uow, command.parent_id)
+            parent.grant_video_playback_access(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(parent.pull_domain_events())
+            await uow.commit()
+            return parent_to_dto(parent)
+
+    async def revoke_parent_video_playback_access(
+        self, command: RevokeParentVideoPlaybackAccessCommand, *, uow: TransportOpsUnitOfWork
+    ) -> ParentDTO:
+        async with uow:
+            parent = await self._get_parent_or_raise(uow, command.parent_id)
+            parent.revoke_video_playback_access(clock=self._clock, actor_id=command.actor.user_id)
             uow.record_events(parent.pull_domain_events())
             await uow.commit()
             return parent_to_dto(parent)

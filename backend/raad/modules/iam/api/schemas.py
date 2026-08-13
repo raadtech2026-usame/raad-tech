@@ -148,13 +148,20 @@ class RolePermissionsResponse(BaseModel):
 class MeIdentityResponse(BaseModel):
     """ADR-0023: `GET /me`. `parent_id`/`driver_id` are `null` unless `role` is `PARENT`/
     `DRIVER` and a linked `transport_ops` row actually resolves — every other role's domain
-    identity is already fully captured by `organization_id` alone."""
+    identity is already fully captured by `organization_id` alone.
+
+    `has_video_live_access`/`has_video_playback_access` (ADR-0026 §5) are always `false` for
+    every non-Parent role and for a Parent with no grant — this response is presentation only;
+    `interfaces/http/policy_guards.resolve_d5_decision` is the real, independent server-side
+    enforcement a client cannot bypass by ignoring these two flags."""
 
     user_id: str
     role: str
     organization_id: str | None = None
     parent_id: str | None = None
     driver_id: str | None = None
+    has_video_live_access: bool = False
+    has_video_playback_access: bool = False
 
 
 class MeStudentResponse(BaseModel):

@@ -109,6 +109,8 @@ class MeIdentityDTO:
     organization_id: str | None
     parent_id: str | None
     driver_id: str | None
+    has_video_live_access: bool = False
+    has_video_playback_access: bool = False
 
 
 @dataclass(frozen=True)

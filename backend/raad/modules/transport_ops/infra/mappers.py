@@ -121,6 +121,8 @@ def parent_to_model(
     model.full_name = parent.full_name
     model.phone = str(parent.phone) if parent.phone is not None else None
     model.status = parent.status.value
+    model.has_video_live_access = parent.has_video_live_access
+    model.has_video_playback_access = parent.has_video_playback_access
     model.created_at = _to_naive_utc(parent.created_at)
     model.updated_at = _to_naive_utc(parent.updated_at)
     return model
@@ -136,6 +138,8 @@ def model_to_parent(model: ParentModel) -> Parent:
         status=ParentStatus(model.status),
         created_at=model.created_at,
         updated_at=model.updated_at,
+        has_video_live_access=model.has_video_live_access,
+        has_video_playback_access=model.has_video_playback_access,
     )
 
 

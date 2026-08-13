@@ -542,6 +542,8 @@ class Parent(_AggregateRoot):
         status: ParentStatus,
         created_at: datetime,
         updated_at: datetime,
+        has_video_live_access: bool = False,
+        has_video_playback_access: bool = False,
     ) -> None:
         super().__init__()
         _validate_parent_full_name(full_name)
@@ -553,6 +555,11 @@ class Parent(_AggregateRoot):
         self.status = status
         self.created_at = created_at
         self.updated_at = updated_at
+        # ADR-0026: off by default for every parent, always - never inferred, never inherited
+        # from a role or another parent. Only `grant_video_live_access`/`grant_video_playback_
+        # access` (org_admin-only, `interfaces/http/policy_guards`) ever flip either to `True`.
+        self.has_video_live_access = has_video_live_access
+        self.has_video_playback_access = has_video_playback_access
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Parent) and self.id == other.id
@@ -648,6 +655,65 @@ class Parent(_AggregateRoot):
         self.updated_at = clock.now()
         self._record(
             transport_ops_events.parent_disabled(
+                parent_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def grant_video_live_access(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        """ADR-0026 §2: org_admin-only (enforced at the API layer, not here — this aggregate has
+        no reachable way to know the caller's role, mirroring `VideoSession`'s identical
+        posture). Idempotent same-state no-op, mirrors `activate`/`disable`."""
+        if self.has_video_live_access:
+            return
+        self.has_video_live_access = True
+        self.updated_at = clock.now()
+        self._record(
+            transport_ops_events.parent_video_live_access_granted(
+                parent_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def revoke_video_live_access(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if not self.has_video_live_access:
+            return
+        self.has_video_live_access = False
+        self.updated_at = clock.now()
+        self._record(
+            transport_ops_events.parent_video_live_access_revoked(
+                parent_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def grant_video_playback_access(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if self.has_video_playback_access:
+            return
+        self.has_video_playback_access = True
+        self.updated_at = clock.now()
+        self._record(
+            transport_ops_events.parent_video_playback_access_granted(
+                parent_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def revoke_video_playback_access(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if not self.has_video_playback_access:
+            return
+        self.has_video_playback_access = False
+        self.updated_at = clock.now()
+        self._record(
+            transport_ops_events.parent_video_playback_access_revoked(
                 parent_id=str(self.id),
                 organization_id=str(self.organization_id),
                 occurred_at=clock.now(),

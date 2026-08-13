@@ -50,6 +50,15 @@ policy silently invents. If a future-approved RBAC matrix turns out to gate vide
 something *other* than role + org-scope, this policy's role-eligibility set will need revisiting
 — flagged here for that future phase, not guessed at now.
 
+**ADR-0026 (2026-08-12): `Role.PARENT` added to the eligible set — a narrow, explicit, D5-
+preserving exception, not a reversal of "Parent, Driver -> always false" above.** A Parent
+passing *this* policy's own role+scope check is necessary but no longer sufficient on its own:
+`interfaces/http/policy_guards.resolve_d5_decision` additionally requires, for a Parent caller
+only, the explicit per-parent `has_video_live_access`/`has_video_playback_access` permission
+*and* the requesting parent owning a child currently assigned to the requested device's vehicle
+— see that function's own docstring for the full chain. `Role.DRIVER` is deliberately
+**unchanged** — this ADR's own scope is Parent only.
+
 **Not implemented here:** audit logging ("audited" — D5, `.claude/rules/security.md` #8) is an
 enforcement-point/`platform_audit` concern, not this pure decision function's job — same
 separation `SubscriptionAccessPolicy`'s module docstring draws for its own "not implemented
@@ -63,7 +72,13 @@ from raad.core.tenancy.principal import Principal, Role
 from raad.core.tenancy.scope import TenantRegionScope
 
 _VIDEO_ELIGIBLE_ROLES = frozenset(
-    {Role.FOUNDER, Role.REGIONAL_MANAGER, Role.SUPPORT_STAFF, Role.ORG_ADMIN}
+    {
+        Role.FOUNDER,
+        Role.REGIONAL_MANAGER,
+        Role.SUPPORT_STAFF,
+        Role.ORG_ADMIN,
+        Role.PARENT,  # ADR-0026 - see module docstring; further gated by policy_guards
+    }
 )
 
 

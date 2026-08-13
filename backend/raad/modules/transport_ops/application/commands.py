@@ -158,6 +158,33 @@ class DisableParentCommand:
 
 
 @dataclass(frozen=True)
+class GrantParentVideoLiveAccessCommand:
+    """ADR-0026 §2. `actor` is org_admin (or founder), never the parent themselves - enforced by
+    `require_permission(Permission("transport_ops.parents.grant_video_access"))` at the route."""
+
+    parent_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RevokeParentVideoLiveAccessCommand:
+    parent_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class GrantParentVideoPlaybackAccessCommand:
+    parent_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RevokeParentVideoPlaybackAccessCommand:
+    parent_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class LinkParentToStudentCommand:
     """Phase 10.7. `relationship`/`is_primary` are set-once-at-link-time only (Database Design
     §6.4) — no `Update*Command` exists for this pair, matching `StudentParent`'s own domain

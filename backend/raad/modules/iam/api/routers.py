@@ -618,6 +618,8 @@ def _me_identity_dto_to_response(dto: MeIdentityDTO) -> MeIdentityResponse:
         organization_id=dto.organization_id,
         parent_id=dto.parent_id,
         driver_id=dto.driver_id,
+        has_video_live_access=dto.has_video_live_access,
+        has_video_playback_access=dto.has_video_playback_access,
     )
 
 

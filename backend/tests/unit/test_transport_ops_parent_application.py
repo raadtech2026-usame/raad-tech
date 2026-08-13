@@ -24,7 +24,11 @@ from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
     ActivateParentCommand,
     DisableParentCommand,
+    GrantParentVideoLiveAccessCommand,
+    GrantParentVideoPlaybackAccessCommand,
     RegisterParentCommand,
+    RevokeParentVideoLiveAccessCommand,
+    RevokeParentVideoPlaybackAccessCommand,
     UpdateParentCommand,
 )
 from raad.modules.transport_ops.application.ports import (
@@ -513,6 +517,90 @@ class ParentApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTest
                 DisableParentCommand(parent_id="not-a-ulid", actor=make_actor()),
                 uow=uow,
             )
+
+
+class ParentApplicationServiceVideoAccessTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0026 SS2 - mirrors `ParentApplicationServiceStatusTransitionTests`'s exact shape."""
+
+    async def _registered_parent_id(
+        self, service: ParentApplicationService, uow
+    ) -> str:
+        dto, _temporary_password = await service.register_parent(
+            RegisterParentCommand(
+                organization_id=VALID_ORG_ULID,
+                full_name="Fatima Hassan",
+                email=None,
+                phone=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        uow.recorded_events.clear()
+        return dto.id
+
+    async def test_new_parent_has_no_video_access(self) -> None:
+        service, uow, _provisioning = make_service()
+        parent_id = await self._registered_parent_id(service, uow)
+        dto = await service.get_parent_by_id(
+            GetParentByIdQuery(parent_id=parent_id), uow=uow
+        )
+        self.assertFalse(dto.has_video_live_access)
+        self.assertFalse(dto.has_video_playback_access)
+
+    async def test_grant_video_live_access(self) -> None:
+        service, uow, _provisioning = make_service()
+        parent_id = await self._registered_parent_id(service, uow)
+        dto = await service.grant_parent_video_live_access(
+            GrantParentVideoLiveAccessCommand(parent_id=parent_id, actor=make_actor()), uow=uow
+        )
+        self.assertTrue(dto.has_video_live_access)
+        self.assertFalse(dto.has_video_playback_access)
+        self.assertEqual(uow.recorded_events[-1].event_type, "ParentVideoLiveAccessGranted")
+
+    async def test_revoke_video_live_access(self) -> None:
+        service, uow, _provisioning = make_service()
+        parent_id = await self._registered_parent_id(service, uow)
+        await service.grant_parent_video_live_access(
+            GrantParentVideoLiveAccessCommand(parent_id=parent_id, actor=make_actor()), uow=uow
+        )
+        dto = await service.revoke_parent_video_live_access(
+            RevokeParentVideoLiveAccessCommand(parent_id=parent_id, actor=make_actor()), uow=uow
+        )
+        self.assertFalse(dto.has_video_live_access)
+
+    async def test_grant_video_playback_access_is_independent_of_live(self) -> None:
+        service, uow, _provisioning = make_service()
+        parent_id = await self._registered_parent_id(service, uow)
+        dto = await service.grant_parent_video_playback_access(
+            GrantParentVideoPlaybackAccessCommand(parent_id=parent_id, actor=make_actor()),
+            uow=uow,
+        )
+        self.assertTrue(dto.has_video_playback_access)
+        self.assertFalse(dto.has_video_live_access)
+
+    async def test_revoke_video_playback_access(self) -> None:
+        service, uow, _provisioning = make_service()
+        parent_id = await self._registered_parent_id(service, uow)
+        await service.grant_parent_video_playback_access(
+            GrantParentVideoPlaybackAccessCommand(parent_id=parent_id, actor=make_actor()),
+            uow=uow,
+        )
+        dto = await service.revoke_parent_video_playback_access(
+            RevokeParentVideoPlaybackAccessCommand(parent_id=parent_id, actor=make_actor()),
+            uow=uow,
+        )
+        self.assertFalse(dto.has_video_playback_access)
+
+    async def test_grant_on_missing_parent_raises_not_found(self) -> None:
+        service, uow, _provisioning = make_service()
+        with self.assertRaises(NotFoundError):
+            await service.grant_parent_video_live_access(
+                GrantParentVideoLiveAccessCommand(
+                    parent_id=NON_EXISTENT_PARENT_ID, actor=make_actor()
+                ),
+                uow=uow,
+            )
+        self.assertEqual(uow.commit_count, 0)
 
 
 class ParentApplicationServiceUpdateTests(unittest.IsolatedAsyncioTestCase):

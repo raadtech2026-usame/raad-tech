@@ -244,6 +244,7 @@ from raad.modules.transport_ops.api.schemas import (
     TripSummaryResponse,
     UpdateDriverRequest,
     UpdateParentRequest,
+    UpdateParentVideoAccessRequest,
     UpdateRouteRequest,
     UpdateStudentAssignmentStatusRequest,
     UpdateStudentRequest,
@@ -267,10 +268,14 @@ from raad.modules.transport_ops.application.commands import (
     EnrollStudentCommand,
     GraduateStudentAssignmentCommand,
     GraduateStudentCommand,
+    GrantParentVideoLiveAccessCommand,
+    GrantParentVideoPlaybackAccessCommand,
     LinkParentToStudentCommand,
     RegisterDriverCommand,
     RegisterParentCommand,
     RemoveStudentAssignmentCommand,
+    RevokeParentVideoLiveAccessCommand,
+    RevokeParentVideoPlaybackAccessCommand,
     ScheduleTripCommand,
     StartTripCommand,
     TransferStudentAssignmentCommand,
@@ -361,6 +366,8 @@ def _parent_dto_to_response(parent: ParentDTO) -> ParentResponse:
         full_name=parent.full_name,
         phone=parent.phone,
         status=parent.status,
+        has_video_live_access=parent.has_video_live_access,
+        has_video_playback_access=parent.has_video_playback_access,
         created_at=parent.created_at,
         updated_at=parent.updated_at,
     )
@@ -901,6 +908,64 @@ async def update_parent(
         # invariant-holds-regardless-of-interpreter-flags reasoning.
         raise RuntimeError(
             "update_parent: no field was processed despite the guard above."
+        )
+    return _parent_dto_to_response(parent)
+
+
+@parents_router.patch(
+    "/{parent_id}/video-access",
+    response_model=ParentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Grant or revoke a parent's video access",
+    description=(
+        "Org Admin (+ Founder) only (ADR-0026 SS2) - a dedicated, more restrictive permission "
+        "than `PATCH /parents/{id}` (`transport_ops.parents.grant_video_access`, not "
+        "`.update`). Off by default for every parent; this is the only way either flag ever "
+        "becomes `true`. Live and playback are independently grantable/revocable."
+    ),
+)
+async def update_parent_video_access(
+    parent_id: str,
+    body: UpdateParentVideoAccessRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.parents.grant_video_access"))
+    ),
+    parent_service: ParentApplicationService = Depends(get_parent_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> ParentResponse:
+    if body.has_video_live_access is None and body.has_video_playback_access is None:
+        raise ValidationError(
+            "At least one of 'has_video_live_access' or 'has_video_playback_access' must be "
+            "provided.",
+            details={"fields": ["has_video_live_access", "has_video_playback_access"]},
+        )
+
+    parent: ParentDTO | None = None
+
+    if body.has_video_live_access is True:
+        parent = await parent_service.grant_parent_video_live_access(
+            GrantParentVideoLiveAccessCommand(parent_id=parent_id, actor=principal), uow=uow
+        )
+    elif body.has_video_live_access is False:
+        parent = await parent_service.revoke_parent_video_live_access(
+            RevokeParentVideoLiveAccessCommand(parent_id=parent_id, actor=principal), uow=uow
+        )
+
+    if body.has_video_playback_access is True:
+        parent = await parent_service.grant_parent_video_playback_access(
+            GrantParentVideoPlaybackAccessCommand(parent_id=parent_id, actor=principal), uow=uow
+        )
+    elif body.has_video_playback_access is False:
+        parent = await parent_service.revoke_parent_video_playback_access(
+            RevokeParentVideoPlaybackAccessCommand(parent_id=parent_id, actor=principal), uow=uow
+        )
+
+    if parent is None:
+        # Guaranteed not to happen by the "at least one field" guard above - an explicit raise
+        # rather than `assert`, matching `update_parent`'s own identical invariant-holds-
+        # regardless-of-interpreter-flags reasoning.
+        raise RuntimeError(
+            "update_parent_video_access: no field was processed despite the guard above."
         )
     return _parent_dto_to_response(parent)
 

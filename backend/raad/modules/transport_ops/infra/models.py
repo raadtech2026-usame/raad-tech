@@ -157,6 +157,14 @@ class ParentModel(AuditedTableMixin, Base):
         nullable=False,
         index=True,
     )
+    #: ADR-0026: off by default, org_admin-grantable per parent. Kept as two independent
+    #: booleans, not one "video_enabled" flag - live and playback are separately grantable.
+    #: `default=False` mirrors `fleet_device.DeviceModel.is_online`'s identical precedent; the
+    #: migration itself carries the `server_default` for existing rows.
+    has_video_live_access: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    has_video_playback_access: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
 
 class StudentParentModel(Base):

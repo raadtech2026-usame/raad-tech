@@ -139,6 +139,8 @@ class ParentResponse(BaseModel):
     full_name: str
     phone: str | None
     status: str
+    has_video_live_access: bool
+    has_video_playback_access: bool
     created_at: datetime
     updated_at: datetime
 
@@ -181,6 +183,16 @@ class UpdateParentRequest(BaseModel):
     full_name: str | None = None
     phone: str | None = None
     status: str | None = None
+
+
+class UpdateParentVideoAccessRequest(BaseModel):
+    """`PATCH /parents/{id}/video-access` (ADR-0026 §2) — a dedicated route, not folded into
+    `UpdateParentRequest` above, because it is gated by its own, more restrictive permission
+    (`transport_ops.parents.grant_video_access`, org_admin/founder only) rather than
+    `transport_ops.parents.update`. At least one field must be given."""
+
+    has_video_live_access: bool | None = None
+    has_video_playback_access: bool | None = None
 
 
 class LinkParentToStudentRequest(BaseModel):

@@ -155,6 +155,11 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("PATCH", "/api/v1/regions/{region_id}", "uniform-CRUD addition"),
     ("GET", "/api/v1/parents/{parent_id}", "uniform-CRUD addition"),
     ("PATCH", "/api/v1/parents/{parent_id}", "uniform-CRUD addition"),
+    (
+        "PATCH",
+        "/api/v1/parents/{parent_id}/video-access",
+        "ADR-0026 SS2 - grant/revoke, its own dedicated permission",
+    ),
     ("GET", "/api/v1/parents/{parent_id}/students", "ListStudentsForParentQuery's own route"),
     ("GET", "/api/v1/students/{student_id}", "uniform-CRUD addition"),
     ("PATCH", "/api/v1/students/{student_id}", "uniform-CRUD addition"),

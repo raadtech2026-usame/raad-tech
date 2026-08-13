@@ -1,9 +1,16 @@
 """Unit tests for `core.policies.video_access.VideoAccessPolicy` (Phase 14, D5). Stdlib
 `unittest` — no `pytest`. Exhaustively covers every role from API Contracts §3.2's "Live video /
-playback" capability row (Founder/Regional Manager/Support/Finance/Org Admin/Driver/Parent), not
-just Parent — D5 is a hard security invariant ("Parent has zero reachable path to video,
-anywhere, ever") but the exclusion of Finance/Driver is equally load-bearing and equally
-regression-worthy (`.claude/rules/testing.md` #3).
+playback" capability row (Founder/Regional Manager/Support/Finance/Org Admin/Driver/Parent).
+
+**ADR-0026 (2026-08-12): `Role.PARENT` moved out of this policy's own "never eligible" set.**
+This policy alone no longer decides Parent video access — it is necessary but not sufficient.
+The real, additional gating (explicit per-parent permission, device/child ownership) lives in
+`interfaces/http/policy_guards.resolve_d5_decision`, covered by `tests/unit/
+test_policy_guards.py::ResolveAndEnforceD5Tests` — this file only proves what this one pure
+role+scope policy itself does, which for Parent is now "the same org-scope check Org Admin
+gets," not an outright denial. Driver and Finance Staff remain genuinely, unconditionally
+ineligible at this layer, unaffected by ADR-0026 (Driver was never in scope for it; Finance
+Staff was never eligible for video at all).
 """
 
 from __future__ import annotations
@@ -29,22 +36,15 @@ class VideoAccessPolicyIsAPolicyTests(unittest.TestCase):
 
 
 class NeverEligibleRolesTests(unittest.TestCase):
-    """API Contracts §3.2: Parent and Driver are '❌' regardless of org/scope - D5's 'no
-    reachable path' invariant, and Finance Staff's '❌' in the same row (excluded even though
-    a RAAD-staff role) - proven even with an unrestricted org_scope, so a permissive scope
-    can never compensate for an ineligible role."""
+    """API Contracts §3.2: Driver is '❌' regardless of org/scope - D5's 'no reachable path'
+    invariant, and Finance Staff's '❌' in the same row (excluded even though a RAAD-staff
+    role) - proven even with an unrestricted org_scope, so a permissive scope can never
+    compensate for an ineligible role. Parent moved to `ParentRoleEligibilityTests` below
+    (ADR-0026 - see module docstring)."""
 
     def setUp(self) -> None:
         self.policy = VideoAccessPolicy()
         self.unrestricted_scope = TenantRegionScope(organization_ids=None)
-
-    def test_parent_is_denied_even_with_unrestricted_scope(self) -> None:
-        decision = self.policy.evaluate(
-            principal=make_principal(Role.PARENT),
-            device_organization_id=ORG_A,
-            org_scope=self.unrestricted_scope,
-        )
-        self.assertFalse(decision.allowed)
 
     def test_driver_is_denied_even_with_unrestricted_scope(self) -> None:
         decision = self.policy.evaluate(
@@ -67,12 +67,41 @@ class NeverEligibleRolesTests(unittest.TestCase):
     def test_ineligible_roles_never_carry_a_reason_or_action(self) -> None:
         """D5 documents no reason/required_action taxonomy for video (unlike CR-1)."""
         decision = self.policy.evaluate(
-            principal=make_principal(Role.PARENT),
+            principal=make_principal(Role.DRIVER),
             device_organization_id=ORG_A,
             org_scope=self.unrestricted_scope,
         )
         self.assertIsNone(decision.reason)
         self.assertIsNone(decision.required_action)
+
+
+class ParentRoleEligibilityTests(unittest.TestCase):
+    """ADR-0026: this policy's own role+scope check for Parent now mirrors Org Admin's shape
+    exactly - own-org true, other-org false. This is *not* the real Parent gate; it only
+    proves this one input is no longer an unconditional denial. The actual per-parent
+    permission/ownership decision lives one layer up (`interfaces/http/policy_guards.
+    resolve_d5_decision`, `test_policy_guards.py::ResolveAndEnforceD5Tests`)."""
+
+    def setUp(self) -> None:
+        self.policy = VideoAccessPolicy()
+
+    def test_parent_within_own_org_passes_this_layer(self) -> None:
+        scope = TenantRegionScope(organization_ids=frozenset({ORG_A}))
+        decision = self.policy.evaluate(
+            principal=make_principal(Role.PARENT, org_id=ORG_A),
+            device_organization_id=ORG_A,
+            org_scope=scope,
+        )
+        self.assertTrue(decision.allowed)
+
+    def test_parent_outside_own_org_is_denied(self) -> None:
+        scope = TenantRegionScope(organization_ids=frozenset({ORG_A}))
+        decision = self.policy.evaluate(
+            principal=make_principal(Role.PARENT, org_id=ORG_A),
+            device_organization_id=ORG_B,
+            org_scope=scope,
+        )
+        self.assertFalse(decision.allowed)
 
 
 class OrgAdminOwnOrgTests(unittest.TestCase):

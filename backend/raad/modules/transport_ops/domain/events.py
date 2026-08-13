@@ -319,6 +319,77 @@ def parent_disabled(
     )
 
 
+def parent_video_live_access_granted(
+    *,
+    parent_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """ADR-0026 §2. Flows through the same `UnitOfWork.commit()` -> outbox + `audit_entries`
+    pipeline (ADR-0007) every other event in this file already does - no separate audit
+    mechanism needed for who granted video access to which parent, when."""
+    return _new_event(
+        event_type="ParentVideoLiveAccessGranted",
+        aggregate_type="Parent",
+        aggregate_id=parent_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def parent_video_live_access_revoked(
+    *,
+    parent_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="ParentVideoLiveAccessRevoked",
+        aggregate_type="Parent",
+        aggregate_id=parent_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def parent_video_playback_access_granted(
+    *,
+    parent_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="ParentVideoPlaybackAccessGranted",
+        aggregate_type="Parent",
+        aggregate_id=parent_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
+def parent_video_playback_access_revoked(
+    *,
+    parent_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="ParentVideoPlaybackAccessRevoked",
+        aggregate_type="Parent",
+        aggregate_id=parent_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
 def student_parent_linked(
     *,
     student_id: str,

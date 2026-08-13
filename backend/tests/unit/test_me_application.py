@@ -26,7 +26,13 @@ from raad.modules.transport_ops.application.queries import (
 )
 
 
-def _parent_dto(*, id: str = "parent-1", user_id: str = "user-parent-1") -> ParentDTO:
+def _parent_dto(
+    *,
+    id: str = "parent-1",
+    user_id: str = "user-parent-1",
+    has_video_live_access: bool = False,
+    has_video_playback_access: bool = False,
+) -> ParentDTO:
     return ParentDTO(
         id=id,
         organization_id="org-1",
@@ -34,6 +40,8 @@ def _parent_dto(*, id: str = "parent-1", user_id: str = "user-parent-1") -> Pare
         full_name="Parent One",
         phone=None,
         status="active",
+        has_video_live_access=has_video_live_access,
+        has_video_playback_access=has_video_playback_access,
         created_at=None,  # type: ignore[arg-type]
         updated_at=None,  # type: ignore[arg-type]
     )
@@ -121,6 +129,29 @@ class MeIdentityResolutionTests(unittest.IsolatedAsyncioTestCase):
         # Only the PARENT lookup should ever run - resolving DRIVER too would be a wasted query.
         self.assertEqual(len(driver_service.calls), 0)
         self.assertEqual(parent_service.calls[0]["user_id"], "user-parent-1")
+        # ADR-0026 §5: no grant on this fixture parent - both flags stay false.
+        self.assertFalse(identity.has_video_live_access)
+        self.assertFalse(identity.has_video_playback_access)
+
+    async def test_granted_parent_surfaces_video_access_flags(self) -> None:
+        """ADR-0026 §5: `GET /me` is the mobile client's only way to know whether to show the
+        video affordance at all - must reflect a real grant, not always default to false."""
+        principal = Principal(user_id="user-parent-1", role=Role.PARENT, org_id="org-1")
+        service, _parent_service, _driver_service, _sp = make_service(
+            parents={
+                "user-parent-1": _parent_dto(
+                    id="parent-1",
+                    user_id="user-parent-1",
+                    has_video_live_access=True,
+                    has_video_playback_access=False,
+                )
+            }
+        )
+
+        identity = await service.get_my_identity(principal, uow="uow")
+
+        self.assertTrue(identity.has_video_live_access)
+        self.assertFalse(identity.has_video_playback_access)
 
     async def test_driver_principal_resolves_driver_id_and_leaves_parent_id_null(self) -> None:
         principal = Principal(user_id="user-driver-1", role=Role.DRIVER, org_id="org-1")

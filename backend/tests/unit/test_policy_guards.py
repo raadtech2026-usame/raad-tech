@@ -37,7 +37,10 @@ from raad.interfaces.http import policy_guards
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
-from raad.modules.fleet_device.application.services import VehicleApplicationService
+from raad.modules.fleet_device.application.services import (
+    DeviceApplicationService,
+    VehicleApplicationService,
+)
 from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
@@ -54,6 +57,8 @@ OTHER_ORG_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
 @dataclass(frozen=True)
 class _ParentDTO:
     id: str
+    has_video_live_access: bool = False
+    has_video_playback_access: bool = False
 
 
 @dataclass(frozen=True)
@@ -78,6 +83,12 @@ class FakeParentService:
 
     async def get_parent_by_user_id(self, user_id, *, uow):
         return self._by_user_id.get(user_id)
+
+    async def get_parent_by_id(self, query, *, uow):
+        for parent in self._by_user_id.values():
+            if parent.id == query.parent_id:
+                return parent
+        raise NotFoundError(f"Parent {query.parent_id} not found.")
 
 
 class FakeStudentParentService:
@@ -138,6 +149,22 @@ class FakeVehicleService:
         return vehicle
 
 
+@dataclass(frozen=True)
+class _DeviceAssignmentDTO:
+    vehicle_id: str
+
+
+class FakeDeviceService:
+    """ADR-0026 §3 - `find_owned_student_id_for_device`'s own `DeviceApplicationService`
+    dependency."""
+
+    def __init__(self, assignment_by_device: dict[str, _DeviceAssignmentDTO | None]) -> None:
+        self._by_device = assignment_by_device
+
+    async def get_active_vehicle_assignment_for_device(self, device_id, *, uow):
+        return self._by_device.get(device_id)
+
+
 class FakeTrackingService:
     def __init__(
         self, position_by_vehicle: dict[str, _PositionDTO | None] | None = None
@@ -169,11 +196,14 @@ def make_container(
     *,
     parent_id: str = "parent-1",
     parent_user_id: str = "user-1",
+    has_video_live_access: bool = False,
+    has_video_playback_access: bool = False,
     children: list[str] | None = None,
     assignments: dict[str, _AssignmentDTO | None] | None = None,
     subscription: _SubscriptionDTO | None = None,
     scope: TenantRegionScope = TenantRegionScope(organization_ids=frozenset({ORG_ID})),
     vehicles: dict[str, _VehicleDTO] | None = None,
+    devices: dict[str, _DeviceAssignmentDTO | None] | None = None,
     positions: dict[str, _PositionDTO | None] | None = None,
     trips: dict[str, _TripStatusDTO] | None = None,
     tracking_service: object | None = None,
@@ -181,7 +211,15 @@ def make_container(
     container = Container()
     container.bind_singleton(
         ParentApplicationService,
-        FakeParentService({parent_user_id: _ParentDTO(id=parent_id)}),
+        FakeParentService(
+            {
+                parent_user_id: _ParentDTO(
+                    id=parent_id,
+                    has_video_live_access=has_video_live_access,
+                    has_video_playback_access=has_video_playback_access,
+                )
+            }
+        ),
     )
     container.bind_singleton(
         StudentParentApplicationService,
@@ -196,6 +234,7 @@ def make_container(
     container.bind_singleton(BillingApplicationService, FakeBillingService(subscription))
     container.bind_singleton(ScopeResolver, FakeScopeResolver(scope))
     container.bind_singleton(VehicleApplicationService, FakeVehicleService(vehicles or {}))
+    container.bind_singleton(DeviceApplicationService, FakeDeviceService(devices or {}))
     container.bind_singleton(
         TrackingApplicationService, tracking_service or FakeTrackingService(positions)
     )
@@ -451,27 +490,28 @@ class ResolveTrackingDecisionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
-    async def test_parent_is_denied_regardless_of_scope(self) -> None:
-        """D5 (`.claude/rules/jt1078.md` #1): "Parents have zero reachable path to video,
-        anywhere, ever" — must deny even with an unrestricted scope."""
-        container = make_container(
-            scope=TenantRegionScope(organization_ids=frozenset({ORG_ID}))
-        )
-        decision = await policy_guards.resolve_d5_decision(
-            principal=PARENT, device_organization_id=ORG_ID, container=container
-        )
-        self.assertFalse(decision.allowed)
+    """D5 (`.claude/rules/jt1078.md` #1) plus its ADR-0026 parent-permission extension. Every
+    Parent test below wires a *real* owned-device/child chain unless the test is specifically
+    about the absence of one — `device-1` -> `veh-1` -> `s1`, `s1` assigned to `parent-1`."""
 
     async def test_org_admin_within_own_org_is_granted(self) -> None:
         container = make_container(
             scope=TenantRegionScope(organization_ids=frozenset({ORG_ID}))
         )
         decision = await policy_guards.resolve_d5_decision(
-            principal=ORG_ADMIN, device_organization_id=ORG_ID, container=container
+            principal=ORG_ADMIN,
+            device_organization_id=ORG_ID,
+            device_id="device-1",
+            purpose="live",
+            container=container,
         )
         self.assertTrue(decision.allowed)
         await policy_guards.enforce_d5(
-            principal=ORG_ADMIN, device_organization_id=ORG_ID, container=container
+            principal=ORG_ADMIN,
+            device_organization_id=ORG_ID,
+            device_id="device-1",
+            purpose="live",
+            container=container,
         )
 
     async def test_org_admin_outside_own_org_raises_video_forbidden_error(self) -> None:
@@ -482,17 +522,136 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
             await policy_guards.enforce_d5(
                 principal=ORG_ADMIN,
                 device_organization_id=OTHER_ORG_ID,
+                device_id="device-1",
+                purpose="live",
                 container=container,
             )
         self.assertEqual(ctx.exception.code, "VIDEO_FORBIDDEN")
 
-    async def test_parent_enforce_d5_raises_video_forbidden_error(self) -> None:
+    async def test_driver_is_denied_regardless_of_scope(self) -> None:
+        """ADR-0026 is Parent-only - Driver's own eligibility is unchanged."""
+        driver = Principal(user_id="driver-1", role=Role.DRIVER, org_id=ORG_ID)
         container = make_container(
             scope=TenantRegionScope(organization_ids=frozenset({ORG_ID}))
         )
         with self.assertRaises(VideoForbiddenError):
             await policy_guards.enforce_d5(
-                principal=PARENT, device_organization_id=ORG_ID, container=container
+                principal=driver,
+                device_organization_id=ORG_ID,
+                device_id="device-1",
+                purpose="live",
+                container=container,
+            )
+
+    async def test_parent_owning_neither_device_nor_child_raises_not_found_not_forbidden(
+        self,
+    ) -> None:
+        """404-over-403 (ADR-0026 §3, mirroring CR-1's own precedent): a parent with zero
+        ownership relationship to the device must not learn it exists via a 403 - even one
+        holding the permission flag."""
+        container = make_container(
+            has_video_live_access=True, children=[], devices={"device-1": None}
+        )
+        with self.assertRaises(NotFoundError):
+            await policy_guards.resolve_d5_decision(
+                principal=PARENT,
+                device_organization_id=ORG_ID,
+                device_id="device-1",
+                purpose="live",
+                container=container,
+            )
+
+    async def test_parent_owning_device_but_lacking_permission_is_forbidden(self) -> None:
+        container = make_container(
+            has_video_live_access=False,
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
+            devices={"device-1": _DeviceAssignmentDTO(vehicle_id="veh-1")},
+        )
+        decision = await policy_guards.resolve_d5_decision(
+            principal=PARENT,
+            device_organization_id=ORG_ID,
+            device_id="device-1",
+            purpose="live",
+            container=container,
+        )
+        self.assertFalse(decision.allowed)
+        with self.assertRaises(VideoForbiddenError):
+            await policy_guards.enforce_d5(
+                principal=PARENT,
+                device_organization_id=ORG_ID,
+                device_id="device-1",
+                purpose="live",
+                container=container,
+            )
+
+    async def test_parent_owning_device_and_granted_live_access_is_allowed(self) -> None:
+        container = make_container(
+            has_video_live_access=True,
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
+            devices={"device-1": _DeviceAssignmentDTO(vehicle_id="veh-1")},
+        )
+        decision = await policy_guards.resolve_d5_decision(
+            principal=PARENT,
+            device_organization_id=ORG_ID,
+            device_id="device-1",
+            purpose="live",
+            container=container,
+        )
+        self.assertTrue(decision.allowed)
+
+    async def test_live_access_does_not_grant_playback(self) -> None:
+        """ADR-0026 §3: live and playback are independently checked - one flag must never
+        satisfy the other purpose."""
+        container = make_container(
+            has_video_live_access=True,
+            has_video_playback_access=False,
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
+            devices={"device-1": _DeviceAssignmentDTO(vehicle_id="veh-1")},
+        )
+        decision = await policy_guards.resolve_d5_decision(
+            principal=PARENT,
+            device_organization_id=ORG_ID,
+            device_id="device-1",
+            purpose="playback",
+            container=container,
+        )
+        self.assertFalse(decision.allowed)
+
+    async def test_parent_granted_playback_access_is_allowed_for_playback(self) -> None:
+        container = make_container(
+            has_video_playback_access=True,
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
+            devices={"device-1": _DeviceAssignmentDTO(vehicle_id="veh-1")},
+        )
+        decision = await policy_guards.resolve_d5_decision(
+            principal=PARENT,
+            device_organization_id=ORG_ID,
+            device_id="device-1",
+            purpose="playback",
+            container=container,
+        )
+        self.assertTrue(decision.allowed)
+
+    async def test_parent_owning_a_different_childs_device_is_not_found(self) -> None:
+        """The device is real and assigned, but to a vehicle none of *this* parent's children
+        rides - must still be 404, not 403, matching the "not owned at all" case."""
+        container = make_container(
+            has_video_live_access=True,
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-OTHER")},
+            devices={"device-1": _DeviceAssignmentDTO(vehicle_id="veh-1")},
+        )
+        with self.assertRaises(NotFoundError):
+            await policy_guards.resolve_d5_decision(
+                principal=PARENT,
+                device_organization_id=ORG_ID,
+                device_id="device-1",
+                purpose="live",
+                container=container,
             )
 
 

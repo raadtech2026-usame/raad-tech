@@ -154,6 +154,8 @@ class ParentDTO:
     full_name: str
     phone: str | None
     status: str
+    has_video_live_access: bool
+    has_video_playback_access: bool
     created_at: datetime
     updated_at: datetime
 
@@ -175,6 +177,8 @@ def parent_to_dto(parent: Parent) -> ParentDTO:
         full_name=parent.full_name,
         phone=str(parent.phone) if parent.phone is not None else None,
         status=parent.status.value,
+        has_video_live_access=parent.has_video_live_access,
+        has_video_playback_access=parent.has_video_playback_access,
         created_at=parent.created_at,
         updated_at=parent.updated_at,
     )
