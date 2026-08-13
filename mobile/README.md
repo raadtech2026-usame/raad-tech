@@ -1,8 +1,12 @@
 # Mobile — RAAD Flutter App
 
 Single Flutter codebase (Android + iOS) rendering two role experiences via RBAC: **Parent** and
-**Driver**. No admin features and no live video on mobile (video is Org Admin-only, web dashboard
-only).
+**Driver**. No admin features on mobile, ever. **Live video is narrowly reachable by a Parent as
+of ADR-0026 (2026-08-12)** — off by default, only when an org_admin has explicitly granted
+`has_video_live_access`/`has_video_playback_access`, server-enforced independent of anything this
+app itself renders; see `features/video/`'s own docstrings and the "Video (ADR-0026)" phase entry
+below. Driver still has zero video reachability, unconditionally — that half of the original
+"video is Org Admin-only, web dashboard only" rule is unchanged.
 
 Source of truth: `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §9;
 `docs/architecture/frontend-flutter-master-roadmap.md` §5 (Phases M0–M5) is the approved,
@@ -16,14 +20,18 @@ lib/
 ├── app/
 │   └── app.dart               # role-based shell: Login / Driver home / Parent home
 ├── core/
-│   ├── auth/                  # Principal, AuthSession, AuthRepository, AuthController (Riverpod)
+│   ├── auth/                  # Principal, AuthSession, AuthRepository, AuthController (Riverpod),
+│   │                          # MeIdentity/MeRepository (GET /me, ADR-0023 + ADR-0026 §5)
 │   ├── config/env.dart        # API/WS base URLs (--dart-define, mirrors the web's VITE_* pattern)
 │   ├── network/                # ApiClient (REST + error envelope), TrackingWebSocketClient
 │   └── storage/                # SecureTokenStorage (refresh token only — flutter.md #5)
 ├── features/
 │   ├── auth/login_screen.dart # shared by both roles
 │   ├── driver/                 # trip list (org-scoped) + start/end (Phase M2)
-│   └── parent/                 # live tracking (Phase M3 — see "Known gaps" below)
+│   ├── parent/                 # live tracking (Phase M3 — see "Known gaps" below)
+│   └── video/                  # permission-gated live video player (ADR-0026, ADR-0024 §5) —
+│                               # VideoRepository, FlvRelayBridge (WS-FLV -> local http:// for
+│                               # media_kit), VideoPlayerScreen, VideoWatchScreen
 ├── shared/                     # not yet populated — reserved for cross-role widgets once a
 │                               # second one is actually needed (no premature abstraction)
 └── data/                       # not yet populated — reserved for Phase M5's local/offline cache
@@ -70,6 +78,25 @@ endpoint to call at all** today — not just "no mobile screen for it yet." See
 docstring explains it in the code itself, and offers a manual "track a vehicle by id" entry
 point as an explicitly-labeled stand-in for testing/demonstration, not the intended production UX.
 
+**Video (ADR-0026, 2026-08-12) — code complete, one disclosed limitation beyond the general
+"no Flutter SDK" caveat below.** Narrowly reverses D5's original "Parent has zero reachable path
+to video, anywhere, ever" (`docs/architecture/adr/0026-parent-video-access-authorization.md` has
+the full reasoning: this was always the platform's own root requirement, `Project_Brief_v1.md`
+§4.8, deliberately deferred pending exactly this kind of explicit re-authorization). `GET /me`
+now surfaces `has_video_live_access`/`has_video_playback_access`; `ParentHomeScreen`'s new
+`_VideoAccessSection` shows a "Watch live video" button only when granted (presentation only —
+`interfaces/http/policy_guards.resolve_d5_decision` is the real, independent server-side gate).
+`VideoWatchScreen` reuses `ParentHomeScreen`'s own disclosed "manual id entry" pattern (no
+backend endpoint resolves "which devices/cameras belong to my children" any more than one
+resolves "which vehicles" — the same real gap, not newly introduced here) to call `POST
+/video/live`, then `VideoPlayerScreen` renders the resulting stream via `FlvRelayBridge` (a
+local WS-FLV -> `http://127.0.0.1` bridge, `dart:io.HttpServer` only, no new dependency for the
+bridge itself) and the new `media_kit`/`media_kit_video` dependency (MIT, user-approved before
+adding). **Single-listener bridge, by design** (`flv_relay_bridge.dart`'s own docstring) — not a
+general-purpose multi-viewer relay, matching this feature's actual need (one parent, one player).
+Playback (as opposed to live) has a repository method (`VideoRepository.requestPlayback`) but no
+screen yet — out of this phase's own scope, not silently dropped.
+
 **Phase M4 (Push notifications / FCM) — not started.** Needs a real Firebase project (a
 `google-services.json`/`GoogleService-Info.plist` and real API keys), which does not exist in
 this engagement — the identical category of external dependency Priority 1 Item 8 (Payment)
@@ -101,6 +128,14 @@ by a human-equivalent read" is a categorically weaker guarantee than "compiled a
 this file says so plainly rather than implying otherwise. One real bug (`/auth/logout` called
 without the bearer token it actually requires) was caught during this same manual review and
 fixed before commit — a proof this review process has real value, not a substitute for it.
+
+**`features/video/` carries an additional, distinct unverified layer beyond the SDK gap above**:
+`media_kit`'s own native libmpv initialization (`MediaKit.ensureInitialized()`, `main.dart`) and
+`FlvRelayBridge`'s WS-binary-frames -> `dart:io.HttpServer` chunked-response bridging have each
+only been reasoned about against their respective documented public APIs, never run — and,
+separately from the SDK gap, never tested against a real device's own video bytes even in
+principle (`services/jt1078`'s own report already discloses the SPS/PPS-to-real-hardware gap on
+the relay side; this mobile layer inherits that same boundary one hop further downstream).
 
 **Before this code is trusted**: install the Flutter SDK matching `pubspec.yaml`'s constraints,
 run `flutter pub get`, `flutter analyze`, `flutter test`, and `flutter run` against a real

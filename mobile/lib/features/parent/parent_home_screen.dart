@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_state.dart';
+import '../video/video_providers.dart';
+import '../video/video_watch_screen.dart';
 import 'live_tracking_screen.dart';
 
 /// Phase M3 (docs/architecture/frontend-flutter-master-roadmap.md §5): "Assigned children
@@ -102,9 +104,54 @@ class _ParentHomeScreenState extends ConsumerState<ParentHomeScreen> {
               },
               child: const Text('Track'),
             ),
+            const SizedBox(height: 32),
+            const _VideoAccessSection(),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// ADR-0026 §1/§5: off by default for every parent, unless an org_admin has explicitly granted
+/// `has_video_live_access`/`has_video_playback_access` (`GET /me`, ADR-0023, extended §5).
+/// **Presentation only** — hiding this section for an ungranted parent is a convenience, not
+/// the real gate; `interfaces/http/policy_guards.resolve_d5_decision` is what actually protects
+/// the media relay regardless of what this widget renders (`.claude/rules/frontend.md` #2).
+class _VideoAccessSection extends ConsumerWidget {
+  const _VideoAccessSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final identity = ref.watch(myIdentityProvider);
+    return identity.when(
+      // Loading/error both render nothing — a transient `/me` failure must never flash a video
+      // affordance a parent may not actually have, and must never block the rest of this
+      // screen either (`.claude/rules/flutter.md` #6: degrade visibly for *safety* UI; this is
+      // a convenience affordance, so degrading to "simply absent" is the correct, safe default).
+      loading: () => const SizedBox.shrink(),
+      // Two distinct params, not `(_, _)` - this app's minimum SDK (3.3.0) predates Dart's
+      // wildcard-variables feature (3.7+), which is the only thing that makes repeated `_`
+      // parameter names valid.
+      error: (error, stackTrace) => const SizedBox.shrink(),
+      data: (me) {
+        if (!me.hasAnyVideoAccess) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Video', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            if (me.hasVideoLiveAccess)
+              FilledButton.icon(
+                icon: const Icon(Icons.videocam),
+                label: const Text('Watch live video'),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const VideoWatchScreen()),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }

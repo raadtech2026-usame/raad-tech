@@ -26,6 +26,22 @@
 # (google-services.json / GoogleService-Info.plist, real API keys), which does not exist in
 # this engagement; adding the dependency without real config to point it at would be dead
 # weight, not a working feature. See mobile/README.md's own "Known gaps" section.
+#
+# ADR-0026 (Parent Video Access Authorization) additions, user-approved before adding
+# (`.claude/rules/workflow.md` rule 1):
+#
+#   media_kit / media_kit_video / media_kit_libs_video - MIT license. FLV decode/render for the
+#                       permission-gated live video player (features/video/). The JT1078 relay
+#                       speaks a bespoke WS-FLV protocol (binary WebSocket frames carrying FLV
+#                       bytes) that no Flutter media package understands directly - this app
+#                       connects via the already-approved web_socket_channel above, re-serves
+#                       the received bytes over a local loopback dart:io.HttpServer (stdlib,
+#                       no new dependency) as a continuous byte stream, and points media_kit's
+#                       player widget at that local http:// URL - media_kit is never asked to
+#                       speak the relay's own protocol, only an ordinary network stream.
+#                       media_kit_libs_video pulls in the actual native libmpv binaries per
+#                       platform (media_kit/media_kit_video alone are pure-Dart wrappers with no
+#                       decoder of their own).
 name: raad_mobile
 description: RAAD Platform mobile app (Parent + Driver roles).
 publish_to: "none"
@@ -42,6 +58,9 @@ dependencies:
   flutter_secure_storage: ^9.2.2
   web_socket_channel: ^2.4.5
   http: ^1.2.1
+  media_kit: ^1.1.11
+  media_kit_video: ^1.2.5
+  media_kit_libs_video: ^1.0.5
 
 dev_dependencies:
   flutter_test:
