@@ -2,18 +2,28 @@
 
 ## Status
 
-**Accepted, revised (2026-08-10, ADR-0025).** Originally written "Proposed — pending user review"
-against the LSZ-proprietary-hardware premise ADR-0009 established at the time. `docs/architecture/
-adr/0025-jt808-2019-jt1078-2016-native-protocol-compliance.md` supersedes that premise — the
-procured `LSZ-C5804DG-Q-F` is now treated as genuinely JT/T 1078-2016 compliant. This ADR is
-revised in place (§1, Context point 3, §6, §7, §8, §14 reasoning, §16 point 1, Consequences,
-References) rather than replaced, since it was never implemented — no code, migration, or
-Dockerfile exists for any decision recorded here, before or after this revision. Every section not
-listed above is protocol-agnostic policy (no cloud storage, stateless relay, session lifecycle,
-Redis roles, why the services stay separate, VPS sizing, most of security/failure-handling/
-deployment) and is unchanged by ADR-0025 — it did not depend on which wire protocol the hardware
-actually speaks. **Still architecture-only: no code is authorized to begin by this revision
-alone** — see ADR-0025's own "What this ADR does not do."
+**Accepted, revised (2026-08-10, ADR-0025; 2026-08-12, ADR-0026).** Originally written "Proposed —
+pending user review" against the LSZ-proprietary-hardware premise ADR-0009 established at the
+time. `docs/architecture/adr/0025-jt808-2019-jt1078-2016-native-protocol-compliance.md` supersedes
+that premise — the procured `LSZ-C5804DG-Q-F` is now treated as genuinely JT/T 1078-2016
+compliant. This ADR is revised in place (§1, Context point 3, §6, §7, §8, §14 reasoning, §16
+point 1, Consequences, References) rather than replaced, since it was never implemented — no code,
+migration, or Dockerfile exists for any decision recorded here, before or after this revision.
+Every section not listed above is protocol-agnostic policy (no cloud storage, stateless relay,
+session lifecycle, Redis roles, why the services stay separate, VPS sizing, most of security/
+failure-handling/deployment) and is unchanged by ADR-0025 — it did not depend on which wire
+protocol the hardware actually speaks. **Still architecture-only: no code is authorized to begin
+by this revision alone** — see ADR-0025's own "What this ADR does not do."
+
+**Revised again in place (2026-08-12, ADR-0026), now that this ADR's own decisions have actually
+been implemented.** §5 point 2's "a... signed viewer token minted by the **backend**" is corrected
+to reflect the shipped design — the **relay** mints it (`docs/architecture/adr/
+0026-parent-video-access-authorization.md` §6 has the full reasoning: the backend never holds the
+relay's signing secret, so it structurally cannot mint one itself; the authorization property this
+point actually protects is unchanged). §5 point 3's "transitions to `ACTIVE` once the relay
+confirms... producing frames" and §16's own reconciliation expectations are now enforced for real,
+closing a gap the JT1078 backend-integration phase's own report had disclosed (ADR-0026 §7). §1's
+concurrency-ceiling citation (§13.1) is now implemented (ADR-0026 §8).
 
 ## Context
 
