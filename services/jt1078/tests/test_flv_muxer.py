@@ -317,5 +317,97 @@ class FeedAnnexBVideoTests(unittest.TestCase):
         self.assertEqual(late_chunk[12], 0)
 
 
+class FeedAnnexBVideoSplitParameterSetTests(unittest.TestCase):
+    """Regression coverage for the bug found in review: a reassembled JT/T 1078 frame is not
+    guaranteed to carry SPS and PPS together (the wire format's own `data_type` has no distinct
+    "parameter set" value), so `feed_annex_b_video` must not require both in the same call to
+    build/update the `AVCDecoderConfigurationRecord` — see `FlvMuxer._latest_sps_list`/
+    `_latest_pps_list`.
+    """
+
+    def _annex_b(self, *nalus: bytes) -> bytes:
+        return b"".join(b"\x00\x00\x01" + nalu for nalu in nalus)
+
+    def test_sps_then_separate_pps_call_then_idr_builds_a_complete_decoder_config(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+
+        # Call 1: SPS only - no PPS, no VCL data.
+        chunk1 = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS), is_keyframe=False, timestamp_ms=1000
+        )
+        self.assertGreater(len(chunk1), 0)
+        self.assertEqual(chunk1[12], 0)  # sequence header, 0 PPS known so far
+
+        # Call 2: PPS only, no SPS in this call - must not be silently dropped.
+        chunk2 = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_PPS), is_keyframe=False, timestamp_ms=1010
+        )
+        self.assertGreater(len(chunk2), 0)
+        self.assertEqual(chunk2[12], 0)  # a corrected sequence header, now carrying the PPS
+        self.assertIn(_PPS, chunk2)
+        self.assertIn(_SPS, chunk2)
+
+        # Call 3: the IDR slice - the decoder already has both SPS and PPS by now, so only a
+        # NALU tag is needed.
+        chunk3 = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_IDR), is_keyframe=True, timestamp_ms=1040
+        )
+        self.assertEqual(chunk3[12], 1)  # NALU tag, no further sequence header
+        self.assertIn(_IDR, chunk3)
+
+    def test_pps_only_refresh_after_an_existing_sps_updates_the_sequence_header(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS, _IDR), is_keyframe=True, timestamp_ms=1000
+        )
+
+        different_pps = b"\x68\xce\x3c\x00"  # a changed PPS; SPS unchanged, not resent
+        chunk2 = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(different_pps), is_keyframe=False, timestamp_ms=1040
+        )
+        self.assertGreater(len(chunk2), 0)  # previously: b"" - the PPS was silently dropped
+        self.assertEqual(chunk2[12], 0)  # a fresh sequence header
+        self.assertIn(different_pps, chunk2)
+        self.assertIn(_SPS, chunk2)  # decoder config still carries the previously-seen SPS
+
+    def test_sps_and_pps_arriving_together_still_sends_one_sequence_header(self) -> None:
+        """Existing (pre-fix) behavior, preserved: SPS+PPS bundled in one call still produces
+        exactly one sequence-header tag with each parameter set appearing once."""
+        muxer = FlvMuxer()
+        muxer.start()
+        chunk = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS, _IDR), is_keyframe=True, timestamp_ms=1000
+        )
+        self.assertEqual(chunk[12], 0)
+        self.assertEqual(chunk.count(_SPS), 1)
+        self.assertEqual(chunk.count(_PPS), 1)
+        self.assertIn(_IDR, chunk)
+
+    def test_sps_and_pps_changes_are_each_picked_up_across_separate_calls(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS, _IDR), is_keyframe=True, timestamp_ms=1000
+        )
+
+        different_sps = b"\x67\x4d\x00\x1f\x00\x00"  # different profile/level bytes
+        chunk_sps_change = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(different_sps), is_keyframe=False, timestamp_ms=1040
+        )
+        self.assertEqual(chunk_sps_change[12], 0)
+        self.assertIn(different_sps, chunk_sps_change)
+        self.assertIn(_PPS, chunk_sps_change)  # last-known PPS carried forward unchanged
+
+        different_pps = b"\x68\xce\x3c\x00"
+        chunk_pps_change = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(different_pps), is_keyframe=False, timestamp_ms=1080
+        )
+        self.assertEqual(chunk_pps_change[12], 0)
+        self.assertIn(different_sps, chunk_pps_change)  # last-known (updated) SPS carried forward
+        self.assertIn(different_pps, chunk_pps_change)
+
+
 if __name__ == "__main__":
     unittest.main()

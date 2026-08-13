@@ -207,15 +207,21 @@ def build_aac_raw_tag(*, aac_payload: bytes, timestamp_ms: int) -> bytes:
 
 class FlvMuxer:
     """Stateful only in the sense of tracking `PreviousTagSize` (the 4-byte value FLV requires
-    before every tag, including the file header's own trailing zero) and rebasing the first
-    frame's timestamp to 0. Holds no video bytes across calls — each `feed_*` call returns exactly
-    the bytes to forward to the viewer immediately, matching ADR-0024 §4's "no growing cache."
+    before every tag, including the file header's own trailing zero), rebasing the first frame's
+    timestamp to 0, and remembering the latest-seen SPS/PPS NALUs (`_latest_sps_list`/
+    `_latest_pps_list`) so a parameter set that arrives in a call by itself (no reassembled JT/T
+    1078 frame is guaranteed to carry both together) is still picked up rather than silently
+    dropped — see `feed_annex_b_video`. Holds no other video bytes across calls — each `feed_*`
+    call returns exactly the bytes to forward to the viewer immediately, matching ADR-0024 §4's
+    "no growing cache."
     """
 
     def __init__(self) -> None:
         self._base_timestamp_ms: int | None = None
         self._wrote_header = False
         self._sent_avc_decoder_config: bytes | None = None
+        self._latest_sps_list: list[bytes] = []
+        self._latest_pps_list: list[bytes] = []
 
     def _relative_timestamp(self, timestamp_ms: int | None) -> int:
         if timestamp_ms is None:
@@ -245,11 +251,18 @@ class FlvMuxer:
         own docstring used to flag as unpopulated). Splits the raw Annex-B payload once,
         separates SPS(7)/PPS(8) from every other NAL unit (`extract_sps_pps`), and:
 
-        - emits a fresh `AVCDecoderConfigurationRecord` sequence-header tag the first time this
-          *viewer's own muxer* sees a SPS+PPS pair, or again if a later pair differs byte-for-
-          byte from the one already sent (a real, if rare, mid-stream parameter-set change) —
-          never on every frame, real players expect this tag once per configuration, not
-          per-NALU;
+        - persists whichever of SPS/PPS this call actually observed into `_latest_sps_list`/
+          `_latest_pps_list` independently — a reassembled JT/T 1078 frame is not guaranteed to
+          carry SPS and PPS together (the wire format's own `data_type` has no distinct
+          "parameter set" value, so a device may deliver them as separate reassembled frames);
+          requiring both in the same call would silently and permanently drop whichever one
+          arrives alone;
+        - emits a fresh `AVCDecoderConfigurationRecord` sequence-header tag, built from the
+          *latest known* SPS/PPS state (not just this call's own local NALUs), the first time
+          this *viewer's own muxer* has a complete SPS, or again if the latest known pair differs
+          byte-for-byte from the one already sent (a real, if rare, mid-stream parameter-set
+          change — whether SPS and PPS change together or independently) — never on every frame,
+          real players expect this tag once per configuration, not per-NALU;
         - strips SPS/PPS out of the AVCC NALU tag itself (they are carried by the sequence
           header instead, the standard FLV/RTMP muxing convention — sending them twice is
           redundant, not merely harmless, for some real players);
@@ -270,9 +283,16 @@ class FlvMuxer:
             if nalu and (nalu[0] & _NAL_TYPE_MASK) not in (_NAL_TYPE_SPS, _NAL_TYPE_PPS)
         ]
 
-        chunks: list[bytes] = []
         if sps_list:
-            avc_decoder_config = build_avc_decoder_config(sps_list=sps_list, pps_list=pps_list)
+            self._latest_sps_list = sps_list
+        if pps_list:
+            self._latest_pps_list = pps_list
+
+        chunks: list[bytes] = []
+        if (sps_list or pps_list) and self._latest_sps_list:
+            avc_decoder_config = build_avc_decoder_config(
+                sps_list=self._latest_sps_list, pps_list=self._latest_pps_list
+            )
             if avc_decoder_config != self._sent_avc_decoder_config:
                 self._sent_avc_decoder_config = avc_decoder_config
                 header_tag = build_avc_sequence_header_tag(
