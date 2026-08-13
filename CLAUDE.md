@@ -894,3 +894,96 @@ deliberately left as-is, not renamed — the original JT/T 808 code still lives 
 `services/device-gateway/src/vendors/jt808/` (ADR-0009/0010). Not live-tested against a real
 GitHub Actions run — no way to trigger one in this sandbox, the same disclosed posture every other
 workflow file in this repository already carries.
+
+## Parent Video Access Authorization (ADR-0026, 2026-08-12)
+
+At explicit user direction: organizations must be able to grant individual, named parents live
+and/or playback video access — off by default for every parent, server-enforced, never a
+client-side toggle. This is a formal, narrow revisit of D5 ("Parents have zero reachable path to
+video, anywhere, ever"), not a weakening of it — and not a new requirement invented from
+nothing: `docs/business/Project_Brief_v1.md` §4.8 always said Parents may "View live video (if
+enabled by the organization)," and `docs/architecture/frontend-flutter-master-roadmap.md` §2.5
+point 2 had already found this conflict during frontend planning and deliberately deferred it,
+naming its own resolution condition verbatim: *"a 'business requirement changes' trigger only if
+you want to actually revisit D5 itself."* This ADR is that trigger.
+`docs/architecture/adr/0026-parent-video-access-authorization.md` has the full design; this
+section records what changed and why, per this file's own division of labor with
+`PROJECT_STATUS.md`.
+
+**Two independent booleans on `Parent`, not a new permission system.** `has_video_live_access`/
+`has_video_playback_access` (`.claude/rules/naming.md`'s `is_`/`has_` boolean convention; the
+user's own "video_live_access"/"video_playback_access" vocabulary is the prose/permission name)
+live directly on the `transport_ops.Parent` aggregate, off by default, mutated only by four new
+idempotent domain methods (`grant_video_live_access`/`revoke_video_live_access`/`grant_video_
+playback_access`/`revoke_video_playback_access`) — mirroring `Parent.activate`/`disable`'s exact
+shape, the same "boolean capability flag on the owning aggregate" pattern `StudentParent.
+is_primary`/`devices.is_online` already established. RBAC (`role_permissions`) grants
+per-*role*, not per-instance, so a per-parent flag has no home there without inventing a parallel
+system — this was investigated and ruled out before touching schema, per the user's own explicit
+instruction. Migration `1470274175d8` (additive, `server_default=false`), live-Postgres
+round-tripped in this session.
+
+**Grant/revoke: a dedicated, more restrictive endpoint, not folded into ordinary profile edits.**
+`PATCH /parents/{id}/video-access` (org_admin + founder only, a **new**
+`transport_ops.parents.grant_video_access` permission — deliberately distinct from
+`.parents.update`, since granting access to a child's live video feed is materially more
+sensitive than editing a phone number, `.claude/rules/security.md` #1).
+
+**The authorization chain, exactly as specified, entirely server-side**:
+`Parent (Principal) → D5 role gate (VideoAccessPolicy, now includes Role.PARENT narrowly) → self
+identity (_resolve_parent_id, reused) → explicit permission (matching purpose — live/playback
+independently, one flag never satisfies the other) → child/device ownership (new
+find_owned_student_id_for_device: device_id → its active vehicle assignment → the existing CR-1
+find_owned_student_id_for_vehicle, unmodified) → only then VideoSession/VideoProviderPort.`
+`interfaces/http/policy_guards.resolve_d5_decision`/`enforce_d5` were widened to take
+`device_id`/`purpose`; all three `/video/*` routes updated. **A parent owning nothing at all
+raises `NotFoundError` (404), never `403`** — this codebase's established cross-tenant-probing-
+avoidance convention (`resolve_cr1_decision`'s own precedent), extended to video; only an
+owning-but-ungranted parent gets `403 VideoForbiddenError`. RBAC additionally grants Parent the
+same three `video.*` permissions Org Admin already holds — layer-2 "may attempt," not "may
+succeed," the identical split CR-1 already established for `tracking.vehicles.read_latest`.
+`GET /me` (ADR-0023) now surfaces both flags for client-side UI gating — presentation only,
+never a second authorization system (`.claude/rules/frontend.md` #2).
+
+**Relay-lifecycle reconciliation, concurrency ceilings, and real SPS/PPS/AVCC — the remaining
+software-only JT1078 gaps this same session's own prior report had flagged, closed together.**
+`VideoApplicationService`'s eager, optimistic `session.activate()` (fired synchronously right
+after the provider RPC returned, before the relay had any real signal media was flowing) is
+removed; a new `video/events/subscribers.py` (previously empty) consumes the relay's own
+already-published `VideoSessionActivated`/`Ended`/`Failed` events and drives real `activate`/
+`end`/`fail` transitions, mirroring `fleet_device`'s own `DeviceConnectivityProcessor` shape
+exactly. `services/jt1078`'s `SessionManager` gained configurable global (default 50, citing
+Phase 2 §13.1's own "e.g., start 50 global") and per-organization concurrency ceilings, raising
+`SessionCapacityExceededError` before any allocation. `flv_muxer.py` gained real SPS/PPS
+extraction and `AVCDecoderConfigurationRecord` construction (ISO/IEC 14496-15), closing the seam
+`build_avc_sequence_header_tag` previously left unpopulated. `audit_entries` needed no new code
+at all — every `VideoSession` transition and every parent video-access grant/revoke already
+flows through the existing `UnitOfWork.commit()` → `AuditWriter` pipeline (ADR-0007); the
+reconciliation fix above was the only real gap, now live-Postgres-verified with two dedicated
+tests.
+
+**One prior-ADR amendment, in place, same session — mirroring ADR-0025's own precedent for
+revising a document once it's actually implemented.** ADR-0024 §5 point 2 read "a signed viewer
+token minted by the *backend*"; the shipped design has the **relay** mint it (the backend never
+holds `JT1078_RELAY_VIEWER_TOKEN_SECRET`, so it structurally cannot). Corrected in ADR-0024 itself
+rather than left as a silent contradiction — the security property that section actually
+protects (no session decision happens outside the backend's own D5/RBAC/permission check, which
+always runs first) is unchanged.
+
+**Mobile player: Flutter only, confirmed via `AskUserQuestion`, not assumed.** The web dashboard
+has no Parent login at all — a web-only player would be permanently unreachable by any parent —
+so `.claude/rules/flutter.md` #3 ("no live video anywhere in the mobile app") is narrowly
+amended for Parent only; Driver's own exclusion is unaffected, and `.claude/rules/frontend.md` #4
+(web dashboard, Org-Admin-only) is untouched. New mobile dependency `media_kit`/`media_kit_video`/
+`media_kit_libs_video` (MIT license) for FLV decode/render, also confirmed via
+`AskUserQuestion` before adding (`.claude/rules/workflow.md` #1) — the relay's bespoke WS-FLV
+binary-frame protocol is bridged to an ordinary `http://127.0.0.1` URL via a new `FlvRelayBridge`
+(the already-approved `web_socket_channel` in, `dart:io.HttpServer` out, no new dependency for
+the bridge itself). Carries the identical "written, not compiled or run" limitation every prior
+mobile phase already discloses — no Flutter SDK in this sandbox.
+
+**What remains, disclosed not silently dropped:** HLS; ADR-0024 §16's own defensive
+reconciliation-timeout job (for the case where *no* relay lifecycle event ever arrives at all,
+e.g. a relay crash); the Org-Admin web video player (F10 — the user's own explicit
+Flutter-only choice this phase); a real Flutter SDK and a physical MDVR to verify any of this
+against, backend through mobile.

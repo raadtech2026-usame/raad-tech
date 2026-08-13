@@ -12,7 +12,16 @@ Derived from `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §12 an
 4. **The tracking-visibility predicate is: capability ∧ scope ∧ ownership ∧ time-window.** Every
    live-tracking surface (web, mobile, WebSocket, REST) must implement this exact predicate — no
    surface may take a shortcut version of it.
-5. **Video is Org-Admin-only, by construction**, not by a runtime flag that could be misconfigured.
+5. **Video is Org-Admin-only by default and by construction, not by a runtime flag that could be
+   misconfigured.** A narrow, explicit exception exists for Parent (ADR-0026, 2026-08-12):
+   `video_live_access`/`video_playback_access`, two independent booleans on the `Parent`
+   aggregate, off by default for every parent and grantable only by that parent's own
+   organization admin (`PATCH /parents/{id}/video-access`, a dedicated, more restrictive
+   permission than ordinary parent-profile edits). This remains construction, not
+   configuration: the server-side chain (self identity → explicit permission → child/device
+   ownership, `interfaces/http/policy_guards.resolve_d5_decision`) is still a fixed code path,
+   not a toggle that changes behavior at the framework level, and it is not reachable or
+   bypassable from the client. Driver's video exclusion is unchanged.
 6. **Safety capabilities are never billing-gated.** Subscription lapse restricts premium/convenience
    features only — enforced by one policy object, tested explicitly.
 7. **Encryption everywhere:** HTTPS/TLS on all client-plane traffic; encryption at rest for the

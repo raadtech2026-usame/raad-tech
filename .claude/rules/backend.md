@@ -18,5 +18,10 @@ Derived from `docs/business/RAAD_Phase3.1_Backend_LLD_v1_2.md`.
 6. **Safety-over-billing is one policy object.** Safety capabilities (live GPS during active trips,
    safety notifications) are granted by a single, tested capability policy in `core/policies/` —
    never by scattered `if subscription_active` checks.
-7. **Video authorization happens in the API**, before any signaling to the JT1078 server. The Parent
-   role must have zero reachable code path to a media session or stream token.
+7. **Video authorization happens in the API**, before any signaling to the JT1078 server. By
+   default, the Parent role has zero reachable code path to a media session or stream token; the
+   one narrow, explicit exception (ADR-0026, 2026-08-12) is a parent whose own organization admin
+   has granted `video_live_access`/`video_playback_access` — even then, the API still
+   independently re-verifies that parent's ownership of the specific child/device/camera on
+   every request (`interfaces/http/policy_guards.resolve_d5_decision`), never trusting the grant
+   alone. Driver's own exclusion is unaffected.

@@ -17,8 +17,8 @@ architecture; this file is the source of truth for progress and sequencing.
 | **Overall completion** | ~68% (weighted: ✅=100%, 🟡=50%, ❌/⏸=0%, across the 39 subsystems in Section 3 — a rough gauge, not a precise metric; Mobile App moved ❌→🟡 this item, though entirely unverified — see below) |
 | **Production readiness** | **Backend + web dashboard: production-ready for a first pilot VPS deployment**, pending only real external accounts (a real domain for TLS, a real VPS to run the already-written provisioning runbook against, a real Stripe merchant account for live payments) — every Priority 1 item touching the backend/web/infra surface (1–8) is now complete and either live-verified or mechanism-complete-with-disclosed-testing-limits: **Item 8 (Payment) is no longer an architectural blocker** — ADR-0022 (2026-08-06) shipped a real, verified `StripePaymentAdapter`, a wired webhook route, and a production `OrgBillingPage` "Pay Invoice" flow, resolving both the design gaps (signed-webhook-caller representation, provider abstraction shape) this item used to carry; only a live merchant account's credentials remain, same disclosed posture as TLS/Redis. Two deployment paths now exist side by side: the original generic-VPS/nginx/certbot path, and a new Coolify-managed path (`docker-compose.coolify.yml`, `docs/runbooks/coolify-deployment.md`) for the user's own chosen Hostinger-VPS-via-Coolify target. **Mobile: not production-ready** — Item 9 shipped a real M0/M2 foundation and a partial M3, but is entirely unverified (no Flutter SDK in this sandbox) and is missing FCM push (M4) and release packaging (M5), both blocked on real external accounts. **ADR-0023 (2026-08-07)** closed Known Issue #17 on the backend side (a canonical `GET /me`/`GET /me/students`/`GET /me/driver-profile` self-service identity capability) — M3's own blocking backend gap is resolved, though the mobile client itself is not yet wired to it (same missing-SDK limitation as the rest of Item 9). This is the direct continuation of the continuous-completion program (user directive 2026-08-03) — see Section 15 for that program's own final report, and Section 8 for ADR-0022's/ADR-0023's own full writeups. |
 | **Current phase** | Backend: all ten bounded contexts implemented; ADR-0018 (Device Inventory & Allocation), ADR-0019 (Account-Sharing Session Cap), ADR-0020 (Platform Analytics Read Model), and **ADR-0022 (Payment Provider Architecture) have all now landed** — every backend milestone in the original "IAM provisioning port → org onboarding → billing cutover → device inventory → session cap → platform analytics" sequence (CLAUDE.md's own Business Model section) is complete, plus this unplanned-at-the-time payment-architecture milestone the user added afterward. Frontend: **F0–F9 complete**, with F9's own previously-deferred Organization Billing half now also complete (ADR-0022: dedicated `OrgBillingPage` + real "Pay Invoice" flow) — F8: Notifications web UI (first cursor-paginated page, first live-WS-driven bell badge); F9: Billing web UI (platform-wide read-only tabs + org-scoped subscription/invoice/payment view and a real payment flow) — plus the ADR-0020 KPI grid and a fleet-ops-style dashboard redesign/polish pass; F10 (Video)/reporting still not started. Mobile: M0/M2 code-complete, M3 partial, M4/M5 not started, entirely unverified. See Section 2 for the full per-track breakdown and Section 15 for the Priority 1 program's consolidated final report. |
-| **Current git commit** | This turn's own commit (recording the Business API `VideoProviderPort` → JT1078 relay wiring in PROJECT_STATUS.md/the two rule files) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; the two prior commits were `8212f1e` (feat(video): wire VideoProviderPort to the JT1078 relay) and, before that, `224afd4` (feat(jt1078-relay): add Redis RPC session-request server) — each already one commit behind by the time this line is read (the same real, disclosed, recurring staleness rule 2 warns about, not a one-time slip). |
-| **Last updated** | 2026-08-12 |
+| **Current git commit** | This turn's own commit (recording ADR-0026's parent video access authorization in PROJECT_STATUS.md/the five rule files) is created immediately after this line is written — see Section 14 rule 2 on why this field always lags by one commit; the four prior commits were `9cda51e` (feat(mobile): permission-gated Parent WS-FLV video player), `5bd6524` (feat(video,jt1078): reconcile relay lifecycle, concurrency ceilings, SPS/PPS/AVCC), `cca7c96` (feat(transport_ops,video,iam): implement ADR-0026 parent video access authorization), and `fd8f330` (docs(adr): accept ADR-0026) — each already one commit behind by the time this line is read (the same real, disclosed, recurring staleness rule 2 warns about, not a one-time slip). |
+| **Last updated** | 2026-08-13 |
 
 ---
 
@@ -130,10 +130,10 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** No, mechanism-wise. Yes, if "launch" is read as "verified against real hardware" — that verification has not happened.
 - **Dependencies:** A real device, for the one remaining verification step.
 
-#### JT1078 — 🟡 Partial (relay built and tested 2026-08-11; backend wired to it 2026-08-12 — never live-device-verified)
-- **Implemented:** New deployable `services/jt1078/`, Python 3.11 asyncio, stdlib + `redis>=5.0` only (evidence-based runtime choice — see `services/jt1078/pyproject.toml`'s own header comment; zero new dependency). JT/T 1078 extended-RTP ingest demux + subpackaged-frame reassembly, spec-verified against `mdvrdocs/MDVR-808-1078-spec.pdf` §6.2.1.1. Session lifecycle (VSM): `SessionManager` — create → active → ended/failed, viewer-count tracking, idle-timeout + ingest-timeout sweeps, device stop-signal (reuses `device-gateway`'s own `Jt1078SignalCommandRequested` wire contract, `0x9102`/`0x9202` control=close). Signed, single-use, session-scoped viewer tokens (HMAC-SHA256; in-memory or Redis-backed single-use guard) — D5 enforced structurally (the relay does no RBAC of its own; a viewer with no valid token never reaches a media byte). Hand-rolled FLV muxer (repackage-only) and a minimal RFC 6455 WebSocket server (no new dependency) for WS-FLV live delivery. Full device→ingest→repackage→viewer path proven end to end over real loopback sockets with synthetic frames. Redis-backed session-lifecycle event publishing on the shared `raad:events` stream, conditional on a broker being configured, mirroring `device-gateway`'s own pattern. Docker: `docker/jt1078-relay.Dockerfile` + a `jt1078-relay` service block in `docker-compose.yml`/`.dev.yml`, `.env.example` entries, `.coolify.yml` note — mirrors `device-gateway`'s exact deployment shape (own container, own published ports 7910/7911, same Redis instance). **Backend-facing control endpoint built (2026-08-12)**: a new `SessionRequestServer` answers a Redis list-based BLPOP/RPUSH RPC (`raad:jt1078:session_requests`/`raad:jt1078:session_responses:{request_id}`) from the Business API's own new `Jt1078RelayRpcClient` — see the Video row below for the full flow. `SessionManager.create_session` gained an optional `session_id` passthrough so the Business API's own `VideoSession` ULID is the one identifier used everywhere (Postgres, relay session tracking, Redis event `correlation_id`). 82→90 jt1078 tests, all green.
-- **Missing:** AVC/HEVC sequence-header (SPS/PPS) delivery — the muxer exposes the seam (`build_avc_sequence_header_tag`) but isn't populated from a real device's own parameter sets. HLS (the playback transport ADR-0024 §14 also names) — live/WS-FLV only this phase; playback signaling (`0x9201`/`0x9202`/`0x9205`/`0x1205`) is fully built on the device-gateway side, but the relay's own playback viewer-delivery transport is not. Per-org/global max-concurrent-stream ceiling (rule #4) — per-device mutual exclusivity holds structurally, but no ceiling is enforced. `audit_entries` writes for session open/close (rule #6) — the relay publishes the lifecycle events; no Business-API consumer writes them to `audit_entries` yet. **The relay's own session-lifecycle events (`VideoSessionActivated`/`Ended`/`Failed`) are not consumed back into the Business API's `VideoSession` row either** (`backend/raad/modules/video/events/subscribers.py` is still empty, pre-existing, unchanged by the 2026-08-12 phase) — `VideoSession` transitions to `ACTIVE` once the RPC call + device signal succeed, not on a real "media is flowing" signal, and an automatic relay-side teardown (idle timeout, viewer disconnect, device drop) has no path back into Postgres; ADR-0024 §16's own "defensive reconciliation timeout" safety net for a `VideoSession` stuck in `REQUESTED`/`ACTIVE` does not exist yet either. **Never tested against the physical MDVR** — every piece above, old and new, is verified against the supplier's own written specification and synthetic byte fixtures/fakes only.
-- **Production blocker?** Yes, for real live video — SPS/PPS handling, the relay-event-to-`VideoSession` reconciliation gap, and physical-device verification are all still required before this is launch-ready. The backend control-endpoint wiring itself is no longer a blocker.
+#### JT1078 — 🟡 Partial (relay + backend + mobile player all built, 2026-08-12 — never live-device-verified)
+- **Implemented:** New deployable `services/jt1078/`, Python 3.11 asyncio, stdlib + `redis>=5.0` only (evidence-based runtime choice — see `services/jt1078/pyproject.toml`'s own header comment; zero new dependency). JT/T 1078 extended-RTP ingest demux + subpackaged-frame reassembly, spec-verified against `mdvrdocs/MDVR-808-1078-spec.pdf` §6.2.1.1. Session lifecycle (VSM): `SessionManager` — create → active → ended/failed, viewer-count tracking, idle-timeout + ingest-timeout sweeps, device stop-signal (reuses `device-gateway`'s own `Jt1078SignalCommandRequested` wire contract, `0x9102`/`0x9202` control=close). Signed, single-use, session-scoped viewer tokens (HMAC-SHA256; in-memory or Redis-backed single-use guard) — D5 enforced structurally (the relay does no RBAC of its own; a viewer with no valid token never reaches a media byte). Hand-rolled FLV muxer, now with a real SPS/PPS-aware sequence-header path (`FlvMuxer.feed_annex_b_video` — `extract_sps_pps`/`build_avc_decoder_config` parse real Annex-B SPS/PPS NAL units into a real `AVCDecoderConfigurationRecord`, emitted once per distinct parameter set, re-emitted only if it changes; closes the seam `build_avc_sequence_header_tag`'s own docstring used to flag as unpopulated), and a minimal RFC 6455 WebSocket server (no new dependency) for WS-FLV live delivery. Full device→ingest→repackage→viewer path proven end to end over real loopback sockets with synthetic frames. Redis-backed session-lifecycle event publishing on the shared `raad:events` stream, conditional on a broker being configured. Docker: `docker/jt1078-relay.Dockerfile` + a `jt1078-relay` service block — mirrors `device-gateway`'s exact deployment shape. **Backend-facing control endpoint built**: `SessionRequestServer` answers a Redis list-based BLPOP/RPUSH RPC from the Business API's `Jt1078RelayRpcClient` — see the Video row below. **Concurrency ceilings implemented (ADR-0026 §8)**: `SessionManager` enforces a configurable global ceiling (default 50, citing Phase 2 §13.1's "e.g., start 50 global") and an independent per-organization ceiling (`JT1078_RELAY_MAX_GLOBAL_SESSIONS`/`JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION`), rejecting `create_session` with `SessionCapacityExceededError` before any allocation. **The relay-event reconciliation gap is closed**: `backend/raad/modules/video/events/subscribers.py` now consumes `VideoSessionActivated`/`Ended`/`Failed` and drives real `VideoSession.activate`/`end`/`fail` transitions (see Video row). 90→115 jt1078 tests, all green.
+- **Missing:** HLS (the playback transport ADR-0024 §14 also names) — live/WS-FLV only; playback signaling (`0x9201`/`0x9202`/`0x9205`/`0x1205`) is fully built on the device-gateway side, but the relay's own playback viewer-delivery transport is not. Viewer-level (not session-level) audit granularity — `audit_entries` now covers every `VideoSession` transition (see below), but not individual viewer join/leave events. A defensive reconciliation-timeout scheduled job for a `VideoSession` stuck in `REQUESTED`/`ACTIVE` with **no** lifecycle event ever arriving at all (e.g. relay crash) — ADR-0024 §16 names this, ADR-0026 does not build it, out of that ADR's own scope. **Never tested against the physical MDVR** — every piece above, old and new, is verified against the supplier's own written specification and synthetic byte fixtures/fakes only.
+- **Production blocker?** Yes, for real live video — HLS (if required), the reconciliation-timeout job, and physical-device verification are the remaining items. SPS/PPS handling, the concurrency ceiling, the relay-event reconciliation gap, and the backend control-endpoint wiring are no longer blockers.
 - **Dependencies:** None architecturally (the runtime/dependency/backend-transport decisions are all made); a real device for verification.
 
 ### Live operations
@@ -150,11 +150,19 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** Partially — works today, not yet trustworthy at scale.
 - **Dependencies:** GPS ingestion, Redis.
 
-#### Video — 🟡 Partial (backend wired to the JT1078 relay, 2026-08-12 — never live-device-verified)
-- **Implemented:** The D5 authorization policy (parents get zero reachable path to video) is real and enforced, unchanged by this phase — `enforce_d5()` still runs before any of the below. **`VideoProviderPort` now has a real implementation**: `Jt1078RelayAdapter` (`backend/raad/modules/video/infra/adapters.py`), conditionally bound in `core/di/bootstrap.py` only when both a broker and `device_plane.jt1078_signaling_url` are configured (fixed a real DI-ordering bug found while wiring this in — `VideoApplicationService` used to be bound *before* the conditional block, so it would have silently resolved `video_provider=None` even with a broker configured; relocated after the block, mirroring `PlatformStatsApplicationService`'s own documented precedent for the identical constraint). `VideoProviderPort.start_live`/`start_playback` widened to take `terminal_id`/`channel_no`, resolved once in `routers.py` from `fleet_device`'s own DTOs (no second cross-module lookup inside the adapter). The three existing routes are otherwise unchanged — no new route was added. Full flow: `VideoApplicationService` → `Jt1078RelayAdapter` → `Jt1078RelayRpcClient` (new Redis list RPC to the relay's new `SessionRequestServer`, JT1078 row above) → a `Jt1078SignalCommandRequested` event on the existing `raad:events` broker stream → device-gateway's already-built `RedisVideoSignalingConsumer` → the real `0x9101`/`0x9201` JT808 command on the device's connection. The returned `stream_url` is a `ws://.../viewer?token=...` URL the frontend connects to directly — no media byte ever transits the FastAPI process.
-- **Missing:** Frontend player (F10) not started — nothing in this phase touched the frontend. The relay-event-to-`VideoSession` reconciliation gap named in the JT1078 row above (session state can drift from what the relay actually observes). SPS/PPS, HLS, the concurrency ceiling, and `audit_entries` writes (JT1078 row above) all remain open. **Physical-MDVR verification** — this wiring is unit/integration-tested against fakes only; no real device has exercised any part of this path.
-- **Production blocker?** Yes, for launch with live video — the frontend player doesn't exist yet, and nothing here has been verified against real hardware.
-- **Dependencies:** JT1078 (built), the backend adapter (now built), the frontend player (not built), a real device for verification.
+#### Video — 🟡 Partial (backend + relay + a narrow Parent mobile player all built, 2026-08-12 — never live-device-verified)
+- **Implemented:** D5 is now narrower, not weaker (ADR-0026, 2026-08-12 — formally revisits the "Parent has zero reachable path to video, anywhere, ever" invariant, resolving `docs/business/Project_Brief_v1.md` §4.8's own original "Parents may view live video if enabled by the organization" requirement in its favor, narrowly — see that ADR for why this is the platform's own root requirement being formally reinstated, not a new one being invented). `enforce_d5()` still runs before any of the below, unconditionally, for every role. **`VideoProviderPort` has a real implementation**: `Jt1078RelayAdapter` (`backend/raad/modules/video/infra/adapters.py`), conditionally bound in `core/di/bootstrap.py` only when both a broker and `device_plane.jt1078_signaling_url` are configured. Full flow: `VideoApplicationService` → `Jt1078RelayAdapter` → `Jt1078RelayRpcClient` (Redis list RPC to the relay's `SessionRequestServer`) → a `Jt1078SignalCommandRequested` event on the existing `raad:events` broker stream → device-gateway's `RedisVideoSignalingConsumer` → the real `0x9101`/`0x9201` JT808 command. The returned `stream_url` is a `ws://.../viewer?token=...` URL the client connects to directly — no media byte ever transits the FastAPI process.
+
+  **Parent video-access authorization (ADR-0026 §1-§4):** two independent booleans on `Parent` (`has_video_live_access`/`has_video_playback_access`), off by default for every parent, migration-backed (`server_default=false`), grantable only by that parent's own org_admin via a new `PATCH /parents/{id}/video-access` (a dedicated, more restrictive RBAC permission, `transport_ops.parents.grant_video_access`, not the ordinary profile-edit permission). Full authorization chain, all server-side, before any `VideoApplicationService` call (`interfaces/http/policy_guards.resolve_d5_decision`, extended for `Role.PARENT` only): self identity (`_resolve_parent_id`) → explicit permission (matching `purpose`, "live" vs "playback", independently) → child/device ownership (new `find_owned_student_id_for_device`, resolving `device_id` → the device's active vehicle assignment → the existing CR-1 child-ownership check) → only then `VideoSession`/`VideoProviderPort`. **A parent with no ownership relationship to the device at all gets 404, never 403** (this codebase's established cross-tenant-probing-avoidance convention); only an owning-but-ungranted parent gets 403. RBAC: Parent gains the same three `video.*` permissions Org Admin already holds (layer-2 "may attempt," not "may succeed" — the real per-instance decision is the policy chain above, the identical split CR-1 already established for `tracking.vehicles.read_latest`). `GET /me` now surfaces both flags (presentation only) for the mobile client's own UI gating.
+
+  **Relay-lifecycle reconciliation (ADR-0026 §7):** `VideoApplicationService.request_live_video`/`request_playback_video`'s previous eager `session.activate()` (called synchronously right after the provider RPC returned, before the relay had any real signal media was flowing) is removed. A new `video/events/subscribers.py` (previously empty) consumes the relay's own `VideoSessionActivated`/`Ended`/`Failed` events and drives real `activate`/`end`/`fail` transitions through a fresh `VideoUnitOfWork` — `VideoSession.end`/`.fail` gained an optional `reason` parameter, threaded from the relay's own event payload into the domain-event payload (e.g. `"viewer_idle_timeout"`, `"ingest_timeout"`).
+
+  **`audit_entries` closed for real (ADR-0026 §6 of this session's own report), not just architecturally**: every `VideoSession` transition (`Requested`/`Started`/`Ended`/`Failed`) and every `Parent` video-access grant/revoke already flows through the existing `UnitOfWork.commit()` → `AuditWriter` pipeline (ADR-0007) automatically — no new audit code was needed, only the reconciliation fix above closing the gap that used to leave `Started`/`Ended`/`Failed` under-triggered. Live-Postgres-verified (`tests/integration/test_video_audit_entries.py`, two new tests: a grant produces a real `ParentVideoLiveAccessGranted` row; `mark_session_active` produces a real `VideoSessionStarted` row).
+
+  **Mobile player (ADR-0026 §5, `mobile/lib/features/video/`)**: `MeIdentity`/`MeRepository` (`GET /me`), `VideoRepository` (`POST /video/live`/`/playback`/`/sessions/{id}/stop`), `FlvRelayBridge` (bridges the relay's bespoke binary-WebSocket-frame WS-FLV protocol to a local `http://127.0.0.1` URL via `dart:io.HttpServer`, no new dependency for the bridge itself), `VideoPlayerScreen` (new `media_kit`/`media_kit_video`/`media_kit_libs_video` dependency, MIT license, user-approved before adding), `VideoWatchScreen` (manual device/camera id entry — the same disclosed "no endpoint resolves my devices" stand-in pattern `ParentHomeScreen` already established for "list my children"). `ParentHomeScreen` gained a permission-gated "Watch live video" entry point, presentation-only per `.claude/rules/frontend.md` #2. **Web dashboard (F10) is untouched** — the user's own explicit choice was Flutter-only for this phase; Org Admin's own web video player remains not started.
+- **Missing:** HLS, the relay's own reconciliation-timeout scheduled job (ADR-0024 §16), and the F10 Org-Admin web player all remain open, disclosed not silently dropped. **Physical-MDVR verification** — every layer above, backend through mobile, is unit/integration-tested against fakes/synthetic fixtures only; no real device or real Flutter SDK has exercised any part of this path (the mobile layer carries the same categorical "written, not compiled or run" limitation every M0-M3 phase already disclosed, `mobile/README.md`'s own "Testing limitation" section).
+- **Production blocker?** Yes, for launch with live video against real hardware — nothing here has been verified against a physical device, and the mobile code is entirely unverified even in principle (no Flutter SDK). No longer blocked on: parent authorization design, relay/backend wiring, audit coverage, or a mobile UI existing at all.
+- **Dependencies:** JT1078 (built), the backend adapter (built), the parent-authorization model (built), a Flutter SDK to verify the mobile layer, a real device for hardware verification.
 
 ### Engagement & revenue
 
@@ -398,8 +406,9 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0021 | Tenant Scope Enforcement at Repository Layer | ✅ Complete |
 | 0022 | Payment Provider Architecture | ✅ Complete |
 | 0023 | Canonical `/me` Self-Service Identity Resolution | ✅ Complete |
-| 0024 | JT1078 Video Relay Architecture | 🟡 Partial (device-gateway signaling, relay, and Business API wiring all built and tested against fakes/synthetic fixtures; SPS/PPS, HLS, concurrency ceiling, `audit_entries`, and relay→`VideoSession` reconciliation still open; physical-MDVR verification pending) |
+| 0024 | JT1078 Video Relay Architecture | 🟡 Partial (device-gateway signaling, relay, Business API wiring, SPS/PPS, concurrency ceilings, `audit_entries`, and relay→`VideoSession` reconciliation all built and tested against fakes/synthetic fixtures; HLS and the reconciliation-timeout job still open; physical-MDVR verification pending) |
 | 0025 | JT/T 808-2019 + JT/T 1078-2016 Native Protocol Compliance | 🟡 Partial (architecture accepted and every named implementation item — field-width rework, `0x0102` auth-code lifecycle, `0x0200` byte-diff — is built and tested; physical-MDVR verification pending) |
+| 0026 | Parent Video Access Authorization | 🟡 Partial (backend authorization chain, migration, RBAC, audit coverage, and relay reconciliation all built and live-Postgres-tested; the Flutter mobile player is written but categorically unverified — no Flutter SDK in this sandbox; physical-MDVR verification pending) |
 
 ---
 
@@ -897,6 +906,156 @@ poll). **Results**: `services/jt1078` 82→90, all green. Backend `tests/unit`+`
 gap the prior phase's own report already named, confirmed present before this phase and containing
 no `/video` route). `services/device-gateway` (regression check, untouched by this phase): 408
 passed, unchanged.
+
+**Parent Video Access Authorization + remaining software-only video gaps (2026-08-12/13,
+user-directed, ADR-0026).** Closes every remaining software-only item the prior phase's own
+report flagged, plus a genuinely new capability the user directed as a formal D5 revisit — not a
+loosening, a narrowing, per that ADR's own full reasoning. Two blocking design forks were
+resolved via `AskUserQuestion` before implementing (both "(Recommended)" options accepted): (1)
+the video player surface is Flutter mobile only, not the React web dashboard — the web dashboard
+has no Parent login at all, so a web-only player would be permanently unreachable by any parent;
+(2) FLV decode/render uses `media_kit`/`media_kit_video`/`media_kit_libs_video` (MIT), a new
+mobile dependency, explained and approved before adding (`.claude/rules/workflow.md` rule 1).
+
+1. **Parent video-access authorization (ADR-0026 §1-§4).** Investigated first, per the user's own
+   explicit instruction, before touching schema: RBAC (`role_permissions`) grants per-*role*, not
+   per-instance, so a per-parent flag cannot live there without inventing a parallel permission
+   system — the correct, already-precedented pattern is a boolean capability flag directly on the
+   owning aggregate (`Parent.status`, `StudentParent.is_primary`, `devices.is_online` all already
+   do this), mutated by a dedicated domain method, audited automatically via the existing
+   `DomainEvent` → outbox → `audit_entries` pipeline. Two new columns,
+   `has_video_live_access`/`has_video_playback_access` (`BOOLEAN NOT NULL DEFAULT false`,
+   migration `1470274175d8`, live-Postgres-verified: upgrade → downgrade → upgrade round-trip,
+   `alembic check` clean) — `.claude/rules/naming.md`'s `is_`/`has_` boolean-prefix convention
+   applied at every layer (domain/DB/DTO/API), while "video_live_access"/"video_playback_access"
+   (the user's own vocabulary) remains the prose/permission name. Four new idempotent domain
+   methods (`grant_video_live_access`/`revoke_video_live_access`/`grant_video_playback_access`/
+   `revoke_video_playback_access`, mirroring `Parent.activate`/`disable`'s exact shape) + four new
+   domain events. New `PATCH /parents/{id}/video-access` (org_admin + founder only, a **new**,
+   dedicated `transport_ops.parents.grant_video_access` permission — deliberately not reused from
+   `.update`, least privilege). RBAC also grants Parent the three existing `video.*` permissions
+   (layer-2 "may attempt," mirroring CR-1's own established "role can attempt, policy decides
+   per-instance" split for `tracking.vehicles.read_latest`).
+
+   **The authorization chain, exactly as specified**: Parent → D5 role gate (`VideoAccessPolicy`
+   gains `Role.PARENT`, narrowly) → self identity (`_resolve_parent_id`, reused, not
+   re-invented) → explicit permission (`has_video_live_access`/`has_video_playback_access`,
+   matching `purpose` independently — live never satisfies playback or vice versa) → child/device
+   ownership (new `find_owned_student_id_for_device`: `device_id` → active vehicle assignment
+   → the existing CR-1 `find_owned_student_id_for_vehicle`, unmodified) → only then
+   `VideoSession`/`VideoProviderPort`. `resolve_d5_decision`/`enforce_d5` widened to take
+   `device_id`/`purpose` (all three video routes updated). **A parent owning nothing at all
+   raises `NotFoundError` (404) directly** — this codebase's established cross-tenant-probing-
+   avoidance convention, extended to video; only an owning-but-ungranted parent gets `403
+   VideoForbiddenError`. New `DeviceApplicationService.get_active_vehicle_assignment_for_device`
+   (the reverse direction of `VehicleApplicationService.get_vehicle_by_id`'s own existing
+   `active_for_vehicle` embedding) was the one genuinely new cross-module-adjacent read needed.
+   `GET /me` (ADR-0023) now surfaces both flags for the mobile client's own UI gating —
+   presentation only, per `.claude/rules/frontend.md` #2.
+
+2. **Relay-lifecycle reconciliation (ADR-0026 §7)**, closing the gap the prior phase's own report
+   flagged. `VideoApplicationService.request_live_video`/`request_playback_video`'s eager,
+   optimistic `session.activate()` (called synchronously right after the provider RPC returned,
+   before the relay had any real signal media was flowing) is removed. New
+   `video/events/subscribers.py` (previously empty) mirrors `fleet_device`'s own
+   `DeviceConnectivityProcessor`/`DeviceAuthCodeProcessor` shape exactly: three processors consume
+   the relay's own `VideoSessionActivated`/`Ended`/`Failed` events (already published since the
+   prior phase) and call new `VideoApplicationService.mark_session_active`/`mark_session_ended`/
+   `mark_session_failed` — no-op (log, don't raise) for an unknown `video_session_id`, the same
+   "a stray event is expected, not an error" precedent `record_device_seen` already established.
+   `VideoSession.end`/`.fail` gained an optional `reason` parameter, threaded from the relay's own
+   event payload into the domain-event payload (`"viewer_idle_timeout"`, `"ingest_timeout"`, etc.).
+   Registered in `core/di/bootstrap.py` alongside the other broker consumers.
+
+3. **Concurrency ceilings (ADR-0026 §8).** `SessionManager` gained `max_global_sessions` (default
+   `50`, directly citing Phase 2 §13.1's own "e.g., start 50 global" — the one concrete number an
+   approved document names) and `max_sessions_per_organization` (default unconfigured — no
+   approved document names a per-org number, so none is invented), both env-var-configurable
+   (`JT1078_RELAY_MAX_GLOBAL_SESSIONS`/`JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION`). A new
+   `SessionCapacityExceededError`, checked before any session is allocated, already correctly
+   surfaces as `{"ok": false, "error": ...}` via `SessionRequestServer`'s existing generic
+   exception handling (no new plumbing) → `Jt1078RelayError` → propagates uncaught through
+   `VideoApplicationService`, matching every other unbound-provider/relay-failure precedent
+   already established there.
+
+4. **SPS/PPS/AVCC handling (`services/jt1078/src/repackager/flv_muxer.py`).** New
+   `extract_sps_pps` (classifies already-split Annex-B NAL units by H.264 NAL type — a fixed
+   ITU-T H.264 §7.3.1 bitstream property, not JT/T-1078-specific) and `build_avc_decoder_config`
+   (a real `AVCDecoderConfigurationRecord`, ISO/IEC 14496-15 §5.2.4.1.1, reading
+   profile/compatibility/level directly from the first SPS's own bytes). New `FlvMuxer.
+   feed_annex_b_video` wires both together: emits a sequence-header tag the first time a viewer's
+   own muxer sees a SPS+PPS pair (or again only if it changes), strips SPS/PPS out of the AVCC
+   NALU tag itself (the standard FLV/RTMP muxing convention), delivers ordinary VCL NALUs
+   unconditionally regardless of sequence-header state (a real design choice, not an oversight —
+   a player buffers/discards what it can't yet decode rather than erroring, and never delivering
+   stream data at all until the next parameter-set refresh would silently stall a legitimately-
+   connected viewer longer than necessary). `broadcast_hub.py`'s `broadcast_video` now calls this
+   new method per-viewer instead of a shared, pre-converted AVCC payload — "has *this* viewer's
+   own muxer already sent a sequence header" is genuinely per-viewer state, the same reasoning
+   already established for the per-viewer FLV file header itself.
+
+5. **`audit_entries`, confirmed closed, not newly built.** Every `VideoSession` transition and
+   every `Parent` video-access grant/revoke already flows through the existing
+   `UnitOfWork.commit()` → `AuditWriter` pipeline (ADR-0007) automatically — "not every domain
+   event is filtered out as not business-meaningful" is this mechanism's own explicit, verified
+   design. The only real gap was item 2 above (transitions that never fired); no new audit code
+   was written. Live-Postgres-verified with two new, specific tests (not just trusting the
+   generic ADR-0007 proof `test_audit_entries_transactional_write.py` already gives for
+   `reporting`): granting video access produces a real `ParentVideoLiveAccessGranted` row;
+   `mark_session_active` (the new relay-reconciliation path, not the removed eager-activate path)
+   produces a real `VideoSessionStarted` row.
+
+6. **Mobile player (ADR-0026 §5).** New `mobile/lib/features/video/`: `VideoSession`/
+   `VideoRepository` (`POST /video/live`/`/playback`/`/sessions/{id}/stop`), `FlvRelayBridge`
+   (connects to the relay's `ws://.../viewer?token=...` via the already-approved
+   `web_socket_channel`, re-serves received binary frames over a local loopback
+   `dart:io.HttpServer` as a continuous `http://127.0.0.1/stream.flv` — no new dependency for the
+   bridge itself; single-listener by design, a second concurrent request would miss the FLV
+   header already sent to the first), `VideoPlayerScreen` (`media_kit`/`media_kit_video`, opens
+   the bridge's local URL, tears down bridge + player + calls `stop()` on dispose),
+   `VideoWatchScreen` (manual device/camera id entry — the same disclosed "no endpoint resolves
+   my devices" stand-in pattern `ParentHomeScreen` already established for "list my children";
+   safety unweakened, since the server independently re-verifies ownership regardless of what id
+   is typed in). New `core/auth/me_identity.dart`/`me_repository.dart` (`GET /me`, now carrying
+   both video flags). `ParentHomeScreen` gained a permission-gated `_VideoAccessSection`
+   ("Watch live video," shown only when `hasVideoLiveAccess`) — presentation only, the real gate
+   is server-side. One new widget test (`video_watch_screen_test.dart`, mirroring
+   `login_screen_test.dart`'s exact static-shape-only scope). **Carries the identical
+   categorical "written, not compiled or run" limitation every M0-M3 mobile phase already
+   disclosed** — no Flutter SDK in this sandbox; `mobile/README.md`'s own "Testing limitation"
+   section extended, not superseded.
+
+7. **Rule-file narrowing, not silent contradiction.** `.claude/rules/jt1078.md` #1,
+   `.claude/rules/security.md` #5, `.claude/rules/backend.md` #7, `.claude/rules/flutter.md` #3,
+   `.claude/rules/frontend.md` #4 all previously stated an *unconditional* "Parent has zero
+   reachable path to video, ever" — each now states the narrowed, off-by-default-unless-
+   explicitly-granted version, citing ADR-0026. `docs/architecture/adr/
+   0024-jt1078-video-relay-architecture.md` §5 point 2 ("token minted by the backend") is
+   corrected in place (ADR-0026 §6) to match the shipped relay-mints-the-token design, the exact
+   same "revise a prior ADR in place once it's actually implemented" precedent ADR-0025 already
+   established for this same document.
+   `docs/architecture/frontend-flutter-master-roadmap.md` §2.5 point 2's own "no action needed,
+   and none is planned [unless you want to revisit D5]" is **not rewritten** (historical record
+   of its own drafting-time reasoning) — ADR-0026 is the "business requirement changes" trigger
+   that section named, and is where a reader following it forward should land.
+
+**Testing.** Backend `tests/unit`+`tests/architecture`: 1356 → 1390, all green (new: 6 Parent
+domain tests, 8 Parent application-service tests, 33 `ResolveAndEnforceD5Tests`/policy-guard
+tests, 6 `mark_session_*` tests, 6 subscriber-processor tests, 2 `/me` tests, plus fixture fixes
+across `test_me_application.py`). `tests/integration`: 275, all green (new: 2 live-Postgres video
+audit_entries tests; the parent-repository and video-repository suites re-verified against the
+new migration). `tests/contract`: 1 pre-existing, unrelated failure (`NoSilentUndocumentedRoutesTests`
+— confirmed present before this phase, no `/video`/`/parents/*/video-access` route in the
+unexplained list; the new route was added to `ALLOWED_UNDOCUMENTED_EXTRAS` with its own citation).
+`services/jt1078`: 90 → 115, all green. `services/device-gateway` (regression check, untouched):
+408, unchanged. Migration applied and round-tripped against this sandbox's own live Postgres
+instance — `alembic upgrade head` → `downgrade -1` → `upgrade head` → `alembic check` clean.
+
+**What remains, genuinely external or out of this phase's own explicit scope:** HLS; the relay's
+own defensive reconciliation-timeout job (ADR-0024 §16, for the "no lifecycle event ever arrives
+at all" case); the Org-Admin web video player (F10 — the user's own explicit "Flutter only this
+phase" choice); a real Flutter SDK to compile/run/verify the mobile layer; a physical MDVR for
+every layer, backend through mobile, this phase built against synthetic fixtures and fakes only.
 
 **CI hardening — frontend + device-gateway CI (2026-08-07, Priority 2 backlog item,
 `PROJECT_STATUS.md` Section 5).** `ci-cd/pipelines/*.yml` had five placeholder index stubs;
