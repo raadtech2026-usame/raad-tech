@@ -9,9 +9,19 @@ from src.repackager.flv_muxer import (
     TAG_TYPE_AUDIO,
     TAG_TYPE_VIDEO,
     FlvMuxer,
+    build_avc_decoder_config,
     build_avcc_from_annex_b,
+    extract_sps_pps,
     split_annex_b_nalus,
 )
+
+# A minimal, realistic-shaped H.264 SPS/PPS pair - `0x67`/`0x68`'s low 5 bits are NAL types
+# 7 (SPS) / 8 (PPS); `0x42 0x00 0x1e` are SPS bytes 1-3 (AVCProfileIndication=Baseline,
+# profile_compatibility=0, AVCLevelIndication=30) - the same fixture shape
+# `SplitAnnexBNalusTests` above already uses, extended to full-length SPS/PPS bytes.
+_SPS = b"\x67\x42\x00\x1e\xab\xcd\xef"
+_PPS = b"\x68\xce\x3c\x80"
+_IDR = b"\x65IDR-DATA"
 
 
 class SplitAnnexBNalusTests(unittest.TestCase):
@@ -126,6 +136,185 @@ class FlvMuxerTests(unittest.TestCase):
         self.assertEqual(key_frame_type, 1)
         self.assertEqual(inter_frame_type, 2)
         self.assertNotEqual(key_frame_type, inter_frame_type)
+
+
+class ExtractSpsPpsTests(unittest.TestCase):
+    def test_classifies_sps_and_pps_by_nal_type(self) -> None:
+        sps_list, pps_list = extract_sps_pps([_SPS, _PPS])
+        self.assertEqual(sps_list, [_SPS])
+        self.assertEqual(pps_list, [_PPS])
+
+    def test_non_parameter_set_nalus_are_ignored(self) -> None:
+        sps_list, pps_list = extract_sps_pps([_SPS, _PPS, _IDR])
+        self.assertEqual(sps_list, [_SPS])
+        self.assertEqual(pps_list, [_PPS])
+
+    def test_no_parameter_sets_returns_two_empty_lists(self) -> None:
+        sps_list, pps_list = extract_sps_pps([_IDR])
+        self.assertEqual(sps_list, [])
+        self.assertEqual(pps_list, [])
+
+    def test_empty_nalu_is_skipped_not_raised(self) -> None:
+        sps_list, pps_list = extract_sps_pps([b"", _SPS])
+        self.assertEqual(sps_list, [_SPS])
+
+    def test_multiple_sps_are_all_collected(self) -> None:
+        sps_list, _pps_list = extract_sps_pps([_SPS, _SPS])
+        self.assertEqual(len(sps_list), 2)
+
+
+class BuildAvcDecoderConfigTests(unittest.TestCase):
+    def test_reads_profile_compatibility_level_from_the_first_sps(self) -> None:
+        config = build_avc_decoder_config(sps_list=[_SPS], pps_list=[_PPS])
+        self.assertEqual(config[0], 0x01)  # configurationVersion
+        self.assertEqual(config[1], 0x42)  # AVCProfileIndication
+        self.assertEqual(config[2], 0x00)  # profile_compatibility
+        self.assertEqual(config[3], 0x1E)  # AVCLevelIndication
+
+    def test_length_size_minus_one_is_3_matching_the_4_byte_avcc_prefix(self) -> None:
+        config = build_avc_decoder_config(sps_list=[_SPS], pps_list=[_PPS])
+        # reserved(6)=111111 + lengthSizeMinusOne(2)=11 -> 0xFF, byte offset 4
+        self.assertEqual(config[4], 0xFF)
+        self.assertEqual(config[4] & 0x03, 0x03)
+
+    def test_sps_and_pps_are_length_prefixed_and_recoverable(self) -> None:
+        config = build_avc_decoder_config(sps_list=[_SPS], pps_list=[_PPS])
+        num_sps = config[5] & 0x1F
+        self.assertEqual(num_sps, 1)
+        sps_len = int.from_bytes(config[6:8], "big")
+        self.assertEqual(sps_len, len(_SPS))
+        self.assertEqual(config[8 : 8 + sps_len], _SPS)
+        offset = 8 + sps_len
+        num_pps = config[offset]
+        self.assertEqual(num_pps, 1)
+        pps_len = int.from_bytes(config[offset + 1 : offset + 3], "big")
+        self.assertEqual(pps_len, len(_PPS))
+        self.assertEqual(config[offset + 3 : offset + 3 + pps_len], _PPS)
+
+    def test_pps_list_may_be_empty(self) -> None:
+        config = build_avc_decoder_config(sps_list=[_SPS], pps_list=[])
+        sps_len = int.from_bytes(config[6:8], "big")
+        num_pps = config[8 + sps_len]
+        self.assertEqual(num_pps, 0)
+
+    def test_empty_sps_list_raises_value_error(self) -> None:
+        with self.assertRaises(ValueError):
+            build_avc_decoder_config(sps_list=[], pps_list=[_PPS])
+
+    def test_sps_too_short_raises_value_error(self) -> None:
+        with self.assertRaises(ValueError):
+            build_avc_decoder_config(sps_list=[b"\x67\x42"], pps_list=[])
+
+
+class FeedAnnexBVideoTests(unittest.TestCase):
+    """`FlvMuxer.feed_annex_b_video` — the SPS/PPS-aware entry point real players need before
+    they can decode anything (completes the seam `build_avc_sequence_header_tag` used to leave
+    unpopulated)."""
+
+    def _annex_b(self, *nalus: bytes) -> bytes:
+        return b"".join(b"\x00\x00\x01" + nalu for nalu in nalus)
+
+    def test_first_frame_with_sps_pps_emits_a_sequence_header_before_the_nalu_tag(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        chunk = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS, _IDR),
+            is_keyframe=True,
+            timestamp_ms=1000,
+        )
+        # Sequence header tag first: AVCPacketType (byte 12, after the 11-byte tag header +
+        # 1-byte frame/codec byte) must be 0 (sequence header), not 1 (NALU).
+        self.assertEqual(chunk[12], 0)
+
+    def test_sequence_header_is_not_repeated_for_an_unchanged_parameter_set(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS, _IDR),
+            is_keyframe=True,
+            timestamp_ms=1000,
+        )
+        chunk2 = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_IDR), is_keyframe=False, timestamp_ms=1040
+        )
+        # Only one tag this time (the NALU tag) - AVCPacketType=1, not a sequence header.
+        self.assertEqual(chunk2[12], 1)
+
+    def test_sequence_header_is_re_sent_if_the_parameter_set_changes(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS, _IDR),
+            is_keyframe=True,
+            timestamp_ms=1000,
+        )
+        different_sps = b"\x67\x4d\x00\x1f\x00\x00"  # different profile/level bytes
+        chunk2 = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(different_sps, _PPS, _IDR),
+            is_keyframe=True,
+            timestamp_ms=1040,
+        )
+        self.assertEqual(chunk2[12], 0)  # sequence header again, not skipped
+
+    def test_sps_pps_appear_once_in_the_sequence_header_not_duplicated_in_the_nalu_tag(
+        self,
+    ) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        chunk = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS, _IDR),
+            is_keyframe=True,
+            timestamp_ms=1000,
+        )
+        # SPS/PPS legitimately appear once each, inside the sequence-header tag's own
+        # AVCDecoderConfigurationRecord - never a second time inside the NALU tag.
+        self.assertEqual(chunk.count(_SPS), 1)
+        self.assertEqual(chunk.count(_PPS), 1)
+        self.assertIn(_IDR, chunk)
+
+    def test_frame_with_no_sps_and_no_vcl_nalu_returns_empty_bytes(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        chunk = muxer.feed_annex_b_video(
+            annex_b_payload=b"", is_keyframe=True, timestamp_ms=1000
+        )
+        self.assertEqual(chunk, b"")
+
+    def test_sps_only_frame_with_no_vcl_nalu_returns_only_the_sequence_header(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        chunk = muxer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS), is_keyframe=False, timestamp_ms=1000
+        )
+        self.assertGreater(len(chunk), 0)
+        self.assertEqual(chunk[12], 0)  # sequence header, no trailing NALU tag
+
+    def test_each_viewers_own_muxer_tracks_its_own_sequence_header_independently(self) -> None:
+        """The per-viewer independence `SessionBroadcastHub`'s own docstring already documents
+        for the FLV file header - now proven for the codec sequence header too: an early
+        viewer's muxer has already sent the config and won't repeat it, while a late viewer's
+        fresh muxer has not, independent of what any other viewer's own muxer has done."""
+        early_viewer = FlvMuxer()
+        early_viewer.start()
+        early_viewer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS, _IDR),
+            is_keyframe=True,
+            timestamp_ms=1000,
+        )
+        early_chunk2 = early_viewer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS, _IDR), is_keyframe=True, timestamp_ms=2000
+        )
+        self.assertEqual(early_chunk2[12], 1)  # unchanged config - no repeated sequence header
+
+        late_viewer = FlvMuxer()
+        late_viewer.start()
+        late_chunk = late_viewer.feed_annex_b_video(
+            annex_b_payload=self._annex_b(_SPS, _PPS, _IDR), is_keyframe=True, timestamp_ms=2000
+        )
+        # A fresh muxer has never sent this config before - sequence header first, same as the
+        # early viewer's own first frame, regardless of what the early viewer's muxer has
+        # already done.
+        self.assertEqual(late_chunk[12], 0)
 
 
 if __name__ == "__main__":

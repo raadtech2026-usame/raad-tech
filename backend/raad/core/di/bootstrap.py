@@ -123,6 +123,7 @@ from raad.modules.reporting.application.services import ReportingApplicationServ
 from raad.modules.reporting.infra.repositories import SqlAlchemyReportingUnitOfWork
 from raad.modules.video.application.ports import VideoProviderPort, VideoUnitOfWork
 from raad.modules.video.application.services import VideoApplicationService
+from raad.modules.video.events.subscribers import register_video_processors
 from raad.modules.video.infra.adapters import Jt1078RelayAdapter
 from raad.modules.video.infra.jt1078_relay_client import Jt1078RelayRpcClient
 from raad.modules.video.infra.repositories import SqlAlchemyVideoUnitOfWork
@@ -466,6 +467,16 @@ def build_container(settings: Settings) -> Container:
         # never consumed anywhere on this backend before now) onto `devices.last_seen_at` - see
         # `modules/fleet_device/events/subscribers.py`'s own module docstring.
         register_fleet_device_processors(container.resolve(EventProcessorRegistry), container)
+
+        # Same registry, ADR-0026 §7: reconciles `VideoSession.status` with the JT1078 relay's
+        # own observed reality (`VideoSessionActivated`/`Ended`/`Failed`, published by
+        # `services/jt1078` since the JT1078 backend-integration phase, never consumed anywhere
+        # on this backend before now) - see `modules/video/events/subscribers.py`'s own module
+        # docstring. Each processor resolves `VideoApplicationService` lazily inside `process()`,
+        # so registering here (before that service is bound, a few lines below) is safe - the
+        # same ordering `DeviceConnectivityProcessor`/`DeviceAuthCodeProcessor` above already
+        # rely on.
+        register_video_processors(container.resolve(EventProcessorRegistry), container)
 
         # JT1078 backend-integration phase: `VideoProviderPort` -> `Jt1078RelayAdapter`, real and
         # native (not a hardware/vendor-API stub) - reuses this exact `broker_redis_client`/

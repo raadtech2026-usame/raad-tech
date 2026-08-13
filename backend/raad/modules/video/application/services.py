@@ -7,27 +7,37 @@ BillingApplicationService`'s shape.
 `BillingApplicationService.__init__`'s own docstring documents for `PaymentProviderPort`.**
 `request_live_video`/`request_playback_video` persist the `VideoSession` as `REQUESTED` (a
 real, complete, testable action needing no provider) before ever touching
-`self._video_provider`; only the subsequent activation step raises `NotImplementedError` when
-unbound. This phase's own explicit instruction ("Implement only the abstraction layer if
-needed... Native JT1078 implementation is intentionally postponed") is exactly why no concrete
-adapter is bound in `core/di/bootstrap.py` this phase.
+`self._video_provider`; the subsequent provider call raises `NotImplementedError` when unbound
+(no adapter conditionally bound in `core/di/bootstrap.py`) or, when bound, calls `Jt1078RelayAdapter`
+(JT1078 backend-integration phase).
 
 **No `try/except` around the provider call, deliberately.** Unlike a hypothetical retry/
 compensating-transaction wrapper, nothing in any approved document describes what should happen
 if a bound provider's `start_live`/`start_playback` raises — mirroring `BillingApplicationService.
 initiate_payment`'s identical choice to let `self._payment_provider.charge(...)` propagate
 uncaught rather than inventing failure-handling behavior no document specifies.
-`VideoSession.fail()` exists for completeness of the documented status enum (mirrors `Subscription.
-suspend`/`cancel`'s "documented value, no documented trigger" posture) but nothing calls it this
-phase.
+
+**`session.activate()` is no longer called eagerly here (ADR-0026 §7).** Both request methods
+used to call it synchronously right after the provider RPC returned — before the relay had any
+real signal that media was actually flowing. `VideoSession` now stays `REQUESTED` until
+`events/subscribers.VideoSessionLifecycleProcessor` consumes the relay's own
+`VideoSessionActivated`/`VideoSessionEnded`/`VideoSessionFailed` events (already published by
+`services/jt1078`) and calls `activate`/`end`/`fail` through a fresh `VideoUnitOfWork` — the
+first real caller of `VideoSession.fail()` in this codebase. `stream_url` is still returned
+immediately in the API response; it never depended on persisted `status`
+(`queries.video_session_to_dto`'s own signature).
 """
 
 from __future__ import annotations
 
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.logging.setup import get_logger
 from raad.core.time.clock import Clock
 from raad.modules.video.application.commands import (
+    MarkVideoSessionActiveCommand,
+    MarkVideoSessionEndedCommand,
+    MarkVideoSessionFailedCommand,
     RequestLiveVideoCommand,
     RequestPlaybackVideoCommand,
     StopVideoSessionCommand,
@@ -46,6 +56,8 @@ from raad.modules.video.domain.value_objects import (
     UserId,
     VideoSessionId,
 )
+
+logger = get_logger("raad.video.application")
 
 
 class VideoApplicationService:
@@ -96,12 +108,12 @@ class VideoApplicationService:
             channel_no=command.channel_no,
             reference=str(session.id),
         )
-        async with uow:
-            session = await self._get_session_or_raise(uow, str(session.id))
-            session.activate(clock=self._clock, actor_id=command.actor.user_id)
-            uow.record_events(session.pull_domain_events())
-            await uow.commit()
-            return video_session_to_dto(session, stream_url=stream_url)
+        # ADR-0026 §7: no eager `session.activate()` here - the relay hasn't confirmed media is
+        # actually flowing yet (only that the RPC + device signal succeeded). `status` stays
+        # `REQUESTED` until `events/subscribers.py`'s `VideoSessionLifecycleProcessor` consumes
+        # the relay's own `VideoSessionActivated` event. `stream_url` is still returned
+        # immediately - it never depended on persisted `status` (`queries.video_session_to_dto`).
+        return video_session_to_dto(session, stream_url=stream_url)
 
     async def request_playback_video(
         self, command: RequestPlaybackVideoCommand, *, uow: VideoUnitOfWork
@@ -137,12 +149,8 @@ class VideoApplicationService:
             window_end=command.window_end,
             reference=str(session.id),
         )
-        async with uow:
-            session = await self._get_session_or_raise(uow, str(session.id))
-            session.activate(clock=self._clock, actor_id=command.actor.user_id)
-            uow.record_events(session.pull_domain_events())
-            await uow.commit()
-            return video_session_to_dto(session, stream_url=stream_url)
+        # ADR-0026 §7: same reasoning as request_live_video above - no eager activate().
+        return video_session_to_dto(session, stream_url=stream_url)
 
     async def stop_video_session(
         self, command: StopVideoSessionCommand, *, uow: VideoUnitOfWork
@@ -170,6 +178,64 @@ class VideoApplicationService:
         async with uow:
             session = await self._get_session_or_raise(uow, query.video_session_id)
             return video_session_to_dto(session)
+
+    async def mark_session_active(
+        self, command: MarkVideoSessionActiveCommand, *, uow: VideoUnitOfWork
+    ) -> None:
+        """ADR-0026 §7 — `events/subscribers.py`'s entry point for the relay's own
+        `VideoSessionActivated` event. **No-ops (logs, doesn't raise) for an unknown
+        `video_session_id`** — mirrors `fleet_device.DeviceApplicationService.
+        record_device_seen`'s identical precedent for a broker-driven fact about a session this
+        backend didn't necessarily still have a row for (a relay event arriving after the
+        session was already torn down some other way is a real, expected race, not an error).
+        Returns `None` — no HTTP caller needs a DTO."""
+        async with uow:
+            session = await uow.video_sessions.get(VideoSessionId(command.video_session_id))
+            if session is None:
+                logger.info(
+                    "video_session_activated_for_unknown_session",
+                    extra={"video_session_id": command.video_session_id},
+                )
+                return
+            session.activate(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(session.pull_domain_events())
+            await uow.commit()
+
+    async def mark_session_ended(
+        self, command: MarkVideoSessionEndedCommand, *, uow: VideoUnitOfWork
+    ) -> None:
+        """Same shape as `mark_session_active` — the relay's own `VideoSessionEnded` event."""
+        async with uow:
+            session = await uow.video_sessions.get(VideoSessionId(command.video_session_id))
+            if session is None:
+                logger.info(
+                    "video_session_ended_for_unknown_session",
+                    extra={"video_session_id": command.video_session_id},
+                )
+                return
+            session.end(
+                clock=self._clock, actor_id=command.actor.user_id, reason=command.reason
+            )
+            uow.record_events(session.pull_domain_events())
+            await uow.commit()
+
+    async def mark_session_failed(
+        self, command: MarkVideoSessionFailedCommand, *, uow: VideoUnitOfWork
+    ) -> None:
+        """Same shape as `mark_session_active` — the relay's own `VideoSessionFailed` event."""
+        async with uow:
+            session = await uow.video_sessions.get(VideoSessionId(command.video_session_id))
+            if session is None:
+                logger.info(
+                    "video_session_failed_for_unknown_session",
+                    extra={"video_session_id": command.video_session_id},
+                )
+                return
+            session.fail(
+                clock=self._clock, actor_id=command.actor.user_id, reason=command.reason
+            )
+            uow.record_events(session.pull_domain_events())
+            await uow.commit()
 
     @staticmethod
     async def _get_session_or_raise(

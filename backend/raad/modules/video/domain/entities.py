@@ -224,9 +224,12 @@ class VideoSession(_AggregateRoot):
             )
         )
 
-    def end(self, *, clock: Clock, actor_id: str | None = None) -> None:
-        """`video.session_ended`. `POST /video/sessions/{id}/stop`. Idempotent same-state
-        no-op."""
+    def end(
+        self, *, clock: Clock, actor_id: str | None = None, reason: str | None = None
+    ) -> None:
+        """`video.session_ended`. `POST /video/sessions/{id}/stop`, or the relay's own
+        `VideoSessionEnded` event (ADR-0026 §7 — `reason` then carries the relay's own reason
+        string, e.g. `"viewer_idle_timeout"`). Idempotent same-state no-op."""
         if self.status == VideoSessionStatus.ENDED:
             return
         self.status = VideoSessionStatus.ENDED
@@ -239,15 +242,18 @@ class VideoSession(_AggregateRoot):
                 camera_id=str(self.camera_id),
                 occurred_at=self.ended_at,
                 actor_id=actor_id,
+                reason=reason,
             )
         )
 
-    def fail(self, *, clock: Clock, actor_id: str | None = None) -> None:
+    def fail(
+        self, *, clock: Clock, actor_id: str | None = None, reason: str | None = None
+    ) -> None:
         """No approved document names a failure event — flagged, mirrors `Payment.
-        mark_failed`'s identical undocumented-but-analogous treatment. Reachable at this layer
-        only; nothing calls it automatically this phase (see `application/services.py`'s module
-        docstring for why the provider-call failure path is left to propagate rather than being
-        caught here). Idempotent same-state no-op."""
+        mark_failed`'s identical undocumented-but-analogous treatment. `reason` (ADR-0026 §7)
+        mirrors the relay's own `VideoSessionFailed.reason` (e.g. `"ingest_timeout"`) — the
+        first real caller of this method, `events/subscribers.
+        VideoSessionLifecycleProcessor`. Idempotent same-state no-op."""
         if self.status == VideoSessionStatus.FAILED:
             return
         self.status = VideoSessionStatus.FAILED
@@ -259,5 +265,6 @@ class VideoSession(_AggregateRoot):
                 camera_id=str(self.camera_id),
                 occurred_at=clock.now(),
                 actor_id=actor_id,
+                reason=reason,
             )
         )

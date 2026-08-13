@@ -4,7 +4,7 @@ teardown, and the device stop-signal publish, all against a recording fake publi
 import unittest
 
 from src.events.session_events import VideoSessionActivated, VideoSessionEnded, VideoSessionFailed
-from src.session.session_manager import SessionManager
+from src.session.session_manager import SessionCapacityExceededError, SessionManager
 from src.session.video_session import VideoSessionKind, VideoSessionState
 
 
@@ -180,6 +180,113 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(acted_on, [])
         self.assertIsNotNone(manager.resolve(session.session_id))
+
+
+class ConcurrencyCeilingTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0026 §8 — configurable global and per-organization concurrent-session ceilings."""
+
+    async def test_default_global_ceiling_is_fifty(self) -> None:
+        """Citing Phase 2 §13.1's own "e.g., start 50 global" — the default, not a made-up
+        number."""
+        manager, _ = _manager()
+        for i in range(50):
+            manager.create_session(
+                terminal_id=f"T{i}",
+                kind=VideoSessionKind.LIVE,
+                correlation_id=f"corr-{i}",
+                logical_channel=1,
+            )
+        with self.assertRaises(SessionCapacityExceededError):
+            manager.create_session(
+                terminal_id="T-over",
+                kind=VideoSessionKind.LIVE,
+                correlation_id="corr-over",
+                logical_channel=1,
+            )
+
+    async def test_global_ceiling_of_zero_or_less_means_unlimited(self) -> None:
+        manager, _ = _manager(max_global_sessions=0)
+        for i in range(5):
+            manager.create_session(
+                terminal_id=f"T{i}",
+                kind=VideoSessionKind.LIVE,
+                correlation_id=f"corr-{i}",
+                logical_channel=1,
+            )  # must not raise
+        self.assertEqual(manager.active_session_count, 5)
+
+    async def test_global_ceiling_rejects_the_request_before_creating_a_session(self) -> None:
+        manager, _ = _manager(max_global_sessions=1)
+        manager.create_session(
+            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
+        )
+        with self.assertRaises(SessionCapacityExceededError):
+            manager.create_session(
+                terminal_id="T2",
+                kind=VideoSessionKind.LIVE,
+                correlation_id="corr-2",
+                logical_channel=1,
+            )
+        # rejected - the session count must not have grown past the ceiling
+        self.assertEqual(manager.active_session_count, 1)
+
+    async def test_per_organization_ceiling_is_independent_of_global(self) -> None:
+        manager, _ = _manager(max_global_sessions=100, max_sessions_per_organization=1)
+        manager.create_session(
+            terminal_id="T1",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-1",
+            logical_channel=1,
+            organization_id="org-A",
+        )
+        with self.assertRaises(SessionCapacityExceededError):
+            manager.create_session(
+                terminal_id="T2",
+                kind=VideoSessionKind.LIVE,
+                correlation_id="corr-2",
+                logical_channel=1,
+                organization_id="org-A",
+            )
+
+    async def test_per_organization_ceiling_does_not_affect_other_organizations(self) -> None:
+        manager, _ = _manager(max_global_sessions=100, max_sessions_per_organization=1)
+        manager.create_session(
+            terminal_id="T1",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-1",
+            logical_channel=1,
+            organization_id="org-A",
+        )
+        session_b = manager.create_session(
+            terminal_id="T2",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-2",
+            logical_channel=1,
+            organization_id="org-B",
+        )  # must not raise - a different organization
+        self.assertIsNotNone(manager.resolve(session_b.session_id))
+
+    async def test_organization_less_session_is_only_subject_to_the_global_ceiling(self) -> None:
+        manager, _ = _manager(max_global_sessions=100, max_sessions_per_organization=1)
+        manager.create_session(
+            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
+        )
+        session = manager.create_session(
+            terminal_id="T2", kind=VideoSessionKind.LIVE, correlation_id="corr-2", logical_channel=1
+        )  # organization_id=None both times - must not raise
+        self.assertIsNotNone(manager.resolve(session.session_id))
+
+    async def test_ending_a_session_frees_its_ceiling_slot(self) -> None:
+        manager, _ = _manager(max_global_sessions=1)
+        first = manager.create_session(
+            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
+        )
+        await manager.end_session(first.session_id, reason="explicit_stop")
+
+        second = manager.create_session(
+            terminal_id="T2", kind=VideoSessionKind.LIVE, correlation_id="corr-2", logical_channel=1
+        )  # must not raise - the first session's slot is now free
+        self.assertIsNotNone(manager.resolve(second.session_id))
 
 
 if __name__ == "__main__":

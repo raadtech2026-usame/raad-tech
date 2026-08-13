@@ -14,7 +14,7 @@ disconnected client must never stall or crash delivery to every other viewer of 
 
 from __future__ import annotations
 
-from src.repackager.flv_muxer import FlvMuxer, build_avcc_from_annex_b
+from src.repackager.flv_muxer import FlvMuxer
 from src.viewer.websocket_server import WebSocketConnection
 
 
@@ -38,15 +38,23 @@ class SessionBroadcastHub:
     async def broadcast_video(
         self, *, annex_b_payload: bytes, is_keyframe: bool, timestamp_ms: int | None
     ) -> list[WebSocketConnection]:
-        """Repackages once per viewer (AVCC conversion is cheap - pure byte restructuring, no
-        re-encoding) and sends. Returns the viewers that failed to receive it (the caller,
-        `relay.py`, removes them and decrements the session's own viewer count)."""
-        avcc_payload = build_avcc_from_annex_b(annex_b_payload)
+        """Repackages once per viewer via `FlvMuxer.feed_annex_b_video` — NAL splitting/
+        classification is cheap (pure byte scanning, no re-encoding), and "has *this* viewer's
+        own muxer already sent a sequence header" is genuinely per-viewer state (a viewer
+        joining mid-stream needs its own copy, independent of whether earlier viewers already
+        got theirs — the same reasoning `add_viewer`'s own docstring already gives for the FLV
+        file header itself, now extended to the codec sequence header). Returns the viewers that
+        failed to receive it (the caller, `relay.py`, removes them and decrements the session's
+        own viewer count)."""
         failed: list[WebSocketConnection] = []
         for connection, muxer in list(self._viewers.items()):
-            chunk = muxer.feed_video_nalu(
-                avcc_payload=avcc_payload, is_keyframe=is_keyframe, timestamp_ms=timestamp_ms
+            chunk = muxer.feed_annex_b_video(
+                annex_b_payload=annex_b_payload,
+                is_keyframe=is_keyframe,
+                timestamp_ms=timestamp_ms,
             )
+            if not chunk:
+                continue
             try:
                 await connection.send_binary(chunk)
             except Exception:  # noqa: BLE001 - one bad viewer must not break the broadcast

@@ -21,6 +21,9 @@ from raad.core.ids.generator import IdGenerator
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.video.application.commands import (
+    MarkVideoSessionActiveCommand,
+    MarkVideoSessionEndedCommand,
+    MarkVideoSessionFailedCommand,
     RequestLiveVideoCommand,
     RequestPlaybackVideoCommand,
     StopVideoSessionCommand,
@@ -63,6 +66,9 @@ class SequentialIdGenerator(IdGenerator):
 
 def make_actor() -> Principal:
     return Principal(user_id="admin-1", role=Role.ORG_ADMIN, org_id=VALID_ORG_ULID)
+
+
+SYSTEM_ACTOR = Principal(user_id="system", role=Role.FOUNDER, org_id=None)
 
 
 class InMemoryVideoSessionRepository(VideoSessionRepository):
@@ -176,7 +182,10 @@ class RequestLiveVideoTests(unittest.IsolatedAsyncioTestCase):
         persisted = next(iter(uow.video_sessions.by_id.values()))
         self.assertEqual(persisted.status.value, "requested")
 
-    async def test_with_bound_provider_activates_and_returns_stream_url(self) -> None:
+    async def test_with_bound_provider_stays_requested_and_returns_stream_url(self) -> None:
+        """ADR-0026 §7: no more eager `activate()` - `status` only flips to `active` once
+        `events/subscribers.py` consumes the relay's own `VideoSessionActivated` event.
+        `stream_url` is still returned immediately - it never depended on `status`."""
         provider = FakeVideoProvider()
         service = make_service(provider=provider)
         uow = make_uow()
@@ -192,7 +201,7 @@ class RequestLiveVideoTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        self.assertEqual(session.status, "active")
+        self.assertEqual(session.status, "requested")
         self.assertEqual(session.stream_url, provider.stream_url)
         self.assertEqual(len(provider.start_live_calls), 1)
 
@@ -222,7 +231,8 @@ class RequestPlaybackVideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(persisted.status.value, "requested")
         self.assertEqual(persisted.purpose.value, "playback")
 
-    async def test_with_bound_provider_activates_and_returns_stream_url(self) -> None:
+    async def test_with_bound_provider_stays_requested_and_returns_stream_url(self) -> None:
+        """ADR-0026 §7 - same reasoning as the live equivalent above."""
         provider = FakeVideoProvider()
         service = make_service(provider=provider)
         uow = make_uow()
@@ -242,7 +252,7 @@ class RequestPlaybackVideoTests(unittest.IsolatedAsyncioTestCase):
             ),
             uow=uow,
         )
-        self.assertEqual(session.status, "active")
+        self.assertEqual(session.status, "requested")
         self.assertEqual(session.stream_url, provider.stream_url)
         self.assertEqual(len(provider.start_playback_calls), 1)
 
@@ -312,6 +322,110 @@ class GetVideoSessionByIdTests(unittest.IsolatedAsyncioTestCase):
             await service.get_video_session_by_id(
                 GetVideoSessionByIdQuery(video_session_id=NON_EXISTENT_ID), uow=uow
             )
+
+
+class MarkSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0026 §7 - `mark_session_active`/`mark_session_ended`/`mark_session_failed`, the
+    application-layer entry points `events/subscribers.py`'s processors call. No HTTP route
+    calls these directly - only a broker-driven `SYSTEM_PRINCIPAL` actor."""
+
+    async def _requested_session_id(self, service: VideoApplicationService, uow) -> str:
+        with self.assertRaises(NotImplementedError):
+            await service.request_live_video(
+                RequestLiveVideoCommand(
+                    organization_id=VALID_ORG_ULID,
+                    device_id="device-ref-7",
+                    camera_id="camera-ref-7",
+                    terminal_id="00000000013800138000",
+                    channel_no=1,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+        return next(iter(uow.video_sessions.by_id.values())).id.value
+
+    async def test_mark_session_active_transitions_status(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        session_id = await self._requested_session_id(service, uow)
+
+        await service.mark_session_active(
+            MarkVideoSessionActiveCommand(video_session_id=session_id, actor=SYSTEM_ACTOR),
+            uow=uow,
+        )
+        self.assertEqual(uow.video_sessions.by_id[session_id].status.value, "active")
+
+    async def test_mark_session_active_for_unknown_session_is_a_no_op_not_an_error(
+        self,
+    ) -> None:
+        service = make_service()
+        uow = make_uow()
+        await service.mark_session_active(
+            MarkVideoSessionActiveCommand(
+                video_session_id=NON_EXISTENT_ID, actor=SYSTEM_ACTOR
+            ),
+            uow=uow,
+        )  # must not raise
+        self.assertEqual(uow.commit_count, 0)
+
+    async def test_mark_session_ended_transitions_status_and_carries_reason(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        session_id = await self._requested_session_id(service, uow)
+
+        await service.mark_session_ended(
+            MarkVideoSessionEndedCommand(
+                video_session_id=session_id,
+                reason="viewer_idle_timeout",
+                actor=SYSTEM_ACTOR,
+            ),
+            uow=uow,
+        )
+        self.assertEqual(uow.video_sessions.by_id[session_id].status.value, "ended")
+        self.assertEqual(uow.recorded_events[-1].payload["reason"], "viewer_idle_timeout")
+
+    async def test_mark_session_failed_transitions_status_and_carries_reason(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        session_id = await self._requested_session_id(service, uow)
+
+        await service.mark_session_failed(
+            MarkVideoSessionFailedCommand(
+                video_session_id=session_id, reason="ingest_timeout", actor=SYSTEM_ACTOR
+            ),
+            uow=uow,
+        )
+        self.assertEqual(uow.video_sessions.by_id[session_id].status.value, "failed")
+        self.assertEqual(uow.recorded_events[-1].payload["reason"], "ingest_timeout")
+
+    async def test_mark_session_ended_for_unknown_session_is_a_no_op_not_an_error(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        await service.mark_session_ended(
+            MarkVideoSessionEndedCommand(
+                video_session_id=NON_EXISTENT_ID, reason=None, actor=SYSTEM_ACTOR
+            ),
+            uow=uow,
+        )
+        self.assertEqual(uow.commit_count, 0)
+
+    async def test_mark_session_active_is_idempotent_no_double_event(self) -> None:
+        """Mirrors `VideoSession.activate`'s own domain-level idempotency - a duplicate relay
+        event (at-least-once delivery, LLD §10.3) must not re-fire the transition."""
+        service = make_service()
+        uow = make_uow()
+        session_id = await self._requested_session_id(service, uow)
+
+        await service.mark_session_active(
+            MarkVideoSessionActiveCommand(video_session_id=session_id, actor=SYSTEM_ACTOR),
+            uow=uow,
+        )
+        uow.recorded_events.clear()
+        await service.mark_session_active(
+            MarkVideoSessionActiveCommand(video_session_id=session_id, actor=SYSTEM_ACTOR),
+            uow=uow,
+        )
+        self.assertEqual(uow.recorded_events, [])
 
 
 if __name__ == "__main__":

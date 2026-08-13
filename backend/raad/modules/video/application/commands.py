@@ -55,3 +55,32 @@ class StopVideoSessionCommand:
 
     video_session_id: str
     actor: Principal
+
+
+@dataclass(frozen=True)
+class MarkVideoSessionActiveCommand:
+    """ADR-0026 §7 — the relay's own `VideoSessionActivated` event, consumed by
+    `events/subscribers.py`. `actor` follows `fleet_device/events/subscribers.py`'s own
+    `SYSTEM_PRINCIPAL` precedent for a broker-driven, non-HTTP caller."""
+
+    video_session_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class MarkVideoSessionEndedCommand:
+    """ADR-0026 §7 — the relay's own `VideoSessionEnded` event. `reason` mirrors that event's
+    own field verbatim (e.g. `"viewer_idle_timeout"`)."""
+
+    video_session_id: str
+    reason: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class MarkVideoSessionFailedCommand:
+    """ADR-0026 §7 — the relay's own `VideoSessionFailed` event."""
+
+    video_session_id: str
+    reason: str | None
+    actor: Principal

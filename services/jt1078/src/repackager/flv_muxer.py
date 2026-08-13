@@ -49,6 +49,12 @@ _AAC_PACKET_TYPE_RAW = 1
 
 _START_CODE_3 = b"\x00\x00\x01"
 
+# H.264 Annex-B NAL unit type — the low 5 bits of the NALU's first byte (ITU-T H.264 §7.3.1,
+# a stable, codec-spec-defined constant, independent of any JT/T 1078 signaling detail).
+_NAL_TYPE_MASK = 0x1F
+_NAL_TYPE_SPS = 7
+_NAL_TYPE_PPS = 8
+
 
 def split_annex_b_nalus(payload: bytes) -> list[bytes]:
     """Splits an Annex-B-delimited byte string on `0x000001`/`0x00000001` start codes, returning
@@ -83,7 +89,74 @@ def build_avcc_from_annex_b(payload: bytes) -> bytes:
     """Annex-B -> length-prefixed AVCC (each NALU prefixed by its own 4-byte big-endian length,
     no start codes) — the format FLV's `AVCVIDEOPACKET` (`AVCPacketType=1`) requires."""
     nalus = split_annex_b_nalus(payload)
+    return _avcc_from_nalus(nalus)
+
+
+def _avcc_from_nalus(nalus: list[bytes]) -> bytes:
     return b"".join(len(nalu).to_bytes(4, "big") + nalu for nalu in nalus)
+
+
+def extract_sps_pps(nalus: list[bytes]) -> tuple[list[bytes], list[bytes]]:
+    """Classifies already-Annex-B-split NAL units (`split_annex_b_nalus`'s own output) into
+    `(sps_list, pps_list)` by NAL unit type — a fixed H.264 bitstream property (ITU-T H.264
+    §7.3.1), unrelated to JT/T 1078 signaling, so this needs no vendor-specific knowledge to get
+    right. A NALU with a malformed/empty byte is skipped, never raises — real bytes from a real
+    ingest connection are never assumed well-formed just because they arrived."""
+    sps_list: list[bytes] = []
+    pps_list: list[bytes] = []
+    for nalu in nalus:
+        if not nalu:
+            continue
+        nal_type = nalu[0] & _NAL_TYPE_MASK
+        if nal_type == _NAL_TYPE_SPS:
+            sps_list.append(nalu)
+        elif nal_type == _NAL_TYPE_PPS:
+            pps_list.append(nalu)
+    return sps_list, pps_list
+
+
+def build_avc_decoder_config(*, sps_list: list[bytes], pps_list: list[bytes]) -> bytes:
+    """Builds an `AVCDecoderConfigurationRecord` (ISO/IEC 14496-15 §5.2.4.1.1 — a stable,
+    codec-container-spec-defined byte structure, not JT/T-1078-specific) from real, already-
+    parsed SPS/PPS NAL units. `AVCProfileIndication`/`profile_compatibility`/`AVCLevelIndication`
+    are read directly from the first SPS's own bytes 1-3 (immediately after its 1-byte NAL
+    header) — always present in any syntactically valid SPS, regardless of device/vendor.
+    `lengthSizeMinusOne=3` (4-byte NALU length prefix) matches this muxer's own
+    `build_avcc_from_annex_b` convention exactly, so the two must always agree.
+
+    Raises `ValueError` for an empty `sps_list` — there is no valid `AVCDecoderConfigurationRecord`
+    without at least one SPS to source the profile/level bytes from; `pps_list` may be empty
+    (a real player still needs *a* PPS to decode, but this function's own job is only to build
+    a structurally valid record from whatever was actually seen on the wire, not to invent one).
+    """
+    if not sps_list:
+        raise ValueError("build_avc_decoder_config requires at least one SPS.")
+    first_sps = sps_list[0]
+    if len(first_sps) < 4:
+        raise ValueError("SPS NALU too short to read profile/compatibility/level bytes.")
+
+    avc_profile_indication = first_sps[1]
+    profile_compatibility = first_sps[2]
+    avc_level_indication = first_sps[3]
+
+    parts = [
+        bytes(
+            [
+                0x01,  # configurationVersion
+                avc_profile_indication,
+                profile_compatibility,
+                avc_level_indication,
+                0xFF,  # reserved(6 bits)=111111 + lengthSizeMinusOne(2 bits)=11 -> 4-byte length
+                0xE0 | (len(sps_list) & 0x1F),  # reserved(3 bits)=111 + numOfSPS(5 bits)
+            ]
+        )
+    ]
+    for sps in sps_list:
+        parts.append(len(sps).to_bytes(2, "big") + sps)
+    parts.append(bytes([len(pps_list) & 0xFF]))  # numOfPictureParameterSets
+    for pps in pps_list:
+        parts.append(len(pps).to_bytes(2, "big") + pps)
+    return b"".join(parts)
 
 
 def _build_tag(*, tag_type: int, timestamp_ms: int, data: bytes) -> bytes:
@@ -103,12 +176,9 @@ def _build_tag(*, tag_type: int, timestamp_ms: int, data: bytes) -> bytes:
 def build_avc_sequence_header_tag(*, avc_decoder_config: bytes, timestamp_ms: int) -> bytes:
     """The FLV muxer's own "codec parameter set" tag (SPS/PPS wrapped in an
     `AVCDecoderConfigurationRecord`) — real players require this *before* the first NALU tag to
-    decode anything. Building `avc_decoder_config` from a real device's SPS/PPS NAL units is a
-    genuinely separate, real concern this module exposes a seam for
-    (`avc_decoder_config`) but does not build itself, since JT/T 1078's signaling spec gives no
-    guarantee about *when*/*how often* a device resends SPS/PPS on the media socket — a real
-    integration needs to capture the first I-frame's own parameter sets live, which this codebase
-    cannot do without the physical MDVR."""
+    decode anything. `avc_decoder_config` is built by `build_avc_decoder_config` (above) from
+    whatever SPS/PPS `FlvMuxer.feed_annex_b_video` actually observes on the wire — this function
+    itself only wraps an already-built record in its own tag header, unchanged."""
     body = (
         bytes([(_FRAME_TYPE_KEYFRAME << 4) | _CODEC_ID_AVC])
         + bytes([_AVC_PACKET_TYPE_SEQUENCE_HEADER])
@@ -145,6 +215,7 @@ class FlvMuxer:
     def __init__(self) -> None:
         self._base_timestamp_ms: int | None = None
         self._wrote_header = False
+        self._sent_avc_decoder_config: bytes | None = None
 
     def _relative_timestamp(self, timestamp_ms: int | None) -> int:
         if timestamp_ms is None:
@@ -166,6 +237,65 @@ class FlvMuxer:
             timestamp_ms=self._relative_timestamp(timestamp_ms),
         )
         return tag + len(tag).to_bytes(4, "big")
+
+    def feed_annex_b_video(
+        self, *, annex_b_payload: bytes, is_keyframe: bool, timestamp_ms: int | None
+    ) -> bytes:
+        """The SPS/PPS-aware entry point (completes the seam `build_avc_sequence_header_tag`'s
+        own docstring used to flag as unpopulated). Splits the raw Annex-B payload once,
+        separates SPS(7)/PPS(8) from every other NAL unit (`extract_sps_pps`), and:
+
+        - emits a fresh `AVCDecoderConfigurationRecord` sequence-header tag the first time this
+          *viewer's own muxer* sees a SPS+PPS pair, or again if a later pair differs byte-for-
+          byte from the one already sent (a real, if rare, mid-stream parameter-set change) —
+          never on every frame, real players expect this tag once per configuration, not
+          per-NALU;
+        - strips SPS/PPS out of the AVCC NALU tag itself (they are carried by the sequence
+          header instead, the standard FLV/RTMP muxing convention — sending them twice is
+          redundant, not merely harmless, for some real players);
+        - returns the concatenated bytes (sequence-header tag, if newly emitted, followed by the
+          NALU tag) — still exactly one call, one contiguous chunk to forward to the viewer,
+          matching every other `feed_*` method's own contract.
+
+        A frame carrying no VCL NALUs at all (SPS/PPS-only, e.g. a parameter-set refresh with no
+        picture data) returns just the sequence-header bytes, if any — never an empty AVCC tag
+        with a zero-length payload.
+        """
+        relative_timestamp = self._relative_timestamp(timestamp_ms)
+        nalus = split_annex_b_nalus(annex_b_payload)
+        sps_list, pps_list = extract_sps_pps(nalus)
+        other_nalus = [
+            nalu
+            for nalu in nalus
+            if nalu and (nalu[0] & _NAL_TYPE_MASK) not in (_NAL_TYPE_SPS, _NAL_TYPE_PPS)
+        ]
+
+        chunks: list[bytes] = []
+        if sps_list:
+            avc_decoder_config = build_avc_decoder_config(sps_list=sps_list, pps_list=pps_list)
+            if avc_decoder_config != self._sent_avc_decoder_config:
+                self._sent_avc_decoder_config = avc_decoder_config
+                header_tag = build_avc_sequence_header_tag(
+                    avc_decoder_config=avc_decoder_config, timestamp_ms=relative_timestamp
+                )
+                chunks.append(header_tag + len(header_tag).to_bytes(4, "big"))
+
+        # Delivered unconditionally, whether or not a sequence header has been sent yet on
+        # *this* muxer (e.g. a viewer joining mid-GOP, before the next keyframe's own
+        # parameter-set refresh): a real player buffers/discards NALUs it cannot yet decode
+        # rather than erroring, and never delivering stream data at all until the next SPS/PPS
+        # refresh would silently stall a legitimately-connected viewer for longer than
+        # necessary - the same "never drop real bytes" posture `split_annex_b_nalus`'s own
+        # docstring already commits to.
+        if other_nalus:
+            nalu_tag = build_avc_nalu_tag(
+                avcc_payload=_avcc_from_nalus(other_nalus),
+                is_keyframe=is_keyframe,
+                timestamp_ms=relative_timestamp,
+            )
+            chunks.append(nalu_tag + len(nalu_tag).to_bytes(4, "big"))
+
+        return b"".join(chunks)
 
     def feed_audio_aac(self, *, aac_payload: bytes, timestamp_ms: int | None) -> bytes:
         tag = build_aac_raw_tag(

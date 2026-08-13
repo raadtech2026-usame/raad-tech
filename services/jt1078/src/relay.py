@@ -68,6 +68,8 @@ class Jt1078Relay:
             viewer_grace_seconds=self._config.viewer_grace_seconds,
             absolute_idle_seconds=self._config.absolute_idle_seconds,
             ingest_timeout_seconds=self._config.ingest_timeout_seconds,
+            max_global_sessions=self._config.max_global_sessions,
+            max_sessions_per_organization=self._config.max_sessions_per_organization,
             on_session_created=self._on_session_created,
             on_session_removed=self._on_session_removed,
         )

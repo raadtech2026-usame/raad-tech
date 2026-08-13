@@ -91,14 +91,24 @@ def video_session_ended(
     camera_id: str,
     occurred_at: datetime,
     actor_id: str | None,
+    reason: str | None = None,
 ) -> DomainEvent:
-    """`video.session_ended` (JT1078 Technical Design, "Emits ... events for audit")."""
+    """`video.session_ended` (JT1078 Technical Design, "Emits ... events for audit"). `reason`
+    (ADR-0026 §7) mirrors the relay's own `VideoSessionEnded.reason`
+    (`services/jt1078/src/events/session_events.py`) when this transition was driven by that
+    event — `None` for an explicit `POST /video/sessions/{id}/stop` with no relay event
+    involved yet."""
     return _new_event(
         event_type="VideoSessionEnded",
         aggregate_id=video_session_id,
         org_id=organization_id,
         occurred_at=occurred_at,
-        payload={"device_id": device_id, "camera_id": camera_id, "actor_id": actor_id},
+        payload={
+            "device_id": device_id,
+            "camera_id": camera_id,
+            "actor_id": actor_id,
+            "reason": reason,
+        },
     )
 
 
@@ -110,11 +120,17 @@ def video_session_failed(
     camera_id: str,
     occurred_at: datetime,
     actor_id: str | None,
+    reason: str | None = None,
 ) -> DomainEvent:
     return _new_event(
         event_type="VideoSessionFailed",
         aggregate_id=video_session_id,
         org_id=organization_id,
         occurred_at=occurred_at,
-        payload={"device_id": device_id, "camera_id": camera_id, "actor_id": actor_id},
+        payload={
+            "device_id": device_id,
+            "camera_id": camera_id,
+            "actor_id": actor_id,
+            "reason": reason,
+        },
     )

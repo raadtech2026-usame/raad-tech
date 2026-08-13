@@ -23,6 +23,12 @@ class RelayConfig:
     absolute_idle_seconds: float = 60.0
     ingest_timeout_seconds: float = 30.0
     idle_sweep_interval_seconds: float = 5.0
+    #: ADR-0026 §8. `50` cites `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md`
+    #: §13.1's own "e.g., start 50 global" - the one concrete number an approved document names.
+    #: `<= 0` means "no ceiling." No approved document names a per-org number, so that one
+    #: defaults unconfigured (`0`, no additional restriction beyond the global ceiling).
+    max_global_sessions: int = 50
+    max_sessions_per_organization: int = 0
     #: The address a device dials to reach `ingest_port` — distinct from `ingest_host` (a bind
     #: address, typically "0.0.0.0", never a valid destination for a device to connect *to*).
     #: `SessionRequestServer` echoes this back to the Business API's `Jt1078RelayAdapter` as part
@@ -48,6 +54,12 @@ class RelayConfig:
             ),
             ingest_timeout_seconds=float(
                 os.environ.get("JT1078_RELAY_INGEST_TIMEOUT_SECONDS", "30")
+            ),
+            max_global_sessions=int(
+                os.environ.get("JT1078_RELAY_MAX_GLOBAL_SESSIONS", "50")
+            ),
+            max_sessions_per_organization=int(
+                os.environ.get("JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION", "0")
             ),
             public_ingest_host=os.environ.get(
                 "JT1078_RELAY_PUBLIC_INGEST_HOST", ingest_host
