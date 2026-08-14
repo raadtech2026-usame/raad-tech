@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from raad.core.config.settings import get_settings
+from raad.core.config.settings import Environment, get_settings
 from raad.core.di.bootstrap import build_container
 from raad.core.errors.handlers import register_exception_handlers
 from raad.core.logging.setup import configure_logging, get_logger
@@ -123,12 +123,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("raad_business_api_shutdown")
 
 
+def _docs_kwargs(environment: Environment) -> dict[str, str | None]:
+    """`/docs`, `/redoc`, `/openapi.json` are FastAPI's own auto-mounted routes — left at their
+    defaults (all three enabled) in `dev`/`staging`, but disabled outright in `prod` (`docs_url`/
+    `redoc_url`/`openapi_url` all `None`, FastAPI's own documented mechanism for turning a route
+    off, not a custom guard). A live deployment's full API surface, including RBAC/auth internals,
+    shouldn't be publicly browsable. Pure function of `Environment`, not `get_settings()`/env
+    vars directly, so it's trivially unit-testable and can't depend on ambient process state — the
+    same class of fragility Backend CI just caught in `test_video_provider_di_wiring.py`
+    (`PROJECT_STATUS.md` §9). Mirrors `Settings.validate_on_startup`'s own `Environment.PROD`-only
+    precedent (`staging` is treated like `dev` everywhere else in this codebase today)."""
+    if environment is Environment.PROD:
+        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    return {}
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
         title="RAAD Business API",
         version="0.1.0",
         lifespan=lifespan,
+        **_docs_kwargs(settings.environment),
     )
 
     # Middleware order matters: Starlette runs the *last-added* middleware outermost, i.e.
