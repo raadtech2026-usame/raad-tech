@@ -26,6 +26,7 @@ from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.events.outbox import OutboxWriter
 from raad.core.audit.writer import AuditWriter
 from raad.core.ids.generator import UlidGenerator
+from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
 from raad.modules.video.domain.entities import VideoSession
 from raad.modules.video.domain.value_objects import (
@@ -167,6 +168,53 @@ class VideoSessionRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched.purpose.value, "playback")
         self.assertEqual(fetched.window_start, start)
         self.assertEqual(fetched.window_end, end)
+
+    async def test_get_is_tenant_scoped_a_cross_org_uow_gets_none(self) -> None:
+        """Focused D5 review, 2026-08-13 (Finding 1). Before this fix,
+        `SqlAlchemyVideoSessionRepository` never accepted a `scope` at all, so `get()` was
+        unconditionally unrestricted regardless of caller — `POST /video/sessions/{id}/stop`
+        could resolve a session belonging to *another* organization, and `enforce_d5` would then
+        deny it with a 403 (confirming the session's existence) instead of the 404 every other
+        cross-org lookup in this codebase gives. A UoW scoped to a different organization must
+        now get `None`, exactly like `SqlAlchemyParentRepository`/`SqlAlchemyDeviceRepository`
+        already behave; the session's own organization (or an unrestricted scope) must still
+        resolve it, unchanged."""
+        org_id = self.id_generator.new_id()
+        other_org_id = self.id_generator.new_id()
+        device_id = f"device-{self.tag}-scope"
+        camera_id = f"camera-{self.tag}-scope"
+        requester_id = self.id_generator.new_id()
+        async with self._new_uow() as uow:
+            session = VideoSession.request_live(
+                id=VideoSessionId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                device_id=DeviceId(device_id),
+                camera_id=CameraId(camera_id),
+                requested_by=UserId(requester_id),
+                clock=self.clock,
+            )
+            uow.video_sessions.add(session)
+            uow.record_events(session.pull_domain_events())
+            await uow.commit()
+            session_id = session.id
+            self._created_session_ids.append(str(session_id))
+
+        cross_org_uow = self._new_uow()
+        cross_org_uow.scope = TenantRegionScope(organization_ids=frozenset({other_org_id}))
+        async with cross_org_uow as uow:
+            cross_org_result = await uow.video_sessions.get(session_id)
+        self.assertIsNone(cross_org_result)
+
+        same_org_uow = self._new_uow()
+        same_org_uow.scope = TenantRegionScope(organization_ids=frozenset({org_id}))
+        async with same_org_uow as uow:
+            same_org_result = await uow.video_sessions.get(session_id)
+        self.assertIsNotNone(same_org_result)
+
+        unrestricted_uow = self._new_uow()
+        async with unrestricted_uow as uow:
+            unrestricted_result = await uow.video_sessions.get(session_id)
+        self.assertIsNotNone(unrestricted_result)
 
 
 if __name__ == "__main__":

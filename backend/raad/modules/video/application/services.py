@@ -55,7 +55,11 @@ from raad.modules.video.domain.value_objects import (
     OrganizationId,
     UserId,
     VideoSessionId,
+    VideoSessionStatus,
 )
+
+_OPEN_STATUSES = (VideoSessionStatus.REQUESTED, VideoSessionStatus.ACTIVE)
+_TERMINAL_STATUSES = (VideoSessionStatus.ENDED, VideoSessionStatus.FAILED)
 
 logger = get_logger("raad.video.application")
 
@@ -158,9 +162,20 @@ class VideoApplicationService:
         """`POST /video/sessions/{id}/stop`. Unlike the two request methods, a missing
         `VideoProviderPort` does not block ending the session locally — `end()` still runs, so a
         control record can always be closed out even if the vendor-side teardown itself could
-        not be attempted."""
+        not be attempted.
+
+        **Idempotent on the provider-facing side too (stale-permission fix, focused D5 review
+        2026-08-13).** A session already `ENDED`/`FAILED` short-circuits *before* any
+        `VideoProviderPort.stop` call — `VideoSession.end()`'s own same-state no-op only
+        protects the persisted row; without this guard, calling this method twice for the same
+        session (a client retry, or `events/subscribers.py`'s revoke-driven cleanup racing an
+        already-completed stop — at-least-once delivery, LLD §10.3) would re-signal the relay/
+        device a second time for a session that no longer needs tearing down."""
         async with uow:
             session = await self._get_session_or_raise(uow, command.video_session_id)
+
+        if session.status in _TERMINAL_STATUSES:
+            return video_session_to_dto(session)
 
         if self._video_provider is not None:
             await self._video_provider.stop(reference=str(session.id))
@@ -178,6 +193,33 @@ class VideoApplicationService:
         async with uow:
             session = await self._get_session_or_raise(uow, query.video_session_id)
             return video_session_to_dto(session)
+
+    async def list_active_sessions_for_requester(
+        self, *, requested_by_user_id: str, purpose: str, uow: VideoUnitOfWork
+    ) -> list[VideoSessionDTO]:
+        """Stale-permission fix (focused D5 review, 2026-08-13): resolves every `REQUESTED`/
+        `ACTIVE` session a given user currently has open for the given `purpose` — the read side
+        of `events/subscribers.ParentVideoLiveAccessRevokedProcessor`/
+        `ParentVideoPlaybackAccessRevokedProcessor`'s own "find what to stop" step.
+        `requested_by_user_id` is a parent's own `user_id` (`VideoSession.requested_by`), never a
+        client-supplied id — the caller resolves it from a trusted `Parent` row first.
+
+        Read-only, no state change — the caller is responsible for actually tearing each session
+        down via the existing `stop_video_session`, never a second stop mechanism. Filters
+        `list_all()` client-side rather than adding a new indexed finder, the same "an unbounded
+        worker read doesn't need one" precedent `notifications/events/subscribers.py`'s own
+        `student_assignments.list_all()` use already establishes for an analogous cross-cutting
+        read — `video_sessions.requested_by` carries no index of its own (Database Design §7.4),
+        matching that reasoning exactly."""
+        async with uow:
+            sessions = await uow.video_sessions.list_all()
+        return [
+            video_session_to_dto(session)
+            for session in sessions
+            if str(session.requested_by) == requested_by_user_id
+            and session.purpose.value == purpose
+            and session.status in _OPEN_STATUSES
+        ]
 
     async def mark_session_active(
         self, command: MarkVideoSessionActiveCommand, *, uow: VideoUnitOfWork

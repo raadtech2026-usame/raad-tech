@@ -33,7 +33,13 @@ from raad.modules.video.application.queries import GetVideoSessionByIdQuery
 from raad.modules.video.application.services import VideoApplicationService
 from raad.modules.video.domain.entities import VideoSession
 from raad.modules.video.domain.repositories import VideoSessionRepository
-from raad.modules.video.domain.value_objects import VideoSessionId
+from raad.modules.video.domain.value_objects import (
+    CameraId,
+    DeviceId,
+    OrganizationId,
+    UserId,
+    VideoSessionId,
+)
 
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
 NON_EXISTENT_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
@@ -313,6 +319,39 @@ class StopVideoSessionTests(unittest.IsolatedAsyncioTestCase):
                 uow=uow,
             )
 
+    async def test_stopping_an_already_ended_session_does_not_re_signal_the_provider(
+        self,
+    ) -> None:
+        """Stale-permission fix, focused D5 review 2026-08-13: a session already `ENDED` must
+        short-circuit before any `VideoProviderPort.stop` call - repeated `stop_video_session`
+        calls for the same session (a client retry, or the revoke-driven cleanup racing an
+        already-completed stop) must never re-signal the relay/device a second time."""
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+        session = await service.request_live_video(
+            RequestLiveVideoCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-ref-idempotent",
+                camera_id="camera-ref-idempotent",
+                terminal_id="00000000013800138000",
+                channel_no=1,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        first = await service.stop_video_session(
+            StopVideoSessionCommand(video_session_id=session.id, actor=make_actor()), uow=uow
+        )
+        second = await service.stop_video_session(
+            StopVideoSessionCommand(video_session_id=session.id, actor=make_actor()), uow=uow
+        )
+
+        self.assertEqual(first.status, "ended")
+        self.assertEqual(second.status, "ended")
+        self.assertEqual(len(provider.stop_calls), 1)
+
 
 class GetVideoSessionByIdTests(unittest.IsolatedAsyncioTestCase):
     async def test_not_found_raises(self) -> None:
@@ -322,6 +361,105 @@ class GetVideoSessionByIdTests(unittest.IsolatedAsyncioTestCase):
             await service.get_video_session_by_id(
                 GetVideoSessionByIdQuery(video_session_id=NON_EXISTENT_ID), uow=uow
             )
+
+
+class ListActiveSessionsForRequesterTests(unittest.IsolatedAsyncioTestCase):
+    """`VideoApplicationService.list_active_sessions_for_requester` (stale-permission fix,
+    focused D5 review 2026-08-13) — the read side `events/subscribers.
+    ParentVideoLiveAccessRevokedProcessor`/`ParentVideoPlaybackAccessRevokedProcessor` use to
+    find what to stop. Sessions are constructed directly via the domain factories, bypassing
+    `request_live_video`'s own `NotImplementedError`-when-unbound behavior — irrelevant here."""
+
+    def _live_session(self, *, requested_by: str, suffix: str) -> VideoSession:
+        return VideoSession.request_live(
+            id=VideoSessionId(f"01J8Z3K9G6X8YV5T4N2R{suffix:0>6}"),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            device_id=DeviceId(f"device-{suffix}"),
+            camera_id=CameraId(f"camera-{suffix}"),
+            requested_by=UserId(requested_by),
+            clock=CLOCK,
+        )
+
+    def _playback_session(self, *, requested_by: str, suffix: str) -> VideoSession:
+        start = datetime(2026, 7, 20, 9, 0, 0)
+        return VideoSession.request_playback(
+            id=VideoSessionId(f"01J8Z3K9G6X8YV5T4N2R{suffix:0>6}"),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            device_id=DeviceId(f"device-{suffix}"),
+            camera_id=CameraId(f"camera-{suffix}"),
+            requested_by=UserId(requested_by),
+            window_start=start,
+            window_end=start + timedelta(minutes=15),
+            clock=CLOCK,
+        )
+
+    async def test_returns_only_open_sessions_for_the_matching_requester_and_purpose(
+        self,
+    ) -> None:
+        service = make_service()
+        uow = make_uow()
+
+        mine_live = self._live_session(requested_by="parent-user-1", suffix="100001")
+        mine_playback = self._playback_session(requested_by="parent-user-1", suffix="100002")
+        someone_elses_live = self._live_session(requested_by="parent-user-2", suffix="100003")
+        uow.video_sessions.add(mine_live)
+        uow.video_sessions.add(mine_playback)
+        uow.video_sessions.add(someone_elses_live)
+
+        live_results = await service.list_active_sessions_for_requester(
+            requested_by_user_id="parent-user-1", purpose="live", uow=uow
+        )
+        playback_results = await service.list_active_sessions_for_requester(
+            requested_by_user_id="parent-user-1", purpose="playback", uow=uow
+        )
+
+        self.assertEqual([s.id for s in live_results], [mine_live.id.value])
+        self.assertEqual([s.id for s in playback_results], [mine_playback.id.value])
+
+    async def test_excludes_ended_and_failed_sessions(self) -> None:
+        service = make_service()
+        uow = make_uow()
+
+        ended = self._live_session(requested_by="parent-user-1", suffix="100004")
+        ended.activate(clock=CLOCK)
+        ended.end(clock=CLOCK)
+        failed = self._live_session(requested_by="parent-user-1", suffix="100005")
+        failed.fail(clock=CLOCK)
+        still_open = self._live_session(requested_by="parent-user-1", suffix="100006")
+        uow.video_sessions.add(ended)
+        uow.video_sessions.add(failed)
+        uow.video_sessions.add(still_open)
+
+        results = await service.list_active_sessions_for_requester(
+            requested_by_user_id="parent-user-1", purpose="live", uow=uow
+        )
+
+        self.assertEqual([s.id for s in results], [still_open.id.value])
+
+    async def test_handles_multiple_open_sessions_for_the_same_requester(self) -> None:
+        service = make_service()
+        uow = make_uow()
+
+        first = self._live_session(requested_by="parent-user-1", suffix="100007")
+        second = self._live_session(requested_by="parent-user-1", suffix="100008")
+        uow.video_sessions.add(first)
+        uow.video_sessions.add(second)
+
+        results = await service.list_active_sessions_for_requester(
+            requested_by_user_id="parent-user-1", purpose="live", uow=uow
+        )
+
+        self.assertEqual({s.id for s in results}, {first.id.value, second.id.value})
+
+    async def test_no_matching_sessions_returns_empty_list(self) -> None:
+        service = make_service()
+        uow = make_uow()
+
+        results = await service.list_active_sessions_for_requester(
+            requested_by_user_id="parent-user-1", purpose="live", uow=uow
+        )
+
+        self.assertEqual(results, [])
 
 
 class MarkSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):

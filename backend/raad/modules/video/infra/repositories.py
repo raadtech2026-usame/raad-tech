@@ -6,6 +6,19 @@ identity-map/`flush_tracked_changes` pattern exactly.
 **`list_all`'s unrestricted-`TenantRegionScope` caveat carries over unchanged** — the same
 system-wide gap every other module's `list_all` in this codebase already flags, not a
 `video`-specific one.
+
+**`get`/`get_by_id` are now tenant-scoped (focused D5 review, 2026-08-13), closing a real,
+`video`-specific gap `list_all`'s own caveat above does not cover.** Unlike every sibling
+repository (`SqlAlchemyParentRepository`, `SqlAlchemyDeviceRepository`, ...),
+`SqlAlchemyVideoSessionRepository` previously never accepted or forwarded a `scope` at all — its
+`SqlAlchemyUnitOfWork.__init__` default (unrestricted) was therefore permanent, not merely the
+per-call-site default it is everywhere else. `scope` now flows the same way it does for every
+other module: `video.api.deps.get_video_uow` resolves it and sets `uow.scope`,
+`SqlAlchemyVideoUnitOfWork.__aenter__` passes it into this repository's constructor, which
+forwards it to `SqlAlchemyRepositoryBase.__init__` so `get_by_id`'s existing `_apply_scope`
+takes effect. This is what makes `POST /video/sessions/{id}/stop` (`api/routers.py`) 404 for a
+`session_id` belonging to another organization, instead of leaking its existence via a 403 from
+`enforce_d5`.
 """
 
 from __future__ import annotations
@@ -28,8 +41,10 @@ class SqlAlchemyVideoSessionRepository(
 ):
     model = VideoSessionModel
 
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[VideoSession, VideoSessionModel]] = {}
 
     async def get(self, video_session_id: VideoSessionId) -> VideoSession | None:
@@ -66,7 +81,7 @@ class SqlAlchemyVideoUnitOfWork(SqlAlchemyUnitOfWork, VideoUnitOfWork):
 
     async def __aenter__(self) -> "SqlAlchemyVideoUnitOfWork":
         await super().__aenter__()
-        self.video_sessions = SqlAlchemyVideoSessionRepository(self.session)
+        self.video_sessions = SqlAlchemyVideoSessionRepository(self.session, scope=self.scope)
         return self
 
     async def commit(self) -> None:
