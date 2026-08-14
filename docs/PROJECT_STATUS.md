@@ -1752,6 +1752,34 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Backend CI failure fixed — `test_video_provider_di_wiring.py` job-environment leakage**
+  (2026-08-14). The `Backend CI` run on commit `d689c08` (D5 review findings 1+2, tenant-scoping
+  `video_sessions`) failed its `Run unit tests` step: 1394 ran, 1 failed —
+  `test_signaling_url_alone_without_a_broker_leaves_it_unbound`
+  (`backend/tests/unit/test_video_provider_di_wiring.py:48`), `AssertionError: LookupError not
+  raised`. Root-caused to a test-isolation bug, not a production regression and unrelated to
+  `d689c08`'s own changes (confirmed via `git show --stat`/diff — that commit never touched
+  `bootstrap.py`, `settings.py`, or this test file): `.github/workflows/backend-pipeline.yml` sets
+  `RAAD_BROKER__URL: redis://localhost:6379/1` at **job level** (needed by the later integration-
+  test step), and `Settings(_env_file=None, ...)` only disables the dotenv source — the real
+  process environment is still read for any field the test doesn't explicitly override. Since this
+  one test constructed `Settings` with `device_plane=DevicePlaneSettings(jt1078_signaling_url=...)`
+  but no explicit `broker=`, the leaked `RAAD_BROKER__URL` made `settings.broker.url` truthy in CI
+  (empty locally, which is why it passed on a dev machine), so `core/di/bootstrap.py`'s
+  `if settings.broker.url: ... if settings.device_plane.jt1078_signaling_url: bind(...)` bound
+  `VideoProviderPort` when the test's intent was "no broker configured" — confirmed by reproducing
+  the exact CI env vars locally and reproducing the identical failure. `bootstrap.py`'s conditional-
+  binding logic itself is correct and needed no change. **Fix (test-only, one line):** the affected
+  test now explicitly passes `broker=BrokerSettings(url="")`, matching the sibling tests' own
+  explicit-override pattern, making the assertion hermetic against ambient environment variables.
+  Verified locally (`tests/unit`: 1394/1394; `tests/architecture`: 10/10, both re-run with the
+  exact CI env vars reproduced) and then for real in GitHub Actions — commit `70217f5` pushed to
+  `main`, `Backend CI` run [#4](https://github.com/raadtech2026-usame/raad-tech/actions/runs/31817093951)
+  completed with conclusion `success` across all eight steps, including the two gates this
+  sandbox itself cannot run (no Docker/local service containers matching the CI's `raad`/`raad`/
+  `raad` Postgres+Redis credentials — see Known Issue #15's own disclosed class of gap): live
+  integration tests and the backup/restore round-trip.
+
 - **Native JT/T 808-2019 + JT/T 1078-2016 protocol compliance — architecture update** (2026-08-10,
   ADR-0025), at the user's explicit direction, following a prior, code-change-free
   protocol-source-of-truth review of two new official supplier documents (a JT/T 808-2019 + JT/T
