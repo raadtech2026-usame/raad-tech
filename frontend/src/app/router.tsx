@@ -25,6 +25,7 @@ import { LiveTrackingPage } from "../features/live-monitoring/LiveTrackingPage";
 import { NotificationsPage } from "../features/notifications/NotificationsPage";
 import { BillingPage } from "../features/billing/BillingPage";
 import { OrgBillingPage } from "../features/billing/OrgBillingPage";
+import { VideoPage } from "../features/video/VideoPage";
 
 const PLATFORM_ROLES: Role[] = ["founder", "regional_manager", "support_staff", "finance_staff"];
 const ORGANIZATION_ROLES: Role[] = ["org_admin"];
@@ -147,7 +148,17 @@ const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
  * owns and manages all GPS/MDVR hardware; schools never register, configure, or even view raw
  * device records. An Org Admin's own device-connectivity visibility is served instead by
  * `VehiclesPage`'s own "Tracking" drawer section (`fleet_device.vehicles.tracking_status`),
- * which carries no device identifier of any kind. */
+ * which carries no device identifier of any kind.
+ *
+ * **`/org/video` (F10) graduates from `PlaceholderPage`** — `VideoPage.tsx` reuses the existing
+ * ADR-0024/0025/0026 `/video/*` contracts and authorization chain unchanged; see that
+ * component's own module docstring for why its picker is device-first (a real, confirmed
+ * `fleet_device` contract gap, not a design choice) and why browser playback itself is
+ * deliberately not wired (the relay's WS-FLV transport needs an approved frontend dependency
+ * this change did not add). This is the one narrow, deliberate exception to the "no device
+ * visibility" note directly above — `fleet_device.devices.read` (org_admin already holds it,
+ * ADR-0018) is exercised here only to resolve `device_id`/`camera_id` for the video request
+ * itself, not to add a general device-browsing surface. */
 const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/vehicles": <VehiclesPage />,
   "/org/students": <StudentsPage />,
@@ -156,6 +167,7 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/routes": <RoutesPage />,
   "/org/trips": <TripsPage />,
   "/org/tracking": <LiveTrackingPage />,
+  "/org/video": <VideoPage />,
   "/org/notifications": <NotificationsPage />,
   "/org/billing": <OrgBillingPage />,
 };
