@@ -42,6 +42,7 @@ class VideoProviderDiWiringTests(unittest.TestCase):
     def test_signaling_url_alone_without_a_broker_leaves_it_unbound(self) -> None:
         settings = Settings(
             _env_file=None,
+            broker=BrokerSettings(url=""),
             device_plane=DevicePlaneSettings(jt1078_signaling_url=_SIGNALING_URL),
         )
         container = build_container(settings)
