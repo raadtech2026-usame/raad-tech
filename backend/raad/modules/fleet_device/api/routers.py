@@ -23,6 +23,15 @@ carries (CLAUDE.md's "Known gaps"). Same addition, same reasoning, as `GET /user
 `GET /devices`'s whitelist deliberately excludes `sim_msisdn` (PII, masked in logs per
 `application/queries.py`'s own docstring).
 
+**`GET /vehicles/{vehicle_id}/device-assignment` — added under ADR-0027.** Resolves the
+vehicle's active `DeviceAssignment` (reusing the existing `DeviceAssignmentResponse` schema,
+previously returned only by the three write routes below), the read a device-centric vehicle
+operations view (GPS + video from one selected vehicle) needs. Gated by
+`fleet_device.devices.read`; see the route's own docstring and ADR-0027 for the full
+scope-safety reasoning (the vehicle is resolved via the existing scoped lookup before the
+assignment lookup runs). `DeviceResponse` also gained `is_online` (ADR-0027 Change 2, same ADR)
+— no new route needed for that half, it rides on the existing `GET /devices`/`GET /devices/{id}`.
+
 **Endpoints deliberately not implemented** (documented, not silently dropped):
 - `DELETE /vehicles/{id}` / `DELETE /devices/{id}` (uniform-CRUD soft delete, §4 preamble) —
   neither aggregate has soft-delete behavior in the domain (Database Design §9 keeps soft
@@ -51,7 +60,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from raad.core.errors.exceptions import ValidationError
+from raad.core.errors.exceptions import NotFoundError, ValidationError
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
@@ -154,6 +163,7 @@ def _device_dto_to_response(device: DeviceDTO) -> DeviceResponse:
         serial_number=device.serial_number,
         lifecycle_state=device.lifecycle_state,
         last_seen_at=device.last_seen_at,
+        is_online=device.is_online,
         created_at=device.created_at,
         updated_at=device.updated_at,
         cameras=[
@@ -287,6 +297,37 @@ async def get_vehicle(
         GetVehicleByIdQuery(vehicle_id=vehicle_id), uow=uow
     )
     return _vehicle_dto_to_response(vehicle)
+
+
+@vehicles_router.get(
+    "/{vehicle_id}/device-assignment",
+    response_model=DeviceAssignmentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a vehicle's active device assignment",
+    description=(
+        "ADR-0027 — resolves the vehicle's currently active Device/MDVR assignment: the one "
+        "physical source of both JT808 GPS and JT1078 video for this vehicle. Gated by "
+        "`fleet_device.devices.read` (not `.vehicles.read` — the payload is device data, "
+        "matching ADR-0018's own precedent). The vehicle is resolved via the existing, "
+        "already-scoped vehicle lookup before the assignment lookup runs, so a nonexistent "
+        "vehicle, an out-of-scope vehicle, and a vehicle with no active device assignment all "
+        "404 identically — no distinguishing disclosure between them."
+    ),
+)
+async def get_vehicle_device_assignment(
+    vehicle_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("fleet_device.devices.read"))
+    ),
+    vehicle_service: VehicleApplicationService = Depends(get_vehicle_service),
+    uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> DeviceAssignmentResponse:
+    assignment = await vehicle_service.get_active_device_assignment_for_vehicle(
+        vehicle_id, uow=uow
+    )
+    if assignment is None:
+        raise NotFoundError(f"No active device assignment for vehicle {vehicle_id}.")
+    return _assignment_dto_to_response(assignment)
 
 
 @vehicles_router.patch(

@@ -898,6 +898,76 @@ class DeviceAssignmentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dto.cameras[0].label, "dashcam")
 
 
+class VehicleDeviceAssignmentQueryTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0027 Change 1: `VehicleApplicationService.get_active_device_assignment_for_vehicle`
+    — the reverse direction of `DeviceApplicationService.
+    get_active_vehicle_assignment_for_device` (ADR-0026), resolving the vehicle first via the
+    existing, already-scoped `_get_vehicle_or_raise` path before ever querying
+    `device_assignments`. Cross-organization scope-rejection needs a real, live-scoped
+    repository and is proven in `test_fleet_device_repository.py`'s
+    `TenantIsolationRepositoryTests` instead — these in-memory fakes carry no scope concept at
+    all, so they can only prove the found/none/nonexistent-vehicle shapes."""
+
+    async def test_returns_the_active_assignment(self) -> None:
+        vehicle_service, device_service, uow = make_services()
+        vehicle_id = await _register_vehicle(vehicle_service, uow)
+        device_id = await _register_activated_device(device_service, uow)
+        await device_service.assign_device_to_vehicle(
+            AssignDeviceToVehicleCommand(
+                device_id=device_id, vehicle_id=vehicle_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        dto = await vehicle_service.get_active_device_assignment_for_vehicle(
+            vehicle_id, uow=uow
+        )
+
+        self.assertIsNotNone(dto)
+        self.assertEqual(dto.device_id, device_id)
+        self.assertEqual(dto.vehicle_id, vehicle_id)
+        self.assertTrue(dto.is_active)
+
+    async def test_returns_none_for_a_vehicle_with_no_active_assignment(self) -> None:
+        vehicle_service, _device_service, uow = make_services()
+        vehicle_id = await _register_vehicle(vehicle_service, uow)
+
+        dto = await vehicle_service.get_active_device_assignment_for_vehicle(
+            vehicle_id, uow=uow
+        )
+
+        self.assertIsNone(dto)
+
+    async def test_raises_not_found_for_a_nonexistent_vehicle(self) -> None:
+        vehicle_service, _device_service, uow = make_services()
+
+        with self.assertRaises(NotFoundError):
+            await vehicle_service.get_active_device_assignment_for_vehicle(
+                NON_EXISTENT_ULID, uow=uow
+            )
+
+    async def test_returns_none_after_the_device_is_unassigned(self) -> None:
+        """The assignment's own closed history row must not be mistaken for an active one."""
+        vehicle_service, device_service, uow = make_services()
+        vehicle_id = await _register_vehicle(vehicle_service, uow)
+        device_id = await _register_activated_device(device_service, uow)
+        await device_service.assign_device_to_vehicle(
+            AssignDeviceToVehicleCommand(
+                device_id=device_id, vehicle_id=vehicle_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        await device_service.unassign_device(
+            UnassignDeviceCommand(device_id=device_id, actor=make_actor()), uow=uow
+        )
+
+        dto = await vehicle_service.get_active_device_assignment_for_vehicle(
+            vehicle_id, uow=uow
+        )
+
+        self.assertIsNone(dto)
+
+
 OTHER_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3OT"
 
 
@@ -1274,6 +1344,33 @@ class RecordDeviceSeenTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertFalse(uow.devices.by_id[device_id].is_online)
+
+    async def test_get_device_by_id_reflects_is_online(self) -> None:
+        """ADR-0027 Change 2: `DeviceDTO.is_online` mirrors `Device.is_online` directly — no
+        second source of truth, proven via the same mapper (`device_to_dto`) `GET /devices/{id}`
+        uses."""
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+
+        before = await device_service.get_device_by_id(
+            GetDeviceByIdQuery(device_id=device_id), uow=uow
+        )
+        self.assertFalse(before.is_online)
+
+        await device_service.record_device_seen(
+            RecordDeviceSeenCommand(
+                device_id=device_id,
+                seen_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+                is_online=True,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        after = await device_service.get_device_by_id(
+            GetDeviceByIdQuery(device_id=device_id), uow=uow
+        )
+        self.assertTrue(after.is_online)
 
 
 class ReceiveDeviceInventoryItemTests(unittest.IsolatedAsyncioTestCase):

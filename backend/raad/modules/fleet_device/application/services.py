@@ -193,6 +193,34 @@ class VehicleApplicationService:
                 tracking_status=TrackingStatusDTO(last_seen_at=device.last_seen_at),
             )
 
+    async def get_active_device_assignment_for_vehicle(
+        self, vehicle_id: str, *, uow: FleetDeviceUnitOfWork
+    ) -> DeviceAssignmentDTO | None:
+        """ADR-0027 Change 1: resolves "which device is currently assigned to this vehicle" —
+        the reverse direction of `DeviceApplicationService.
+        get_active_vehicle_assignment_for_device` (ADR-0026). Backs `GET /vehicles/{id}/
+        device-assignment`, the read this vehicle-centric operational view (GPS + video from
+        one selected vehicle) needs.
+
+        **Deliberately resolves the vehicle first, via the same already-scoped
+        `_get_vehicle_or_raise` path `get_vehicle_by_id` above already uses, before ever
+        touching `device_assignments`.** `DeviceAssignmentRepository.active_for_vehicle` itself
+        applies no tenant/region scope (a real, pre-existing gap recorded in ADR-0027's Context,
+        deliberately not fixed here) — every existing caller of that repository method is safe
+        only because it's reached through an already-scoped id first, and this method preserves
+        that same safety-by-ordering rather than trusting the repository method to scope itself.
+        An out-of-scope or nonexistent `vehicle_id` therefore raises `NotFoundError` here, before
+        the assignment lookup ever runs.
+
+        Returns `None` (never raises) only for "vehicle exists, in scope, but currently has no
+        active device" — the same expected, non-exceptional absence
+        `get_active_vehicle_assignment_for_device` already returns `None` for on its own
+        symmetric case."""
+        async with uow:
+            vehicle = await self._get_vehicle_or_raise(uow, vehicle_id)
+            assignment = await uow.device_assignments.active_for_vehicle(vehicle.id)
+            return assignment_to_dto(assignment) if assignment is not None else None
+
     async def list_vehicles(
         self, query: ListVehiclesQuery, *, uow: FleetDeviceUnitOfWork
     ) -> OffsetPage[VehicleDTO]:

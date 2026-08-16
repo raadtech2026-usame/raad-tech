@@ -205,6 +205,14 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     # narrower, count-only routes back that KPI tile. API Contracts predates this realignment.
     ("GET", "/api/v1/students/count", "RAAD business model realignment, no API Contracts row"),
     ("GET", "/api/v1/parents/count", "RAAD business model realignment, no API Contracts row"),
+    # ADR-0027 Change 1: resolves a vehicle's active Device/MDVR assignment — the one physical
+    # source of both JT808 GPS and JT1078 video for that vehicle. API Contracts §4.2 predates
+    # this ADR, same "documented predates the ADR" shape as the entries above.
+    (
+        "GET",
+        "/api/v1/vehicles/{vehicle_id}/device-assignment",
+        "ADR-0027 Change 1, no API Contracts row",
+    ),
     # Infrastructure/process health probes — outside API Contracts §1's `/api/v1` namespace
     # entirely by design (liveness/readiness checks are never versioned resource routes).
     ("GET", "/health", "process-level health probe, outside /api/v1"),

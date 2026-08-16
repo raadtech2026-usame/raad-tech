@@ -85,6 +85,9 @@ class DeviceResponse(BaseModel):
     serial_number: str | None
     lifecycle_state: str
     last_seen_at: datetime | None
+    #: ADR-0027 Change 2: mirrors `Device.is_online` (ADR-0020) — read directly, never a second
+    #: source of truth.
+    is_online: bool
     created_at: datetime
     updated_at: datetime
     cameras: list[CameraResponse]

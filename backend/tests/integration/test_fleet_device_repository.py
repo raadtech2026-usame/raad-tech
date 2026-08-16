@@ -28,7 +28,7 @@ from sqlalchemy import text
 from raad.core.audit.writer import AuditWriter
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
-from raad.core.errors.exceptions import ConflictError, ValidationError
+from raad.core.errors.exceptions import ConflictError, NotFoundError, ValidationError
 from raad.core.events.outbox import OutboxWriter
 from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
@@ -36,9 +36,18 @@ from raad.core.tenancy.principal import SYSTEM_PRINCIPAL
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
 from raad.modules.fleet_device.application.commands import RegisterDeviceCommand
-from raad.modules.fleet_device.application.services import DeviceApplicationService
-from raad.modules.fleet_device.domain.entities import Device, DeviceInventoryItem, Vehicle
+from raad.modules.fleet_device.application.services import (
+    DeviceApplicationService,
+    VehicleApplicationService,
+)
+from raad.modules.fleet_device.domain.entities import (
+    Device,
+    DeviceAssignment,
+    DeviceInventoryItem,
+    Vehicle,
+)
 from raad.modules.fleet_device.domain.value_objects import (
+    AssignmentId,
     DeviceId,
     DeviceInventoryState,
     DeviceLifecycleState,
@@ -519,11 +528,23 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.tag = uuid.uuid4().hex[:8]
         self.org_a = self.id_generator.new_id()
         self.org_b = self.id_generator.new_id()
+        self.vehicle_service = VehicleApplicationService(
+            clock=self.clock, id_generator=self.id_generator
+        )
         self._created_vehicle_ids: list[str] = []
         self._created_device_ids: list[str] = []
+        self._created_assignment_ids: list[str] = []
 
     async def asyncTearDown(self) -> None:
         async with self.engine.begin() as conn:
+            # FK-safe order: assignments -> devices/vehicles (mirrors
+            # `FleetDeviceAssignmentDatabaseInvariantTests` in
+            # test_postgres_repository_invariants.py).
+            if self._created_assignment_ids:
+                await conn.execute(
+                    text("DELETE FROM device_assignments WHERE id = ANY(:ids)"),
+                    {"ids": self._created_assignment_ids},
+                )
             if self._created_vehicle_ids:
                 await conn.execute(
                     text("DELETE FROM vehicles WHERE id = ANY(:ids)"),
@@ -573,6 +594,23 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
             await uow.commit()
             self._created_device_ids.append(str(device.id))
             return str(device.id)
+
+    async def _seed_assignment(
+        self, *, organization_id: str, device_id: str, vehicle_id: str
+    ) -> str:
+        async with self._new_uow() as uow:
+            assignment = DeviceAssignment.open(
+                id=AssignmentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(organization_id),
+                device_id=DeviceId(device_id),
+                vehicle_id=VehicleId(vehicle_id),
+                clock=self.clock,
+            )
+            uow.device_assignments.add(assignment)
+            uow.record_events(assignment.pull_domain_events())
+            await uow.commit()
+            self._created_assignment_ids.append(str(assignment.id))
+            return str(assignment.id)
 
     async def test_org_a_cannot_get_org_bs_vehicle_by_id(self) -> None:
         """The IDOR case: substituting another organization's real id must not work, even
@@ -681,6 +719,69 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         visible_ids = {str(v.id) for v in visible}
         self.assertIn(vehicle_a, visible_ids)
         self.assertIn(vehicle_b, visible_ids)
+
+    async def test_get_active_device_assignment_for_vehicle_succeeds_in_own_org(
+        self,
+    ) -> None:
+        """ADR-0027 Change 1, same-org case: the new application-service method resolves the
+        vehicle's active device assignment when the caller's scope covers the vehicle's own
+        organization."""
+        vehicle_a = await self._seed_vehicle(
+            organization_id=self.org_a, plate_no=f"ASSIGN-{self.tag}"
+        )
+        device_a = await self._seed_device(
+            organization_id=self.org_a, terminal_id=f"ASSIGN-{self.tag}"
+        )
+        await self._seed_assignment(
+            organization_id=self.org_a, device_id=device_a, vehicle_id=vehicle_a
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        dto = await self.vehicle_service.get_active_device_assignment_for_vehicle(
+            vehicle_a, uow=self._new_uow(scope=scope_a)
+        )
+
+        self.assertIsNotNone(dto)
+        self.assertEqual(dto.device_id, device_a)
+        self.assertEqual(dto.vehicle_id, vehicle_a)
+        self.assertTrue(dto.is_active)
+
+    async def test_get_active_device_assignment_for_vehicle_404s_cross_org(self) -> None:
+        """ADR-0027 Context point 4, proven live: `DeviceAssignmentRepository.
+        active_for_vehicle` itself applies no scope — this proves the new method is still safe
+        because it resolves the vehicle via the already-scoped `uow.vehicles.get` first.
+        Organization A must not be able to discover Organization B's vehicle-device binding by
+        id, the same IDOR shape `test_org_a_cannot_get_org_bs_vehicle_by_id` already proves for
+        the plain vehicle lookup."""
+        vehicle_b = await self._seed_vehicle(
+            organization_id=self.org_b, plate_no=f"XORG-{self.tag}"
+        )
+        device_b = await self._seed_device(
+            organization_id=self.org_b, terminal_id=f"XORG-{self.tag}"
+        )
+        await self._seed_assignment(
+            organization_id=self.org_b, device_id=device_b, vehicle_id=vehicle_b
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        with self.assertRaises(NotFoundError):
+            await self.vehicle_service.get_active_device_assignment_for_vehicle(
+                vehicle_b, uow=self._new_uow(scope=scope_a)
+            )
+
+    async def test_get_active_device_assignment_for_vehicle_returns_none_when_unassigned(
+        self,
+    ) -> None:
+        vehicle_a = await self._seed_vehicle(
+            organization_id=self.org_a, plate_no=f"NOASSIGN-{self.tag}"
+        )
+
+        scope_a = TenantRegionScope(organization_ids=frozenset({self.org_a}))
+        dto = await self.vehicle_service.get_active_device_assignment_for_vehicle(
+            vehicle_a, uow=self._new_uow(scope=scope_a)
+        )
+
+        self.assertIsNone(dto)
 
 
 @unittest.skipUnless(_db_available(), _SKIP_REASON)

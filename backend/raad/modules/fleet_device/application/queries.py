@@ -121,6 +121,10 @@ class DeviceDTO:
     serial_number: str | None
     lifecycle_state: str
     last_seen_at: datetime | None
+    #: ADR-0027 Change 2: mirrors `Device.is_online` (ADR-0020) directly — read, never derived
+    #: or duplicated. Previously persisted but only ever read in aggregate
+    #: (`DeviceRepository.count_online()`), never surfaced per device.
+    is_online: bool
     created_at: datetime
     updated_at: datetime
     cameras: tuple[CameraDTO, ...]
@@ -178,6 +182,7 @@ def device_to_dto(device: Device) -> DeviceDTO:
         ),
         lifecycle_state=device.lifecycle_state.value,
         last_seen_at=device.last_seen_at,
+        is_online=device.is_online,
         created_at=device.created_at,
         updated_at=device.updated_at,
         cameras=tuple(camera_to_dto(camera) for camera in device.cameras),
