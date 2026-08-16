@@ -184,6 +184,33 @@ class IamPermissionEvaluatorRoundTripTests(unittest.IsolatedAsyncioTestCase):
                 result = await evaluator.has_permission(principal, Permission(permission))
                 self.assertTrue(result)
 
+    async def test_seeded_matrix_grants_regional_manager_and_support_staff_video_sessions_stop(
+        self,
+    ) -> None:
+        """ADR-0029 (migration `50261534916f`): closes a real, pre-existing RBAC gap —
+        `regional_manager`/`support_staff` already held `video.live.start`/`.playback.start`
+        (seed migration `5437a5d1651b`) but never `video.sessions.stop`, so either role could
+        start a session but 403 attempting to stop it. D5 (`VideoAccessPolicy`) already listed
+        both roles as eligible before this migration; this is the RBAC-layer grant catching up
+        to that already-existing D5 eligibility, not a new authorization decision. `founder`
+        already held all three via `_ALL_PERMISSIONS`, unaffected; `finance_staff`/`driver`
+        remain denied, unaffected."""
+        evaluator = self._evaluator()
+        for role in (Role.REGIONAL_MANAGER, Role.SUPPORT_STAFF):
+            with self.subTest(role=role):
+                principal = Principal(user_id="u1", role=role, org_id=None)
+                result = await evaluator.has_permission(
+                    principal, Permission("video.sessions.stop")
+                )
+                self.assertTrue(result)
+        for role in (Role.FINANCE_STAFF, Role.DRIVER):
+            with self.subTest(role=role):
+                principal = Principal(user_id="u1", role=role, org_id="org1")
+                result = await evaluator.has_permission(
+                    principal, Permission("video.sessions.stop")
+                )
+                self.assertFalse(result)
+
     async def test_grant_then_revoke_round_trips(self) -> None:
         evaluator = self._evaluator()
         test_permission = f"test.custom.permission.{self.tag}"

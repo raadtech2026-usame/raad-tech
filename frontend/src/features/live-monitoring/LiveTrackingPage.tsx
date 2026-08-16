@@ -11,6 +11,7 @@ import { Select } from "../../shared/components/Select/Select";
 import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
 import { Button } from "../../shared/components/Button/Button";
 import { useAuthStore } from "../../shared/stores/authStore";
+import type { Role } from "../../shared/api/types";
 import { CameraPicker } from "../video/CameraPicker";
 import { VideoPlayerPanel } from "../video/VideoPlayerPanel";
 import { useVideoSessionController } from "../video/useVideoSessionController";
@@ -39,14 +40,18 @@ import styles from "./LiveTrackingPage.module.css";
  * {id}` calls simply fail server-side (`useVehicleActiveDevice`'s own `"error"` status), exactly
  * like every other query in this frontend.
  *
- * **The video sub-panel (camera picker, player, Start/Stop) is Org-Admin-only** —
- * presentation-only gating (`.claude/rules/frontend.md` #2) mirroring exactly the reading
- * `navConfig.ts`'s own existing comment already gives for why no platform role sees a video nav
- * entry today. `enforce_d5`/`require_permission` remain the only real gate, invoked exactly
- * where they already are for `/video/*` — showing or hiding this section changes nothing about
- * what the server will accept from a given caller. Whether Platform Admin should ever get a real
- * video capability is deliberately left open by ADR-0028 (§ Non-goals) — this is not that
- * decision, and this page does not make it.
+ * **The video sub-panel (camera picker, player, Start/Stop) is gated to
+ * `founder`/`regional_manager`/`support_staff`/`org_admin` (ADR-0029)** — presentation-only
+ * gating (`.claude/rules/frontend.md` #2), aligned to the role set D5
+ * (`core.policies.video_access.VideoAccessPolicy._VIDEO_ELIGIBLE_ROLES`) already treats as
+ * eligible on the web dashboard (D5 also lists `Role.PARENT`, ADR-0026, but Parent has no web
+ * login at all — `.claude/rules/frontend.md` #4 — so it's structurally excluded here, not a new
+ * decision). `enforce_d5`/`require_permission` remain the only real gate, invoked exactly where
+ * they already are for `/video/*` — showing or hiding this section changes nothing about what
+ * the server will accept from a given caller; ADR-0029 only widened who sees the button, after
+ * confirming (and closing, via a new migration) that RBAC/D5 already allow it server-side.
+ * `finance_staff`/`driver`/`parent` are unaffected — none of the three was ever D5-eligible on
+ * this dashboard, and this change does not touch any of them.
  *
  * **Vehicle -> Device is resolved exclusively through `useVehicleActiveDevice`**
  * (`GET /vehicles/{id}/device-assignment` then `GET /devices/{device_id}`, ADR-0027) — never
@@ -54,9 +59,22 @@ import styles from "./LiveTrackingPage.module.css";
  * own return shape at all, so there is nothing here to fall back to even by accident (ADR-0028
  * §C's own "reporting device ≠ currently assigned device" distinction).
  */
+/** ADR-0029: the web-dashboard video-eligible role set — mirrors D5's own
+ * `_VIDEO_ELIGIBLE_ROLES` minus `Role.PARENT` (mobile-only, no web login at all). Kept as a
+ * `Set` rather than inline role-string comparisons so this is the single place a future role
+ * change would need to touch. */
+const VIDEO_ELIGIBLE_WEB_ROLES = new Set<Role>([
+  "founder",
+  "regional_manager",
+  "support_staff",
+  "org_admin",
+]);
+
 export function LiveTrackingPage() {
   usePageHeader("Live Tracking", "Real-time vehicle position, device status, and live video");
-  const isOrgAdmin = useAuthStore((s) => s.principal?.role === "org_admin");
+  const canSeeVideo = useAuthStore(
+    (s) => s.principal !== null && VIDEO_ELIGIBLE_WEB_ROLES.has(s.principal.role),
+  );
 
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>("");
   const [selectedCameraId, setSelectedCameraId] = useState<string>("");
@@ -175,7 +193,7 @@ export function LiveTrackingPage() {
               </div>
             </Card>
 
-            {isOrgAdmin && (
+            {canSeeVideo && (
               <Card className={styles.videoCard}>
                 <CardHeader
                   title="Live Video"

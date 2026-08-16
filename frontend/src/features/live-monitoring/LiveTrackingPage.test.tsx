@@ -110,6 +110,34 @@ const FOUNDER_PRINCIPAL = {
   regionIds: [],
 };
 
+const REGIONAL_MANAGER_PRINCIPAL = {
+  userId: "u3",
+  role: "regional_manager" as const,
+  organizationId: null,
+  regionIds: ["region-1"],
+};
+
+const SUPPORT_STAFF_PRINCIPAL = {
+  userId: "u4",
+  role: "support_staff" as const,
+  organizationId: null,
+  regionIds: [],
+};
+
+const FINANCE_STAFF_PRINCIPAL = {
+  userId: "u5",
+  role: "finance_staff" as const,
+  organizationId: null,
+  regionIds: [],
+};
+
+/** ADR-0029: the roles the video panel is now gated to on this dashboard. */
+const VIDEO_ELIGIBLE_PRINCIPALS = [
+  ["founder", FOUNDER_PRINCIPAL],
+  ["regional_manager", REGIONAL_MANAGER_PRINCIPAL],
+  ["support_staff", SUPPORT_STAFF_PRINCIPAL],
+] as const;
+
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const utils = render(
@@ -299,14 +327,14 @@ describe("LiveTrackingPage", () => {
     });
   });
 
-  describe("Video role gating (ADR-0028 §G)", () => {
+  describe("Video role gating (ADR-0028 §G, widened by ADR-0029)", () => {
     beforeEach(() => {
       vi.mocked(api.getDeviceAssignmentForVehicle).mockResolvedValue({ deviceId: DEVICE.id });
       vi.mocked(api.getActiveDeviceDetails).mockResolvedValue(DEVICE);
     });
 
-    it("renders no camera picker or video panel for a non-org_admin role, and makes no video API calls", async () => {
-      useAuthStore.setState({ status: "authenticated", principal: FOUNDER_PRINCIPAL });
+    it("renders no camera picker or video panel for finance_staff, and makes no video API calls", async () => {
+      useAuthStore.setState({ status: "authenticated", principal: FINANCE_STAFF_PRINCIPAL });
       renderPage();
       const select = await screen.findByLabelText("Vehicle");
       await userEvent.selectOptions(select, VEHICLE.id);
@@ -316,6 +344,55 @@ describe("LiveTrackingPage", () => {
       expect(screen.queryByLabelText("Camera")).not.toBeInTheDocument();
       expect(videoApi.requestLiveVideo).not.toHaveBeenCalled();
     });
+
+    it.each(VIDEO_ELIGIBLE_PRINCIPALS)(
+      "shows the Live Video panel and camera picker for %s (ADR-0029)",
+      async (_role, principal) => {
+        useAuthStore.setState({ status: "authenticated", principal });
+        renderPage();
+        const select = await screen.findByLabelText("Vehicle");
+        await userEvent.selectOptions(select, VEHICLE.id);
+
+        expect(await screen.findByText("Live Video")).toBeInTheDocument();
+        const cameraSelect = await screen.findByLabelText("Camera");
+        expect(cameraSelect).toHaveTextContent("Front");
+      },
+    );
+
+    it.each(VIDEO_ELIGIBLE_PRINCIPALS)(
+      "starts a live session with the resolved device id for %s (ADR-0029)",
+      async (_role, principal) => {
+        useAuthStore.setState({ status: "authenticated", principal });
+        vi.mocked(videoApi.requestLiveVideo).mockResolvedValue(SESSION);
+        renderPage();
+        const select = await screen.findByLabelText("Vehicle");
+        await userEvent.selectOptions(select, VEHICLE.id);
+        await userEvent.selectOptions(await screen.findByLabelText("Camera"), DEVICE.cameras[0].id);
+        await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
+
+        expect(videoApi.requestLiveVideo).toHaveBeenCalledWith(DEVICE.id, DEVICE.cameras[0].id);
+      },
+    );
+
+    it.each(VIDEO_ELIGIBLE_PRINCIPALS)(
+      "stops an active session for %s (ADR-0029)",
+      async (_role, principal) => {
+        useAuthStore.setState({ status: "authenticated", principal });
+        vi.mocked(videoApi.requestLiveVideo).mockResolvedValue(SESSION);
+        playerReturn.state = "connected";
+        renderPage();
+        const select = await screen.findByLabelText("Vehicle");
+        await userEvent.selectOptions(select, VEHICLE.id);
+        await userEvent.selectOptions(await screen.findByLabelText("Camera"), DEVICE.cameras[0].id);
+        await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
+        await screen.findByTestId("live-video");
+
+        await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+        expect(videoApi.stopVideoSession).toHaveBeenCalledWith(SESSION.id);
+        expect(await screen.findByText("Session stopped")).toBeInTheDocument();
+      },
+    );
 
     it("populates the camera picker from the resolved device's own cameras for org_admin", async () => {
       useAuthStore.setState({ status: "authenticated", principal: ORG_ADMIN_PRINCIPAL });
