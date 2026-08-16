@@ -39,41 +39,86 @@
   color: var(--color-text-faint);
 }
 
-.mapCard {
-  display: flex;
-  flex-direction: column;
+/* ADR-0028 §E: map beside the device/video panel on wide viewports, stacked below it on
+ * narrower ones — both panels can mount simultaneously (cheap); only pressing Start Live begins
+ * any real streaming cost (VideoPlayerPanel/useVideoSessionController, unchanged). */
+.operationsGrid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: var(--space-5);
+  min-height: 0;
   overflow: hidden;
 }
 
-.mapArea {
+@media (max-width: 1100px) {
+  .operationsGrid {
+    grid-template-columns: 1fr;
+    overflow: visible auto;
+  }
+}
+
+.sidePanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  overflow-y: auto;
+}
+
+.deviceCard {
+  flex-shrink: 0;
+}
+
+.deviceBody {
+  padding-top: var(--space-2);
+}
+
+.deviceInfo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.deviceTerminalId {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.videoCard {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 360px;
+  overflow: hidden;
+}
+
+.videoBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1;
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.offlineBadge {
+  align-self: flex-start;
+}
+
+.videoActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.videoPlayerArea {
   position: relative;
   flex: 1;
-  /* Mapbox GL JS computes its internal camera/projection matrix from the container's actual
-   * pixel dimensions as part of Map construction (before any style/token has loaded) — a 0px
-   * dimension at that moment produces "Invalid LngLat object: (NaN, NaN)" internally, a
-   * well-documented Mapbox GL JS failure mode. `.map` below is `position: absolute; inset: 0`,
-   * which needs *this* element to already have real dimensions; `flex: 1` alone only guarantees
-   * that once layout has fully settled, not at every possible measurement instant. This
-   * min-height is the same safety net `MapView.module.css`'s own default `.map` class already
-   * carries (`min-height: 320px`) — this page silently bypassed it by passing its own
-   * `className` override, which replaces rather than merges with that default (`MapView.tsx`'s
-   * `className ?? styles.map`). */
-  min-height: 320px;
-}
-
-.map {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-
-.overlay {
-  position: absolute;
-  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--color-bg-surface);
-  pointer-events: none;
+  min-height: 220px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
 }

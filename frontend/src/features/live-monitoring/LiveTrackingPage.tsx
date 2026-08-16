@@ -1,70 +1,65 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { MapPin, Radio, WifiOff } from "lucide-react";
+import { Cpu, WifiOff } from "lucide-react";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
+import { Badge } from "../../shared/components/Badge/Badge";
 import { Card, CardHeader } from "../../shared/components/Card/Card";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
 import { FormField } from "../../shared/components/FormField/FormField";
 import { LiveIndicator } from "../../shared/components/LiveIndicator/LiveIndicator";
 import { Select } from "../../shared/components/Select/Select";
 import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
-import { useToast } from "../../shared/components/Toast/toastStore";
-import { useWebSocketChannel } from "../../shared/hooks/useWebSocket";
-import { MapView } from "../../shared/map/MapView";
-import type { MapProvider } from "../../shared/map/MapProvider";
-import {
-  getActiveTripRouteId,
-  getLatestVehiclePosition,
-  getRouteWithStops,
-  listVehiclesForTracking,
-  type TrackingWsMessage,
-} from "./api";
+import { Button } from "../../shared/components/Button/Button";
+import { useAuthStore } from "../../shared/stores/authStore";
+import { CameraPicker } from "../video/CameraPicker";
+import { VideoPlayerPanel } from "../video/VideoPlayerPanel";
+import { useVideoSessionController } from "../video/useVideoSessionController";
+import { listVehiclesForTracking } from "./api";
+import { useActiveTripRoute } from "./useActiveTripRoute";
+import { useVehicleActiveDevice } from "./useVehicleActiveDevice";
+import { useVehiclePosition } from "./useVehiclePosition";
+import { VehicleMapPanel } from "./VehicleMapPanel";
 import styles from "./LiveTrackingPage.module.css";
 
-/** No stand-in/default position anywhere in this component — a marker only ever appears once a
- * real position (REST snapshot or a live WS frame) exists. This constant is only the map's own
- * *initial camera framing* before any vehicle is selected; it is never rendered as a vehicle. */
-const DEFAULT_CENTER = { lat: 2.0469, lng: 45.3182 }; // Mogadishu — this codebase's own target market (RegisterDeviceWizard's own SIM-number placeholder is a +252 number).
-const DEFAULT_ZOOM = 11;
-const VEHICLE_MARKER_ID = "live-vehicle";
-const ROUTE_SOURCE_ID = "active-trip-route";
-const STOPS_SOURCE_ID = "active-trip-stops";
-
-const UNAUTHENTICATED_CLOSE_CODE = 4401;
-const FORBIDDEN_CLOSE_CODE = 4403;
-
-interface LivePosition {
-  lat: number;
-  lng: number;
-  headingDeg: number;
-  eventTime: string;
-}
-
 /**
- * `/platform/tracking` + `/org/tracking` (Phase F7) — one shared component, matching every
- * other phase's two-dashboard pattern. Only a single vehicle is ever live at once: `/ws/tracking`
- * supports exactly one active subscription per connection (`tracking/api/ws.py`'s own docstring,
- * a deliberate backend simplification, not an oversight) — this page is the "per-vehicle detail
- * view" half of the roadmap's two F7 deliverables; a always-every-vehicle-live map was never the
- * shape the backend was built for.
+ * `/platform/tracking` + `/org/tracking` (Phase F7, evolved under ADR-0028 — Unified Vehicle
+ * Operations). Same shared component, same two routes, same nav entries as before (ADR-0028
+ * §A/§F: no new route, no backward-compatibility break) — the page now also resolves the
+ * selected vehicle's active Device/MDVR (ADR-0027) and, for Org Admin, its live video. One
+ * vehicle selection stays the single source of truth for both capabilities; nothing here
+ * duplicates the GPS WebSocket implementation (`useVehiclePosition`, reusing the shared
+ * `useWebSocketChannel` unchanged) or the video player implementation
+ * (`../video/VideoPlayerPanel`/`useVideoSessionController`, reusing `useMpegtsPlayer`
+ * unchanged) — both are extracted, reused pieces, not copies (ADR-0028 §G).
  *
- * **Honest by construction, not just by intent**: this session's own device-onboarding-readiness
- * audit (`docs/architecture/device-onboarding-readiness-audit.md`) confirmed nothing in this
- * platform currently writes the Redis key `GET /tracking/vehicles/{id}/latest` reads, so that
- * snapshot will 404 ("no known position") for every vehicle in most environments — this page
- * shows that honestly rather than a fabricated marker, exactly like the roadmap's own F7 exit
- * criteria require. If a real device is streaming (or a real position event is manually
- * published), the live WS path below still renders it immediately, independent of that gap.
+ * **The device-status panel (terminal id, online/offline) renders for every role that reaches
+ * this page.** `fleet_device.devices.read` is already held by Founder/Regional Manager/Support
+ * Staff, not just Org Admin, so this half needed no new grant and makes no new authorization
+ * decision — an unauthorized caller's own `GET /vehicles/{id}/device-assignment`/`GET /devices/
+ * {id}` calls simply fail server-side (`useVehicleActiveDevice`'s own `"error"` status), exactly
+ * like every other query in this frontend.
+ *
+ * **The video sub-panel (camera picker, player, Start/Stop) is Org-Admin-only** —
+ * presentation-only gating (`.claude/rules/frontend.md` #2) mirroring exactly the reading
+ * `navConfig.ts`'s own existing comment already gives for why no platform role sees a video nav
+ * entry today. `enforce_d5`/`require_permission` remain the only real gate, invoked exactly
+ * where they already are for `/video/*` — showing or hiding this section changes nothing about
+ * what the server will accept from a given caller. Whether Platform Admin should ever get a real
+ * video capability is deliberately left open by ADR-0028 (§ Non-goals) — this is not that
+ * decision, and this page does not make it.
+ *
+ * **Vehicle -> Device is resolved exclusively through `useVehicleActiveDevice`**
+ * (`GET /vehicles/{id}/device-assignment` then `GET /devices/{device_id}`, ADR-0027) — never
+ * inferred from a GPS position's `device_id`. `useVehiclePosition` carries no `device_id` in its
+ * own return shape at all, so there is nothing here to fall back to even by accident (ADR-0028
+ * §C's own "reporting device ≠ currently assigned device" distinction).
  */
 export function LiveTrackingPage() {
-  usePageHeader("Live Tracking", "Real-time vehicle position via the device gateway");
-  const toast = useToast();
+  usePageHeader("Live Tracking", "Real-time vehicle position, device status, and live video");
+  const isOrgAdmin = useAuthStore((s) => s.principal?.role === "org_admin");
 
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>("");
-  const [livePosition, setLivePosition] = useState<LivePosition | null>(null);
-  const providerRef = useRef<MapProvider | null>(null);
-  const markerAddedRef = useRef(false);
-  const routeLayersAddedRef = useRef(false);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>("");
 
   const vehiclesQuery = useQuery({
     queryKey: ["vehicles", "tracking-picker"],
@@ -72,139 +67,29 @@ export function LiveTrackingPage() {
     staleTime: 60_000,
   });
 
-  const snapshotQuery = useQuery({
-    queryKey: ["tracking", "latest", selectedVehicleId],
-    queryFn: () => getLatestVehiclePosition(selectedVehicleId),
-    enabled: selectedVehicleId !== "",
-  });
+  const gps = useVehiclePosition(selectedVehicleId);
+  const { routeStops } = useActiveTripRoute(selectedVehicleId);
+  const activeDevice = useVehicleActiveDevice(selectedVehicleId);
 
-  const activeTripQuery = useQuery({
-    queryKey: ["tracking", "active-trip", selectedVehicleId],
-    queryFn: () => getActiveTripRouteId(selectedVehicleId),
-    enabled: selectedVehicleId !== "",
-  });
+  const position = gps.livePosition
+    ? gps.livePosition
+    : gps.snapshotQuery.data
+      ? {
+          lat: gps.snapshotQuery.data.latitude,
+          lng: gps.snapshotQuery.data.longitude,
+          headingDeg: gps.snapshotQuery.data.headingDeg,
+        }
+      : null;
 
-  const routeQuery = useQuery({
-    queryKey: ["tracking", "route", activeTripQuery.data],
-    queryFn: () => getRouteWithStops(activeTripQuery.data as string),
-    enabled: !!activeTripQuery.data,
-  });
+  const videoSession = useVideoSessionController(
+    activeDevice.device?.id ?? null,
+    selectedCameraId || null,
+  );
 
-  const { status, lastCloseCode, send } = useWebSocketChannel<TrackingWsMessage>("/ws/tracking", {
-    enabled: selectedVehicleId !== "",
-    onMessage: (message) => {
-      if (message.type === "position" && message.vehicle_id === selectedVehicleId) {
-        setLivePosition({
-          lat: message.lat,
-          lng: message.lng,
-          headingDeg: message.heading_deg,
-          eventTime: message.event_time,
-        });
-      } else if (message.type === "subscription_closed" && message.vehicle_id === selectedVehicleId) {
-        toast.info("Tracking stopped", `Trip ended (${message.reason}) — showing the last known position.`);
-      }
-    },
-  });
-
-  // Sends (or re-sends, after any reconnect) the one subscribe frame this connection ever needs
-  // — the backend replaces the prior subscription on the same connection when a new one arrives,
-  // so switching vehicles needs no separate "unsubscribe" call.
-  useEffect(() => {
-    if (status === "open" && selectedVehicleId !== "") {
-      send({ type: "subscribe", channel: "vehicle", vehicle_id: selectedVehicleId });
-    }
-    // `send` is intentionally omitted from the dependency array: it's a fresh function identity
-    // every render of useWebSocketChannel, and including it would re-run this effect (re-sending
-    // the same subscribe frame) on every unrelated re-render — only `status`/`selectedVehicleId`
-    // transitions should trigger a (re-)subscribe.
-  }, [status, selectedVehicleId]);
-
-  // Switching vehicles clears the previous one's live marker/state rather than showing a stale
-  // position under a new plate number.
-  useEffect(() => {
-    setLivePosition(null);
-    markerAddedRef.current = false;
-    const provider = providerRef.current;
-    if (provider) {
-      provider.removeMarker(VEHICLE_MARKER_ID);
-    }
-  }, [selectedVehicleId]);
-
-  // Renders the live/snapshot position as a marker — the "hot path" `MapProvider.updateMarker`'s
-  // own docstring names — whichever of the two (live WS frame, or the REST snapshot fetched on
-  // selection) is the most recent known position.
-  useEffect(() => {
-    const provider = providerRef.current;
-    if (!provider) return;
-
-    const position = livePosition ?? (snapshotQuery.data ? {
-      lat: snapshotQuery.data.latitude,
-      lng: snapshotQuery.data.longitude,
-      headingDeg: snapshotQuery.data.headingDeg,
-    } : null);
-    // `position` is asserted `number` by TypeScript but originates from either a raw
-    // `JSON.parse(...) as T` WebSocket frame (useWebSocket.ts performs no runtime schema
-    // validation) or a REST response — a malformed/partial payload can carry `undefined`/`null`/
-    // non-numeric values here at runtime despite the type. Mapbox's own `LngLat` constructor
-    // throws "Invalid LngLat object: (NaN, NaN)" on exactly this input, so this guard turns a
-    // silent, unrecoverable map crash into a plain skipped update — the next valid position still
-    // renders normally.
-    if (!position || !Number.isFinite(position.lat) || !Number.isFinite(position.lng)) return;
-
-    if (markerAddedRef.current) {
-      provider.updateMarker(VEHICLE_MARKER_ID, { lat: position.lat, lng: position.lng }, position.headingDeg);
-    } else {
-      provider.addMarker({ id: VEHICLE_MARKER_ID, position: { lat: position.lat, lng: position.lng }, headingDeg: position.headingDeg });
-      markerAddedRef.current = true;
-    }
-    provider.setCenter({ lat: position.lat, lng: position.lng });
-  }, [livePosition, snapshotQuery.data]);
-
-  // Static route/stop overlay for the vehicle's current in-progress trip, if any — context only,
-  // never live geofence *events* (this session's own audit confirmed geofence-crossing
-  // generation is dead code anywhere in this platform today, so there is nothing live to show).
-  useEffect(() => {
-    const provider = providerRef.current;
-    if (!provider) return;
-
-    if (routeLayersAddedRef.current) {
-      provider.removeLayer(ROUTE_SOURCE_ID);
-      provider.removeLayer(STOPS_SOURCE_ID);
-      provider.removeSource(ROUTE_SOURCE_ID);
-      provider.removeSource(STOPS_SOURCE_ID);
-      routeLayersAddedRef.current = false;
-    }
-
-    const stops = routeQuery.data?.stops;
-    if (!stops || stops.length === 0) return;
-
-    const ordered = [...stops].sort((a, b) => a.sequenceNo - b.sequenceNo);
-    provider.addGeoJsonSource({
-      id: ROUTE_SOURCE_ID,
-      data: {
-        type: "Feature",
-        properties: {},
-        geometry: { type: "LineString", coordinates: ordered.map((s) => [s.longitude, s.latitude]) },
-      },
-    });
-    provider.addLineLayer({ id: ROUTE_SOURCE_ID, sourceId: ROUTE_SOURCE_ID });
-    provider.addGeoJsonSource({
-      id: STOPS_SOURCE_ID,
-      data: {
-        type: "FeatureCollection",
-        features: ordered.map((s) => ({
-          type: "Feature",
-          properties: { name: s.name },
-          geometry: { type: "Point", coordinates: [s.longitude, s.latitude] },
-        })),
-      },
-    });
-    provider.addCircleLayer({ id: STOPS_SOURCE_ID, sourceId: STOPS_SOURCE_ID });
-    routeLayersAddedRef.current = true;
-  }, [routeQuery.data]);
-
-  const hasKnownPosition = livePosition !== null || snapshotQuery.data !== null;
-  const isAuthOrPolicyClose = lastCloseCode === UNAUTHENTICATED_CLOSE_CODE || lastCloseCode === FORBIDDEN_CLOSE_CODE;
+  function handleVehicleChange(vehicleId: string): void {
+    setSelectedVehicleId(vehicleId);
+    setSelectedCameraId("");
+  }
 
   return (
     <div className={styles.page}>
@@ -215,7 +100,7 @@ export function LiveTrackingPage() {
           ) : (
             <Select
               value={selectedVehicleId}
-              onChange={(e) => setSelectedVehicleId(e.target.value)}
+              onChange={(e) => handleVehicleChange(e.target.value)}
               aria-label="Vehicle"
             >
               <option value="">Select a vehicle</option>
@@ -232,51 +117,144 @@ export function LiveTrackingPage() {
         {selectedVehicleId !== "" && (
           <div className={styles.statusPanel}>
             <div className={styles.statusRow}>
-              {status === "open" && !isAuthOrPolicyClose ? (
+              {gps.wsStatus === "open" && !gps.isAuthOrPolicyClose ? (
                 <LiveIndicator>Live</LiveIndicator>
               ) : (
                 <span className={styles.disconnected}>
                   <WifiOff size={14} />
-                  {isAuthOrPolicyClose ? "Not authorized to track this vehicle" : "Connecting…"}
+                  {gps.isAuthOrPolicyClose ? "Not authorized to track this vehicle" : "Connecting…"}
                 </span>
               )}
             </div>
-            {livePosition && (
+            {gps.livePosition && (
               <div className={styles.lastUpdate}>
-                Last update: {new Date(livePosition.eventTime).toLocaleTimeString()}
+                Last update: {new Date(gps.livePosition.eventTime).toLocaleTimeString()}
               </div>
             )}
           </div>
         )}
       </Card>
 
-      <Card className={styles.mapCard}>
-        <CardHeader title="Map" />
-        <div className={styles.mapArea}>
-          <MapView
-            center={DEFAULT_CENTER}
-            zoom={DEFAULT_ZOOM}
-            className={styles.map}
-            onReady={(provider) => {
-              providerRef.current = provider;
-            }}
-          />
-          {selectedVehicleId === "" && (
-            <div className={styles.overlay}>
-              <EmptyState icon={<MapPin size={28} />} title="Select a vehicle to start tracking" />
-            </div>
-          )}
-          {selectedVehicleId !== "" && !snapshotQuery.isLoading && !hasKnownPosition && (
-            <div className={styles.overlay}>
-              <EmptyState
-                icon={<Radio size={28} />}
-                title="No live position data"
-                description="This vehicle hasn't reported a position yet."
-              />
-            </div>
-          )}
-        </div>
-      </Card>
+      <div className={styles.operationsGrid}>
+        <VehicleMapPanel
+          vehicleId={selectedVehicleId}
+          position={position}
+          hasKnownPosition={gps.hasKnownPosition}
+          isPositionLoading={gps.snapshotQuery.isLoading}
+          routeStops={routeStops}
+        />
+
+        {selectedVehicleId !== "" && (
+          <div className={styles.sidePanel}>
+            <Card padded className={styles.deviceCard}>
+              <CardHeader title="Device" />
+              <div className={styles.deviceBody}>
+                {activeDevice.status === "loading" && <Skeleton height={48} />}
+                {activeDevice.status === "no-assignment" && (
+                  <EmptyState
+                    icon={<Cpu size={28} />}
+                    title="No device assigned"
+                    description="This vehicle has no active device assignment."
+                  />
+                )}
+                {activeDevice.status === "error" && (
+                  <EmptyState icon={<Cpu size={28} />} title="Could not load device" />
+                )}
+                {activeDevice.status === "ready" && activeDevice.device && (
+                  <div className={styles.deviceInfo}>
+                    <span className={styles.deviceTerminalId}>{activeDevice.device.terminalId}</span>
+                    <Badge
+                      variant={activeDevice.device.isOnline ? "success" : "warning"}
+                      dot
+                      pulsing={activeDevice.device.isOnline}
+                    >
+                      {activeDevice.device.isOnline ? "Online" : "Offline"}
+                    </Badge>
+                  </div>
+                )}
+              </div>
+            </Card>
+
+            {isOrgAdmin && (
+              <Card className={styles.videoCard}>
+                <CardHeader
+                  title="Live Video"
+                  action={
+                    videoSession.phase === "connected" || videoSession.phase === "connecting" ? (
+                      <LiveIndicator>
+                        {videoSession.phase === "connected" ? "Live" : "Connecting"}
+                      </LiveIndicator>
+                    ) : undefined
+                  }
+                />
+                <div className={styles.videoBody}>
+                  {activeDevice.status === "loading" && <Skeleton height={200} />}
+                  {activeDevice.status === "no-assignment" && (
+                    <EmptyState
+                      icon={<Cpu size={28} />}
+                      title="No device assigned"
+                      description="Live video is unavailable until a device is assigned to this vehicle."
+                    />
+                  )}
+                  {activeDevice.status === "error" && (
+                    <EmptyState icon={<Cpu size={28} />} title="Could not load device" />
+                  )}
+                  {activeDevice.status === "ready" &&
+                    activeDevice.device &&
+                    (activeDevice.device.cameras.length === 0 ? (
+                      <EmptyState icon={<Cpu size={28} />} title="No camera channels configured" />
+                    ) : (
+                      <>
+                        <CameraPicker
+                          cameras={activeDevice.device.cameras}
+                          value={selectedCameraId}
+                          onChange={setSelectedCameraId}
+                        />
+                        {/* `is_online` is a best-effort telemetry mirror (ADR-0020/0027), not an
+                            authoritative gate — this is a visible hint only, it never disables
+                            Start (ADR-0028 §D): the real authority is the backend's own
+                            `POST /video/live` call. */}
+                        {!activeDevice.device.isOnline && (
+                          <Badge variant="warning" className={styles.offlineBadge}>
+                            Device last reported offline — a live stream may fail.
+                          </Badge>
+                        )}
+                        <div className={styles.videoActions}>
+                          <Button
+                            onClick={videoSession.start}
+                            disabled={!videoSession.canStart}
+                            loading={videoSession.phase === "requesting"}
+                            fullWidth
+                          >
+                            Start Live
+                          </Button>
+                          <Button
+                            onClick={videoSession.stop}
+                            disabled={!videoSession.canStop}
+                            variant="danger"
+                            fullWidth
+                          >
+                            Stop
+                          </Button>
+                        </div>
+                        <div className={styles.videoPlayerArea}>
+                          <VideoPlayerPanel
+                            phase={videoSession.phase}
+                            requestError={videoSession.requestError}
+                            player={videoSession.player}
+                            videoRef={videoSession.videoRef}
+                            idleTitle="Select a camera"
+                            idleDescription="Choose one of this device's cameras, then press Start Live."
+                          />
+                        </div>
+                      </>
+                    ))}
+                </div>
+              </Card>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

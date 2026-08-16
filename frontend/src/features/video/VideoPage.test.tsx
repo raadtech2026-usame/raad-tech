@@ -9,13 +9,12 @@ vi.mock("./api", () => ({
   stopVideoSession: vi.fn(),
 }));
 
-const relayReturn: { state: string; closeCode: number | null; bytesReceived: number } = {
+const playerReturn: { state: string; errorMessage: string | null } = {
   state: "idle",
-  closeCode: null,
-  bytesReceived: 0,
+  errorMessage: null,
 };
-vi.mock("./useRelayStreamSocket", () => ({
-  useRelayStreamSocket: () => relayReturn,
+vi.mock("./useMpegtsPlayer", () => ({
+  useMpegtsPlayer: () => playerReturn,
 }));
 
 import * as api from "./api";
@@ -70,9 +69,8 @@ describe("VideoPage", () => {
     vi.mocked(api.stopVideoSession)
       .mockReset()
       .mockResolvedValue({ ...SESSION, status: "ended" });
-    relayReturn.state = "idle";
-    relayReturn.closeCode = null;
-    relayReturn.bytesReceived = 0;
+    playerReturn.state = "idle";
+    playerReturn.errorMessage = null;
   });
 
   it("shows an honest empty state before any device/camera is selected", async () => {
@@ -100,17 +98,37 @@ describe("VideoPage", () => {
     expect(await screen.findByText("Requesting a live session…")).toBeInTheDocument();
   });
 
-  it("shows the relay-connected state honestly, without pretending to render video", async () => {
+  it("renders the real video element once the player reports connected", async () => {
     vi.mocked(api.requestLiveVideo).mockResolvedValue(SESSION);
-    relayReturn.state = "connected";
-    relayReturn.bytesReceived = 2048;
+    playerReturn.state = "connected";
     renderPage();
     await selectDeviceAndCamera();
     await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
 
-    expect(await screen.findByText("Stream is live on the relay")).toBeInTheDocument();
-    expect(screen.getByText(/2\.0 KB received/)).toBeInTheDocument();
-    expect(screen.getByText(/browser playback isn't wired yet/)).toBeInTheDocument();
+    expect(await screen.findByTestId("live-video")).toBeInTheDocument();
+    expect(screen.getByText(/audio isn't available/)).toBeInTheDocument();
+    expect(screen.getByText("Live")).toBeInTheDocument();
+  });
+
+  it("maps a player error to the error state with the player's own message", async () => {
+    vi.mocked(api.requestLiveVideo).mockResolvedValue(SESSION);
+    playerReturn.state = "error";
+    playerReturn.errorMessage = "NetworkError: CONNECTING_TIMEOUT";
+    renderPage();
+    await selectDeviceAndCamera();
+    await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
+
+    expect(await screen.findByText("NetworkError: CONNECTING_TIMEOUT")).toBeInTheDocument();
+  });
+
+  it("maps a relay-side close (token/session outcome the player can't distinguish) to unavailable", async () => {
+    vi.mocked(api.requestLiveVideo).mockResolvedValue(SESSION);
+    playerReturn.state = "closed";
+    renderPage();
+    await selectDeviceAndCamera();
+    await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
+
+    expect(await screen.findByText("Video is unavailable")).toBeInTheDocument();
   });
 
   it("maps a 500 (no VideoProviderPort bound on this deployment) to the unavailable state, not a generic error", async () => {
@@ -137,11 +155,11 @@ describe("VideoPage", () => {
 
   it("stops the session on explicit Stop and shows the stopped state", async () => {
     vi.mocked(api.requestLiveVideo).mockResolvedValue(SESSION);
-    relayReturn.state = "connected";
+    playerReturn.state = "connected";
     renderPage();
     await selectDeviceAndCamera();
     await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
-    await screen.findByText("Stream is live on the relay");
+    await screen.findByTestId("live-video");
 
     await userEvent.click(screen.getByRole("button", { name: "Stop" }));
 
@@ -153,13 +171,13 @@ describe("VideoPage", () => {
     const OTHER_DEVICE = { ...DEVICE, id: "01DEVICE0000000000000000C", terminalId: "TERM00000000" };
     vi.mocked(api.listDevicesForVideoPicker).mockResolvedValue([DEVICE, OTHER_DEVICE]);
     vi.mocked(api.requestLiveVideo).mockResolvedValue(SESSION);
-    relayReturn.state = "connected";
+    playerReturn.state = "connected";
     renderPage();
     const deviceSelect = await screen.findByLabelText("Device");
     await userEvent.selectOptions(deviceSelect, DEVICE.id);
     await userEvent.selectOptions(screen.getByLabelText("Camera"), DEVICE.cameras[0].id);
     await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
-    await screen.findByText("Stream is live on the relay");
+    await screen.findByTestId("live-video");
 
     await userEvent.selectOptions(deviceSelect, OTHER_DEVICE.id);
 
@@ -169,11 +187,11 @@ describe("VideoPage", () => {
 
   it("does not call stop again after an explicit Stop already tore the session down (idempotency guard)", async () => {
     vi.mocked(api.requestLiveVideo).mockResolvedValue(SESSION);
-    relayReturn.state = "connected";
+    playerReturn.state = "connected";
     const { unmount } = renderPage();
     await selectDeviceAndCamera();
     await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
-    await screen.findByText("Stream is live on the relay");
+    await screen.findByTestId("live-video");
     await userEvent.click(screen.getByRole("button", { name: "Stop" }));
     await screen.findByText("Session stopped");
 

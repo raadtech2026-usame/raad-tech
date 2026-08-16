@@ -180,3 +180,95 @@ export async function getRouteWithStops(routeId: string): Promise<RouteWithStops
     })),
   };
 }
+
+// --- ADR-0028: Vehicle -> Device resolution (Unified Vehicle Operations) --------------------
+
+export interface DeviceAssignmentInfo {
+  deviceId: string;
+}
+
+interface DeviceAssignmentWire {
+  device_id: string;
+}
+
+/**
+ * `GET /vehicles/{vehicle_id}/device-assignment` (ADR-0027) — the **authoritative** Vehicle ->
+ * Device resolution for the unified Vehicle Operations view (ADR-0028 §C). Deliberately the
+ * only place this feature ever learns a `device_id` — never derived from a
+ * `VehiclePositionResponse.device_id`/WS position frame (that field answers "which device sent
+ * *this* report," not "which device is *currently* assigned," the same distinction ADR-0027's
+ * own Context draws for the backend). A `404` means "no active device assignment for this
+ * vehicle" — nonexistent, out-of-scope, and unassigned vehicles all 404 identically by design
+ * (this codebase's cross-tenant-probing-avoidance convention) — mapped to `null` here, mirroring
+ * `getLatestVehiclePosition`'s own identical 404-to-null convention above.
+ */
+export async function getDeviceAssignmentForVehicle(
+  vehicleId: string,
+): Promise<DeviceAssignmentInfo | null> {
+  try {
+    const wire = await apiRequest<DeviceAssignmentWire>(
+      `/vehicles/${vehicleId}/device-assignment`,
+    );
+    return { deviceId: wire.device_id };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export type ActiveDeviceCameraPosition = "in_cabin" | "road_facing" | "other";
+
+export interface ActiveDeviceCamera {
+  id: string;
+  channelNo: number;
+  position: ActiveDeviceCameraPosition;
+  label: string | null;
+}
+
+/** A vehicle's resolved active device — this feature folder's own minimal copy
+ * (`.claude/rules/frontend.md` #1: no cross-feature-folder `api.ts` import), matching
+ * `features/video/api.ts`'s own `VideoDeviceOption`/`listDevicesForVideoPicker` precedent
+ * exactly, just for one already-known id (from `getDeviceAssignmentForVehicle` above) instead
+ * of a filtered list. `isOnline` is ADR-0027 Change 2 — read directly, never derived. */
+export interface ActiveDevice {
+  id: string;
+  terminalId: string;
+  isOnline: boolean;
+  cameras: ActiveDeviceCamera[];
+}
+
+interface ActiveDeviceCameraWire {
+  id: string;
+  channel_no: number;
+  position: string;
+  label: string | null;
+}
+
+/** Wire shape of `fleet_device.api.schemas.DeviceResponse` — only the fields the unified view
+ * actually needs are declared (the real response carries more, e.g. `sim_msisdn`/`imei`/
+ * `iccid`/`lifecycle_state` — irrelevant here). */
+interface ActiveDeviceWire {
+  id: string;
+  terminal_id: string;
+  is_online: boolean;
+  cameras: ActiveDeviceCameraWire[];
+}
+
+/** `GET /devices/{device_id}` (existing, unchanged) — the second step of ADR-0028 §C's
+ * two-call resolution, called only once a `device_id` is already known. */
+export async function getActiveDeviceDetails(deviceId: string): Promise<ActiveDevice> {
+  const wire = await apiRequest<ActiveDeviceWire>(`/devices/${deviceId}`);
+  return {
+    id: wire.id,
+    terminalId: wire.terminal_id,
+    isOnline: wire.is_online,
+    cameras: wire.cameras.map((camera) => ({
+      id: camera.id,
+      channelNo: camera.channel_no,
+      position: camera.position as ActiveDeviceCameraPosition,
+      label: camera.label,
+    })),
+  };
+}
