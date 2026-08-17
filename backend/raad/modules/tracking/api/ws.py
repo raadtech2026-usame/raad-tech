@@ -94,11 +94,20 @@ logger = get_logger("raad.tracking.ws")
 # service is a separate, not-yet-built deployable, `.claude/rules/architecture.md` #2), so
 # there is no prior literal string to stay consistent with the way `TripStarted`/`TripEnded`
 # already exist; PascalCase is chosen for consistency with every domain event this codebase
-# *does* already emit, flagged here rather than silently assumed. Payload field names
-# (`vehicle_id`, `trip_id`, `lat`, `lng`, `speed_kph`, `heading_deg`, `event_time`) are read
-# directly from API Contracts §11.2's own fully-specified wire frame — the more authoritative,
-# exact contract, vs. §13.2's abridged "key payload: vehicle_id, lat, lng, speed, heading,
-# event_time, is_backfill" prose row.
+# *does* already emit, flagged here rather than silently assumed.
+#
+# **Inbound payload field-name correction (found via live end-to-end verification against a
+# real device-gateway-published event, not a synthetic mock — fixed in the same phase this
+# comment was written).** This comment previously claimed the *inbound* broker payload carries
+# `lat`/`lng` directly, citing API Contracts §11.2's own prose row. The actually-shipped
+# `DevicePositionReported` producer (`services/device-gateway`) and its own sibling consumer,
+# `tracking.events.subscribers.DevicePositionReportedProcessor` (already reads
+# `payload["latitude"]`/`payload["longitude"]` for the REST/history path), both use the full
+# field names instead — confirmed live, not assumed. `_position_frame` below now reads
+# `latitude`/`longitude` from the *inbound* payload to match. The *outbound* WS wire frame this
+# function builds keeps its own `lat`/`lng` keys unchanged — that is API Contracts §11.2's
+# client-facing shape, already matched by the frontend's `PositionFrame` type
+# (`features/live-monitoring/api.ts`) — only which inbound payload keys populate them was wrong.
 POSITION_EVENT_TYPE = "DevicePositionReported"
 TRIP_ENDED_EVENT_TYPE = "TripEnded"
 
@@ -195,13 +204,16 @@ async def handle_subscribe(
 
 def _position_frame(payload: dict[str, Any]) -> dict[str, Any]:
     """API Contracts §11.2's documented server->client position frame, built directly from the
-    broker event's payload — see this module's own docstring for the field-naming reasoning."""
+    broker event's payload — see this module's own docstring for the field-naming reasoning
+    (in particular: the *inbound* `DevicePositionReported` payload carries `latitude`/
+    `longitude`, not `lat`/`lng` — this function's own bug, fixed in the same phase as this
+    docstring). The *outbound* frame's own `lat`/`lng` keys are unchanged."""
     return {
         "type": "position",
         "vehicle_id": payload.get("vehicle_id"),
         "trip_id": payload.get("trip_id"),
-        "lat": payload.get("lat"),
-        "lng": payload.get("lng"),
+        "lat": payload.get("latitude"),
+        "lng": payload.get("longitude"),
         "speed_kph": payload.get("speed_kph"),
         "heading_deg": payload.get("heading_deg"),
         "event_time": payload.get("event_time"),

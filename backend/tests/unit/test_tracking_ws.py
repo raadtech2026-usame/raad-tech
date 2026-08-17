@@ -28,6 +28,7 @@ from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.services import VehicleApplicationService
 from raad.modules.tracking.api.ws import (
+    _position_frame,
     build_tracking_fanout_handler,
     handle_subscribe,
     run_tracking_websocket,
@@ -458,17 +459,48 @@ class HandleSubscribeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(await connections.subscribers_for("veh-2")), 1)
 
 
-class TrackingFanoutHandlerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_position_event_forwards_frame_to_authorized_subscriber(self) -> None:
-        container = make_container(vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)})
-        connections = ConnectionManager()
-        websocket = FakeWebSocket()
-        await connections.register("veh-1", websocket, ORG_ADMIN)
-        handler = build_tracking_fanout_handler(connections=connections, container=container)
+class PositionFrameTests(unittest.TestCase):
+    """Direct, isolated coverage of `_position_frame` — the exact function a real bug lived in
+    (reading the inbound payload's `lat`/`lng` instead of `latitude`/`longitude`, found via live
+    end-to-end verification against a real device-gateway-published event, never caught by this
+    file's own prior test because that test's own payload was synthetically shaped to already
+    match the bug). This payload is the **real** `DevicePositionReported` shape — confirmed
+    against both the live device-gateway publisher and this event's own sibling consumer,
+    `tracking.events.subscribers.DevicePositionReportedProcessor`, which already reads
+    `payload["latitude"]`/`payload["longitude"]` for the REST/history path — not a payload
+    shaped to match whatever `_position_frame` happens to read."""
 
-        event = make_event(
-            "DevicePositionReported",
+    REALISTIC_PAYLOAD = {
+        "organization_id": ORG_ID,
+        "vehicle_id": "veh-1",
+        "device_id": "dev-1",
+        "terminal_id": "13800000001",
+        "trip_id": "trip-1",
+        "latitude": 2.0469,
+        "longitude": 45.3182,
+        "speed_kph": 34,
+        "heading_deg": 120,
+        "alarm_flags": 0,
+        "event_time": "2026-07-22T08:00:00Z",
+        "is_backfill": False,
+    }
+
+    def test_maps_latitude_longitude_to_the_outbound_lat_lng_keys(self) -> None:
+        frame = _position_frame(self.REALISTIC_PAYLOAD)
+
+        self.assertEqual(frame["lat"], 2.0469)
+        self.assertEqual(frame["lng"], 45.3182)
+
+    def test_every_outbound_field_maps_correctly_from_the_realistic_payload(self) -> None:
+        """Requirement: heading, speed, vehicle_id, trip_id, and event_time must remain
+        correct alongside the lat/lng fix — a full-dict comparison catches any of them
+        silently regressing, not just lat/lng."""
+        frame = _position_frame(self.REALISTIC_PAYLOAD)
+
+        self.assertEqual(
+            frame,
             {
+                "type": "position",
                 "vehicle_id": "veh-1",
                 "trip_id": "trip-1",
                 "lat": 2.0469,
@@ -478,14 +510,47 @@ class TrackingFanoutHandlerTests(unittest.IsolatedAsyncioTestCase):
                 "event_time": "2026-07-22T08:00:00Z",
             },
         )
+
+    def test_missing_latitude_longitude_degrades_to_none_not_a_crash(self) -> None:
+        """`_position_frame` must stay defensive about a malformed/partial payload (this
+        module's own docstring elsewhere: a WebSocket transport must never crash on bad input)
+        — confirms the fix didn't turn a missing-key `.get()` into a `[...]` that would raise."""
+        frame = _position_frame({"vehicle_id": "veh-1"})
+
+        self.assertIsNone(frame["lat"])
+        self.assertIsNone(frame["lng"])
+
+
+class TrackingFanoutHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_position_event_forwards_frame_to_authorized_subscriber(self) -> None:
+        """Regression, end-to-end through the real handler: uses the same realistic
+        `latitude`/`longitude`-shaped payload as `PositionFrameTests` above, not the
+        synthetic `lat`/`lng`-shaped payload this test previously used (which silently matched
+        the now-fixed bug instead of catching it)."""
+        container = make_container(vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)})
+        connections = ConnectionManager()
+        websocket = FakeWebSocket()
+        await connections.register("veh-1", websocket, ORG_ADMIN)
+        handler = build_tracking_fanout_handler(connections=connections, container=container)
+
+        event = make_event("DevicePositionReported", dict(PositionFrameTests.REALISTIC_PAYLOAD))
         await handler(event)
 
         self.assertEqual(len(websocket.sent), 1)
         frame = websocket.sent[0]
-        self.assertEqual(frame["type"], "position")
-        self.assertEqual(frame["vehicle_id"], "veh-1")
-        self.assertEqual(frame["lat"], 2.0469)
-        self.assertEqual(frame["speed_kph"], 34)
+        self.assertEqual(
+            frame,
+            {
+                "type": "position",
+                "vehicle_id": "veh-1",
+                "trip_id": "trip-1",
+                "lat": 2.0469,
+                "lng": 45.3182,
+                "speed_kph": 34,
+                "heading_deg": 120,
+                "event_time": "2026-07-22T08:00:00Z",
+            },
+        )
 
     async def test_position_event_with_no_subscribers_is_a_no_op(self) -> None:
         container = make_container(vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)})
