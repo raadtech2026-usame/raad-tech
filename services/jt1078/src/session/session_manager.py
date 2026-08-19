@@ -60,6 +60,25 @@ def _default_on_session_removed(_session_id: str) -> None:
     return None
 
 
+def _terminal_id_matches_sim_card_number(terminal_id: str, sim_card_number: str) -> bool:
+    """**A real, live-found bug (2026-08-19, physical `LSZ-C5804DG-Q-F` bench unit):** JT/T
+    1078's own extended-RTP ingest frame carries only a `BCD[6]` (12 hex-digit) SIM card number
+    (`ingest/extended_rtp.py` §6.2.1.1 Table 6.3) - narrower than JT/T 808-2019's own `BCD[10]`
+    (20 hex-digit) terminal-phone field (ADR-0025 §2) `VideoSession.terminal_id` is keyed by.
+    They are the *same* underlying SIM/phone number, right-justified and zero-padded to the
+    wider field, per JT/T 808's own convention - confirmed live, not assumed: a real
+    `terminal_id` of `00000000014482607571`'s own trailing 12 characters are exactly the ingest
+    frame's own `014482607571`. `resolve_ingest_by_terminal_id`'s previous exact `==` comparison
+    between the two could therefore never match: the device correctly dialed this relay's own
+    ingest port (once `JT1078_RELAY_PUBLIC_INGEST_HOST` was also fixed, a separate gap found the
+    same session) and sent valid extended-RTP frames, every single one rejected as
+    `unsolicited_ingest_connection_rejected` regardless."""
+    return (
+        len(terminal_id) >= len(sim_card_number)
+        and terminal_id[-len(sim_card_number) :] == sim_card_number
+    )
+
+
 class SessionManager:
     def __init__(
         self,
@@ -152,9 +171,15 @@ class SessionManager:
     def resolve(self, session_id: str) -> VideoSession | None:
         return self._sessions.get(session_id)
 
-    def resolve_ingest_by_terminal_id(self, terminal_id: str) -> VideoSession | None:
+    def resolve_ingest_by_terminal_id(self, sim_card_number: str) -> VideoSession | None:
+        """Despite the parameter's own historical name (kept for `ingest_server.py`'s existing
+        call-site compatibility), this actually receives the ingest frame's `BCD[6]` SIM card
+        number, not the wider `BCD[10]` `terminal_id` - see `_terminal_id_matches_sim_card_number`
+        for why the two need width-aware matching, not `==`."""
         for session in self._sessions.values():
-            if session.terminal_id == terminal_id and session.state in (
+            if _terminal_id_matches_sim_card_number(
+                session.terminal_id, sim_card_number
+            ) and session.state in (
                 VideoSessionState.REQUESTED,
                 VideoSessionState.ACTIVE,
             ):

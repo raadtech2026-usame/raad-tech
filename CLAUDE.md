@@ -572,6 +572,59 @@ Bugs found during implementation that represent a durable rule for future code, 
   out-of-range `heading_deg`/`alarm_flags` straight through, silently failing *every* real
   position event (both of the vendor's own documented worked examples triggered it) until this
   was caught by live verification, not by any unit test.
+- **Every hand-rolled `async def run_forever(self): while True: await self.poll_once()` consumer
+  loop must catch and log per-iteration exceptions, never let one propagate out of the loop.**
+  Found live (2026-08-19, ADR-0030 end-to-end verification against the physical bench unit): a
+  single `redis.exceptions.BusyLoadingError` (Redis reloading its dataset — but any transient
+  Redis error has the identical effect) on `services/jt1078/src/session/session_request_server.
+  SessionRequestServer.run_forever`'s very first iteration silently killed that `asyncio.Task`
+  for the rest of the process's life — nothing ever awaits or logs a fire-and-forget task's
+  result until shutdown, so 22+ real, live session-creation requests piled up completely
+  unprocessed with zero error output until the process was later stopped and `stop()`'s own
+  `await self._session_request_task` finally surfaced the buried exception. The exact same
+  unprotected pattern existed in two more places — `services/device-gateway/src/registry/
+  redis_device_registry_consumer.RedisDeviceRegistryConsumer.run_forever` and
+  `.../vendors/jt808/commands/redis_video_signaling_consumer.RedisVideoSignalingConsumer.
+  run_forever` — fixed identically, all three now `catch Exception, log, `asyncio.sleep(1)`,
+  continue`, matching the resilience this codebase's own `backend/raad/core/workers/base.py
+  Worker._tick` already established as the correct shape for a supervised polling loop.
+- **A Redis-backed in-memory projection needs an explicit, consumer-group-independent replay on
+  cold start — an incremental consumer group alone is not enough.** Found in the same live
+  session: `device-gateway`'s `DeviceRegistryProjection` is a plain in-memory `dict`, nothing
+  about it survives a process restart, but the Redis consumer *group* reading it into existence
+  (`device-gateway-registry`) is itself durable Redis state — its delivery cursor persists across
+  restarts. A restarted process therefore combined an empty projection with an already-caught-up
+  group, and `xreadgroup(..., {stream: ">"})` returned nothing, ever, for any device registered
+  before the restart (`terminal_not_found` on a real, previously-working JT/T 808 registration).
+  Fixed by `RedisDeviceRegistryConsumer.replay_from_start` — a one-time raw `XRANGE` (not
+  `XREADGROUP`, so it never touches the group's own cursor) that rebuilds the full projection
+  before any vendor adapter starts accepting connections (`gateway.DeviceGateway.start`),
+  leaving the incremental consumer-group loop to handle only what's genuinely new afterward.
+- **A BCD-encoded identity field re-derived in two different wire protocols is not guaranteed to
+  be the same width.** JT/T 808-2019's own terminal-phone `terminal_id` is `BCD[10]` (20 hex
+  digits, ADR-0025 §2); JT/T 1078's own extended-RTP ingest frame carries the *same* underlying
+  SIM/phone-number identity as its own, narrower `BCD[6]` (12 hex digits) "SIM card number"
+  field — the same value, right-justified/zero-padded into the wider field, not two different
+  identities. `services/jt1078/src/session/session_manager.SessionManager.
+  resolve_ingest_by_terminal_id` compared the two with plain `==` and could therefore never
+  match a real device's ingest connection to its own session — confirmed live: the device
+  correctly dialed the relay's ingest port and streamed valid frames, every one rejected as
+  `unsolicited_ingest_connection_rejected` regardless of correctness. Fixed by matching on the
+  narrower field's own trailing-suffix length (`_terminal_id_matches_sim_card_number`), not
+  exact equality. **Any future cross-protocol identity comparison between this vendor's
+  JT/T 808 and JT/T 1078 fields must check each spec table's own stated byte width first, never
+  assume two identity-shaped fields are directly comparable.**
+- **`docker-compose.yml` must wire every config value an adapter's own `from_env()` reads — an
+  unset one degrading to a silently-wrong default is worse than a missing one that fails loudly.**
+  `services/jt1078/src/config.RelayConfig.effective_public_ingest_host` falls back to
+  `ingest_host`'s own default, `0.0.0.0` — a *bind* address, structurally never a valid
+  destination — when `JT1078_RELAY_PUBLIC_INGEST_HOST` is unset. Live-verified: the device
+  acknowledged every `0x9101`/`0x9201` (a wire-valid command), because `0.0.0.0` is syntactically
+  a fine IP for that field: only the device's own subsequent, silent inability to dial it exposed
+  the gap, and the JT808 side of the exchange gave no indication anything was wrong. Now wired in
+  `docker-compose.yml`, documented in `docker/.env.example` with no safe universal default (the
+  reachable address depends on network topology this file cannot know), and set to a real value
+  in this environment's own `docker/.env`.
 
 ## Frontend Implementation Status
 

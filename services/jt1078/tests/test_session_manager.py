@@ -59,6 +59,40 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(manager.resolve_ingest_by_terminal_id("some-other-terminal"))
 
+    async def test_resolve_ingest_by_terminal_id_matches_the_narrower_bcd6_sim_card_number(
+        self,
+    ) -> None:
+        """Regression test for a real, live-found bug (2026-08-19, physical bench unit): the
+        ingest frame's own SIM card number is `BCD[6]` (12 hex digits), narrower than the
+        `BCD[10]` (20 hex digits) `terminal_id` a `VideoSession` is keyed by - the device's real
+        terminal_id `00000000014482607571` and its ingest frame's own `014482607571` are the
+        same identity, right-justified/zero-padded to the wider field. An exact `==` comparison
+        rejected every real ingest connection regardless of correctness."""
+        manager, _ = _manager()
+        session = manager.create_session(
+            terminal_id="00000000014482607571",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-1",
+            logical_channel=1,
+        )
+
+        found = manager.resolve_ingest_by_terminal_id("014482607571")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.session_id, session.session_id)
+
+    async def test_resolve_ingest_by_terminal_id_does_not_match_a_coincidental_short_suffix(
+        self,
+    ) -> None:
+        manager, _ = _manager()
+        manager.create_session(
+            terminal_id="00000000014482607571",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-1",
+            logical_channel=1,
+        )
+        self.assertIsNone(manager.resolve_ingest_by_terminal_id("999999999999"))
+
     async def test_mark_ingest_active_transitions_and_publishes_once(self) -> None:
         manager, publisher = _manager()
         session = manager.create_session(

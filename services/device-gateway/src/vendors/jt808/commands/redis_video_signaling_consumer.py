@@ -38,6 +38,7 @@ every other broker consumer in this deployable already takes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from typing import Any, Callable
@@ -268,5 +269,14 @@ class RedisVideoSignalingConsumer:
         return 1
 
     async def run_forever(self) -> None:
+        """Same fix, same live incident, as `registry/redis_device_registry_consumer.
+        RedisDeviceRegistryConsumer.run_forever`'s own docstring: an unprotected `while True`
+        here means any transient Redis error permanently and silently kills all further
+        `Jt1078SignalCommandRequested` delivery (including the ADR-0030 `query_av_attributes`
+        discovery request) for the rest of this process's life, with no error ever logged."""
         while True:
-            await self.poll_once()
+            try:
+                await self.poll_once()
+            except Exception as exc:  # noqa: BLE001 - a transient Redis error must not kill this loop
+                log_with_fields(logger, 40, "video_signaling_poll_failed", error=str(exc))
+                await asyncio.sleep(1.0)

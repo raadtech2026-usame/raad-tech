@@ -620,6 +620,73 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
+**Nothing — ADR-0030's automatic camera-discovery workflow has now been verified genuinely
+end to end against the physical `LSZ-C5804DG-Q-F` bench unit (`terminal_id=
+00000000014482607571`), including a full real live-video request, and four more real,
+production-blocking bugs found and fixed along the way (2026-08-19).** At explicit user
+direction, following the previous session's ADR-0030 implementation: authenticate → auto-trigger
+`0x9003` → `0x1003` reply → `DeviceAvAttributesReported` reaches the backend → `Camera` rows
+auto-created → visible through the existing `GET /devices/{id}` API → a real `POST /video/live`
+→ `0x9101` → the device dials the relay's ingest port → real extended-RTP frames flow →
+`VideoSession.status=active` → a connected viewer. **No Camera row was ever manually inserted and
+no device data was modified to fake a result** — the one intentional write was resetting
+`devices.av_attributes_requested_at` back to `NULL` for this one device (confirmed with the user
+first), because a prior attempt under pre-fix code had already consumed the ADR's own one-shot
+discovery guard without ever actually completing it.
+
+Discovered that the running Docker stack (`raad-backend`/`raad-worker`/`raad-device-gateway`) was
+still on images built *before* ADR-0030's own code existed, and `jt1078-relay` had never been
+started at all despite having no Compose `profile` gate — nothing in this checklist could have
+worked until all four services were rebuilt/started against current code. Doing that surfaced
+four real, previously-undetected bugs, none caught by any fake-backed unit test because none of
+the fakes reproduced the failure mode:
+
+1. **`DeviceAvAttributesReported` was never wired into device-gateway's `publisher_port.
+   DeviceEvent` union / `LoggingEventPublisher` / `redis_event_publisher._fields_for`** — with
+   the real broker-backed publisher this raised `TypeError` on every `0x1003` reply; with the
+   default logging-only publisher it silently vanished. Fixed by adding the missing branch to
+   all three (committed as part of the ADR-0030 phase, see previous entry below).
+2. **Three separate `async def run_forever(self): while True: await self.poll_once()` consumer
+   loops** (`RedisDeviceRegistryConsumer`/`RedisVideoSignalingConsumer` on device-gateway,
+   `SessionRequestServer` on jt1078-relay) **had no exception handling at all** — a single
+   transient Redis error permanently and silently killed each task for the rest of the process's
+   life. Live-caught via `SessionRequestServer`: a real `BusyLoadingError` on its very first poll
+   left 22+ genuine live-video session requests piled up, completely unprocessed, with zero log
+   output, until the process was later restarted and finally surfaced the buried exception on
+   shutdown. All three now catch, log, and continue — see CLAUDE.md's own Permanent Engineering
+   Lessons for the full incident and the fix's own resemblance to `core/workers/base.py
+   Worker._tick`.
+3. **`DeviceRegistryProjection` (in-memory) vs. its own Redis consumer group (durable) —
+   a device-gateway restart previously made every already-provisioned device unresolvable**
+   (`terminal_not_found` on a real, previously-working registration) until an unrelated new event
+   happened to touch it again. Fixed by `RedisDeviceRegistryConsumer.replay_from_start` — a raw,
+   group-independent `XRANGE` full-stream replay run before any adapter starts accepting
+   connections.
+4. **`SessionManager.resolve_ingest_by_terminal_id` compared JT/T 1078's own narrower `BCD[6]`
+   ingest-frame SIM card number against the wider `BCD[10]` `terminal_id` with exact `==`** —
+   structurally could never match. The device correctly dialed the relay's ingest port and
+   streamed valid frames; every one was rejected as `unsolicited_ingest_connection_rejected`
+   regardless. Fixed by matching on the narrower field's own trailing suffix.
+5. **`JT1078_RELAY_PUBLIC_INGEST_HOST` was never wired into `docker-compose.yml`/
+   `docker/.env.example` at all** — left unset, `RelayConfig.effective_public_ingest_host` falls
+   back to its own bind address `0.0.0.0`, embedded verbatim as `server_ip` in the `0x9101`
+   signaling body. The device acknowledged the command every time (a wire-valid message), but
+   could never dial an unroutable address, so no ingest byte ever arrived and every session timed
+   out `failed` — silently, with no error anywhere in the chain. Now wired with no safe universal
+   default (flagged, must be set per-environment); this environment's own `docker/.env` was set
+   to the host's real LAN IP, the same network path the bench device already uses for
+   `DEVICE_GATEWAY_JT808_PORT`/7808.
+
+Verification after all fixes: backend `tests/unit`+`tests/architecture` (1427 tests, 10
+subtests), device-gateway's full suite (423 tests), `services/jt1078`'s full suite (122 tests,
+including new regression coverage for bugs 2/3/4 above) — all passing. Live: `devices.is_online`
+flips true, `av_attributes_requested_at` sets on first-ever online, 4 `Camera` rows auto-created
+(`position=other`/`label="Channel N"`, matching `max_video_channels=4`), visible via
+`GET /devices/{id}`; a real `POST /video/live` reached `status=active` with a genuinely connected
+viewer. **Still not exercised by this pass:** HLS, ADR-0024 §16's own reconciliation-timeout job,
+the F10 web player's own UI polish beyond what already shipped (ADR-0028) — none of these were in
+scope for this verification pass.
+
 **Nothing — ADR-0030 (Automatic Camera/Channel Discovery) is complete.** A read-only bench-test
 diagnostic against the physical `LSZ-C5804DG-Q-F` unit (`terminal_id=00000000014482607571`) found
 GPS/registration fully working but zero `Camera` rows and no code path to create one automatically;

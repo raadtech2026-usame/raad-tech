@@ -163,6 +163,26 @@ class FakeRedis:
     async def xack(self, name, groupname, message_id) -> None:
         self.acked.setdefault(groupname, set()).add(message_id)
 
+    async def xrange(self, name, min="-", max="+", count=None):
+        # `RedisDeviceRegistryConsumer.replay_from_start` reads with plain XRANGE, deliberately
+        # bypassing consumer-group/ack state entirely - same yield-back requirement as
+        # `xreadgroup` above, for the same reason.
+        await asyncio.sleep(0)
+        entries = self.entries
+        if min != "-":
+            if min.startswith("("):
+                floor = int(min[1:])
+                entries = [e for e in entries if int(e[0]) > floor]
+            else:
+                floor = int(min)
+                entries = [e for e in entries if int(e[0]) >= floor]
+        if max != "+":
+            ceiling = int(max)
+            entries = [e for e in entries if int(e[0]) <= ceiling]
+        if count is not None:
+            entries = entries[:count]
+        return entries
+
 
 class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_both_adapters_are_registered_by_name(self) -> None:

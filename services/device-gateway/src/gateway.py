@@ -181,6 +181,16 @@ class DeviceGateway:
         raise LookupError(f"No adapter registered under name {name!r}.")
 
     async def start(self) -> None:
+        # A real, production-blocking gap found live (2026-08-19): `DeviceRegistryProjection`
+        # is in-memory only, but the consumer *group* backing it is durable Redis state — a
+        # bare restart previously left every already-provisioned device unresolvable
+        # (`terminal_not_found`) until some unrelated new event happened to touch it again. Must
+        # run to completion *before* any adapter below starts accepting connections, so a device
+        # can never race a still-empty projection — see `RedisDeviceRegistryConsumer.
+        # replay_from_start`'s own docstring for the full incident and why this is safe to run
+        # unconditionally on every startup, not just after a crash.
+        if self._registry_consumer is not None:
+            await self._registry_consumer.replay_from_start()
         for adapter in self._adapters:
             await adapter.start()
             log_with_fields(

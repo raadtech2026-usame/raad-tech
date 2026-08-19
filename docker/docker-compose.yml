@@ -258,6 +258,23 @@ services:
       # with (ADR-0022's own "secrets are environment variables" precedent) — no default in
       # production; left as the dev-only placeholder here since no such adapter exists yet.
       JT1078_RELAY_VIEWER_TOKEN_SECRET: ${JT1078_RELAY_VIEWER_TOKEN_SECRET:-dev-only-change-me}
+      # A real, production-blocking gap found live (2026-08-19): this was never wired here at
+      # all. `RelayConfig.effective_public_ingest_host` (`services/jt1078/src/config.py`) then
+      # silently falls back to `ingest_host`'s own default, `0.0.0.0` — a *bind* address, never
+      # a valid destination — and that unroutable value is exactly what gets embedded in the
+      # `0x9101`/`0x9201` `server_ip` field signaled to the device. Confirmed live: the device
+      # acknowledged the command every time (`command_acknowledged` result=0), a viewer even
+      # connected to the relay's own WS-FLV port, but the device could never actually dial
+      # `0.0.0.0` for its media/ingest connection, so no ingest byte ever arrived and every
+      # session ended `status=failed`. No safe universal default exists (unlike
+      # `JT1078_SIGNALING_URL`'s own `ws://localhost:7911`, which is genuinely correct for a
+      # same-host dev browser) — the device dials this address over its own network path, which
+      # this Compose file cannot know. **Must be set to the real, device-reachable IP/hostname of
+      # this host in `docker/.env`** (a production deployment: the VPS's public IP/domain,
+      # routed through nginx/Coolify's own TCP passthrough or a direct port mapping — the relay
+      # speaks raw extended-RTP on this port, not HTTP, so it cannot go through the same
+      # HTTP(S) reverse-proxy path `JT1078_SIGNALING_URL`'s viewer WebSocket does).
+      JT1078_RELAY_PUBLIC_INGEST_HOST: ${JT1078_RELAY_PUBLIC_INGEST_HOST:-}
     ports:
       - "${JT1078_RELAY_INGEST_PORT:-7910}:7910"
       - "${JT1078_RELAY_VIEWER_PORT:-7911}:7911"

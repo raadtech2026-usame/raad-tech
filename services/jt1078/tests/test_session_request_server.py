@@ -23,6 +23,13 @@ class FakeRedis:
         self.expirations: dict[str, int] = {}
 
     async def blpop(self, keys, timeout: int = 0):
+        # A real `redis.asyncio.Redis.blpop` always suspends back to the event loop (genuine
+        # network I/O); this fake has no real I/O to await, so it must yield explicitly or a
+        # consumer's `run_forever` `while True` loop would spin as a tight synchronous busy-loop
+        # that never actually suspends, starving every other task on the loop (including a
+        # test's own bounded polling wait) - the same lesson `services/device-gateway/tests/
+        # test_gateway.py`'s own `FakeRedis.xreadgroup` already documents.
+        await asyncio.sleep(0)
         for key in keys:
             values = self.lists.get(key)
             if values:
@@ -176,6 +183,63 @@ class SessionRequestServerTests(unittest.IsolatedAsyncioTestCase):
         server, _session_manager = _make_server(redis)
         processed = await server.poll_once()
         self.assertFalse(processed)
+
+
+class FlakyRedis(FakeRedis):
+    """Raises on its first N `blpop` calls (mirrors the live-reproduced `BusyLoadingError`),
+    then behaves normally - the regression fixture for `run_forever`'s own resilience fix."""
+
+    def __init__(self, *, fail_first_n_calls: int) -> None:
+        super().__init__()
+        self._remaining_failures = fail_first_n_calls
+        self.blpop_call_count = 0
+
+    async def blpop(self, keys, timeout: int = 0):
+        self.blpop_call_count += 1
+        if self._remaining_failures > 0:
+            self._remaining_failures -= 1
+            raise ConnectionError("simulated transient Redis failure")
+        return await super().blpop(keys, timeout=timeout)
+
+
+class RunForeverResilienceTests(unittest.IsolatedAsyncioTestCase):
+    """**Regression test for a real, live-reproduced outage (2026-08-19):** `run_forever`
+    previously had no protection at all - a single transient Redis error on its very first
+    `poll_once` call permanently killed the task, silently, for the rest of the process's life.
+    22+ real session-creation requests piled up unprocessed in `raad:jt1078:session_requests`
+    before this was caught. This proves the fixed loop survives an early failure and goes on to
+    process a request queued after it."""
+
+    async def test_survives_a_transient_failure_and_keeps_processing(self) -> None:
+        redis = FlakyRedis(fail_first_n_calls=1)
+        server, session_manager = _make_server(redis)
+        _push_request(
+            redis,
+            {
+                "request_id": "req-after-failure",
+                "command": "create_live_session",
+                "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+                "correlation_id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+                "terminal_id": "00000000013800138000",
+                "logical_channel": 1,
+            },
+        )
+
+        task = asyncio.create_task(server.run_forever())
+        try:
+            for _ in range(200):  # bounded polling, not an unconditional sleep
+                if redis.lists.get("raad:jt1078:session_responses:req-after-failure"):
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        self.assertGreaterEqual(redis.blpop_call_count, 2)  # the failure, then a real read
+        response = _pop_response(redis, "req-after-failure")
+        self.assertTrue(response["ok"])
+        self.assertIsNotNone(session_manager.resolve("01ARZ3NDEKTSV4RRFFQ69G5FAZ"))
 
 
 if __name__ == "__main__":

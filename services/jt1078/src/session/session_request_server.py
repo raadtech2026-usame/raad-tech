@@ -44,6 +44,7 @@ inside `SessionManager.end_session` itself (ADR-0024 §5 point 4), unchanged by 
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -152,5 +153,26 @@ class SessionRequestServer:
         await self._redis.expire(response_key, self._response_ttl_seconds)
 
     async def run_forever(self) -> None:
+        """**The exact root cause of a real, live-reproduced outage (2026-08-19).** This loop
+        had no protection at all: a `redis.exceptions.BusyLoadingError` (Redis reloading its
+        dataset - observed live, but any transient Redis error would do the same) on this task's
+        very first `poll_once` call propagated straight out of `while True`, permanently killing
+        the `asyncio.Task` for the rest of the process's life. Nothing ever awaits or logs a
+        fire-and-forget task's result until shutdown, so this was completely invisible - the
+        Business API's own `Jt1078RelayRpcClient.call` kept `RPUSH`-ing real requests onto
+        `raad:jt1078:session_requests` (confirmed live: 22+ piled up, unread), every one of them
+        silently timing out from the caller's side with no indication the relay itself was the
+        problem, until this process was actually restarted and `stop()`'s own `await
+        self._session_request_task` finally surfaced the buried exception. Matches the fix
+        already applied to the two structurally identical loops on the device-gateway side
+        (`RedisDeviceRegistryConsumer`/`RedisVideoSignalingConsumer.run_forever`) and this
+        platform's own established resilient-loop shape (`backend/raad/core/workers/base.py
+        Worker._tick`: catch, log, never let one bad iteration kill the loop) - `poll_once`'s own
+        request/response shape (nothing is acked or removed from the list until a response is
+        pushed) already makes a retried poll safe to repeat."""
         while True:
-            await self.poll_once()
+            try:
+                await self.poll_once()
+            except Exception as exc:  # noqa: BLE001 - a transient Redis error must not kill this loop
+                log_with_fields(logger, 40, "session_request_poll_failed", error=str(exc))
+                await asyncio.sleep(1.0)
