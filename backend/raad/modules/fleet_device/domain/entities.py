@@ -261,6 +261,7 @@ class Device(_AggregateRoot):
         cameras: list[Camera] | None = None,
         inventory_id: InventoryItemId | None = None,
         is_online: bool = False,
+        av_attributes_requested_at: datetime | None = None,
     ) -> None:
         super().__init__()
         self.id = id
@@ -279,6 +280,11 @@ class Device(_AggregateRoot):
         #: `DeviceOnline`/`DeviceOffline` connectivity event), never claimed `True` by default.
         #: Same "connectivity telemetry, not business state" reasoning as `last_seen_at` itself.
         self.is_online = is_online
+        #: ADR-0030: set once RAAD publishes a `0x9003` channel-discovery request for this
+        #: device (`record_av_attributes_requested`) — the idempotency guard so a later
+        #: `DeviceOnline` reconnect never re-triggers discovery signaling. `None` means never
+        #: requested.
+        self.av_attributes_requested_at = av_attributes_requested_at
         self.created_at = created_at
         self.updated_at = updated_at
         self._cameras: list[Camera] = list(cameras) if cameras else []
@@ -478,6 +484,16 @@ class Device(_AggregateRoot):
         process already decided and acted on, not a business decision made here. Callable
         regardless of `lifecycle_state`, same reasoning as `record_last_seen`."""
         self.auth_key_hash = auth_key_hash
+
+    def record_av_attributes_requested(self, requested_at: datetime) -> None:
+        """ADR-0030: marks that RAAD has published a `0x9003` channel-discovery request for
+        this device — the idempotency guard `events/subscribers.py`'s
+        `DeviceAvAttributesRequestProcessor` checks before requesting again on a later
+        `DeviceOnline`. Mirrors `record_last_seen`/`record_auth_key_hash`'s identical break from
+        every other mutator here — no lifecycle check, no `updated_at` bump, no recorded
+        `DomainEvent`: a provisioning-workflow bookkeeping fact, not a business state change.
+        Callable regardless of `lifecycle_state`, same reasoning as those two."""
+        self.av_attributes_requested_at = requested_at
 
     def register_camera(
         self,

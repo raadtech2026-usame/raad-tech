@@ -366,15 +366,26 @@ class DeviceApplicationService:
 
     async def record_device_seen(
         self, command: RecordDeviceSeenCommand, *, uow: FleetDeviceUnitOfWork
-    ) -> None:
+    ) -> str | None:
         """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A3 — the
         application-layer entry point `events/subscribers.py`'s `DeviceOnline`/`DeviceOffline`
         processors call. **No-ops (logs, doesn't raise) for an unknown `device_id`** — unlike
         every other method here, which raises `NotFoundError` for a caller that named a specific
         device it expected to exist, a connectivity event for a terminal this backend never
         registered (a stray, decommissioned, or not-yet-provisioned device still reaching the
-        device-gateway) is a real, expected occurrence, not an error. Returns `None`, not a DTO
-        — no HTTP route calls this; there is nothing for a caller to do with the result."""
+        device-gateway) is a real, expected occurrence, not an error.
+
+        **Return value widened by ADR-0030** (previously always `None`, no HTTP route calls
+        this): returns the device's own `terminal_id` when this call is the transition that
+        should trigger automatic JT/T 1078 channel discovery — `is_online=True` (a real
+        `DeviceOnline`, never `DeviceOffline`) *and* `av_attributes_requested_at is None` (never
+        requested before, this codebase's own idempotency-guard convention). The guard is set
+        in the *same* transaction/commit as `record_last_seen`, before the caller ever publishes
+        anything — so a crash between this method returning and the caller's broker-publish call
+        loses at most one discovery request, never doubles one up on retry. `None` in every other
+        case (unknown device, `DeviceOffline`, or already requested) — the caller
+        (`events/subscribers.py`'s `DeviceConnectivityProcessor`) treats `None` as "nothing to
+        publish", exactly the same no-op posture this method already had before this ADR."""
         async with uow:
             device = await uow.devices.get(DeviceId(command.device_id))
             if device is None:
@@ -382,9 +393,13 @@ class DeviceApplicationService:
                     "device_seen_event_for_unknown_device",
                     extra={"device_id": command.device_id},
                 )
-                return
+                return None
             device.record_last_seen(command.seen_at, is_online=command.is_online)
+            should_discover = command.is_online and device.av_attributes_requested_at is None
+            if should_discover:
+                device.record_av_attributes_requested(command.seen_at)
             await uow.commit()
+            return str(device.terminal_id) if should_discover else None
 
     async def record_auth_key_hash(
         self, command: RecordAuthKeyHashCommand, *, uow: FleetDeviceUnitOfWork

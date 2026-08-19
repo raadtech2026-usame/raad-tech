@@ -32,6 +32,7 @@ from typing import Union
 
 from src.events.device_alarm_raised import DeviceAlarmRaised
 from src.events.device_auth_code_issued import DeviceAuthCodeIssued
+from src.events.device_av_attributes_reported import DeviceAvAttributesReported
 from src.events.device_command_result import DeviceCommandResult
 from src.events.device_offline import DeviceOffline
 from src.events.device_online import DeviceOnline
@@ -49,6 +50,7 @@ DeviceEvent = Union[
     DeviceAuthCodeIssued,
     DeviceCommandResult,
     DeviceResourceListReported,
+    DeviceAvAttributesReported,
 ]
 
 
@@ -154,5 +156,19 @@ class LoggingEventPublisher(EventPublisher):
                 correlation_id=event.correlation_id,
                 total_resource_count=event.total_resource_count,
                 item_count=len(event.items),
+                event_time=event.event_time.isoformat(),
+            )
+        elif isinstance(event, DeviceAvAttributesReported):
+            log_with_fields(
+                logger,
+                20,
+                "device_av_attributes_reported",
+                organization_id=event.organization_id,
+                vehicle_id=event.vehicle_id,
+                device_id=event.device_id,
+                terminal_id=event.terminal_id,
+                correlation_id=event.correlation_id,
+                max_video_channels=event.max_video_channels,
+                max_audio_channels=event.max_audio_channels,
                 event_time=event.event_time.isoformat(),
             )

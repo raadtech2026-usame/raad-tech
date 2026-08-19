@@ -149,6 +149,7 @@ def device_to_model(
     # triggered because nothing ever set this column to a real (tz-aware `Clock.now()`) value.
     model.last_seen_at = _naive(device.last_seen_at)
     model.is_online = device.is_online
+    model.av_attributes_requested_at = _naive(device.av_attributes_requested_at)
     model.inventory_id = (
         str(device.inventory_id) if device.inventory_id is not None else None
     )
@@ -193,6 +194,7 @@ def model_to_device(model: DeviceModel) -> Device:
         auth_key_hash=model.auth_key_hash,
         last_seen_at=model.last_seen_at,
         is_online=model.is_online,
+        av_attributes_requested_at=model.av_attributes_requested_at,
         created_at=model.created_at,
         updated_at=model.updated_at,
         cameras=[model_to_camera(row) for row in model.cameras],

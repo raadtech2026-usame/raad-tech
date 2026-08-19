@@ -21,7 +21,8 @@ sends structured fields, never pre-encoded wire bytes):
     "terminal_id": "<JT/T 808 terminal phone>",
     "correlation_id": "<opaque string the requester can trace a result back by>",
     "command": "live_video_request | live_video_control | live_video_status_notify |
-                 query_resource_list | playback_request | playback_control",
+                 query_resource_list | playback_request | playback_control |
+                 query_av_attributes",
     "fields": { ... command-specific, see `_BUILDERS` below ... }
   }
 }
@@ -44,6 +45,7 @@ from typing import Any, Callable
 from redis.asyncio import Redis
 
 from src.logging_setup import get_logger, log_with_fields
+from src.vendors.jt808.commands.av_attributes import encode_query_av_attributes
 from src.vendors.jt808.commands.command_sender import CommandSender
 from src.vendors.jt808.commands.video_signaling import (
     LiveVideoControl,
@@ -143,6 +145,15 @@ def _build_playback_control(fields: dict[str, Any]) -> tuple[int, bytes]:
     return message_ids.PLAYBACK_CONTROL, encode_playback_control(control)
 
 
+def _build_query_av_attributes(fields: dict[str, Any]) -> tuple[int, bytes]:
+    # ADR-0030 — `commands/av_attributes.py`'s own channel-*count* discovery pair, distinct from
+    # `_build_query_resource_list` above. `0x9003`'s body is empty (§6.1.1), so `fields` is
+    # unused — kept as a parameter only so this function's shape matches every other entry in
+    # `_BUILDERS` (a uniform `dict[str, Any] -> tuple[int, bytes]` callable).
+    del fields
+    return message_ids.QUERY_AV_ATTRIBUTES, encode_query_av_attributes()
+
+
 _BUILDERS: dict[str, Callable[[dict[str, Any]], tuple[int, bytes]]] = {
     "live_video_request": _build_live_video_request,
     "live_video_control": _build_live_video_control,
@@ -150,6 +161,7 @@ _BUILDERS: dict[str, Callable[[dict[str, Any]], tuple[int, bytes]]] = {
     "query_resource_list": _build_query_resource_list,
     "playback_request": _build_playback_request,
     "playback_control": _build_playback_control,
+    "query_av_attributes": _build_query_av_attributes,
 }
 
 

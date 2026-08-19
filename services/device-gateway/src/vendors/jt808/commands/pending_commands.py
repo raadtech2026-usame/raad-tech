@@ -73,6 +73,28 @@ class PendingCommandTracker:
         out — both expected, not errors; see `handlers/command_ack_handler.py`)."""
         return self._pending.pop((terminal_id, message_id, serial_no), None)
 
+    def resolve_by_terminal_and_message(
+        self, *, terminal_id: str, message_id: int
+    ) -> PendingCommand | None:
+        """Pops and returns the pending command matching `(terminal_id, message_id)` alone,
+        ignoring `serial_no` — for a reply message whose body carries no echoed serial number to
+        match against the usual `resolve()` triple (`handlers/av_attributes_handler.py`'s own
+        `0x1003`, confirmed by reading Table 6.1 field-by-field: no such field exists there,
+        unlike `0x1205`'s own `original_serial_no`). Safe only for a message family where at most
+        one request is realistically outstanding per terminal at a time — `0x9003`/`0x1003` is
+        exactly that (ADR-0030 sends it at most once per device). Returns the first match found;
+        with more than one pending entry for this `(terminal_id, message_id)` pair, which one is
+        returned is unspecified — not a concern this command family can ever actually hit."""
+        match_key = next(
+            (
+                key
+                for key in self._pending
+                if key[0] == terminal_id and key[1] == message_id
+            ),
+            None,
+        )
+        return self._pending.pop(match_key) if match_key is not None else None
+
     def sweep_expired(self) -> list[PendingCommand]:
         now = time.monotonic()
         expired_keys = [

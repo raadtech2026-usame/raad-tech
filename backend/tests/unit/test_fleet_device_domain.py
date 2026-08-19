@@ -368,6 +368,39 @@ class DeviceLifecycleTests(unittest.TestCase):
         device.record_last_seen(datetime(2026, 7, 25, 1, tzinfo=timezone.utc), is_online=False)
         self.assertFalse(device.is_online)
 
+    # --- record_av_attributes_requested (ADR-0030) ---------------------------------------
+
+    def test_new_device_has_never_requested_av_attributes(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        self.assertIsNone(device.av_attributes_requested_at)
+
+    def test_record_av_attributes_requested_sets_the_timestamp(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        requested_at = datetime(2026, 8, 18, 12, 0, 0, tzinfo=timezone.utc)
+        device.record_av_attributes_requested(requested_at)
+        self.assertEqual(device.av_attributes_requested_at, requested_at)
+
+    def test_record_av_attributes_requested_emits_no_domain_event(self) -> None:
+        """Mirrors `record_last_seen`/`record_auth_key_hash`'s identical break from every other
+        mutator - a provisioning-workflow bookkeeping fact, not a business-state change."""
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.record_av_attributes_requested(datetime(2026, 8, 18, tzinfo=timezone.utc))
+        self.assertEqual(device.pull_domain_events(), [])
+
+    def test_record_av_attributes_requested_does_not_bump_updated_at(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        original_updated_at = device.updated_at
+        device.record_av_attributes_requested(datetime(2026, 8, 18, tzinfo=timezone.utc))
+        self.assertEqual(device.updated_at, original_updated_at)
+
+    def test_record_av_attributes_requested_works_regardless_of_lifecycle_state(self) -> None:
+        for state in DeviceLifecycleState:
+            with self.subTest(state=state):
+                device = self.make_device(state)
+                requested_at = datetime(2026, 8, 18, tzinfo=timezone.utc)
+                device.record_av_attributes_requested(requested_at)
+                self.assertEqual(device.av_attributes_requested_at, requested_at)
+
     def test_mark_assigned_emits_no_event(self) -> None:
         """Regression: the assignment fact is emitted once, by DeviceAssignment.open - not
         duplicated here."""

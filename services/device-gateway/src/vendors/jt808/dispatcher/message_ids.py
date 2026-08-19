@@ -46,5 +46,10 @@ PLAYBACK_REQUEST = 0x9201  # §6.3.3 — remote recording playback request
 PLAYBACK_CONTROL = 0x9202  # §6.3.4 — playback start/pause/stop/seek control
 QUERY_RESOURCE_LIST = 0x9205  # §6.3.1 — query the terminal's own recording resource list
 
+# JT/T 1078 A/V attribute query (spec §6.1, ADR-0030) — the channel-*count* discovery pair,
+# distinct from QUERY_RESOURCE_LIST/RESOURCE_LIST_REPORT above (which browse recorded files).
+QUERY_AV_ATTRIBUTES = 0x9003  # §6.1.1 — platform -> terminal, empty body
+
 # JT/T 1078 video signaling — terminal -> platform (uplink), a real handler.
 RESOURCE_LIST_REPORT = 0x1205  # §6.3.2 — the terminal's reply to QUERY_RESOURCE_LIST
+AV_ATTRIBUTES_REPORT = 0x1003  # §6.1.2 — the terminal's reply to QUERY_AV_ATTRIBUTES

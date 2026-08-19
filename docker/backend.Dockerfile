@@ -22,7 +22,11 @@ COPY raad ./raad
 COPY migrations ./migrations
 COPY alembic.ini ./
 
-RUN pip install --no-cache-dir -e .
+# --default-timeout/--retries: resilience against a slow/unstable network mid-build — pip's
+# stock 15s read timeout was observed failing repeatedly on a constrained connection; a longer
+# per-chunk timeout plus more retries is strictly safer everywhere (a fast network just never
+# hits either limit), not a workaround specific to any one environment.
+RUN pip install --no-cache-dir --default-timeout=100 --retries 10 -e .
 
 USER appuser
 

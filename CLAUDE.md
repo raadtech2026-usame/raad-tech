@@ -987,3 +987,82 @@ reconciliation-timeout job (for the case where *no* relay lifecycle event ever a
 e.g. a relay crash); the Org-Admin web video player (F10 — the user's own explicit
 Flutter-only choice this phase); a real Flutter SDK and a physical MDVR to verify any of this
 against, backend through mobile.
+
+**Note on ADR-0027/0028/0029 (2026-08-16) and F10:** the paragraph above's "F10 — Flutter-only
+choice this phase" was accurate when ADR-0026 was written, but ADR-0028 (Unified Vehicle
+Operations Frontend) later built the Org-Admin **web** video player after all, alongside ADR-0027
+(a `GET /vehicles/{vehicle_id}/device-assignment` read model + `Device.is_online`) and ADR-0029
+(extending Platform Admin — Founder/Regional Manager/Support Staff — the same live-video access).
+All three are `Accepted`/implemented (commits `560580d`/`8b5bd0c`/`857d68b`) but this file's own
+narrative was never updated to reflect them — see `docs/PROJECT_STATUS.md` §4's own flagged note
+next to those three ADR rows, and each ADR's own file, for the authoritative detail; not
+duplicated here to avoid a second copy that can drift.
+
+## Automatic Camera/Channel Discovery (ADR-0030, 2026-08-18)
+
+A read-only bench-test diagnostic against the physical `LSZ-C5804DG-Q-F` unit found JT808
+registration/heartbeat/GPS fully working but zero `Camera` rows: `RegisterCameraCommand` existed
+at the application layer with no HTTP route, and no event subscriber turned a device-reported
+channel list into a `Camera` row. The user explicitly declined a one-off manual fix for the test
+device and asked for the generic product workflow — any JT/T808/1078-compliant MDVR added through
+**Add Device** should have its cameras discovered and registered automatically, no database/shell
+intervention ever. Per `.claude/rules/workflow.md` #8,
+`docs/architecture/adr/0030-automatic-camera-channel-discovery.md` was written and accepted before
+implementation.
+
+**A real correction found while investigating:** the message pair that actually reports channel
+*count/capability* is `0x9003`/`0x1003` ("Query/Upload Terminal A/V Attributes",
+`mdvrdocs/MDVR-808-1078-spec.pdf` §6.1.1/§6.1.2) — not `0x9205`/`0x1205`
+(`commands/video_signaling.py`'s `QueryResourceList`/`ResourceListReport`), which the code's own
+existing comment already correctly scoped as the terminal's own **recording** resource list
+(browsing recorded files), not physical channel capability. `0x9003`/`0x1003` was net-new protocol
+code (`services/device-gateway/src/vendors/jt808/commands/av_attributes.py`,
+`handlers/av_attributes_handler.py`), reusing the *existing* `Jt1078SignalCommandRequested` broker
+wire contract verbatim (one new entry in `redis_video_signaling_consumer.py`'s `_BUILDERS` table —
+no new consumer, no new event type on the request side).
+
+**Discovery trigger: once per device, on first successful authentication** — a new, purely
+additive `devices.av_attributes_requested_at` column (migration `7d3a9c1e5b42`) is the idempotency
+guard `DeviceApplicationService.record_device_seen` sets (widened to return `str | None`: the
+device's own `terminal_id` exactly when this `DeviceOnline` transition should trigger discovery,
+`None` otherwise) and `fleet_device.events.subscribers.DeviceConnectivityProcessor` checks before
+publishing the `0x9003` request — a later reconnect never re-triggers it. **Channel-to-position
+mapping deliberately defaults to `position=other`/`label="Channel N"`, never guessed semantics** —
+the vendor spec's own channel-numbering convention (Table 5.31) is not hardcoded as a
+platform-wide mapping, since RAAD cannot confirm it holds for every future JT/T1078-compliant
+vendor (ADR-0010's multi-vendor premise); an Org Admin can rename/reposition a discovered camera
+once a camera-editing surface exists (none does yet — a disclosed, pre-existing gap this ADR does
+not close). A new `DeviceAvAttributesReportedProcessor` (`fleet_device/events/subscribers.py`)
+consumes the resulting `DeviceAvAttributesReported` event and calls the existing, previously-
+unreachable `DeviceApplicationService.register_camera` once per channel `1..max_video_channels` —
+idempotent by construction via `register_camera`'s own `ux_cameras__device_channel` invariant
+(`ConflictError` on replay, caught and logged, not treated as an error).
+
+**Two real gaps found and fixed while verifying this work, not by the original implementation
+pass — the same "a fake can't catch a real wiring gap" lesson this file's Permanent Engineering
+Lessons section already names for the LSZ adapter's field clamping.** (1) The new
+`DeviceAvAttributesReported` event was never added to device-gateway's
+`events/publisher_port.DeviceEvent` union, `LoggingEventPublisher`, or
+`events/redis_event_publisher._fields_for` — with the real `RedisEventPublisher` this raised
+`TypeError` on every `0x1003` reply (the final `raise TypeError("Unrecognized device-plane event
+type...")` fallthrough), and with the default `LoggingEventPublisher` the event silently vanished
+with no log line; both handler unit tests used a recording fake publisher, so `pytest` never
+caught either failure mode. Fixed by adding the missing branch to all three. (2)
+`backend/tests/unit/test_fleet_device_application.py::RecordDeviceSeenTests::
+test_updates_last_seen_at_and_commits` still asserted the pre-ADR-0030 always-`None` return value
+against the now-widened `str | None` signature — fixed, plus a new regression test proving a
+second `DeviceOnline` for the same device does not re-trigger discovery. Verified after both
+fixes: device-gateway's full suite (419 tests, including the new `test_av_attributes*`/
+`test_pending_commands`/`test_redis_video_signaling_consumer` cases, 24 of them) and backend
+`tests/unit` + `tests/architecture` (1427 tests + 10 subtests) all pass; `tests/integration` (278
+tests + 21 subtests) passes with migration `7d3a9c1e5b42` applied and an upgrade→downgrade→upgrade
+round trip clean (`alembic check`: zero drift) — the only integration failures are two pre-existing
+Redis-timeout tests unrelated to this change (no reachable Redis broker in this sandbox).
+`tests/contract`'s pre-existing `NoSilentUndocumentedRoutesTests` failure (routes from ADR-0017
+through ADR-0023 never added to that suite's own documented-routes accounting) is untouched — this
+ADR adds no new HTTP route — and is flagged, not fixed, here.
+
+**What this ADR does not do**, per its own text: build a camera-editing UI/API; route the JT1078
+relay through nginx/Coolify; touch any other JT/T808/1078 message; change how
+`POST /video/live`/`/playback` resolve a camera (already generic via `device.cameras`); or start
+`services/jt1078` by default in every environment (it already has no Compose `profile` gate).

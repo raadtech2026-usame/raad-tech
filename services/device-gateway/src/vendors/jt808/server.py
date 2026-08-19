@@ -86,6 +86,7 @@ from src.events.device_offline import DeviceOffline
 from src.events.device_online import DeviceOnline
 from src.events.publisher_port import EventPublisher, LoggingEventPublisher
 from src.vendors.jt808.handlers.authentication_handler import TerminalAuthenticationHandler
+from src.vendors.jt808.handlers.av_attributes_handler import AvAttributesHandler
 from src.vendors.jt808.handlers.bulk_location_handler import BulkLocationHandler
 from src.vendors.jt808.handlers.command_ack_handler import CommandAckHandler
 from src.vendors.jt808.handlers.heartbeat_handler import HeartbeatHandler
@@ -185,6 +186,10 @@ class Jt808Server(DeviceProtocolAdapter):
         self._handler_registry.register(
             message_ids.RESOURCE_LIST_REPORT,
             ResourceListHandler(self._pending_commands, self._event_publisher),
+        )
+        self._handler_registry.register(
+            message_ids.AV_ATTRIBUTES_REPORT,
+            AvAttributesHandler(self._pending_commands, self._event_publisher),
         )
         self._dispatcher = MessageDispatcher(
             registry=self._handler_registry,

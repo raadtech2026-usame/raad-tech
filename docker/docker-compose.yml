@@ -44,6 +44,14 @@ x-backend-env: &backend-env
   # service" posture backend/.env.example's own comment on these two vars describes in full.
   RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
   RAAD_PAYMENT__PROVIDER_CREDENTIALS: '${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}'
+  # ADR-0030/ADR-0022 precedent (env var, composition-root only, never hardcoded): the JT1078
+  # relay's own public-facing viewer base URL — gates `VideoProviderPort`/`Jt1078RelayAdapter`
+  # binding (`core/di/bootstrap.py`'s own `if settings.device_plane.jt1078_signaling_url:`).
+  # Dev default here matches this file's own `dev-only-change-me` convention for every other
+  # not-yet-a-real-secret value; a real deployment sets `JT1078_SIGNALING_URL` in its own
+  # `docker/.env` to the relay's actual public URL (e.g. through nginx/Coolify's own TLS
+  # termination) — this default is never assumed correct outside local dev.
+  RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL: ${JT1078_SIGNALING_URL:-ws://localhost:7911}
 
 services:
   postgres:

@@ -1279,10 +1279,42 @@ class RecordDeviceSeenTests(unittest.IsolatedAsyncioTestCase):
             uow=uow,
         )
 
-        self.assertIsNone(result)
+        # ADR-0030: the first-ever `is_online=True` transition for a device that has never had
+        # channel discovery requested returns its own `terminal_id`, the signal
+        # `DeviceConnectivityProcessor` uses to publish a `0x9003` discovery request.
+        self.assertEqual(result, "TERM-001")
         self.assertEqual(uow.devices.by_id[device_id].last_seen_at, seen_at)
         self.assertTrue(uow.devices.by_id[device_id].is_online)
+        self.assertIsNotNone(uow.devices.by_id[device_id].av_attributes_requested_at)
         self.assertEqual(uow.commit_count, commit_count_before + 1)
+
+    async def test_returns_none_once_discovery_already_requested(self) -> None:
+        """A later `DeviceOnline` reconnect for the same device must not re-trigger discovery
+        (ADR-0030 Decision §1: "once per device, on first successful authentication")."""
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+
+        first = await device_service.record_device_seen(
+            RecordDeviceSeenCommand(
+                device_id=device_id,
+                seen_at=datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc),
+                is_online=True,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        second = await device_service.record_device_seen(
+            RecordDeviceSeenCommand(
+                device_id=device_id,
+                seen_at=datetime(2026, 7, 26, 12, 0, 0, tzinfo=timezone.utc),
+                is_online=True,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(first, "TERM-001")
+        self.assertIsNone(second)
 
     async def test_unknown_device_id_is_a_safe_no_op_not_an_error(self) -> None:
         """A connectivity event for a terminal this backend never registered (stray/

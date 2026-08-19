@@ -1,7 +1,8 @@
 """`RedisVideoSignalingConsumer` tests — mirrors `test_redis_device_registry_consumer.py`'s fake
 Redis Streams double exactly. Verifies the wire contract this consumer's own module docstring
 defines, and that a real `CommandSender` actually gets called with the right message id/body for
-each of the six supported command kinds."""
+each of the seven supported command kinds (six JT/T 1078 video-signaling kinds plus ADR-0030's
+`query_av_attributes` channel-discovery kind)."""
 
 import json
 import unittest
@@ -198,6 +199,31 @@ class RedisVideoSignalingConsumerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(message.message_id, message_ids.QUERY_RESOURCE_LIST)
         self.assertEqual(message.body[1:7], b"\x00" * 6)  # no start-time constraint
+
+    async def test_query_av_attributes_is_forwarded_as_0x9003_with_empty_body(self) -> None:
+        # ADR-0030 — the automatic channel-discovery trigger reuses this exact consumer/wire
+        # contract, one more entry in _BUILDERS, not a new consumer or event type.
+        command_sender, sent_frames = await _make_command_sender_with_authenticated_terminal()
+        redis = FakeRedisConsumerGroupStream()
+        redis.add_event(
+            event_type="Jt1078SignalCommandRequested",
+            payload={
+                "terminal_id": _PHONE,
+                "correlation_id": "corr-4",
+                "command": "query_av_attributes",
+                "fields": {},
+            },
+        )
+        consumer = RedisVideoSignalingConsumer(redis, command_sender=command_sender)
+
+        forwarded = await consumer.poll_once()
+
+        self.assertEqual(forwarded, 1)
+        message = PacketParser().parse(
+            sent_frames[0][1][1:-1], received_at=datetime.now(timezone.utc)
+        )
+        self.assertEqual(message.message_id, message_ids.QUERY_AV_ATTRIBUTES)
+        self.assertEqual(message.body, b"")
 
     async def test_irrelevant_event_type_is_acked_but_not_forwarded(self) -> None:
         command_sender, sent_frames = await _make_command_sender_with_authenticated_terminal()

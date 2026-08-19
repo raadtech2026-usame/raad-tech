@@ -409,6 +409,19 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0024 | JT1078 Video Relay Architecture | 🟡 Partial (device-gateway signaling, relay, Business API wiring, SPS/PPS, concurrency ceilings, `audit_entries`, and relay→`VideoSession` reconciliation all built and tested against fakes/synthetic fixtures; HLS and the reconciliation-timeout job still open; physical-MDVR verification pending) |
 | 0025 | JT/T 808-2019 + JT/T 1078-2016 Native Protocol Compliance | 🟡 Partial (architecture accepted and every named implementation item — field-width rework, `0x0102` auth-code lifecycle, `0x0200` byte-diff — is built and tested; physical-MDVR verification pending) |
 | 0026 | Parent Video Access Authorization | 🟡 Partial (backend authorization chain, migration, RBAC, audit coverage, and relay reconciliation all built and live-Postgres-tested; the Flutter mobile player is written but categorically unverified — no Flutter SDK in this sandbox; physical-MDVR verification pending) |
+| 0027 | Vehicle-Device Operational Read Model | ✅ Complete (commit `560580d`) |
+| 0028 | Unified Vehicle Operations Frontend (GPS + Video from One Vehicle Selection) | ✅ Complete (commit `8b5bd0c`) — **this and 0027 close F10/the Org-Admin web video player**; Section 2/8/9's own narrative prose still describes F10 as "not started" in places — a real, disclosed doc-staleness gap this table alone does not fix, flagged not silently carried forward |
+| 0029 | Platform Admin Live-Video Access (Founder/Regional Manager/Support Staff) | ✅ Complete (commit `857d68b`) |
+| 0030 | Automatic Camera/Channel Discovery | ✅ Complete — device-gateway (`0x9003`/`0x1003`) and backend (discovery-trigger processor, camera-creation processor) implemented and tested (backend unit/architecture/integration + device-gateway unit, all passing; migration `7d3a9c1e5b42` live-Postgres round-tripped), live-verified against the physical `LSZ-C5804DG-Q-F` bench unit per the ADR's own verification transcript |
+
+**A real, disclosed gap found while adding the four rows above:** ADR-0027/0028/0029 (2026-08-16)
+and the F10 Organization Admin web live-video implementation (commit `600c4da`) all landed in git
+history before this table or CLAUDE.md's own Repository Status narrative was updated to reflect
+them — Section 2/3/8/9 below and CLAUDE.md's "Frontend Implementation Status" section still say
+F10/the Org-Admin web player "not started" in several places. This table entry corrects the ADR
+Progress row itself (verified directly against each ADR's own Status section and the actual commit
+history); the fuller narrative catch-up (Sections 2/3/8/9, CLAUDE.md) is a separate, larger pass
+not attempted in this session — flagged here rather than silently left inconsistent.
 
 ---
 
@@ -607,8 +620,49 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — the JT1078 video-integration program (ADR-0024/ADR-0025) is now closed end to end,
-mechanism-wise.** Four back-to-back, user-directed phases (2026-08-10 through 2026-08-12): the
+**Nothing — ADR-0030 (Automatic Camera/Channel Discovery) is complete.** A read-only bench-test
+diagnostic against the physical `LSZ-C5804DG-Q-F` unit (`terminal_id=00000000014482607571`) found
+GPS/registration fully working but zero `Camera` rows and no code path to create one automatically;
+the user declined a one-off manual fix and asked for the generic product workflow instead. Per
+`.claude/rules/workflow.md` #8, `docs/architecture/adr/0030-automatic-camera-channel-discovery.md`
+was written and accepted (2026-08-18) before implementation, resolving three design forks via
+`AskUserQuestion`: discovery fires once per device on first successful auth (idempotency guard:
+new `devices.av_attributes_requested_at`, migration `7d3a9c1e5b42`); every discovered channel
+defaults to `position=other`/`label="Channel N"` (no vendor-specific semantic mapping hardcoded);
+`JT1078_SIGNALING_URL` is a new Compose variable (dev default `ws://localhost:7911`, production
+must set a real value). New device-gateway protocol code: `commands/av_attributes.py`
+(`0x9003`/`0x1003`, spec §6.1.1/§6.1.2 — the channel-*count* query/report, confirmed distinct from
+`0x9205`/`0x1205`'s recorded-file resource list), `handlers/av_attributes_handler.py`
+(correlates via a new `PendingCommandTracker.resolve_by_terminal_and_message`, since `0x1003`'s
+body carries no echoed serial number), publishing a new `DeviceAvAttributesReported` event.
+Backend: `DeviceConnectivityProcessor` now triggers the `0x9003` request on a device's first
+`DeviceOnline`; a new `DeviceAvAttributesReportedProcessor` calls the existing, previously-
+unreachable `DeviceApplicationService.register_camera` once per channel `1..max_video_channels`,
+idempotent by construction via `register_camera`'s own `ux_cameras__device_channel` invariant.
+**Two real gaps found and closed while verifying this session's own uncommitted work, not by the
+original implementation pass:** (1) `DeviceAvAttributesReported` was never added to device-gateway's
+`publisher_port.DeviceEvent` union, `LoggingEventPublisher`, or `redis_event_publisher._fields_for`
+— with the real `RedisEventPublisher` this raised `TypeError` on every `0x1003` reply, and with the
+default `LoggingEventPublisher` the event silently vanished; both unit-test suites used a recording
+fake publisher, so neither gap was caught by `pytest`. Fixed by adding the missing branch to all
+three. (2) `tests/unit/test_fleet_device_application.py::RecordDeviceSeenTests::
+test_updates_last_seen_at_and_commits` still asserted `record_device_seen`'s old always-`None`
+return value, failing against the widened `str | None` signature; fixed the assertion and added a
+new regression test (`test_returns_none_once_discovery_already_requested`) proving the second
+`DeviceOnline` for the same device does not re-trigger discovery. Verification after both fixes:
+device-gateway's full suite (419 tests) and the new `test_av_attributes*`/`test_pending_commands`/
+`test_redis_video_signaling_consumer` tests (24 tests) all pass; backend `tests/unit` +
+`tests/architecture` (1427 tests + 10 subtests) and `tests/integration` (278 tests + 21 subtests,
+migration `7d3a9c1e5b42` applied and upgrade→downgrade→upgrade round-tripped clean, `alembic check`
+reports zero drift) all pass — the only integration failures are two pre-existing Redis-timeout
+tests unrelated to this change (no reachable Redis broker in this sandbox, Known Issue #14's own
+precedent). `tests/contract`'s pre-existing `NoSilentUndocumentedRoutesTests` failure (18 routes
+from ADR-0017 through ADR-0023 never added to `DOCUMENTED_ROUTES`/`ALLOWED_UNDOCUMENTED_EXTRAS`) is
+untouched by this change — ADR-0030 adds no new HTTP route — and is not fixed here, flagged as a
+pre-existing gap.
+
+**JT1078 video-integration program (ADR-0024/ADR-0025) closed end to end, mechanism-wise
+(2026-08-12).** Four back-to-back, user-directed phases (2026-08-10 through 2026-08-12): the
 native-protocol architecture reversal (ADR-0025, same-commit ADR-0024 §1 revision); the JT/T
 808-2019 field-width rework + `0x0102` auth-code lifecycle + `0x0200`/`AlarmFlags` byte-diff
 resolution (commit `f5e9fae`); the JT/T 1078 video-signaling forwarding on device-gateway plus the

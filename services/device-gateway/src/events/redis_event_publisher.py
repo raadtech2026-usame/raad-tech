@@ -49,6 +49,7 @@ from redis.asyncio import Redis
 
 from src.events.device_alarm_raised import DeviceAlarmRaised
 from src.events.device_auth_code_issued import DeviceAuthCodeIssued
+from src.events.device_av_attributes_reported import DeviceAvAttributesReported
 from src.events.device_command_result import DeviceCommandResult
 from src.events.device_offline import DeviceOffline
 from src.events.device_online import DeviceOnline
@@ -204,6 +205,24 @@ def _fields_for(event: DeviceEvent) -> dict[str, str]:
                 "correlation_id": event.correlation_id,
                 "total_resource_count": event.total_resource_count,
                 "items": list(event.items),
+            },
+        )
+    if isinstance(event, DeviceAvAttributesReported):
+        return _envelope(
+            event_type="DeviceAvAttributesReported",
+            org_id=event.organization_id,
+            aggregate_type="Device",
+            aggregate_id=event.terminal_id,
+            occurred_at=event.event_time,
+            correlation_id=event.correlation_id,
+            payload={
+                "organization_id": event.organization_id,
+                "vehicle_id": event.vehicle_id,
+                "device_id": event.device_id,
+                "terminal_id": event.terminal_id,
+                "correlation_id": event.correlation_id,
+                "max_video_channels": event.max_video_channels,
+                "max_audio_channels": event.max_audio_channels,
             },
         )
     raise TypeError(f"Unrecognized device-plane event type: {type(event)!r}")
