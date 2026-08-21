@@ -80,6 +80,18 @@ const DEVICE = {
   ],
 };
 
+const DEVICE_4_CAMERAS = {
+  id: "01DEVICE0000000000000000B",
+  terminalId: "TERM99999999",
+  isOnline: true,
+  cameras: [
+    { id: "cam-1", channelNo: 1, position: "road_facing" as const, label: "Front" },
+    { id: "cam-2", channelNo: 2, position: "in_cabin" as const, label: "Cabin" },
+    { id: "cam-3", channelNo: 3, position: "other" as const, label: "Rear" },
+    { id: "cam-4", channelNo: 4, position: "other" as const, label: "Side" },
+  ],
+};
+
 const SESSION = {
   id: "01SESSION000000000000000A",
   organizationId: "01ORG00000000000000000000",
@@ -95,6 +107,10 @@ const SESSION = {
   createdAt: "2026-01-01T00:00:00Z",
   streamUrl: "ws://jt1078-relay:7911/viewer?token=abc123",
 };
+
+function sessionFor(deviceId: string, cameraId: string) {
+  return { ...SESSION, id: `session-${cameraId}`, deviceId, cameraId, streamUrl: `ws://jt1078-relay:7911/viewer?token=${cameraId}` };
+}
 
 const ORG_ADMIN_PRINCIPAL = {
   userId: "u1",
@@ -265,6 +281,8 @@ describe("LiveTrackingPage", () => {
     rerenderSame();
 
     expect(await screen.findByText("Not authorized to track this vehicle")).toBeInTheDocument();
+    // Surfaced in both the header's GPS chip and the map's own header status.
+    expect(await screen.findByTestId("chip-gps")).toHaveTextContent("Not authorized");
   });
 
   it("clears the previous vehicle's marker when switching to a different one", async () => {
@@ -297,7 +315,7 @@ describe("LiveTrackingPage", () => {
     expect(await screen.findByText("No live position data")).toBeInTheDocument();
   });
 
-  describe("Vehicle -> Device resolution (ADR-0027/0028 §C)", () => {
+  describe("Vehicle -> Device resolution (ADR-0027/0028 §C), now surfaced in the header", () => {
     it("resolves the vehicle's active device via GET /vehicles/{id}/device-assignment, never a GPS field", async () => {
       vi.mocked(api.getDeviceAssignmentForVehicle).mockResolvedValue({ deviceId: DEVICE.id });
       vi.mocked(api.getActiveDeviceDetails).mockResolvedValue(DEVICE);
@@ -309,21 +327,40 @@ describe("LiveTrackingPage", () => {
         expect(api.getDeviceAssignmentForVehicle).toHaveBeenCalledWith(VEHICLE.id);
       });
       expect(api.getActiveDeviceDetails).toHaveBeenCalledWith(DEVICE.id);
-      expect(await screen.findByText("TERM12345678")).toBeInTheDocument();
-      expect(await screen.findByText("Online")).toBeInTheDocument();
+      const deviceChip = await screen.findByTestId("chip-device");
+      expect(deviceChip).toHaveTextContent("TERM12345678");
+      expect(deviceChip).toHaveTextContent("Online");
       // No live/snapshot position was ever mocked with a device_id — proves the device shown
       // above came from the assignment/device calls above, not from any GPS payload.
     });
 
-    it("shows the honest 'no device assigned' state for a vehicle with no active assignment — GPS keeps working independently", async () => {
+    it("shows an honest 'No device' chip for a vehicle with no active assignment — GPS keeps working independently", async () => {
       vi.mocked(api.getDeviceAssignmentForVehicle).mockResolvedValue(null);
       renderPage();
       const select = await screen.findByLabelText("Vehicle");
       await userEvent.selectOptions(select, VEHICLE.id);
 
-      expect(await screen.findByText("No device assigned")).toBeInTheDocument();
+      expect(await screen.findByTestId("chip-device")).toHaveTextContent("No device");
       // The map's own empty state is independent of device resolution.
       expect(await screen.findByText("No live position data")).toBeInTheDocument();
+    });
+  });
+
+  describe("Removal of the old left Vehicle panel", () => {
+    it("has no standalone left vehicle sidebar — the vehicle selector lives in the header, beside the map/video workspace", async () => {
+      vi.mocked(api.getDeviceAssignmentForVehicle).mockResolvedValue({ deviceId: DEVICE.id });
+      vi.mocked(api.getActiveDeviceDetails).mockResolvedValue(DEVICE);
+      const { container } = renderPage();
+      const select = await screen.findByLabelText("Vehicle");
+      await userEvent.selectOptions(select, VEHICLE.id);
+      await screen.findByTestId("chip-device");
+
+      // The old design's separate always-visible "Device" card no longer exists as its own
+      // titled card — device info is now a compact header chip only.
+      expect(screen.queryByRole("heading", { name: "Device" })).not.toBeInTheDocument();
+      // Exactly one page-level column layout (header + workspace), not a 3-column
+      // sidebar/map/panel split — a coarse structural smoke check.
+      expect(container.querySelectorAll("select")).toHaveLength(1);
     });
   });
 
@@ -333,20 +370,21 @@ describe("LiveTrackingPage", () => {
       vi.mocked(api.getActiveDeviceDetails).mockResolvedValue(DEVICE);
     });
 
-    it("renders no camera picker or video panel for finance_staff, and makes no video API calls", async () => {
+    it("renders no Live Video panel or Cameras chip for finance_staff, and makes no video API calls", async () => {
       useAuthStore.setState({ status: "authenticated", principal: FINANCE_STAFF_PRINCIPAL });
       renderPage();
       const select = await screen.findByLabelText("Vehicle");
       await userEvent.selectOptions(select, VEHICLE.id);
 
-      await screen.findByText("TERM12345678");
+      await screen.findByTestId("chip-device");
       expect(screen.queryByText("Live Video")).not.toBeInTheDocument();
-      expect(screen.queryByLabelText("Camera")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("chip-cameras")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Start Live" })).not.toBeInTheDocument();
       expect(videoApi.requestLiveVideo).not.toHaveBeenCalled();
     });
 
     it.each(VIDEO_ELIGIBLE_PRINCIPALS)(
-      "shows the Live Video panel and camera picker for %s (ADR-0029)",
+      "shows the Live Video panel, ready to start every camera, for %s (ADR-0029)",
       async (_role, principal) => {
         useAuthStore.setState({ status: "authenticated", principal });
         renderPage();
@@ -354,28 +392,28 @@ describe("LiveTrackingPage", () => {
         await userEvent.selectOptions(select, VEHICLE.id);
 
         expect(await screen.findByText("Live Video")).toBeInTheDocument();
-        const cameraSelect = await screen.findByLabelText("Camera");
-        expect(cameraSelect).toHaveTextContent("Front");
+        expect(await screen.findByText("1 camera ready")).toBeInTheDocument();
       },
     );
 
     it.each(VIDEO_ELIGIBLE_PRINCIPALS)(
-      "starts a live session with the resolved device id for %s (ADR-0029)",
+      "Start Live requests a session for the resolved device/camera for %s (ADR-0029)",
       async (_role, principal) => {
         useAuthStore.setState({ status: "authenticated", principal });
         vi.mocked(videoApi.requestLiveVideo).mockResolvedValue(SESSION);
         renderPage();
         const select = await screen.findByLabelText("Vehicle");
         await userEvent.selectOptions(select, VEHICLE.id);
-        await userEvent.selectOptions(await screen.findByLabelText("Camera"), DEVICE.cameras[0].id);
-        await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
+        await userEvent.click(await screen.findByRole("button", { name: "Start Live" }));
 
-        expect(videoApi.requestLiveVideo).toHaveBeenCalledWith(DEVICE.id, DEVICE.cameras[0].id);
+        await waitFor(() =>
+          expect(videoApi.requestLiveVideo).toHaveBeenCalledWith(DEVICE.id, DEVICE.cameras[0].id),
+        );
       },
     );
 
     it.each(VIDEO_ELIGIBLE_PRINCIPALS)(
-      "stops an active session for %s (ADR-0029)",
+      "Stop Live stops the active session for %s (ADR-0029)",
       async (_role, principal) => {
         useAuthStore.setState({ status: "authenticated", principal });
         vi.mocked(videoApi.requestLiveVideo).mockResolvedValue(SESSION);
@@ -383,53 +421,38 @@ describe("LiveTrackingPage", () => {
         renderPage();
         const select = await screen.findByLabelText("Vehicle");
         await userEvent.selectOptions(select, VEHICLE.id);
-        await userEvent.selectOptions(await screen.findByLabelText("Camera"), DEVICE.cameras[0].id);
-        await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
+        await userEvent.click(await screen.findByRole("button", { name: "Start Live" }));
         await screen.findByTestId("live-video");
 
-        await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+        await userEvent.click(screen.getByRole("button", { name: "Stop Live" }));
 
-        expect(videoApi.stopVideoSession).toHaveBeenCalledWith(SESSION.id);
-        expect(await screen.findByText("Session stopped")).toBeInTheDocument();
+        await waitFor(() => expect(videoApi.stopVideoSession).toHaveBeenCalledWith(SESSION.id));
+        expect(await screen.findByText("1 camera ready")).toBeInTheDocument();
+        expect(screen.queryByTestId("live-video")).not.toBeInTheDocument();
       },
     );
 
-    it("populates the camera picker from the resolved device's own cameras for org_admin", async () => {
+    it("shows the resolved camera count in the header's Cameras chip for org_admin", async () => {
       useAuthStore.setState({ status: "authenticated", principal: ORG_ADMIN_PRINCIPAL });
       renderPage();
       const select = await screen.findByLabelText("Vehicle");
       await userEvent.selectOptions(select, VEHICLE.id);
 
-      const cameraSelect = await screen.findByLabelText("Camera");
-      expect(cameraSelect).toHaveTextContent("Front");
+      expect(await screen.findByTestId("chip-cameras")).toHaveTextContent("1");
     });
 
-    it("shows a non-blocking offline hint, never disabling Start, when the resolved device is offline", async () => {
+    it("shows a non-blocking offline hint, never disabling Start Live, when the resolved device is offline", async () => {
       useAuthStore.setState({ status: "authenticated", principal: ORG_ADMIN_PRINCIPAL });
       vi.mocked(api.getActiveDeviceDetails).mockResolvedValue({ ...DEVICE, isOnline: false });
       renderPage();
       const select = await screen.findByLabelText("Vehicle");
       await userEvent.selectOptions(select, VEHICLE.id);
-      await screen.findByLabelText("Camera");
 
       expect(await screen.findByText(/last reported offline/i)).toBeInTheDocument();
-      await userEvent.selectOptions(screen.getByLabelText("Camera"), DEVICE.cameras[0].id);
       expect(screen.getByRole("button", { name: "Start Live" })).not.toBeDisabled();
     });
 
-    it("starts a live session with the resolved device id, exactly as ADR-0027 intends — never inferred from a GPS position field", async () => {
-      useAuthStore.setState({ status: "authenticated", principal: ORG_ADMIN_PRINCIPAL });
-      vi.mocked(videoApi.requestLiveVideo).mockResolvedValue(SESSION);
-      renderPage();
-      const select = await screen.findByLabelText("Vehicle");
-      await userEvent.selectOptions(select, VEHICLE.id);
-      await userEvent.selectOptions(await screen.findByLabelText("Camera"), DEVICE.cameras[0].id);
-      await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
-
-      expect(videoApi.requestLiveVideo).toHaveBeenCalledWith(DEVICE.id, DEVICE.cameras[0].id);
-    });
-
-    it("shows the 'no device assigned' state in the video panel too, without offering a camera picker", async () => {
+    it("shows the 'no device assigned' state in the Live Video panel too, offering no Start Live control", async () => {
       useAuthStore.setState({ status: "authenticated", principal: ORG_ADMIN_PRINCIPAL });
       vi.mocked(api.getDeviceAssignmentForVehicle).mockResolvedValue(null);
       renderPage();
@@ -437,8 +460,75 @@ describe("LiveTrackingPage", () => {
       await userEvent.selectOptions(select, VEHICLE.id);
 
       expect(await screen.findByText("Live Video")).toBeInTheDocument();
-      expect(screen.queryByLabelText("Camera")).not.toBeInTheDocument();
+      expect(await screen.findByText("No device assigned")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Start Live" })).not.toBeInTheDocument();
       expect(videoApi.requestLiveVideo).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Multi-camera live video grid (data-driven, not hardcoded)", () => {
+    beforeEach(() => {
+      useAuthStore.setState({ status: "authenticated", principal: ORG_ADMIN_PRINCIPAL });
+      vi.mocked(api.getDeviceAssignmentForVehicle).mockResolvedValue({ deviceId: DEVICE_4_CAMERAS.id });
+      vi.mocked(api.getActiveDeviceDetails).mockResolvedValue(DEVICE_4_CAMERAS);
+    });
+
+    it("Start Live requests a session for every camera the resolved device reports, and renders one tile per camera", async () => {
+      vi.mocked(videoApi.requestLiveVideo).mockImplementation((deviceId: string, cameraId: string) =>
+        Promise.resolve(sessionFor(deviceId, cameraId)),
+      );
+      playerReturn.state = "connected";
+      renderPage();
+      const select = await screen.findByLabelText("Vehicle");
+      await userEvent.selectOptions(select, VEHICLE.id);
+      expect(await screen.findByTestId("chip-cameras")).toHaveTextContent("4");
+
+      await userEvent.click(await screen.findByRole("button", { name: "Start Live" }));
+
+      await waitFor(() => expect(videoApi.requestLiveVideo).toHaveBeenCalledTimes(4));
+      for (const camera of DEVICE_4_CAMERAS.cameras) {
+        expect(videoApi.requestLiveVideo).toHaveBeenCalledWith(DEVICE_4_CAMERAS.id, camera.id);
+      }
+      expect(await screen.findAllByTestId("live-video")).toHaveLength(4);
+      expect(await screen.findByText("4/4 Live")).toBeInTheDocument();
+    });
+
+    it("isolates a single camera's failure — the rest of the grid stays live, not a full-panel failure", async () => {
+      vi.mocked(videoApi.requestLiveVideo).mockImplementation((deviceId: string, cameraId: string) =>
+        cameraId === "cam-3"
+          ? Promise.reject(new Error("relay unreachable for this channel"))
+          : Promise.resolve(sessionFor(deviceId, cameraId)),
+      );
+      playerReturn.state = "connected";
+      renderPage();
+      const select = await screen.findByLabelText("Vehicle");
+      await userEvent.selectOptions(select, VEHICLE.id);
+      await userEvent.click(await screen.findByRole("button", { name: "Start Live" }));
+
+      expect(await screen.findByText("3/4 Live")).toBeInTheDocument();
+      expect(await screen.findAllByTestId("live-video")).toHaveLength(3);
+      expect(await screen.findByText("Something went wrong")).toBeInTheDocument();
+    });
+
+    it("Stop Live tears down every open camera session cleanly, leaving nothing orphaned", async () => {
+      vi.mocked(videoApi.requestLiveVideo).mockImplementation((deviceId: string, cameraId: string) =>
+        Promise.resolve(sessionFor(deviceId, cameraId)),
+      );
+      playerReturn.state = "connected";
+      renderPage();
+      const select = await screen.findByLabelText("Vehicle");
+      await userEvent.selectOptions(select, VEHICLE.id);
+      await userEvent.click(await screen.findByRole("button", { name: "Start Live" }));
+      await screen.findAllByTestId("live-video");
+
+      await userEvent.click(screen.getByRole("button", { name: "Stop Live" }));
+
+      await waitFor(() => expect(videoApi.stopVideoSession).toHaveBeenCalledTimes(4));
+      for (const camera of DEVICE_4_CAMERAS.cameras) {
+        expect(videoApi.stopVideoSession).toHaveBeenCalledWith(`session-${camera.id}`);
+      }
+      expect(screen.queryByTestId("live-video")).not.toBeInTheDocument();
+      expect(await screen.findByText("4 cameras ready")).toBeInTheDocument();
     });
   });
 });

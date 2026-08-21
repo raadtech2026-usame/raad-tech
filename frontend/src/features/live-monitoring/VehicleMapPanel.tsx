@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { MapPin, Radio } from "lucide-react";
 import { Card, CardHeader } from "../../shared/components/Card/Card";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
@@ -28,6 +28,11 @@ export interface VehicleMapPanelProps {
    * `LiveTrackingPage`'s own `!snapshotQuery.isLoading` gate exactly. */
   isPositionLoading: boolean;
   routeStops: RouteStop[] | null;
+  /** GPS live/connecting/last-update indicator, computed by `LiveTrackingPage` from
+   * `useVehiclePosition`'s own state — rendered in the card header (ADR-0028 evolution's "MAP ●
+   * Live" header requirement) rather than duplicated here, since this component has no GPS
+   * connection state of its own to derive it from. */
+  headerStatus?: ReactNode;
 }
 
 /**
@@ -43,6 +48,7 @@ export function VehicleMapPanel({
   hasKnownPosition,
   isPositionLoading,
   routeStops,
+  headerStatus,
 }: VehicleMapPanelProps) {
   const providerRef = useRef<MapProvider | null>(null);
   const markerAddedRef = useRef(false);
@@ -126,7 +132,7 @@ export function VehicleMapPanel({
 
   return (
     <Card className={styles.mapCard}>
-      <CardHeader title="Map" />
+      <CardHeader title="Map" action={headerStatus} />
       <div className={styles.mapArea}>
         <MapView
           center={DEFAULT_CENTER}

@@ -1,0 +1,118 @@
+.header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-card);
+  border-radius: var(--radius-2xl);
+  flex-shrink: 0;
+}
+
+.vehiclePicker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.vehicleIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-lg);
+  background: var(--color-brand-primary-tint);
+  color: var(--color-brand-primary);
+  flex-shrink: 0;
+}
+
+.vehiclePickerBody {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 200px;
+}
+
+.vehicleSelect {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-lg);
+  padding: 4px 30px 4px 2px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary);
+}
+
+.vehicleSelect:focus {
+  box-shadow: none;
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.vehicleHint {
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.statChips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-left: var(--space-4);
+  margin-left: auto;
+  border-left: 1px solid var(--color-border-subtle);
+}
+
+@media (max-width: 900px) {
+  .statChips {
+    padding-left: 0;
+    margin-left: 0;
+    border-left: none;
+  }
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.chipIconLive {
+  color: var(--color-success);
+}
+
+.chipIconMuted {
+  color: var(--color-text-faint);
+}
+
+.chipLabel {
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.terminalId {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+}
+
+.lastUpdate {
+  font-size: var(--text-2xs);
+  color: var(--color-text-faint);
+  white-space: nowrap;
+}

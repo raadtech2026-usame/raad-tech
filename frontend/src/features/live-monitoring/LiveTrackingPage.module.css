@@ -1,29 +1,15 @@
 .page {
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: var(--space-5);
-  height: calc(100vh - 160px);
-  min-height: 480px;
-}
-
-.sidebar {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  overflow-y: auto;
+  height: calc(100vh - 160px);
+  min-height: 560px;
 }
 
-.statusPanel {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--color-border-subtle);
-}
-
-.statusRow {
+.mapHeaderStatus {
   display: flex;
   align-items: center;
+  gap: var(--space-3);
 }
 
 .disconnected {
@@ -39,53 +25,33 @@
   color: var(--color-text-faint);
 }
 
-/* ADR-0028 §E: map beside the device/video panel on wide viewports, stacked below it on
- * narrower ones — both panels can mount simultaneously (cheap); only pressing Start Live begins
- * any real streaming cost (VideoPlayerPanel/useVideoSessionController, unchanged). */
-.operationsGrid {
-  display: grid;
-  grid-template-columns: 1.4fr 1fr;
-  gap: var(--space-5);
+/* Two primary workspace areas, side by side: Map / Live Video. Both panels can mount
+ * simultaneously (cheap) — only pressing Start Live begins any real streaming cost
+ * (`MultiCameraVideoPanel`/`CameraTile`, unchanged session lifecycle). */
+.workspace {
+  flex: 1;
   min-height: 0;
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: var(--space-4);
   overflow: hidden;
 }
 
+/* No video-eligible role for this session (or nothing gates it off, e.g. the role check
+ * excludes finance_staff/driver): the map takes the full workspace rather than leaving a
+ * permanently empty second column. */
+.workspaceMapOnly {
+  grid-template-columns: 1fr;
+}
+
 @media (max-width: 1100px) {
-  .operationsGrid {
+  .workspace {
     grid-template-columns: 1fr;
     overflow: visible auto;
   }
 }
 
-.sidePanel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  overflow-y: auto;
-}
-
-.deviceCard {
-  flex-shrink: 0;
-}
-
-.deviceBody {
-  padding-top: var(--space-2);
-}
-
-.deviceInfo {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.deviceTerminalId {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-}
-
-.videoCard {
+.videoStateCard {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -93,32 +59,10 @@
   overflow: hidden;
 }
 
-.videoBody {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  flex: 1;
-  padding: var(--space-4);
-  overflow-y: auto;
-}
-
-.offlineBadge {
-  align-self: flex-start;
-}
-
-.videoActions {
-  display: flex;
-  gap: var(--space-2);
-}
-
-.videoPlayerArea {
-  position: relative;
+.videoStateBody {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-bg-surface);
-  min-height: 220px;
-  border-radius: var(--radius-md);
-  overflow: hidden;
+  padding: var(--space-4);
 }
