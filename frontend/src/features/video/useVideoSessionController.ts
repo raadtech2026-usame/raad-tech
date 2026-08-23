@@ -128,6 +128,14 @@ export function useVideoSessionController(
     if (requestError) return requestError.unavailable ? "unavailable" : "error";
     if (!session) return "idle";
     if (manuallyStopped) return "stopped";
+    // A `null` streamUrl is permanent for this session (no VideoProviderPort bound on this
+    // deployment) — `useMpegtsPlayer` never even attempts a connection in that case, so
+    // `player.state` stays `"idle"` forever. Checked before the `player.state` branches below
+    // so it can't be confused with the *transient* single-render `"idle"` a fresh session
+    // legitimately passes through, one render, on its way to a real `"connecting"` (see
+    // `VideoPlayerPanel`'s own docstring on why the video element must already be mounted by
+    // the time `useMpegtsPlayer`'s effect runs) — this check doesn't touch that path at all.
+    if (streamUrl === null) return "unavailable";
     if (player.state === "connected") return "connected";
     if (player.state === "error") return "error";
     // The relay's WebSocket close code (invalid/used token vs. session-not-active) isn't

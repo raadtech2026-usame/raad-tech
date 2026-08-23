@@ -12,6 +12,106 @@
   gap: var(--space-3);
 }
 
+/* A second, slim toolbar row (video-wall redesign) — only present once streaming with more than
+ * one camera, since a single-camera device has nothing to switch between. Dark, matching the
+ * wall below it rather than the card's own light chrome — visually anchors the wall as one
+ * continuous dark surface instead of a light header sitting awkwardly above it. */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: #0a0f1a;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.toolbarLabel {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #e2e8f0;
+}
+
+.audioHint {
+  font-size: var(--text-2xs);
+  color: #64748b;
+}
+
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.viewToggle {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.viewToggleButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.viewToggleButton:hover {
+  color: #e2e8f0;
+}
+
+.viewToggleButton[data-active="true"] {
+  background: var(--color-brand-primary);
+  color: #fff;
+}
+
+.viewToggleButton:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+.toolbarIconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.toolbarIconButton:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.toolbarIconButton:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+/* Dark professional video-wall surface, applied to the whole body (not just once live) — a
+ * "no cameras yet" or "ready" state still reads as a monitoring console, not a light card with
+ * dark tiles dropped into it once streaming starts. Same token-override trick `CameraTile`'s own
+ * `.videoArea` already uses, so the reused `EmptyState`/`Badge` components theme correctly here
+ * with no changes of their own. */
 .body {
   display: flex;
   flex-direction: column;
@@ -19,22 +119,176 @@
   flex: 1;
   min-height: 0;
   padding: var(--space-4);
-  overflow-y: auto;
+  overflow: hidden;
+  background: #05070d;
+  --color-text-primary: #e2e8f0;
+  --color-text-secondary: #cbd5e1;
+  --color-text-muted: #94a3b8;
+  --color-text-faint: #64748b;
+  --color-bg-subtle: rgba(255, 255, 255, 0.08);
 }
 
 .offlineBadge {
+  margin: var(--space-3) var(--space-4) 0;
   align-self: flex-start;
 }
 
-/* Data-driven, not a fixed 4-cell grid: `auto-fit` collapses to a single full-width column for
- * one camera, wraps to two columns once there's room for a second ~240px tile (naturally landing
- * on a 2x2 layout for four cameras at this panel's usual width), and keeps scaling for more. */
-.grid {
+/* The wall itself always fills whatever height the card gives it — every layout below is sized
+ * to fit that fixed area without ever needing internal vertical scrolling, per the "no camera
+ * list scrolling" requirement. */
+.wall {
+  position: relative;
   flex: 1;
   min-height: 0;
+}
+
+.closeFocusButton {
+  position: absolute;
+  top: calc(var(--space-3) + var(--space-2));
+  right: calc(var(--space-3) + var(--space-2));
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: rgba(10, 15, 28, 0.75);
+  color: #fff;
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  backdrop-filter: blur(2px);
+  transition: background var(--transition-fast);
+}
+
+.closeFocusButton:hover {
+  background: rgba(10, 15, 28, 0.92);
+}
+
+.closeFocusButton:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+/* ---- Grid mode ---------------------------------------------------------------------------- */
+
+/* `place-items` is deliberately left at its default (`stretch`), not `center` — the real,
+ * observed bug this fixes: `center` makes each grid item size to its own *content's* preferred
+ * height rather than its track's computed `1fr` share, and `VideoPlayerPanel`'s own idle/
+ * connecting `EmptyState` (padding + icon + copy) has a taller natural content height than a
+ * strict 50%-height row leaves room for — the row track then grew to fit that content instead of
+ * honoring `1fr`, pushing camera 3/4 below `.wall`'s own bounded height, where `.body`'s
+ * `overflow: hidden` silently clipped them. Stretching (this rule) plus `min-height: 0` on
+ * `.gridSlot` below (grid's own default `min-height: auto` on an item otherwise refuses to
+ * shrink it below that same content minimum) together force every tile to true 50%/50% cells —
+ * a single camera's own `[data-count="1"]` override further down still centers itself
+ * regardless, via its own explicit `width: auto` + `margin: 0 auto`. */
+.wall[data-mode="grid"] {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  grid-auto-rows: minmax(160px, 1fr);
   gap: var(--space-3);
-  align-content: start;
+}
+
+.wall[data-mode="grid"][data-count="1"] {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+
+.wall[data-mode="grid"][data-count="2"] {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.wall[data-mode="grid"][data-count="3"] {
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+}
+
+/* Third tile occupies the full-width remaining row — a balanced 2-up-top, 1-wide-below layout
+ * rather than an uneven 3-in-a-row squeeze. */
+.wall[data-mode="grid"][data-count="3"] .gridSlot:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+.wall[data-mode="grid"][data-count="4"] {
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+}
+
+/* Each slot owns its own 16:9 box, sized to fill its grid cell by height first (clamped by
+ * width) — this is what keeps every tile a correct, undistorted 16:9 rectangle regardless of
+ * how the surrounding cell's own aspect ratio happens to work out, rather than stretching the
+ * video to fill a non-16:9 cell (the exact "cramped/overlapping" appearance being replaced). */
+.gridSlot {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 16 / 9;
+}
+
+/* A single camera: large and centered, not stretched to the whole card and not left in a mostly
+ * empty grid. */
+.wall[data-mode="grid"][data-count="1"] .gridSlot {
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+/* ---- Focus mode ---------------------------------------------------------------------------- */
+
+.wall[data-mode="focus"] {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: minmax(0, 1fr) 132px;
+  grid-template-areas:
+    "main main main main"
+    "t0 t1 t2 t3";
+  gap: var(--space-3);
+}
+
+.mainSlot {
+  grid-area: main;
+  min-height: 0;
+  min-width: 0;
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  margin: 0 auto;
+}
+
+.thumbSlot {
+  min-height: 0;
+  min-width: 0;
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  margin: 0 auto;
+  opacity: 0.85;
+  transition: opacity var(--transition-fast);
+}
+
+.thumbSlot:hover {
+  opacity: 1;
+}
+
+@media (max-width: 900px) {
+  .wall[data-mode="grid"][data-count="3"],
+  .wall[data-mode="grid"][data-count="4"] {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+  }
+
+  .wall[data-mode="grid"][data-count="3"] .gridSlot:nth-child(3) {
+    grid-column: auto;
+  }
+
+  .wall[data-mode="focus"] {
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: minmax(0, 1fr) 96px;
+  }
 }

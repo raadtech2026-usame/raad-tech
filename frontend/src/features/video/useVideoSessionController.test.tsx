@@ -75,6 +75,15 @@ describe("useVideoSessionController", () => {
     expect(result.current.canStop).toBe(true);
   });
 
+  it("shows 'unavailable' rather than a permanent fake 'connecting' when the session carries no streamUrl", async () => {
+    vi.mocked(requestLiveVideo).mockResolvedValue({ ...SESSION, streamUrl: null });
+    const { result } = renderHook(() => useVideoSessionController("device-1", "camera-1"), { wrapper });
+
+    act(() => result.current.start());
+
+    await waitFor(() => expect(result.current.phase).toBe("unavailable"));
+  });
+
   it("maps a 500 to 'unavailable' rather than a generic error", async () => {
     const apiErrorModule = await import("../../shared/api/types");
     vi.mocked(requestLiveVideo).mockRejectedValue(

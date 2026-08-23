@@ -16,6 +16,11 @@ export interface VideoPlayerPanelProps {
    * this panel renders). */
   idleTitle?: string;
   idleDescription?: string;
+  /** Defaults to `true` (unchanged behavior — `VideoPage.tsx`'s single large player has room for
+   * this). `CameraTile` (video-wall redesign) passes `false`: repeating this notice on every
+   * compact wall tile collided with the tile's own bottom name/controls bar (a real, observed
+   * text-overlap bug) — the wall now surfaces this fact once, in the panel toolbar, instead. */
+  showAudioNotice?: boolean;
 }
 
 /**
@@ -31,6 +36,7 @@ export function VideoPlayerPanel({
   videoRef,
   idleTitle = "Select a device and camera",
   idleDescription = "Choose a device and one of its cameras, then press Start Live.",
+  showAudioNotice = true,
 }: VideoPlayerPanelProps) {
   return (
     <>
@@ -48,7 +54,7 @@ export function VideoPlayerPanel({
               <span>Connecting to the relay…</span>
             </div>
           )}
-          {phase === "connected" && (
+          {phase === "connected" && showAudioNotice && (
             <span className={styles.audioNotice}>Video only — audio isn't available on this stream yet.</span>
           )}
         </div>

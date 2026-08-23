@@ -1,9 +1,12 @@
+/* Stacked, full-page-width layout (redesign): Map and Live Cameras are no longer side-by-side
+ * columns sharing one viewport-height budget — the page now grows to its natural content height
+ * and the surrounding app shell scrolls, so the user scrolls down from the map to reach the
+ * camera wall below it. Both sections get the page's full width; each is sized independently
+ * (below), not squeezed to fit a fixed remaining space. */
 .page {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  height: calc(100vh - 160px);
-  min-height: 560px;
 }
 
 .mapHeaderStatus {
@@ -25,29 +28,61 @@
   color: var(--color-text-faint);
 }
 
-/* Two primary workspace areas, side by side: Map / Live Video. Both panels can mount
- * simultaneously (cheap) — only pressing Start Live begins any real streaming cost
- * (`MultiCameraVideoPanel`/`CameraTile`, unchanged session lifecycle). */
 .workspace {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 1.15fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: var(--space-4);
-  overflow: hidden;
 }
 
-/* No video-eligible role for this session (or nothing gates it off, e.g. the role check
- * excludes finance_staff/driver): the map takes the full workspace rather than leaving a
- * permanently empty second column. */
-.workspaceMapOnly {
-  grid-template-columns: 1fr;
+/* Map: the upper section, full width, a substantial but bounded height (not the whole viewport,
+ * so Live Cameras below is reachable with one natural scroll, not several). */
+.mapSection {
+  width: 100%;
+  height: min(56vh, 620px);
+  /* Mapbox GL JS's own documented floor (`VehicleMapPanel.module.css`'s `.mapArea`, 320px) plus
+   * a small margin so this section is never shorter than that regardless of viewport height. */
+  min-height: 340px;
 }
 
-@media (max-width: 1100px) {
-  .workspace {
-    grid-template-columns: 1fr;
-    overflow: visible auto;
+.mapSection > * {
+  height: 100%;
+  width: 100%;
+}
+
+/* No video-eligible role for this session: the map is the only section, so it can take a
+ * taller share of the page instead of leaving room for a video wall that will never render. */
+.workspaceMapOnly .mapSection {
+  height: min(72vh, 760px);
+}
+
+/* Live Cameras: the lower section, full page width, sized generously enough that a 2x2 wall
+ * gets real per-tile screen space — this is the page's dominant area by design, just reached by
+ * scrolling down from the map rather than by narrowing the map beside it. */
+.videoSection {
+  width: 100%;
+  height: min(80vh, 840px);
+  min-height: 480px;
+}
+
+.videoSection > * {
+  height: 100%;
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .mapSection,
+  .workspaceMapOnly .mapSection {
+    height: min(48vh, 420px);
+    min-height: 320px;
+  }
+
+  /* The wall's own internal grid (`MultiCameraVideoPanel.module.css`) already collapses to a
+   * responsive single-column layout below this width — this section no longer needs a tall
+   * fixed height to hold a 2x2 grid at that point, so it's allowed to size to its own content
+   * instead (the page itself keeps scrolling normally). */
+  .videoSection {
+    height: auto;
+    min-height: 420px;
   }
 }
 
