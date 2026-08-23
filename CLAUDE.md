@@ -1041,15 +1041,24 @@ e.g. a relay crash); the Org-Admin web video player (F10 — the user's own expl
 Flutter-only choice this phase); a real Flutter SDK and a physical MDVR to verify any of this
 against, backend through mobile.
 
-**Note on ADR-0027/0028/0029 (2026-08-16) and F10:** the paragraph above's "F10 — Flutter-only
-choice this phase" was accurate when ADR-0026 was written, but ADR-0028 (Unified Vehicle
-Operations Frontend) later built the Org-Admin **web** video player after all, alongside ADR-0027
-(a `GET /vehicles/{vehicle_id}/device-assignment` read model + `Device.is_online`) and ADR-0029
-(extending Platform Admin — Founder/Regional Manager/Support Staff — the same live-video access).
-All three are `Accepted`/implemented (commits `560580d`/`8b5bd0c`/`857d68b`) but this file's own
-narrative was never updated to reflect them — see `docs/PROJECT_STATUS.md` §4's own flagged note
-next to those three ADR rows, and each ADR's own file, for the authoritative detail; not
-duplicated here to avoid a second copy that can drift.
+**Note on F10 and ADR-0027/0028/0029 (corrected 2026-08-19):** the paragraph above's "F10 —
+Flutter-only choice this phase" was accurate when ADR-0026 was written (2026-08-12) but stopped
+being current two days later. **The Org-Admin web video player (F10, `/org/video`,
+`VideoPage.tsx`) was built 2026-08-14 (commit `600c4da`)** — its own, un-ADR'd frontend phase,
+not part of ADR-0026 or ADR-0028. ADR-0027 (2026-08-16, commit `560580d`: a `GET /vehicles/
+{vehicle_id}/device-assignment` read model + `Device.is_online`) and ADR-0028 (2026-08-16, commit
+`8b5bd0c`) then *unified* that already-existing F10 page with GPS tracking into one Vehicle
+Operations view on `/platform/tracking`/`/org/tracking` (`/org/video` itself is kept, unchanged,
+as the only path to a device not yet assigned to any vehicle). ADR-0029 (2026-08-16, commit
+`857d68b`) extended that same unified view's video capability to Founder/Regional Manager/Support
+Staff. All three are `Accepted`/implemented. **Live-verified end to end against the physical
+`LSZ-C5804DG-Q-F` bench unit, 2026-08-19** (real `POST /video/live` → `0x9101` → the device
+streaming genuine JT/T 1078 extended-RTP frames → `VideoSession.status=active` → a real WS-FLV
+viewer) — see this file's own "Automatic Camera/Channel Discovery (ADR-0030...)" section above
+for that verification pass and the four real bugs it found and fixed.
+`docs/PROJECT_STATUS.md` has been updated in place to match throughout (search it for `600c4da`);
+this note is kept as the historical record of the correction, not duplicated as a second live
+status copy that could itself drift.
 
 ## Automatic Camera/Channel Discovery (ADR-0030, 2026-08-18)
 
