@@ -4,13 +4,31 @@
 `VideoSessionActivated`/`VideoSessionEnded`/`VideoSessionFailed` events + device stop-signal
 command (ADR-0024 §5 point 4).
 
-**Correlates an inbound ingest connection to a session by `terminal_id` alone** — the JT/T 1078
-media socket itself carries no session token (ADR-0024 §1: "the relay's own correctness anchor
-for *that* socket remains identity/session correlation... never by trusting the connection's
-source IP alone"). `resolve_ingest_by_terminal_id` only ever returns a session in `REQUESTED` or
-`ACTIVE` state — an `ENDED`/`FAILED` session (or one this manager never created) correlates to
-nothing, so a stray/unsolicited media connection is rejected by the caller
+**Correlates an inbound ingest connection to a session by `terminal_id` *and* `logical_channel`**
+— the JT/T 1078 media socket itself carries no session token (ADR-0024 §1: "the relay's own
+correctness anchor for *that* socket remains identity/session correlation... never by trusting
+the connection's source IP alone"). `resolve_ingest_by_terminal_id` only ever returns a session in
+`REQUESTED` or `ACTIVE` state — an `ENDED`/`FAILED` session (or one this manager never created)
+correlates to nothing, so a stray/unsolicited media connection is rejected by the caller
 (`ingest/ingest_server.py`), not silently accepted.
+
+**A real, live-found bug (2026-08-22, physical bench unit, multi-camera grid): matching by
+`terminal_id` alone is only correct when at most one session is ever `REQUESTED`/`ACTIVE` for a
+given device at a time.** ADR-0030's multi-camera grid (`MultiCameraVideoPanel`) requests all of a
+device's cameras' sessions simultaneously — up to four `REQUESTED` sessions sharing the *same*
+`terminal_id`, distinguished only by `logical_channel`. `ExtendedRtpFrame` already carries its own
+`logical_channel` (`ingest/extended_rtp.py`, spec Table 5.31, byte 14) on every single frame, but
+the previous terminal-id-only match ignored it and returned whichever same-device session
+happened to be first in `self._sessions`' iteration order — non-deterministic, tied to RPC
+processing order, not to which channel a given ingest connection was actually for. Confirmed
+live: the physical MDVR genuinely opens one independent ingest TCP connection per requested
+channel (four simultaneous connections observed on the ingest port for a 4-camera Start Live),
+but all four could resolve to the *same* session, interleaving frames from multiple physical
+channels into one broadcast hub while the other sessions' own real ingest connections went
+unattributed and later failed on `ingest_timeout` — exactly matching the observed "1/4 Live, and
+which camera is Live changes between attempts" symptom. Matching on `logical_channel` too (already
+present on every frame, already stored on every `VideoSession` at creation) makes each of a
+device's concurrently-pending sessions resolvable only by its own channel's ingest connection.
 
 **`on_session_created`/`on_session_removed`** — sync hooks `relay.py`'s composition root uses to
 keep its own `session_id -> SessionBroadcastHub` dict in lockstep with session lifecycle (a hub
@@ -171,17 +189,21 @@ class SessionManager:
     def resolve(self, session_id: str) -> VideoSession | None:
         return self._sessions.get(session_id)
 
-    def resolve_ingest_by_terminal_id(self, sim_card_number: str) -> VideoSession | None:
+    def resolve_ingest_by_terminal_id(
+        self, sim_card_number: str, logical_channel: int
+    ) -> VideoSession | None:
         """Despite the parameter's own historical name (kept for `ingest_server.py`'s existing
-        call-site compatibility), this actually receives the ingest frame's `BCD[6]` SIM card
-        number, not the wider `BCD[10]` `terminal_id` - see `_terminal_id_matches_sim_card_number`
-        for why the two need width-aware matching, not `==`."""
+        call-site compatibility), `sim_card_number` actually receives the ingest frame's `BCD[6]`
+        SIM card number, not the wider `BCD[10]` `terminal_id` - see
+        `_terminal_id_matches_sim_card_number` for why the two need width-aware matching, not
+        `==`. `logical_channel` disambiguates between a device's own multiple concurrently-pending
+        sessions (module docstring) - required, not optional, since a single-field terminal-id
+        match is silently wrong the instant more than one session is pending for the same device."""
         for session in self._sessions.values():
-            if _terminal_id_matches_sim_card_number(
-                session.terminal_id, sim_card_number
-            ) and session.state in (
-                VideoSessionState.REQUESTED,
-                VideoSessionState.ACTIVE,
+            if (
+                _terminal_id_matches_sim_card_number(session.terminal_id, sim_card_number)
+                and session.logical_channel == logical_channel
+                and session.state in (VideoSessionState.REQUESTED, VideoSessionState.ACTIVE)
             ):
                 return session
         return None

@@ -47,7 +47,7 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
         session = manager.create_session(
             terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
         )
-        found = manager.resolve_ingest_by_terminal_id("T1")
+        found = manager.resolve_ingest_by_terminal_id("T1", 1)
         self.assertEqual(found.session_id, session.session_id)
 
     async def test_resolve_ingest_by_terminal_id_returns_none_for_unsolicited_terminal(
@@ -57,7 +57,46 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
         manager.create_session(
             terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
         )
-        self.assertIsNone(manager.resolve_ingest_by_terminal_id("some-other-terminal"))
+        self.assertIsNone(manager.resolve_ingest_by_terminal_id("some-other-terminal", 1))
+
+    async def test_resolve_ingest_by_terminal_id_disambiguates_a_devices_own_concurrent_sessions(
+        self,
+    ) -> None:
+        """Regression test for a real, live-found bug (2026-08-22, physical bench unit,
+        multi-camera grid): four cameras on one device are live-requested simultaneously, giving
+        four `REQUESTED` sessions that share the same `terminal_id` and differ only by
+        `logical_channel`. Matching by `terminal_id` alone (the previous behavior) returned
+        whichever same-device session happened to be first in iteration order, regardless of
+        which channel a given ingest connection's own frames were actually for — confirmed live:
+        the device opened four independent, simultaneous ingest connections, but every one of
+        them resolved to the same one session."""
+        manager, _ = _manager()
+        sessions = [
+            manager.create_session(
+                terminal_id="T1",
+                kind=VideoSessionKind.LIVE,
+                correlation_id=f"corr-{channel}",
+                logical_channel=channel,
+            )
+            for channel in (1, 2, 3, 4)
+        ]
+
+        for channel, session in zip((1, 2, 3, 4), sessions):
+            found = manager.resolve_ingest_by_terminal_id("T1", channel)
+            self.assertEqual(
+                found.session_id,
+                session.session_id,
+                f"channel {channel}'s ingest frame resolved to the wrong session",
+            )
+
+    async def test_resolve_ingest_by_terminal_id_returns_none_for_a_channel_with_no_pending_session(
+        self,
+    ) -> None:
+        manager, _ = _manager()
+        manager.create_session(
+            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
+        )
+        self.assertIsNone(manager.resolve_ingest_by_terminal_id("T1", 2))
 
     async def test_resolve_ingest_by_terminal_id_matches_the_narrower_bcd6_sim_card_number(
         self,
@@ -76,7 +115,7 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
             logical_channel=1,
         )
 
-        found = manager.resolve_ingest_by_terminal_id("014482607571")
+        found = manager.resolve_ingest_by_terminal_id("014482607571", 1)
 
         self.assertIsNotNone(found)
         self.assertEqual(found.session_id, session.session_id)
@@ -91,7 +130,7 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
             correlation_id="corr-1",
             logical_channel=1,
         )
-        self.assertIsNone(manager.resolve_ingest_by_terminal_id("999999999999"))
+        self.assertIsNone(manager.resolve_ingest_by_terminal_id("999999999999", 1))
 
     async def test_mark_ingest_active_transitions_and_publishes_once(self) -> None:
         manager, publisher = _manager()

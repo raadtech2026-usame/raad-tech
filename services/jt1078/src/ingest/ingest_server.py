@@ -1,15 +1,20 @@
 """`IngestServer` — the TCP listener a device connects to directly once `0x9101`/`0x9201`
 signaling has told it this relay's ingest host:port (ADR-0024 §1/§6/§7). One shared, well-known
 port for every session (not one port per session) — a new inbound connection is correlated to a
-pending/active `VideoSession` purely by the extended-RTP frame's own SIM card number
-(`ExtendedRtpFrame.sim_card_number`, matched against `VideoSession.terminal_id`), per ADR-0024
-§1's own "the relay's own correctness anchor for that socket remains identity/session
-correlation... never by trusting the connection's source IP alone."
+pending/active `VideoSession` by the extended-RTP frame's own SIM card number *and*
+`logical_channel` (`ExtendedRtpFrame.sim_card_number`/`.logical_channel`, matched against
+`VideoSession.terminal_id`/`.logical_channel`), per ADR-0024 §1's own "the relay's own
+correctness anchor for that socket remains identity/session correlation... never by trusting the
+connection's source IP alone." **`logical_channel` is required in the match, not just identity**
+(`session/session_manager.py`'s own module docstring has the full real-bug history) — a device
+with several of its own cameras all live-requested at once has several concurrently-`REQUESTED`
+sessions sharing one `terminal_id`, and a terminal-id-only match cannot tell their independent
+ingest connections apart.
 
 **Unsolicited connections are rejected and audited** (ADR-0024 §1/§15, mirroring `jt808.md` #5):
-if the *first* frame's SIM card number doesn't correlate to any `REQUESTED`/`ACTIVE` session,
-the connection is closed immediately — no frames from an unrecognized device are ever fed to the
-reassembler/repackager/viewer pipeline.
+if the *first* frame's identity doesn't correlate to any `REQUESTED`/`ACTIVE` session on that
+exact channel, the connection is closed immediately — no frames from an unrecognized device (or
+a channel with no pending session) are ever fed to the reassembler/repackager/viewer pipeline.
 
 **One `ExtendedRtpStreamDemuxer` + `FrameReassembler` pair per connection** — a fresh instance for
 every accepted TCP connection, discarded when that connection closes (ADR-0024 §4: no state
@@ -88,7 +93,7 @@ class IngestServer:
                 for frame in frames:
                     if session_id is None:
                         session = self._session_manager.resolve_ingest_by_terminal_id(
-                            frame.sim_card_number
+                            frame.sim_card_number, frame.logical_channel
                         )
                         if session is None:
                             log_with_fields(
