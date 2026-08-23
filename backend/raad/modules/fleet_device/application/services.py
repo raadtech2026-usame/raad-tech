@@ -59,6 +59,7 @@ from raad.modules.fleet_device.application.queries import (
     GetVehicleByIdQuery,
     ListDevicesQuery,
     ListVehiclesQuery,
+    OnlineDeviceAssignmentDTO,
     TrackingStatusDTO,
     VehicleDTO,
     VehicleStatsDTO,
@@ -242,6 +243,17 @@ class VehicleApplicationService:
                 page=page.page,
                 page_size=page.page_size,
             )
+
+    async def list_vehicles_by_ids(
+        self, vehicle_ids: list[str], *, uow: FleetDeviceUnitOfWork
+    ) -> list[VehicleDTO]:
+        """ADR-0031 (Fleet Overview read model) — the bulk sibling of `get_vehicle_by_id`, for
+        a caller (`tracking.FleetOverviewApplicationService`) that already has a specific set of
+        vehicle ids to resolve (the online-device-assignment set) and needs their
+        `plate_no`/`label`, never a full paginated listing to filter client-side."""
+        async with uow:
+            vehicles = await uow.vehicles.list_by_ids([VehicleId(v) for v in vehicle_ids])
+            return [vehicle_to_dto(v) for v in vehicles]
 
     async def get_vehicle_stats(self, *, uow: FleetDeviceUnitOfWork) -> VehicleStatsDTO:
         """ADR-0020: "Total Vehicles" KPI, backing `platform_audit.PlatformStatsApplicationService`."""
@@ -478,6 +490,25 @@ class DeviceApplicationService:
                 page=page.page,
                 page_size=page.page_size,
             )
+
+    async def list_online_devices_with_vehicle_assignment(
+        self, *, uow: FleetDeviceUnitOfWork
+    ) -> list[OnlineDeviceAssignmentDTO]:
+        """ADR-0031 (Fleet Overview read model) — backs `tracking`'s new `GET /tracking/
+        vehicles/online`. The one query that closes the gap `GET /vehicles`/`GET /devices`
+        (list) both deliberately leave open: neither carries an online-device<->vehicle
+        association (`VehicleResponse.tracking_status` is `null` on list responses by design,
+        to avoid exactly this N+1; `DeviceResponse` has no `vehicle_id` field at all)."""
+        async with uow:
+            rows = await uow.devices.list_online_with_active_assignment()
+            return [
+                OnlineDeviceAssignmentDTO(
+                    device_id=row.device_id,
+                    terminal_id=row.terminal_id,
+                    vehicle_id=row.vehicle_id,
+                )
+                for row in rows
+            ]
 
     async def get_device_stats(self, *, uow: FleetDeviceUnitOfWork) -> DeviceStatsDTO:
         """ADR-0020 §3: "Total/Online/Offline Devices" KPI, backing `platform_audit.

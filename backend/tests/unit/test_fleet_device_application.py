@@ -62,6 +62,7 @@ from raad.modules.fleet_device.domain.repositories import (
     DeviceAssignmentRepository,
     DeviceInventoryRepository,
     DeviceRepository,
+    OnlineDeviceAssignment,
     VehicleRepository,
 )
 from raad.modules.fleet_device.domain.value_objects import (
@@ -173,6 +174,10 @@ class InMemoryVehicleRepository(VehicleRepository):
     async def list_all(self) -> list[Vehicle]:
         return list(self.by_id.values())
 
+    async def list_by_ids(self, vehicle_ids: list[VehicleId]) -> list[Vehicle]:
+        wanted = {str(v) for v in vehicle_ids}
+        return [v for v in self.by_id.values() if str(v.id) in wanted]
+
     async def list_page(
         self,
         page_request: OffsetPageRequest,
@@ -256,6 +261,13 @@ class InMemoryDeviceRepository(DeviceRepository):
 
     async def count_online(self) -> int:
         return sum(1 for device in self.by_id.values() if device.is_online)
+
+    async def list_online_with_active_assignment(self) -> list[OnlineDeviceAssignment]:
+        """Not exercised by anything in this file (a dedicated fake in
+        `test_fleet_device_application_online.py` covers the real join behavior) — empty is the
+        correct, honest default: no test here ever seeds a `device_assignments`-equivalent on
+        this repository."""
+        return []
 
 
 class InMemoryDeviceAssignmentRepository(DeviceAssignmentRepository):

@@ -10,12 +10,13 @@ import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
 import { useAuthStore } from "../../shared/stores/authStore";
 import type { Role } from "../../shared/api/types";
 import { MultiCameraVideoPanel } from "../video/MultiCameraVideoPanel";
-import { listVehiclesForTracking } from "./api";
+import { listOnlineVehicles, listVehiclesForTracking } from "./api";
+import { FleetMapPanel } from "./FleetMapPanel";
 import { useActiveTripRoute } from "./useActiveTripRoute";
 import { useVehicleActiveDevice } from "./useVehicleActiveDevice";
 import { useVehiclePosition } from "./useVehiclePosition";
 import { VehicleMapPanel } from "./VehicleMapPanel";
-import { VehicleOperationsHeader } from "./VehicleOperationsHeader";
+import { ALL_VEHICLES_ID, VehicleOperationsHeader } from "./VehicleOperationsHeader";
 import styles from "./LiveTrackingPage.module.css";
 
 /**
@@ -69,13 +70,36 @@ const VIDEO_ELIGIBLE_WEB_ROLES = new Set<Role>([
   "org_admin",
 ]);
 
+/** ADR-0031 — mirrors the backend's own `_FLEET_OVERVIEW_ELIGIBLE_ROLES`
+ * (`tracking/api/routers.py`) exactly. A separate constant from `VIDEO_ELIGIBLE_WEB_ROLES` even
+ * though the two sets are identical today — they gate genuinely different capabilities
+ * (fleet-wide GPS visibility vs. live video), the same "coincidentally the same set, kept as
+ * two names" choice the backend itself makes for the identical reason. Presentation-only
+ * gating (`.claude/rules/frontend.md` #2) — the real gate is the backend's own permission +
+ * role check on `GET /tracking/vehicles/online`. */
+const FLEET_OVERVIEW_ELIGIBLE_ROLES = new Set<Role>([
+  "founder",
+  "regional_manager",
+  "support_staff",
+  "org_admin",
+]);
+
 export function LiveTrackingPage() {
   usePageHeader("Live Tracking", "Real-time vehicle position, device status, and live video");
   const canSeeVideo = useAuthStore(
     (s) => s.principal !== null && VIDEO_ELIGIBLE_WEB_ROLES.has(s.principal.role),
   );
+  const canSeeFleetOverview = useAuthStore(
+    (s) => s.principal !== null && FLEET_OVERVIEW_ELIGIBLE_ROLES.has(s.principal.role),
+  );
 
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>("");
+  const isFleetMode = selectedVehicleId === ALL_VEHICLES_ID;
+  // Neither the GPS/device hooks below nor the video panel should ever see the fleet-mode
+  // sentinel as if it were a real vehicle id — an empty string is each hook's own existing
+  // "nothing selected" disabled state (`enabled: vehicleId !== ""`), already exercised today
+  // for the initial no-selection case, not a new code path.
+  const individualVehicleId = isFleetMode ? "" : selectedVehicleId;
 
   const vehiclesQuery = useQuery({
     queryKey: ["vehicles", "tracking-picker"],
@@ -83,9 +107,19 @@ export function LiveTrackingPage() {
     staleTime: 60_000,
   });
 
-  const gps = useVehiclePosition(selectedVehicleId);
-  const { routeStops } = useActiveTripRoute(selectedVehicleId);
-  const activeDevice = useVehicleActiveDevice(selectedVehicleId);
+  // ADR-0031: the All Vehicles snapshot — fetched once per fleet-mode entry, never polled.
+  // Realtime updates for the returned set happen entirely over `/ws/tracking`
+  // (`FleetMapPanel`/`FleetVehicleTracker`), reusing `useVehiclePosition` unchanged.
+  const onlineVehiclesQuery = useQuery({
+    queryKey: ["tracking", "online-vehicles"],
+    queryFn: listOnlineVehicles,
+    enabled: isFleetMode && canSeeFleetOverview,
+    staleTime: 15_000,
+  });
+
+  const gps = useVehiclePosition(individualVehicleId);
+  const { routeStops } = useActiveTripRoute(individualVehicleId);
+  const activeDevice = useVehicleActiveDevice(individualVehicleId);
 
   const position = gps.livePosition
     ? gps.livePosition
@@ -98,7 +132,7 @@ export function LiveTrackingPage() {
       : null;
 
   const mapHeaderStatus =
-    selectedVehicleId === "" ? undefined : (
+    individualVehicleId === "" ? undefined : (
       <div className={styles.mapHeaderStatus}>
         {gps.wsStatus === "open" && !gps.isAuthOrPolicyClose ? (
           <LiveIndicator>Live</LiveIndicator>
@@ -127,29 +161,53 @@ export function LiveTrackingPage() {
         deviceStatus={activeDevice.status}
         device={activeDevice.device}
         showCameraChip={canSeeVideo}
+        showAllVehiclesOption={canSeeFleetOverview}
       />
 
-      <div className={clsx(styles.workspace, !canSeeVideo && styles.workspaceMapOnly)}>
-        <VehicleMapPanel
-          vehicleId={selectedVehicleId}
-          position={position}
-          hasKnownPosition={gps.hasKnownPosition}
-          isPositionLoading={gps.snapshotQuery.isLoading}
-          routeStops={routeStops}
-          headerStatus={mapHeaderStatus}
-        />
+      {/* Stacked, full-width workspace (layout redesign): Map occupies its own upper section at
+       * substantial height, Live Cameras occupies a full-width section below it — replacing the
+       * old side-by-side Map/Video columns so the camera wall gets the page's full width rather
+       * than sharing it with the map. The page now grows to its natural content height (see
+       * `.page`'s own comment) and the surrounding app shell scrolls, exactly the "scroll down
+       * from map to cameras" behavior requested — neither section scrolls internally.
+       *
+       * ADR-0031: in All Vehicles mode the map is the *only* section — no Live Video section is
+       * rendered at all (not hidden, not mounted-but-empty), so no camera/video session of any
+       * kind is ever initialized for the fleet view. */}
+      <div className={clsx(styles.workspace, (!canSeeVideo || isFleetMode) && styles.workspaceMapOnly)}>
+        <div className={styles.mapSection}>
+          {isFleetMode ? (
+            <FleetMapPanel
+              vehicles={onlineVehiclesQuery.data?.vehicles ?? []}
+              totalOnline={onlineVehiclesQuery.data?.totalOnline ?? 0}
+              isLoading={onlineVehiclesQuery.isLoading}
+              onSelectVehicle={setSelectedVehicleId}
+            />
+          ) : (
+            <VehicleMapPanel
+              vehicleId={selectedVehicleId}
+              position={position}
+              hasKnownPosition={gps.hasKnownPosition}
+              isPositionLoading={gps.snapshotQuery.isLoading}
+              routeStops={routeStops}
+              headerStatus={mapHeaderStatus}
+            />
+          )}
+        </div>
 
-        {canSeeVideo && selectedVehicleId === "" && (
-          <Card className={styles.videoStateCard}>
-            <CardHeader title="Live Video" />
-            <div className={styles.videoStateBody}>
-              <EmptyState icon={<Video size={28} />} title="Select a vehicle to view its cameras" />
-            </div>
-          </Card>
+        {canSeeVideo && !isFleetMode && selectedVehicleId === "" && (
+          <div className={styles.videoSection}>
+            <Card className={styles.videoStateCard}>
+              <CardHeader title="Live Video" />
+              <div className={styles.videoStateBody}>
+                <EmptyState icon={<Video size={28} />} title="Select a vehicle to view its cameras" />
+              </div>
+            </Card>
+          </div>
         )}
 
-        {canSeeVideo && selectedVehicleId !== "" && (
-          <>
+        {canSeeVideo && !isFleetMode && selectedVehicleId !== "" && (
+          <div className={styles.videoSection}>
             {activeDevice.status === "loading" && (
               <Card className={styles.videoStateCard}>
                 <CardHeader title="Live Video" />
@@ -185,7 +243,7 @@ export function LiveTrackingPage() {
                 deviceOnline={activeDevice.device.isOnline}
               />
             )}
-          </>
+          </div>
         )}
       </div>
     </div>

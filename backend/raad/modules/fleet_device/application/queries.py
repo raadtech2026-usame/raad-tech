@@ -101,6 +101,18 @@ class DeviceStatsDTO:
 
 
 @dataclass(frozen=True)
+class OnlineDeviceAssignmentDTO:
+    """ADR-0031 (Fleet Overview read model) — the application-layer mirror of
+    `domain.repositories.OnlineDeviceAssignment`, returned by `DeviceApplicationService.
+    list_online_devices_with_vehicle_assignment`. `tracking`'s new `FleetOverviewApplicationService`
+    is the sole consumer."""
+
+    device_id: str
+    terminal_id: str
+    vehicle_id: str
+
+
+@dataclass(frozen=True)
 class CameraDTO:
     id: str
     channel_no: int

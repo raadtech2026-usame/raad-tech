@@ -33,6 +33,11 @@ from datetime import timedelta
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import CursorPage
 from raad.core.time.clock import Clock
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.fleet_device.application.services import (
+    DeviceApplicationService,
+    VehicleApplicationService,
+)
 from raad.modules.tracking.application.commands import (
     EvaluateGeofenceCommand,
     RecordBackfillPositionCommand,
@@ -49,6 +54,9 @@ from raad.modules.tracking.application.queries import (
     GetCurrentVehiclePositionQuery,
     GetGeofenceCrossingsQuery,
     GetVehiclePositionHistoryQuery,
+    FleetOnlineVehiclesDTO,
+    OnlineVehicleDTO,
+    OnlineVehiclePositionDTO,
     VehiclePositionDTO,
     geofence_crossing_to_dto,
     vehicle_position_to_dto,
@@ -271,3 +279,109 @@ class TrackingApplicationService:
                 TripId(query.trip_id)
             )
             return [geofence_crossing_to_dto(crossing) for crossing in crossings]
+
+
+#: The existing ≤100-vehicle-per-page convention this same feature already established
+#: (`listVehiclesForTracking`'s own page size, frontend) — the ADR-0031 scalability analysis's
+#: chosen cap on how many online vehicles the All Vehicles map tracks live at once, rather than
+#: opening an unbounded number of `/ws/tracking` connections. Not a hard platform limit; a
+#: future widening needs its own decision, not a silent bump here.
+FLEET_OVERVIEW_MAX_ONLINE_VEHICLES = 100
+
+
+class FleetOverviewApplicationService:
+    """ADR-0031 (Fleet Overview read model) — backs `GET /tracking/vehicles/online`, the All
+    Vehicles map mode's one-time snapshot query. Composes `fleet_device`'s own
+    `VehicleApplicationService`/`DeviceApplicationService` (never a cross-module DB read,
+    `.claude/rules/backend.md` #3) plus this module's own `LatestPositionPort` — exactly the
+    `PlatformStatsApplicationService` (ADR-0020) precedent: a new, distinct composing service,
+    not a method bolted onto `TrackingApplicationService`, since its dependency set (two other
+    modules' services) is entirely different from every other method in this file.
+
+    Each dependency's own Unit of Work is resolved by the caller (the router) and passed in per
+    call, mirroring `PlatformStatsApplicationService.get_platform_stats`'s identical shape —
+    this service holds no UoW of its own.
+
+    `latest_position_port` is optional, the same "fail loudly only at the one method that needs
+    it, not the whole service" posture `TrackingApplicationService.get_current_vehicle_position`
+    already establishes — without a reachable Redis, every vehicle's `position` is simply
+    `None`, not a 500."""
+
+    def __init__(
+        self,
+        *,
+        vehicle_service: VehicleApplicationService,
+        device_service: DeviceApplicationService,
+        latest_position_port: LatestPositionPort | None = None,
+    ) -> None:
+        self._vehicle_service = vehicle_service
+        self._device_service = device_service
+        self._latest_position_port = latest_position_port
+
+    async def list_online_vehicles(
+        self, *, fleet_device_uow: FleetDeviceUnitOfWork
+    ) -> FleetOnlineVehiclesDTO:
+        online_devices = await self._device_service.list_online_devices_with_vehicle_assignment(
+            uow=fleet_device_uow
+        )
+        if not online_devices:
+            return FleetOnlineVehiclesDTO(vehicles=[], total_online=0)
+
+        # ADR-0031's own scalability analysis: capped, deterministic (not "whichever devices
+        # happened to sort first from the DB"), and disclosed via `total_online` (the *pre-cap*
+        # count) rather than silently truncated with no signal to the caller.
+        online_devices = sorted(online_devices, key=lambda d: d.vehicle_id)
+        total_online = len(online_devices)
+        capped = online_devices[:FLEET_OVERVIEW_MAX_ONLINE_VEHICLES]
+
+        vehicle_ids = [d.vehicle_id for d in capped]
+        vehicles = await self._vehicle_service.list_vehicles_by_ids(
+            vehicle_ids, uow=fleet_device_uow
+        )
+        vehicles_by_id = {v.id: v for v in vehicles}
+
+        positions: dict[VehicleId, VehiclePosition] = {}
+        if self._latest_position_port is not None:
+            positions = await self._latest_position_port.get_latest_many(
+                [VehicleId(vid) for vid in vehicle_ids]
+            )
+
+        result: list[OnlineVehicleDTO] = []
+        for online in capped:
+            vehicle = vehicles_by_id.get(online.vehicle_id)
+            if vehicle is None:
+                # The device's own assignment points at a vehicle this caller's scope/tenant
+                # can't see (or that no longer exists) — silently excluded, not an error, the
+                # same posture `list_by_ids`' own docstring already documents for an
+                # out-of-scope id.
+                continue
+            position = positions.get(VehicleId(online.vehicle_id))
+            result.append(
+                OnlineVehicleDTO(
+                    vehicle_id=vehicle.id,
+                    plate_no=vehicle.plate_no,
+                    label=vehicle.label,
+                    device_id=online.device_id,
+                    is_online=True,
+                    position=(
+                        OnlineVehiclePositionDTO(
+                            latitude=position.position.latitude,
+                            longitude=position.position.longitude,
+                            heading_deg=(
+                                position.heading_deg.value
+                                if position.heading_deg is not None
+                                else None
+                            ),
+                            speed_kph=(
+                                position.speed_kph.value
+                                if position.speed_kph is not None
+                                else None
+                            ),
+                            event_time=position.event_time,
+                        )
+                        if position is not None
+                        else None
+                    ),
+                )
+            )
+        return FleetOnlineVehiclesDTO(vehicles=result, total_online=total_online)

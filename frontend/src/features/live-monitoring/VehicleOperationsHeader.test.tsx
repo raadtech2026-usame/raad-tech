@@ -28,6 +28,7 @@ function baseProps(overrides: Partial<VehicleOperationsHeaderProps> = {}): Vehic
     deviceStatus: "idle",
     device: null,
     showCameraChip: true,
+    showAllVehiclesOption: true,
     ...overrides,
   };
 }

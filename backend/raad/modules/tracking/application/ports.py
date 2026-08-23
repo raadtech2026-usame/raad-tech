@@ -74,6 +74,21 @@ class LatestPositionPort(ABC):
     async def get_latest(self, vehicle_id: VehicleId) -> VehiclePosition | None:
         raise NotImplementedError
 
+    @abstractmethod
+    async def get_latest_many(
+        self, vehicle_ids: list[VehicleId]
+    ) -> dict[VehicleId, VehiclePosition]:
+        """ADR-0031 (Fleet Overview read model) — the bulk sibling of `get_latest`, for the All
+        Vehicles map's one-time initial snapshot (realtime *updates* after that still go
+        entirely over the existing `/ws/tracking` per-vehicle subscriptions, never this port —
+        see the ADR's own scalability analysis for why). A single round trip regardless of how
+        many vehicle ids are asked for (the concrete `RedisLatestPositionPort` uses `MGET`, not
+        an `get_latest` loop) — the same "one round trip, not N" reasoning
+        `fleet_device.VehicleRepository.list_by_ids` applies on the SQL side. A vehicle with no
+        cached key is simply absent from the returned dict, the identical "honest, not an
+        error" contract `get_latest` already has for a single vehicle."""
+        raise NotImplementedError
+
 
 @dataclass
 class GeofenceHysteresisState:

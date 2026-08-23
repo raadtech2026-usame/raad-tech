@@ -7,6 +7,11 @@ import type { VehicleActiveDeviceStatus } from "./useVehicleActiveDevice";
 import type { UseVehiclePositionResult } from "./useVehiclePosition";
 import styles from "./VehicleOperationsHeader.module.css";
 
+/** ADR-0031 — the vehicle picker's sentinel value for the fleet-wide "All Vehicles" mode, a
+ * third state distinct from both `""` (nothing selected yet) and a real vehicle id. Exported so
+ * `LiveTrackingPage.tsx` can recognize it without duplicating the literal. */
+export const ALL_VEHICLES_ID = "__all__";
+
 export interface VehicleOperationsHeaderProps {
   vehicles: VehicleOption[];
   vehiclesLoading: boolean;
@@ -19,6 +24,11 @@ export interface VehicleOperationsHeaderProps {
    * Cameras chip, mirroring the same role check that gates `MultiCameraVideoPanel` itself; every
    * other chip here reflects `fleet_device.devices.read`, already held more broadly. */
   showCameraChip: boolean;
+  /** ADR-0031 — whether the "All Vehicles" option is offered at all in the picker (the same
+   * role check that gates the fleet map itself, `LiveTrackingPage.tsx`'s own
+   * `FLEET_OVERVIEW_ELIGIBLE_ROLES`) — an ineligible role never sees the option, rather than
+   * seeing it and getting a 403 on selection. */
+  showAllVehiclesOption: boolean;
 }
 
 /**
@@ -36,7 +46,9 @@ export function VehicleOperationsHeader({
   deviceStatus,
   device,
   showCameraChip,
+  showAllVehiclesOption,
 }: VehicleOperationsHeaderProps) {
+  const isFleetMode = selectedVehicleId === ALL_VEHICLES_ID;
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId) ?? null;
   const gpsLive = selectedVehicleId !== "" && gps.wsStatus === "open" && !gps.isAuthOrPolicyClose;
   const deviceOnline = deviceStatus === "ready" && device !== null && device.isOnline;
@@ -59,6 +71,7 @@ export function VehicleOperationsHeader({
               aria-label="Vehicle"
             >
               <option value="">Select a vehicle</option>
+              {showAllVehiclesOption && <option value={ALL_VEHICLES_ID}>All Vehicles</option>}
               {vehicles.map((vehicle) => (
                 <option key={vehicle.id} value={vehicle.id}>
                   {vehicle.plateNo}
@@ -68,12 +81,16 @@ export function VehicleOperationsHeader({
             </Select>
           )}
           <span className={styles.vehicleHint}>
-            {selectedVehicle ? "Vehicle Operations" : "Select a vehicle to begin"}
+            {isFleetMode
+              ? "Fleet Overview — every online vehicle"
+              : selectedVehicle
+                ? "Vehicle Operations"
+                : "Select a vehicle to begin"}
           </span>
         </div>
       </div>
 
-      {selectedVehicleId !== "" && (
+      {selectedVehicleId !== "" && !isFleetMode && (
         <div className={styles.statChips}>
           <div className={styles.chip} data-testid="chip-gps">
             {gpsLive ? (

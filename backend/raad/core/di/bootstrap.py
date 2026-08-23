@@ -84,7 +84,10 @@ from raad.modules.tracking.application.ports import (
     LatestPositionPort,
     TrackingUnitOfWork,
 )
-from raad.modules.tracking.application.services import TrackingApplicationService
+from raad.modules.tracking.application.services import (
+    FleetOverviewApplicationService,
+    TrackingApplicationService,
+)
 from raad.modules.tracking.events.subscribers import register_tracking_processors
 from raad.modules.tracking.infra.adapters import (
     RedisGeofenceStatePort,
@@ -747,6 +750,22 @@ def build_container(settings: Settings) -> Container:
                 device_service=container.resolve(DeviceApplicationService),
                 billing_service=container.resolve(BillingApplicationService),
                 health_check_service=container.resolve(HealthCheckService),
+            ),
+        )
+
+    # FleetOverviewApplicationService (ADR-0031) — bound here for the identical reason
+    # PlatformStatsApplicationService immediately above is: depends on
+    # VehicleApplicationService/DeviceApplicationService, both bound only inside this
+    # `if settings.db.url:` block. `latest_position_port` is optional (`container.try_resolve`,
+    # the same pattern `TrackingApplicationService`'s own binding above already uses) — without
+    # a reachable Redis, every vehicle's `position` is simply `None`, never a 500.
+    if settings.db.url:
+        container.bind_singleton(
+            FleetOverviewApplicationService,
+            FleetOverviewApplicationService(
+                vehicle_service=container.resolve(VehicleApplicationService),
+                device_service=container.resolve(DeviceApplicationService),
+                latest_position_port=container.try_resolve(LatestPositionPort),
             ),
         )
 

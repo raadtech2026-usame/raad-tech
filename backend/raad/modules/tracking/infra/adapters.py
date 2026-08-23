@@ -76,6 +76,25 @@ class RedisLatestPositionPort(LatestPositionPort):
         raw = await self._redis.get(_key(vehicle_id))
         if raw is None:
             return None
+        return self._parse(raw)
+
+    async def get_latest_many(
+        self, vehicle_ids: list[VehicleId]
+    ) -> dict[VehicleId, VehiclePosition]:
+        """ADR-0031 — one `MGET` for every requested key, not a `get_latest` loop (see the
+        interface method's own docstring for why this matters: a Redis round trip per vehicle
+        would reintroduce, at the cache layer, exactly the N+1 shape this whole read model
+        exists to avoid at the Postgres layer)."""
+        if not vehicle_ids:
+            return {}
+        raw_values = await self._redis.mget([_key(v) for v in vehicle_ids])
+        result: dict[VehicleId, VehiclePosition] = {}
+        for vehicle_id, raw in zip(vehicle_ids, raw_values):
+            if raw is not None:
+                result[vehicle_id] = self._parse(raw)
+        return result
+
+    def _parse(self, raw: str) -> VehiclePosition:
         payload = json.loads(raw)
         return VehiclePosition(
             id=VehiclePositionId(self._id_generator.new_id()),

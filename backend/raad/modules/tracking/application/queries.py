@@ -81,6 +81,44 @@ class GeofenceCrossingDTO:
 
 
 @dataclass(frozen=True)
+class OnlineVehiclePositionDTO:
+    """ADR-0031 (Fleet Overview read model) — the position half of an `OnlineVehicleDTO` row,
+    `None` when `LatestPositionPort` has no cached key for that vehicle (the confirmed,
+    disclosed gap the ADR names: today, universally, since the live JT808 adapter doesn't wire
+    a `LatestPositionWriter` — see `tracking.infra.adapters`' own module docstring)."""
+
+    latitude: float
+    longitude: float
+    heading_deg: int | None
+    speed_kph: int | None
+    event_time: datetime
+
+
+@dataclass(frozen=True)
+class OnlineVehicleDTO:
+    """ADR-0031 — one row of `GET /tracking/vehicles/online`'s response. Composed by
+    `FleetOverviewApplicationService` from `fleet_device`'s own `OnlineDeviceAssignmentDTO` +
+    `VehicleDTO` plus this module's own `LatestPositionPort` — never a cross-module DB read."""
+
+    vehicle_id: str
+    plate_no: str
+    label: str | None
+    device_id: str
+    is_online: bool
+    position: OnlineVehiclePositionDTO | None
+
+
+@dataclass(frozen=True)
+class FleetOnlineVehiclesDTO:
+    """`total_online` is the *pre-cap* count — see `FLEET_OVERVIEW_MAX_ONLINE_VEHICLES`
+    (`application/services.py`) and `api/schemas.FleetOnlineVehiclesResponse`'s own docstring
+    for why this is returned separately from `len(vehicles)`."""
+
+    vehicles: list[OnlineVehicleDTO]
+    total_online: int
+
+
+@dataclass(frozen=True)
 class GeofenceEvaluationResultDTO:
     """The result of a pure `EvaluateGeofenceCommand` — no identity, since nothing is
     persisted (`services.py`'s `evaluate_geofence` performs no I/O)."""

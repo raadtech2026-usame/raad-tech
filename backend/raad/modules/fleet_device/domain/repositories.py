@@ -18,6 +18,7 @@ binding per device & per vehicle" invariant (LLD §5.2; Database Design §5.4).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from raad.core.pagination import (
     FilterCondition,
@@ -46,6 +47,17 @@ from raad.modules.fleet_device.domain.value_objects import (
 class VehicleRepository(ABC):
     @abstractmethod
     async def get(self, vehicle_id: VehicleId) -> Vehicle | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_by_ids(self, vehicle_ids: list[VehicleId]) -> list[Vehicle]:
+        """ADR-0031 (Fleet Overview read model) — a single scoped `WHERE id IN (...)` lookup
+        for a caller that already knows exactly which vehicles it needs (e.g. the online set
+        `DeviceRepository.list_online_with_active_assignment` resolved), never a fan-out of one
+        `get()` call per id. Same `_apply_scope` tenant/region enforcement as every other
+        `list_*` method (ADR-0021) — an out-of-scope id in the input list is silently absent
+        from the result, not an error, matching this codebase's own cross-tenant-probing-
+        avoidance posture."""
         raise NotImplementedError
 
     @abstractmethod
@@ -92,6 +104,19 @@ class VehicleRepository(ABC):
         counts outside their assigned scope, matching `admin.audit.read`'s identical existing
         posture (`AuditEntryRepository.list_page` scopes the same way)."""
         raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class OnlineDeviceAssignment:
+    """A pure read-model projection (ADR-0031, Fleet Overview) — not a domain entity, the same
+    "thin dedicated read shape" precedent `DeviceStatsDTO`/`VehicleStatsDTO` already establish
+    for a KPI-only query that has no business behavior of its own. Exactly the three columns
+    `tracking`'s new fleet-overview composition needs: which device, its wire identity, and
+    which vehicle it's currently bound to."""
+
+    device_id: str
+    terminal_id: str
+    vehicle_id: str
 
 
 class DeviceRepository(ABC):
@@ -154,6 +179,20 @@ class DeviceRepository(ABC):
     async def count_online(self) -> int:
         """ADR-0020 §3: "Online Devices" KPI, backed by the new `is_online` column
         (`DeviceConnectivityProcessor`, `events/subscribers.py`)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_online_with_active_assignment(self) -> list[OnlineDeviceAssignment]:
+        """ADR-0031 (Fleet Overview read model) — the one query the All Vehicles map mode
+        actually needs: every online device that also has an active vehicle binding, in one
+        round trip (an online device with no vehicle assignment has nothing to show on a
+        vehicle map, so it's excluded here rather than returned for the caller to filter out).
+        Joins this module's own `devices`/`device_assignments` tables only — never a
+        cross-module read (`.claude/rules/backend.md` #3) — and is scope-filtered exactly like
+        every other `list_*` method (ADR-0021). Deliberately returns the thin
+        `OnlineDeviceAssignment` projection, not reconstructed `Device` aggregates: this is a
+        read-model query with no business behavior to invoke, the same reasoning
+        `count_total`/`count_online` above already apply."""
         raise NotImplementedError
 
 

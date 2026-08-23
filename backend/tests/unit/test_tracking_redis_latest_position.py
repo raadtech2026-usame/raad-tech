@@ -50,10 +50,15 @@ class FakeRedis:
     def __init__(self, values: dict[str, str] | None = None) -> None:
         self._values = values or {}
         self.get_calls: list[str] = []
+        self.mget_calls: list[list[str]] = []
 
     async def get(self, key: str) -> str | None:
         self.get_calls.append(key)
         return self._values.get(key)
+
+    async def mget(self, keys: list[str]) -> list[str | None]:
+        self.mget_calls.append(list(keys))
+        return [self._values.get(key) for key in keys]
 
 
 def make_port(redis: FakeRedis) -> RedisLatestPositionPort:
@@ -126,6 +131,51 @@ class RedisLatestPositionPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(position.heading_deg)
         self.assertIsNone(position.alarm_flags)
         self.assertTrue(position.is_backfill)
+
+
+class RedisLatestPositionPortGetLatestManyTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0031 (Fleet Overview read model) — `get_latest_many` must use one `MGET` round trip
+    (never a `get_latest` loop, the exact N+1-at-the-cache-layer this method exists to avoid)."""
+
+    async def test_empty_input_returns_empty_dict_without_a_redis_round_trip(self) -> None:
+        redis = FakeRedis()
+        port = make_port(redis)
+
+        result = await port.get_latest_many([])
+
+        self.assertEqual(result, {})
+        self.assertEqual(redis.mget_calls, [])
+
+    async def test_one_mget_call_covers_every_requested_vehicle(self) -> None:
+        payload = {
+            "organization_id": "org-ref-1",
+            "vehicle_id": "vehicle-a",
+            "device_id": "device-ref-1",
+            "trip_id": None,
+            "lat": 2.0469,
+            "lng": 45.3182,
+            "speed_kph": 30,
+            "heading_deg": 90,
+            "alarm_flags": None,
+            "event_time": "2026-07-21T07:59:00",
+            "is_backfill": False,
+        }
+        redis = FakeRedis({"vehicle:vehicle-a:last": json.dumps(payload)})
+        port = make_port(redis)
+
+        result = await port.get_latest_many(
+            [VehicleId("vehicle-a"), VehicleId("vehicle-b"), VehicleId("vehicle-c")]
+        )
+
+        self.assertEqual(len(redis.mget_calls), 1)
+        self.assertEqual(
+            redis.mget_calls[0],
+            ["vehicle:vehicle-a:last", "vehicle:vehicle-b:last", "vehicle:vehicle-c:last"],
+        )
+        # Only the vehicle with a cached key is present — the same "absent, not an error"
+        # contract `get_latest` already has for a single vehicle.
+        self.assertEqual(set(result.keys()), {VehicleId("vehicle-a")})
+        self.assertEqual(result[VehicleId("vehicle-a")].speed_kph.value, 30)
 
     async def test_id_and_received_at_are_synthesized_not_from_payload(self) -> None:
         payload = {

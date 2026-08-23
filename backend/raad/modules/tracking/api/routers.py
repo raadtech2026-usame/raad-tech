@@ -61,7 +61,7 @@ from raad.core.di.container import Container
 from raad.core.errors.exceptions import AuthorizationError, NotFoundError
 from raad.core.pagination import CursorPageRequest, FilterCondition
 from raad.core.security.permissions import Permission
-from raad.core.tenancy.principal import Principal
+from raad.core.tenancy.principal import Principal, Role
 from raad.interfaces.http.deps import (
     get_container,
     get_cursor_page_request,
@@ -70,20 +70,51 @@ from raad.interfaces.http.deps import (
 )
 from raad.interfaces.http.pagination import CursorPageResponse, to_cursor_page_response
 from raad.interfaces.http.policy_guards import resolve_tracking_decision
-from raad.modules.tracking.api.deps import get_tracking_service, get_tracking_uow
-from raad.modules.tracking.api.schemas import VehiclePositionResponse
+from raad.modules.fleet_device.api.deps import get_fleet_device_uow
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.tracking.api.deps import (
+    get_fleet_overview_service,
+    get_tracking_service,
+    get_tracking_uow,
+)
+from raad.modules.tracking.api.schemas import (
+    FleetOnlineVehiclesResponse,
+    OnlineVehiclePositionResponse,
+    OnlineVehicleResponse,
+    VehiclePositionResponse,
+)
 from raad.modules.tracking.application.ports import TrackingUnitOfWork
 from raad.modules.tracking.application.queries import (
+    FleetOnlineVehiclesDTO,
     GetCurrentVehiclePositionQuery,
     GetVehiclePositionHistoryQuery,
+    OnlineVehicleDTO,
     VehiclePositionDTO,
 )
-from raad.modules.tracking.application.services import TrackingApplicationService
+from raad.modules.tracking.application.services import (
+    FleetOverviewApplicationService,
+    TrackingApplicationService,
+)
 from raad.modules.transport_ops.api.deps import get_trip_service, get_transport_ops_uow
 from raad.modules.transport_ops.application.queries import GetTripByIdQuery
 from raad.modules.transport_ops.application.services import TripApplicationService
 
 tracking_router = APIRouter()
+
+#: ADR-0031 — a real gap found while wiring this route, not assumed away: `tracking.vehicles.
+#: read_latest` (reused above for the coarse gate, deliberately not a new permission/migration)
+#: is *also* held by `parent` (`role_permissions` seed migration `5437a5d1651b`'s own
+#: `_PARENT_PERMISSIONS`) for their existing single-vehicle, CR-1-gated use case
+#: (`GET /tracking/vehicles/{id}/latest`, `/ws/tracking`). This new *bulk* route has no
+#: per-vehicle ownership check at all (see its own description for why — an admin fleet-list
+#: view, not a single-vehicle CR-1 read) — reusing the permission alone would let a parent's own
+#: mobile JWT list every vehicle in their organization, not just their child's. Mirrors
+#: `core.policies.video_access._VIDEO_ELIGIBLE_ROLES`'s identical shape: an explicit,
+#: migration-free role-set check layered on top of `require_permission`, for exactly this
+#: "the permission is broader than this one route needs" mismatch.
+_FLEET_OVERVIEW_ELIGIBLE_ROLES = frozenset(
+    {Role.FOUNDER, Role.REGIONAL_MANAGER, Role.SUPPORT_STAFF, Role.ORG_ADMIN}
+)
 
 
 def _position_dto_to_response(position: VehiclePositionDTO) -> VehiclePositionResponse:
@@ -203,3 +234,69 @@ async def get_trip_position_history(
         uow=uow,
     )
     return to_cursor_page_response(page, _position_dto_to_response)
+
+
+def _online_vehicle_dto_to_response(vehicle: OnlineVehicleDTO) -> OnlineVehicleResponse:
+    return OnlineVehicleResponse(
+        vehicle_id=vehicle.vehicle_id,
+        plate_no=vehicle.plate_no,
+        label=vehicle.label,
+        device_id=vehicle.device_id,
+        is_online=vehicle.is_online,
+        position=(
+            OnlineVehiclePositionResponse(
+                latitude=vehicle.position.latitude,
+                longitude=vehicle.position.longitude,
+                heading_deg=vehicle.position.heading_deg,
+                speed_kph=vehicle.position.speed_kph,
+                event_time=vehicle.position.event_time,
+            )
+            if vehicle.position is not None
+            else None
+        ),
+    )
+
+
+@tracking_router.get(
+    "/vehicles/online",
+    response_model=FleetOnlineVehiclesResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List online vehicles for the All Vehicles fleet-map mode",
+    description=(
+        "ADR-0031 (Fleet Overview read model). Founder/Regional Manager/Support Staff/Org "
+        "Admin only — gated by the existing `tracking.vehicles.read_latest` permission "
+        "(reused, no new grant/migration) *plus* an explicit role-set check "
+        "(`_FLEET_OVERVIEW_ELIGIBLE_ROLES`, this file), since that permission is also held by "
+        "`parent` for their own single-vehicle, CR-1-gated use case — this bulk route has no "
+        "per-vehicle ownership check at all (an admin fleet-list view, matching `GET /vehicles`/"
+        "`GET /devices` (list)'s own posture, not `GET /tracking/vehicles/{id}/latest`'s "
+        "single-vehicle CR-1 posture), so a parent must never reach it. Scoped by the caller's "
+        "own tenant/region (ADR-0021, applied automatically at the repository layer). "
+        "`position` is `null` today for every vehicle — a confirmed, disclosed gap (the live "
+        "JT808 adapter doesn't yet write `vehicle:{id}:last`), not a bug in this route. Capped "
+        "at `FLEET_OVERVIEW_MAX_ONLINE_VEHICLES` online vehicles (`application/services.py`) — "
+        "realtime *updates* for the returned set happen over the existing `/ws/tracking`, "
+        "never a poll of this route."
+    ),
+)
+async def list_online_vehicles(
+    principal: Principal = Depends(
+        require_permission(Permission("tracking.vehicles.read_latest"))
+    ),
+    fleet_overview_service: FleetOverviewApplicationService = Depends(
+        get_fleet_overview_service
+    ),
+    fleet_device_uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> FleetOnlineVehiclesResponse:
+    if principal.role not in _FLEET_OVERVIEW_ELIGIBLE_ROLES:
+        raise AuthorizationError(
+            "Access denied: the fleet overview is not available to this role."
+        )
+
+    result = await fleet_overview_service.list_online_vehicles(
+        fleet_device_uow=fleet_device_uow
+    )
+    return FleetOnlineVehiclesResponse(
+        vehicles=[_online_vehicle_dto_to_response(v) for v in result.vehicles],
+        total_online=result.total_online,
+    )

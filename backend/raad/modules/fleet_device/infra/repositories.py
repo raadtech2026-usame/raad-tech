@@ -53,6 +53,7 @@ from raad.modules.fleet_device.domain.repositories import (
     DeviceAssignmentRepository,
     DeviceInventoryRepository,
     DeviceRepository,
+    OnlineDeviceAssignment,
     VehicleRepository,
 )
 from raad.modules.fleet_device.domain.value_objects import (
@@ -128,6 +129,21 @@ class SqlAlchemyVehicleRepository(
         `SqlAlchemyFleetDeviceUnitOfWork.__aenter__`)."""
         rows = await self.list_scoped()
         return [self._track(row) for row in rows]  # type: ignore[misc]
+
+    async def list_by_ids(self, vehicle_ids: list[VehicleId]) -> list[Vehicle]:
+        """ADR-0031: a single scoped `WHERE id IN (...)` lookup — see the interface method's
+        own docstring. An empty input list short-circuits to an empty result without a query;
+        `IN ()` is itself valid SQL but there's no reason to round-trip for a caller that
+        already knows it has nothing to ask for."""
+        if not vehicle_ids:
+            return []
+        statement = select(VehicleModel).where(
+            VehicleModel.id.in_([str(v) for v in vehicle_ids]),
+            VehicleModel.deleted_at.is_(None),
+        )
+        statement = self._apply_scope(statement)
+        result = await self._session.execute(statement)
+        return [self._track(row) for row in result.scalars().all()]  # type: ignore[misc]
 
     async def list_page(
         self,
@@ -294,6 +310,36 @@ class SqlAlchemyDeviceRepository(
             select(func.count()).select_from(statement.subquery())
         )
         return result.scalar_one()
+
+    async def list_online_with_active_assignment(self) -> list[OnlineDeviceAssignment]:
+        """ADR-0031 — see the interface method's own docstring. A plain-column `select`
+        (`DeviceModel.id`/`.terminal_id`/`DeviceAssignmentModel.vehicle_id`), not
+        `select(DeviceModel)`, since the result is projected straight into the thin
+        `OnlineDeviceAssignment` read-model, never reconstructed into a full `Device`
+        aggregate — `_apply_scope` still applies correctly to a column-select statement, since
+        it filters on `self.model.organization_id` (`DeviceModel`, still the statement's primary
+        selectable) regardless of which columns are projected."""
+        statement = (
+            select(
+                DeviceModel.id, DeviceModel.terminal_id, DeviceAssignmentModel.vehicle_id
+            )
+            .join(
+                DeviceAssignmentModel, DeviceAssignmentModel.device_id == DeviceModel.id
+            )
+            .where(
+                DeviceModel.deleted_at.is_(None),
+                DeviceModel.is_online.is_(True),
+                DeviceAssignmentModel.unassigned_at.is_(None),
+            )
+        )
+        statement = self._apply_scope(statement)
+        result = await self._session.execute(statement)
+        return [
+            OnlineDeviceAssignment(
+                device_id=row.id, terminal_id=row.terminal_id, vehicle_id=row.vehicle_id
+            )
+            for row in result.all()
+        ]
 
     def flush_tracked_changes(self) -> None:
         for device, model in self._tracked.values():

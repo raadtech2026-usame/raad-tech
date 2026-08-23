@@ -12,7 +12,10 @@ from fastapi import Depends
 from raad.core.di.container import Container
 from raad.interfaces.http.deps import get_container
 from raad.modules.tracking.application.ports import TrackingUnitOfWork
-from raad.modules.tracking.application.services import TrackingApplicationService
+from raad.modules.tracking.application.services import (
+    FleetOverviewApplicationService,
+    TrackingApplicationService,
+)
 
 
 def get_tracking_uow(
@@ -34,3 +37,12 @@ def get_tracking_service(
     module docstring), the same "fail loudly, don't fake it" policy `get_uow`/`get_scope`
     already document in `interfaces/http/deps.py`."""
     return container.resolve(TrackingApplicationService)
+
+
+def get_fleet_overview_service(
+    container: Container = Depends(get_container),
+) -> FleetOverviewApplicationService:
+    """ADR-0031 — raises `LookupError` if unbound (no `settings.db.url`, the same condition
+    `PlatformStatsApplicationService`/`MeApplicationService` guard their own binding on in
+    `core/di/bootstrap.py`)."""
+    return container.resolve(FleetOverviewApplicationService)

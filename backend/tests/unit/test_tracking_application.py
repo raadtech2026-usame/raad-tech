@@ -214,6 +214,9 @@ class NullLatestPositionPort(LatestPositionPort):
     async def get_latest(self, vehicle_id):
         return None
 
+    async def get_latest_many(self, vehicle_ids):
+        return {}
+
 
 def make_service() -> tuple[TrackingApplicationService, FakeTrackingUnitOfWork]:
     service = TrackingApplicationService(

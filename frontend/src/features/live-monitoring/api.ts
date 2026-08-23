@@ -87,6 +87,85 @@ export interface VehicleOption {
   label: string | null;
 }
 
+// --- ADR-0031: All Vehicles fleet-map mode --------------------------------------------------
+
+export interface OnlineVehiclePosition {
+  latitude: number;
+  longitude: number;
+  headingDeg: number | null;
+  speedKph: number | null;
+  eventTime: string;
+}
+
+export interface OnlineVehicle {
+  vehicleId: string;
+  plateNo: string;
+  label: string | null;
+  deviceId: string;
+  isOnline: boolean;
+  /** `null` today for every vehicle — a confirmed, disclosed backend gap (ADR-0031: the live
+   * JT808 adapter doesn't yet write its Redis position cache), not a bug here. The fleet map
+   * still shows the vehicle (from `GET /vehicles/{id}/device-assignment`'s equivalent bulk
+   * data) and relies on `/ws/tracking` for a real position the moment one arrives. */
+  position: OnlineVehiclePosition | null;
+}
+
+interface OnlineVehiclePositionWire {
+  latitude: number;
+  longitude: number;
+  heading_deg: number | null;
+  speed_kph: number | null;
+  event_time: string;
+}
+
+interface OnlineVehicleWire {
+  vehicle_id: string;
+  plate_no: string;
+  label: string | null;
+  device_id: string;
+  is_online: boolean;
+  position: OnlineVehiclePositionWire | null;
+}
+
+interface FleetOnlineVehiclesWire {
+  vehicles: OnlineVehicleWire[];
+  total_online: number;
+}
+
+export interface FleetOnlineVehicles {
+  vehicles: OnlineVehicle[];
+  totalOnline: number;
+}
+
+/** `GET /tracking/vehicles/online` (ADR-0031) — the All Vehicles fleet-map mode's one-time
+ * snapshot: every online vehicle in the caller's scope (capped server-side,
+ * `total_online` is the true pre-cap count). Realtime *updates* after this initial fetch go
+ * entirely over the existing `/ws/tracking` (one connection per vehicle, `useVehiclePosition`
+ * reused unchanged, `FleetVehicleTracker.tsx`) — this function is called exactly once per
+ * fleet-map mount, never polled. */
+export async function listOnlineVehicles(): Promise<FleetOnlineVehicles> {
+  const wire = await apiRequest<FleetOnlineVehiclesWire>("/tracking/vehicles/online");
+  return {
+    totalOnline: wire.total_online,
+    vehicles: wire.vehicles.map((v) => ({
+      vehicleId: v.vehicle_id,
+      plateNo: v.plate_no,
+      label: v.label,
+      deviceId: v.device_id,
+      isOnline: v.is_online,
+      position: v.position
+        ? {
+            latitude: v.position.latitude,
+            longitude: v.position.longitude,
+            headingDeg: v.position.heading_deg,
+            speedKph: v.position.speed_kph,
+            eventTime: v.position.event_time,
+          }
+        : null,
+    })),
+  };
+}
+
 interface VehicleOptionWire {
   id: string;
   plate_no: string;

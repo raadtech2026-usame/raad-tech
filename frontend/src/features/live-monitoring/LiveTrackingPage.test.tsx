@@ -10,6 +10,7 @@ vi.mock("./api", () => ({
   getRouteWithStops: vi.fn(),
   getDeviceAssignmentForVehicle: vi.fn(),
   getActiveDeviceDetails: vi.fn(),
+  listOnlineVehicles: vi.fn(),
 }));
 
 vi.mock("../video/api", () => ({
@@ -68,6 +69,7 @@ import * as api from "./api";
 import * as videoApi from "../video/api";
 import { useAuthStore } from "../../shared/stores/authStore";
 import { LiveTrackingPage } from "./LiveTrackingPage";
+import { ALL_VEHICLES_ID } from "./VehicleOperationsHeader";
 
 const VEHICLE = { id: "01ARZ3NDEKTSV4RRFFQ69G5FAV", plateNo: "ABC-1234", label: "Bus 12" };
 
@@ -180,6 +182,7 @@ describe("LiveTrackingPage", () => {
     vi.mocked(api.getRouteWithStops).mockReset();
     vi.mocked(api.getDeviceAssignmentForVehicle).mockReset().mockResolvedValue(null);
     vi.mocked(api.getActiveDeviceDetails).mockReset();
+    vi.mocked(api.listOnlineVehicles).mockReset().mockResolvedValue({ vehicles: [], totalOnline: 0 });
     vi.mocked(videoApi.requestLiveVideo).mockReset();
     vi.mocked(videoApi.stopVideoSession).mockReset().mockResolvedValue({ ...SESSION, status: "ended" });
     mockSend.mockClear();
@@ -529,6 +532,141 @@ describe("LiveTrackingPage", () => {
       }
       expect(screen.queryByTestId("live-video")).not.toBeInTheDocument();
       expect(await screen.findByText("4 cameras ready")).toBeInTheDocument();
+    });
+  });
+
+  describe("All Vehicles fleet-map mode (ADR-0031)", () => {
+    beforeEach(() => {
+      useAuthStore.setState({ status: "authenticated", principal: ORG_ADMIN_PRINCIPAL });
+    });
+
+    const VEHICLE_ONLINE_A = {
+      vehicleId: "veh-a",
+      plateNo: "AAA-111",
+      label: "Bus A",
+      deviceId: "device-a",
+      isOnline: true,
+      position: {
+        latitude: 2.05,
+        longitude: 45.32,
+        headingDeg: 90,
+        speedKph: 25,
+        eventTime: "2026-01-01T00:00:00Z",
+      },
+    };
+
+    const VEHICLE_ONLINE_B = {
+      vehicleId: "veh-b",
+      plateNo: "BBB-222",
+      label: null,
+      deviceId: "device-b",
+      isOnline: true,
+      position: null,
+    };
+
+    it("selecting All Vehicles fetches the online-vehicle snapshot and shows the fleet overview", async () => {
+      vi.mocked(api.listOnlineVehicles).mockResolvedValue({
+        vehicles: [VEHICLE_ONLINE_A],
+        totalOnline: 1,
+      });
+      renderPage();
+      const select = await screen.findByLabelText("Vehicle");
+
+      await userEvent.selectOptions(select, ALL_VEHICLES_ID);
+
+      await waitFor(() => expect(api.listOnlineVehicles).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText("Fleet Overview")).toBeInTheDocument();
+      expect(screen.getByText(/1\/1 vehicles/)).toBeInTheDocument();
+    });
+
+    it("renders one marker per online vehicle at its known position", async () => {
+      vi.mocked(api.listOnlineVehicles).mockResolvedValue({
+        vehicles: [VEHICLE_ONLINE_A, VEHICLE_ONLINE_B],
+        totalOnline: 2,
+      });
+      renderPage();
+      const select = await screen.findByLabelText("Vehicle");
+
+      await userEvent.selectOptions(select, ALL_VEHICLES_ID);
+
+      // VEHICLE_ONLINE_A has a known snapshot position and gets a marker immediately;
+      // VEHICLE_ONLINE_B has none yet (the disclosed ADR-0031 gap) and gets one only once a
+      // live `/ws/tracking` frame arrives — covered by the realtime-update test below.
+      await waitFor(() =>
+        expect(mockProvider.addMarker).toHaveBeenCalledWith({
+          id: "veh-a",
+          position: { lat: 2.05, lng: 45.32 },
+          headingDeg: 90,
+          element: expect.any(Object),
+        }),
+      );
+      expect(mockProvider.addMarker).not.toHaveBeenCalledWith(
+        expect.objectContaining({ id: "veh-b" }),
+      );
+    });
+
+    it("moves a vehicle's marker in realtime from a /ws/tracking frame, the same channel individual mode uses", async () => {
+      vi.mocked(api.listOnlineVehicles).mockResolvedValue({
+        vehicles: [VEHICLE_ONLINE_B],
+        totalOnline: 1,
+      });
+      renderPage();
+      const select = await screen.findByLabelText("Vehicle");
+      await userEvent.selectOptions(select, ALL_VEHICLES_ID);
+      wsReturn.status = "open";
+
+      act(() => {
+        latestOnMessage?.({
+          type: "position",
+          vehicle_id: "veh-b",
+          trip_id: null,
+          lat: 3.1,
+          lng: 46.2,
+          speed_kph: 40,
+          heading_deg: 270,
+          event_time: "2026-01-01T00:05:00Z",
+        });
+      });
+
+      await waitFor(() =>
+        expect(mockProvider.addMarker).toHaveBeenCalledWith(
+          expect.objectContaining({ id: "veh-b", position: { lat: 3.1, lng: 46.2 } }),
+        ),
+      );
+    });
+
+    it("switching from All Vehicles back to an individual vehicle restores single-vehicle Map + Live Video exactly", async () => {
+      vi.mocked(api.listOnlineVehicles).mockResolvedValue({ vehicles: [], totalOnline: 0 });
+      vi.mocked(api.getDeviceAssignmentForVehicle).mockResolvedValue({ deviceId: DEVICE.id });
+      vi.mocked(api.getActiveDeviceDetails).mockResolvedValue(DEVICE);
+      renderPage();
+      const select = await screen.findByLabelText("Vehicle");
+      await userEvent.selectOptions(select, ALL_VEHICLES_ID);
+      expect(await screen.findByText("Fleet Overview")).toBeInTheDocument();
+
+      await userEvent.selectOptions(select, VEHICLE.id);
+
+      expect(screen.queryByText("Fleet Overview")).not.toBeInTheDocument();
+      expect(await screen.findByTestId("chip-device")).toBeInTheDocument();
+      expect(await screen.findByText("Live Video")).toBeInTheDocument();
+    });
+
+    it("never initializes any camera/video session in All Vehicles mode", async () => {
+      vi.mocked(api.listOnlineVehicles).mockResolvedValue({
+        vehicles: [VEHICLE_ONLINE_A],
+        totalOnline: 1,
+      });
+      renderPage();
+      const select = await screen.findByLabelText("Vehicle");
+
+      await userEvent.selectOptions(select, ALL_VEHICLES_ID);
+      await screen.findByText("Fleet Overview");
+
+      expect(screen.queryByText("Live Video")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Start Live" })).not.toBeInTheDocument();
+      expect(screen.queryByTestId("live-video")).not.toBeInTheDocument();
+      expect(videoApi.requestLiveVideo).not.toHaveBeenCalled();
+      expect(api.getDeviceAssignmentForVehicle).not.toHaveBeenCalled();
     });
   });
 });

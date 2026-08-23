@@ -1,0 +1,54 @@
+.mapCard {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.headerStatus {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.mapArea {
+  position: relative;
+  flex: 1;
+  min-height: 320px;
+}
+
+.map {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.7);
+  pointer-events: none;
+}
+
+/* The marker itself — a simple, clearly-clickable colored pin. Kept intentionally plain
+ * (no per-vehicle status coloring beyond "online," since this endpoint only ever returns
+ * online vehicles) — a future status-differentiated palette is a presentation-only addition,
+ * not a data-model one. */
+.marker {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-brand-primary);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.35);
+  cursor: pointer;
+}
+
+.marker:hover,
+.marker:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
