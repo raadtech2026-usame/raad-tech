@@ -44,14 +44,16 @@ class DeviceRecord:
     serial_number: str | None
     is_active: bool
     vehicle_id: str | None
-    #: ADR-0025 §3: the JT/T 808 `0x0102` credential's hash, minted and set locally by
-    #: `ProjectionBackedJt808ProvisioningPort.authorize_registration` on a successful `0x0100` —
-    #: never fed by a broker event the way every other field on this record is (`fleet_device`
-    #: has no reason to ever originate this value; the device-gateway process is the one that
-    #: mints it). `None` until a first successful registration mints one. Same durability
-    #: characteristics as every other field here: lost on a device-gateway process restart,
-    #: same as `is_active`/`vehicle_id` (this projection's own module docstring already accepts
-    #: that as a self-healing characteristic, not a gap this ADR needed to close).
+    #: ADR-0025 §3: the JT/T 808 `0x0102` credential's hash, minted locally by
+    #: `ProjectionBackedJt808ProvisioningPort.authorize_registration` on a successful `0x0100`
+    #: (`fleet_device` never originates this value; the device-gateway process is the one that
+    #: mints it) and set here immediately. `None` until a first successful registration mints
+    #: one. **P0 #2 fix:** also fed by a replayed `DeviceAuthCodeIssued` broker event, the same
+    #: as every other field on this record — `apply_event`'s own `DeviceAuthCodeIssued` branch —
+    #: so `RedisDeviceRegistryConsumer.replay_from_start` recovers a previously-minted hash on a
+    #: device-gateway restart instead of leaving every already-registered device permanently
+    #: unable to complete `0x0102` (an *ordinary* reconnect, which does not resend `0x0100` —
+    #: see `ProjectionBackedJt808ProvisioningPort`'s own docstring) short of a factory reset.
     auth_key_hash: str | None = None
 
     @property
@@ -92,6 +94,15 @@ class DeviceRegistryProjection:
             record = self._by_device_id.get(aggregate_id)
             if record is not None:
                 record.vehicle_id = payload.get("new_vehicle_id")
+        elif event_type == "DeviceAuthCodeIssued":
+            # P0 #2 fix: mirrors DeviceReassigned's shape immediately above -- aggregate_id is
+            # the device_id for this event too (redis_event_publisher.py's own
+            # aggregate_id=event.device_id choice). A record for a device this projection has
+            # never seen DeviceRegistered for is silently ignored, same convention as every
+            # other branch here (expected during a consumer's initial catch-up window).
+            record = self._by_device_id.get(aggregate_id)
+            if record is not None:
+                record.auth_key_hash = payload.get("auth_key_hash")
 
     def _apply_registered(self, *, aggregate_id: str, org_id: str | None, payload: dict) -> None:
         terminal_id = payload.get("terminal_id")

@@ -129,6 +129,34 @@ class RedisDeviceRegistryConsumerTests(unittest.IsolatedAsyncioTestCase):
             projection.lookup_by_serial_number("00007").is_provisionable
         )  # active but still unassigned
 
+    async def test_auth_code_issued_event_is_now_relevant_and_applied(self) -> None:
+        """P0 #2 fix: `DeviceAuthCodeIssued` must no longer be filtered out as irrelevant — it
+        needs to reach the projection the same way `DeviceActivated`/etc. already do, so
+        `replay_from_start` can recover a previously-minted `auth_key_hash` after a restart."""
+        redis = FakeRedisConsumerGroupStream()
+        redis.add_event(
+            event_type="DeviceRegistered",
+            aggregate_id="device-1",
+            org_id="org-1",
+            payload={"terminal_id": "TERM-1", "serial_number": "00007"},
+        )
+        redis.add_event(
+            event_type="DeviceAuthCodeIssued",
+            aggregate_id="device-1",
+            org_id="org-1",
+            payload={"auth_key_hash": "pbkdf2_sha256$10000$salt$hash"},
+        )
+        projection = DeviceRegistryProjection()
+        consumer = RedisDeviceRegistryConsumer(redis, projection=projection)
+
+        applied = await consumer.poll_once()
+
+        self.assertEqual(applied, 2)
+        self.assertEqual(
+            projection.lookup_by_terminal_id("TERM-1").auth_key_hash,
+            "pbkdf2_sha256$10000$salt$hash",
+        )
+
     async def test_group_already_exists_does_not_raise(self) -> None:
         redis = FakeRedisConsumerGroupStream()
         projection = DeviceRegistryProjection()

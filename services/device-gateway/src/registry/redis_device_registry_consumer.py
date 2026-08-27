@@ -13,8 +13,9 @@ cross-deployable contract rather than shared code.
 consumer group must keep pace with every event `raad:events` ever carries (position reports,
 notifications, billing, everything), or its own unacknowledged/pending-entries list would grow
 without bound; only `DeviceRegistered`/`DeviceActivated`/`DeviceSuspended`/`DeviceReactivated`/
-`DeviceRetired`/`DeviceAssignedToVehicle`/`DeviceUnassignedFromVehicle`/`DeviceReassigned` are
-actually applied to the projection, everything else is acknowledged and discarded.
+`DeviceRetired`/`DeviceAssignedToVehicle`/`DeviceUnassignedFromVehicle`/`DeviceReassigned`/
+`DeviceAuthCodeIssued` are actually applied to the projection, everything else is acknowledged and
+discarded.
 
 **No retry/dead-letter handling** (unlike the Business API's own `RedisStreamsBrokerConsumer`) —
 a missed or misapplied registry update is self-healing: the next relevant event for the same
@@ -54,6 +55,10 @@ _RELEVANT_EVENT_TYPES = {
     "DeviceAssignedToVehicle",
     "DeviceUnassignedFromVehicle",
     "DeviceReassigned",
+    # P0 #2 fix: previously excluded, which meant `replay_from_start` could never recover a
+    # previously-minted `auth_key_hash` after a device-gateway restart -- see
+    # `DeviceRegistryProjection.apply_event`'s own `DeviceAuthCodeIssued` branch.
+    "DeviceAuthCodeIssued",
 }
 
 
@@ -120,7 +125,7 @@ class RedisDeviceRegistryConsumer:
         happened.
 
         **Disclosed, not silently assumed away:** this reads the *entire* shared `raad:events`
-        stream every time the process starts, filtering for the 8 event types this projection
+        stream every time the process starts, filtering for the 9 event types this projection
         cares about out of every event type in this platform's entire vocabulary — proportional
         to total platform event volume, not to device count. Acceptable at this platform's
         current scale (this fix's own live verification replayed 19000+ events in well under a

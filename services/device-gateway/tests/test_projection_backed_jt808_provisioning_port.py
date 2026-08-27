@@ -212,6 +212,44 @@ class ProjectionBackedJt808ProvisioningPortTests(unittest.IsolatedAsyncioTestCas
         )
         self.assertFalse(result.is_valid)
 
+    async def test_verify_auth_code_succeeds_after_projection_replay_simulating_a_restart(
+        self,
+    ) -> None:
+        """P0 #2 regression test: before this fix, `auth_key_hash` was never fed by a broker
+        event, so a device-gateway restart between a device's `0x0100` and its next `0x0102`
+        (an *ordinary* reconnect, which does not resend `0x0100` -- see this port's own
+        docstring) always failed authentication, unrecoverable short of a factory reset. This
+        reproduces that restart by minting a code against one projection/port pair, then
+        replaying the resulting `DeviceAuthCodeIssued` event (exactly as
+        `RedisDeviceRegistryConsumer.replay_from_start` would on a fresh process) onto a second,
+        independent projection/port pair standing in for the restarted process, and verifying
+        against a *third*, freshly-constructed port bound to that second projection -- proving
+        the hash is recoverable from the projection alone, not from any port-instance state."""
+        pre_restart_port = ProjectionBackedJt808ProvisioningPort(_provisionable_projection())
+        registration = await pre_restart_port.authorize_registration(
+            terminal_phone="013800138000", request=None
+        )
+        self.assertEqual(registration.result, RegistrationResult.SUCCESS)
+
+        # The restarted process: a brand-new projection, rebuilt the same way
+        # `replay_from_start` rebuilds every other field -- by re-applying the device's
+        # lifecycle events plus the `DeviceAuthCodeIssued` event this registration just caused.
+        post_restart_projection = _provisionable_projection()
+        post_restart_projection.apply_event(
+            event_type="DeviceAuthCodeIssued",
+            aggregate_id=registration.device_id,
+            org_id="org-1",
+            payload={"auth_key_hash": registration.auth_key_hash},
+        )
+
+        post_restart_port = ProjectionBackedJt808ProvisioningPort(post_restart_projection)
+        result = await post_restart_port.verify_auth_code(
+            terminal_phone="013800138000", auth_code=registration.auth_code
+        )
+
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.device_id, "device-1")
+
 
 if __name__ == "__main__":
     unittest.main()
