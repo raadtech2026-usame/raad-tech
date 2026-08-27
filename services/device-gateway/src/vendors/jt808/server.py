@@ -61,6 +61,14 @@ structured log line, never a crash. A real outbox+broker implementation is injec
 one is built (a later phase, once a broker dependency is proposed and approved per `.claude/
 rules/workflow.md` #1/#2).
 
+**`device_session_registry` (P0 #2 fix, device-gateway session-durability audit, 2026-08-25,
+constructor parameter):** the `DeviceSessionRegistryPort` implementation backing
+`device_sessions`/`DeviceSessionManager`. Defaults to the in-memory `DeviceSessionRegistry` —
+correct for any deployment without a broker configured, and for standalone/test use of this
+class. `gateway.DeviceGateway` injects a `RedisDeviceSessionRegistry` here whenever a broker is
+configured, the same conditional pattern already used for `event_publisher`/`device_provisioning`
+— see that module's own docstring for why (`.claude/rules/jt808.md` #4).
+
 Framework-agnostic composition root — no FastAPI, no HTTP, no SQLAlchemy
 (`.claude/rules/architecture.md` #2: "FastAPI never terminates a device socket").
 """
@@ -105,6 +113,7 @@ from src.session.device_session import DeviceSession
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
 from src.session.registry import SessionRegistry
+from src.session.session_registry_port import DeviceSessionRegistryPort
 
 logger = get_logger("jt808.server")
 
@@ -128,12 +137,13 @@ class Jt808Server(DeviceProtocolAdapter):
         *,
         device_provisioning: DeviceProvisioningPort | None = None,
         event_publisher: EventPublisher | None = None,
+        device_session_registry: DeviceSessionRegistryPort | None = None,
     ) -> None:
         self._config = config or ServerConfig.from_env()
         self._device_provisioning = device_provisioning or NullDeviceProvisioningPort()
         self._event_publisher = event_publisher or LoggingEventPublisher()
         self._sessions = SessionRegistry()
-        self._device_session_registry = DeviceSessionRegistry()
+        self._device_session_registry = device_session_registry or DeviceSessionRegistry()
         self._device_sessions = DeviceSessionManager(
             registry=self._device_session_registry,
             close_connection=self._close_connection,
@@ -223,14 +233,10 @@ class Jt808Server(DeviceProtocolAdapter):
     async def _on_device_online(self, session: DeviceSession) -> None:
         """Wired into `DeviceSessionManager` (device-gateway Redis integration) so the
         `AUTHENTICATED -> ONLINE` transition actually publishes a `DeviceOnline` event, not just
-        a log line. `HeartbeatHandler`/`LocationHandler` both now call `touch()` (JT808
-        device-plane integration gap, `handlers/heartbeat_handler.py`), so this genuinely fires
-        the moment a real `DeviceSession` exists — the one remaining reason it still never fires
-        for a real terminal today is that no `DeviceSession` is ever created in the first place:
-        `0x0102` authentication is deliberately unresolved pending the supplier's JT808
-        documentation (`handlers/provisioning_port.py`'s own docstring has the full reasoning).
-        Kept wired anyway so it activates for free the moment that gap closes, with zero further
-        change here."""
+        a log line. `HeartbeatHandler`/`LocationHandler` both call `touch()`
+        (`handlers/heartbeat_handler.py`), and `0x0102` authentication is real and tested
+        (ADR-0025 §3, `handlers/provisioning_port.py`), so this genuinely fires for any real
+        terminal that completes registration + authentication."""
         now = datetime.now(timezone.utc)
         log_with_fields(logger, 20, "device_online", terminal_id=session.terminal_id)
         await self._event_publisher.publish(
@@ -321,6 +327,14 @@ class Jt808Server(DeviceProtocolAdapter):
     @property
     def device_provisioning(self) -> DeviceProvisioningPort:
         return self._device_provisioning
+
+    @property
+    def device_session_registry(self) -> DeviceSessionRegistryPort:
+        """Exposed publicly for the same reason `device_provisioning`/`event_publisher` are —
+        tests/introspection asserting which concrete registry (`DeviceSessionRegistry` vs.
+        `RedisDeviceSessionRegistry`) a given instance was wired with (P0 #2 fix, device-gateway
+        session-durability audit, 2026-08-25)."""
+        return self._device_session_registry
 
     @property
     def event_publisher(self) -> EventPublisher:

@@ -111,10 +111,11 @@ class RecordingEventPublisher:
 
 
 class FakeRedis:
-    """Minimal fake covering `RedisEventPublisher.publish` (`xadd`) and every consumer-group
-    reader this deployable now has (`RedisDeviceRegistryConsumer`, `RedisVideoSignalingConsumer`)
-    — enough for `DeviceGateway`'s Redis-wired path to exercise all of them together without a
-    real Redis connection.
+    """Minimal fake covering `RedisEventPublisher.publish` (`xadd`), every consumer-group reader
+    this deployable now has (`RedisDeviceRegistryConsumer`, `RedisVideoSignalingConsumer`), and
+    the plain string/set commands `RedisDeviceSessionRegistry` uses (P0 #2 fix, device-gateway
+    session-durability audit, 2026-08-25) — enough for `DeviceGateway`'s Redis-wired path to
+    exercise all of them together without a real Redis connection.
 
     **Acknowledgment is tracked per consumer group** (`self.acked: dict[groupname, set[message_id]]`),
     matching real Redis Streams semantics — a message acked in one group's own pending-entries
@@ -129,6 +130,32 @@ class FakeRedis:
         self.entries: list[tuple[str, dict[str, str]]] = []
         self.groups: set[tuple[str, str]] = set()
         self.acked: dict[str, set[str]] = {}
+        # P0 #2 fix (device-gateway session-durability audit, 2026-08-25): plain string/set
+        # commands, so this same fake can also back a `RedisDeviceSessionRegistry` alongside the
+        # stream commands above — mirrors `test_redis_device_session_registry.py`'s own `FakeRedis`.
+        self._strings: dict[str, str] = {}
+        self._sets: dict[str, set[str]] = {}
+
+    async def get(self, key: str):
+        return self._strings.get(key)
+
+    async def set(self, key: str, value: str) -> None:
+        self._strings[key] = value
+
+    async def delete(self, key: str) -> None:
+        self._strings.pop(key, None)
+
+    async def sadd(self, key: str, *values: str) -> None:
+        self._sets.setdefault(key, set()).update(values)
+
+    async def srem(self, key: str, *values: str) -> None:
+        self._sets.get(key, set()).difference_update(values)
+
+    async def smembers(self, key: str):
+        return set(self._sets.get(key, set()))
+
+    async def scard(self, key: str) -> int:
+        return len(self._sets.get(key, set()))
 
     async def xadd(self, name: str, fields: dict[str, str]) -> str:
         message_id = str(self._next_id)
@@ -309,6 +336,62 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
             gateway.adapter("jt808").device_provisioning, ProjectionBackedJt808ProvisioningPort
         )
         self.assertIsNotNone(gateway.registry_projection)
+
+    async def test_redis_client_wires_redis_device_session_registry_for_jt808_only(self) -> None:
+        """P0 #2 fix (device-gateway session-durability audit, 2026-08-25): JT808 alone gets a
+        `RedisDeviceSessionRegistry` whenever a broker is configured. LSZ/`MdvrServer` is not
+        given this wiring at all — its constructor has no `device_session_registry` parameter to
+        begin with, so there is nothing to assert here beyond that structural fact; it keeps its
+        in-memory default, dormant per CLAUDE.md's own posture."""
+        from src.session.redis_device_session_registry import RedisDeviceSessionRegistry
+
+        redis = FakeRedis()
+        gateway = DeviceGateway(
+            redis_client=redis,
+            jt808_config=Jt808Config(host="127.0.0.1", port=0),
+            lsz_config=LszConfig(host="127.0.0.1", port=0),
+        )
+        self.assertIsInstance(
+            gateway.adapter("jt808").device_session_registry, RedisDeviceSessionRegistry
+        )
+
+    async def test_without_a_broker_jt808_falls_back_to_in_memory_session_registry(self) -> None:
+        from src.session.device_session_registry import DeviceSessionRegistry
+
+        gateway = DeviceGateway(
+            jt808_config=Jt808Config(host="127.0.0.1", port=0),
+            lsz_config=LszConfig(host="127.0.0.1", port=0),
+        )
+        self.assertIsInstance(
+            gateway.adapter("jt808").device_session_registry, DeviceSessionRegistry
+        )
+
+    async def test_session_created_on_one_jt808_server_is_visible_from_another_sharing_redis(
+        self,
+    ) -> None:
+        """The actual point of this wiring: session state now lives in Redis, not a single
+        process's memory. Two independent `Jt808Server` instances (standing in for two
+        independent device-gateway processes/restarts) sharing one Redis backing must see the
+        same session — proving durability, not just that the right class got constructed."""
+        from src.session.redis_device_session_registry import RedisDeviceSessionRegistry
+        from src.vendors.jt808.server import Jt808Server
+
+        redis = FakeRedis()
+        registry_a = RedisDeviceSessionRegistry(redis)
+        registry_b = RedisDeviceSessionRegistry(redis)
+
+        server_a = Jt808Server(
+            Jt808Config(host="127.0.0.1", port=0), device_session_registry=registry_a
+        )
+        server_b = Jt808Server(
+            Jt808Config(host="127.0.0.1", port=0), device_session_registry=registry_b
+        )
+
+        await server_a.device_sessions.create(connection_id="conn-1", terminal_id="TERM-1")
+
+        session_from_b = await server_b.device_sessions.resolve("TERM-1")
+        self.assertIsNotNone(session_from_b)
+        self.assertEqual(session_from_b.connection_id, "conn-1")
 
     async def test_jt808_and_lsz_provisioning_share_one_registry_projection(self) -> None:
         """A single `DeviceRegistered` event (carrying both `terminal_id` and `serial_number`)

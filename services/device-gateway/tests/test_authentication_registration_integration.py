@@ -1,10 +1,13 @@
 """Full-stack Phase 9.5 integration: real loopback TCP client, real `Jt808Server` (transport +
 codec + dispatcher + registration/authentication handlers), a scriptable `DeviceProvisioningPort`
-double standing in for the still-unresolved real authentication mechanism (JT808 device-plane
-integration gap — see `handlers/provisioning_port.py`'s own docstring). Exercises the task's own
-manual-verification scenario end to end: Register -> Authenticate -> Heartbeat (now a real
-handler, promoting the session ONLINE), plus registration response encoding, authentication
-response encoding over the wire, and clean shutdown with a bound device session.
+double standing in for `ProjectionBackedJt808ProvisioningPort` (the real, ADR-0025 §3 mechanism —
+see `test_projection_backed_jt808_provisioning_port.py` for that one in isolation, and
+`test_gateway.py`'s `DeviceGatewayRedisWiringTests` for the real port exercised over this exact
+wire path) — kept here to isolate this file's own focus on protocol/session-plumbing correctness
+from provisioning-port correctness. Exercises the task's own manual-verification scenario end to
+end: Register -> Authenticate -> Heartbeat (now a real handler, promoting the session ONLINE),
+plus registration response encoding, authentication response encoding over the wire, and clean
+shutdown with a bound device session.
 """
 
 import asyncio

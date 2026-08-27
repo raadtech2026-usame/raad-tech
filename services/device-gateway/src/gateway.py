@@ -22,12 +22,15 @@ is injected directly, the seam tests use), this gateway constructs one shared `R
 `RedisDeviceRegistryConsumer` background task — vendor-agnostic by design (indexed by both
 `terminal_id` and `serial_number`), so the same projection instance backs **both** the LSZ
 adapter's real `ProjectionBackedMdvrProvisioningPort` **and** the JT808 adapter's real
-`ProjectionBackedJt808ProvisioningPort` (JT808 device-plane integration gap — closes the identity/
-provisioning half; `0x0102` authentication verification itself remains deliberately unresolved,
-see `vendors/jt808/handlers/provisioning_port.py`'s own docstring). Without a broker configured,
-every adapter falls back to exactly what it already defaulted to (`LoggingEventPublisher`,
-`NullMdvrDeviceProvisioningPort`/`NullDeviceProvisioningPort`) — nothing about the unconfigured
-path changes.
+`ProjectionBackedJt808ProvisioningPort`. `0x0102` authentication verification is real and tested
+(ADR-0025 §3, hash-comparison against `DeviceRecord.auth_key_hash` — see that port's own
+docstring), and — since the P0 #2 fix (device-gateway session-durability audit, 2026-08-25) —
+that same broker-configured condition also injects a `RedisDeviceSessionRegistry` into the JT808
+adapter alone (`_build_jt808_session_registry`, below); LSZ keeps its in-memory default, dormant
+per CLAUDE.md's own posture. Without a broker configured, every adapter falls back to exactly
+what it already defaulted to (`LoggingEventPublisher`,
+`NullMdvrDeviceProvisioningPort`/`NullDeviceProvisioningPort`, in-memory `DeviceSessionRegistry`)
+— nothing about the unconfigured path changes.
 
 Each adapter's own `serve_forever()` remains for standalone single-adapter use (its own tests, or
 running just one adapter in isolation) — this composition root calls `start()`/`stop()` on each
@@ -63,6 +66,7 @@ from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestP
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.registry.device_registry_projection import DeviceRegistryProjection
 from src.registry.redis_device_registry_consumer import RedisDeviceRegistryConsumer
+from src.session.redis_device_session_registry import RedisDeviceSessionRegistry
 from src.vendors.jt808.commands.redis_video_signaling_consumer import (
     RedisVideoSignalingConsumer,
 )
@@ -104,6 +108,7 @@ class DeviceGateway:
             jt808_config,
             device_provisioning=jt808_provisioning,
             event_publisher=self._event_publisher,
+            device_session_registry=self._build_jt808_session_registry(),
         )
         self._adapters: list[DeviceProtocolAdapter] = [
             self._jt808_server,
@@ -137,6 +142,17 @@ class DeviceGateway:
         if self._redis_client is not None:
             return RedisLatestPositionWriter(self._redis_client)
         return LoggingLatestPositionWriter()
+
+    def _build_jt808_session_registry(self) -> RedisDeviceSessionRegistry | None:
+        """P0 #2 fix (device-gateway session-durability audit, 2026-08-25): the same
+        conditional-on-`self._redis_client` pattern as every other Redis-dependent binding in
+        this file — `None` (so `Jt808Server` falls back to its own in-memory default) unless a
+        broker is configured. `MdvrServer`/LSZ is deliberately not given this — it stays
+        dormant, in-memory-only, per CLAUDE.md's own "kept, untouched" posture; only JT808 is the
+        live vendor target this closes the gap for (`.claude/rules/jt808.md` #4)."""
+        if self._redis_client is None:
+            return None
+        return RedisDeviceSessionRegistry(self._redis_client)
 
     def _build_registry_projection(self) -> DeviceRegistryProjection | None:
         """The shared, vendor-agnostic device-registry read-model (device-gateway Redis
