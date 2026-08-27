@@ -1,8 +1,9 @@
 """Session registry keyed by Terminal ID (Phase 9.2; Phase 3.4 §5's `SessionManager` contract:
 `resolve(terminal_id) -> {...}`). In-memory only — `.claude/rules/jt808.md` #4 names Redis as
 the eventual authoritative, cross-shard-shared backing store (`session:{terminal_id}`, Phase
-3.4 §14); no multi-node deployment or Redis exists at this phase (Phase 9.1's precedent:
-in-memory, single-node, Redis explicitly deferred).
+3.4 §14); `RedisDeviceSessionRegistry` (`redis_device_session_registry.py`) is the real,
+now-wired-in implementation of that store — this class remains the default whenever no broker
+is configured (`DeviceGateway`'s own conditional-on-`redis_client` pattern).
 
 **Thread-safe async, unlike Phase 9.1's `SessionRegistry`.** `SessionRegistry`'s
 add/get/remove are synchronous dict operations with no `await` between a check and its
@@ -14,6 +15,16 @@ session already exists for a `terminal_id` *and* replacing it in one step, and t
 two concurrent `create()` calls for the *same* `terminal_id` (e.g. a flapping device retrying
 fast) could otherwise both believe they safely superseded the other. `asyncio.Lock` closes
 that window.
+
+**Every method is `async def` (P0 #2 fix, device-gateway session-durability audit, 2026-08-25),
+implementing `DeviceSessionRegistryPort`** so `DeviceSessionManager` can be written once, against
+either this class or `RedisDeviceSessionRegistry`, with no backend-specific branch. Nothing here
+actually needs to `await` anything (a plain dict operation never blocks) — the `async def` is
+purely an interface-conformance requirement, not a behavior change from the previous sync
+methods. `save()` is a documented no-op for the same reason `RedisDeviceSessionRegistry.save()`'s
+own docstring gives: mutating an in-memory `DeviceSession` already mutates what every `get()`
+call returns (same object reference), so there is nothing additional to persist — kept only so
+`DeviceSessionManager` can call `save()` unconditionally regardless of which registry backs it.
 """
 
 from __future__ import annotations
@@ -21,9 +32,10 @@ from __future__ import annotations
 import asyncio
 
 from src.session.device_session import DeviceSession
+from src.session.session_registry_port import DeviceSessionRegistryPort
 
 
-class DeviceSessionRegistry:
+class DeviceSessionRegistry(DeviceSessionRegistryPort):
     def __init__(self) -> None:
         self._sessions: dict[str, DeviceSession] = {}
         self._lock = asyncio.Lock()
@@ -38,10 +50,14 @@ class DeviceSessionRegistry:
             self._sessions[session.terminal_id] = session
             return previous
 
-    def get(self, terminal_id: str) -> DeviceSession | None:
+    async def get(self, terminal_id: str) -> DeviceSession | None:
         return self._sessions.get(terminal_id)
 
-    def remove_if_current(self, terminal_id: str, session: DeviceSession) -> None:
+    async def save(self, session: DeviceSession) -> None:
+        """No-op — see class docstring. Kept for interface parity with
+        `RedisDeviceSessionRegistry.save()`, which is not a no-op."""
+
+    async def remove_if_current(self, terminal_id: str, session: DeviceSession) -> None:
         """Removes the registry entry for `terminal_id` only if it still *is* `session`
         (identity check) — guards a superseded session's own belated close-cleanup from
         deleting the newer session that already replaced it (the reconnect/supersede race
@@ -50,14 +66,14 @@ class DeviceSessionRegistry:
         if current is session:
             self._sessions.pop(terminal_id, None)
 
-    def find_by_connection_id(self, connection_id: str) -> DeviceSession | None:
+    async def find_by_connection_id(self, connection_id: str) -> DeviceSession | None:
         for session in self._sessions.values():
             if session.connection_id == connection_id:
                 return session
         return None
 
-    def all(self) -> list[DeviceSession]:
+    async def all(self) -> list[DeviceSession]:
         return list(self._sessions.values())
 
-    def __len__(self) -> int:
+    async def count(self) -> int:
         return len(self._sessions)

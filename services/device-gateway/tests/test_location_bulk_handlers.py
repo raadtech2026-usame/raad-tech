@@ -99,7 +99,7 @@ class LocationHandlerTests(unittest.IsolatedAsyncioTestCase):
         publisher = RecordingEventPublisher()
         handler = LocationHandler(publisher)
         context = await self._authenticated_context()
-        session = context.device_sessions.resolve(TERMINAL_ID)
+        session = await context.device_sessions.resolve(TERMINAL_ID)
         self.assertEqual(session.state, DeviceConnectivityState.AUTHENTICATED)
 
         await handler.handle(_make_message(0x0200, body=_build_body()), context)

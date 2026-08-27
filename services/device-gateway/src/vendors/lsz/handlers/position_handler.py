@@ -126,7 +126,7 @@ class MdvrPositionHandler(MdvrMessageHandler):
     async def handle(
         self, message: MdvrInboundMessage, context: MdvrHandlerContext
     ) -> MdvrHandlerResult:
-        session = context.device_sessions.resolve(message.device_serial_number)
+        session = await context.device_sessions.resolve(message.device_serial_number)
         if (
             session is None
             or session.device_id is None

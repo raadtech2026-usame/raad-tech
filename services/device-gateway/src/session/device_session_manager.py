@@ -40,6 +40,22 @@ can wire a callback that both logs (unchanged) *and* publishes a real `DeviceOnl
 sync to awaitable). `on_session_superseded` stays synchronous — superseding a duplicate terminal
 is a connectivity-bookkeeping fact, not one of the four domain events this refactor's own scope
 names.
+
+**Every registry call is now `await`ed (P0 #2 fix, device-gateway session-durability audit,
+2026-08-25).** `registry` is typed against `DeviceSessionRegistryPort`
+(`session_registry_port.py`), not the concrete in-memory `DeviceSessionRegistry`, so this class
+works unchanged against either it or `RedisDeviceSessionRegistry` — the seam that lets
+`Jt808Server`/`DeviceGateway` wire in a Redis-backed registry whenever a broker is configured.
+`touch()` now calls `self._registry.save(session)` after mutating the resolved session (`.touch()`/
+`.mark_online()`), since a Redis-backed `get()` returns a copy, not a live reference — the
+in-memory registry's own `save()` is a documented no-op, kept only for this interface parity.
+`close()` needs no equivalent `save()`: the session is about to be removed, and
+`session.mark_offline()`'s mutation is only ever read from the same in-process object handed to
+`on_device_offline`, never re-fetched from the registry. `resolve()` and `session_count` became
+`async` as a direct consequence (a coroutine cannot back a `@property`, hence `session_count` is
+now a method) — every call site was already inside an `async def`, so this is a mechanical
+`await`-adding change everywhere it ripples (both vendor stacks' handlers/servers, per the P0 #2
+plan), not a new capability.
 """
 
 from __future__ import annotations
@@ -50,7 +66,7 @@ from typing import Awaitable, Callable
 
 from src.logging_setup import get_logger, log_with_fields
 from src.session.device_session import DeviceConnectivityState, DeviceSession
-from src.session.device_session_registry import DeviceSessionRegistry
+from src.session.session_registry_port import DeviceSessionRegistryPort
 
 logger = get_logger("device_gateway.device_session_manager")
 
@@ -85,7 +101,7 @@ class DeviceSessionManager:
     def __init__(
         self,
         *,
-        registry: DeviceSessionRegistry,
+        registry: DeviceSessionRegistryPort,
         close_connection: CloseConnection,
         on_device_online: OnDeviceOnline | None = None,
         on_device_offline: OnDeviceOffline | None = None,
@@ -144,29 +160,30 @@ class DeviceSessionManager:
         this. The first call after `create()` promotes `AUTHENTICATED -> ONLINE` — see module
         docstring's resolved conflict. `async` (device-gateway Redis integration) so the
         `on_device_online` callback can actually publish an event, not just log one."""
-        session = self._registry.get(terminal_id)
+        session = await self._registry.get(terminal_id)
         if session is None:
             return
         session.touch()
         if session.state == DeviceConnectivityState.AUTHENTICATED:
             session.mark_online()
             await self._on_device_online(session)
+        await self._registry.save(session)
 
-    def resolve(self, terminal_id: str) -> DeviceSession | None:
+    async def resolve(self, terminal_id: str) -> DeviceSession | None:
         """Phase 3.4 §5's `resolve(terminal_id) -> {...}` — returns the `DeviceSession`
         itself rather than a separate dict (see module docstring re: `node_id`/`auth_state`).
         """
-        return self._registry.get(terminal_id)
+        return await self._registry.get(terminal_id)
 
     async def close(self, terminal_id: str, *, reason: str) -> None:
         """Phase 3.4 §5's `close(terminal_id, reason)` — "emits device.offline" (here: fires
         `on_device_offline`, module docstring). Idempotent: closing an already-gone session is
         a no-op."""
-        session = self._registry.get(terminal_id)
+        session = await self._registry.get(terminal_id)
         if session is None:
             return
         session.mark_offline()
-        self._registry.remove_if_current(terminal_id, session)
+        await self._registry.remove_if_current(terminal_id, session)
         await self._on_device_offline(session, reason)
 
     async def handle_connection_closed(self, connection_id: str) -> None:
@@ -175,7 +192,7 @@ class DeviceSessionManager:
         was bound to it — socket drop, peer disconnect, or idle-timeout at the transport layer
         all funnel through here. A no-op if no `DeviceSession` was ever bound to this
         connection (e.g. it disconnected before authenticating)."""
-        session = self._registry.find_by_connection_id(connection_id)
+        session = await self._registry.find_by_connection_id(connection_id)
         if session is None:
             return
         await self.close(session.terminal_id, reason="connection_closed")
@@ -212,9 +229,10 @@ class DeviceSessionManager:
         `timeout_seconds` is caller-configured, the same "don't invent a protocol constant"
         stance Phase 9.1's `idle_timeout_seconds` already takes."""
         now = time.monotonic()
+        sessions = await self._registry.all()
         expired = [
             session.terminal_id
-            for session in self._registry.all()
+            for session in sessions
             if now - session.last_seen_at > timeout_seconds
         ]
         for terminal_id in expired:
@@ -223,9 +241,8 @@ class DeviceSessionManager:
     async def shutdown(self) -> None:
         """Graceful shutdown: stop the sweep, close every remaining device session."""
         await self.stop_sweep()
-        for session in list(self._registry.all()):
+        for session in list(await self._registry.all()):
             await self.close(session.terminal_id, reason="server_shutdown")
 
-    @property
-    def session_count(self) -> int:
-        return len(self._registry)
+    async def session_count(self) -> int:
+        return await self._registry.count()

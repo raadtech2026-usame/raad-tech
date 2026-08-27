@@ -47,7 +47,7 @@ class MdvrHeartbeatHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_promotes_authenticated_session_to_online(self) -> None:
         await self.device_sessions.create(connection_id="conn-1", terminal_id="00007")
-        session = self.device_sessions.resolve("00007")
+        session = await self.device_sessions.resolve("00007")
         assert session is not None
         self.assertEqual(session.state, DeviceConnectivityState.AUTHENTICATED)
 

@@ -191,7 +191,7 @@ class RegistrationHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         await handler.handle(message, context)
 
-        self.assertIsNone(context.device_sessions.resolve(_PHONE))
+        self.assertIsNone(await context.device_sessions.resolve(_PHONE))
 
 
 class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
@@ -211,7 +211,7 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_body[4], RESULT_SUCCESS)
         self.assertFalse(result.close_connection_after)
 
-        session = context.device_sessions.resolve(_PHONE)
+        session = await context.device_sessions.resolve(_PHONE)
         self.assertIsNotNone(session)
         self.assertEqual(session.connection_id, "conn-1")
         self.assertEqual(session.device_id, f"device-{_PHONE}")
@@ -233,7 +233,7 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_body[4], RESULT_FAILURE)
         self.assertTrue(result.close_connection_after)
         self.assertEqual(result.close_reason, "authentication_failed")
-        self.assertIsNone(context.device_sessions.resolve(_PHONE))
+        self.assertIsNone(await context.device_sessions.resolve(_PHONE))
 
     async def test_invalid_authentication_code_for_unregistered_terminal_fails(
         self,
@@ -279,7 +279,7 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             superseded, []
         )  # same connection re-authenticating is not a supersede
-        session = device_sessions.resolve(_PHONE)
+        session = await device_sessions.resolve(_PHONE)
         self.assertEqual(session.connection_id, "conn-1")
 
     async def test_duplicate_authentication_from_a_different_connection_supersedes(
@@ -308,7 +308,7 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(closed, ["conn-A"])  # older connection superseded and closed
-        session = device_sessions.resolve(_PHONE)
+        session = await device_sessions.resolve(_PHONE)
         self.assertEqual(session.connection_id, "conn-B")
 
     async def test_reconnect_after_authentication_creates_fresh_session_on_new_connection(
@@ -330,13 +330,13 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
             HandlerContext(connection_id="conn-1", device_sessions=device_sessions),
         )
         await device_sessions.close(_PHONE, reason="connection_closed")
-        self.assertIsNone(device_sessions.resolve(_PHONE))
+        self.assertIsNone(await device_sessions.resolve(_PHONE))
 
         await handler.handle(
             _make_message(0x0102, body=_auth_body("SECRET")),
             HandlerContext(connection_id="conn-2", device_sessions=device_sessions),
         )
-        session = device_sessions.resolve(_PHONE)
+        session = await device_sessions.resolve(_PHONE)
         self.assertIsNotNone(session)
         self.assertEqual(session.connection_id, "conn-2")
 
@@ -372,7 +372,7 @@ class AuthenticationHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         for terminal_id in terminal_ids:
-            session = device_sessions.resolve(terminal_id)
+            session = await device_sessions.resolve(terminal_id)
             self.assertIsNotNone(session)
             self.assertEqual(session.connection_id, f"conn-{terminal_id}")
 

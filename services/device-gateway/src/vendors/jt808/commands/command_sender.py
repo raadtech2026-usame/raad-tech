@@ -63,7 +63,7 @@ class CommandSender:
         correlation_id: str,
         timeout_seconds: float | None = None,
     ) -> bool:
-        session = self._device_sessions.resolve(terminal_id)
+        session = await self._device_sessions.resolve(terminal_id)
         if session is None:
             await self._publish_result(
                 terminal_id=terminal_id,

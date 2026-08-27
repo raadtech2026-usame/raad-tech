@@ -52,7 +52,7 @@ class HeartbeatHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_promotes_authenticated_session_to_online(self) -> None:
         await self.device_sessions.create(connection_id="conn-1", terminal_id=TERMINAL_ID)
-        session = self.device_sessions.resolve(TERMINAL_ID)
+        session = await self.device_sessions.resolve(TERMINAL_ID)
         assert session is not None
         self.assertEqual(session.state, DeviceConnectivityState.AUTHENTICATED)
 
@@ -73,7 +73,7 @@ class HeartbeatHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_second_heartbeat_does_not_refire_online_promotion(self) -> None:
         await self.device_sessions.create(connection_id="conn-1", terminal_id=TERMINAL_ID)
-        session = self.device_sessions.resolve(TERMINAL_ID)
+        session = await self.device_sessions.resolve(TERMINAL_ID)
         context = HandlerContext(connection_id="conn-1", device_sessions=self.device_sessions)
 
         await self.handler.handle(_make_message(serial_no=1), context)

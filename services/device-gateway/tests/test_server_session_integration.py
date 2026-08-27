@@ -56,15 +56,15 @@ class ServerSessionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         session = await self.server.device_sessions.create(
             connection_id=connection_id, terminal_id="TERM-REAL-1"
         )
-        self.assertEqual(self.server.device_session_count, 1)
-        self.assertIs(self.server.device_sessions.resolve("TERM-REAL-1"), session)
+        self.assertEqual(await self.server.device_session_count(), 1)
+        self.assertIs(await self.server.device_sessions.resolve("TERM-REAL-1"), session)
 
         writer.close()
         await writer.wait_closed()
         await asyncio.sleep(0.1)
 
         self.assertEqual(self.server.manager.connection_count, 0)
-        self.assertEqual(self.server.device_session_count, 0)
+        self.assertEqual(await self.server.device_session_count(), 0)
 
     async def test_duplicate_terminal_over_two_real_connections_closes_old_socket(
         self,
@@ -92,10 +92,9 @@ class ServerSessionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.server.manager.connection_count, 1
         )  # only the new one remains
-        self.assertEqual(self.server.device_session_count, 1)
-        self.assertIs(
-            self.server.device_sessions.resolve("TERM-DUP").connection_id, conn2_id
-        )
+        self.assertEqual(await self.server.device_session_count(), 1)
+        resolved = await self.server.device_sessions.resolve("TERM-DUP")
+        self.assertIs(resolved.connection_id, conn2_id)
 
     async def test_device_session_expires_via_real_sweep_task(self) -> None:
         _, writer = await self._open_client()
@@ -104,12 +103,12 @@ class ServerSessionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.server.device_sessions.create(
             connection_id=connection_id, terminal_id="TERM-EXPIRE"
         )
-        self.assertEqual(self.server.device_session_count, 1)
+        self.assertEqual(await self.server.device_session_count(), 1)
 
         # device_session_timeout_seconds=0.2, sweep every 0.05s -> should expire well within.
         await asyncio.sleep(0.5)
 
-        self.assertEqual(self.server.device_session_count, 0)
+        self.assertEqual(await self.server.device_session_count(), 0)
         # The underlying transport connection is untouched by device-session expiry alone.
         self.assertEqual(self.server.manager.connection_count, 1)
 
@@ -124,12 +123,12 @@ class ServerSessionIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 connection_id=connection_id, terminal_id=f"TERM-{i}"
             )
 
-        self.assertEqual(self.server.device_session_count, 3)
+        self.assertEqual(await self.server.device_session_count(), 3)
         self.assertEqual(self.server.manager.connection_count, 3)
 
         await self.server.stop()
 
-        self.assertEqual(self.server.device_session_count, 0)
+        self.assertEqual(await self.server.device_session_count(), 0)
         self.assertEqual(self.server.manager.connection_count, 0)
 
         await self.server.start()  # so asyncTearDown's own stop() is a harmless no-op

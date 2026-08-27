@@ -13,6 +13,13 @@ publisher`) beyond this interface for its own tests/introspection — those are 
 the concrete instance, not through this ABC, exactly the way `Jt808Server`/`MdvrServer` already
 did before this interface existed.
 
+**`device_session_count` is an `async def` method, not a `@property` (P0 #2 fix, device-gateway
+session-durability audit, 2026-08-25)** — the only asymmetry with its `session_count` sibling.
+Both `Jt808Server` and `MdvrServer` resolve it via `DeviceSessionManager.session_count()`, which
+itself must `await` its (possibly Redis-backed) registry's `count()` — a coroutine cannot back a
+`@property`. `session_count` (the *transport*-level connection count, unrelated to device
+sessions) is untouched by that change and stays a synchronous property.
+
 **Not part of this interface:** `serve_forever()`. Each vendor's own server class keeps its own
 `serve_forever()` for standalone single-adapter use (its own tests, or running that one adapter
 in isolation) — but the multi-adapter `DeviceGateway` composition root calls `start()`/`stop()`
@@ -52,7 +59,6 @@ class DeviceProtocolAdapter(ABC):
     def session_count(self) -> int:
         raise NotImplementedError
 
-    @property
     @abstractmethod
-    def device_session_count(self) -> int:
+    async def device_session_count(self) -> int:
         raise NotImplementedError

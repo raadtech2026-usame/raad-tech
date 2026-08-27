@@ -166,7 +166,7 @@ class PositionPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(online_event.vehicle_id, "vehicle-1")
         self.assertEqual(online_event.organization_id, "org-1")
 
-        session = self.server.device_sessions.resolve(TERMINAL_PHONE)
+        session = await self.server.device_sessions.resolve(TERMINAL_PHONE)
         self.assertEqual(session.state.value, "online")
 
     async def test_batch_position_report_reaches_publisher_as_backfill(self) -> None:

@@ -49,7 +49,7 @@ class BulkLocationHandler(MessageHandler):
     async def handle(
         self, message: InboundMessage, context: HandlerContext
     ) -> HandlerResult:
-        session = context.device_sessions.resolve(message.terminal_id)
+        session = await context.device_sessions.resolve(message.terminal_id)
         if (
             session is None
             or session.device_id is None

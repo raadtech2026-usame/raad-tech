@@ -203,9 +203,8 @@ class MdvrServer(DeviceProtocolAdapter):
     def session_count(self) -> int:
         return len(self._sessions)
 
-    @property
-    def device_session_count(self) -> int:
-        return self._device_sessions.session_count
+    async def device_session_count(self) -> int:
+        return await self._device_sessions.session_count()
 
     @property
     def bound_port(self) -> int:
@@ -233,7 +232,7 @@ class MdvrServer(DeviceProtocolAdapter):
             20,
             "server_stopping",
             active_connections=self._manager.connection_count,
-            active_device_sessions=self._device_sessions.session_count,
+            active_device_sessions=await self._device_sessions.session_count(),
         )
         await self._manager.shutdown()
         await self._device_sessions.shutdown()

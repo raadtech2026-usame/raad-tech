@@ -149,7 +149,7 @@ class AuthenticationRegistrationIntegrationTests(unittest.IsolatedAsyncioTestCas
 
         # Heartbeat-ready: a bound, AUTHENTICATED DeviceSession exists and the connection is
         # still open (not torn down).
-        session = self.server.device_sessions.resolve(TERMINAL_PHONE)
+        session = await self.server.device_sessions.resolve(TERMINAL_PHONE)
         self.assertIsNotNone(session)
         self.assertEqual(session.state.value, "authenticated")
         self.assertEqual(self.server.manager.connection_count, 1)
@@ -200,7 +200,7 @@ class AuthenticationRegistrationIntegrationTests(unittest.IsolatedAsyncioTestCas
         data = await asyncio.wait_for(reader.read(1), timeout=2.0)
         self.assertEqual(data, b"")
 
-        self.assertIsNone(self.server.device_sessions.resolve(TERMINAL_PHONE))
+        self.assertIsNone(await self.server.device_sessions.resolve(TERMINAL_PHONE))
 
     async def test_duplicate_authentication_supersedes_older_connection_over_the_wire(
         self,
@@ -229,7 +229,7 @@ class AuthenticationRegistrationIntegrationTests(unittest.IsolatedAsyncioTestCas
         data = await asyncio.wait_for(reader_a.read(1), timeout=2.0)
         self.assertEqual(data, b"")
 
-        session = self.server.device_sessions.resolve(TERMINAL_PHONE)
+        session = await self.server.device_sessions.resolve(TERMINAL_PHONE)
         self.assertIsNotNone(session)
         self.assertEqual(self.server.manager.connection_count, 1)
 
@@ -266,11 +266,11 @@ class AuthenticationRegistrationIntegrationTests(unittest.IsolatedAsyncioTestCas
         await writer.drain()
         await self._read_frame(reader)
 
-        self.assertEqual(self.server.device_session_count, 1)
+        self.assertEqual(await self.server.device_session_count(), 1)
         await self.server.stop()
 
         self.assertEqual(self.server.manager.connection_count, 0)
-        self.assertEqual(self.server.device_session_count, 0)
+        self.assertEqual(await self.server.device_session_count(), 0)
 
         await self.server.start()  # asyncTearDown's own stop() becomes a harmless no-op
 

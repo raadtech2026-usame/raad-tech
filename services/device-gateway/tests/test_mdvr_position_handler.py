@@ -162,7 +162,7 @@ class MdvrPositionHandlerTests(unittest.IsolatedAsyncioTestCase):
         publisher = RecordingEventPublisher()
         handler = MdvrPositionHandler(publisher)
         context = await self._authenticated_context()
-        session = context.device_sessions.resolve("00007")
+        session = await context.device_sessions.resolve("00007")
         assert session is not None
         self.assertEqual(session.state, DeviceConnectivityState.AUTHENTICATED)
 
@@ -178,14 +178,14 @@ class MdvrPositionHandlerTests(unittest.IsolatedAsyncioTestCase):
         publisher = RecordingEventPublisher()
         handler = MdvrPositionHandler(publisher)
         context = await self._authenticated_context()
-        session = context.device_sessions.resolve("00007")
+        session = await context.device_sessions.resolve("00007")
         assert session is not None
         session.last_seen_at = time.monotonic() - 1000  # already "expired" absent a fresh touch
 
         await handler.handle(_make_message(), context)
         await context.device_sessions._sweep_once(timeout_seconds=5.0)
 
-        self.assertIsNotNone(context.device_sessions.resolve("00007"))
+        self.assertIsNotNone(await context.device_sessions.resolve("00007"))
         self.assertEqual(session.state, DeviceConnectivityState.ONLINE)
 
     async def test_writes_the_latest_position_snapshot_before_publishing(self) -> None:

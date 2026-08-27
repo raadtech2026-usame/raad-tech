@@ -79,7 +79,7 @@ class MdvrRegistrationHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(result.close_connection_after)
 
-        session = self.device_sessions.resolve("00007")
+        session = await self.device_sessions.resolve("00007")
         self.assertIsNotNone(session)
         self.assertEqual(session.device_id, "device-1")
         self.assertEqual(session.vehicle_id, "vehicle-1")
@@ -96,7 +96,7 @@ class MdvrRegistrationHandlerTests(unittest.IsolatedAsyncioTestCase):
             result.response_fields, ["V101", "180903 094112", "0", "0", "2"]
         )
         self.assertTrue(result.close_connection_after)
-        self.assertIsNone(self.device_sessions.resolve("00007"))
+        self.assertIsNone(await self.device_sessions.resolve("00007"))
 
     async def test_provisioning_port_is_asked_with_the_exact_serial_number(self) -> None:
         context = MdvrHandlerContext(

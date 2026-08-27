@@ -1,5 +1,10 @@
 """DeviceSessionManager tests (Phase 9.2): first login, duplicate terminal, reconnect,
 disconnect cleanup, heartbeat timeout, concurrent sessions, registry consistency.
+
+**P0 #2 fix (device-gateway session-durability audit, 2026-08-25):** every registry access below
+is now `await`ed — `DeviceSessionRegistry.get`/`find_by_connection_id`/`count` (replacing
+`__len__`) are `async def`, and `DeviceSessionManager.resolve`/`session_count` became `async` too
+(a coroutine cannot back a `@property`). No test behavior changed, only call syntax.
 """
 
 import asyncio
@@ -35,7 +40,7 @@ class FirstLoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.terminal_id, "TERM-1")
         self.assertEqual(session.connection_id, "conn-1")
         self.assertEqual(session.state, DeviceConnectivityState.AUTHENTICATED)
-        self.assertEqual(len(registry), 1)
+        self.assertEqual(await registry.count(), 1)
         self.assertEqual(closer.calls, [])  # no supersede on first login
 
     async def test_create_passes_through_optional_identity_fields(self) -> None:
@@ -94,8 +99,8 @@ class FirstLoginTests(unittest.IsolatedAsyncioTestCase):
     async def test_resolve_returns_session(self) -> None:
         manager, _, _ = make_manager()
         session = await manager.create(connection_id="conn-1", terminal_id="TERM-1")
-        self.assertIs(manager.resolve("TERM-1"), session)
-        self.assertIsNone(manager.resolve("unknown"))
+        self.assertIs(await manager.resolve("TERM-1"), session)
+        self.assertIsNone(await manager.resolve("unknown"))
 
 
 class DuplicateTerminalTests(unittest.IsolatedAsyncioTestCase):
@@ -108,8 +113,8 @@ class DuplicateTerminalTests(unittest.IsolatedAsyncioTestCase):
         second = await manager.create(connection_id="conn-2", terminal_id="TERM-1")
 
         # Only the newest session is registered under the terminal_id.
-        self.assertIs(registry.get("TERM-1"), second)
-        self.assertEqual(len(registry), 1)
+        self.assertIs(await registry.get("TERM-1"), second)
+        self.assertEqual(await registry.count(), 1)
 
         # The old connection was asked to close, with a reason.
         self.assertEqual(closer.calls, [("conn-1", "superseded")])
@@ -125,7 +130,7 @@ class DuplicateTerminalTests(unittest.IsolatedAsyncioTestCase):
         second = await manager.create(connection_id="conn-1", terminal_id="TERM-1")
 
         self.assertEqual(closer.calls, [])  # same connection -> no close requested
-        self.assertIs(registry.get("TERM-1"), second)
+        self.assertIs(await registry.get("TERM-1"), second)
 
     async def test_handle_connection_closed_after_supersede_only_affects_new_session(
         self,
@@ -141,8 +146,8 @@ class DuplicateTerminalTests(unittest.IsolatedAsyncioTestCase):
 
         await manager.handle_connection_closed("conn-1")
 
-        self.assertIs(registry.get("TERM-1"), new_session)
-        self.assertEqual(len(registry), 1)
+        self.assertIs(await registry.get("TERM-1"), new_session)
+        self.assertEqual(await registry.count(), 1)
         self.assertEqual(new_session.state, DeviceConnectivityState.AUTHENTICATED)
 
     async def test_concurrent_create_for_same_terminal_never_double_registers(
@@ -158,8 +163,8 @@ class DuplicateTerminalTests(unittest.IsolatedAsyncioTestCase):
             manager.create(connection_id="conn-b", terminal_id="TERM-RACE"),
         )
 
-        self.assertEqual(len(registry), 1)
-        winner = registry.get("TERM-RACE")
+        self.assertEqual(await registry.count(), 1)
+        winner = await registry.get("TERM-RACE")
         self.assertIn(winner, results)
         # Exactly one supersede/close should have happened (the loser).
         self.assertEqual(len(closer.calls), 1)
@@ -170,7 +175,7 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
         manager, registry, closer = make_manager()
         await manager.create(connection_id="conn-1", terminal_id="TERM-1")
         await manager.close("TERM-1", reason="logout")
-        self.assertEqual(len(registry), 0)
+        self.assertEqual(await registry.count(), 0)
 
         session = await manager.create(connection_id="conn-2", terminal_id="TERM-1")
         self.assertEqual(session.connection_id, "conn-2")
@@ -192,7 +197,7 @@ class DisconnectCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         await manager.handle_connection_closed("conn-1")
 
-        self.assertEqual(len(registry), 0)
+        self.assertEqual(await registry.count(), 0)
         self.assertEqual(session.state, DeviceConnectivityState.OFFLINE)
         self.assertEqual(len(offline_calls), 1)
         self.assertIs(offline_calls[0][0], session)
@@ -206,14 +211,14 @@ class DisconnectCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         await manager.handle_connection_closed("conn-never-authenticated")
 
-        self.assertEqual(len(registry), 1)  # untouched
+        self.assertEqual(await registry.count(), 1)  # untouched
 
     async def test_close_is_idempotent(self) -> None:
         manager, registry, _ = make_manager()
         await manager.create(connection_id="conn-1", terminal_id="TERM-1")
         await manager.close("TERM-1", reason="logout")
         await manager.close("TERM-1", reason="logout")  # must not raise
-        self.assertEqual(len(registry), 0)
+        self.assertEqual(await registry.count(), 0)
 
 
 class HeartbeatTimeoutTests(unittest.IsolatedAsyncioTestCase):
@@ -229,7 +234,7 @@ class HeartbeatTimeoutTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.1)
         await manager._sweep_once(timeout_seconds=0.05)
 
-        self.assertEqual(len(registry), 0)
+        self.assertEqual(await registry.count(), 0)
         self.assertEqual(offline_calls[0][1], "session_expired")
 
     async def test_sweep_does_not_expire_fresh_sessions(self) -> None:
@@ -238,7 +243,7 @@ class HeartbeatTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         await manager._sweep_once(timeout_seconds=10.0)
 
-        self.assertEqual(len(registry), 1)
+        self.assertEqual(await registry.count(), 1)
 
     async def test_touch_resets_expiration(self) -> None:
         manager, registry, _ = make_manager()
@@ -249,7 +254,7 @@ class HeartbeatTimeoutTests(unittest.IsolatedAsyncioTestCase):
             await manager.touch("TERM-1")
             await manager._sweep_once(timeout_seconds=0.1)
 
-        self.assertEqual(len(registry), 1)  # kept alive by repeated touches
+        self.assertEqual(await registry.count(), 1)  # kept alive by repeated touches
 
     async def test_start_stop_sweep_task(self) -> None:
         manager, registry, _ = make_manager()
@@ -258,7 +263,7 @@ class HeartbeatTimeoutTests(unittest.IsolatedAsyncioTestCase):
         manager.start_sweep(timeout_seconds=0.05, interval_seconds=0.02)
         await asyncio.sleep(0.2)
 
-        self.assertEqual(len(registry), 0)  # swept away by the background task
+        self.assertEqual(await registry.count(), 0)  # swept away by the background task
         await manager.stop_sweep()
 
 
@@ -271,7 +276,7 @@ class ConcurrentSessionsTests(unittest.IsolatedAsyncioTestCase):
                 for i in range(10)
             ]
         )
-        self.assertEqual(len(registry), 10)
+        self.assertEqual(await registry.count(), 10)
         self.assertEqual(closer.calls, [])  # no supersedes - all distinct terminals
         terminal_ids = {s.terminal_id for s in sessions}
         self.assertEqual(len(terminal_ids), 10)
@@ -283,10 +288,10 @@ class ConcurrentSessionsTests(unittest.IsolatedAsyncioTestCase):
 
         await manager.close("TERM-2", reason="logout")
 
-        self.assertEqual(len(registry), 4)
-        self.assertIsNone(registry.get("TERM-2"))
+        self.assertEqual(await registry.count(), 4)
+        self.assertIsNone(await registry.get("TERM-2"))
         for i in [0, 1, 3, 4]:
-            self.assertIsNotNone(registry.get(f"TERM-{i}"))
+            self.assertIsNotNone(await registry.get(f"TERM-{i}"))
 
 
 class RegistryConsistencyTests(unittest.IsolatedAsyncioTestCase):
@@ -297,22 +302,22 @@ class RegistryConsistencyTests(unittest.IsolatedAsyncioTestCase):
 
         await manager.shutdown()
 
-        self.assertEqual(len(registry), 0)
-        self.assertEqual(manager.session_count, 0)
+        self.assertEqual(await registry.count(), 0)
+        self.assertEqual(await manager.session_count(), 0)
 
     async def test_session_count_matches_registry_length(self) -> None:
         manager, registry, _ = make_manager()
         await manager.create(connection_id="conn-1", terminal_id="TERM-1")
         await manager.create(connection_id="conn-2", terminal_id="TERM-2")
-        self.assertEqual(manager.session_count, len(registry))
-        self.assertEqual(manager.session_count, 2)
+        self.assertEqual(await manager.session_count(), await registry.count())
+        self.assertEqual(await manager.session_count(), 2)
 
     async def test_find_by_connection_id(self) -> None:
         manager, registry, _ = make_manager()
         session = await manager.create(connection_id="conn-1", terminal_id="TERM-1")
-        found = registry.find_by_connection_id("conn-1")
+        found = await registry.find_by_connection_id("conn-1")
         self.assertIs(found, session)
-        self.assertIsNone(registry.find_by_connection_id("no-such-connection"))
+        self.assertIsNone(await registry.find_by_connection_id("no-such-connection"))
 
 
 if __name__ == "__main__":

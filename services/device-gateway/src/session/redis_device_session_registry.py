@@ -1,25 +1,25 @@
-"""`RedisDeviceSessionRegistry` — a Redis-backed implementation of the same operations
-`DeviceSessionRegistry` (in-memory) exposes, per `.claude/rules/jt808.md` #4 ("session state
-lives in Redis... enabling sharded, sticky device connections"). Genuinely standalone and fully
-tested on its own — **not wired into `DeviceSessionManager` by default in this phase**, and that
-is a deliberate, flagged scope boundary, not an oversight:
+"""`RedisDeviceSessionRegistry` — a Redis-backed implementation of `DeviceSessionRegistryPort`
+(`session_registry_port.py`), the same operations `DeviceSessionRegistry` (in-memory) exposes,
+per `.claude/rules/jt808.md` #4 ("session state lives in Redis... enabling sharded, sticky device
+connections"). **Wired into `Jt808Server` via `DeviceGateway` whenever a broker is configured**
+(P0 #2 fix, device-gateway session-durability audit, 2026-08-25) — see `gateway.py`'s
+`_build_jt808_provisioning`-adjacent construction for the exact conditional wiring, the same
+pattern already used for `RedisEventPublisher`/`DeviceRegistryProjection`. `MdvrServer` (LSZ) is
+untouched by this and keeps the in-memory default — LSZ remains dormant per CLAUDE.md's own
+posture, with no live wiring benefit to justify touching it.
 
-**Why this isn't a drop-in replacement yet.** `DeviceSessionRegistry`'s current methods (`get`,
-`remove_if_current`, `find_by_connection_id`, `all`, `__len__`) are synchronous — correct for an
+**What made this a drop-in replacement (Phase 2 of the P0 #2 fix, done first, no behavior
+change):** `DeviceSessionRegistry`'s methods were previously synchronous — correct for an
 in-memory dict, since no operation ever awaits anything. Any Redis-backed implementation is
 inherently asynchronous (every operation is network I/O), so this class's methods are `async def`
 throughout, including `count()` in place of `__len__` (Python's `__len__` cannot itself be a
-coroutine). Actually wiring this into `DeviceSessionManager` — so a vendor adapter could swap
-between in-memory and Redis-backed sessions transparently — would require converting every
+coroutine). Wiring this into `DeviceSessionManager` required converting every
 `DeviceSessionRegistry`-shaped call site to `await` (the in-memory implementation's methods too,
-for interface consistency), rippling through `DeviceSessionManager` itself and every handler that
-calls `context.device_sessions.resolve(...)` (already-async methods in every existing handler, so
-mechanically safe, but a real, wide-reaching change touching both vendor stacks and their test
-suites). That migration is real, well-understood follow-up work — not undertaken in this phase
-because no actual multi-node device-gateway deployment exists yet to need it (today's deployment
-is one process, for which the in-memory registry is already correct and faster). This class
-proves the Redis-backed session store itself works correctly, ready to be wired in in that later
-phase with no further change to this file.
+for interface consistency via the shared `DeviceSessionRegistryPort`), rippling through
+`DeviceSessionManager` itself and every handler that calls `context.device_sessions.resolve(...)`
+— mechanically safe since every call site was already inside an `async def`, but genuinely
+touching both vendor stacks and their test suites. That refactor landed first, behavior-preserving
+against the in-memory registry, before this class was ever constructed outside its own test file.
 
 **Clock semantics — a second, explicitly-flagged limitation.** `DeviceSession.authenticated_at`/
 `last_seen_at` are `time.monotonic()` floats, meaningful only for comparisons *within the process
@@ -49,6 +49,7 @@ import json
 from redis.asyncio import Redis
 
 from src.session.device_session import DeviceConnectivityState, DeviceSession
+from src.session.session_registry_port import DeviceSessionRegistryPort
 
 _SESSION_KEY_PREFIX = "device_session:"
 _CONNECTION_INDEX_PREFIX = "device_session:by_connection:"
@@ -92,7 +93,7 @@ def _deserialize(raw: str) -> DeviceSession:
     )
 
 
-class RedisDeviceSessionRegistry:
+class RedisDeviceSessionRegistry(DeviceSessionRegistryPort):
     def __init__(self, redis_client: Redis) -> None:
         self._redis = redis_client
 
@@ -121,7 +122,8 @@ class RedisDeviceSessionRegistry:
         Redis — the in-memory registry needs no equivalent since mutating the object already
         mutates what every `get()` call returns; a Redis-backed session is a *copy* on every
         `get()`, so callers that mutate a returned `DeviceSession` must explicitly `save()` it
-        back. (Not yet called by `DeviceSessionManager` — see module docstring.)"""
+        back — called by `DeviceSessionManager.touch()` after every `session.touch()`/
+        `mark_online()` mutation (not by `close()`, which removes the record instead)."""
         await self._redis.set(_session_key(session.terminal_id), _serialize(session))
 
     async def remove_if_current(self, terminal_id: str, session: DeviceSession) -> None:
