@@ -1128,3 +1128,62 @@ ADR adds no new HTTP route — and is flagged, not fixed, here.
 relay through nginx/Coolify; touch any other JT/T808/1078 message; change how
 `POST /video/live`/`/playback` resolve a camera (already generic via `device.cameras`); or start
 `services/jt1078` by default in every environment (it already has no Compose `profile` gate).
+
+## Fleet Overview / All Vehicles Map Mode (ADR-0031, 2026-08-23)
+
+The Live Tracking frontend redesign needed an "All Vehicles" map mode — every currently-online
+vehicle as its own marker, updating live, with no camera/video initialization at all (10 buses ×
+4 cameras = 40 possible streams is never the desired behavior for this mode). **No bulk "which
+vehicles are online" data source existed anywhere in this backend** — confirmed by reading the
+actual code, not assumed: `GET /vehicles` (list) deliberately returns `tracking_status: null` on
+every row specifically to avoid an N+1 device lookup per list page; `GET /devices?
+filter[is_online]=true` returns online devices but carries no `vehicle_id` at all (no reverse
+device→vehicle mapping in the wire contract); and no REST endpoint anywhere returns bulk latest
+positions (`LatestPositionPort`/`GET /tracking/vehicles/{id}/latest` is single-vehicle only).
+Building the online-vehicle set from these alone would have meant a REST fan-out bounded only by
+the existing ≤100-vehicle page cap — up to ~200 calls purely to determine who's online, before a
+single realtime update — repeating exactly the N+1 shape `tracking_status: null` was introduced
+elsewhere in this codebase specifically to avoid. Per `.claude/rules/workflow.md` #8,
+`docs/architecture/adr/0031-fleet-overview-online-vehicles-read-model.md` was written and accepted
+before implementation.
+
+**New `GET /tracking/vehicles/online`, owned by `tracking`** — mirroring ADR-0020/ADR-0023's "new
+composing application service lives in the module that owns the capability" precedent, never a
+cross-module DB read. A new `FleetOverviewApplicationService` composes
+`VehicleApplicationService`/`DeviceApplicationService` (per-call UoW, mirroring
+`PlatformStatsApplicationService`'s own shape) plus a new, optional `LatestPositionPort.
+get_latest_many` (one Redis `MGET`, never a `get_latest` loop). Two small, additive `fleet_device`
+methods, no schema/migration: `DeviceRepository.list_online_with_active_assignment()` (one JOIN,
+`_apply_scope`-scoped like every other `list_*` method, ADR-0021) and `VehicleRepository.
+list_by_ids()`. Capped at 100 online vehicles, sorted deterministically, with the true pre-cap
+count (`total_online`) returned separately — an organization past the cap gets an honest "showing
+X of Y" signal, never a silent truncation.
+
+**Realtime updates reuse `/ws/tracking` exactly as-is, deliberately capped rather than
+redesigned.** `/ws/tracking` already enforces exactly one active vehicle subscription per
+*connection*, not per browser tab, so opening up to `total_online` independent connections (one
+per online vehicle) is a correct, already-tested reuse with zero backend protocol change — the
+same "N independent instances of a single-item primitive" shape `MultiCameraVideoPanel`/
+`CameraTile`'s N independent `useVideoSessionController` instances already proved safe for. The
+ADR evaluated this against the shared, small DB pool before committing to it: 100 near-simultaneous
+connections is a real but acceptable latency burst against RAAD's realistic per-organization fleet
+size (tens to a couple hundred buses, not thousands — no NFR target suggests otherwise); 500+ would
+not be. Raising the cap needs a genuine `/ws/tracking` multi-vehicle-subscribe protocol change,
+explicitly not attempted here.
+
+**A real authorization gap found and fixed while wiring this route, not silently shipped.** The
+reused `tracking.vehicles.read_latest` permission (deliberately no new permission/migration) is
+also held by `parent`, for their existing single-vehicle, CR-1-gated use case. This new *bulk*
+route has no per-vehicle ownership check at all (an admin fleet-list view, matching `GET
+/vehicles`/`GET /devices` (list)'s own posture, not the single-vehicle CR-1 posture) — reusing the
+permission alone would have let a parent's own mobile JWT list every vehicle in their
+organization, not just their child's. Fixed with an explicit, migration-free role-set check
+(`_FLEET_OVERVIEW_ELIGIBLE_ROLES` — Founder/Regional Manager/Support Staff/Org Admin only),
+mirroring `core.policies.video_access`'s own identical `_VIDEO_ELIGIBLE_ROLES` shape for the exact
+same "the permission is broader than this one route needs" mismatch.
+
+**What remains open, disclosed in the ADR itself:** `position` is `null` for every vehicle today —
+the pre-existing, separately-tracked JT808 `LatestPositionWriter` wiring gap this file's own
+"Device onboarding readiness audit" section already names as open, not new to this ADR and not
+required to close it; populates automatically once that gap is separately closed. The 100-vehicle
+cap is a real ceiling, not a soft default.

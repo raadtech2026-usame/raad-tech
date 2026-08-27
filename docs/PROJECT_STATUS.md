@@ -407,13 +407,14 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0021 | Tenant Scope Enforcement at Repository Layer | ✅ Complete |
 | 0022 | Payment Provider Architecture | ✅ Complete |
 | 0023 | Canonical `/me` Self-Service Identity Resolution | ✅ Complete |
-| 0024 | JT1078 Video Relay Architecture | 🟡 Partial (device-gateway signaling, relay, Business API wiring, SPS/PPS, concurrency ceilings, `audit_entries`, and relay→`VideoSession` reconciliation all built and tested against fakes/synthetic fixtures; HLS and the reconciliation-timeout job still open; physical-MDVR verification pending) |
-| 0025 | JT/T 808-2019 + JT/T 1078-2016 Native Protocol Compliance | 🟡 Partial (architecture accepted and every named implementation item — field-width rework, `0x0102` auth-code lifecycle, `0x0200` byte-diff — is built and tested; physical-MDVR verification pending) |
-| 0026 | Parent Video Access Authorization | 🟡 Partial (backend authorization chain, migration, RBAC, audit coverage, and relay reconciliation all built and live-Postgres-tested; the Flutter mobile player is written but categorically unverified — no Flutter SDK in this sandbox; physical-MDVR verification pending) |
+| 0024 | JT1078 Video Relay Architecture | 🟡 Partial (device-gateway signaling, relay, Business API wiring, SPS/PPS, concurrency ceilings, `audit_entries`, and relay→`VideoSession` reconciliation all built, tested, and live-verified against the physical bench unit — real extended-RTP frames, `VideoSession.status=active`, a connected viewer, 2026-08-19, §8; HLS and the reconciliation-timeout job still open) |
+| 0025 | JT/T 808-2019 + JT/T 1078-2016 Native Protocol Compliance | ✅ Complete — architecture accepted, every named implementation item (field-width rework, `0x0102` auth-code lifecycle, `0x0200` byte-diff) built, tested, and live-verified against the physical `LSZ-C5804DG-Q-F` bench unit (registration → authentication → A/V-attribute discovery → live video, 2026-08-19, §8) — **over LAN only**; no external/public-network JT808 session is recorded anywhere in this repository, and that specific path remains unverified |
+| 0026 | Parent Video Access Authorization | 🟡 Partial (backend authorization chain, migration, RBAC, audit coverage, and relay reconciliation all built and live-Postgres-tested; the Flutter mobile player is written but categorically unverified — no Flutter SDK in this sandbox; the parent-specific authorization chain itself was not exercised by the 2026-08-19 bench session, which used no parent principal — physical-MDVR verification of that chain specifically remains pending) |
 | 0027 | Vehicle-Device Operational Read Model | ✅ Complete (commit `560580d`) — the backend read model ADR-0028's frontend consumes |
 | 0028 | Unified Vehicle Operations Frontend (GPS + Video from One Vehicle Selection) | ✅ Complete (commit `8b5bd0c`) — unifies GPS + the already-existing F10 web video page (commit `600c4da`, 2026-08-14, predates this ADR by two days) into one Vehicle Operations view |
 | 0029 | Platform Admin Live-Video Access (Founder/Regional Manager/Support Staff) | ✅ Complete (commit `857d68b`) |
 | 0030 | Automatic Camera/Channel Discovery | ✅ Complete — device-gateway (`0x9003`/`0x1003`) and backend (discovery-trigger processor, camera-creation processor) implemented and tested (backend unit/architecture/integration + device-gateway unit, all passing; migration `7d3a9c1e5b42` live-Postgres round-tripped), live-verified against the physical `LSZ-C5804DG-Q-F` bench unit per the ADR's own verification transcript |
+| 0031 | Fleet Overview Online-Vehicles Read Model | ✅ Complete — new `GET /tracking/vehicles/online` (`FleetOverviewApplicationService`), two additive `fleet_device` repository methods, `LatestPositionPort.get_latest_many`; a real per-vehicle-ownership authorization gap found and fixed while wiring the route (bulk fleet visibility could otherwise leak to a Parent's own mobile JWT), closed with an explicit role-set gate; `position` is `null` for every vehicle today (the pre-existing, disclosed JT808 `LatestPositionWriter` wiring gap, unaffected by this ADR) |
 
 **A real doc-staleness gap found 2026-08-19, since corrected throughout this file and
 CLAUDE.md:** ADR-0027/0028/0029 (2026-08-16) and the F10 Organization Admin web live-video
@@ -620,6 +621,69 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
+**Nothing — ADR-0031 (Fleet Overview Online-Vehicles Read Model) is complete (2026-08-23).** The
+Live Tracking frontend redesign's "All Vehicles" fleet-map mode needed a bulk "which vehicles are
+online right now" data source; none existed anywhere in this backend — `GET /vehicles`
+deliberately omits `tracking_status` on list rows to avoid an N+1 device lookup per page,
+`GET /devices?filter[is_online]=true` carries no `vehicle_id` at all, and no bulk latest-position
+read existed. Building it from single-vehicle calls alone would have meant up to ~200 REST
+round-trips (`GET /vehicles/{id}/device-assignment` + `GET /devices/{id}`, per vehicle, bounded
+only by the existing ≤100-vehicle page cap) just to determine who's online, before a single
+realtime update — the exact N+1 shape `tracking_status: null` was introduced elsewhere in this
+codebase specifically to avoid, and repeating it here for a brand-new feature would have been
+inconsistent with that precedent. Per `.claude/rules/workflow.md` #8, `docs/architecture/adr/
+0031-fleet-overview-online-vehicles-read-model.md` was written and accepted before implementation.
+
+New `GET /tracking/vehicles/online`, owned by `tracking` (mirroring ADR-0020/ADR-0023's "new
+composing application service lives in the module that owns the capability" precedent, never a
+cross-module DB read — verified clean against the architecture-gate module-boundary suite, 10/10
+passing). A new `FleetOverviewApplicationService` composes `VehicleApplicationService`/
+`DeviceApplicationService` (per-call UoW, mirroring `PlatformStatsApplicationService`'s own shape)
+plus a new, optional `LatestPositionPort.get_latest_many` (one Redis `MGET` for every requested
+key, never a `get_latest` loop — the identical "one round trip, not N" reasoning `list_by_ids`
+applies at the SQL layer). Two small, additive `fleet_device` methods, no schema/migration:
+`DeviceRepository.list_online_with_active_assignment()` (one JOIN on `device_assignments`,
+`_apply_scope`-scoped like every other `list_*` method, ADR-0021) and `VehicleRepository.
+list_by_ids()`. Capped at `FLEET_OVERVIEW_MAX_ONLINE_VEHICLES = 100`, sorted deterministically by
+`vehicle_id`, with the true pre-cap count returned separately (`total_online`) so an organization
+with more online vehicles than the cap gets an honest "showing X of Y" signal, never a silent
+truncation.
+
+**A real authorization gap found and fixed while wiring this route, not silently shipped:** the
+reused `tracking.vehicles.read_latest` permission (deliberately no new permission/migration) is
+also held by `parent`, for their existing single-vehicle, CR-1-gated use case
+(`GET /tracking/vehicles/{id}/latest`, `/ws/tracking`). This new *bulk* route has no per-vehicle
+ownership check at all (an admin fleet-list view, matching `GET /vehicles`/`GET /devices` (list)'s
+own posture, not the single-vehicle CR-1 posture) — reusing the permission alone would have let a
+parent's own mobile JWT list every vehicle in their organization, not just their child's. Fixed
+with an explicit, migration-free role-set check (`_FLEET_OVERVIEW_ELIGIBLE_ROLES` — Founder/
+Regional Manager/Support Staff/Org Admin only), mirroring `core.policies.video_access`'s own
+identical `_VIDEO_ELIGIBLE_ROLES` shape for the exact same "the permission is broader than this
+one route needs" mismatch. Regression-tested (`test_tracking_fleet_overview.py`).
+
+Frontend: a new `useFleetVehiclePositions` hook fetches the endpoint once for the initial
+snapshot, then opens up to `total_online` (capped) independent `/ws/tracking` connections for
+realtime updates — reusing `useWebSocketChannel`, the same primitive `useVehiclePosition` already
+uses, with zero backend protocol change (`/ws/tracking` already enforces exactly one active
+vehicle subscription per *connection*, not per browser tab, so N connections is a correct,
+already-tested reuse — the same "N independent instances of a single-item hook" shape already proven safe
+in this codebase for `MultiCameraVideoPanel`/`CameraTile`'s N independent
+`useVideoSessionController` instances, one per camera). Evaluated and deliberately capped rather
+than redesigned: at RAAD's realistic per-organization fleet size (tens to a couple hundred buses,
+not thousands — no NFR target suggests otherwise), 100 near-simultaneous connections is a real but
+acceptable latency burst against the shared ~15-connection DB pool; 500+ would not be, and raising
+the cap needs a genuine `/ws/tracking` multi-vehicle-subscribe protocol change, explicitly not
+attempted here. `FleetMapPanel`/this mode never initializes video/camera state at all — 10 buses ×
+4 cameras = 40 possible streams is never the desired behavior for this mode.
+
+**What remains open, disclosed in the ADR itself, not hidden:** `position` is `null` for every
+vehicle today — the pre-existing, separately-tracked JT808 `LatestPositionWriter` wiring gap
+(CLAUDE.md's own "Device onboarding readiness audit" section), not new to this ADR and not
+required to close it; populates automatically once that gap is separately closed, no change
+needed in this read model when it is. No dedicated live-DB integration test was added this pass
+for the two new repository methods (verified by static review against `count_online`/`list_page`'s
+own already-tested patterns instead, plus the full architecture-gate + unit suite passing).
+
 **Nothing — ADR-0030's automatic camera-discovery workflow has now been verified genuinely
 end to end against the physical `LSZ-C5804DG-Q-F` bench unit (`terminal_id=
 00000000014482607571`), including a full real live-video request, and four more real,
