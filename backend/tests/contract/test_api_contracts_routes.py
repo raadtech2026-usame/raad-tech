@@ -218,6 +218,96 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("GET", "/health", "process-level health probe, outside /api/v1"),
     ("GET", "/health/live", "process-level health probe, outside /api/v1"),
     ("GET", "/health/ready", "process-level health probe, outside /api/v1"),
+    # Priority 1 Item 5 (real health checks + minimum monitoring): same shape as the health
+    # probes immediately above — unauthenticated, process-level, outside /api/v1 by design.
+    ("GET", "/metrics", "process-level Prometheus scrape target, outside /api/v1 (Priority 1 Item 5)"),
+
+    # Audit P0 #1 fix (2026-08-27): 19 routes built across six real, already-Accepted ADRs and
+    # two PROJECT_STATUS.md Priority 1 items, none of which ever got a matching entry here when
+    # they landed — the same "documented predates the ADR" shape every group above already
+    # establishes, just never applied to this batch. Confirmed via `git log` against each route's
+    # own introducing commit.
+
+    # ADR-0023: canonical self-service identity resolution (commit cf9bc6d) — no API Contracts row.
+    ("GET", "/api/v1/me", "ADR-0023 canonical self-service identity resolution, no API Contracts row"),
+    ("GET", "/api/v1/me/students", "ADR-0023 canonical self-service identity resolution, no API Contracts row"),
+    ("GET", "/api/v1/me/driver-profile", "ADR-0023 canonical self-service identity resolution, no API Contracts row"),
+
+    # ADR-0019: account-sharing session cap self-service (commit 07cd3e8) — no API Contracts row.
+    ("GET", "/api/v1/auth/sessions", "ADR-0019 account-sharing session cap self-service, no API Contracts row"),
+    (
+        "DELETE",
+        "/api/v1/auth/sessions/{session_id}",
+        "ADR-0019 account-sharing session cap self-service, no API Contracts row",
+    ),
+
+    # PROJECT_STATUS.md Priority 1 Item 6: RBAC grant/revoke routes (commit 756e8b2), reachable
+    # only at the application layer before this — no API Contracts row, same posture
+    # Route.remove_stop/Trip.interrupt already establish for a use-case-exists-no-route-yet gap,
+    # just now closed with a real route.
+    (
+        "GET",
+        "/api/v1/roles/{role}/permissions",
+        "PROJECT_STATUS.md Priority 1 Item 6 RBAC grant/revoke routes, no API Contracts row",
+    ),
+    (
+        "POST",
+        "/api/v1/roles/{role}/permissions",
+        "PROJECT_STATUS.md Priority 1 Item 6 RBAC grant/revoke routes, no API Contracts row",
+    ),
+    (
+        "POST",
+        "/api/v1/roles/{role}/permissions/revoke",
+        "PROJECT_STATUS.md Priority 1 Item 6 RBAC grant/revoke routes, no API Contracts row",
+    ),
+    (
+        "GET",
+        "/api/v1/scope-assignments/{user_id}",
+        "PROJECT_STATUS.md Priority 1 Item 6 RBAC grant/revoke routes, no API Contracts row",
+    ),
+    (
+        "POST",
+        "/api/v1/scope-assignments/regions",
+        "PROJECT_STATUS.md Priority 1 Item 6 RBAC grant/revoke routes, no API Contracts row",
+    ),
+    (
+        "POST",
+        "/api/v1/scope-assignments/regions/revoke",
+        "PROJECT_STATUS.md Priority 1 Item 6 RBAC grant/revoke routes, no API Contracts row",
+    ),
+    (
+        "POST",
+        "/api/v1/scope-assignments/support",
+        "PROJECT_STATUS.md Priority 1 Item 6 RBAC grant/revoke routes, no API Contracts row",
+    ),
+    (
+        "POST",
+        "/api/v1/scope-assignments/support/revoke",
+        "PROJECT_STATUS.md Priority 1 Item 6 RBAC grant/revoke routes, no API Contracts row",
+    ),
+
+    # ADR-0020: platform analytics read model (commit 7b55c87) — no API Contracts row.
+    ("GET", "/api/v1/admin/platform-stats", "ADR-0020 platform analytics read model, no API Contracts row"),
+
+    # ADR-0031: fleet-overview online-vehicles read model (commit d2366fc) — no API Contracts row.
+    (
+        "GET",
+        "/api/v1/tracking/vehicles/online",
+        "ADR-0031 fleet-overview online-vehicles read model, no API Contracts row",
+    ),
+
+    # ADR-0022: payment history list route (commit 59882f7) — POST /billing/payments and
+    # /billing/payments/callback from the same ADR are already documented in API Contracts §4.7;
+    # only this new GET list route was never added.
+    ("GET", "/api/v1/billing/payments", "ADR-0022 payment history list route, no API Contracts row"),
+
+    # ADR-0018: device inventory & allocation (commit d13a5a8) — no API Contracts row.
+    ("POST", "/api/v1/device-inventory", "ADR-0018 device inventory & allocation, no API Contracts row"),
+    (
+        "POST",
+        "/api/v1/device-inventory/{inventory_item_id}/allocate",
+        "ADR-0018 device inventory & allocation, no API Contracts row",
+    ),
 ]
 
 

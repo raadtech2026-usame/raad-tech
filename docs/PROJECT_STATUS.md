@@ -2384,6 +2384,28 @@ Reverse-chronological (most recent first):
   verification) — see Section 3's JT808 row for the fuller status. Physical-MDVR verification
   remains open, tracked there, not re-opened as a separate issue here.
 
+### 19. ~~`NoSilentUndocumentedRoutesTests` contract-test failure (19 undocumented routes)~~ — RESOLVED 2026-08-27
+- **The gap (found by the 2026-08-25 audit, never previously filed as its own numbered issue
+  despite being narrated inline across several earlier phase entries in this section and §9):**
+  `backend/tests/contract/test_api_contracts_routes.py`'s `NoSilentUndocumentedRoutesTests` had
+  been silently red since routes started shipping without a matching `ALLOWED_UNDOCUMENTED_EXTRAS`
+  entry — 19 real, built `/api/v1` routes (plus `GET /metrics`) spanning ADR-0018 (device
+  inventory), ADR-0019 (session cap self-service), ADR-0020 (platform analytics), ADR-0022
+  (payment history list), ADR-0023 (canonical `/me`), ADR-0031 (fleet-overview online-vehicles),
+  and the two RBAC/scope-assignment routes from Priority 1 Item 6 above, each landed without the
+  corresponding citation this suite's own accounting requires.
+- **Resolution:** all 19 added to `ALLOWED_UNDOCUMENTED_EXTRAS`, each citing its real originating
+  ADR/Priority-1 item and introducing commit (traced via `git log`) — the same "documented predates
+  the ADR, cited not silently added" precedent this list already established 9 times over for
+  every other post-Phase-3.3 route (uniform-CRUD additions, `/drivers`, `/auth/change-password`,
+  `/parents/{id}/video-access`, `/health*`, etc.). `docs/business/RAAD_Phase3.3_API_Contracts_v1.md`
+  itself is a frozen Phase-3.3 deliverable and was deliberately **not** edited, matching how this
+  repo treats ADRs as historical records — confirmed with the user before implementing.
+  `tests/contract` is now `2 passed, 0 failed`.
+- **Severity:** ~~Low~~
+- **Blocking production?** No longer — this was a CI-gate-integrity gap (the suite existed to
+  catch exactly this kind of drift but had itself drifted), not a runtime defect.
+
 ---
 
 ## 11. Deployment Checklist
