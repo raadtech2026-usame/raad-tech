@@ -156,6 +156,7 @@ async def request_live_video(
         device_organization_id=device.organization_id,
         device_id=device.id,
         purpose="live",
+        camera_position=camera.position,
         container=container,
     )
 
@@ -201,6 +202,7 @@ async def request_playback_video(
         device_organization_id=device.organization_id,
         device_id=device.id,
         purpose="playback",
+        camera_position=camera.position,
         container=container,
     )
 
@@ -242,6 +244,7 @@ async def stop_video_session(
         device_organization_id=existing.organization_id,
         device_id=existing.device_id,
         purpose=existing.purpose,
+        camera_position=None,  # teardown of an already-authorized session grants no new visibility
         container=container,
     )
 

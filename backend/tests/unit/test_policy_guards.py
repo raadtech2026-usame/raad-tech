@@ -503,6 +503,7 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
             device_organization_id=ORG_ID,
             device_id="device-1",
             purpose="live",
+            camera_position=None,
             container=container,
         )
         self.assertTrue(decision.allowed)
@@ -511,6 +512,7 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
             device_organization_id=ORG_ID,
             device_id="device-1",
             purpose="live",
+            camera_position=None,
             container=container,
         )
 
@@ -524,6 +526,7 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
                 device_organization_id=OTHER_ORG_ID,
                 device_id="device-1",
                 purpose="live",
+                camera_position=None,
                 container=container,
             )
         self.assertEqual(ctx.exception.code, "VIDEO_FORBIDDEN")
@@ -540,6 +543,7 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
                 device_organization_id=ORG_ID,
                 device_id="device-1",
                 purpose="live",
+                camera_position=None,
                 container=container,
             )
 
@@ -558,6 +562,7 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
                 device_organization_id=ORG_ID,
                 device_id="device-1",
                 purpose="live",
+                camera_position=None,
                 container=container,
             )
 
@@ -573,6 +578,7 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
             device_organization_id=ORG_ID,
             device_id="device-1",
             purpose="live",
+            camera_position=None,
             container=container,
         )
         self.assertFalse(decision.allowed)
@@ -582,6 +588,7 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
                 device_organization_id=ORG_ID,
                 device_id="device-1",
                 purpose="live",
+                camera_position=None,
                 container=container,
             )
 
@@ -597,6 +604,7 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
             device_organization_id=ORG_ID,
             device_id="device-1",
             purpose="live",
+            camera_position=None,
             container=container,
         )
         self.assertTrue(decision.allowed)
@@ -616,6 +624,7 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
             device_organization_id=ORG_ID,
             device_id="device-1",
             purpose="playback",
+            camera_position=None,
             container=container,
         )
         self.assertFalse(decision.allowed)
@@ -632,6 +641,7 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
             device_organization_id=ORG_ID,
             device_id="device-1",
             purpose="playback",
+            camera_position=None,
             container=container,
         )
         self.assertTrue(decision.allowed)
@@ -651,8 +661,94 @@ class ResolveAndEnforceD5Tests(unittest.IsolatedAsyncioTestCase):
                 device_organization_id=ORG_ID,
                 device_id="device-1",
                 purpose="live",
+                camera_position=None,
                 container=container,
             )
+
+    async def test_parent_granted_access_is_denied_for_in_cabin_camera(self) -> None:
+        """ADR-0032 regression test: before this ADR's fix, a granted+owning parent could
+        request video from an `in_cabin` camera - `VideoAccessPolicy.evaluate` never took a
+        camera/position argument, so nothing anywhere checked it. `camera_position` must now
+        deny this absolutely, even though every other input (ownership, permission) is valid."""
+        container = make_container(
+            has_video_live_access=True,
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
+            devices={"device-1": _DeviceAssignmentDTO(vehicle_id="veh-1")},
+        )
+        decision = await policy_guards.resolve_d5_decision(
+            principal=PARENT,
+            device_organization_id=ORG_ID,
+            device_id="device-1",
+            purpose="live",
+            camera_position="in_cabin",
+            container=container,
+        )
+        self.assertFalse(decision.allowed)
+        with self.assertRaises(VideoForbiddenError):
+            await policy_guards.enforce_d5(
+                principal=PARENT,
+                device_organization_id=ORG_ID,
+                device_id="device-1",
+                purpose="live",
+                camera_position="in_cabin",
+                container=container,
+            )
+
+    async def test_parent_granted_access_is_denied_for_driver_facing_camera(self) -> None:
+        """`driver_facing` (ADR-0032's own new position value) is cabin-facing too - the
+        exclusion set is not hardcoded to the single legacy `in_cabin` string anywhere in this
+        check; it goes through `CameraPosition.is_cabin_facing`."""
+        container = make_container(
+            has_video_live_access=True,
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
+            devices={"device-1": _DeviceAssignmentDTO(vehicle_id="veh-1")},
+        )
+        decision = await policy_guards.resolve_d5_decision(
+            principal=PARENT,
+            device_organization_id=ORG_ID,
+            device_id="device-1",
+            purpose="live",
+            camera_position="driver_facing",
+            container=container,
+        )
+        self.assertFalse(decision.allowed)
+
+    async def test_parent_granted_access_is_allowed_for_road_facing_camera(self) -> None:
+        """No regression: a real, non-cabin position still passes for an otherwise-eligible
+        granted parent - the fix denies cabin-facing cameras specifically, not every camera."""
+        container = make_container(
+            has_video_live_access=True,
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
+            devices={"device-1": _DeviceAssignmentDTO(vehicle_id="veh-1")},
+        )
+        decision = await policy_guards.resolve_d5_decision(
+            principal=PARENT,
+            device_organization_id=ORG_ID,
+            device_id="device-1",
+            purpose="live",
+            camera_position="road_facing",
+            container=container,
+        )
+        self.assertTrue(decision.allowed)
+
+    async def test_org_admin_is_unaffected_by_in_cabin_camera_position(self) -> None:
+        """D5's cabin exclusion is "never exposed to *parents*" (Database Design §5.3) - not a
+        blanket restriction. Org Admin must still reach an in_cabin camera exactly as before."""
+        container = make_container(
+            scope=TenantRegionScope(organization_ids=frozenset({ORG_ID}))
+        )
+        decision = await policy_guards.resolve_d5_decision(
+            principal=ORG_ADMIN,
+            device_organization_id=ORG_ID,
+            device_id="device-1",
+            purpose="live",
+            camera_position="in_cabin",
+            container=container,
+        )
+        self.assertTrue(decision.allowed)
 
 
 class ResolveVehicleTrackingContextTests(unittest.IsolatedAsyncioTestCase):

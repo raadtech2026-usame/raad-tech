@@ -170,5 +170,11 @@ class LoggingEventPublisher(EventPublisher):
                 correlation_id=event.correlation_id,
                 max_video_channels=event.max_video_channels,
                 max_audio_channels=event.max_audio_channels,
+                input_audio_codec=event.input_audio_codec,
+                input_audio_channels=event.input_audio_channels,
+                input_audio_sample_rate=event.input_audio_sample_rate,
+                input_audio_sample_bits=event.input_audio_sample_bits,
+                supports_audio_output=event.supports_audio_output,
+                video_codec=event.video_codec,
                 event_time=event.event_time.isoformat(),
             )

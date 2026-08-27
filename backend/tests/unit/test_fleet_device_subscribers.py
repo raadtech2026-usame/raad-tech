@@ -21,12 +21,13 @@ from raad.core.errors.exceptions import ConflictError
 from raad.core.events.base import DomainEvent
 from raad.core.events.ports import BrokerPort
 from raad.modules.fleet_device.application.commands import (
+    RecordAudioCapabilityCommand,
     RecordDeviceSeenCommand,
     RegisterCameraCommand,
 )
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.services import DeviceApplicationService
-from raad.modules.fleet_device.domain.value_objects import CameraPosition
+from raad.modules.fleet_device.domain.value_objects import AudioCapability, CameraPosition
 from raad.modules.fleet_device.events.subscribers import (
     SYSTEM_PRINCIPAL,
     DeviceAvAttributesReportedProcessor,
@@ -54,6 +55,7 @@ class _RecordingDeviceApplicationService:
     def __init__(self, *, discover_terminal_id: str | None = None) -> None:
         self.recorded: list[RecordDeviceSeenCommand] = []
         self.registered_cameras: list[RegisterCameraCommand] = []
+        self.recorded_audio_capabilities: list[RecordAudioCapabilityCommand] = []
         self._discover_terminal_id = discover_terminal_id
         #: channel numbers to reject with ConflictError (simulates "already registered")
         self.conflicting_channels: set[int] = set()
@@ -68,6 +70,11 @@ class _RecordingDeviceApplicationService:
         if command.channel_no in self.conflicting_channels:
             raise ConflictError(f"channel {command.channel_no} already registered")
         self.registered_cameras.append(command)
+
+    async def record_audio_capability(
+        self, command: RecordAudioCapabilityCommand, *, uow
+    ) -> None:
+        self.recorded_audio_capabilities.append(command)
 
 
 def _make_event(
@@ -327,6 +334,122 @@ class DeviceAvAttributesReportedProcessorTests(unittest.IsolatedAsyncioTestCase)
             await processor.process(event)
 
         self.assertEqual(service.registered_cameras, [])
+
+
+_FULL_AUDIO_PAYLOAD = {
+    "device_id": "device-1",
+    "max_video_channels": 1,
+    "input_audio_codec": 6,
+    "input_audio_channels": 1,
+    "input_audio_sample_rate": 3,
+    "input_audio_sample_bits": 1,
+    "audio_frame_length": 320,
+    "supports_audio_output": True,
+    "video_codec": 2,
+}
+
+
+class DeviceAvAttributesReportedProcessorAudioCaptureTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0033 — the second, independent half of `DeviceAvAttributesReportedProcessor`:
+    recording the terminal's own real audio capability, alongside the pre-existing
+    camera-discovery loop these tests don't otherwise touch."""
+
+    def setUp(self) -> None:
+        self.container = Container()
+        self.container.bind_singleton(FleetDeviceUnitOfWork, _FakeUnitOfWork())
+
+    async def test_records_audio_capability_when_all_fields_present(self) -> None:
+        service = _RecordingDeviceApplicationService()
+        self.container.bind_singleton(DeviceApplicationService, service)
+        processor = DeviceAvAttributesReportedProcessor(self.container)
+
+        event = DomainEvent(
+            event_id="evt-1",
+            event_type="DeviceAvAttributesReported",
+            version=1,
+            occurred_at=_OCCURRED_AT,
+            org_id="org-1",
+            correlation_id="corr-1",
+            payload=dict(_FULL_AUDIO_PAYLOAD),
+            aggregate_type="Device",
+            aggregate_id="00007",
+        )
+        await processor.process(event)
+
+        self.assertEqual(len(service.recorded_audio_capabilities), 1)
+        command = service.recorded_audio_capabilities[0]
+        self.assertEqual(command.device_id, "device-1")
+        self.assertEqual(
+            command.audio_capability,
+            AudioCapability(
+                codec=6,
+                channels=1,
+                sample_rate=3,
+                sample_bits=1,
+                frame_length=320,
+                supports_output=True,
+                video_codec=2,
+            ),
+        )
+        self.assertIs(command.actor, SYSTEM_PRINCIPAL)
+
+    async def test_falsy_but_present_fields_are_not_treated_as_missing(self) -> None:
+        """`0` is a valid codec/sample/byte value and `False` is a valid
+        `supports_audio_output` - the check must use `is not None`, not truthiness."""
+        service = _RecordingDeviceApplicationService()
+        self.container.bind_singleton(DeviceApplicationService, service)
+        processor = DeviceAvAttributesReportedProcessor(self.container)
+
+        payload = dict(_FULL_AUDIO_PAYLOAD)
+        payload.update(
+            {
+                "input_audio_codec": 0,
+                "input_audio_channels": 0,
+                "supports_audio_output": False,
+                "video_codec": 0,
+            }
+        )
+        event = DomainEvent(
+            event_id="evt-1",
+            event_type="DeviceAvAttributesReported",
+            version=1,
+            occurred_at=_OCCURRED_AT,
+            org_id="org-1",
+            correlation_id="corr-1",
+            payload=payload,
+            aggregate_type="Device",
+            aggregate_id="00007",
+        )
+        await processor.process(event)
+
+        self.assertEqual(len(service.recorded_audio_capabilities), 1)
+        capability = service.recorded_audio_capabilities[0].audio_capability
+        self.assertEqual(capability.codec, 0)
+        self.assertEqual(capability.channels, 0)
+        self.assertFalse(capability.supports_output)
+        self.assertEqual(capability.video_codec, 0)
+
+    async def test_missing_audio_field_skips_audio_capture_not_camera_discovery(self) -> None:
+        service = _RecordingDeviceApplicationService()
+        self.container.bind_singleton(DeviceApplicationService, service)
+        processor = DeviceAvAttributesReportedProcessor(self.container)
+
+        payload = {"device_id": "device-1", "max_video_channels": 2}  # no audio fields at all
+        event = DomainEvent(
+            event_id="evt-1",
+            event_type="DeviceAvAttributesReported",
+            version=1,
+            occurred_at=_OCCURRED_AT,
+            org_id="org-1",
+            correlation_id="corr-1",
+            payload=payload,
+            aggregate_type="Device",
+            aggregate_id="00007",
+        )
+        await processor.process(event)
+
+        self.assertEqual(service.recorded_audio_capabilities, [])
+        self.assertEqual(len(service.registered_cameras), 2)  # unaffected
 
 
 if __name__ == "__main__":

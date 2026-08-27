@@ -46,6 +46,7 @@ from raad.modules.fleet_device.application.services import (
     DeviceApplicationService,
     VehicleApplicationService,
 )
+from raad.modules.fleet_device.domain.value_objects import CameraPosition
 from raad.modules.tracking.application.queries import GetCurrentVehiclePositionQuery
 from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
@@ -278,6 +279,7 @@ async def resolve_d5_decision(
     device_organization_id: str,
     device_id: str,
     purpose: str,
+    camera_position: str | None,
     container: Container,
 ) -> PolicyDecision:
     """D5 (Backend LLD §5.2/§5.4; `.claude/rules/jt1078.md` #1). Resolves `org_scope` via the
@@ -294,7 +296,27 @@ async def resolve_d5_decision(
     not purely a `PolicyDecision` factory for that one case, the same "mostly returns a
     decision, but raises directly for the not-owned-at-all case" shape `resolve_cr1_decision`
     already establishes for students. Every other role is entirely unaffected by this addition —
-    `device_id`/`purpose` are accepted but not consulted for them.
+    `device_id`/`purpose`/`camera_position` are accepted but not consulted for them.
+
+    **`camera_position` cabin-facing exclusion, ADR-0032 — a real, pre-existing gap fixed here,
+    not new hardening.** `fleet_device.domain.value_objects.CameraPosition`'s own docstring has
+    always claimed `IN_CABIN` "is never exposed to parents," attributing that exclusion to this
+    policy — but `VideoAccessPolicy.evaluate` never took a camera/position argument at all, so
+    the check never actually existed anywhere in this codebase: a granted parent
+    (`has_video_live_access=True`) owning the right child could request a stream from *any*
+    camera on the vehicle's device, including an `in_cabin`/`driver_facing` one. This absolute
+    exclusion applies only to `Role.PARENT` — Org Admin and permitted RAAD staff are unaffected,
+    matching the rule's own "never exposed to *parents*" wording, not a blanket camera-position
+    restriction.
+
+    **`camera_position=None` is a deliberate opt-out, not a loophole.** Only `POST /video/live`/
+    `/playback` (new visibility being granted) pass the real value; `POST /video/sessions/{id}/
+    stop` passes `None` because tearing down an already-authorized session grants no new
+    visibility — the cabin exclusion already did its job at the session's own creation, and
+    resolving a device+camera solely to re-check a fact that can't change the teardown decision
+    would be unjustified scope for this fix. `None` skips the check entirely rather than
+    defaulting to allow-or-deny, so a future new call site is forced to pass an explicit value
+    or explicitly opt out — never silently inherits a wrong default.
     """
     resolver = container.resolve(ScopeResolver)
     org_scope: TenantRegionScope = await resolver.effective_org_scope(principal)
@@ -306,6 +328,9 @@ async def resolve_d5_decision(
     )
     if principal.role != Role.PARENT or not decision.allowed:
         return decision
+
+    if camera_position is not None and CameraPosition(camera_position).is_cabin_facing:
+        return PolicyDecision(allowed=False)
 
     student_id = await find_owned_student_id_for_device(
         principal=principal, device_id=device_id, container=container
@@ -332,6 +357,7 @@ async def enforce_d5(
     device_organization_id: str,
     device_id: str,
     purpose: str,
+    camera_position: str | None,
     container: Container,
 ) -> None:
     """Raises `VideoForbiddenError` (403, `VIDEO_FORBIDDEN` per API Contracts §5.2) on a D5
@@ -345,6 +371,7 @@ async def enforce_d5(
         device_organization_id=device_organization_id,
         device_id=device_id,
         purpose=purpose,
+        camera_position=camera_position,
         container=container,
     )
     if not decision.allowed:

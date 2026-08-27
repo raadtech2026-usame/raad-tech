@@ -58,7 +58,16 @@ _DEVICE_LIFECYCLE_VALUES = (
     "suspended",
     "retired",
 )
-_CAMERA_POSITION_VALUES = ("in_cabin", "road_facing", "other")
+_CAMERA_POSITION_VALUES = (
+    "in_cabin",
+    "road_facing",
+    "other",
+    "front",
+    "rear",
+    "left",
+    "right",
+    "driver_facing",
+)
 _DEVICE_INVENTORY_STATE_VALUES = ("manufactured", "in_stock", "allocated", "scrapped")
 
 
@@ -117,6 +126,16 @@ class DeviceModel(AuditedTableMixin, Base):
     av_attributes_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
     )
+    # ADR-0033: the terminal's own real `0x1003` audio capability, recorded verbatim. All seven
+    # NULL together until a real report has been received - never partially populated (see
+    # `AudioCapability`/`record_audio_capability`, which always overwrite as one unit).
+    audio_codec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audio_channels: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audio_sample_rate: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audio_sample_bits: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audio_frame_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    supports_audio_output: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    video_codec: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # ADR-0018: set only for a device created via `POST /device-inventory/{id}/allocate`; NULL
     # for every device registered the pre-existing way. In-context FK (both tables owned by
     # this same module), unlike `organization_id`'s deliberate cross-module id-only treatment.

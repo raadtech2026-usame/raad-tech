@@ -223,6 +223,13 @@ def _fields_for(event: DeviceEvent) -> dict[str, str]:
                 "correlation_id": event.correlation_id,
                 "max_video_channels": event.max_video_channels,
                 "max_audio_channels": event.max_audio_channels,
+                "input_audio_codec": event.input_audio_codec,
+                "input_audio_channels": event.input_audio_channels,
+                "input_audio_sample_rate": event.input_audio_sample_rate,
+                "input_audio_sample_bits": event.input_audio_sample_bits,
+                "audio_frame_length": event.audio_frame_length,
+                "supports_audio_output": event.supports_audio_output,
+                "video_codec": event.video_codec,
             },
         )
     raise TypeError(f"Unrecognized device-plane event type: {type(event)!r}")

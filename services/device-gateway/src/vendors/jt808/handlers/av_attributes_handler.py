@@ -71,17 +71,34 @@ class AvAttributesHandler(MessageHandler):
                 correlation_id=correlation_id,
                 max_video_channels=report.max_video_channels,
                 max_audio_channels=report.max_audio_channels,
+                input_audio_codec=report.input_audio_codec,
+                input_audio_channels=report.input_audio_channels,
+                input_audio_sample_rate=report.input_audio_sample_rate,
+                input_audio_sample_bits=report.input_audio_sample_bits,
+                audio_frame_length=report.audio_frame_length,
+                supports_audio_output=report.supports_audio_output,
+                video_codec=report.video_codec,
                 event_time=now,
                 received_at=now,
             )
         )
         log_with_fields(
             logger,
-            10,
+            20,  # ADR-0033: was DEBUG (10) - invisible at this deployment's default log level,
+                 # compounding the field-discard bug this same ADR fixes (a real 0x1003 exchange
+                 # completed for the bench terminal on 2026-08-19 and left no visible trace
+                 # anywhere). This fires exactly once per device's lifetime (ADR-0030's own
+                 # idempotency guard), the same significance level as `authentication_succeeded`.
             "av_attributes_reported",
             connection_id=context.connection_id,
             terminal_id=message.terminal_id,
             correlation_id=correlation_id,
             max_video_channels=report.max_video_channels,
+            max_audio_channels=report.max_audio_channels,
+            input_audio_codec=report.input_audio_codec,
+            input_audio_channels=report.input_audio_channels,
+            input_audio_sample_rate=report.input_audio_sample_rate,
+            input_audio_sample_bits=report.input_audio_sample_bits,
+            supports_audio_output=report.supports_audio_output,
         )
         return HandlerResult.no_response()

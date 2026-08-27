@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from raad.core.tenancy.principal import Principal
-from raad.modules.fleet_device.domain.value_objects import CameraPosition
+from raad.modules.fleet_device.domain.value_objects import AudioCapability, CameraPosition
 
 # --- Vehicle ------------------------------------------------------------------------------
 
@@ -101,6 +101,18 @@ class RegisterCameraCommand:
 
 
 @dataclass(frozen=True)
+class UpdateCameraCommand:
+    """`PATCH /devices/{device_id}/cameras/{camera_id}` (ADR-0032). `position`/`label` are
+    "leave unchanged when omitted" — see `Device.update_camera`'s own docstring."""
+
+    device_id: str
+    camera_id: str
+    position: CameraPosition | None
+    label: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class RecordDeviceSeenCommand:
     """`docs/architecture/post-f7-production-readiness-roadmap.md` Phase A item A3 — the
     device-gateway's `DeviceOnline`/`DeviceOffline` connectivity events, consumed by
@@ -127,6 +139,20 @@ class RecordAuthKeyHashCommand:
 
     device_id: str
     auth_key_hash: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RecordAudioCapabilityCommand:
+    """ADR-0033 — the device-gateway's widened `DeviceAvAttributesReported` event (its own
+    `0x1003` reply body, now carried in full), consumed by `events/subscribers.py`'s
+    `DeviceAvAttributesReportedProcessor`. Mirrors `RecordAuthKeyHashCommand`'s identical
+    shape/precedent: a broker-driven wire fact about a device this backend does not originate,
+    using the same `SYSTEM_PRINCIPAL` actor. `audio_capability` is always the terminal's raw
+    reported values — no codec/sample-rate assumption is made here or anywhere downstream."""
+
+    device_id: str
+    audio_capability: AudioCapability
     actor: Principal
 
 

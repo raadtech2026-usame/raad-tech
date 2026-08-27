@@ -32,6 +32,7 @@ from raad.modules.fleet_device.application.commands import (
     MarkVehicleUnderMaintenanceCommand,
     ReassignDeviceCommand,
     ReceiveDeviceInventoryItemCommand,
+    RecordAudioCapabilityCommand,
     RecordDeviceSeenCommand,
     RegisterCameraCommand,
     RegisterDeviceCommand,
@@ -39,6 +40,7 @@ from raad.modules.fleet_device.application.commands import (
     RetireDeviceCommand,
     SuspendDeviceCommand,
     UnassignDeviceCommand,
+    UpdateCameraCommand,
 )
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import (
@@ -67,6 +69,7 @@ from raad.modules.fleet_device.domain.repositories import (
 )
 from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
+    AudioCapability,
     CameraPosition,
     DeviceId,
     InventoryItemId,
@@ -641,6 +644,38 @@ class CameraRegistrationApplicationTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 uow=uow,
             )
+
+    async def test_update_camera_via_application_service_persists_new_role(self) -> None:
+        """ADR-0032: an Org Admin/RAAD-staff correction of a discovered channel's
+        auto-assigned role/label. No HTTP route exposes this yet (mirrors
+        `RegisterCameraCommand`'s own no-route posture, `api/routers.py`'s module docstring) -
+        this proves the application-layer capability itself round-trips correctly."""
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+        registered = await device_service.register_camera(
+            RegisterCameraCommand(
+                device_id=device_id,
+                channel_no=1,
+                position=CameraPosition.OTHER,
+                label="Channel 1",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        camera_id = registered.cameras[0].id
+
+        dto = await device_service.update_camera(
+            UpdateCameraCommand(
+                device_id=device_id,
+                camera_id=camera_id,
+                position=CameraPosition.DRIVER_FACING,
+                label="Driver Monitor",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(dto.cameras[0].position, CameraPosition.DRIVER_FACING.value)
+        self.assertEqual(dto.cameras[0].label, "Driver Monitor")
 
 
 class DeviceAssignmentLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -1415,6 +1450,59 @@ class RecordDeviceSeenTests(unittest.IsolatedAsyncioTestCase):
             GetDeviceByIdQuery(device_id=device_id), uow=uow
         )
         self.assertTrue(after.is_online)
+
+
+class RecordAudioCapabilityTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0033 — the application-layer entry point `events/subscribers.py`'s
+    `DeviceAvAttributesReportedProcessor` calls alongside its existing camera-discovery loop."""
+
+    async def test_records_audio_capability_and_commits(self) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+        commit_count_before = uow.commit_count
+        capability = AudioCapability(
+            codec=6,
+            channels=1,
+            sample_rate=3,
+            sample_bits=1,
+            frame_length=320,
+            supports_output=True,
+            video_codec=2,
+        )
+
+        await device_service.record_audio_capability(
+            RecordAudioCapabilityCommand(
+                device_id=device_id, audio_capability=capability, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(uow.commit_count, commit_count_before + 1)
+        stored = await uow.devices.get(DeviceId(device_id))
+        self.assertEqual(stored.audio_capability, capability)
+
+    async def test_unknown_device_id_is_a_no_op(self) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        commit_count_before = uow.commit_count
+
+        await device_service.record_audio_capability(
+            RecordAudioCapabilityCommand(
+                device_id=NON_EXISTENT_ULID,
+                audio_capability=AudioCapability(
+                    codec=6,
+                    channels=1,
+                    sample_rate=3,
+                    sample_bits=1,
+                    frame_length=320,
+                    supports_output=True,
+                    video_codec=2,
+                ),
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(uow.commit_count, commit_count_before)
 
 
 class ReceiveDeviceInventoryItemTests(unittest.IsolatedAsyncioTestCase):

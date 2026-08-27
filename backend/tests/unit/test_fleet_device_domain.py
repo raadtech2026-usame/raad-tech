@@ -21,6 +21,7 @@ from raad.modules.fleet_device.domain.entities import (
 )
 from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
+    AudioCapability,
     CameraId,
     CameraPosition,
     DeviceId,
@@ -401,6 +402,101 @@ class DeviceLifecycleTests(unittest.TestCase):
                 device.record_av_attributes_requested(requested_at)
                 self.assertEqual(device.av_attributes_requested_at, requested_at)
 
+    # --- record_audio_capability (ADR-0033) -----------------------------------------------
+
+    def test_new_device_has_no_audio_capability(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        self.assertIsNone(device.audio_capability)
+
+    def test_record_audio_capability_sets_the_value_verbatim(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        capability = AudioCapability(
+            codec=6,
+            channels=1,
+            sample_rate=3,
+            sample_bits=1,
+            frame_length=320,
+            supports_output=True,
+            video_codec=2,
+        )
+        device.record_audio_capability(capability)
+        self.assertEqual(device.audio_capability, capability)
+
+    def test_record_audio_capability_overwrites_rather_than_merges(self) -> None:
+        """The terminal's own report is always the current truth - a second, different report
+        (e.g. after a firmware update) replaces the prior value outright, never field-by-field."""
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        first = AudioCapability(
+            codec=6,
+            channels=1,
+            sample_rate=3,
+            sample_bits=1,
+            frame_length=320,
+            supports_output=False,
+            video_codec=2,
+        )
+        second = AudioCapability(
+            codec=10,
+            channels=2,
+            sample_rate=4,
+            sample_bits=2,
+            frame_length=640,
+            supports_output=True,
+            video_codec=7,
+        )
+        device.record_audio_capability(first)
+        device.record_audio_capability(second)
+        self.assertEqual(device.audio_capability, second)
+
+    def test_record_audio_capability_emits_no_domain_event(self) -> None:
+        """Mirrors `record_av_attributes_requested`'s identical break from every other mutator -
+        a durable wire fact device-gateway already observed, not a business decision made here."""
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.record_audio_capability(
+            AudioCapability(
+                codec=6,
+                channels=1,
+                sample_rate=3,
+                sample_bits=1,
+                frame_length=320,
+                supports_output=True,
+                video_codec=2,
+            )
+        )
+        self.assertEqual(device.pull_domain_events(), [])
+
+    def test_record_audio_capability_does_not_bump_updated_at(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        original_updated_at = device.updated_at
+        device.record_audio_capability(
+            AudioCapability(
+                codec=6,
+                channels=1,
+                sample_rate=3,
+                sample_bits=1,
+                frame_length=320,
+                supports_output=True,
+                video_codec=2,
+            )
+        )
+        self.assertEqual(device.updated_at, original_updated_at)
+
+    def test_record_audio_capability_works_regardless_of_lifecycle_state(self) -> None:
+        for state in DeviceLifecycleState:
+            with self.subTest(state=state):
+                device = self.make_device(state)
+                capability = AudioCapability(
+                    codec=6,
+                    channels=1,
+                    sample_rate=3,
+                    sample_bits=1,
+                    frame_length=320,
+                    supports_output=True,
+                    video_codec=2,
+                )
+                device.record_audio_capability(capability)
+                self.assertEqual(device.audio_capability, capability)
+
     def test_mark_assigned_emits_no_event(self) -> None:
         """Regression: the assignment fact is emitted once, by DeviceAssignment.open - not
         duplicated here."""
@@ -482,6 +578,76 @@ class CameraRegistrationTests(unittest.TestCase):
     def test_cameras_property_is_read_only_tuple(self) -> None:
         device = self.make_activated_device()
         self.assertIsInstance(device.cameras, tuple)
+
+    def test_update_camera_changes_position_and_label_and_records_event(self) -> None:
+        device = self.make_activated_device()
+        camera = device.register_camera(
+            id=CameraId(VALID_CAMERA_ULID),
+            channel_no=1,
+            position=CameraPosition.OTHER,
+            label="Channel 1",
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        device.pull_domain_events()  # drain the CameraRegistered event first
+
+        updated = device.update_camera(
+            camera_id=camera.id,
+            position=CameraPosition.FRONT,
+            label="Front Road Camera",
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        )
+        self.assertIs(updated, camera)
+        self.assertEqual(camera.position, CameraPosition.FRONT)
+        self.assertEqual(camera.label, "Front Road Camera")
+        events = device.pull_domain_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "CameraUpdated")
+
+    def test_update_camera_with_omitted_fields_leaves_them_unchanged(self) -> None:
+        device = self.make_activated_device()
+        camera = device.register_camera(
+            id=CameraId(VALID_CAMERA_ULID),
+            channel_no=1,
+            position=CameraPosition.OTHER,
+            label="Channel 1",
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        device.update_camera(
+            camera_id=camera.id,
+            position=CameraPosition.REAR,
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(camera.position, CameraPosition.REAR)
+        self.assertEqual(camera.label, "Channel 1")  # untouched - label was omitted
+
+    def test_update_camera_with_unknown_camera_id_raises_domain_error(self) -> None:
+        device = self.make_activated_device()
+        with self.assertRaises(DomainError):
+            device.update_camera(
+                camera_id=CameraId("01J8Z3K9G6X8YV5T4N2R7QW3MH"),
+                position=CameraPosition.FRONT,
+                clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            )
+
+
+class CameraPositionCabinFacingTests(unittest.TestCase):
+    """ADR-0032: `is_cabin_facing` is the single source of truth D5's parent-exclusion check
+    (`interfaces/http/policy_guards.resolve_d5_decision`) now consumes."""
+
+    def test_in_cabin_and_driver_facing_are_cabin_facing(self) -> None:
+        self.assertTrue(CameraPosition.IN_CABIN.is_cabin_facing)
+        self.assertTrue(CameraPosition.DRIVER_FACING.is_cabin_facing)
+
+    def test_directional_and_other_positions_are_not_cabin_facing(self) -> None:
+        for position in (
+            CameraPosition.ROAD_FACING,
+            CameraPosition.OTHER,
+            CameraPosition.FRONT,
+            CameraPosition.REAR,
+            CameraPosition.LEFT,
+            CameraPosition.RIGHT,
+        ):
+            self.assertFalse(position.is_cabin_facing, msg=position)
 
 
 # --- DeviceAssignment ----------------------------------------------------------------------

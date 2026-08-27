@@ -37,6 +37,7 @@ from raad.core.time.clock import Clock
 from raad.modules.fleet_device.domain import events as fleet_events
 from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
+    AudioCapability,
     CameraId,
     CameraPosition,
     DeviceId,
@@ -262,6 +263,7 @@ class Device(_AggregateRoot):
         inventory_id: InventoryItemId | None = None,
         is_online: bool = False,
         av_attributes_requested_at: datetime | None = None,
+        audio_capability: AudioCapability | None = None,
     ) -> None:
         super().__init__()
         self.id = id
@@ -285,6 +287,13 @@ class Device(_AggregateRoot):
         #: `DeviceOnline` reconnect never re-triggers discovery signaling. `None` means never
         #: requested.
         self.av_attributes_requested_at = av_attributes_requested_at
+        #: ADR-0033: the terminal's own real `0x1003` audio capability, recorded verbatim via
+        #: `record_audio_capability` — `None` until a real report has been received. Was
+        #: previously unrecoverable: `commands/av_attributes.AvAttributesReport` (device-gateway)
+        #: always parsed the full body, but `DeviceAvAttributesReported` only ever carried
+        #: `max_video_channels`/`max_audio_channels`, discarding the rest before this aggregate
+        #: could ever see it.
+        self.audio_capability = audio_capability
         self.created_at = created_at
         self.updated_at = updated_at
         self._cameras: list[Camera] = list(cameras) if cameras else []
@@ -495,6 +504,16 @@ class Device(_AggregateRoot):
         Callable regardless of `lifecycle_state`, same reasoning as those two."""
         self.av_attributes_requested_at = requested_at
 
+    def record_audio_capability(self, audio_capability: AudioCapability) -> None:
+        """ADR-0033: records the terminal's own real `0x1003` audio capability. Mirrors
+        `record_av_attributes_requested`'s identical break from every other mutator here — no
+        lifecycle check, no `updated_at` bump, no recorded `DomainEvent`: a durable record of a
+        wire fact device-gateway already observed, not a business decision made here. Callable
+        regardless of `lifecycle_state`, same reasoning as its siblings. Overwrites any prior
+        value outright — the terminal's own report is always the current truth, never merged
+        field-by-field with a stale one."""
+        self.audio_capability = audio_capability
+
     def register_camera(
         self,
         *,
@@ -522,6 +541,45 @@ class Device(_AggregateRoot):
                 channel_no=channel_no,
                 position=position.value,
                 label=label,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+        return camera
+
+    def update_camera(
+        self,
+        *,
+        camera_id: CameraId,
+        position: CameraPosition | None = None,
+        label: str | None = None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> Camera:
+        """ADR-0032: corrects a channel's admin-assigned role/label after discovery (ADR-0030
+        defaults every discovered channel to `OTHER`/"Channel N"). `channel_no` is never
+        editable here — it is the wire identity `ux_cameras__device_channel` is keyed on, not a
+        provisioning label. Both `position`/`label` are "leave unchanged when omitted" — the
+        same convention `RequestPlaybackVideoCommand`-style partial updates already use
+        elsewhere in this codebase; to clear a label, pass an empty string, not `None`. A
+        missing `camera_id` is a `DomainError`, not `NotFoundError` — the same "domain raises
+        for a missing child within an already-loaded aggregate; `NotFoundError` is the
+        application layer's concern for the aggregate root itself" convention `Route.remove_stop`
+        already established (`transport_ops/domain/entities.py`)."""
+        camera = next((c for c in self._cameras if c.id == camera_id), None)
+        if camera is None:
+            raise DomainError(f"Camera {camera_id} not found on device {self.id}.")
+        if position is not None:
+            camera.position = position
+        if label is not None:
+            camera.label = label
+        self._record(
+            fleet_events.camera_updated(
+                camera_id=str(camera_id),
+                device_id=str(self.id),
+                organization_id=str(self.organization_id),
+                position=camera.position.value,
+                label=camera.label,
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )

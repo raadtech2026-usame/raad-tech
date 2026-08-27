@@ -244,6 +244,34 @@ def camera_registered(
     )
 
 
+def camera_updated(
+    *,
+    camera_id: str,
+    device_id: str,
+    organization_id: str,
+    position: str,
+    label: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """ADR-0032: an Org Admin/RAAD-staff correction of a discovered channel's role/label —
+    mirrors `camera_registered`'s exact shape (same aggregate, same payload keys minus
+    `channel_no`, which `update_camera` never changes)."""
+    return _new_event(
+        event_type="CameraUpdated",
+        aggregate_type="Device",
+        aggregate_id=device_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "camera_id": camera_id,
+            "position": position,
+            "label": label,
+            "actor_id": actor_id,
+        },
+    )
+
+
 # --- DeviceAssignment ---------------------------------------------------------------------
 
 

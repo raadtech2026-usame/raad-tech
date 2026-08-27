@@ -29,6 +29,7 @@ from raad.modules.fleet_device.domain.entities import (
 )
 from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
+    AudioCapability,
     CameraId,
     CameraPosition,
     DeviceId,
@@ -150,6 +151,16 @@ def device_to_model(
     model.last_seen_at = _naive(device.last_seen_at)
     model.is_online = device.is_online
     model.av_attributes_requested_at = _naive(device.av_attributes_requested_at)
+    # ADR-0033: all seven columns are set/cleared as one unit, mirroring
+    # `AudioCapability`/`record_audio_capability`'s own "never partially populated" invariant.
+    audio = device.audio_capability
+    model.audio_codec = audio.codec if audio is not None else None
+    model.audio_channels = audio.channels if audio is not None else None
+    model.audio_sample_rate = audio.sample_rate if audio is not None else None
+    model.audio_sample_bits = audio.sample_bits if audio is not None else None
+    model.audio_frame_length = audio.frame_length if audio is not None else None
+    model.supports_audio_output = audio.supports_output if audio is not None else None
+    model.video_codec = audio.video_codec if audio is not None else None
     model.inventory_id = (
         str(device.inventory_id) if device.inventory_id is not None else None
     )
@@ -195,6 +206,19 @@ def model_to_device(model: DeviceModel) -> Device:
         last_seen_at=model.last_seen_at,
         is_online=model.is_online,
         av_attributes_requested_at=model.av_attributes_requested_at,
+        audio_capability=(
+            AudioCapability(
+                codec=model.audio_codec,
+                channels=model.audio_channels,
+                sample_rate=model.audio_sample_rate,
+                sample_bits=model.audio_sample_bits,
+                frame_length=model.audio_frame_length,
+                supports_output=model.supports_audio_output,
+                video_codec=model.video_codec,
+            )
+            if model.audio_codec is not None
+            else None
+        ),
         created_at=model.created_at,
         updated_at=model.updated_at,
         cameras=[model_to_camera(row) for row in model.cameras],

@@ -621,6 +621,67 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
+**Nothing — ADR-0032 (Camera Role Taxonomy + D5 Cabin-Facing Exclusion Fix) and ADR-0033
+(Terminal Audio Capability Capture) are both complete (2026-08-27).** At explicit user
+direction ("bench test first, then implement audio / camera roles / ADAS-safety / future-ready
+DMS / intercom, without assuming AAC or inventing hardware capabilities"): the current bench unit
+has an ADAS-relevant road-facing camera and an internal/cabin camera connected; **no DMS
+(driver-facing) camera is connected** — both ADRs are scoped accordingly, adding taxonomy and
+capability-capture only, never a physically-unverified claim.
+
+**ADR-0032** widens `CameraPosition` (previously `in_cabin`/`road_facing`/`other`) with `front`/
+`rear`/`left`/`right` (ADAS-relevant directional roles) and `driver_facing` (the DMS role,
+reserved — **not assigned to any camera**, since none is connected). A new `Device.update_camera`
+(application-layer only, no HTTP route yet — mirrors `RegisterCameraCommand`'s own
+no-route posture) lets an admin correct ADR-0030's auto-discovery `other` default after the fact.
+**A real, pre-existing D5 gap was found and fixed while widening the taxonomy, not introduced by
+it:** `CameraPosition`'s own docstring always claimed `in_cabin` "is never exposed to parents,"
+attributing that to `VideoAccessPolicy` — but `interfaces/http/policy_guards.resolve_d5_decision`
+(the actual D5 enforcement point) never took a camera/position argument at all, so a parent
+granted `has_video_live_access`/`has_video_playback_access` (ADR-0026) and owning the right child
+could reach *any* camera, including the in-cabin one. Fixed with a new `camera_position`
+parameter on `resolve_d5_decision`/`enforce_d5` and a `CameraPosition.is_cabin_facing` property
+(`in_cabin`/`driver_facing`) — absolute for `Role.PARENT` only, Org Admin/RAAD staff unaffected.
+Migration `a6682ad19581` (additive enum values only).
+
+**ADR-0033** closes a real information-loss bug: device-gateway's `commands/av_attributes.
+AvAttributesReport` already parsed the terminal's full `0x1003` audio/video attributes reply
+(confirmed live — the bench terminal's own 2026-08-19 exchange left no trace of its audio fields
+anywhere), but `DeviceAvAttributesReported` (ADR-0030) only ever carried
+`max_video_channels`/`max_audio_channels`. Widened the event end-to-end (device-gateway's
+`LoggingEventPublisher`/`RedisEventPublisher`/handler — all three producers updated, not just the
+one that would crash first, per ADR-0030's own documented lesson) and added a new
+`AudioCapability` value object + `Device.record_audio_capability` (mirrors
+`record_av_attributes_requested`'s "wire fact, not business decision" shape: no domain event, no
+lifecycle check, always overwrites as one unit). Backend wiring — `RecordAudioCapabilityCommand`,
+`DeviceApplicationService.record_audio_capability`, a second independent branch on
+`DeviceAvAttributesReportedProcessor` (checked with `is not None`, never truthiness — `0`/`False`
+are valid reported values), `infra/mappers.py` round-trip, migration `3aef3f7c7bb1` (seven
+nullable `devices` columns) — was completed in this same pass after being found partially built
+(ORM columns present, no migration yet) at session recovery. **No codec is assumed** — `codec`/
+`video_codec` are recorded as Table 6.21's raw enum byte, never decoded to a name (no approved
+document maps that table yet) — **not AAC, not anything else.** `supports_audio_output` is
+captured as the prerequisite fact any future intercom/PA feature would need, but no downlink
+audio command or streaming path is added — disclosed groundwork, not a working intercom.
+
+**What neither ADR does, disclosed not silently skipped:** no ADAS/DSM alarm detection or
+ingestion of any kind — `docs/vendor/HARDWARE_ANALYSIS.md` confirms this is undocumented for the
+confirmed `LSZ-C5804DG-Q-F` spec, and `RAAD_DevicePlane_Architecture_v0_1_draft.md`'s own
+`AdasEventDetected`/AI-alarm ingestion remains **[PROPOSED]**, not approved — implementing alarm
+logic here would have been inventing a hardware capability no approved document describes.
+
+Verified: full backend `tests/unit` + `tests/architecture` (1458 passed, 15 subtests), full
+`tests/integration` against real PostgreSQL with both migrations applied (the `fleet_device`
+device round-trip suite, previously failing with `UndefinedColumnError` on the unmigrated audio
+columns, now passes in full — the two remaining integration failures, `test_realtime_broker_
+fanout.py`, are pre-existing and unrelated, confirmed via `git stash` to fail identically at the
+pre-session commit). Device-gateway: full suite, 431 passed. New/updated tests:
+`CameraPositionCabinFacingTests`, `update_camera` domain/application cases,
+`RecordAudioCapabilityTests`, `DeviceAvAttributesReportedProcessorAudioCaptureTests`,
+`ResolveAndEnforceD5Tests`' new cabin-facing-denial regression tests. See
+`docs/architecture/adr/0032-camera-role-taxonomy-and-d5-cabin-exclusion-fix.md` and
+`0033-terminal-audio-capability-capture.md` for full detail.
+
 **Nothing — ADR-0031 (Fleet Overview Online-Vehicles Read Model) is complete (2026-08-23).** The
 Live Tracking frontend redesign's "All Vehicles" fleet-map mode needed a bulk "which vehicles are
 online right now" data source; none existed anywhere in this backend — `GET /vehicles`

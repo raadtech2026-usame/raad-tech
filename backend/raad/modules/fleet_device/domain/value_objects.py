@@ -245,14 +245,52 @@ class DeviceLifecycleState(str, Enum):
 
 
 class CameraPosition(str, Enum):
-    """Database Design §5.3: `position ENUM(in_cabin,road_facing,other)` — **D5**: `in_cabin`
-    is never exposed to parents. That exposure rule is the `video` context's policy
-    (`VideoAccessPolicy`, Backend LLD §5.2); this module only records the provisioning
-    fact."""
+    """Database Design §5.3's original three values (`in_cabin`, `road_facing`, `other`),
+    widened by ADR-0032 with five directional/role values discovered channels can now be
+    assigned to. **D5**: `IN_CABIN`/`DRIVER_FACING` are never exposed to parents — enforced in
+    `interfaces/http/policy_guards.resolve_d5_decision` (a real gap found and fixed by
+    ADR-0032: this module's own prior docstring claimed `VideoAccessPolicy` consumed this fact,
+    but `VideoAccessPolicy.evaluate` never took a camera/position argument at all — the check
+    did not exist anywhere before ADR-0032). `is_cabin_facing` is the single source of truth
+    for that exclusion set, so a future position value only needs to be added to
+    `_CABIN_FACING_POSITIONS` once, not re-derived at every call site."""
 
     IN_CABIN = "in_cabin"
     ROAD_FACING = "road_facing"
     OTHER = "other"
+    FRONT = "front"
+    REAR = "rear"
+    LEFT = "left"
+    RIGHT = "right"
+    DRIVER_FACING = "driver_facing"
+
+    @property
+    def is_cabin_facing(self) -> bool:
+        """True for any position showing the vehicle's interior/occupants — the set D5 excludes
+        from parent video access, regardless of an explicit `has_video_*_access` grant."""
+        return self in _CABIN_FACING_POSITIONS
+
+
+_CABIN_FACING_POSITIONS = frozenset({CameraPosition.IN_CABIN, CameraPosition.DRIVER_FACING})
+
+
+@dataclass(frozen=True)
+class AudioCapability:
+    """ADR-0033: the terminal's own `0x1003` audio/video attributes report (`mdvrdocs/
+    MDVR-808-1078-spec.pdf` §6.1.2 Table 6.1), recorded verbatim — no codec/sample-rate
+    assumption is made anywhere in this value object or its callers. Every field is the raw wire
+    value; `codec`/`video_codec` are Table 6.21's enum byte, not decoded to a name here (no
+    approved document maps every one of that table's 28 codec IDs to a name yet). Device-level,
+    not camera-level: `0x1003` reports `max_audio_channels` independently of
+    `max_video_channels` — this codebase does not assume a 1:1 audio-to-video-channel mapping."""
+
+    codec: int
+    channels: int
+    sample_rate: int
+    sample_bits: int
+    frame_length: int
+    supports_output: bool
+    video_codec: int
 
 
 class DeviceInventoryState(str, Enum):

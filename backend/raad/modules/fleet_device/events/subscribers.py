@@ -44,13 +44,14 @@ from raad.core.events.processor import EventProcessor, EventProcessorRegistry
 from raad.core.logging.setup import get_logger
 from raad.core.tenancy.principal import Principal, Role
 from raad.modules.fleet_device.application.commands import (
+    RecordAudioCapabilityCommand,
     RecordAuthKeyHashCommand,
     RecordDeviceSeenCommand,
     RegisterCameraCommand,
 )
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.services import DeviceApplicationService
-from raad.modules.fleet_device.domain.value_objects import CameraPosition
+from raad.modules.fleet_device.domain.value_objects import AudioCapability, CameraPosition
 
 SYSTEM_PRINCIPAL = Principal(user_id="system", role=Role.FOUNDER, org_id=None)
 
@@ -189,7 +190,14 @@ class DeviceAvAttributesReportedProcessor(EventProcessor):
     (`Device.register_camera`, raises `ConflictError`) — a replayed/duplicate `0x1003` report
     (e.g. device-gateway restart, at-least-once broker delivery) simply finds every channel
     already registered and moves on, exactly the same "idempotent because the invariant already
-    exists" posture this codebase already applies elsewhere rather than a separate dedup check."""
+    exists" posture this codebase already applies elsewhere rather than a separate dedup check.
+
+    **ADR-0033 widened this processor with a second, independent half: recording the terminal's
+    own real audio capability** (`record_audio_capability`, always an overwrite, never merged —
+    see `Device.record_audio_capability`'s own docstring). The event's audio fields are checked
+    with `is not None`, not truthiness — `0` is a valid codec id, sample count, or byte value,
+    and `False` is a valid `supports_audio_output`; treating any of them as "missing" would
+    silently drop a real, meaningful terminal report."""
 
     event_type = "DeviceAvAttributesReported"
 
@@ -221,6 +229,36 @@ class DeviceAvAttributesReportedProcessor(EventProcessor):
                     "camera_channel_already_registered",
                     extra={"device_id": device_id, "channel_no": channel_no},
                 )
+
+        audio_fields = (
+            event.payload.get("input_audio_codec"),
+            event.payload.get("input_audio_channels"),
+            event.payload.get("input_audio_sample_rate"),
+            event.payload.get("input_audio_sample_bits"),
+            event.payload.get("audio_frame_length"),
+            event.payload.get("supports_audio_output"),
+            event.payload.get("video_codec"),
+        )
+        if None not in audio_fields:
+            codec, channels, sample_rate, sample_bits, frame_length, supports_output, video_codec = (
+                audio_fields
+            )
+            await service.record_audio_capability(
+                RecordAudioCapabilityCommand(
+                    device_id=device_id,
+                    audio_capability=AudioCapability(
+                        codec=int(codec),
+                        channels=int(channels),
+                        sample_rate=int(sample_rate),
+                        sample_bits=int(sample_bits),
+                        frame_length=int(frame_length),
+                        supports_output=bool(supports_output),
+                        video_codec=int(video_codec),
+                    ),
+                    actor=SYSTEM_PRINCIPAL,
+                ),
+                uow=self._container.resolve(FleetDeviceUnitOfWork),
+            )
 
 
 def register_fleet_device_processors(

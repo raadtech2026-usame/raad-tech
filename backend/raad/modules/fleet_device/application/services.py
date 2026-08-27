@@ -40,6 +40,7 @@ from raad.modules.fleet_device.application.commands import (
     ReactivateDeviceCommand,
     ReassignDeviceCommand,
     ReceiveDeviceInventoryItemCommand,
+    RecordAudioCapabilityCommand,
     RecordAuthKeyHashCommand,
     RecordDeviceSeenCommand,
     RegisterCameraCommand,
@@ -48,6 +49,7 @@ from raad.modules.fleet_device.application.commands import (
     RetireDeviceCommand,
     SuspendDeviceCommand,
     UnassignDeviceCommand,
+    UpdateCameraCommand,
 )
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import (
@@ -433,6 +435,26 @@ class DeviceApplicationService:
             device.record_auth_key_hash(command.auth_key_hash)
             await uow.commit()
 
+    async def record_audio_capability(
+        self, command: RecordAudioCapabilityCommand, *, uow: FleetDeviceUnitOfWork
+    ) -> None:
+        """ADR-0033 — the application-layer entry point `events/subscribers.py`'s
+        `DeviceAvAttributesReportedProcessor` calls alongside its existing camera-discovery
+        loop. No-ops for an unknown `device_id`, mirroring `record_auth_key_hash`/
+        `record_device_seen`'s identical reasoning. Returns `None` — no HTTP route calls this
+        yet (`audio_capability` is not exposed on `DeviceDTO` this phase, the same posture
+        `av_attributes_requested_at` already has)."""
+        async with uow:
+            device = await uow.devices.get(DeviceId(command.device_id))
+            if device is None:
+                logger.info(
+                    "audio_capability_reported_for_unknown_device",
+                    extra={"device_id": command.device_id},
+                )
+                return
+            device.record_audio_capability(command.audio_capability)
+            await uow.commit()
+
     async def register_camera(
         self, command: RegisterCameraCommand, *, uow: FleetDeviceUnitOfWork
     ) -> DeviceDTO:
@@ -441,6 +463,22 @@ class DeviceApplicationService:
             device.register_camera(
                 id=CameraId(self._id_generator.new_id()),
                 channel_no=command.channel_no,
+                position=command.position,
+                label=command.label,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(device.pull_domain_events())
+            await uow.commit()
+            return device_to_dto(device)
+
+    async def update_camera(
+        self, command: UpdateCameraCommand, *, uow: FleetDeviceUnitOfWork
+    ) -> DeviceDTO:
+        async with uow:
+            device = await self._get_device_or_raise(uow, command.device_id)
+            device.update_camera(
+                camera_id=CameraId(command.camera_id),
                 position=command.position,
                 label=command.label,
                 clock=self._clock,
