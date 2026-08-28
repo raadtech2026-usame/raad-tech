@@ -11,6 +11,7 @@ already-tested (`test_relay_redis_wiring` below) conditional-binding layer, not 
 
 import asyncio
 import base64
+import shutil
 import struct
 import unittest
 
@@ -99,6 +100,24 @@ async def _read_ws_frame(reader) -> tuple[int, bytes]:
     return opcode, payload
 
 
+def _parse_flv_tags(buffer: bytes) -> list[tuple[int, bytes]]:
+    """Splits a buffer holding one or more concatenated `Tag(11-byte header + Data) +
+    PreviousTagSize(4)` sequences - exactly what a single WS binary frame from `broadcast_video`/
+    `broadcast_audio_aac` may carry (`FlvMuxer.feed_audio_aac_frame`'s own "sequence header +
+    raw frame in one chunk on first send" shape) - into `(tag_type, data)` pairs, mirroring a
+    real FLV demuxer's own tag-walking loop."""
+    tags: list[tuple[int, bytes]] = []
+    pos = 0
+    while pos + 11 <= len(buffer):
+        tag_type = buffer[pos]
+        data_size = int.from_bytes(buffer[pos + 1 : pos + 4], "big")
+        data_start = pos + 11
+        data = buffer[data_start : data_start + data_size]
+        tags.append((tag_type, data))
+        pos = data_start + data_size + 4  # skip the trailing PreviousTagSize
+    return tags
+
+
 class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         config = RelayConfig(
@@ -148,15 +167,16 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         device_writer.close()
         viewer_writer.close()
 
-    async def test_g711a_codec_currently_produces_no_audio_tag_or_header_claim(self) -> None:
-        """`_AUDIO_DECODERS` is deliberately empty as of 2026-08-28 (real-browser evidence:
-        Chrome's MSE rejects `audio/mp4;codecs=ipcm` and the failure is fatal to the whole
-        player, video included) - even a device reporting the one codec this relay knows how to
-        *decode* (G.711A, code 6) must currently get zero audio tags and a video-only header,
-        identical to any other/unknown codec, until a real browser-MSE-compatible audio
-        representation replaces this table's entry. `codec/g711a.py`'s own decode/resample
-        functions remain correct and unit-tested (`tests/test_g711a.py`) for whichever delivery
-        mechanism is chosen next - this test only proves the relay doesn't *use* them yet."""
+    async def test_g711a_codec_declares_audio_and_never_breaks_video(self) -> None:
+        """ADR-0034 (2026-08-28): G.711A (codec 6) is now transcoded to AAC via a per-session
+        `ffmpeg` subprocess (`_TRANSCODABLE_AUDIO_CODECS`), so the session's own FLV header now
+        correctly claims audio - unlike the prior, since-superseded Linear-PCM path this replaces
+        (browser MSE rejected `audio/mp4;codecs=ipcm` outright). This test does not require a
+        real `ffmpeg` binary: it only proves the header claim and the safety property that
+        matters regardless of whether transcoding itself succeeds on this machine - video for the
+        session is never affected by the audio path, whether ffmpeg is present, missing, or still
+        starting (`test_audio_reaches_viewer_as_aac_via_real_ffmpeg` below is the real,
+        ffmpeg-gated end-to-end proof that transcoded audio actually arrives)."""
         session = self.relay.session_manager.create_session(
             terminal_id="138001380001",
             kind=VideoSessionKind.LIVE,
@@ -171,7 +191,7 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         )
         await _ws_handshake(viewer_reader, viewer_writer, token=token)
         opcode, header_payload = await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=2.0)
-        self.assertEqual(header_payload[4], 0b001)  # video-only - never claim audio we can't ship
+        self.assertEqual(header_payload[4], 0b101)  # video + audio - codec 6 is transcodable
 
         device_reader, device_writer = await asyncio.open_connection(
             "127.0.0.1", self.relay.ingest_server.bound_port
@@ -181,10 +201,10 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
             _build_device_audio_frame(sim_card="138001380001", body=g711a_payload)
         )
         await device_writer.drain()
-        with self.assertRaises(asyncio.TimeoutError):
-            await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=0.3)
 
-        # video for the same session is completely unaffected by the disabled audio dispatch.
+        # video for the same session is unaffected by the audio path regardless of whether the
+        # transcoder ever produces output (real ffmpeg AAC framing is at least 128ms/frame, so no
+        # audio tag is expected this soon even when ffmpeg is genuinely available).
         device_writer.write(
             _build_device_frame(sim_card="138001380001", body=b"\x00\x00\x01\x65IDR-DATA")
         )
@@ -197,11 +217,79 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         device_writer.close()
         viewer_writer.close()
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "requires a real ffmpeg binary on PATH")
+    async def test_audio_reaches_viewer_as_aac_via_real_ffmpeg(self) -> None:
+        """The one test in this suite that spawns a genuine `ffmpeg` subprocess (ADR-0034) -
+        proves real G.711A silence bytes survive the actual transcode -> ADTS-split -> FLV-tag
+        pipeline and reach the viewer as an AAC sequence-header tag followed by an AAC raw tag.
+        Skipped, not faked, when `ffmpeg` isn't on `PATH` (this repo's dev sandbox has no ffmpeg;
+        the `jt1078-relay` Docker image does - `docker/jt1078-relay.Dockerfile`)."""
+        session = self.relay.session_manager.create_session(
+            terminal_id="138001380003",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-audio-3",
+            logical_channel=1,
+            audio_codec=6,
+        )
+        token = mint_token(session_id=session.session_id, secret=b"e2e-test-secret")
+
+        viewer_reader, viewer_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.viewer_server.bound_port
+        )
+        await _ws_handshake(viewer_reader, viewer_writer, token=token)
+        opcode, header_payload = await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=2.0)
+        self.assertEqual(header_payload[4], 0b101)
+
+        device_reader, device_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.ingest_server.bound_port
+        )
+        # 0xD5 is G.711A-encoded silence - real bytes ffmpeg's own `alaw` demuxer can decode.
+        silence_frame = bytes([0xD5] * 320)  # 320 bytes = 40ms @ 8kHz mono, per Table 6.1
+        # ffmpeg needs several 40ms input frames before it has enough audio to emit one 128ms
+        # AAC-LC frame - feed a generous burst rather than guessing the exact minimum.
+        for seq in range(20):
+            device_writer.write(
+                _build_device_audio_frame(
+                    sim_card="138001380003", body=silence_frame, packet_sequence=seq
+                )
+            )
+            await device_writer.drain()
+            await asyncio.sleep(0.02)
+
+        # The first `broadcast_audio_aac` call for a session sends the AAC sequence-header tag
+        # and the first raw AAC tag concatenated in one WS binary frame (`feed_audio_aac_frame`'s
+        # own "config changed -> prepend the header" shape); read defensively in case a future
+        # change ever splits them across two WS frames instead.
+        opcode, first_payload = await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=10.0)
+        tags = _parse_flv_tags(first_payload)
+        self.assertGreaterEqual(len(tags), 1)
+        seq_tag_type, seq_data = tags[0]
+        self.assertEqual(seq_tag_type, 8)  # FLV audio tag type
+        self.assertEqual(seq_data[0] >> 4, 10)  # SoundFormat=10 (AAC)
+        self.assertEqual(seq_data[1], 0)  # AACPacketType=0 (sequence header)
+
+        if len(tags) > 1:
+            raw_tag_type, raw_data = tags[1]
+        else:
+            opcode, second_payload = await asyncio.wait_for(
+                _read_ws_frame(viewer_reader), timeout=10.0
+            )
+            raw_tags = _parse_flv_tags(second_payload)
+            self.assertEqual(len(raw_tags), 1)
+            raw_tag_type, raw_data = raw_tags[0]
+        self.assertEqual(raw_tag_type, 8)
+        self.assertEqual(raw_data[0] >> 4, 10)
+        self.assertEqual(raw_data[1], 1)  # AACPacketType=1 (raw)
+        self.assertGreater(len(raw_data), 2)  # real AAC bytes followed the 2-byte audio header
+
+        device_writer.close()
+        viewer_writer.close()
+
     async def test_audio_frame_with_unrecognized_codec_produces_no_audio_tag(self) -> None:
-        """The explicit-dispatch safety net (`relay.py`'s own `_AUDIO_DECODERS.get(...)`) - a
-        session with no known codec (the default for every device today, until a real
-        `AudioCapability` names one this relay implements) gets zero audio tags, and video for
-        the same session is completely unaffected."""
+        """The explicit-dispatch safety net (`relay.py`'s own `_TRANSCODABLE_AUDIO_CODECS`
+        membership check) - a session with no known codec (the default for every device today,
+        until a real `AudioCapability` names one this relay implements) gets zero audio tags, and
+        video for the same session is completely unaffected."""
         session = self.relay.session_manager.create_session(
             terminal_id="138001380002",
             kind=VideoSessionKind.LIVE,

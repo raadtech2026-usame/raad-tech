@@ -75,12 +75,40 @@ class SessionBroadcastHub:
         """`pcm_payload` is already-decoded 16-bit little-endian mono PCM at exactly
         `sample_rate_hz` (`codec/g711a.py`'s `decode_g711a` + `resample_linear_pcm16`) - this
         method only fans it out per-viewer via `FlvMuxer.feed_audio_pcm`, mirroring
-        `broadcast_video`'s identical per-viewer-muxer shape."""
+        `broadcast_video`'s identical per-viewer-muxer shape. **Dead as of ADR-0034** (`relay.py`
+        no longer calls this - the emptied `_AUDIO_DECODERS` table never produces a PCM payload
+        to broadcast) - kept, not deleted, as the Linear-PCM tag-building path stays correct and
+        tested for any future case that genuinely wants raw PCM over `feed_audio_aac_frame`'s
+        transcoded path."""
         failed: list[WebSocketConnection] = []
         for connection, muxer in list(self._viewers.items()):
             chunk = muxer.feed_audio_pcm(
                 pcm_payload=pcm_payload,
                 sample_rate_hz=sample_rate_hz,
+                timestamp_ms=timestamp_ms,
+            )
+            try:
+                await connection.send_binary(chunk)
+            except Exception:  # noqa: BLE001 - one bad viewer must not break the broadcast
+                failed.append(connection)
+        for connection in failed:
+            self.remove_viewer(connection)
+        return failed
+
+    async def broadcast_audio_aac(
+        self, *, aac_payload: bytes, audio_specific_config: bytes, timestamp_ms: int | None
+    ) -> list[WebSocketConnection]:
+        """`aac_payload` is one already-encoded raw AAC frame (ADTS header already stripped,
+        `codec/aac_transcoder.find_adts_frames`) from this session's own `AacTranscoder`
+        (ADR-0034) - fans it out per-viewer via `FlvMuxer.feed_audio_aac_frame`, which handles
+        sending the AAC sequence-header tag on each viewer's own first frame (or on a config
+        change) before the raw frame, mirroring `broadcast_video`/`broadcast_audio`'s identical
+        per-viewer-muxer shape."""
+        failed: list[WebSocketConnection] = []
+        for connection, muxer in list(self._viewers.items()):
+            chunk = muxer.feed_audio_aac_frame(
+                aac_payload=aac_payload,
+                audio_specific_config=audio_specific_config,
                 timestamp_ms=timestamp_ms,
             )
             try:

@@ -9,6 +9,7 @@ from src.repackager.flv_muxer import (
     TAG_TYPE_AUDIO,
     TAG_TYPE_VIDEO,
     FlvMuxer,
+    build_aac_sequence_header_tag,
     build_avc_decoder_config,
     build_avcc_from_annex_b,
     build_linear_pcm_tag,
@@ -463,6 +464,62 @@ class FeedAnnexBVideoSplitParameterSetTests(unittest.TestCase):
         self.assertEqual(chunk_pps_change[12], 0)
         self.assertIn(different_sps, chunk_pps_change)  # last-known (updated) SPS carried forward
         self.assertIn(different_pps, chunk_pps_change)
+
+
+class AacSequenceHeaderTests(unittest.TestCase):
+    """ADR-0034 - closes the real gap the pre-existing `feed_audio_aac` left unpopulated: a
+    sequence header (`AACPacketType=0`) must precede any raw AAC frame."""
+
+    _CONFIG = bytes([0x15, 0x88])  # AAC-LC/8kHz/mono AudioSpecificConfig
+
+    def test_sequence_header_tag_uses_the_audio_tag_type_and_packet_type_zero(self) -> None:
+        tag = build_aac_sequence_header_tag(audio_specific_config=self._CONFIG, timestamp_ms=0)
+        self.assertEqual(tag[0], TAG_TYPE_AUDIO)
+        sound_format = tag[11] >> 4
+        aac_packet_type = tag[12]
+        self.assertEqual(sound_format, 10)  # AAC
+        self.assertEqual(aac_packet_type, 0)  # sequence header
+
+    def test_sequence_header_carries_the_exact_config_bytes(self) -> None:
+        tag = build_aac_sequence_header_tag(audio_specific_config=self._CONFIG, timestamp_ms=0)
+        self.assertEqual(tag[13:15], self._CONFIG)
+
+
+class AacFrameFeedTests(unittest.TestCase):
+    def test_first_frame_emits_sequence_header_then_raw_frame(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        chunk = muxer.feed_audio_aac_frame(
+            aac_payload=b"\xaa\xbb", audio_specific_config=b"\x15\x88", timestamp_ms=1000
+        )
+        # sequence header tag first (AACPacketType=0), then the raw frame tag (=1)
+        first_tag_packet_type = chunk[12]
+        self.assertEqual(first_tag_packet_type, 0)
+        second_tag_offset = 11 + (int.from_bytes(chunk[1:4], "big")) + 4
+        self.assertEqual(chunk[second_tag_offset + 12], 1)
+
+    def test_unchanged_config_does_not_resend_the_sequence_header(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        muxer.feed_audio_aac_frame(
+            aac_payload=b"\xaa", audio_specific_config=b"\x15\x88", timestamp_ms=1000
+        )
+        second_chunk = muxer.feed_audio_aac_frame(
+            aac_payload=b"\xbb", audio_specific_config=b"\x15\x88", timestamp_ms=1040
+        )
+        # only the raw-frame tag - packet type 1 straight away, no sequence header repeated.
+        self.assertEqual(second_chunk[12], 1)
+
+    def test_changed_config_resends_the_sequence_header(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        muxer.feed_audio_aac_frame(
+            aac_payload=b"\xaa", audio_specific_config=b"\x15\x88", timestamp_ms=1000
+        )
+        second_chunk = muxer.feed_audio_aac_frame(
+            aac_payload=b"\xbb", audio_specific_config=b"\x12\x10", timestamp_ms=1040
+        )
+        self.assertEqual(second_chunk[12], 0)  # sequence header again - config changed
 
 
 if __name__ == "__main__":

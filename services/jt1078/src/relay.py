@@ -22,12 +22,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-from typing import Callable
+from collections.abc import Awaitable
 
 from redis.asyncio import Redis
 
 from src.broker_config import BrokerConfig
-from src.codec.g711a import decode_g711a, resample_linear_pcm16
+from src.codec.aac_transcoder import AAC_LC_8KHZ_MONO_AUDIO_SPECIFIC_CONFIG, AacTranscoder
 from src.config import RelayConfig
 from src.events.publisher_port import LoggingSessionEventPublisher, SessionEventPublisher
 from src.events.redis_session_event_publisher import RedisSessionEventPublisher
@@ -48,34 +48,53 @@ from src.viewer.viewer_server import ViewerServer
 
 logger = get_logger("jt1078_relay.relay")
 
-# `input_audio_codec` (`mdvrdocs/MDVR-808-1078-spec.pdf` Table 6.21) -> a
-# `(payload: bytes) -> (pcm16le_bytes, sample_rate_hz)` decoder. Deliberately small and explicit:
-# any codec not listed here gets zero audio tags for its session (`_on_reassembled_frame` below),
-# never a guessed decode. `6` (G.711A) is the only codec this relay has real evidence for - the
-# bench MDVR's own confirmed live `0x1003` report (ADR-0033).
-_G711A_TARGET_SAMPLE_RATE_HZ = 11025  # nearest of FLV's 4 legacy SoundRate values to 8000Hz
+# `input_audio_codec` (`mdvrdocs/MDVR-808-1078-spec.pdf` Table 6.21) values this relay knows how
+# to get audible in a browser. Deliberately small and explicit: any codec not listed here gets
+# zero audio tags for its session (`_on_reassembled_frame` below), never a guessed transcode. `6`
+# (G.711A) is the only codec this relay has real evidence for - the bench MDVR's own confirmed
+# live `0x1003` report (ADR-0033).
+#
+# ADR-0034 (2026-08-28): real-browser evidence (Chrome DevTools console, live against the
+# physical bench unit) showed `MediaSource.addSourceBuffer('audio/mp4;codecs=ipcm')` throws
+# `NotSupportedError` - Chrome's MSE does not accept raw Linear-PCM-in-MP4 via `mpegts.js`'s own
+# remux path, and that failure was fatal to the *whole* player (video's own already-accepted
+# H.264 SourceBuffer included), not just the audio track. AAC-LC is the one audio codec that
+# path reliably accepts, so G.711A is now transcoded to AAC via a per-session `ffmpeg` subprocess
+# (`codec/aac_transcoder.AacTranscoder`) rather than expanded to Linear PCM in Python
+# (`codec/g711a.py` - kept, correct and tested, for any future non-ffmpeg need, just not called
+# from this live path anymore).
+_TRANSCODABLE_AUDIO_CODECS: frozenset[int] = frozenset({6})
+
+# AAC-LC's frame size is fixed at 1024 samples; at the fixed 8kHz this transcoder always encodes
+# at (`codec/aac_transcoder.py`'s own `_SOURCE_SAMPLE_RATE_HZ`), that's exactly 128ms/frame -
+# used to derive each emitted AAC frame's own FLV tag timestamp (see `_AudioTranscodeSession`
+# below), deliberately not ffmpeg's own output-arrival wall-clock time (internal buffering/flush
+# jitter would otherwise make tag timestamps non-monotonic or bursty).
+_AAC_FRAME_DURATION_MS = 1024 * 1000 // 8000
 
 
-def _decode_g711a_to_pcm(payload: bytes) -> tuple[bytes, int]:
-    # G.711 is an ITU-T-standardized 8kHz codec (not a value this relay is guessing or assuming
-    # per-device - it's what "G.711" *is*); Table 6.1's own generic `input_audio_sample_rate`
-    # field is not threaded through this relay today, since G.711A's rate is fixed by definition.
-    pcm = decode_g711a(payload)
-    resampled = resample_linear_pcm16(pcm, from_hz=8000, to_hz=_G711A_TARGET_SAMPLE_RATE_HZ)
-    return resampled, _G711A_TARGET_SAMPLE_RATE_HZ
+class _AudioTranscodeSession:
+    """Per-session AAC transcoding state: the live `AacTranscoder` process plus enough to derive
+    each emitted AAC frame's own FLV tag timestamp. ffmpeg buffers internally and does not
+    preserve a 1:1 relationship between a fed G.711A frame's own `frame.timestamp_ms` and any
+    particular emitted AAC frame (`aac_transcoder.py`'s own docstring) - so output timestamps are
+    derived instead from a fixed per-frame duration counted forward from the first real audio
+    frame's timestamp, which stays monotonic regardless of ffmpeg's own I/O timing."""
 
+    def __init__(self, transcoder: AacTranscoder) -> None:
+        self.transcoder = transcoder
+        self._next_frame_index = 0
+        self._anchor_timestamp_ms: int | None = None
 
-# EMPTY, deliberately, as of 2026-08-28 - real-browser evidence (Chrome DevTools console,
-# live against the physical bench unit): `MediaSource.addSourceBuffer('audio/mp4;
-# codecs=ipcm')` throws `NotSupportedError` - Chrome's MSE does not accept raw Linear-PCM-in-MP4
-# via `mpegts.js`'s own remux path, and that failure is fatal to the *whole* player (video's own
-# already-accepted H.264 SourceBuffer included), not just the audio track. `decode_g711a`/
-# `resample_linear_pcm16`/`_decode_g711a_to_pcm` above are correct, tested, and kept exactly as
-# they are - this table just doesn't route to them yet, until a genuinely browser-MSE-compatible
-# audio representation is chosen (see the codebase's own tracked follow-up); no video-affecting
-# change is needed anywhere else, since `_on_session_created`/`_on_reassembled_frame` both key
-# off this one table as their single source of truth for "does this session get audio tags."
-_AUDIO_DECODERS: dict[int, Callable[[bytes], tuple[bytes, int]]] = {}
+    def note_input_frame(self, timestamp_ms: int | None) -> None:
+        if self._anchor_timestamp_ms is None:
+            self._anchor_timestamp_ms = timestamp_ms or 0
+
+    def next_output_timestamp_ms(self) -> int:
+        anchor = self._anchor_timestamp_ms or 0
+        timestamp_ms = anchor + self._next_frame_index * _AAC_FRAME_DURATION_MS
+        self._next_frame_index += 1
+        return timestamp_ms
 
 
 class Jt1078Relay:
@@ -91,6 +110,13 @@ class Jt1078Relay:
         self._redis_client = redis_client or self._build_redis_client()
 
         self._hubs: dict[str, SessionBroadcastHub] = {}
+        self._audio_transcode_sessions: dict[str, _AudioTranscodeSession] = {}
+        # Holds references to fire-and-forget transcoder start/stop tasks spawned from the
+        # synchronous `_on_session_created`/`_on_session_removed` callbacks (`SessionManager`'s
+        # own `OnSessionCreated`/`OnSessionRemoved` types are sync) - without this, asyncio may
+        # garbage-collect a task before it completes (see the stdlib docs' own warning on
+        # `asyncio.create_task`).
+        self._background_tasks: set[asyncio.Task] = set()
         self._event_publisher: SessionEventPublisher = self._build_event_publisher()
         self._token_guard: SingleUseTokenGuard = self._build_token_guard()
 
@@ -147,15 +173,58 @@ class Jt1078Relay:
 
     def _on_session_created(self, session: VideoSession) -> None:
         # Same source of truth `_on_reassembled_frame` uses to decide whether to ever call
-        # `broadcast_audio` for this session - the FLV header's own claim and actual tag
+        # `broadcast_audio_aac` for this session - the FLV header's own claim and actual tag
         # delivery must never disagree (2026-08-28 regression fix).
-        has_audio = session.audio_codec in _AUDIO_DECODERS
+        has_audio = session.audio_codec in _TRANSCODABLE_AUDIO_CODECS
         self._hubs[session.session_id] = SessionBroadcastHub(
             session.session_id, has_audio=has_audio
         )
+        if has_audio:
+            self._spawn_background(self._start_audio_transcoder(session.session_id))
 
     def _on_session_removed(self, session_id: str) -> None:
         self._hubs.pop(session_id, None)
+        audio_state = self._audio_transcode_sessions.pop(session_id, None)
+        if audio_state is not None:
+            self._spawn_background(audio_state.transcoder.stop())
+
+    def _spawn_background(self, coro: Awaitable[None]) -> None:
+        task = asyncio.ensure_future(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _start_audio_transcoder(self, session_id: str) -> None:
+        async def _on_aac_frame(aac_payload: bytes) -> None:
+            await self._on_transcoded_aac_frame(session_id, aac_payload)
+
+        transcoder = AacTranscoder(on_aac_frame=_on_aac_frame)
+        try:
+            await transcoder.start()
+        except Exception as exc:  # noqa: BLE001 - a missing/broken ffmpeg must be logged, never
+            # silently vanish (the same "don't let a background task's exception disappear
+            # unlogged" lesson this codebase already applies to every `run_forever` consumer
+            # loop) - the session simply stays video-only, exactly like an unrecognized codec.
+            log_with_fields(
+                logger, 40, "audio_transcoder_start_failed", session_id=session_id, error=str(exc)
+            )
+            return
+        if session_id not in self._hubs:
+            # The session was torn down while ffmpeg was still spawning - don't leak the
+            # process; `_on_session_removed` already ran and found nothing to stop.
+            await transcoder.stop()
+            return
+        self._audio_transcode_sessions[session_id] = _AudioTranscodeSession(transcoder)
+
+    async def _on_transcoded_aac_frame(self, session_id: str, aac_payload: bytes) -> None:
+        hub = self._hubs.get(session_id)
+        audio_state = self._audio_transcode_sessions.get(session_id)
+        if hub is None or audio_state is None:
+            return
+        await hub.broadcast_audio_aac(
+            aac_payload=aac_payload,
+            audio_specific_config=AAC_LC_8KHZ_MONO_AUDIO_SPECIFIC_CONFIG,
+            timestamp_ms=audio_state.next_output_timestamp_ms(),
+        )
 
     async def _on_reassembled_frame(self, session_id: str, frame: ReassembledFrame) -> None:
         hub = self._hubs.get(session_id)
@@ -170,15 +239,16 @@ class Jt1078Relay:
         elif frame.is_audio:
             session = self._session_manager.resolve(session_id)
             audio_codec = session.audio_codec if session is not None else None
-            decoder = _AUDIO_DECODERS.get(audio_codec) if audio_codec is not None else None
-            if decoder is None:
-                return  # no decoder for this device's real (or unknown) codec - no audio tag
-            pcm_payload, sample_rate_hz = decoder(frame.body)
-            await hub.broadcast_audio(
-                pcm_payload=pcm_payload,
-                sample_rate_hz=sample_rate_hz,
-                timestamp_ms=frame.timestamp_ms,
-            )
+            if audio_codec not in _TRANSCODABLE_AUDIO_CODECS:
+                return  # no transcoder for this device's real (or unknown) codec - no audio tag
+            audio_state = self._audio_transcode_sessions.get(session_id)
+            if audio_state is None:
+                # ffmpeg is still spawning (`_start_audio_transcoder` hasn't finished) - this
+                # frame is dropped, not queued; audio resumes once the transcoder is ready,
+                # video for this same frame is unaffected either way.
+                return
+            audio_state.note_input_frame(frame.timestamp_ms)
+            await audio_state.transcoder.feed(frame.body)
 
     def create_live_session(
         self,
@@ -288,6 +358,11 @@ class Jt1078Relay:
             except asyncio.CancelledError:
                 pass
             self._idle_sweep_task = None
+        for audio_state in list(self._audio_transcode_sessions.values()):
+            await audio_state.transcoder.stop()
+        self._audio_transcode_sessions.clear()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
         await self._ingest_server.stop()
         await self._viewer_server.stop()
         log_with_fields(logger, 20, "relay_stopped")

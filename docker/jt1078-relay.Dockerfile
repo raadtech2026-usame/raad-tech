@@ -8,12 +8,23 @@
 # `redis>=5.0` (the same pin already approved for device-gateway, ADR-0008/ADR-0010/ADR-0012);
 # everything else (ingest demux, FLV muxer, WS-FLV viewer server) is stdlib, so no compiler
 # toolchain is needed on top of python:3.11-slim.
+#
+# `ffmpeg` (ADR-0034): the one real runtime dependency this deployable has ever needed beyond
+# Python's own stdlib + redis. Narrow, disclosed purpose — transcoding a confirmed-real device's
+# G.711A audio to AAC, the only audio codec browsers' MediaSource Extensions reliably accept via
+# `mpegts.js`'s own FLV->fMP4 remux path (Linear PCM and MP3-in-fMP4 both lack reliable MSE
+# support, confirmed live against a real browser). Debian's own `ffmpeg` package, not a pinned
+# custom build - this relay only uses ffmpeg's standard alaw-decode + AAC-LC encode, both stable
+# for many releases.
 
 FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN groupadd --system appuser && useradd --system --gid appuser --create-home appuser
+RUN groupadd --system appuser && useradd --system --gid appuser --create-home appuser \
+    && apt-get update \
+    && apt-get install --no-install-recommends -y ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
 COPY src ./src

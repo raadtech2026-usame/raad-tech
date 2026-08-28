@@ -62,6 +62,7 @@ _FRAME_TYPE_KEYFRAME = 1
 _FRAME_TYPE_INTER_FRAME = 2
 
 _SOUND_FORMAT_AAC = 10
+_AAC_PACKET_TYPE_SEQUENCE_HEADER = 0
 _AAC_PACKET_TYPE_RAW = 1
 
 # FLV Linear PCM, little-endian (Adobe FLV spec's own SoundFormat enum) - the format
@@ -232,8 +233,25 @@ def build_avc_nalu_tag(*, avcc_payload: bytes, is_keyframe: bool, timestamp_ms: 
 
 
 def build_aac_raw_tag(*, aac_payload: bytes, timestamp_ms: int) -> bytes:
-    header_byte = (_SOUND_FORMAT_AAC << 4) | (0b11 << 2) | (0b1 << 1) | 0b1  # 44kHz/16-bit/stereo
+    # 44kHz/16-bit/stereo is Adobe's own FLV-spec convention for AAC specifically ("For AAC
+    # stream, always set audioSampleRate/-Size/NumberOfChannel to these fixed values") - a
+    # real player ignores these legacy flags for AAC and reads the actual sample
+    # rate/channels from `AudioSpecificConfig` (`build_aac_sequence_header_tag`) instead, so
+    # this hardcoding, unlike the original bug's mislabeled *codec*, is spec-correct as-is.
+    header_byte = (_SOUND_FORMAT_AAC << 4) | (0b11 << 2) | (0b1 << 1) | 0b1
     body = bytes([header_byte, _AAC_PACKET_TYPE_RAW]) + aac_payload
+    return _build_tag(tag_type=TAG_TYPE_AUDIO, timestamp_ms=timestamp_ms, data=body)
+
+
+def build_aac_sequence_header_tag(*, audio_specific_config: bytes, timestamp_ms: int) -> bytes:
+    """ADR-0034 — closes a real, separate gap the original `feed_audio_aac` left unpopulated
+    (mirrors `build_avc_sequence_header_tag`'s identical role for video): a real player cannot
+    decode any `AACPacketType=1` raw frame until it has first received this `AACPacketType=0`
+    tag, carrying the 2-byte MPEG-4 `AudioSpecificConfig` (object type, sample rate, channel
+    count) - without it, even genuinely correct AAC bitstream data has nothing to configure the
+    decoder with."""
+    header_byte = (_SOUND_FORMAT_AAC << 4) | (0b11 << 2) | (0b1 << 1) | 0b1
+    body = bytes([header_byte, _AAC_PACKET_TYPE_SEQUENCE_HEADER]) + audio_specific_config
     return _build_tag(tag_type=TAG_TYPE_AUDIO, timestamp_ms=timestamp_ms, data=body)
 
 
@@ -277,6 +295,7 @@ class FlvMuxer:
         self._sent_avc_decoder_config: bytes | None = None
         self._latest_sps_list: list[bytes] = []
         self._latest_pps_list: list[bytes] = []
+        self._sent_aac_config: bytes | None = None
 
     def _relative_timestamp(self, timestamp_ms: int | None) -> int:
         if timestamp_ms is None:
@@ -381,6 +400,25 @@ class FlvMuxer:
             aac_payload=aac_payload, timestamp_ms=self._relative_timestamp(timestamp_ms)
         )
         return tag + len(tag).to_bytes(4, "big")
+
+    def feed_audio_aac_frame(
+        self, *, aac_payload: bytes, audio_specific_config: bytes, timestamp_ms: int | None
+    ) -> bytes:
+        """The real, ffmpeg-transcoded AAC path (ADR-0034, `codec/aac_transcoder.py`) - mirrors
+        `feed_annex_b_video`'s own "send the sequence header once (or again if it changes),
+        never on every frame" shape, tracked per-muxer exactly like `_sent_avc_decoder_config`
+        (a viewer joining mid-stream needs its own copy)."""
+        relative_timestamp = self._relative_timestamp(timestamp_ms)
+        chunks: list[bytes] = []
+        if audio_specific_config != self._sent_aac_config:
+            self._sent_aac_config = audio_specific_config
+            header_tag = build_aac_sequence_header_tag(
+                audio_specific_config=audio_specific_config, timestamp_ms=relative_timestamp
+            )
+            chunks.append(header_tag + len(header_tag).to_bytes(4, "big"))
+        tag = build_aac_raw_tag(aac_payload=aac_payload, timestamp_ms=relative_timestamp)
+        chunks.append(tag + len(tag).to_bytes(4, "big"))
+        return b"".join(chunks)
 
     def feed_audio_pcm(
         self, *, pcm_payload: bytes, sample_rate_hz: int, timestamp_ms: int | None
