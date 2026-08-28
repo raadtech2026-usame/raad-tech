@@ -664,6 +664,32 @@ document maps that table yet) — **not AAC, not anything else.** `supports_audi
 captured as the prerequisite fact any future intercom/PA feature would need, but no downlink
 audio command or streaming path is added — disclosed groundwork, not a working intercom.
 
+**ADR-0033 is now physically verified against the real `LSZ-C5804DG-Q-F` bench MDVR, same day
+(2026-08-27), not just synthetic-fixture-tested.** After this session's own device-gateway/worker
+rebuild put the code live, a real JT808 registration → authentication → `device_online`
+transition correctly re-triggered `0x9003` (the guard had been reset to `NULL` for this test),
+and the terminal replied with a real `0x1003` carrying `max_video_channels=4`,
+`max_audio_channels=4`, `input_audio_codec=6`, `input_audio_channels=1`,
+`input_audio_sample_rate=0`, `input_audio_sample_bits=1`, `audio_frame_length=320`,
+`supports_audio_output=true`, `video_codec=98` — codec/sample-rate values kept exactly as opaque
+wire bytes throughout, per the same "no codec assumed" rule this ADR already committed to.
+Persisted idempotently: all seven `devices` columns now hold these values, and the same reply's
+channel count against the 4 pre-existing `Camera` rows (from 2026-08-19) logged
+`camera_channel_already_registered` for each — no duplication. **One operational note, not a
+hardware-capability finding:** the first automatic query (published `20:32:43Z`, right after the
+guard reset) got no reply in the following ~49 minutes despite the device staying connected and
+sending GPS/heartbeats throughout; a manual re-publish of the identical request 49 minutes later
+(`21:32:40Z`) got a real reply in ~19ms — as fast as this device's own two 2026-08-19 round
+trips. No error was ever logged on either attempt, so this reads as one dropped/unanswered
+application-layer exchange, not a protocol or code defect — the identical request succeeded on
+retry with zero code changed in between. Full detail: ADR-0033's own Verification section.
+
+**Preserving a distinction the user asked to keep explicit:** *physical-hardware-confirmed* now
+covers this unit's real audio-capability report and its 4-channel video/audio capacity.
+*Protocol-supported-but-hardware-unverified* still covers DMS, ADAS, and intercom — none is
+implemented, and `supports_audio_output=true` is a confirmed fact about this hardware, not a
+working intercom feature.
+
 **What neither ADR does, disclosed not silently skipped:** no ADAS/DSM alarm detection or
 ingestion of any kind — `docs/vendor/HARDWARE_ANALYSIS.md` confirms this is undocumented for the
 confirmed `LSZ-C5804DG-Q-F` spec, and `RAAD_DevicePlane_Architecture_v0_1_draft.md`'s own
@@ -2530,6 +2556,61 @@ Reverse-chronological (most recent first):
 - **Severity:** ~~Low~~
 - **Blocking production?** No longer — this was a CI-gate-integrity gap (the suite existed to
   catch exactly this kind of drift but had itself drifted), not a runtime defect.
+
+### 20. Windows Firewall Private-profile has no inbound allow rule for Docker's JT808 port by default
+
+- **The gap (found live, 2026-08-27, during ADR-0033's own physical bench verification):** the
+  bench MDVR connects to the dev PC entirely over its own built-in Wi-Fi AP (MDVR `WorkMode=AP`,
+  the PC as a Wi-Fi client) — a topology Windows classifies as the **Private** network profile.
+  Docker Desktop's own firewall rule for `com.docker.backend.exe` (the process that actually owns
+  the host-side listener for `DEVICE_GATEWAY_JT808_PORT`/7808) is scoped to the **Public** profile
+  only; Private's active `DefaultInboundAction` is `Block`. The physical MDVR could reach and ARP-
+  resolve the PC (confirmed: the "gateway" IP `192.168.10.202` is the MDVR's own AP radio, ARP MAC
+  identical to the AP's own BSSID), but every inbound JT808 TCP SYN to `7808` was silently dropped
+  by the OS firewall before ever reaching device-gateway — zero `connection_accepted` log lines
+  from any non-`127.0.0.1` address for the full length of a fresh bench-test session.
+- **Resolution:** the user added a dedicated inbound Allow rule (`RAAD JT808 7808`, TCP, Private
+  profile, any remote address) via Windows Firewall directly — not a RAAD/Docker configuration
+  change, so nothing in this repository needed to change. Confirmed working immediately after:
+  real JT808 registration/authentication/heartbeat all succeeded within the same session.
+- **Severity:** Low — a one-time host/OS setup step for any dev machine whose bench MDVR connects
+  over its own AP rather than a shared LAN/router, not a defect in RAAD's own code or Docker
+  Compose configuration. Worth naming in a future bench-setup runbook if one is ever written;
+  no runbook exists yet, and none is created by this entry.
+- **Blocking production?** No — this is specific to a Windows dev-machine bench-test topology; a
+  real deployed device-gateway (Linux VPS/Coolify, per the existing deployment runbooks) has no
+  equivalent Windows-Firewall-profile concern.
+
+### 21. Pre-existing outbox backlog (~3,700 unpublished events dating to 2026-07-20)
+
+- **The gap (found live, 2026-08-27, while diagnosing why a freshly-provisioned device's own
+  `DeviceRegistered`/`DeviceActivated` events weren't reaching device-gateway):** the `worker`
+  container's `OutboxRelayWorker` had a large backlog of unpublished `outbox` rows — 3,699 rows,
+  oldest dated 2026-07-20, spanning ordinary domain events (`NotificationCreated`, `RouteCreated`,
+  `StudentEnrolled`, `VehicleRegistered`, `DeviceRegistered`, and others) accumulated across many
+  prior sessions' test/verification activity. The relay's own 5-second poll/100-row-batch design
+  is correct in isolation; the backlog itself reflects the `worker` container not having run
+  continuously/consistently across this repository's full development history, not a defect in
+  `SqlOutboxPublisher.publish_pending`'s logic (confirmed by reading it — plain FIFO-by-
+  `created_at`, no poison-message-blocking behavior found).
+- **Impact observed:** a newly-created device's own outbox rows had to wait behind the full
+  historical backlog before the relay would reach them — tens of minutes of delay for a
+  broker-driven event the caller might reasonably expect within seconds.
+- **Not resolved, not modified.** Explicitly out of ADR-0032/ADR-0033's own scope (neither ADR's
+  own code touches the outbox relay), and the backlog itself was deliberately left untouched —
+  not drained, deleted, or bypassed in bulk — since it represents real, already-decided historical
+  domain events this codebase's own "no event without a committed change, no committed change
+  silently missing its event" invariant (ADR-0007) says must still be published, not discarded.
+  (The two specific devices this session's own verification depended on had their individual
+  events republished directly, out-of-band, precisely so the bulk backlog would not need to be
+  touched to unblock this one verification — see ADR-0033's own Verification section.)
+- **Severity:** Medium — does not lose data or corrupt state, but silently degrades the "domain
+  event reaches the broker promptly" assumption several other subsystems (device-gateway's
+  registry projection, notification delivery, WS fan-out) depend on.
+- **Blocking production?** Not by itself, but worth investigating before a real deployment
+  relies on timely event delivery — the `worker` container's own uptime/restart history across
+  a real environment should be checked, and consider whether `outbox_relay_batch_size` (currently
+  100 per 5s tick) is sized correctly for this platform's real event volume.
 
 ---
 

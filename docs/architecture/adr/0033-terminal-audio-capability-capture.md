@@ -4,7 +4,18 @@
 
 **Accepted** (user directive, 2026-08-27: bench-test-first, then implement audio support and lay
 future-ready groundwork for intercom, without assuming a specific codec or inventing hardware
-capabilities). Implemented same session.
+capabilities). Implemented same session; **physically verified against the real bench MDVR the
+same day** — see Verification below.
+
+**Physical-hardware-confirmed vs. protocol-supported-but-unverified — a distinction this ADR
+keeps explicit, not blurred:** the real `LSZ-C5804DG-Q-F` bench unit has now *confirmed*, live,
+its own audio capability report and its 4-channel video/audio capacity (Verification, below).
+**DMS, ADAS, and intercom remain protocol-supported-but-hardware-unverified** — nothing in this
+ADR exercises them against real hardware, and none is implemented: `supports_audio_output=true`
+is a real, physically-confirmed *fact* about this unit, not a working intercom; the taxonomy
+values `driver_facing`/`front`/`rear`/`left`/`right` (ADR-0032) remain reserved, unassigned to
+any real camera. This ADR does not close that gap and is not represented as doing so anywhere
+below.
 
 ## Context
 
@@ -129,12 +140,44 @@ an approved consumer would be scope this ADR doesn't need.
   `fleet_device` device round-trip suite (previously failing with `UndefinedColumnError:
   column "audio_codec" of relation "devices" does not exist` before this migration was written
   and applied) now passes in full.
-- **Never tested against the physical MDVR for a real `0x1003` audio-field exchange** — the
-  bench unit's own 2026-08-19 `0x1003` report predates this ADR's field-capture code entirely;
-  no new live exchange has been captured this session. A fresh `DeviceOnline` transition (or a
-  manually-triggered re-query, if one existed) would be needed to observe this device's real
-  audio capability end-to-end — not attempted, since ADR-0030's own idempotency guard
-  (`av_attributes_requested_at`) means a reconnect alone will not re-trigger the query.
+- **Physically verified against the real `LSZ-C5804DG-Q-F` bench unit, 2026-08-27**
+  (`terminal_id=00000000014482607571`), after this session's own device-gateway/worker rebuild
+  put this ADR's code live: real JT808 registration (`0x0100`, result `success`) →
+  authentication (`0x0102`, `authentication_succeeded`) → `device_online` → the
+  `av_attributes_requested_at` guard (reset to `NULL` for this test) correctly re-triggered a
+  fresh `0x9003` query → a real `0x1003` reply, captured with these exact wire values:
+
+  | Field | Value |
+  |---|---|
+  | `max_video_channels` | 4 |
+  | `max_audio_channels` | 4 |
+  | `input_audio_codec` | 6 *(raw wire byte, not decoded — see Context)* |
+  | `input_audio_channels` | 1 |
+  | `input_audio_sample_rate` | 0 *(raw byte, not decoded)* |
+  | `input_audio_sample_bits` | 1 |
+  | `audio_frame_length` | 320 |
+  | `supports_audio_output` | `true` |
+  | `video_codec` | 98 *(raw wire byte, not decoded)* |
+
+  Persisted correctly and idempotently: all seven `devices.audio_*`/`video_codec` columns now
+  hold these exact values (`updated_at` advanced to the write), and the same `0x1003` reply's
+  channel count (`max_video_channels=4`) was processed against the 4 `Camera` rows already
+  created on 2026-08-19 — each logged `camera_channel_already_registered` and was **not**
+  duplicated, confirming `register_camera`'s idempotency invariant holds identically for a
+  live re-query, not just a synthetic/replayed one.
+
+  **One operational note, not a hardware-capability finding:** the *first* automatic query this
+  session (published `2026-08-27T20:32:43Z`, immediately after the guard reset) received no
+  `0x1003` reply in the following ~49 minutes, despite the device staying continuously
+  connected and sending GPS/heartbeat traffic throughout that window. A manual re-publish of the
+  identical `query_av_attributes` request (`2026-08-27T21:32:40Z`) received a real reply in
+  **~19ms** — as fast as the two genuine round-trips this same device already completed on
+  2026-08-19. Device-gateway logged no error on either attempt (`RedisVideoSignalingConsumer.
+  run_forever`'s own exception-catching wrapper, which does log at ERROR on any real failure,
+  never fired), so the most likely explanation is a single dropped/unanswered application-layer
+  message on the device side — not a protocol, implementation, or hardware-capability gap. This
+  ADR's own code is not implicated: the identical request succeeded on retry with no code change
+  in between.
 
 ## References
 
