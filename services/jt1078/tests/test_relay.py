@@ -148,10 +148,15 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         device_writer.close()
         viewer_writer.close()
 
-    async def test_audio_frame_with_known_codec_reaches_viewer_as_linear_pcm_tag(self) -> None:
-        """The G.711A dispatch path (`relay.py`'s `_AUDIO_DECODERS`) - real audio bytes, decoded,
-        resampled, and delivered as a genuine FLV `SoundFormat=3` tag through the actual ingest
-        -> reassembly -> muxer -> viewer path, not a unit-level shortcut."""
+    async def test_g711a_codec_currently_produces_no_audio_tag_or_header_claim(self) -> None:
+        """`_AUDIO_DECODERS` is deliberately empty as of 2026-08-28 (real-browser evidence:
+        Chrome's MSE rejects `audio/mp4;codecs=ipcm` and the failure is fatal to the whole
+        player, video included) - even a device reporting the one codec this relay knows how to
+        *decode* (G.711A, code 6) must currently get zero audio tags and a video-only header,
+        identical to any other/unknown codec, until a real browser-MSE-compatible audio
+        representation replaces this table's entry. `codec/g711a.py`'s own decode/resample
+        functions remain correct and unit-tested (`tests/test_g711a.py`) for whichever delivery
+        mechanism is chosen next - this test only proves the relay doesn't *use* them yet."""
         session = self.relay.session_manager.create_session(
             terminal_id="138001380001",
             kind=VideoSessionKind.LIVE,
@@ -166,10 +171,7 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         )
         await _ws_handshake(viewer_reader, viewer_writer, token=token)
         opcode, header_payload = await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=2.0)
-        # Regression test (2026-08-28): a session with a real, decodable audio_codec must
-        # honestly declare audio in the FLV header's own TypeFlags byte, not just leave the
-        # existing default (see the paired "unrecognized codec" test below for the inverse case).
-        self.assertEqual(header_payload[4], 0b101)
+        self.assertEqual(header_payload[4], 0b001)  # video-only - never claim audio we can't ship
 
         device_reader, device_writer = await asyncio.open_connection(
             "127.0.0.1", self.relay.ingest_server.bound_port
@@ -179,11 +181,18 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
             _build_device_audio_frame(sim_card="138001380001", body=g711a_payload)
         )
         await device_writer.drain()
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=0.3)
 
-        opcode, audio_payload = await asyncio.wait_for(
+        # video for the same session is completely unaffected by the disabled audio dispatch.
+        device_writer.write(
+            _build_device_frame(sim_card="138001380001", body=b"\x00\x00\x01\x65IDR-DATA")
+        )
+        await device_writer.drain()
+        opcode, video_payload = await asyncio.wait_for(
             _read_ws_frame(viewer_reader), timeout=2.0
         )
-        self.assertEqual(audio_payload[11] >> 4, 3)  # FLV SoundFormat: Linear PCM
+        self.assertEqual(video_payload[0], 9)  # FLV video tag type
 
         device_writer.close()
         viewer_writer.close()

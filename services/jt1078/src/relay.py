@@ -65,9 +65,17 @@ def _decode_g711a_to_pcm(payload: bytes) -> tuple[bytes, int]:
     return resampled, _G711A_TARGET_SAMPLE_RATE_HZ
 
 
-_AUDIO_DECODERS: dict[int, Callable[[bytes], tuple[bytes, int]]] = {
-    6: _decode_g711a_to_pcm,  # G.711A
-}
+# EMPTY, deliberately, as of 2026-08-28 - real-browser evidence (Chrome DevTools console,
+# live against the physical bench unit): `MediaSource.addSourceBuffer('audio/mp4;
+# codecs=ipcm')` throws `NotSupportedError` - Chrome's MSE does not accept raw Linear-PCM-in-MP4
+# via `mpegts.js`'s own remux path, and that failure is fatal to the *whole* player (video's own
+# already-accepted H.264 SourceBuffer included), not just the audio track. `decode_g711a`/
+# `resample_linear_pcm16`/`_decode_g711a_to_pcm` above are correct, tested, and kept exactly as
+# they are - this table just doesn't route to them yet, until a genuinely browser-MSE-compatible
+# audio representation is chosen (see the codebase's own tracked follow-up); no video-affecting
+# change is needed anywhere else, since `_on_session_created`/`_on_reassembled_frame` both key
+# off this one table as their single source of truth for "does this session get audio tags."
+_AUDIO_DECODERS: dict[int, Callable[[bytes], tuple[bytes, int]]] = {}
 
 
 class Jt1078Relay:
