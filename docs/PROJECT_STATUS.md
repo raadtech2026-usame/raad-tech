@@ -2612,6 +2612,32 @@ Reverse-chronological (most recent first):
   a real environment should be checked, and consider whether `outbox_relay_batch_size` (currently
   100 per 5s tick) is sized correctly for this platform's real event volume.
 
+### 22. Two-way intercom does not reliably establish on the bench MDVR's current firmware
+
+- **The gap (found live, 2026-08-28, ADR-0035):** a real bench test against the physical bench
+  unit (`LSZ-C5804DG-Q-F`, terminal `00000000014482607571`, firmware `TTY3521DV200-A251110`) sent
+  five independent, real `0x9101 data_type=2` (two-way intercom) requests. The firmware's JT/T 808
+  dispatcher understands the message (`0x0001` ack, `result: 0`, in 3 of 5 attempts) but a real
+  device-initiated media connection for the actual audio channel completed in only 1 of the 5
+  attempts (and that one was itself rejected by this test's own relay-side software gap, since
+  fixed for later attempts) — meaning real two-way audio never actually flowed in any attempt.
+  Both TCP and UDP transports were offered and checked; neither showed reliable device-side
+  connection behavior on repeat requests.
+- **Not implemented, deliberately.** Per the user's own explicit instruction ("if it fails...
+  do not create a fake workaround"), no intercom permission, D5 authorization, audit hooks,
+  browser mic capture/push-to-talk UI, or bidirectional audio relay were built — none of it would
+  have a real, verified media path underneath it. The JT/T 808 wire encoding for `data_type=2`/
+  `control=4` already existed before this test (`commands/video_signaling.py`, from the earlier
+  JT1078 video-signaling phase) and needed no change to run it.
+- **Severity:** Low — this is a disclosed, never-promised feature gap, not a regression; live
+  video, GPS tracking, and the G.711A→AAC audio path (ADR-0034) are all confirmed unaffected (the
+  bench unit remained connected, authenticated, and streaming normal traffic throughout and after
+  this test).
+- **Blocking production?** No — intercom was never a shipped capability. Revisit only after a
+  firmware update from the supplier, a different bench unit/hardware revision, or direct vendor
+  confirmation of this firmware's real preconditions for repeated `0x9101 data_type=2` session
+  establishment — see ADR-0035's own Consequences section.
+
 ---
 
 ## 11. Deployment Checklist
