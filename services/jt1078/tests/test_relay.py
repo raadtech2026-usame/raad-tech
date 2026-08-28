@@ -15,9 +15,15 @@ import struct
 import unittest
 
 from src.config import RelayConfig
-from src.ingest.extended_rtp import DATA_TYPE_I_FRAME, FRAME_HEADER_MAGIC, SUBPACKAGE_ATOMIC
+from src.ingest.extended_rtp import (
+    DATA_TYPE_AUDIO,
+    DATA_TYPE_I_FRAME,
+    FRAME_HEADER_MAGIC,
+    SUBPACKAGE_ATOMIC,
+)
 from src.relay import Jt1078Relay
-from src.session.video_session import VideoSessionState
+from src.session.video_session import VideoSessionKind, VideoSessionState
+from src.session.viewer_token import mint_token
 
 
 def _build_device_frame(*, sim_card: str, body: bytes, packet_sequence: int = 0) -> bytes:
@@ -34,6 +40,27 @@ def _build_device_frame(*, sim_card: str, body: bytes, packet_sequence: int = 0)
         + bytes([(DATA_TYPE_I_FRAME << 4) | SUBPACKAGE_ATOMIC])
     )
     trailer = (1000).to_bytes(8, "big") + (0).to_bytes(2, "big") + (40).to_bytes(2, "big")
+    return header + trailer + len(body).to_bytes(2, "big") + body
+
+
+def _build_device_audio_frame(*, sim_card: str, body: bytes, packet_sequence: int = 0) -> bytes:
+    """Audio's own wire shape (Table 6.3) has a *shorter* trailer than video's - timestamp(8)
+    only, no Last-I-Frame-Interval/Last-Frame-Interval fields (spec's own "当数据类型为非视频帧
+    时，则没有该字段") - a distinct helper from `_build_device_frame`, not a shared one with a
+    conditional trailer, so each stays a direct transcription of its own spec table row."""
+    sim_bytes = bytes(
+        ((int(sim_card[i]) << 4) | int(sim_card[i + 1])) for i in range(0, 12, 2)
+    )
+    header = (
+        FRAME_HEADER_MAGIC.to_bytes(4, "big")
+        + bytes([0b0010_0001])
+        + bytes([0b1000_0001])
+        + packet_sequence.to_bytes(2, "big")
+        + sim_bytes
+        + bytes([1])
+        + bytes([(DATA_TYPE_AUDIO << 4) | SUBPACKAGE_ATOMIC])
+    )
+    trailer = (1000).to_bytes(8, "big")  # timestamp only - audio has no I/P-frame interval fields
     return header + trailer + len(body).to_bytes(2, "big") + body
 
 
@@ -117,6 +144,92 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(session.state, VideoSessionState.ACTIVE)
         self.assertEqual(session.viewer_count, 1)
+
+        device_writer.close()
+        viewer_writer.close()
+
+    async def test_audio_frame_with_known_codec_reaches_viewer_as_linear_pcm_tag(self) -> None:
+        """The G.711A dispatch path (`relay.py`'s `_AUDIO_DECODERS`) - real audio bytes, decoded,
+        resampled, and delivered as a genuine FLV `SoundFormat=3` tag through the actual ingest
+        -> reassembly -> muxer -> viewer path, not a unit-level shortcut."""
+        session = self.relay.session_manager.create_session(
+            terminal_id="138001380001",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-audio-1",
+            logical_channel=1,
+            audio_codec=6,
+        )
+        token = mint_token(session_id=session.session_id, secret=b"e2e-test-secret")
+
+        viewer_reader, viewer_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.viewer_server.bound_port
+        )
+        await _ws_handshake(viewer_reader, viewer_writer, token=token)
+        opcode, header_payload = await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=2.0)
+        # Regression test (2026-08-28): a session with a real, decodable audio_codec must
+        # honestly declare audio in the FLV header's own TypeFlags byte, not just leave the
+        # existing default (see the paired "unrecognized codec" test below for the inverse case).
+        self.assertEqual(header_payload[4], 0b101)
+
+        device_reader, device_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.ingest_server.bound_port
+        )
+        g711a_payload = bytes([0xD5, 0x55, 0x2A, 0xAA] * 10)  # 40 bytes = 40ms @ 8kHz mono
+        device_writer.write(
+            _build_device_audio_frame(sim_card="138001380001", body=g711a_payload)
+        )
+        await device_writer.drain()
+
+        opcode, audio_payload = await asyncio.wait_for(
+            _read_ws_frame(viewer_reader), timeout=2.0
+        )
+        self.assertEqual(audio_payload[11] >> 4, 3)  # FLV SoundFormat: Linear PCM
+
+        device_writer.close()
+        viewer_writer.close()
+
+    async def test_audio_frame_with_unrecognized_codec_produces_no_audio_tag(self) -> None:
+        """The explicit-dispatch safety net (`relay.py`'s own `_AUDIO_DECODERS.get(...)`) - a
+        session with no known codec (the default for every device today, until a real
+        `AudioCapability` names one this relay implements) gets zero audio tags, and video for
+        the same session is completely unaffected."""
+        session = self.relay.session_manager.create_session(
+            terminal_id="138001380002",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-audio-2",
+            logical_channel=1,
+        )
+        token = mint_token(session_id=session.session_id, secret=b"e2e-test-secret")
+
+        viewer_reader, viewer_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.viewer_server.bound_port
+        )
+        await _ws_handshake(viewer_reader, viewer_writer, token=token)
+        opcode, header_payload = await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=2.0)
+        # The regression this whole fix targets: this header must declare video-only, never
+        # audio it will never send - `mpegts.js` would otherwise wait forever for audio metadata
+        # that never arrives, exactly the bug that broke the 4 already-working video channels.
+        self.assertEqual(header_payload[4], 0b001)
+
+        device_reader, device_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.ingest_server.bound_port
+        )
+        device_writer.write(
+            _build_device_audio_frame(sim_card="138001380002", body=b"\xd5" * 40)
+        )
+        await device_writer.drain()
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=0.3)
+
+        # video on the same session still works - the dispatch gap is audio-only.
+        device_writer.write(
+            _build_device_frame(sim_card="138001380002", body=b"\x00\x00\x01\x65IDR-DATA")
+        )
+        await device_writer.drain()
+        opcode, video_payload = await asyncio.wait_for(
+            _read_ws_frame(viewer_reader), timeout=2.0
+        )
+        self.assertEqual(video_payload[0], 9)  # FLV video tag type
 
         device_writer.close()
         viewer_writer.close()

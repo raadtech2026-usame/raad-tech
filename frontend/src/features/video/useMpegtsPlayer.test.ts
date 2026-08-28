@@ -77,7 +77,7 @@ describe("useMpegtsPlayer", () => {
     expect(FakePlayer.instances).toHaveLength(0);
   });
 
-  it("creates a video-only, live FLV player against the relay's WS URL and starts connecting", () => {
+  it("creates a live FLV player against the relay's WS URL and starts connecting", () => {
     const videoRef = makeVideoRef();
     const { result } = renderHook(() => useMpegtsPlayer(STREAM_URL, videoRef));
 
@@ -86,9 +86,12 @@ describe("useMpegtsPlayer", () => {
       type: "flv",
       isLive: true,
       url: STREAM_URL,
-      hasAudio: false,
       hasVideo: true,
     });
+    // `hasAudio` is deliberately omitted, not set to `false` - mpegts.js auto-detects it
+    // per-stream (see the hook's own comment) so a video-only channel keeps working exactly
+    // as before, while a channel that actually streams audio (the G.711A fix) is picked up too.
+    expect(FakePlayer.instances[0].mediaDataSource).not.toHaveProperty("hasAudio");
     expect(result.current.state).toBe("connecting");
   });
 

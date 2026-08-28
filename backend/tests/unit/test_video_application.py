@@ -116,7 +116,14 @@ class FakeVideoProvider(VideoProviderPort):
         self.stop_calls: list[dict] = []
 
     async def start_live(
-        self, *, device_id: str, camera_id: str, terminal_id: str, channel_no: int, reference: str
+        self,
+        *,
+        device_id: str,
+        camera_id: str,
+        terminal_id: str,
+        channel_no: int,
+        reference: str,
+        audio_codec: int | None = None,
     ) -> str:
         self.start_live_calls.append(
             {
@@ -125,6 +132,7 @@ class FakeVideoProvider(VideoProviderPort):
                 "terminal_id": terminal_id,
                 "channel_no": channel_no,
                 "reference": reference,
+                "audio_codec": audio_codec,
             }
         )
         return self.stream_url
@@ -139,6 +147,7 @@ class FakeVideoProvider(VideoProviderPort):
         window_start: datetime,
         window_end: datetime,
         reference: str,
+        audio_codec: int | None = None,
     ) -> str:
         self.start_playback_calls.append(
             {
@@ -149,6 +158,7 @@ class FakeVideoProvider(VideoProviderPort):
                 "window_start": window_start,
                 "window_end": window_end,
                 "reference": reference,
+                "audio_codec": audio_codec,
             }
         )
         return self.stream_url
@@ -210,6 +220,46 @@ class RequestLiveVideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.status, "requested")
         self.assertEqual(session.stream_url, provider.stream_url)
         self.assertEqual(len(provider.start_live_calls), 1)
+
+    async def test_audio_codec_is_passed_through_to_the_provider(self) -> None:
+        """The G.711A audio fix's own backend-side threading (`DeviceDTO.audio_codec` ->
+        `RequestLiveVideoCommand.audio_codec` -> `VideoProviderPort.start_live`) - proven end to
+        end through the application service, not just at any one layer in isolation."""
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+
+        await service.request_live_video(
+            RequestLiveVideoCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-ref-audio",
+                camera_id="camera-ref-audio",
+                terminal_id="00000000013800138000",
+                channel_no=1,
+                actor=make_actor(),
+                audio_codec=6,
+            ),
+            uow=uow,
+        )
+        self.assertEqual(provider.start_live_calls[0]["audio_codec"], 6)
+
+    async def test_audio_codec_defaults_to_none_when_omitted(self) -> None:
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+
+        await service.request_live_video(
+            RequestLiveVideoCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-ref-no-audio",
+                camera_id="camera-ref-no-audio",
+                terminal_id="00000000013800138000",
+                channel_no=1,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertIsNone(provider.start_live_calls[0]["audio_codec"])
 
 
 class RequestPlaybackVideoTests(unittest.IsolatedAsyncioTestCase):

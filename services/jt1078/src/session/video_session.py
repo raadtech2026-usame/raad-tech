@@ -39,6 +39,13 @@ class VideoSession:
     organization_id: str | None
     correlation_id: str
     logical_channel: int
+    #: The device's own real `0x1003`-reported `input_audio_codec` (Table 6.21), if known - the
+    #: raw wire byte, never interpreted here. `None` when the caller didn't supply one (an older
+    #: backend build, or a device with no captured `AudioCapability` yet, ADR-0033) - `relay.py`'s
+    #: own audio-decoder dispatch table treats `None`/any unrecognized value identically: no
+    #: audio tags are ever built for that session, matching this codebase's pre-existing
+    #: video-only behavior exactly.
+    audio_codec: int | None = None
     state: VideoSessionState = VideoSessionState.REQUESTED
     viewer_count: int = 0
     created_at: float = field(default_factory=time.monotonic)

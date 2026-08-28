@@ -111,6 +111,7 @@ class VideoApplicationService:
             terminal_id=command.terminal_id,
             channel_no=command.channel_no,
             reference=str(session.id),
+            audio_codec=command.audio_codec,
         )
         # ADR-0026 §7: no eager `session.activate()` here - the relay hasn't confirmed media is
         # actually flowing yet (only that the RPC + device signal succeeded). `status` stays
@@ -152,6 +153,7 @@ class VideoApplicationService:
             window_start=command.window_start,
             window_end=command.window_end,
             reference=str(session.id),
+            audio_codec=command.audio_codec,
         )
         # ADR-0026 §7: same reasoning as request_live_video above - no eager activate().
         return video_session_to_dto(session, stream_url=stream_url)

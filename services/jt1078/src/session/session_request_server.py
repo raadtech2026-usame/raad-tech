@@ -24,9 +24,18 @@ Request, `RPUSH raad:jt1078:session_requests <json>`:
   "terminal_id": "<JT/T 808 terminal phone>",
   "logical_channel": <int>,
   "device_id": "<opaque>", "vehicle_id": "<opaque>|null", "organization_id": "<opaque>",
-  "window_start": "<ISO 8601>|null", "window_end": "<ISO 8601>|null"
+  "window_start": "<ISO 8601>|null", "window_end": "<ISO 8601>|null",
+  "audio_codec": <int>|null
 }
 ```
+
+`audio_codec` (added for the G.711A audio fix, `codec/g711a.py`): the device's own real
+`0x1003`-reported `input_audio_codec` (Table 6.21), sourced from `AudioCapability.codec`
+(ADR-0033) - the raw wire byte, optional and defaulting to `None`/absent for an older backend
+build or a device with no captured `AudioCapability` yet. `relay.py`'s own audio-decoder
+dispatch table treats `None` and any unrecognized value identically: no audio tags are ever
+built for that session - this relay never guesses a codec it hasn't been told, or invents
+support for one it hasn't implemented.
 
 Response, `RPUSH raad:jt1078:session_responses:<request_id> <json>`:
 ```json
@@ -137,6 +146,7 @@ class SessionRequestServer:
             device_id=data.get("device_id"),
             vehicle_id=data.get("vehicle_id"),
             organization_id=data.get("organization_id"),
+            audio_codec=data.get("audio_codec"),
         )
         token = mint_token(session_id=session.session_id, secret=self._viewer_token_secret)
         return {

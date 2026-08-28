@@ -22,10 +22,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from typing import Callable
 
 from redis.asyncio import Redis
 
 from src.broker_config import BrokerConfig
+from src.codec.g711a import decode_g711a, resample_linear_pcm16
 from src.config import RelayConfig
 from src.events.publisher_port import LoggingSessionEventPublisher, SessionEventPublisher
 from src.events.redis_session_event_publisher import RedisSessionEventPublisher
@@ -45,6 +47,27 @@ from src.viewer.broadcast_hub import SessionBroadcastHub
 from src.viewer.viewer_server import ViewerServer
 
 logger = get_logger("jt1078_relay.relay")
+
+# `input_audio_codec` (`mdvrdocs/MDVR-808-1078-spec.pdf` Table 6.21) -> a
+# `(payload: bytes) -> (pcm16le_bytes, sample_rate_hz)` decoder. Deliberately small and explicit:
+# any codec not listed here gets zero audio tags for its session (`_on_reassembled_frame` below),
+# never a guessed decode. `6` (G.711A) is the only codec this relay has real evidence for - the
+# bench MDVR's own confirmed live `0x1003` report (ADR-0033).
+_G711A_TARGET_SAMPLE_RATE_HZ = 11025  # nearest of FLV's 4 legacy SoundRate values to 8000Hz
+
+
+def _decode_g711a_to_pcm(payload: bytes) -> tuple[bytes, int]:
+    # G.711 is an ITU-T-standardized 8kHz codec (not a value this relay is guessing or assuming
+    # per-device - it's what "G.711" *is*); Table 6.1's own generic `input_audio_sample_rate`
+    # field is not threaded through this relay today, since G.711A's rate is fixed by definition.
+    pcm = decode_g711a(payload)
+    resampled = resample_linear_pcm16(pcm, from_hz=8000, to_hz=_G711A_TARGET_SAMPLE_RATE_HZ)
+    return resampled, _G711A_TARGET_SAMPLE_RATE_HZ
+
+
+_AUDIO_DECODERS: dict[int, Callable[[bytes], tuple[bytes, int]]] = {
+    6: _decode_g711a_to_pcm,  # G.711A
+}
 
 
 class Jt1078Relay:
@@ -115,7 +138,13 @@ class Jt1078Relay:
         return InMemorySingleUseTokenGuard()
 
     def _on_session_created(self, session: VideoSession) -> None:
-        self._hubs[session.session_id] = SessionBroadcastHub(session.session_id)
+        # Same source of truth `_on_reassembled_frame` uses to decide whether to ever call
+        # `broadcast_audio` for this session - the FLV header's own claim and actual tag
+        # delivery must never disagree (2026-08-28 regression fix).
+        has_audio = session.audio_codec in _AUDIO_DECODERS
+        self._hubs[session.session_id] = SessionBroadcastHub(
+            session.session_id, has_audio=has_audio
+        )
 
     def _on_session_removed(self, session_id: str) -> None:
         self._hubs.pop(session_id, None)
@@ -131,7 +160,17 @@ class Jt1078Relay:
                 timestamp_ms=frame.timestamp_ms,
             )
         elif frame.is_audio:
-            await hub.broadcast_audio(aac_payload=frame.body, timestamp_ms=frame.timestamp_ms)
+            session = self._session_manager.resolve(session_id)
+            audio_codec = session.audio_codec if session is not None else None
+            decoder = _AUDIO_DECODERS.get(audio_codec) if audio_codec is not None else None
+            if decoder is None:
+                return  # no decoder for this device's real (or unknown) codec - no audio tag
+            pcm_payload, sample_rate_hz = decoder(frame.body)
+            await hub.broadcast_audio(
+                pcm_payload=pcm_payload,
+                sample_rate_hz=sample_rate_hz,
+                timestamp_ms=frame.timestamp_ms,
+            )
 
     def create_live_session(
         self,

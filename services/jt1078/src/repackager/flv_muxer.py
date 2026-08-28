@@ -29,7 +29,24 @@ since FLV timestamps are conventionally stream-relative, not wall-clock.
 
 from __future__ import annotations
 
-_FLV_HEADER = b"FLV" + bytes([0x01, 0x05]) + (9).to_bytes(4, "big")  # audio+video flags=0x05
+# FLV file-header TypeFlags byte (offset 4): bit 0 = video present, bit 2 = audio present
+# (Adobe FLV spec). Video is always present for every session this relay ever muxes; audio is
+# NOT - a real, previously-latent bug (found live, 2026-08-28, diagnosing a video regression):
+# this byte used to be the hardcoded constant `0x05` (claiming audio present) for *every*
+# session regardless of whether any audio tag would ever actually be sent. That was invisible
+# only because the frontend's own `hasAudio: false` override forcibly suppressed audio-tag
+# parsing client-side, masking the header's false claim - removing that override (the G.711A
+# audio fix) exposed it: `mpegts.js`'s own `isComplete()` gate waits forever for audio metadata
+# a video-only session never sends, once the header itself says to expect it. `build_flv_header`
+# makes this byte honest per-session instead of a blanket assumption.
+_TYPE_FLAGS_VIDEO = 0b001
+_TYPE_FLAGS_AUDIO = 0b100
+
+
+def build_flv_header(*, has_audio: bool) -> bytes:
+    type_flags = _TYPE_FLAGS_VIDEO | (_TYPE_FLAGS_AUDIO if has_audio else 0)
+    return b"FLV" + bytes([0x01, type_flags]) + (9).to_bytes(4, "big")
+
 
 TAG_TYPE_AUDIO = 8
 TAG_TYPE_VIDEO = 9
@@ -46,6 +63,21 @@ _FRAME_TYPE_INTER_FRAME = 2
 
 _SOUND_FORMAT_AAC = 10
 _AAC_PACKET_TYPE_RAW = 1
+
+# FLV Linear PCM, little-endian (Adobe FLV spec's own SoundFormat enum) - the format
+# `mpegts.js`'s own FLV demuxer actually decodes (confirmed by inspecting its bundled source;
+# it does not implement G.711/A-law at all), used for the G.711A-decoded bench MDVR audio via
+# `codec/g711a.decode_g711a`. Never sent for any codec this relay hasn't confirmed how to decode.
+_SOUND_FORMAT_LINEAR_PCM_LE = 3
+_SOUND_SIZE_16BIT = 1
+_SOUND_TYPE_MONO = 0
+# FLV's legacy audio tag header has only a 2-bit SoundRate field - four fixed values, no
+# "arbitrary Hz" option (confirmed against `mpegts.js`'s own `_flvSoundRateTable`:
+# `[5500, 11025, 22050, 44100, 48000]` - only the first four are reachable via this 2-bit field,
+# the fifth needs the newer FourCC/"Enhanced FLV" tag shape this module doesn't use). A caller
+# must resample to one of these four rates first (`codec.g711a.resample_linear_pcm16`) -
+# `build_linear_pcm_tag` raises rather than silently mislabeling a rate this field can't encode.
+_FLV_SOUND_RATE_FLAGS: dict[int, int] = {5500: 0, 11025: 1, 22050: 2, 44100: 3}
 
 _START_CODE_3 = b"\x00\x00\x01"
 
@@ -205,6 +237,29 @@ def build_aac_raw_tag(*, aac_payload: bytes, timestamp_ms: int) -> bytes:
     return _build_tag(tag_type=TAG_TYPE_AUDIO, timestamp_ms=timestamp_ms, data=body)
 
 
+def build_linear_pcm_tag(*, pcm_payload: bytes, sample_rate_hz: int, timestamp_ms: int) -> bytes:
+    """FLV `SoundFormat=3` (Linear PCM, little-endian) tag - unlike `build_aac_raw_tag`, the
+    sound-rate/size/type flags are derived from the caller's own real values, never hardcoded
+    (the AAC path's "44kHz/16-bit/stereo" was fabricated and never matched any real device).
+    `pcm_payload` must already be 16-bit little-endian mono samples at exactly `sample_rate_hz`
+    (`codec.g711a.decode_g711a` + `resample_linear_pcm16`) - this function only builds the tag
+    header, it does not itself decode or resample anything."""
+    sound_rate_flag = _FLV_SOUND_RATE_FLAGS.get(sample_rate_hz)
+    if sound_rate_flag is None:
+        raise ValueError(
+            f"{sample_rate_hz}Hz has no FLV legacy SoundRate encoding "
+            f"(only {sorted(_FLV_SOUND_RATE_FLAGS)} are representable) - resample first."
+        )
+    header_byte = (
+        (_SOUND_FORMAT_LINEAR_PCM_LE << 4)
+        | (sound_rate_flag << 2)
+        | (_SOUND_SIZE_16BIT << 1)
+        | _SOUND_TYPE_MONO
+    )
+    body = bytes([header_byte]) + pcm_payload
+    return _build_tag(tag_type=TAG_TYPE_AUDIO, timestamp_ms=timestamp_ms, data=body)
+
+
 class FlvMuxer:
     """Stateful only in the sense of tracking `PreviousTagSize` (the 4-byte value FLV requires
     before every tag, including the file header's own trailing zero), rebasing the first frame's
@@ -230,9 +285,13 @@ class FlvMuxer:
             self._base_timestamp_ms = timestamp_ms
         return max(0, timestamp_ms - self._base_timestamp_ms)
 
-    def start(self) -> bytes:
+    def start(self, *, has_audio: bool = False) -> bytes:
+        """`has_audio` must reflect whether *this session* actually has a working audio decoder
+        (`relay.py`'s own `_AUDIO_DECODERS` dispatch table) - never assumed `True` regardless of
+        content (see `build_flv_header`'s own docstring for the regression this fixes). Defaults
+        to `False`, matching every session's real behavior before any audio capability existed."""
         self._wrote_header = True
-        return _FLV_HEADER + (0).to_bytes(4, "big")  # PreviousTagSize0 = 0
+        return build_flv_header(has_audio=has_audio) + (0).to_bytes(4, "big")  # PreviousTagSize0
 
     def feed_video_nalu(
         self, *, avcc_payload: bytes, is_keyframe: bool, timestamp_ms: int | None
@@ -320,5 +379,18 @@ class FlvMuxer:
     def feed_audio_aac(self, *, aac_payload: bytes, timestamp_ms: int | None) -> bytes:
         tag = build_aac_raw_tag(
             aac_payload=aac_payload, timestamp_ms=self._relative_timestamp(timestamp_ms)
+        )
+        return tag + len(tag).to_bytes(4, "big")
+
+    def feed_audio_pcm(
+        self, *, pcm_payload: bytes, sample_rate_hz: int, timestamp_ms: int | None
+    ) -> bytes:
+        """The G.711A-decoded-to-PCM path (see `codec/g711a.py`) - shares this muxer's own
+        timestamp rebasing with `feed_video_nalu`/`feed_annex_b_video` so audio and video tags
+        from the same session stay on one consistent timeline."""
+        tag = build_linear_pcm_tag(
+            pcm_payload=pcm_payload,
+            sample_rate_hz=sample_rate_hz,
+            timestamp_ms=self._relative_timestamp(timestamp_ms),
         )
         return tag + len(tag).to_bytes(4, "big")

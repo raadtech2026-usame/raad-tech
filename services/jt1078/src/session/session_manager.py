@@ -134,6 +134,7 @@ class SessionManager:
         vehicle_id: str | None = None,
         organization_id: str | None = None,
         session_id: str | None = None,
+        audio_codec: int | None = None,
     ) -> VideoSession:
         """`session_id` is optional and defaults to a fresh id (`new_session_id()`) — a caller
         that already has its own correlation identity (the Business API's `SessionRequestServer`
@@ -174,6 +175,7 @@ class SessionManager:
             organization_id=organization_id,
             correlation_id=correlation_id,
             logical_channel=logical_channel,
+            audio_codec=audio_codec,
         )
         self._sessions[session.session_id] = session
         self._on_session_created(session)

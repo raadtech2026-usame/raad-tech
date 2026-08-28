@@ -19,8 +19,14 @@ from src.viewer.websocket_server import WebSocketConnection
 
 
 class SessionBroadcastHub:
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, *, has_audio: bool = False) -> None:
+        """`has_audio` must reflect whether this session actually has a working audio decoder
+        (`relay.py`'s own `_AUDIO_DECODERS` dispatch table, the same source of truth
+        `_on_reassembled_frame` uses to decide whether to call `broadcast_audio` at all) - it
+        drives the FLV file header's own `TypeFlags` byte (`FlvMuxer.start`) so a video-only
+        session never falsely claims audio, the real regression this fixes (2026-08-28)."""
         self.session_id = session_id
+        self._has_audio = has_audio
         self._viewers: dict[WebSocketConnection, FlvMuxer] = {}
 
     @property
@@ -30,7 +36,7 @@ class SessionBroadcastHub:
     async def add_viewer(self, connection: WebSocketConnection) -> None:
         muxer = FlvMuxer()
         self._viewers[connection] = muxer
-        await connection.send_binary(muxer.start())
+        await connection.send_binary(muxer.start(has_audio=self._has_audio))
 
     def remove_viewer(self, connection: WebSocketConnection) -> None:
         self._viewers.pop(connection, None)
@@ -64,11 +70,19 @@ class SessionBroadcastHub:
         return failed
 
     async def broadcast_audio(
-        self, *, aac_payload: bytes, timestamp_ms: int | None
+        self, *, pcm_payload: bytes, sample_rate_hz: int, timestamp_ms: int | None
     ) -> list[WebSocketConnection]:
+        """`pcm_payload` is already-decoded 16-bit little-endian mono PCM at exactly
+        `sample_rate_hz` (`codec/g711a.py`'s `decode_g711a` + `resample_linear_pcm16`) - this
+        method only fans it out per-viewer via `FlvMuxer.feed_audio_pcm`, mirroring
+        `broadcast_video`'s identical per-viewer-muxer shape."""
         failed: list[WebSocketConnection] = []
         for connection, muxer in list(self._viewers.items()):
-            chunk = muxer.feed_audio_aac(aac_payload=aac_payload, timestamp_ms=timestamp_ms)
+            chunk = muxer.feed_audio_pcm(
+                pcm_payload=pcm_payload,
+                sample_rate_hz=sample_rate_hz,
+                timestamp_ms=timestamp_ms,
+            )
             try:
                 await connection.send_binary(chunk)
             except Exception:  # noqa: BLE001 - one bad viewer must not break the broadcast

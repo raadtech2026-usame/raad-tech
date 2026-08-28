@@ -103,6 +103,47 @@ class SessionRequestServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.state, VideoSessionState.REQUESTED)
         self.assertEqual(redis.expirations[f"raad:jt1078:session_responses:req-1"], 30)
 
+    async def test_audio_codec_field_flows_into_the_created_session(self) -> None:
+        redis = FakeRedis()
+        server, session_manager = _make_server(redis)
+        _push_request(
+            redis,
+            {
+                "request_id": "req-audio",
+                "command": "create_live_session",
+                "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+                "correlation_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+                "terminal_id": "00000000013800138000",
+                "logical_channel": 1,
+                "audio_codec": 6,
+            },
+        )
+
+        await server.poll_once()
+
+        session = session_manager.resolve("01ARZ3NDEKTSV4RRFFQ69G5FAW")
+        self.assertEqual(session.audio_codec, 6)
+
+    async def test_missing_audio_codec_field_defaults_to_none(self) -> None:
+        redis = FakeRedis()
+        server, session_manager = _make_server(redis)
+        _push_request(
+            redis,
+            {
+                "request_id": "req-no-audio",
+                "command": "create_live_session",
+                "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+                "correlation_id": "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+                "terminal_id": "00000000013800138000",
+                "logical_channel": 1,
+            },
+        )
+
+        await server.poll_once()
+
+        session = session_manager.resolve("01ARZ3NDEKTSV4RRFFQ69G5FAX")
+        self.assertIsNone(session.audio_codec)
+
     async def test_create_playback_session_uses_the_playback_kind(self) -> None:
         redis = FakeRedis()
         server, session_manager = _make_server(redis)

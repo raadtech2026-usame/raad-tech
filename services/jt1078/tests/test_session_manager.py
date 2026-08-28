@@ -42,6 +42,24 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.state, VideoSessionState.REQUESTED)
         self.assertEqual(manager.resolve(session.session_id), session)
 
+    async def test_create_session_defaults_audio_codec_to_none(self) -> None:
+        manager, _ = _manager()
+        session = manager.create_session(
+            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
+        )
+        self.assertIsNone(session.audio_codec)
+
+    async def test_create_session_stores_the_given_audio_codec(self) -> None:
+        manager, _ = _manager()
+        session = manager.create_session(
+            terminal_id="T1",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-1",
+            logical_channel=1,
+            audio_codec=6,
+        )
+        self.assertEqual(session.audio_codec, 6)
+
     async def test_resolve_ingest_by_terminal_id_finds_a_requested_session(self) -> None:
         manager, _ = _manager()
         session = manager.create_session(

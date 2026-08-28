@@ -1481,6 +1481,42 @@ class RecordAudioCapabilityTests(unittest.IsolatedAsyncioTestCase):
         stored = await uow.devices.get(DeviceId(device_id))
         self.assertEqual(stored.audio_capability, capability)
 
+    async def test_device_dto_projects_the_recorded_audio_codec(self) -> None:
+        """`device_to_dto` (`application/queries.py`) - the G.711A audio fix's own new consumer
+        of `AudioCapability.codec`, exposed on `DeviceDTO` for the first time this phase."""
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+        await device_service.record_audio_capability(
+            RecordAudioCapabilityCommand(
+                device_id=device_id,
+                audio_capability=AudioCapability(
+                    codec=6,
+                    channels=1,
+                    sample_rate=0,
+                    sample_bits=1,
+                    frame_length=320,
+                    supports_output=True,
+                    video_codec=98,
+                ),
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        dto = await device_service.get_device_by_id(
+            GetDeviceByIdQuery(device_id=device_id), uow=uow
+        )
+        self.assertEqual(dto.audio_codec, 6)
+
+    async def test_device_dto_audio_codec_is_none_before_any_report(self) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+
+        dto = await device_service.get_device_by_id(
+            GetDeviceByIdQuery(device_id=device_id), uow=uow
+        )
+        self.assertIsNone(dto.audio_codec)
+
     async def test_unknown_device_id_is_a_no_op(self) -> None:
         _vehicle_service, device_service, uow = make_services()
         commit_count_before = uow.commit_count

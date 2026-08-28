@@ -141,6 +141,12 @@ class DeviceDTO:
     updated_at: datetime
     cameras: tuple[CameraDTO, ...]
     inventory_id: str | None = None
+    #: The device's own real `0x1003`-reported `input_audio_codec` (`AudioCapability.codec`,
+    #: ADR-0033), raw and undecoded. Exposed starting with the G.711A audio fix - a real consumer
+    #: now exists (`video/api/routers.py` threading it into `VideoProviderPort.start_live`), the
+    #: same "not exposed until a real consumer needs it" reversal `is_online` (ADR-0027) already
+    #: established a precedent for. `None` when no `AudioCapability` has been captured yet.
+    audio_codec: int | None = None
 
 
 @dataclass(frozen=True)
@@ -199,6 +205,9 @@ def device_to_dto(device: Device) -> DeviceDTO:
         updated_at=device.updated_at,
         cameras=tuple(camera_to_dto(camera) for camera in device.cameras),
         inventory_id=str(device.inventory_id) if device.inventory_id is not None else None,
+        audio_codec=(
+            device.audio_capability.codec if device.audio_capability is not None else None
+        ),
     )
 
 

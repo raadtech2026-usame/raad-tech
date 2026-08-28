@@ -64,7 +64,14 @@ class Jt1078RelayAdapter(VideoProviderPort):
         self._viewer_base_url = viewer_base_url.rstrip("/")
 
     async def start_live(
-        self, *, device_id: str, camera_id: str, terminal_id: str, channel_no: int, reference: str
+        self,
+        *,
+        device_id: str,
+        camera_id: str,
+        terminal_id: str,
+        channel_no: int,
+        reference: str,
+        audio_codec: int | None = None,
     ) -> str:
         response = await self._rpc.call(
             "create_live_session",
@@ -74,6 +81,7 @@ class Jt1078RelayAdapter(VideoProviderPort):
                 "terminal_id": terminal_id,
                 "logical_channel": channel_no,
                 "device_id": device_id,
+                "audio_codec": audio_codec,
             },
         )
         await self._signal_device_start(
@@ -101,6 +109,7 @@ class Jt1078RelayAdapter(VideoProviderPort):
         window_start: datetime,
         window_end: datetime,
         reference: str,
+        audio_codec: int | None = None,
     ) -> str:
         response = await self._rpc.call(
             "create_playback_session",
@@ -112,6 +121,7 @@ class Jt1078RelayAdapter(VideoProviderPort):
                 "device_id": device_id,
                 "window_start": window_start.isoformat(),
                 "window_end": window_end.isoformat(),
+                "audio_codec": audio_codec,
             },
         )
         await self._signal_device_start(

@@ -167,6 +167,7 @@ async def request_live_video(
         terminal_id=device.terminal_id,
         channel_no=camera.channel_no,
         actor=principal,
+        audio_codec=device.audio_codec,
     )
     session = await video_service.request_live_video(command, uow=uow)
     return _session_dto_to_response(session)
@@ -215,6 +216,7 @@ async def request_playback_video(
         window_start=body.window_start,
         window_end=body.window_end,
         actor=principal,
+        audio_codec=device.audio_codec,
     )
     session = await video_service.request_playback_video(command, uow=uow)
     return _session_dto_to_response(session)

@@ -85,7 +85,12 @@ export function useMpegtsPlayer(
     }
 
     const player = mpegts.createPlayer(
-      { type: "flv", isLive: true, url: streamUrl, hasAudio: false, hasVideo: true },
+      // `hasAudio` deliberately omitted (not `false`): mpegts.js auto-detects it per-stream -
+      // stays `false` (video-only, today's exact behavior) unless a real audio tag actually
+      // arrives, in which case it promotes to `true` on its own. Setting `false` explicitly
+      // would have made `isComplete()` wait forever for audio metadata a video-only channel
+      // never sends, silently blocking that channel's own video from ever starting.
+      { type: "flv", isLive: true, url: streamUrl, hasVideo: true },
       { enableStashBuffer: false },
     );
     player.on(mpegts.Events.ERROR, handleError);

@@ -32,6 +32,10 @@ class RequestLiveVideoCommand:
     terminal_id: str
     channel_no: int
     actor: Principal
+    #: The device's own real `AudioCapability.codec` (ADR-0033/the G.711A audio fix), threaded
+    #: through to `VideoProviderPort.start_live` so the relay can decide, per-session, whether it
+    #: has a real decoder for this exact codec - never guessed here or downstream.
+    audio_codec: int | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,7 @@ class RequestPlaybackVideoCommand:
     window_start: datetime
     window_end: datetime
     actor: Principal
+    audio_codec: int | None = None
 
 
 @dataclass(frozen=True)

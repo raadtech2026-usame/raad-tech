@@ -47,9 +47,23 @@ class VideoProviderPort(ABC):
 
     @abstractmethod
     async def start_live(
-        self, *, device_id: str, camera_id: str, terminal_id: str, channel_no: int, reference: str
+        self,
+        *,
+        device_id: str,
+        camera_id: str,
+        terminal_id: str,
+        channel_no: int,
+        reference: str,
+        audio_codec: int | None = None,
     ) -> str:
-        """Requests a live stream from the provider; returns a stream URL/token."""
+        """Requests a live stream from the provider; returns a stream URL/token.
+
+        `audio_codec` (added for the G.711A audio fix): the device's own real `0x1003`-reported
+        `input_audio_codec` (`AudioCapability.codec`, ADR-0033) — the same narrow, additive
+        `VideoProviderPort` widening precedent `terminal_id`/`channel_no` already established.
+        `None` when the device has no captured `AudioCapability` yet; the relay's own explicit
+        per-codec dispatch table treats that identically to any codec it hasn't implemented —
+        no audio, video unaffected."""
         raise NotImplementedError
 
     @abstractmethod
@@ -63,8 +77,10 @@ class VideoProviderPort(ABC):
         window_start: datetime,
         window_end: datetime,
         reference: str,
+        audio_codec: int | None = None,
     ) -> str:
-        """Requests a playback stream for the given window; returns a stream URL/token."""
+        """Requests a playback stream for the given window; returns a stream URL/token. See
+        `start_live`'s own docstring for `audio_codec`."""
         raise NotImplementedError
 
     @abstractmethod

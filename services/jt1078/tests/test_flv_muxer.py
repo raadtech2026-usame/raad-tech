@@ -11,6 +11,7 @@ from src.repackager.flv_muxer import (
     FlvMuxer,
     build_avc_decoder_config,
     build_avcc_from_annex_b,
+    build_linear_pcm_tag,
     extract_sps_pps,
     split_annex_b_nalus,
 )
@@ -84,6 +85,19 @@ class FlvMuxerTests(unittest.TestCase):
         self.assertEqual(int.from_bytes(header[5:9], "big"), 9)  # header size
         self.assertEqual(int.from_bytes(header[9:13], "big"), 0)  # PreviousTagSize0
 
+    def test_start_without_audio_declares_video_only_in_the_type_flags_byte(self) -> None:
+        """Regression test (2026-08-28): the header must never claim audio it will never send -
+        `mpegts.js` reads this byte to decide whether to wait for audio metadata before starting
+        playback at all, and previously always claimed audio present regardless of content."""
+        muxer = FlvMuxer()
+        header = muxer.start()  # has_audio defaults to False
+        self.assertEqual(header[4], 0b001)  # video bit only, no audio bit
+
+    def test_start_with_audio_declares_both_in_the_type_flags_byte(self) -> None:
+        muxer = FlvMuxer()
+        header = muxer.start(has_audio=True)
+        self.assertEqual(header[4], 0b101)  # both video and audio bits
+
     def test_video_tag_has_correct_type_and_previous_tag_size_trailer(self) -> None:
         muxer = FlvMuxer()
         muxer.start()
@@ -121,6 +135,48 @@ class FlvMuxerTests(unittest.TestCase):
         muxer.start()
         chunk = muxer.feed_audio_aac(aac_payload=b"\x21\x22", timestamp_ms=1000)
         self.assertEqual(chunk[0], TAG_TYPE_AUDIO)
+
+
+class LinearPcmAudioTagTests(unittest.TestCase):
+    """The G.711A-decoded audio path (`codec/g711a.py`) - unlike the pre-existing AAC path,
+    every flag here is derived from the caller's real reported values, never hardcoded."""
+
+    def test_pcm_tag_uses_the_audio_tag_type(self) -> None:
+        muxer = FlvMuxer()
+        muxer.start()
+        chunk = muxer.feed_audio_pcm(
+            pcm_payload=b"\x00\x00\x64\x00", sample_rate_hz=11025, timestamp_ms=1000
+        )
+        self.assertEqual(chunk[0], TAG_TYPE_AUDIO)
+
+    def test_sound_format_nibble_is_linear_pcm_not_aac(self) -> None:
+        tag = build_linear_pcm_tag(
+            pcm_payload=b"\x00\x00", sample_rate_hz=11025, timestamp_ms=0
+        )
+        # Tag header: TagType(1)+DataSize(3)+Timestamp(3)+TimestampExt(1)+StreamID(3) = 11 bytes,
+        # then the SoundData byte itself.
+        sound_format = tag[11] >> 4
+        self.assertEqual(sound_format, 3)  # Linear PCM, little-endian
+
+    def test_sound_type_flag_reflects_real_mono_channel_count(self) -> None:
+        tag = build_linear_pcm_tag(
+            pcm_payload=b"\x00\x00", sample_rate_hz=11025, timestamp_ms=0
+        )
+        sound_type = tag[11] & 0b1
+        self.assertEqual(sound_type, 0)  # mono - the AAC path's hardcoded "stereo" is not reused
+
+    def test_sound_rate_flag_matches_the_declared_sample_rate(self) -> None:
+        for rate_hz, expected_flag in ((5500, 0), (11025, 1), (22050, 2), (44100, 3)):
+            with self.subTest(rate_hz=rate_hz):
+                tag = build_linear_pcm_tag(
+                    pcm_payload=b"\x00\x00", sample_rate_hz=rate_hz, timestamp_ms=0
+                )
+                sound_rate = (tag[11] >> 2) & 0b11
+                self.assertEqual(sound_rate, expected_flag)
+
+    def test_unrepresentable_sample_rate_raises_rather_than_silently_mislabeling(self) -> None:
+        with self.assertRaises(ValueError):
+            build_linear_pcm_tag(pcm_payload=b"\x00\x00", sample_rate_hz=8000, timestamp_ms=0)
 
     def test_keyframe_and_interframe_produce_different_frame_type_nibble(self) -> None:
         muxer = FlvMuxer()

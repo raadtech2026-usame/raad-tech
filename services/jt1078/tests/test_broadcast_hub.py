@@ -26,6 +26,32 @@ class SessionBroadcastHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(viewer.sent[0].startswith(b"FLV"))
         self.assertEqual(hub.viewer_count, 1)
 
+    async def test_default_hub_sends_a_video_only_header(self) -> None:
+        """Regression test (2026-08-28): a hub with no `has_audio` (every pre-G.711A session,
+        and every session for a device with no working audio decoder) must never claim audio in
+        the header it hands each viewer - `mpegts.js` would otherwise wait forever for audio
+        metadata a video-only stream never sends."""
+        hub = SessionBroadcastHub("session-1")
+        viewer = FakeConnection()
+        await hub.add_viewer(viewer)
+        self.assertEqual(viewer.sent[0][4], 0b001)
+
+    async def test_hub_with_audio_sends_a_header_declaring_both(self) -> None:
+        hub = SessionBroadcastHub("session-1", has_audio=True)
+        viewer = FakeConnection()
+        await hub.add_viewer(viewer)
+        self.assertEqual(viewer.sent[0][4], 0b101)
+
+    async def test_each_viewer_gets_the_hub_own_has_audio_value_independently(self) -> None:
+        """A viewer joining mid-stream still gets the same, correct per-session declaration -
+        not re-derived per viewer, not defaulted away from the hub's own setting."""
+        hub = SessionBroadcastHub("session-1", has_audio=True)
+        viewer_a, viewer_b = FakeConnection(), FakeConnection()
+        await hub.add_viewer(viewer_a)
+        await hub.add_viewer(viewer_b)
+        self.assertEqual(viewer_a.sent[0][4], 0b101)
+        self.assertEqual(viewer_b.sent[0][4], 0b101)
+
     async def test_broadcast_video_reaches_every_viewer(self) -> None:
         hub = SessionBroadcastHub("session-1")
         viewer_a, viewer_b = FakeConnection(), FakeConnection()
@@ -99,7 +125,9 @@ class SessionBroadcastHubTests(unittest.IsolatedAsyncioTestCase):
         viewer = FakeConnection()
         await hub.add_viewer(viewer)
 
-        failed = await hub.broadcast_audio(aac_payload=b"\xaa\xbb", timestamp_ms=1000)
+        failed = await hub.broadcast_audio(
+            pcm_payload=b"\xaa\xbb\xcc\xdd", sample_rate_hz=11025, timestamp_ms=1000
+        )
 
         self.assertEqual(failed, [])
         self.assertEqual(len(viewer.sent), 2)
