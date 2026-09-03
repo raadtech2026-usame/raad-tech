@@ -34,6 +34,10 @@ const PHASE_BADGE: Record<VideoSessionPhase, { label: string; variant: BadgeVari
   requesting: { label: "Starting", variant: "neutral" },
   connecting: { label: "Connecting", variant: "info", pulsing: true },
   connected: { label: "Live", variant: "success", pulsing: true },
+  // Not "Live": the socket is open and a frame decoded, but the picture has stopped advancing.
+  // Never pulsing - a pulsing badge reads as "flowing", which is exactly the false confidence
+  // this phase exists to correct.
+  stalled: { label: "No signal", variant: "warning" },
   stopped: { label: "Stopped", variant: "neutral" },
   unavailable: { label: "Unavailable", variant: "warning" },
   error: { label: "Error", variant: "danger" },

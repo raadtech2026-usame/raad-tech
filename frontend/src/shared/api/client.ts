@@ -27,6 +27,17 @@ interface RequestOptions {
    * (`.claude/rules/api.md` #6, `POST /billing/payments`). Merged in, never overrides
    * `Content-Type`/`Authorization` above. */
   headers?: Record<string, string>;
+  /** ADR-0037 — lets the browser complete this request even if the initiating document is
+   * being unloaded (tab close/navigation/refresh), instead of the request being silently
+   * aborted mid-flight. Opt-in per call (defaults unset/`false`, every existing caller
+   * unaffected) — only meaningful for a small, idempotent teardown call fired from an unmount
+   * cleanup, e.g. `useIntercomController.ts`'s own stop-on-unmount; the ~64KB payload ceiling
+   * `keepalive` imposes is irrelevant for a body this small. This is a UX/latency improvement
+   * only, not a correctness guarantee on its own — the backend's own stale-session
+   * reconciliation job (`VideoApplicationService.reconcile_stale_intercom_sessions`) is what
+   * actually guarantees a dead session can never block another operator forever, regardless of
+   * whether this request is ever sent or received at all. */
+  keepalive?: boolean;
 }
 
 function toCamelCaseDetail(raw: {
@@ -76,6 +87,7 @@ async function rawRequest<T>(path: string, options: RequestOptions): Promise<T> 
     method: options.method ?? "GET",
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    keepalive: options.keepalive,
   });
 
   if (response.status === 204) {

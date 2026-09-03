@@ -7,6 +7,7 @@ import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
 import { LiveIndicator } from "../../shared/components/LiveIndicator/LiveIndicator";
 import type { VideoCameraOption } from "./api";
 import { CameraTile } from "./CameraTile";
+import { IntercomControl } from "./IntercomControl";
 import type { VideoSessionPhase } from "./useVideoSessionController";
 import styles from "./MultiCameraVideoPanel.module.css";
 
@@ -150,6 +151,11 @@ export function MultiCameraVideoPanel({ deviceId, cameras, deviceOnline }: Multi
                 Start Live
               </Button>
             )}
+            <span className={styles.headerDivider} aria-hidden="true" />
+            <IntercomControl
+              deviceId={hasCameras ? deviceId : null}
+              cameraId={hasCameras ? cameras[0].id : null}
+            />
           </div>
         }
       />
