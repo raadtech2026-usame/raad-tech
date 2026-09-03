@@ -8,6 +8,7 @@ registry, so the two implementations are verified against equivalent expectation
 import unittest
 
 from src.session.device_session import DeviceConnectivityState, DeviceSession
+from src.session.device_session_manager import DeviceSessionManager
 from src.session.redis_device_session_registry import RedisDeviceSessionRegistry
 
 
@@ -86,6 +87,33 @@ class RedisDeviceSessionRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(found.terminal_id, "TERM-1")
         self.assertIsNone(await registry.find_by_connection_id("no-such-connection"))
 
+    async def test_supersede_clears_the_previous_connections_index_key(self) -> None:
+        """Regression, live-found 2026-09-02 against the physical bench unit. The superseded
+        connection's index key used to survive `add_exclusive`, so looking that dead connection
+        up still resolved to the terminal — and therefore to the *new*, live session that had
+        just replaced it."""
+        redis = FakeRedis()
+        registry = RedisDeviceSessionRegistry(redis)
+
+        await registry.add_exclusive(_make_session(connection_id="conn-old"))
+        await registry.add_exclusive(_make_session(connection_id="conn-new"))
+
+        self.assertIsNone(await registry.find_by_connection_id("conn-old"))
+        still_live = await registry.find_by_connection_id("conn-new")
+        self.assertIsNotNone(still_live)
+        self.assertEqual(still_live.connection_id, "conn-new")
+
+    async def test_find_by_connection_id_ignores_a_stale_index_key(self) -> None:
+        """Defense-in-depth for the same bug: an orphaned index key written by a pre-fix process
+        (14 existed on the bench) must never resolve to a session that no longer owns it."""
+        redis = FakeRedis()
+        registry = RedisDeviceSessionRegistry(redis)
+        await registry.add_exclusive(_make_session(connection_id="conn-new"))
+        # Simulate the orphan a pre-fix process would have left behind.
+        await redis.set("device_session:by_connection:conn-orphan", "TERM-1")
+
+        self.assertIsNone(await registry.find_by_connection_id("conn-orphan"))
+
     async def test_remove_if_current_removes_matching_session(self) -> None:
         redis = FakeRedis()
         registry = RedisDeviceSessionRegistry(redis)
@@ -137,6 +165,89 @@ class RedisDeviceSessionRegistryTests(unittest.IsolatedAsyncioTestCase):
 
         fetched = await registry.get("TERM-1")
         self.assertEqual(fetched.state, DeviceConnectivityState.ONLINE)
+
+
+
+class SupersedeThenCloseOldConnectionTests(unittest.IsolatedAsyncioTestCase):
+    """End-to-end reproduction of the live 2026-09-02 bench failure, driven through
+    `DeviceSessionManager` exactly as the real JT/T 808 server does it: the device reconnects
+    while its previous session is still registered, authenticates on the new connection, and the
+    manager then closes the old connection — which fires the transport's own
+    `handle_connection_closed(old_connection_id)` hook. The device's live session must survive.
+
+    Before the fix this deleted the brand-new session, leaving a TCP-connected, successfully
+    authenticated device with no session at all: every 0x0200/0x0704 was then dropped
+    `position_report_dropped_unauthenticated` and no 0x9101 video command could be routed to it.
+    """
+
+    async def test_new_session_survives_the_old_connections_close_hook(self) -> None:
+        closed: list[tuple[str, str]] = []
+
+        async def close_connection(connection_id: str, reason: str) -> None:
+            closed.append((connection_id, reason))
+
+        offline: list[str] = []
+
+        async def on_device_offline(session, reason: str) -> None:
+            offline.append(reason)
+
+        registry = RedisDeviceSessionRegistry(FakeRedis())
+        manager = DeviceSessionManager(
+            registry=registry,
+            close_connection=close_connection,
+            on_device_offline=on_device_offline,
+        )
+
+        await manager.create(
+            connection_id="conn-old",
+            terminal_id="TERM-1",
+            device_id="dev-1",
+            vehicle_id="veh-1",
+            organization_id="org-1",
+        )
+        await manager.create(
+            connection_id="conn-new",
+            terminal_id="TERM-1",
+            device_id="dev-1",
+            vehicle_id="veh-1",
+            organization_id="org-1",
+        )
+        self.assertEqual(closed, [("conn-old", "superseded")])
+
+        # The transport now reports the old connection as closed - the exact hook that used to
+        # destroy the new session.
+        await manager.handle_connection_closed("conn-old")
+
+        live = await manager.resolve("TERM-1")
+        self.assertIsNotNone(live, "the newly authenticated session was destroyed")
+        self.assertEqual(live.connection_id, "conn-new")
+        self.assertEqual(await registry.count(), 1)
+        self.assertEqual(offline, [], "no device_offline should fire for a superseded connection")
+
+    async def test_closing_the_current_connection_still_removes_the_session(self) -> None:
+        """The fix must not break the ordinary path: closing the connection that genuinely owns
+        the session still tears it down and reports the device offline."""
+        offline: list[str] = []
+
+        async def on_device_offline(session, reason: str) -> None:
+            offline.append(reason)
+
+        async def close_connection(connection_id: str, reason: str) -> None:
+            return None
+
+        registry = RedisDeviceSessionRegistry(FakeRedis())
+        manager = DeviceSessionManager(
+            registry=registry,
+            close_connection=close_connection,
+            on_device_offline=on_device_offline,
+        )
+        await manager.create(connection_id="conn-1", terminal_id="TERM-1")
+
+        await manager.handle_connection_closed("conn-1")
+
+        self.assertIsNone(await manager.resolve("TERM-1"))
+        self.assertEqual(await registry.count(), 0)
+        self.assertEqual(offline, ["connection_closed"])
 
 
 if __name__ == "__main__":

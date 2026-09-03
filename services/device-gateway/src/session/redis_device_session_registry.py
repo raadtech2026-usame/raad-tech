@@ -111,6 +111,22 @@ class RedisDeviceSessionRegistry(DeviceSessionRegistryPort):
         await self._redis.set(_session_key(session.terminal_id), _serialize(session))
         await self._redis.set(_connection_index_key(session.connection_id), session.terminal_id)
         await self._redis.sadd(_ALL_TERMINALS_KEY, session.terminal_id)
+        # Live-found bug (2026-09-02, physical bench): the superseded connection's own index key
+        # was never deleted here, so it kept resolving to this terminal *after* its session had
+        # been replaced. `DeviceSessionManager` closes that old connection immediately after this
+        # returns, which fires `handle_connection_closed(old_connection_id)` ->
+        # `find_by_connection_id(old)` -> (stale key) -> `get(terminal_id)` -> the **new**,
+        # live session -> `close()` -> `remove_if_current` matched it and deleted it. Net effect:
+        # a device that had just authenticated successfully was left with no session at all, so
+        # every subsequent 0x0200/0x0704 was dropped `position_report_dropped_unauthenticated`
+        # and no platform-initiated command (0x9101 video included) could be routed to it, while
+        # its TCP connection stayed happily ESTABLISHED. Confirmed live: 185 position reports
+        # dropped in 20 minutes with `device_session:index` empty and 14 orphaned index keys.
+        # The in-memory `DeviceSessionRegistry` never had this bug - its `find_by_connection_id`
+        # scans live sessions, so a superseded connection simply matches nothing. This restores
+        # that same invariant for the Redis-backed port.
+        if previous is not None and previous.connection_id != session.connection_id:
+            await self._redis.delete(_connection_index_key(previous.connection_id))
         return previous
 
     async def get(self, terminal_id: str) -> DeviceSession | None:
@@ -134,10 +150,20 @@ class RedisDeviceSessionRegistry(DeviceSessionRegistryPort):
             await self._redis.srem(_ALL_TERMINALS_KEY, terminal_id)
 
     async def find_by_connection_id(self, connection_id: str) -> DeviceSession | None:
+        """Defense-in-depth for the same supersede bug `add_exclusive` above now prevents at the
+        source: even if an index key is somehow stale (an orphan left by a pre-fix process - 14
+        such keys existed on this bench when the bug was found - or a crash between the two
+        writes above), the session it resolves to is only returned when it genuinely belongs to
+        `connection_id`. This makes the Redis port behave exactly like the in-memory registry,
+        whose own `find_by_connection_id` scans live sessions and therefore can never return a
+        session for a connection that no longer owns it."""
         terminal_id = await self._redis.get(_connection_index_key(connection_id))
         if not terminal_id:
             return None
-        return await self.get(terminal_id)
+        session = await self.get(terminal_id)
+        if session is None or session.connection_id != connection_id:
+            return None
+        return session
 
     async def all(self) -> list[DeviceSession]:
         terminal_ids = await self._redis.smembers(_ALL_TERMINALS_KEY)
