@@ -46,7 +46,11 @@ from redis.asyncio import Redis
 
 from raad.core.events.base import DomainEvent
 from raad.core.events.ports import BrokerConsumer
-from raad.core.events.redis_streams import RedisDeadLetterQueue, RedisStreamsBrokerConsumer
+from raad.core.events.redis_streams import (
+    DEFAULT_STREAM_NAME,
+    RedisDeadLetterQueue,
+    RedisStreamsBrokerConsumer,
+)
 from raad.core.logging.setup import get_logger
 from raad.core.security.tokens import TokenService, resolve_principal_from_access_token
 from raad.core.tenancy.principal import Principal
@@ -184,13 +188,24 @@ class BrokerFanOutWorker(Worker):
 
 
 def build_realtime_broker_consumer(
-    *, broker_url: str, group_name: str, clock: Clock, retry_policy: RetryPolicy | None = None
+    *,
+    broker_url: str,
+    group_name: str,
+    clock: Clock,
+    retry_policy: RetryPolicy | None = None,
+    stream_name: str = DEFAULT_STREAM_NAME,
 ) -> BrokerConsumer:
     """Constructs a fresh `RedisStreamsBrokerConsumer` for one realtime channel's own consumer
     group, independent of `core/di/bootstrap.py`'s `BrokerConsumer` singleton (reserved for the
     Notification Worker's own `notification-worker` group — see module docstring). A fresh
     `Redis.from_url` client per call mirrors `build_container`'s own "separate client per
-    logical consumer" precedent."""
+    logical consumer" precedent.
+
+    `stream_name` exists so an integration test can point one consumer at its own
+    throwaway stream instead of the shared `raad:events`; every production caller
+    omits it and gets `DEFAULT_STREAM_NAME`, so runtime fan-out behaviour is
+    unchanged. `RedisStreamsBrokerPort`/`RedisStreamsBrokerConsumer` already took
+    this same parameter - only this builder was missing the passthrough."""
     redis_client = Redis.from_url(broker_url, decode_responses=True)
     dead_letter_queue = RedisDeadLetterQueue(redis_client)
     policy = retry_policy or ExponentialBackoffRetryPolicy(
@@ -201,6 +216,7 @@ def build_realtime_broker_consumer(
         group_name=group_name,
         retry_policy=policy,
         dead_letter_queue=dead_letter_queue,
+        stream_name=stream_name,
     )
 
 
