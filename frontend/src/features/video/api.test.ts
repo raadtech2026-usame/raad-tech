@@ -110,6 +110,7 @@ describe("video api", () => {
       endedAt: null,
       createdAt: "2026-01-01T00:00:00Z",
       streamUrl: "ws://jt1078-relay:7911/viewer?token=abc123",
+      uplinkUrl: null,
     });
   });
 

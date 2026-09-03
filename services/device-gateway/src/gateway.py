@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 
 from redis.asyncio import Redis
@@ -131,7 +132,9 @@ class DeviceGateway:
 
     def _build_event_publisher(self) -> EventPublisher:
         if self._redis_client is not None:
-            return RedisEventPublisher(self._redis_client)
+            return RedisEventPublisher(
+                self._redis_client, max_length=self._broker_config.stream_max_length
+            )
         return LoggingEventPublisher()
 
     def _build_latest_position_writer(self) -> LatestPositionWriter:
@@ -267,7 +270,15 @@ class DeviceGateway:
 
 
 async def main() -> None:
-    configure_logging(level=logging.INFO)
+    # Env-configurable (2026-09-02), mirroring the Business API's own existing
+    # RAAD_OBSERVABILITY__LOG_LEVEL convention - so raising this service to DEBUG for a
+    # live diagnosis never requires editing code and rebuilding an image again. Defaults
+    # to INFO, so no deployment behaves differently unless the variable is actually set.
+    configure_logging(
+        level=getattr(
+            logging, os.environ.get("DEVICE_GATEWAY_LOG_LEVEL", "INFO").upper(), logging.INFO
+        )
+    )
     gateway = DeviceGateway()
     await gateway.serve_forever()
 

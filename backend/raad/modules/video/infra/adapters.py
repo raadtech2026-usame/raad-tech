@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 
 from raad.core.events.base import DomainEvent
 from raad.core.events.ports import BrokerPort
-from raad.modules.video.application.ports import VideoProviderPort
+from raad.modules.video.application.ports import IntercomStreamUrls, VideoProviderPort
 from raad.modules.video.infra.jt1078_relay_client import Jt1078RelayRpcClient
 
 _SIGNAL_EVENT_TYPE = "Jt1078SignalCommandRequested"
@@ -142,6 +142,52 @@ class Jt1078RelayAdapter(VideoProviderPort):
             },
         )
         return self._viewer_url(response["viewer_token"])
+
+    async def start_intercom(
+        self,
+        *,
+        device_id: str,
+        camera_id: str,
+        terminal_id: str,
+        channel_no: int,
+        reference: str,
+        audio_codec: int | None = None,
+    ) -> IntercomStreamUrls:
+        """ADR-0036. The only real caller anywhere in this codebase that passes `data_type=2` —
+        `start_live` above deliberately keeps its own hardcoded `data_type: 0` unchanged
+        (ADR-0035's own decision), so ordinary live video cannot be affected by this method
+        existing. Requests two independently-minted tokens from the relay (a "viewer" token for
+        the existing, unmodified downlink WS-FLV contract, and a new "uplink" token for sending
+        operator mic audio) — a session's viewer token is single-use, so a second connection
+        needs its own."""
+        response = await self._rpc.call(
+            "create_intercom_session",
+            {
+                "session_id": reference,
+                "correlation_id": reference,
+                "terminal_id": terminal_id,
+                "logical_channel": channel_no,
+                "device_id": device_id,
+                "audio_codec": audio_codec,
+            },
+        )
+        await self._signal_device_start(
+            command="live_video_request",
+            terminal_id=terminal_id,
+            correlation_id=reference,
+            fields={
+                "server_ip": response["ingest_host"],
+                "tcp_port": response["ingest_port"],
+                "udp_port": 0,
+                "logical_channel": channel_no,
+                "data_type": 2,  # 2 = two-way intercom, spec Table 6.2 (ADR-0035/0036)
+                "stream_type": 0,
+            },
+        )
+        return IntercomStreamUrls(
+            downlink_url=self._viewer_url(response["viewer_token"]),
+            uplink_url=self._viewer_url(response["uplink_token"]),
+        )
 
     async def stop(self, *, reference: str) -> None:
         await self._rpc.call("end_session", {"session_id": reference})

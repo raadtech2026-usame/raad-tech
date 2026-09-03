@@ -437,7 +437,9 @@ def build_container(settings: Settings) -> Container:
             socket_timeout=settings.broker.socket_timeout_seconds,
             health_check_interval=settings.broker.health_check_interval_seconds,
         )
-        broker_port = RedisStreamsBrokerPort(broker_redis_client)
+        broker_port = RedisStreamsBrokerPort(
+            broker_redis_client, max_length=settings.broker.stream_max_length
+        )
         container.bind_singleton(BrokerPort, broker_port)
         container.bind_singleton(LockPort, RedisLockPort(broker_redis_client))
         dead_letter_queue = RedisDeadLetterQueue(broker_redis_client)
@@ -449,6 +451,7 @@ def build_container(settings: Settings) -> Container:
                 group_name="notification-worker",
                 retry_policy=container.resolve(RetryPolicy),
                 dead_letter_queue=dead_letter_queue,
+                batch_size=settings.workers.notification_worker_batch_size,
             ),
         )
 

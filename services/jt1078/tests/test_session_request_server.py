@@ -96,7 +96,7 @@ class SessionRequestServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["ingest_port"], 7910)
         self.assertEqual(
             verify_token_signature(response["viewer_token"], secret=SECRET),
-            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            ("01ARZ3NDEKTSV4RRFFQ69G5FAV", "viewer"),
         )
         session = session_manager.resolve("01ARZ3NDEKTSV4RRFFQ69G5FAV")
         self.assertIsNotNone(session)
@@ -281,6 +281,65 @@ class RunForeverResilienceTests(unittest.IsolatedAsyncioTestCase):
         response = _pop_response(redis, "req-after-failure")
         self.assertTrue(response["ok"])
         self.assertIsNotNone(session_manager.resolve("01ARZ3NDEKTSV4RRFFQ69G5FAZ"))
+
+
+class CreateIntercomSessionTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0036."""
+
+    async def test_returns_two_independently_valid_tokens(self) -> None:
+        redis = FakeRedis()
+        server, session_manager = _make_server(redis)
+        _push_request(
+            redis,
+            {
+                "request_id": "req-ic-1",
+                "command": "create_intercom_session",
+                "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FBI",
+                "terminal_id": "00000000014482607571",
+                "logical_channel": 1,
+                "audio_codec": 6,
+            },
+        )
+
+        processed = await server.poll_once()
+
+        self.assertTrue(processed)
+        response = _pop_response(redis, "req-ic-1")
+        self.assertTrue(response["ok"])
+        self.assertNotEqual(response["viewer_token"], response["uplink_token"])
+        self.assertEqual(
+            verify_token_signature(response["viewer_token"], secret=SECRET),
+            ("01ARZ3NDEKTSV4RRFFQ69G5FBI", "viewer"),
+        )
+        self.assertEqual(
+            verify_token_signature(response["uplink_token"], secret=SECRET),
+            ("01ARZ3NDEKTSV4RRFFQ69G5FBI", "uplink"),
+        )
+        session = session_manager.resolve("01ARZ3NDEKTSV4RRFFQ69G5FBI")
+        self.assertEqual(session.kind, VideoSessionKind.INTERCOM)
+        self.assertEqual(session.audio_codec, 6)
+
+    async def test_a_second_intercom_request_for_the_same_terminal_is_rejected(self) -> None:
+        redis = FakeRedis()
+        server, _session_manager = _make_server(redis)
+        for i in (1, 2):
+            _push_request(
+                redis,
+                {
+                    "request_id": f"req-ic-{i}",
+                    "command": "create_intercom_session",
+                    "session_id": f"01ARZ3NDEKTSV4RRFFQ69G5FB{i}",
+                    "terminal_id": "00000000014482607571",
+                    "logical_channel": 1,
+                },
+            )
+            await server.poll_once()
+
+        first = _pop_response(redis, "req-ic-1")
+        second = _pop_response(redis, "req-ic-2")
+        self.assertTrue(first["ok"])
+        self.assertFalse(second["ok"])
+        self.assertIn("already has an open intercom session", second["error"])
 
 
 if __name__ == "__main__":

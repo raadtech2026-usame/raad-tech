@@ -74,11 +74,30 @@ def _fields_to_event(fields: dict[str, str]) -> DomainEvent:
 
 
 class RedisStreamsBrokerPort(BrokerPort):
-    def __init__(self, redis_client: Redis, *, stream_name: str = DEFAULT_STREAM_NAME) -> None:
+    def __init__(
+        self,
+        redis_client: Redis,
+        *,
+        stream_name: str = DEFAULT_STREAM_NAME,
+        max_length: int = 0,
+    ) -> None:
         self._redis = redis_client
         self._stream_name = stream_name
+        #: `0` (the default here) keeps this class's original unbounded behavior, so every
+        #: existing test/caller that constructs it without the argument is unchanged; the real
+        #: composition root (`core/di/bootstrap.py`) passes `settings.broker.stream_max_length`,
+        #: whose own comment carries the full reasoning and the measured numbers.
+        self._max_length = max_length
 
     async def publish(self, event: DomainEvent) -> None:
+        if self._max_length > 0:
+            await self._redis.xadd(
+                self._stream_name,
+                _event_to_fields(event),
+                maxlen=self._max_length,
+                approximate=True,
+            )
+            return
         await self._redis.xadd(self._stream_name, _event_to_fields(event))
 
 
@@ -167,12 +186,38 @@ class RedisStreamsBrokerConsumer(BrokerConsumer):
         fields: dict[str, str],
         handler: Callable[[DomainEvent], Awaitable[None]],
     ) -> None:
-        event = _fields_to_event(fields)
+        try:
+            event = _fields_to_event(fields)
+        except Exception as exc:  # noqa: BLE001 - a message that can't even parse must not
+            # propagate past this method (see `_handle_malformed`'s own docstring for the real,
+            # live-found incident this closes: an unparseable message left `_fields_to_event`'s
+            # call site unprotected, so the exception escaped `consume()` entirely — reached
+            # before `xreadgroup` could ever run on a later `consume()` call once the message
+            # became reclaimable, permanently starving this whole consumer group of every event
+            # newer than the poisoned one, not just that one message).
+            await self._handle_malformed(message_id, fields, exc)
+            return
         try:
             await handler(event)
         except Exception as exc:  # noqa: BLE001 - a handler failure must never crash consume()
             await self._handle_failure(message_id, event, exc)
             return
+        await self._redis.xack(self._stream_name, self._group_name, message_id)
+
+    async def _handle_malformed(
+        self, message_id: str, fields: dict[str, str], exc: Exception
+    ) -> None:
+        """Dead-letters and acks immediately, no retry budget consulted at all — unlike
+        `_handle_failure`'s transient-handler-error case, a message that cannot be parsed into a
+        `DomainEvent` will *never* succeed no matter how many times it's redelivered, so
+        retrying it only ever re-blocks this same consumer group's forward progress again once
+        it next becomes reclaimable (`_reclaim_stale_pending`)."""
+        raw_data = fields.get("data", "")
+        logger.error(
+            "event_deserialization_failed",
+            extra={"message_id": message_id, "error": str(exc), "raw_data": raw_data[:1000]},
+        )
+        await self._dead_letter_queue.send_malformed(raw_data=raw_data, error=str(exc))
         await self._redis.xack(self._stream_name, self._group_name, message_id)
 
     async def _handle_failure(
@@ -226,3 +271,15 @@ class RedisDeadLetterQueue(DeadLetterQueue):
         fields["attempts"] = str(attempts)
         fields["failed_at"] = datetime.now(timezone.utc).isoformat()
         await self._redis.xadd(self._stream_name, fields)
+
+    async def send_malformed(self, *, raw_data: str, error: str) -> None:
+        await self._redis.xadd(
+            self._stream_name,
+            {
+                "data": raw_data,
+                "error": error,
+                "attempts": "0",
+                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "malformed": "true",
+            },
+        )

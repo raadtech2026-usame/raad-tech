@@ -15,6 +15,17 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Line-buffer stdout (2026-09-02). `logging_setup.py` writes to `sys.stdout`, which Python
+# block-buffers (8KB) whenever stdout is a pipe rather than a TTY - which it always is under
+# Docker. A high-volume service masks this (its buffer fills constantly), but a low-volume
+# one does not: `device-gateway` produced ZERO observable log output for five days straight
+# while genuinely running and serving a live JT/T 808 device connection, because its output
+# never filled a single buffer. That made every device-plane fact (0x9101 sends, 0x0001
+# acks, heartbeats, position reports) unobservable in `docker logs` - the exact evidence
+# needed to diagnose a media session that never establishes. Observability only; no
+# behavioral change to any service.
+ENV PYTHONUNBUFFERED=1
+
 RUN groupadd --system appuser && useradd --system --gid appuser --create-home appuser
 
 COPY pyproject.toml ./

@@ -225,6 +225,10 @@ services:
       # consume the same `raad:events` stream (ADR-0010), so a mismatched password or db number
       # here would silently split them onto two disjoint, unrelated streams.
       DEVICE_GATEWAY_BROKER_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      # Shared-stream trimming (2026-09-02) — this deployable is the highest-volume writer to
+      # `raad:events` (one event per GPS position report), so its own cap matters most. See
+      # `src/broker_config.BrokerConfig.stream_max_length`.
+      DEVICE_GATEWAY_STREAM_MAX_LENGTH: ${DEVICE_GATEWAY_STREAM_MAX_LENGTH:-0}
     ports:
       - "${DEVICE_GATEWAY_JT808_PORT:-7808}:7808"
       - "${DEVICE_GATEWAY_MDVR_PORT:-7809}:7809"
@@ -275,6 +279,27 @@ services:
       # speaks raw extended-RTP on this port, not HTTP, so it cannot go through the same
       # HTTP(S) reverse-proxy path `JT1078_SIGNALING_URL`'s viewer WebSocket does).
       JT1078_RELAY_PUBLIC_INGEST_HOST: ${JT1078_RELAY_PUBLIC_INGEST_HOST:-}
+      # Session-lifecycle timeouts (2026-09-02). `RelayConfig.from_env()` has always read these,
+      # but none was wired here — the exact class of gap CLAUDE.md's own Permanent Engineering
+      # Lessons already records for JT1078_RELAY_PUBLIC_INGEST_HOST above. The values below are
+      # `services/jt1078/src/config.RelayConfig`'s own defaults verbatim, so wiring them changes
+      # no behavior; they exist so a deployment on a slow or lossy device link can be tuned
+      # without a code change. Why this matters concretely: INGEST_TIMEOUT_SECONDS +
+      # IDLE_SWEEP_INTERVAL_SECONDS is exactly the window after which a session whose device
+      # never started streaming is failed and its browser WebSocket actively closed — measured
+      # live as the 30-35s "the viewer socket died while I was watching" symptom, which is this
+      # relay's own deliberate teardown, not a network fault.
+      JT1078_RELAY_INGEST_TIMEOUT_SECONDS: ${JT1078_RELAY_INGEST_TIMEOUT_SECONDS:-30}
+      JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS: ${JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS:-5}
+      JT1078_RELAY_ABSOLUTE_IDLE_SECONDS: ${JT1078_RELAY_ABSOLUTE_IDLE_SECONDS:-60}
+      JT1078_RELAY_VIEWER_GRACE_SECONDS: ${JT1078_RELAY_VIEWER_GRACE_SECONDS:-15}
+      JT1078_RELAY_MAX_GLOBAL_SESSIONS: ${JT1078_RELAY_MAX_GLOBAL_SESSIONS:-50}
+      JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION: ${JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION:-0}
+      # Shared-stream trimming (2026-09-02) — see `src/broker_config.BrokerConfig.
+      # stream_max_length`. Must stay consistent with DEVICE_GATEWAY_STREAM_MAX_LENGTH and the
+      # Business API's own RAAD_BROKER__STREAM_MAX_LENGTH: all three write to `raad:events`, and
+      # one unbounded writer alone defeats the cap.
+      JT1078_RELAY_STREAM_MAX_LENGTH: ${JT1078_RELAY_STREAM_MAX_LENGTH:-0}
     ports:
       - "${JT1078_RELAY_INGEST_PORT:-7910}:7910"
       - "${JT1078_RELAY_VIEWER_PORT:-7911}:7911"
@@ -352,8 +377,20 @@ services:
     volumes:
       - ../infrastructure/nginx/conf.d/dev.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
+      # `service_healthy` (not `service_started`) — the real root cause of a live-reproduced bug
+      # (2026-09-01): on a full-stack restart, nginx's own container starts as soon as the
+      # `backend` *process* launches, but uvicorn/FastAPI startup (imports, DB connectivity
+      # checks) takes longer than that — nginx's first health/API probes hit "connection
+      # refused" against a backend that hadn't opened port 8000 yet, nginx flipped to unhealthy,
+      # and every proxied request (including a CORS preflight) got nginx's own bare 502 page
+      # instead of a real response — which has no Access-Control-Allow-Origin header at all,
+      # surfacing in the browser as an apparent CORS failure even though CORSMiddleware
+      # (backend/raad/main.py) was correctly configured the whole time. `backend` already
+      # defines its own `healthcheck` (this file, above) that only passes once `/health/ready`
+      # genuinely responds — waiting on it here closes the race instead of relying on it healing
+      # itself within nginx's own first few (failing) healthcheck attempts.
       backend:
-        condition: service_started
+        condition: service_healthy
       frontend:
         condition: service_started
     healthcheck:

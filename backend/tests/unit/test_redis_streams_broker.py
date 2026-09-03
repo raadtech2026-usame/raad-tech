@@ -60,10 +60,24 @@ class FakeRedisStream:
         self.acked: list[str] = []
         self.locks: dict[str, str] = {}
 
-    async def xadd(self, name: str, fields: dict[str, str]) -> str:
+    async def xadd(
+        self,
+        name: str,
+        fields: dict[str, str],
+        maxlen: int | None = None,
+        approximate: bool = False,
+    ) -> str:
+        # `maxlen`/`approximate` mirror redis-py's own `XADD` kwargs (stream-trimming fix,
+        # 2026-09-02). Recorded so a test can assert they are passed through, and applied
+        # (exactly, not approximately - a fake has no node structure to round to) so a test can
+        # assert the stream is genuinely bounded.
+        self.last_xadd_kwargs = {"maxlen": maxlen, "approximate": approximate}
         message_id = str(self._next_id)
         self._next_id += 1
         self.entries[message_id] = fields
+        if maxlen is not None and maxlen > 0:
+            while len(self.entries) > maxlen:
+                self.entries.pop(next(iter(self.entries)))
         return message_id
 
     async def xgroup_create(self, name: str, groupname: str, id: str, mkstream: bool) -> None:
@@ -143,9 +157,13 @@ class FixedRetryPolicy(RetryPolicy):
 class RecordingDeadLetterQueue(DeadLetterQueue):
     def __init__(self) -> None:
         self.sent: list[dict] = []
+        self.malformed: list[dict] = []
 
     async def send(self, *, event: DomainEvent, error: str, attempts: int) -> None:
         self.sent.append({"event": event, "error": error, "attempts": attempts})
+
+    async def send_malformed(self, *, raw_data: str, error: str) -> None:
+        self.malformed.append({"raw_data": raw_data, "error": error})
 
 
 class RedisStreamsBrokerPortTests(unittest.IsolatedAsyncioTestCase):
@@ -158,6 +176,28 @@ class RedisStreamsBrokerPortTests(unittest.IsolatedAsyncioTestCase):
         data = json.loads(fields["data"])
         self.assertEqual(data["event_type"], "TripStarted")
         self.assertEqual(data["aggregate_id"], "01J8Z3K9G6X8YV5T4N2R7QW3TR")
+
+    async def test_publish_does_not_trim_by_default(self) -> None:
+        """`max_length=0` (the constructor default) keeps this class's original unbounded
+        behavior, so every existing caller/test is unaffected by the trimming option."""
+        redis = FakeRedisStream()
+        port = RedisStreamsBrokerPort(redis)
+        for _ in range(5):
+            await port.publish(make_event())
+        self.assertEqual(len(redis.entries), 5)
+        self.assertEqual(redis.last_xadd_kwargs, {"maxlen": None, "approximate": False})
+
+    async def test_publish_trims_the_stream_when_a_max_length_is_configured(self) -> None:
+        """Stream-growth fix (2026-09-02): `raad:events` was never trimmed and had reached
+        301,162 entries / ~223 MB against a 256 MB `maxmemory` under `noeviction`, where the
+        next write would have failed outright and stopped the whole event backbone."""
+        redis = FakeRedisStream()
+        port = RedisStreamsBrokerPort(redis, max_length=3)
+        for _ in range(10):
+            await port.publish(make_event())
+
+        self.assertEqual(len(redis.entries), 3)
+        self.assertEqual(redis.last_xadd_kwargs, {"maxlen": 3, "approximate": True})
 
 
 class RedisStreamsBrokerConsumerTests(unittest.IsolatedAsyncioTestCase):
@@ -250,6 +290,75 @@ class RedisStreamsBrokerConsumerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(attempts), 2)
         self.assertEqual(len(redis.acked), 1)
 
+    async def test_malformed_message_is_dead_lettered_and_acked_not_retried(self) -> None:
+        """Live-found incident, 2026-09-01: a message written directly onto the shared stream
+        without going through `_event_to_fields` (missing `event_id`) crashed `_fields_to_event`
+        with an unhandled `KeyError`, which used to propagate straight out of `_process_one` -
+        never acked, never dead-lettered, staying pending forever."""
+        redis = FakeRedisStream()
+        await redis.xadd("raad:events", {"data": json.dumps({"event_type": "SomeEvent"})})
+        consumer, dlq = self._make_consumer(redis)
+
+        async def handler(event: DomainEvent) -> None:
+            pass  # must never be reached for an unparseable message
+
+        await consumer.consume(handler)  # must not raise
+
+        self.assertEqual(len(dlq.malformed), 1)
+        self.assertIn("event_id", dlq.malformed[0]["error"])
+        self.assertEqual(len(redis.acked), 1)
+        self.assertEqual(redis.pending, {})
+
+    async def test_a_malformed_message_does_not_block_a_later_well_formed_one(self) -> None:
+        """The actual production symptom this bug caused: once a poisoned message existed
+        anywhere in the stream, EVERY later, well-formed event (e.g. a real `VideoSessionFailed`
+        reconciliation event) was never reached, because `consume()`'s own reclaim-then-read
+        sequence crashed on the poisoned message before `xreadgroup` for new messages ever ran."""
+        redis = FakeRedisStream()
+        await redis.xadd("raad:events", {"data": json.dumps({"event_type": "Poisoned"})})
+        port = RedisStreamsBrokerPort(redis)
+        await port.publish(make_event(event_id="evt-well-formed"))
+        consumer, dlq = self._make_consumer(redis)
+
+        seen: list[DomainEvent] = []
+
+        async def handler(event: DomainEvent) -> None:
+            seen.append(event)
+
+        await consumer.consume(handler)
+
+        self.assertEqual(len(dlq.malformed), 1)
+        self.assertEqual([e.event_id for e in seen], ["evt-well-formed"])
+        self.assertEqual(len(redis.acked), 2)
+
+    async def test_a_reclaimed_stale_malformed_message_is_cleared_not_re_crashed(self) -> None:
+        """Mirrors `test_reclaims_stale_pending_messages_and_retries_them` for the malformed
+        case — a poisoned message stuck in the pending list from before this fix (or from any
+        future redelivery) must be cleared by the very next reclaim pass, not re-wedge the
+        group forever."""
+        redis = FakeRedisStream()
+        await redis.xadd("raad:events", {"data": json.dumps({"event_type": "Poisoned"})})
+        consumer, dlq = self._make_consumer(redis)
+
+        async def handler(event: DomainEvent) -> None:
+            pass
+
+        await consumer.consume(handler)  # first pass: dead-lettered and acked immediately
+        self.assertEqual(len(redis.acked), 1)
+        self.assertEqual(redis.pending, {})
+
+        # A later `consume()` call must reach `xreadgroup` cleanly - proven by publishing and
+        # picking up a real event afterward.
+        port = RedisStreamsBrokerPort(redis)
+        await port.publish(make_event(event_id="evt-after"))
+        seen: list[DomainEvent] = []
+
+        async def handler2(event: DomainEvent) -> None:
+            seen.append(event)
+
+        await consumer.consume(handler2)
+        self.assertEqual([e.event_id for e in seen], ["evt-after"])
+
     async def test_no_messages_is_a_clean_no_op(self) -> None:
         redis = FakeRedisStream()
         consumer, dlq = self._make_consumer(redis)
@@ -273,6 +382,19 @@ class RedisDeadLetterQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fields["attempts"], "3")
         data = json.loads(fields["data"])
         self.assertEqual(data["event_type"], "TripStarted")
+
+    async def test_send_malformed_writes_raw_data_plus_error_metadata(self) -> None:
+        redis = FakeRedisStream()
+        dlq = RedisDeadLetterQueue(redis, stream_name="raad:events:dlq")
+        raw = json.dumps({"event_type": "Poisoned"})
+
+        await dlq.send_malformed(raw_data=raw, error="KeyError: 'event_id'")
+
+        self.assertEqual(len(redis.entries), 1)
+        fields = next(iter(redis.entries.values()))
+        self.assertEqual(fields["data"], raw)
+        self.assertEqual(fields["error"], "KeyError: 'event_id'")
+        self.assertEqual(fields["malformed"], "true")
 
 
 class RedisLockPortTests(unittest.IsolatedAsyncioTestCase):

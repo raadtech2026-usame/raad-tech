@@ -12,6 +12,14 @@
   gap: var(--space-3);
 }
 
+/* Separates the video controls from the Intercom control (ADR-0036) — a visual cue that these
+ * are two independent capabilities sharing one header, not one control group. */
+.headerDivider {
+  width: 1px;
+  height: 20px;
+  background: var(--color-border-default);
+}
+
 /* A second, slim toolbar row (video-wall redesign) — only present once streaming with more than
  * one camera, since a single-camera device has nothing to switch between. Dark, matching the
  * wall below it rather than the card's own light chrome — visually anchors the wall as one

@@ -259,7 +259,13 @@ class RedisVideoSignalingConsumer:
         )
         log_with_fields(
             logger,
-            10,
+            # INFO, not DEBUG (2026-09-02): a platform-issued command actually reaching a device
+            # is the symmetric counterpart of `command_acknowledged` (already INFO,
+            # `handlers/command_ack_handler.py`) and is exactly as low-volume - once per session
+            # request, never per frame. At DEBUG it was invisible under this service's own
+            # hardcoded INFO level, which made "was 0x9101 even sent for this channel?"
+            # unanswerable from logs while diagnosing media sessions that never establish.
+            20,
             "video_signal_command_forwarded",
             terminal_id=terminal_id,
             command=command,

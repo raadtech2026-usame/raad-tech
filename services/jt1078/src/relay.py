@@ -36,6 +36,7 @@ from src.ingest.ingest_server import IngestServer
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.session.session_manager import SessionManager
 from src.session.session_request_server import SessionRequestServer
+from src.session.uplink_registry import IngestConnectionRegistry
 from src.session.video_session import VideoSession, VideoSessionKind
 from src.session.viewer_token import (
     InMemorySingleUseTokenGuard,
@@ -64,6 +65,17 @@ logger = get_logger("jt1078_relay.relay")
 # (`codec/g711a.py` - kept, correct and tested, for any future non-ffmpeg need, just not called
 # from this live path anymore).
 _TRANSCODABLE_AUDIO_CODECS: frozenset[int] = frozenset({6})
+
+# Bug 1 fix — app-specific WebSocket close codes (RFC 6455 §7.4.2: 4000-4999 reserved for private
+# use), distinct from the pre-existing `4001 invalid_token`/`4004 session_not_active` rejection
+# codes above: these signal a connection that *was* legitimately attached to a broadcasting
+# session, closed because that session's own backend lifecycle just reached a terminal state, not
+# because the connection itself was ever invalid. Kept as two separate codes (not one generic
+# "session_terminal") specifically so `useIntercomController.ts` can render "the call failed" and
+# "the call ended" as genuinely different outcomes, matching `VideoSessionFailed`/`VideoSessionEnded`
+# — the same distinction those two events already carry on the backend/broker side.
+_CLOSE_CODE_SESSION_FAILED = 4010
+_CLOSE_CODE_SESSION_ENDED = 4011
 
 # AAC-LC's frame size is fixed at 1024 samples; at the fixed 8kHz this transcoder always encodes
 # at (`codec/aac_transcoder.py`'s own `_SOURCE_SAMPLE_RATE_HZ`), that's exactly 128ms/frame -
@@ -130,11 +142,17 @@ class Jt1078Relay:
             on_session_created=self._on_session_created,
             on_session_removed=self._on_session_removed,
         )
+        #: ADR-0036 — shared between `IngestServer` (registers a device's own live ingest socket
+        #: the moment it's correlated) and `ViewerServer` (forwards a browser's uplink audio to
+        #: it). One instance, this composition root's own object, mirroring `self._hubs`'s
+        #: identical "shared between the two transport servers" shape.
+        self._uplink_registry = IngestConnectionRegistry()
         self._ingest_server = IngestServer(
             host=self._config.ingest_host,
             port=self._config.ingest_port,
             session_manager=self._session_manager,
             on_reassembled_frame=self._on_reassembled_frame,
+            uplink_registry=self._uplink_registry,
         )
         self._viewer_server = ViewerServer(
             host=self._config.viewer_host,
@@ -143,6 +161,7 @@ class Jt1078Relay:
             token_guard=self._token_guard,
             session_manager=self._session_manager,
             hubs=self._hubs,
+            uplink_registry=self._uplink_registry,
         )
         self._session_request_server: SessionRequestServer | None = None
         if self._redis_client is not None:
@@ -163,7 +182,9 @@ class Jt1078Relay:
 
     def _build_event_publisher(self) -> SessionEventPublisher:
         if self._redis_client is not None:
-            return RedisSessionEventPublisher(self._redis_client)
+            return RedisSessionEventPublisher(
+                self._redis_client, max_length=self._broker_config.stream_max_length
+            )
         return LoggingSessionEventPublisher()
 
     def _build_token_guard(self) -> SingleUseTokenGuard:
@@ -182,8 +203,37 @@ class Jt1078Relay:
         if has_audio:
             self._spawn_background(self._start_audio_transcoder(session.session_id))
 
-    def _on_session_removed(self, session_id: str) -> None:
-        self._hubs.pop(session_id, None)
+    def _on_session_removed(self, session_id: str, outcome: str, reason: str) -> None:
+        """Bug 1 fix: previously only dereferenced the hub from `self._hubs`, leaving any browser
+        already connected to it (viewer *and*, for intercom, uplink) holding an open, silent
+        WebSocket forever — the exact cause of `useIntercomController`'s "stuck Connecting..."
+        symptom. Now also actively closes those connections with a distinguishable close code, via
+        `ViewerServer.close_session` (spawned as a background task, matching this hook's own
+        pre-existing sync-callable contract — `SessionManager.fail_session`/`end_session` call
+        this synchronously, never awaited)."""
+        code = _CLOSE_CODE_SESSION_FAILED if outcome == "failed" else _CLOSE_CODE_SESSION_ENDED
+        # WS close `reason` is capped at 123 bytes of UTF-8 (RFC 6455 §5.5.1: 125-byte control
+        # frame minus the 2-byte status code) - every real reason string this relay ever passes
+        # (e.g. "ingest_timeout") is far shorter, but truncate defensively rather than ever raise
+        # on an unexpectedly long one.
+        reason_bytes = reason.encode("utf-8")[:123]
+        # Observability (2026-09-02): this teardown previously logged *nothing at all*, which is
+        # why `ingest_timeout` — measured to be the single most common session outcome here (76 of
+        # 125 sampled sessions ended at 30-35s, exactly `SessionManager`'s own
+        # `ingest_timeout_seconds` + `idle_sweep_interval_seconds` granularity) — never appeared
+        # anywhere in this service's logs, and a relay-initiated teardown was indistinguishable
+        # from a browser-side disconnect (both surface only as `IncompleteReadError` on the read
+        # loop, since `send_close` closes this side's own writer too). One line, terminal states
+        # only (at most once per session), no behavioral change.
+        log_with_fields(
+            logger, 20, "session_removed", session_id=session_id, outcome=outcome, reason=reason
+        )
+        hub = self._hubs.pop(session_id, None)
+        self._spawn_background(
+            self._viewer_server.close_session(
+                session_id, hub=hub, code=code, reason=reason_bytes
+            )
+        )
         audio_state = self._audio_transcode_sessions.pop(session_id, None)
         if audio_state is not None:
             self._spawn_background(audio_state.transcoder.stop())
@@ -231,9 +281,28 @@ class Jt1078Relay:
         if hub is None:
             return
         if frame.is_video:
+            is_keyframe = frame.data_type == 0  # DATA_TYPE_I_FRAME
+            if is_keyframe:
+                # Diagnostic-only (2026-09-02, Problem 1 investigation: 20-30s live-video
+                # startup latency). `last_i_frame_interval_ms` is the device's *own* reported
+                # GOP interval (spec §6.2.1.1's video-frame trailer field, already decoded by
+                # `ingest/extended_rtp.py`/`frame_reassembly.py` on every video frame, but never
+                # previously read anywhere downstream) - an authoritative, device-stated number,
+                # not something this relay has to infer from wall-clock gaps between keyframes
+                # itself. Logged only on a keyframe (at most once per GOP, not once per frame) so
+                # this stays low-volume in production. If this value is large, the dominant
+                # startup-latency cost is the MDVR's own encoder configuration (how long a fresh
+                # viewer must wait for the *next* keyframe after connecting) - a device-side
+                # fact this relay cannot change, only report; see the ADR-0024 §16 gap this
+                # investigation also names for what remains open on the RAAD-code side instead.
+                log_with_fields(
+                    logger, 20, "keyframe_received", session_id=session_id,
+                    last_i_frame_interval_ms=frame.last_i_frame_interval_ms,
+                    timestamp_ms=frame.timestamp_ms,
+                )
             await hub.broadcast_video(
                 annex_b_payload=frame.body,
-                is_keyframe=(frame.data_type == 0),  # DATA_TYPE_I_FRAME
+                is_keyframe=is_keyframe,
                 timestamp_ms=frame.timestamp_ms,
             )
         elif frame.is_audio:

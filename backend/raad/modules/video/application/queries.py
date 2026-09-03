@@ -38,10 +38,14 @@ class VideoSessionDTO:
     ended_at: datetime | None
     created_at: datetime
     stream_url: str | None = None
+    #: ADR-0036 — the intercom uplink URL. Same "in-process passthrough, not a second source of
+    #: truth" treatment as `stream_url` above: populated only by `request_intercom`'s own
+    #: `VideoProviderPort.start_intercom` return value, `None` on every other read path.
+    uplink_url: str | None = None
 
 
 def video_session_to_dto(
-    session: VideoSession, *, stream_url: str | None = None
+    session: VideoSession, *, stream_url: str | None = None, uplink_url: str | None = None
 ) -> VideoSessionDTO:
     return VideoSessionDTO(
         id=str(session.id),
@@ -57,4 +61,5 @@ def video_session_to_dto(
         ended_at=session.ended_at,
         created_at=session.created_at,
         stream_url=stream_url,
+        uplink_url=uplink_url,
     )

@@ -52,6 +52,21 @@ class RedisSettings(RedisConnectionSettings):
 
 class BrokerSettings(RedisConnectionSettings):
     url: str = ""
+    #: **Default 0 = trimming DISABLED. Do not turn this on without first making the device
+    #: registry durable.** Live-proven regression, 2026-09-02: this was briefly defaulted to
+    #: 100_000 to bound Redis memory, and trimming immediately evicted the oldest entries —
+    #: which included the `DeviceRegistered`/`DeviceActivated`/`DeviceAssignedToVehicle` events
+    #: from 2026-08-18 that `services/device-gateway`'s `DeviceRegistryProjection` rebuilds
+    #: itself from on every cold start (`RedisDeviceRegistryConsumer.replay_from_start`, a full
+    #: `XRANGE` over the whole stream). The projection came back empty and the physical MDVR
+    #: could no longer authenticate at all (`authentication_failed` on every `0x0102`).
+    #: `raad:events` is therefore not a transient bus: for the device registry it is the durable
+    #: log of record, with unbounded retention. Any finite cap eventually evicts those founding
+    #: events, because they are by definition the oldest and position reports are high-volume —
+    #: so no "safe" non-zero value exists under the current design. Bounding Redis memory needs
+    #: the projection to stop depending on infinite history (persist it, or compact registry
+    #: events onto their own keys) — a design change, not a tuning knob.
+    stream_max_length: int = 0
 
 
 class PasswordPolicySettings(BaseModel):
@@ -177,6 +192,19 @@ class WorkerSettings(BaseModel):
     # `prune_position_history`/`sweep_expired_subscriptions`/`reconcile_expired_payments`
     # application-service methods.
     notification_worker_interval_seconds: float = 5.0
+    # Raised from `RedisStreamsBrokerConsumer`'s own 10-message default (2026-09-02), measured
+    # against the live bench stack. `NotificationWorker.run_once` performs exactly one
+    # `XREADGROUP count=<this>` per tick, and this single `notification-worker` consumer group
+    # carries *every* backend event processor - notifications, tracking positions, device
+    # connectivity, and (ADR-0026 §7) the JT1078 relay's own VideoSessionActivated/Ended/Failed
+    # lifecycle events. At 10 per 5s tick the whole pipeline was hard-capped at ~2 events/sec,
+    # measured directly: `XINFO GROUPS raad:events` showed this group persistently 105-125
+    # entries behind on a 299k-entry stream, and `video_sessions.started_at` landed ~50s after
+    # the relay's own `ingest_connection_correlated` for the same session - i.e. the durable
+    # session status a UI reads was systematically ~50s stale. Larger batches add no latency
+    # when the stream is idle (`block_ms` still returns early with whatever is available); they
+    # only raise the ceiling during a burst.
+    notification_worker_batch_size: int = 200
     report_worker_interval_seconds: float = 10.0
     vehicle_position_retention_days: int = 90  # `.claude/rules/database.md` #6's own
     # "recommend 90 days, configurable"
@@ -189,6 +217,16 @@ class WorkerSettings(BaseModel):
     # LLD §11.1) rather than the separate workers/bootstrap.py process — same tick-interval
     # tuning shape as every other worker above.
     realtime_fanout_interval_seconds: float = 1.0
+    # ADR-0037 — a defense-in-depth backstop, independent of whether the relay's own
+    # VideoSessionActivated/Ended/Failed event ever successfully arrives and is consumed (the
+    # live-found 2026-09-01 incident: a poisoned broker message wedged the event pipeline for
+    # over an hour, leaving a REQUESTED intercom session permanently blocking every other
+    # operator's own attempt to talk to that bus). 180s is deliberately well past the relay's
+    # own worst-case internal timeout (ingest_timeout 30s + absolute_idle 60s, `services/jt1078/
+    # src/session/session_manager.py`'s own defaults) - this job must never race the primary,
+    # event-driven reconciliation path, only catch what it misses.
+    intercom_reconciliation_interval_seconds: float = 60.0
+    intercom_stale_session_timeout_seconds: float = 180.0
 
 
 class Settings(BaseSettings):

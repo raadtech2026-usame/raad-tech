@@ -41,22 +41,39 @@ def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + padding)
 
 
+DEFAULT_ROLE = "viewer"
+
+
 def mint_token(
-    *, session_id: str, secret: bytes, ttl_seconds: float = _DEFAULT_TTL_SECONDS
+    *,
+    session_id: str,
+    secret: bytes,
+    ttl_seconds: float = _DEFAULT_TTL_SECONDS,
+    role: str = DEFAULT_ROLE,
 ) -> str:
+    """`role` (ADR-0036, additive): `"viewer"` (default, unchanged behavior) for the existing
+    downlink WS-FLV contract, or `"uplink"` for an intercom session's second, independently-
+    minted token that lets a browser send operator mic audio toward the device. A session's
+    token is single-use (`SingleUseTokenGuard`), so a caller needing both directions mints two
+    separate tokens for the same `session_id` — each independently claimable."""
     payload = json.dumps(
-        {"session_id": session_id, "expires_at": time.time() + ttl_seconds}
+        {"session_id": session_id, "expires_at": time.time() + ttl_seconds, "role": role}
     ).encode("utf-8")
     signature = hmac.new(secret, payload, hashlib.sha256).digest()
     return f"{_b64url_encode(payload)}.{_b64url_encode(signature)}"
 
 
-def verify_token_signature(token: str, *, secret: bytes) -> str | None:
+def verify_token_signature(token: str, *, secret: bytes) -> tuple[str, str] | None:
     """Checks the HMAC signature and expiry only — does *not* check single-use (see
-    `SingleUseTokenGuard`, a separate, stateful concern). Returns the `session_id` on success,
-    `None` on any failure (malformed token, bad signature, expired) — deliberately no distinction
-    between failure reasons in the return value, so a caller can't be tempted to leak *why* a
-    token was rejected to an unauthenticated client."""
+    `SingleUseTokenGuard`, a separate, stateful concern). Returns `(session_id, role)` on
+    success, `None` on any failure (malformed token, bad signature, expired) — deliberately no
+    distinction between failure reasons in the return value, so a caller can't be tempted to leak
+    *why* a token was rejected to an unauthenticated client.
+
+    **Backward compatible with a pre-ADR-0036 2-key payload** (`session_id`/`expires_at` only,
+    no `role`) — decodes as `role="viewer"` via `payload.get("role", DEFAULT_ROLE)`, so a token
+    minted by an older process (or any existing test fixture) still verifies identically to
+    before this field was added."""
     try:
         payload_part, signature_part = token.split(".")
         payload_bytes = _b64url_decode(payload_part)
@@ -72,13 +89,14 @@ def verify_token_signature(token: str, *, secret: bytes) -> str | None:
         payload = json.loads(payload_bytes)
         session_id = payload["session_id"]
         expires_at = payload["expires_at"]
+        role = payload.get("role", DEFAULT_ROLE)
     except (ValueError, KeyError, TypeError):
         return None
 
     if time.time() > expires_at:
         return None
 
-    return session_id
+    return session_id, role
 
 
 class SingleUseTokenGuard(ABC):

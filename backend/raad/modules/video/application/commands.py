@@ -55,6 +55,20 @@ class RequestPlaybackVideoCommand:
 
 
 @dataclass(frozen=True)
+class RequestIntercomCommand:
+    """`POST /video/intercom` (ADR-0036). Mirrors `RequestLiveVideoCommand` exactly — no
+    `window_start`/`window_end`, same as live."""
+
+    organization_id: str
+    device_id: str
+    camera_id: str
+    terminal_id: str
+    channel_no: int
+    actor: Principal
+    audio_codec: int | None = None
+
+
+@dataclass(frozen=True)
 class StopVideoSessionCommand:
     """`POST /video/sessions/{id}/stop` (API Contracts §4.5, "teardown")."""
 

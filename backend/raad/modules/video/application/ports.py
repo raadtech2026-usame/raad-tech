@@ -34,10 +34,24 @@ needs `reference` (the relay's own session id) to tear a session down.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 
 from raad.core.db.unit_of_work import UnitOfWork
 from raad.modules.video.domain.repositories import VideoSessionRepository
+
+
+@dataclass(frozen=True)
+class IntercomStreamUrls:
+    """`start_intercom`'s own return shape (ADR-0036 §4) — deliberately not a single `str` like
+    `start_live`/`start_playback`: an intercom session is bidirectional and needs two distinct
+    URLs (the existing WS-FLV viewer contract, unchanged, for hearing the bus mic; a new,
+    separately-tokened uplink WebSocket for sending the operator's own mic audio toward the
+    device) — folding both into one `str` would either silently drop the uplink URL or force
+    every ordinary live/playback caller to handle a return shape they never need."""
+
+    downlink_url: str
+    uplink_url: str
 
 
 class VideoProviderPort(ABC):
@@ -81,6 +95,23 @@ class VideoProviderPort(ABC):
     ) -> str:
         """Requests a playback stream for the given window; returns a stream URL/token. See
         `start_live`'s own docstring for `audio_codec`."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def start_intercom(
+        self,
+        *,
+        device_id: str,
+        camera_id: str,
+        terminal_id: str,
+        channel_no: int,
+        reference: str,
+        audio_codec: int | None = None,
+    ) -> IntercomStreamUrls:
+        """Requests a two-way intercom session (ADR-0036). Signals the device with
+        `data_type=2` (two-way intercom, spec Table 6.2) — distinct from `start_live`'s
+        unchanged `data_type=0`. Returns both a downlink (hear the bus mic) and an uplink (send
+        operator mic audio) URL."""
         raise NotImplementedError
 
     @abstractmethod

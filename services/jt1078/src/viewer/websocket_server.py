@@ -70,6 +70,20 @@ class WebSocketConnection:
         self._reader = reader
         self._writer = writer
         self._closed = False
+        #: Serializes every `write()`+`await drain()` pair on this connection (2026-09-02).
+        #: Three independent tasks can write to the *same* connection concurrently:
+        #: `SessionBroadcastHub._run_sender` (FLV chunks), `ViewerServer._ping_loop` (the
+        #: keepalive ping added the same day), and `ViewerServer.close_session`/
+        #: `SessionBroadcastHub.close_all` (the terminal close frame). `asyncio`'s own
+        #: `FlowControlMixin._drain_helper` asserts `self._drain_waiter is None or ...cancelled()`
+        #: — so two tasks awaiting `drain()` while the transport is *paused* (exactly what a
+        #: slow/lossy viewer causes, by exceeding the high-water mark) raises `AssertionError`
+        #: out of the second one. That surfaces as this hub's own `viewer_sender_task_crashed`
+        #: and silently drops an otherwise-healthy viewer. Holding the lock across write+drain
+        #: makes that impossible without changing frame ordering (a frame's bytes already reach
+        #: the transport in one `write()` call, so no frame could ever interleave — only the
+        #: concurrent `drain()` was unsafe).
+        self._write_lock = asyncio.Lock()
 
     @property
     def closed(self) -> bool:
@@ -125,23 +139,46 @@ class WebSocketConnection:
     async def send_binary(self, data: bytes) -> None:
         if self._closed:
             raise WebSocketClosed("Cannot send on a closed WebSocket connection.")
-        self._writer.write(self._build_frame(OPCODE_BINARY, data))
-        await self._writer.drain()
+        frame = self._build_frame(OPCODE_BINARY, data)
+        async with self._write_lock:
+            self._writer.write(frame)
+            await self._writer.drain()
 
     async def send_close(self, *, code: int = 1000, reason: bytes = b"") -> None:
         if self._closed:
             return
         payload = struct.pack("!H", code) + reason
+        frame = self._build_frame(OPCODE_CLOSE, payload)
         try:
-            self._writer.write(self._build_frame(OPCODE_CLOSE, payload))
-            await self._writer.drain()
+            async with self._write_lock:
+                self._writer.write(frame)
+                await self._writer.drain()
         finally:
             self._closed = True
             self._writer.close()
 
     async def send_pong(self, payload: bytes = b"") -> None:
-        self._writer.write(self._build_frame(OPCODE_PONG, payload))
-        await self._writer.drain()
+        frame = self._build_frame(OPCODE_PONG, payload)
+        async with self._write_lock:
+            self._writer.write(frame)
+            await self._writer.drain()
+
+    async def send_ping(self, payload: bytes = b"") -> None:
+        """RFC 6455 §5.5.2 — a server-initiated keepalive ping (2026-09-02, diagnosing the
+        browser<->relay ~32s disconnect). This server previously never sent one at all: it only
+        ever *replied* to a client-initiated ping (`send_pong` above). A conformant browser
+        WebSocket client responds to this transparently at the protocol level (no application/JS
+        involvement needed on the browser side) - `viewer/viewer_server.py`'s own read loops
+        already tolerate an unexpected opcode without erroring, so no other change is needed to
+        receive the resulting pong. Raises `WebSocketClosed` on an already-closed connection,
+        matching `send_binary`'s own contract — the caller (`ViewerServer`'s ping loop) treats
+        that, and any other send failure, as "this connection is already gone," not an error."""
+        if self._closed:
+            raise WebSocketClosed("Cannot send on a closed WebSocket connection.")
+        frame = self._build_frame(OPCODE_PING, payload)
+        async with self._write_lock:
+            self._writer.write(frame)
+            await self._writer.drain()
 
     async def read_frame(self) -> tuple[int, bytes] | None:
         """Reads one client->server frame (always masked, RFC 6455 §5.3). Returns `(opcode,

@@ -35,7 +35,11 @@ from raad.modules.video.application.commands import (
     RequestLiveVideoCommand,
     RequestPlaybackVideoCommand,
 )
-from raad.modules.video.application.ports import VideoProviderPort, VideoUnitOfWork
+from raad.modules.video.application.ports import (
+    IntercomStreamUrls,
+    VideoProviderPort,
+    VideoUnitOfWork,
+)
 from raad.modules.video.application.services import VideoApplicationService
 from raad.modules.video.domain.entities import VideoSession
 from raad.modules.video.domain.repositories import VideoSessionRepository
@@ -274,6 +278,12 @@ class _FakeVideoProvider(VideoProviderPort):
 
     async def start_playback(self, **kwargs) -> str:
         return "https://stream.example/token"
+
+    async def start_intercom(self, **kwargs) -> IntercomStreamUrls:
+        return IntercomStreamUrls(
+            downlink_url="https://stream.example/token",
+            uplink_url="https://stream.example/token-uplink",
+        )
 
     async def stop(self, *, reference: str) -> None:
         self.stop_calls.append(reference)

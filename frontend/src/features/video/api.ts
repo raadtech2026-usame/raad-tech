@@ -106,7 +106,7 @@ export async function listDevicesForVideoPicker(search: string): Promise<VideoDe
   return wire.data.map(toVideoDeviceOption).filter((device) => device.cameras.length > 0);
 }
 
-export type VideoSessionPurpose = "live" | "playback";
+export type VideoSessionPurpose = "live" | "playback" | "intercom";
 export type VideoSessionStatus = "requested" | "active" | "ended" | "failed";
 
 export interface VideoSession {
@@ -128,6 +128,12 @@ export interface VideoSession {
    * render it into a `<video>` element yet. `null` only if no `VideoProviderPort` is bound on this
    * deployment (`video/api/routers.py`'s own module docstring). */
   streamUrl: string | null;
+  /** ADR-0036 — populated only on an intercom session's own response (`POST /video/intercom`);
+   * `null`/absent for every other purpose/route (optional so every pre-existing test fixture
+   * across this feature stays valid unchanged). A second, independently-tokened WebSocket URL
+   * (the same relay, a different token) for sending the operator's own mic audio toward the
+   * device — see `useIntercomController.ts`. */
+  uplinkUrl?: string | null;
 }
 
 interface VideoSessionWire {
@@ -144,6 +150,7 @@ interface VideoSessionWire {
   ended_at: string | null;
   created_at: string;
   stream_url: string | null;
+  uplink_url: string | null;
 }
 
 function toVideoSession(wire: VideoSessionWire): VideoSession {
@@ -161,6 +168,7 @@ function toVideoSession(wire: VideoSessionWire): VideoSession {
     endedAt: wire.ended_at,
     createdAt: wire.created_at,
     streamUrl: wire.stream_url,
+    uplinkUrl: wire.uplink_url ?? null,
   };
 }
 
@@ -186,13 +194,29 @@ export async function requestLiveVideo(deviceId: string, cameraId: string): Prom
   return toVideoSession(wire);
 }
 
+/** `POST /video/intercom` (ADR-0036) — same body shape as `requestLiveVideo`. Org Admin
+ * (+ permitted RAAD staff) only, never Parent (RBAC-excluded, not just D5-gated — see that ADR
+ * §3); raises `ApiError` (403, 404, 409 if the device already has an open intercom session, or
+ * 500 if no `VideoProviderPort` is bound) exactly like `requestLiveVideo`. */
+export async function requestIntercom(deviceId: string, cameraId: string): Promise<VideoSession> {
+  const wire = await apiRequest<VideoSessionWire>("/video/intercom", {
+    method: "POST",
+    body: { device_id: deviceId, camera_id: cameraId },
+  });
+  return toVideoSession(wire);
+}
+
 /** `POST /video/sessions/{id}/stop` (API Contracts §4.5) — idempotent on the backend (a session
  * already `ended`/`failed` short-circuits before any provider call, `VideoApplicationService.
  * stop_video_session`'s own docstring), so this frontend does not need to guard against calling it
  * twice (unmount racing an explicit Stop click, for instance). */
-export async function stopVideoSession(sessionId: string): Promise<VideoSession> {
+export async function stopVideoSession(
+  sessionId: string,
+  options?: { keepalive?: boolean },
+): Promise<VideoSession> {
   const wire = await apiRequest<VideoSessionWire>(`/video/sessions/${sessionId}/stop`, {
     method: "POST",
+    keepalive: options?.keepalive,
   });
   return toVideoSession(wire);
 }

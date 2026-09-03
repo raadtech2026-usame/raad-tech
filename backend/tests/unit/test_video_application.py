@@ -16,7 +16,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from raad.core.errors.exceptions import NotFoundError
+from raad.core.errors.exceptions import ConflictError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
@@ -24,11 +24,16 @@ from raad.modules.video.application.commands import (
     MarkVideoSessionActiveCommand,
     MarkVideoSessionEndedCommand,
     MarkVideoSessionFailedCommand,
+    RequestIntercomCommand,
     RequestLiveVideoCommand,
     RequestPlaybackVideoCommand,
     StopVideoSessionCommand,
 )
-from raad.modules.video.application.ports import VideoProviderPort, VideoUnitOfWork
+from raad.modules.video.application.ports import (
+    IntercomStreamUrls,
+    VideoProviderPort,
+    VideoUnitOfWork,
+)
 from raad.modules.video.application.queries import GetVideoSessionByIdQuery
 from raad.modules.video.application.services import VideoApplicationService
 from raad.modules.video.domain.entities import VideoSession
@@ -113,6 +118,7 @@ class FakeVideoProvider(VideoProviderPort):
         self.stream_url = stream_url
         self.start_live_calls: list[dict] = []
         self.start_playback_calls: list[dict] = []
+        self.start_intercom_calls: list[dict] = []
         self.stop_calls: list[dict] = []
 
     async def start_live(
@@ -162,6 +168,30 @@ class FakeVideoProvider(VideoProviderPort):
             }
         )
         return self.stream_url
+
+    async def start_intercom(
+        self,
+        *,
+        device_id: str,
+        camera_id: str,
+        terminal_id: str,
+        channel_no: int,
+        reference: str,
+        audio_codec: int | None = None,
+    ) -> "IntercomStreamUrls":
+        self.start_intercom_calls.append(
+            {
+                "device_id": device_id,
+                "camera_id": camera_id,
+                "terminal_id": terminal_id,
+                "channel_no": channel_no,
+                "reference": reference,
+                "audio_codec": audio_codec,
+            }
+        )
+        return IntercomStreamUrls(
+            downlink_url=self.stream_url, uplink_url=f"{self.stream_url}-uplink"
+        )
 
     async def stop(self, *, reference: str) -> None:
         self.stop_calls.append({"reference": reference})
@@ -260,6 +290,254 @@ class RequestLiveVideoTests(unittest.IsolatedAsyncioTestCase):
             uow=uow,
         )
         self.assertIsNone(provider.start_live_calls[0]["audio_codec"])
+
+
+class RequestIntercomTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0036."""
+
+    async def test_without_provider_persists_requested_then_raises(self) -> None:
+        service = make_service(provider=None)
+        uow = make_uow()
+
+        with self.assertRaises(NotImplementedError):
+            await service.request_intercom(
+                RequestIntercomCommand(
+                    organization_id=VALID_ORG_ULID,
+                    device_id="device-ref-1",
+                    camera_id="camera-ref-1",
+                    terminal_id="00000000013800138000",
+                    channel_no=1,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+        self.assertEqual(len(uow.video_sessions.by_id), 1)
+        persisted = next(iter(uow.video_sessions.by_id.values()))
+        self.assertEqual(persisted.status.value, "requested")
+        self.assertEqual(persisted.purpose.value, "intercom")
+
+    async def test_with_bound_provider_returns_both_downlink_and_uplink_urls(self) -> None:
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+
+        session = await service.request_intercom(
+            RequestIntercomCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-ref-2",
+                camera_id="camera-ref-2",
+                terminal_id="00000000013800138000",
+                channel_no=1,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(session.status, "requested")
+        self.assertEqual(session.stream_url, provider.stream_url)
+        self.assertEqual(session.uplink_url, f"{provider.stream_url}-uplink")
+        self.assertEqual(len(provider.start_intercom_calls), 1)
+
+    async def test_a_second_request_for_the_same_device_is_rejected_with_conflict(self) -> None:
+        """ADR-0036 §2: talking to a bus is inherently exclusive - unlike ordinary video
+        viewing, two operators must never be able to talk over each other. Checked before the
+        relay is ever called (`provider.start_intercom_calls` stays at 1)."""
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+        command = RequestIntercomCommand(
+            organization_id=VALID_ORG_ULID,
+            device_id="device-ref-shared",
+            camera_id="camera-ref-shared",
+            terminal_id="00000000013800138000",
+            channel_no=1,
+            actor=make_actor(),
+        )
+
+        await service.request_intercom(command, uow=uow)
+        with self.assertRaises(ConflictError):
+            await service.request_intercom(command, uow=uow)
+        self.assertEqual(len(provider.start_intercom_calls), 1)
+
+    async def test_a_second_request_for_a_different_device_is_not_blocked(self) -> None:
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+
+        await service.request_intercom(
+            RequestIntercomCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-ref-A",
+                camera_id="camera-ref-A",
+                terminal_id="terminal-A",
+                channel_no=1,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.request_intercom(
+            RequestIntercomCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-ref-B",
+                camera_id="camera-ref-B",
+                terminal_id="terminal-B",
+                channel_no=1,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(len(provider.start_intercom_calls), 2)
+
+    async def test_an_ended_intercom_session_does_not_block_a_new_one(self) -> None:
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+        command = RequestIntercomCommand(
+            organization_id=VALID_ORG_ULID,
+            device_id="device-ref-reuse",
+            camera_id="camera-ref-reuse",
+            terminal_id="00000000013800138000",
+            channel_no=1,
+            actor=make_actor(),
+        )
+
+        first = await service.request_intercom(command, uow=uow)
+        await service.stop_video_session(
+            StopVideoSessionCommand(video_session_id=first.id, actor=make_actor()), uow=uow
+        )
+        await service.request_intercom(command, uow=uow)
+        self.assertEqual(len(provider.start_intercom_calls), 2)
+
+
+class ReconcileStaleIntercomSessionsTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0037 — the defense-in-depth backstop for a stuck intercom session, independent of
+    whether the relay's own lifecycle event ever arrives (live-found 2026-09-01: a poisoned
+    broker message wedged event consumption for over an hour, leaving a REQUESTED intercom
+    session permanently blocking every other operator via ADR-0036 §2's own exclusivity check)."""
+
+    async def test_a_stale_requested_session_is_failed(self) -> None:
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+        session = await service.request_intercom(
+            RequestIntercomCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-stale",
+                camera_id="camera-stale",
+                terminal_id="00000000013800138000",
+                channel_no=1,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        stored = uow.video_sessions.by_id[session.id]
+        stored.created_at = stored.created_at - timedelta(seconds=500)
+
+        reconciled = await service.reconcile_stale_intercom_sessions(
+            stale_after_seconds=180, uow=uow
+        )
+
+        self.assertEqual(reconciled, 1)
+        self.assertEqual(stored.status.value, "failed")
+
+    async def test_a_fresh_requested_session_is_left_alone(self) -> None:
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+        session = await service.request_intercom(
+            RequestIntercomCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-fresh",
+                camera_id="camera-fresh",
+                terminal_id="00000000013800138000",
+                channel_no=1,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        reconciled = await service.reconcile_stale_intercom_sessions(
+            stale_after_seconds=180, uow=uow
+        )
+
+        self.assertEqual(reconciled, 0)
+        self.assertEqual(uow.video_sessions.by_id[session.id].status.value, "requested")
+
+    async def test_reconciling_a_stale_session_frees_the_device_for_a_new_request(self) -> None:
+        """The actual regression this whole fix targets end to end: a second operator must be
+        able to start intercom on the same device once the stale one is reconciled - proving the
+        fix, not merely that a status field flips."""
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+        command = RequestIntercomCommand(
+            organization_id=VALID_ORG_ULID,
+            device_id="device-shared",
+            camera_id="camera-shared",
+            terminal_id="00000000013800138000",
+            channel_no=1,
+            actor=make_actor(),
+        )
+        first = await service.request_intercom(command, uow=uow)
+        uow.video_sessions.by_id[first.id].created_at -= timedelta(seconds=500)
+
+        with self.assertRaises(ConflictError):
+            await service.request_intercom(command, uow=uow)
+
+        await service.reconcile_stale_intercom_sessions(stale_after_seconds=180, uow=uow)
+
+        second = await service.request_intercom(command, uow=uow)  # must not raise now
+        self.assertNotEqual(second.id, first.id)
+
+    async def test_non_intercom_sessions_are_never_reconciled(self) -> None:
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+        session = await service.request_live_video(
+            RequestLiveVideoCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-live-stale",
+                camera_id="camera-live-stale",
+                terminal_id="00000000013800138000",
+                channel_no=1,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        uow.video_sessions.by_id[session.id].created_at -= timedelta(seconds=500)
+
+        reconciled = await service.reconcile_stale_intercom_sessions(
+            stale_after_seconds=180, uow=uow
+        )
+
+        self.assertEqual(reconciled, 0)
+        self.assertEqual(uow.video_sessions.by_id[session.id].status.value, "requested")
+
+    async def test_an_already_ended_intercom_session_is_not_touched(self) -> None:
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+        uow = make_uow()
+        session = await service.request_intercom(
+            RequestIntercomCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-ended",
+                camera_id="camera-ended",
+                terminal_id="00000000013800138000",
+                channel_no=1,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.stop_video_session(
+            StopVideoSessionCommand(video_session_id=session.id, actor=make_actor()), uow=uow
+        )
+        uow.video_sessions.by_id[session.id].created_at -= timedelta(seconds=500)
+
+        reconciled = await service.reconcile_stale_intercom_sessions(
+            stale_after_seconds=180, uow=uow
+        )
+
+        self.assertEqual(reconciled, 0)
+        self.assertEqual(uow.video_sessions.by_id[session.id].status.value, "ended")
 
 
 class RequestPlaybackVideoTests(unittest.IsolatedAsyncioTestCase):

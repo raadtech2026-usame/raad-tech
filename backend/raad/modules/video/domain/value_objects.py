@@ -92,10 +92,15 @@ class UserId:
 
 
 class VideoPurpose(str, Enum):
-    """Database Design §7.4 verbatim: `video_sessions.purpose ENUM(live,playback)`."""
+    """Database Design §7.4 verbatim: `video_sessions.purpose ENUM(live,playback)`, widened by
+    ADR-0036 with `INTERCOM` — additive, mirrors ADR-0032's own `camera_position` widening
+    precedent exactly (no approved document enumerates this value yet; the widening itself, and
+    why it doesn't contradict the documented schema, is recorded in that ADR, not silently
+    assumed here)."""
 
     LIVE = "live"
     PLAYBACK = "playback"
+    INTERCOM = "intercom"
 
 
 class VideoSessionStatus(str, Enum):

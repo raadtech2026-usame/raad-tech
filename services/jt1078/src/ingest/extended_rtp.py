@@ -43,6 +43,7 @@ rather than imported from `device-gateway`.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 FRAME_HEADER_MAGIC = 0x30316364
@@ -56,6 +57,14 @@ DATA_TYPE_AUDIO = 0b0011
 DATA_TYPE_PASSTHROUGH = 0b0100
 
 VIDEO_DATA_TYPES = {DATA_TYPE_I_FRAME, DATA_TYPE_P_FRAME, DATA_TYPE_B_FRAME}
+
+#: JT/T 1078 Table 6.21 payload type for G.711A. Wire-confirmed 2026-09-03 against the physical
+#: `LSZ-C5804DG-Q-F`: 23,544 device-originated audio frames all carried `M/PT = 0x86` (M=1,
+#: PT=6), and the same device independently reports `input_audio_codec=6` in its own `0x1003`
+#: A/V-attributes reply — two independent observations of the same table agreeing. Video frames
+#: from the same device carry PT=98 (H.264), so this field genuinely identifies the codec rather
+#: than being decorative.
+PAYLOAD_TYPE_G711A = 6
 
 SUBPACKAGE_ATOMIC = 0b0000
 SUBPACKAGE_FIRST = 0b0001
@@ -92,6 +101,13 @@ class ExtendedRtpFrame:
     last_i_frame_interval_ms: int | None  # None for audio/passthrough
     last_frame_interval_ms: int | None  # None for audio/passthrough
     body: bytes
+    #: Byte 5's own two fields, parsed since 2026-09-03. Previously this byte was skipped
+    #: entirely, which is precisely why a real uplink defect went unnoticed for so long: with no
+    #: code reading `payload_type`, nothing could observe that the device sends PT=6 for its own
+    #: G.711A audio while this relay's `encode_audio_frame` was hardcoding PT=0 in the reverse
+    #: direction. Defaulted so every existing constructor/test keeps working unchanged.
+    payload_type: int = 0
+    marker: bool = False
 
     @property
     def is_video(self) -> bool:
@@ -122,6 +138,9 @@ def parse_one_frame(buffer: bytes) -> tuple[ExtendedRtpFrame, int] | None:
             f"Expected frame header 0x{FRAME_HEADER_MAGIC:08x}, got 0x{magic:08x}."
         )
 
+    m_pt = buffer[5]
+    marker = bool(m_pt & 0x80)
+    payload_type = m_pt & 0x7F
     packet_sequence = int.from_bytes(buffer[6:8], "big")
     sim_card_number = _decode_bcd_sim_card(buffer[8:14])
     logical_channel = buffer[14]
@@ -172,8 +191,66 @@ def parse_one_frame(buffer: bytes) -> tuple[ExtendedRtpFrame, int] | None:
         last_i_frame_interval_ms=last_i_frame_interval_ms,
         last_frame_interval_ms=last_frame_interval_ms,
         body=body,
+        payload_type=payload_type,
+        marker=marker,
     )
     return frame, offset
+
+
+def _encode_bcd_sim_card(sim_card_number: str) -> bytes:
+    """Reverse of `_decode_bcd_sim_card` — packs a 12-digit SIM/terminal-id-tail string into
+    `BCD[6]`. `sim_card_number` must be exactly 12 digits (right-padded/truncated by the caller,
+    `session/uplink_registry.py`, from the device's own reported value on ingest correlation —
+    the same width convention `session/session_manager.py`'s own
+    `_terminal_id_matches_sim_card_number` already establishes for this vendor relationship)."""
+    if len(sim_card_number) != 12 or not sim_card_number.isdigit():
+        raise MalformedExtendedRtpFrameError(
+            f"SIM card number for encoding must be exactly 12 digits, got {sim_card_number!r}."
+        )
+    return bytes(
+        (int(sim_card_number[i]) << 4) | int(sim_card_number[i + 1])
+        for i in range(0, 12, 2)
+    )
+
+
+def encode_audio_frame(
+    *,
+    sim_card_number: str,
+    logical_channel: int,
+    packet_sequence: int,
+    body: bytes,
+    payload_type: int = PAYLOAD_TYPE_G711A,
+) -> bytes:
+    """Encodes one atomic (unfragmented) audio extended-RTP frame (ADR-0036) — the reverse of
+    `parse_one_frame`'s audio branch, for the relay's own new uplink path (operator mic audio ->
+    device). Always `subpackage_marker=SUBPACKAGE_ATOMIC` — the relay never fragments an uplink
+    audio frame (each is already well under the 950-byte ceiling: a G.711A frame is 320 bytes,
+    ADR-0033). `M` (frame-boundary flag) is always set (a complete, atomic frame). `timestamp_ms`
+    is the encoding wall-clock time in milliseconds since epoch, mod 2**64 — the device's own
+    receive-side handling of this field for an *inbound* (to it) frame is not documented; this
+    mirrors the same field width/semantics `parse_one_frame` already decodes for the identical
+    position in a device-originated frame, the most defensible choice absent a spec section that
+    describes this direction explicitly."""
+    if len(body) > _MAX_BODY_LENGTH:
+        raise MalformedExtendedRtpFrameError(
+            f"Audio frame body ({len(body)} bytes) exceeds the {_MAX_BODY_LENGTH}-byte "
+            "protocol ceiling."
+        )
+    magic = FRAME_HEADER_MAGIC.to_bytes(4, "big")
+    vpxcc = bytes([0b10000001])  # V=2, P=0, X=0, CC=1 (spec text, §6.2.1.1)
+    # M=1 (complete frame) | PT (Table 6.21 codec id). **PT was hardcoded to 0 until 2026-09-03**,
+    # with a comment calling it "opaque here, informational only" - that was wrong. PT identifies
+    # the codec, and the device's own audio frames carry PT=6 for the very same G.711A payload
+    # this relay sends back (see `PAYLOAD_TYPE_G711A`). Wire-captured proof of the old behaviour:
+    # 712 uplink frames, every one with `M/PT = 0x80`.
+    m_pt = bytes([0b10000000 | (payload_type & 0x7F)])
+    seq = (packet_sequence & 0xFFFF).to_bytes(2, "big")
+    sim = _encode_bcd_sim_card(sim_card_number)
+    channel = bytes([logical_channel])
+    type_byte = bytes([(DATA_TYPE_AUDIO << 4) | SUBPACKAGE_ATOMIC])
+    timestamp = (int(time.time() * 1000) & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "big")
+    body_length = len(body).to_bytes(2, "big")
+    return magic + vpxcc + m_pt + seq + sim + channel + type_byte + timestamp + body_length + body
 
 
 class ExtendedRtpStreamDemuxer:

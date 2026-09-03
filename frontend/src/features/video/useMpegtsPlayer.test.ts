@@ -65,6 +65,27 @@ function makeVideoRef() {
   return { current: document.createElement("video") };
 }
 
+/** A media element whose playback position and paused-ness the test drives directly. jsdom does
+ * not actually decode anything, so `currentTime` never advances on its own — which is exactly
+ * the condition the stall detector looks for, and therefore must be simulated deliberately
+ * rather than left to jsdom's defaults. */
+function makeControllableVideoRef(): {
+  ref: { current: HTMLMediaElement };
+  setPosition: (seconds: number) => void;
+  setPaused: (paused: boolean) => void;
+} {
+  const element = document.createElement("video");
+  let position = 0;
+  let paused = false;
+  Object.defineProperty(element, "currentTime", { get: () => position, configurable: true });
+  Object.defineProperty(element, "paused", { get: () => paused, configurable: true });
+  return {
+    ref: { current: element as HTMLMediaElement },
+    setPosition: (seconds) => { position = seconds; },
+    setPaused: (value) => { paused = value; },
+  };
+}
+
 describe("useMpegtsPlayer", () => {
   beforeEach(() => {
     FakePlayer.instances = [];
@@ -73,7 +94,7 @@ describe("useMpegtsPlayer", () => {
   it("stays idle and creates no player when streamUrl is null", () => {
     const { result } = renderHook(() => useMpegtsPlayer(null, makeVideoRef()));
 
-    expect(result.current).toEqual({ state: "idle", errorMessage: null });
+    expect(result.current).toEqual({ state: "idle", errorMessage: null, stalled: false });
     expect(FakePlayer.instances).toHaveLength(0);
   });
 
@@ -161,5 +182,71 @@ describe("useMpegtsPlayer", () => {
 
     expect(player.destroyed).toBe(true);
     expect(player.attached).toBeNull();
+  });
+
+  describe("frozen-picture (stall) detection", () => {
+    // Live-verified 2026-09-02: a radio-link outage stops media at the device while the viewer
+    // WebSocket stays open (median 28s, max 93s), so `state` stayed "connected" over a frozen
+    // image. `currentTime` is the honest signal - it is the decoder's own progress.
+    it("is not stalled before the player has connected", () => {
+      const { ref } = makeControllableVideoRef();
+      const { result } = renderHook(() => useMpegtsPlayer(STREAM_URL, ref));
+      expect(result.current.stalled).toBe(false);
+    });
+
+    it("reports stalled once the playback position stops advancing", () => {
+      vi.useFakeTimers();
+      try {
+        const { ref, setPosition } = makeControllableVideoRef();
+        const { result } = renderHook(() => useMpegtsPlayer(STREAM_URL, ref));
+        act(() => FakePlayer.instances[0].emit(EVENTS.MEDIA_INFO, {}));
+        expect(result.current.state).toBe("connected");
+
+        setPosition(1);
+        act(() => { vi.advanceTimersByTime(1000); });
+        expect(result.current.stalled).toBe(false);
+
+        // Position frozen from here on - the picture is stuck.
+        act(() => { vi.advanceTimersByTime(4000); });
+        expect(result.current.stalled).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("clears stalled as soon as the position advances again", () => {
+      vi.useFakeTimers();
+      try {
+        const { ref, setPosition } = makeControllableVideoRef();
+        const { result } = renderHook(() => useMpegtsPlayer(STREAM_URL, ref));
+        act(() => FakePlayer.instances[0].emit(EVENTS.MEDIA_INFO, {}));
+        act(() => { vi.advanceTimersByTime(4000); });
+        expect(result.current.stalled).toBe(true);
+
+        setPosition(9);
+        act(() => { vi.advanceTimersByTime(1000); });
+        expect(result.current.stalled).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not report a deliberately paused element as stalled", () => {
+      // The operator pausing a tile themselves is not a loss of signal, and reporting it as
+      // "No signal" would be a lie.
+      vi.useFakeTimers();
+      try {
+        const { ref, setPaused } = makeControllableVideoRef();
+        const { result } = renderHook(() => useMpegtsPlayer(STREAM_URL, ref));
+        act(() => FakePlayer.instances[0].emit(EVENTS.MEDIA_INFO, {}));
+        setPaused(true);
+
+        act(() => { vi.advanceTimersByTime(10000); });
+
+        expect(result.current.stalled).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

@@ -160,6 +160,11 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/parents/{parent_id}/video-access",
         "ADR-0026 SS2 - grant/revoke, its own dedicated permission",
     ),
+    (
+        "POST",
+        "/api/v1/video/intercom",
+        "ADR-0036 - two-way intercom, its own video.intercom.start permission, RAAD-staff-only",
+    ),
     ("GET", "/api/v1/parents/{parent_id}/students", "ListStudentsForParentQuery's own route"),
     ("GET", "/api/v1/students/{student_id}", "uniform-CRUD addition"),
     ("PATCH", "/api/v1/students/{student_id}", "uniform-CRUD addition"),

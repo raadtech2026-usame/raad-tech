@@ -26,7 +26,17 @@ class FakeRedisStream:
     def __init__(self) -> None:
         self.entries: list[tuple[str, dict[str, str]]] = []
 
-    async def xadd(self, name: str, fields: dict[str, str]) -> str:
+    async def xadd(
+        self,
+        name: str,
+        fields: dict[str, str],
+        maxlen: int | None = None,
+        approximate: bool = False,
+    ) -> str:
+        # `maxlen`/`approximate` mirror redis-py's own `XADD` kwargs — accepted (and
+        # recorded) so this fake stays call-compatible with the stream-trimming fix
+        # (2026-09-02); trimming itself is asserted in the publisher's own unit tests.
+        self.last_xadd_kwargs = {"maxlen": maxlen, "approximate": approximate}
         self.entries.append((name, fields))
         return str(len(self.entries))
 
@@ -36,6 +46,24 @@ def _decode(fields: dict[str, str]) -> dict:
     exactly (field names only — this test does not construct a real `DomainEvent`, just checks
     the same fields that function reads are present and correctly typed)."""
     return json.loads(fields["data"])
+
+
+def _a_position_event() -> DevicePositionReported:
+    return DevicePositionReported(
+        organization_id="org-1",
+        vehicle_id="vehicle-1",
+        device_id="device-1",
+        terminal_id="00007",
+        trip_id="trip-1",
+        latitude=22.67,
+        longitude=114.06,
+        speed_kph=12,
+        heading_deg=90,
+        alarm_flags=0,
+        event_time=_NOW,
+        is_backfill=False,
+        received_at=_NOW,
+    )
 
 
 class RedisEventPublisherTests(unittest.IsolatedAsyncioTestCase):
@@ -136,6 +164,27 @@ class RedisEventPublisherTests(unittest.IsolatedAsyncioTestCase):
         data = _decode(fields)
         self.assertEqual(data["event_type"], "DeviceAlarmRaised")
         self.assertEqual(data["payload"]["alarm_type"], "panic_button")
+
+    async def test_publish_does_not_trim_by_default(self) -> None:
+        """`max_length=0` (constructor default) preserves this publisher's original unbounded
+        behavior, so every pre-existing caller and test is unaffected."""
+        redis = FakeRedisStream()
+        publisher = RedisEventPublisher(redis)
+        await publisher.publish(_a_position_event())
+        self.assertEqual(redis.last_xadd_kwargs, {"maxlen": None, "approximate": False})
+
+    async def test_publish_applies_approximate_trimming_when_configured(self) -> None:
+        """Stream-growth fix (2026-09-02). This publisher is the highest-volume writer to the
+        shared `raad:events` stream (one event per GPS position report), so leaving it unbounded
+        would have defeated the identical cap applied on the Business API side: the stream was
+        measured at 301k entries / ~223 MB against a 256 MB `maxmemory` under `noeviction`,
+        where the next `XADD` fails outright and stops the whole event backbone."""
+        redis = FakeRedisStream()
+        publisher = RedisEventPublisher(redis, max_length=100_000)
+        await publisher.publish(_a_position_event())
+        self.assertEqual(
+            redis.last_xadd_kwargs, {"maxlen": 100_000, "approximate": True}
+        )
 
     async def test_publishes_to_a_custom_stream_name_when_given(self) -> None:
         redis = FakeRedisStream()

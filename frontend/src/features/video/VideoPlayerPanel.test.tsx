@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createRef } from "react";
 import { VideoPlayerPanel } from "./VideoPlayerPanel";
 
-const IDLE_PLAYER = { state: "idle" as const, errorMessage: null };
+const IDLE_PLAYER = { state: "idle" as const, errorMessage: null, stalled: false };
 
 function ref() {
   return createRef<HTMLVideoElement>();
@@ -41,7 +41,7 @@ describe("VideoPlayerPanel", () => {
       <VideoPlayerPanel
         phase="error"
         requestError={{ message: "Video access denied.", unavailable: false }}
-        player={{ state: "error", errorMessage: "NetworkError: CONNECTING_TIMEOUT" }}
+        player={{ state: "error", errorMessage: "NetworkError: CONNECTING_TIMEOUT", stalled: false }}
         videoRef={ref()}
       />,
     );
@@ -53,7 +53,7 @@ describe("VideoPlayerPanel", () => {
       <VideoPlayerPanel
         phase="error"
         requestError={null}
-        player={{ state: "error", errorMessage: "NetworkError: CONNECTING_TIMEOUT" }}
+        player={{ state: "error", errorMessage: "NetworkError: CONNECTING_TIMEOUT", stalled: false }}
         videoRef={ref()}
       />,
     );
