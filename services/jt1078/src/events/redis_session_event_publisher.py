@@ -93,12 +93,36 @@ def _fields_for(event: SessionEvent) -> dict[str, str]:
 
 
 class RedisSessionEventPublisher(SessionEventPublisher):
-    def __init__(self, redis_client: Redis, *, stream_name: str = DEFAULT_STREAM_NAME) -> None:
+    def __init__(
+        self,
+        redis_client: Redis,
+        *,
+        stream_name: str = DEFAULT_STREAM_NAME,
+        max_length: int = 0,
+    ) -> None:
         self._redis = redis_client
         self._stream_name = stream_name
+        #: Approximate `raad:events` cap, applied per `XADD` (2026-09-02). Must match the other
+        #: publishers writing to this same stream (`backend/raad/core/events/redis_streams.
+        #: RedisStreamsBrokerPort`, and this service's sibling relay/gateway publisher) - a single
+        #: unbounded writer is enough to grow the stream past Redis's `maxmemory` on its own,
+        #: which under the deliberate `noeviction` policy makes every subsequent `XADD` fail and
+        #: stops the whole event backbone. Measured live before this fix: 301k entries / ~223 MB
+        #: against a 256 MB ceiling. `0` disables trimming (the previous, unbounded behavior).
+        self._max_length = max_length
+
+    async def _xadd(self, fields: dict) -> None:
+        """Single `XADD` chokepoint so stream trimming is applied identically to every event
+        this publisher writes (see `_max_length`)."""
+        if self._max_length > 0:
+            await self._redis.xadd(
+                self._stream_name, fields, maxlen=self._max_length, approximate=True
+            )
+            return
+        await self._redis.xadd(self._stream_name, fields)
 
     async def publish(self, event: SessionEvent) -> None:
-        await self._redis.xadd(self._stream_name, _fields_for(event))
+        await self._xadd(_fields_for(event))
 
     async def publish_stop_command(
         self,
@@ -122,4 +146,4 @@ class RedisSessionEventPublisher(SessionEventPublisher):
                 "fields": fields,
             },
         )
-        await self._redis.xadd(self._stream_name, envelope)
+        await self._xadd(envelope)

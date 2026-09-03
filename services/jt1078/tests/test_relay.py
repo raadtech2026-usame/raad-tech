@@ -342,6 +342,104 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(session.session_id, self.relay._hubs)
         self.assertIsNone(self.relay.session_manager.resolve(session.session_id))
 
+    async def test_intercom_session_failing_closes_viewer_and_uplink_sockets(self) -> None:
+        """Bug 1 regression test — REQUESTED -> FAILED. Before this fix, `fail_session` only
+        dereferenced the hub from `self.relay._hubs`; a browser already connected (both the
+        downlink viewer *and* the uplink mic socket, ADR-0036) was left holding an open, silent
+        WebSocket forever, with no signal the session had failed — exactly the "stuck Connecting
+        intercom..." symptom (live-reproduced, session `01M1EQZE1D1831D74MHXCTDGQP`,
+        `reason="ingest_timeout"`, never any inbound ingest connection for this session)."""
+        session = self.relay.session_manager.create_session(
+            terminal_id="138001380000",
+            kind=VideoSessionKind.INTERCOM,
+            correlation_id="corr-intercom-fail",
+            logical_channel=1,
+        )
+        viewer_token = mint_token(session_id=session.session_id, secret=b"e2e-test-secret")
+        uplink_token = mint_token(
+            session_id=session.session_id, secret=b"e2e-test-secret", role="uplink"
+        )
+
+        viewer_reader, viewer_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.viewer_server.bound_port
+        )
+        await _ws_handshake(viewer_reader, viewer_writer, token=viewer_token)
+        await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=2.0)  # FLV header
+
+        uplink_reader, uplink_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.viewer_server.bound_port
+        )
+        await _ws_handshake(uplink_reader, uplink_writer, token=uplink_token)
+        await asyncio.sleep(0.05)  # let the uplink connection register itself
+
+        await self.relay.session_manager.fail_session(session.session_id, reason="ingest_timeout")
+
+        viewer_opcode, viewer_payload = await asyncio.wait_for(
+            _read_ws_frame(viewer_reader), timeout=2.0
+        )
+        self.assertEqual(viewer_opcode, 0x8)  # close
+        self.assertEqual(struct.unpack("!H", viewer_payload[0:2])[0], 4010)
+        self.assertEqual(viewer_payload[2:], b"ingest_timeout")
+
+        uplink_opcode, uplink_payload = await asyncio.wait_for(
+            _read_ws_frame(uplink_reader), timeout=2.0
+        )
+        self.assertEqual(uplink_opcode, 0x8)
+        self.assertEqual(struct.unpack("!H", uplink_payload[0:2])[0], 4010)
+        self.assertEqual(uplink_payload[2:], b"ingest_timeout")
+
+        self.assertNotIn(session.session_id, self.relay._hubs)
+        viewer_writer.close()
+        uplink_writer.close()
+
+    async def test_intercom_session_ending_closes_viewer_and_uplink_sockets(self) -> None:
+        """Bug 1 regression test — REQUESTED -> ENDED (e.g. the operator's own "End Intercom"
+        click, or `reconcile_stale_intercom_sessions`), distinct close code from the FAILED case
+        above so the frontend can render "the call ended" separately from "the call failed"."""
+        session = self.relay.session_manager.create_session(
+            terminal_id="138001380000",
+            kind=VideoSessionKind.INTERCOM,
+            correlation_id="corr-intercom-end",
+            logical_channel=1,
+        )
+        viewer_token = mint_token(session_id=session.session_id, secret=b"e2e-test-secret")
+        uplink_token = mint_token(
+            session_id=session.session_id, secret=b"e2e-test-secret", role="uplink"
+        )
+
+        viewer_reader, viewer_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.viewer_server.bound_port
+        )
+        await _ws_handshake(viewer_reader, viewer_writer, token=viewer_token)
+        await asyncio.wait_for(_read_ws_frame(viewer_reader), timeout=2.0)  # FLV header
+
+        uplink_reader, uplink_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.viewer_server.bound_port
+        )
+        await _ws_handshake(uplink_reader, uplink_writer, token=uplink_token)
+        await asyncio.sleep(0.05)
+
+        await self.relay.session_manager.end_session(
+            session.session_id, reason="business_api_requested"
+        )
+
+        viewer_opcode, viewer_payload = await asyncio.wait_for(
+            _read_ws_frame(viewer_reader), timeout=2.0
+        )
+        self.assertEqual(viewer_opcode, 0x8)
+        self.assertEqual(struct.unpack("!H", viewer_payload[0:2])[0], 4011)
+        self.assertEqual(viewer_payload[2:], b"business_api_requested")
+
+        uplink_opcode, uplink_payload = await asyncio.wait_for(
+            _read_ws_frame(uplink_reader), timeout=2.0
+        )
+        self.assertEqual(uplink_opcode, 0x8)
+        self.assertEqual(struct.unpack("!H", uplink_payload[0:2])[0], 4011)
+
+        self.assertNotIn(session.session_id, self.relay._hubs)
+        viewer_writer.close()
+        uplink_writer.close()
+
     async def test_a_viewer_token_for_a_session_that_was_already_ended_is_rejected(self) -> None:
         session, token = self.relay.create_live_session(
             terminal_id="138001380000", correlation_id="corr-3", logical_channel=1

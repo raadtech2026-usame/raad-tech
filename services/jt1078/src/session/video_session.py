@@ -16,6 +16,10 @@ from enum import Enum
 class VideoSessionKind(str, Enum):
     LIVE = "live"
     PLAYBACK = "playback"
+    #: ADR-0036. Signaled with `0x9101 data_type=2` (not `start_live`'s unchanged `data_type=0`)
+    #: and closed with `0x9102 control=4` (not `control=0`) — see `session_manager.py`'s own
+    #: `_signal_device_stop`.
+    INTERCOM = "intercom"
 
 
 class VideoSessionState(str, Enum):
@@ -74,17 +78,41 @@ class VideoSession:
         self.touch()
 
     def is_idle_past(self, *, viewer_grace_seconds: float, absolute_idle_seconds: float) -> bool:
+        """Kept for callers that only need the boolean. `idle_reason` (below) is the richer form
+        — prefer it wherever the *reason* is reported to anyone, because the two conditions have
+        completely different operational meanings."""
+        return (
+            self.idle_reason(
+                viewer_grace_seconds=viewer_grace_seconds,
+                absolute_idle_seconds=absolute_idle_seconds,
+            )
+            is not None
+        )
+
+    def idle_reason(
+        self, *, viewer_grace_seconds: float, absolute_idle_seconds: float
+    ) -> str | None:
         """The two independent, "belt-and-suspenders" idle conditions ADR-0024 §5 point 3
-        names: no viewers for `viewer_grace_seconds` since the last one disconnected, OR no
-        activity at all (no frame ingested, no viewer event) for `absolute_idle_seconds` —
-        the defensive backstop against a viewer-count bookkeeping bug."""
+        names — now reported as *distinct* reasons (2026-09-02), because collapsing both into
+        the single string `"viewer_idle_timeout"` was actively misleading in diagnosis.
+
+        - `"viewer_idle_timeout"`: genuinely no viewers attached for `viewer_grace_seconds`
+          since the last one disconnected. The browser went away.
+        - `"ingest_stalled_timeout"`: viewers may well still be attached and waiting — the
+          *device* simply stopped sending media for `absolute_idle_seconds`.
+
+        These demand opposite investigations (browser/network vs. device/vendor), and the old
+        shared label sent a live investigation down the wrong path: every session in a real
+        two-cycle bench test against the physical `LSZ-C5804DG-Q-F` was removed 66-70s after
+        its own last keyframe - unambiguously the second condition - while the log said
+        "viewer", implying the first."""
         now = time.monotonic()
         if (
             self.viewer_count == 0
             and self.last_viewer_disconnected_at is not None
             and now - self.last_viewer_disconnected_at > viewer_grace_seconds
         ):
-            return True
+            return "viewer_idle_timeout"
         if now - self.last_activity_at > absolute_idle_seconds:
-            return True
-        return False
+            return "ingest_stalled_timeout"
+        return None

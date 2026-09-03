@@ -17,7 +17,11 @@ SECRET = b"test-secret-do-not-use-in-prod"
 class TokenSignatureTests(unittest.TestCase):
     def test_a_freshly_minted_token_verifies(self) -> None:
         token = mint_token(session_id="session-1", secret=SECRET, ttl_seconds=30)
-        self.assertEqual(verify_token_signature(token, secret=SECRET), "session-1")
+        self.assertEqual(verify_token_signature(token, secret=SECRET), ("session-1", "viewer"))
+
+    def test_an_uplink_token_verifies_with_its_own_role(self) -> None:
+        token = mint_token(session_id="session-1", secret=SECRET, ttl_seconds=30, role="uplink")
+        self.assertEqual(verify_token_signature(token, secret=SECRET), ("session-1", "uplink"))
 
     def test_a_token_signed_with_a_different_secret_is_rejected(self) -> None:
         token = mint_token(session_id="session-1", secret=SECRET, ttl_seconds=30)
@@ -42,8 +46,8 @@ class TokenSignatureTests(unittest.TestCase):
         token_a = mint_token(session_id="session-A", secret=SECRET, ttl_seconds=30)
         token_b = mint_token(session_id="session-B", secret=SECRET, ttl_seconds=30)
         self.assertNotEqual(token_a, token_b)
-        self.assertEqual(verify_token_signature(token_a, secret=SECRET), "session-A")
-        self.assertEqual(verify_token_signature(token_b, secret=SECRET), "session-B")
+        self.assertEqual(verify_token_signature(token_a, secret=SECRET), ("session-A", "viewer"))
+        self.assertEqual(verify_token_signature(token_b, secret=SECRET), ("session-B", "viewer"))
 
 
 class InMemorySingleUseTokenGuardTests(unittest.IsolatedAsyncioTestCase):

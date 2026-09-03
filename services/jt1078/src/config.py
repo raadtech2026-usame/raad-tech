@@ -48,12 +48,25 @@ class RelayConfig:
             viewer_host=os.environ.get("JT1078_RELAY_VIEWER_HOST", "0.0.0.0"),
             viewer_port=int(os.environ.get("JT1078_RELAY_VIEWER_PORT", "7911")),
             viewer_token_secret=secret.encode("utf-8"),
-            viewer_grace_seconds=float(os.environ.get("JT1078_RELAY_VIEWER_GRACE_SECONDS", "15")),
             absolute_idle_seconds=float(
                 os.environ.get("JT1078_RELAY_ABSOLUTE_IDLE_SECONDS", "60")
             ),
             ingest_timeout_seconds=float(
                 os.environ.get("JT1078_RELAY_INGEST_TIMEOUT_SECONDS", "30")
+            ),
+            # Was declared on this dataclass but read from no environment variable at all
+            # (2026-09-02) — the one `RelayConfig` field `from_env` silently ignored, so the
+            # sweep cadence could not be tuned without a code change. It directly sets the
+            # granularity of every timeout above: a session that has exceeded
+            # `ingest_timeout_seconds` is only actually failed on the next sweep, which is why
+            # the observed browser-visible disconnect clustered at 30-35s rather than exactly
+            # 30s. Wiring it closes this codebase's own "docker-compose.yml must wire every
+            # value `from_env()` reads" rule (CLAUDE.md, Permanent Engineering Lessons).
+            idle_sweep_interval_seconds=float(
+                os.environ.get("JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS", "5")
+            ),
+            viewer_grace_seconds=float(
+                os.environ.get("JT1078_RELAY_VIEWER_GRACE_SECONDS", "15")
             ),
             max_global_sessions=int(
                 os.environ.get("JT1078_RELAY_MAX_GLOBAL_SESSIONS", "50")

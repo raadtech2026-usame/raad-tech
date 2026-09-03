@@ -129,12 +129,45 @@ class SessionRequestServer:
             return self._create_session(VideoSessionKind.LIVE, data)
         if command == "create_playback_session":
             return self._create_session(VideoSessionKind.PLAYBACK, data)
+        if command == "create_intercom_session":
+            return self._create_intercom_session(data)
         if command == "end_session":
             await self._session_manager.end_session(
                 data["session_id"], reason="business_api_requested"
             )
             return {"ok": True}
         return {"ok": False, "error": f"unknown command: {command!r}"}
+
+    def _create_intercom_session(self, data: dict[str, Any]) -> dict[str, Any]:
+        """ADR-0036. Mints **two** independently-claimable tokens for the same session — a
+        session's token is single-use, so the downlink (hear the bus mic, the existing "viewer"
+        contract, unchanged) and uplink (send operator mic audio) connections each need their
+        own. Everything else mirrors `_create_session` exactly."""
+        session = self._session_manager.create_session(
+            session_id=data["session_id"],
+            terminal_id=data["terminal_id"],
+            kind=VideoSessionKind.INTERCOM,
+            correlation_id=data.get("correlation_id") or data["session_id"],
+            logical_channel=data["logical_channel"],
+            device_id=data.get("device_id"),
+            vehicle_id=data.get("vehicle_id"),
+            organization_id=data.get("organization_id"),
+            audio_codec=data.get("audio_codec"),
+        )
+        viewer_token = mint_token(
+            session_id=session.session_id, secret=self._viewer_token_secret, role="viewer"
+        )
+        uplink_token = mint_token(
+            session_id=session.session_id, secret=self._viewer_token_secret, role="uplink"
+        )
+        return {
+            "ok": True,
+            "session_id": session.session_id,
+            "viewer_token": viewer_token,
+            "uplink_token": uplink_token,
+            "ingest_host": self._public_ingest_host,
+            "ingest_port": self._ingest_port,
+        }
 
     def _create_session(self, kind: VideoSessionKind, data: dict[str, Any]) -> dict[str, Any]:
         session = self._session_manager.create_session(

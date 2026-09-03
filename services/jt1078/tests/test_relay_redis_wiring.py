@@ -24,7 +24,17 @@ class FakeRedis:
         self.entries: list[tuple[str, dict[str, str]]] = []
         self.lists: dict[str, list[str]] = {}
 
-    async def xadd(self, name: str, fields: dict[str, str]) -> str:
+    async def xadd(
+        self,
+        name: str,
+        fields: dict[str, str],
+        maxlen: int | None = None,
+        approximate: bool = False,
+    ) -> str:
+        # `maxlen`/`approximate` mirror redis-py's own `XADD` kwargs — accepted (and
+        # recorded) so this fake stays call-compatible with the stream-trimming fix
+        # (2026-09-02); trimming itself is asserted in the publisher's own unit tests.
+        self.last_xadd_kwargs = {"maxlen": maxlen, "approximate": approximate}
         message_id = str(len(self.entries) + 1)
         self.entries.append((message_id, fields))
         return message_id

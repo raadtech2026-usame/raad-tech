@@ -35,7 +35,10 @@ keep its own `session_id -> SessionBroadcastHub` dict in lockstep with session l
 must exist the moment a session is `REQUESTED`, so a viewer's token can be honored even before the
 device's first frame arrives, and must be torn down the instant the session is). Kept as plain
 sync callables, not events on the broker — this is in-process coordination between two objects
-this composition root owns directly, not a cross-service fact.
+this composition root owns directly, not a cross-service fact. `on_session_removed` also carries
+the removal `outcome`/`reason` (Bug 1 fix) so the composition root can actively close any browser
+WebSocket still attached to the session with a distinguishable close code/reason, instead of only
+dereferencing the hub and leaving an already-connected browser's socket open and silent forever.
 """
 
 from __future__ import annotations
@@ -58,7 +61,11 @@ DEFAULT_INGEST_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_GLOBAL_SESSIONS = 50
 
 OnSessionCreated = Callable[[VideoSession], None]
-OnSessionRemoved = Callable[[str], None]
+#: Bug 1 fix: widened from `Callable[[str], None]` to also carry *why* a session was removed
+#: (`outcome`: `"failed"` from `fail_session`/`"ended"` from `end_session`, plus that call's own
+#: `reason` string) — `relay.py._on_session_removed` needs both to pick the right WS close code
+#: and to tell an already-connected browser *why* its session ended, not just that it did.
+OnSessionRemoved = Callable[[str, str, str], None]
 
 
 class SessionCapacityExceededError(Exception):
@@ -74,7 +81,7 @@ def _default_on_session_created(_session: VideoSession) -> None:
     return None
 
 
-def _default_on_session_removed(_session_id: str) -> None:
+def _default_on_session_removed(_session_id: str, _outcome: str, _reason: str) -> None:
     return None
 
 
@@ -145,7 +152,16 @@ class SessionManager:
         Raises `SessionCapacityExceededError` (ADR-0026 §8) if creating this session would
         exceed either the global ceiling or `organization_id`'s own per-org ceiling — checked
         *before* the session is created, so a rejected request never partially allocates
-        anything. An `organization_id`-less caller is only ever subject to the global ceiling."""
+        anything. An `organization_id`-less caller is only ever subject to the global ceiling.
+
+        **ADR-0036: one active intercom session per device, in-process.** Also raises
+        `SessionCapacityExceededError` if `kind == INTERCOM` and this `terminal_id` already has a
+        `REQUESTED`/`ACTIVE` intercom session — talking to a bus is inherently exclusive (unlike
+        ordinary video viewing, where many simultaneous viewers of the same stream is correct).
+        This is the second of two checks (`backend/raad/modules/video/application/services.
+        VideoApplicationService.request_intercom` makes the first, DB-backed one, before ever
+        calling this relay) — only this single in-process object can reliably serialize a genuine
+        race between two near-simultaneous requests."""
         if (
             self._max_global_sessions is not None
             and self._max_global_sessions > 0
@@ -164,6 +180,15 @@ class SessionManager:
             raise SessionCapacityExceededError(
                 f"Organization {organization_id!r} concurrent-session ceiling reached "
                 f"({self._max_sessions_per_organization})."
+            )
+        if kind == VideoSessionKind.INTERCOM and any(
+            existing.terminal_id == terminal_id
+            and existing.kind == VideoSessionKind.INTERCOM
+            and existing.state in (VideoSessionState.REQUESTED, VideoSessionState.ACTIVE)
+            for existing in self._sessions.values()
+        ):
+            raise SessionCapacityExceededError(
+                f"Terminal {terminal_id!r} already has an open intercom session."
             )
 
         session = VideoSession(
@@ -192,7 +217,7 @@ class SessionManager:
         return self._sessions.get(session_id)
 
     def resolve_ingest_by_terminal_id(
-        self, sim_card_number: str, logical_channel: int
+        self, sim_card_number: str, logical_channel: int, *, is_audio: bool | None = None
     ) -> VideoSession | None:
         """Despite the parameter's own historical name (kept for `ingest_server.py`'s existing
         call-site compatibility), `sim_card_number` actually receives the ingest frame's `BCD[6]`
@@ -200,15 +225,41 @@ class SessionManager:
         `_terminal_id_matches_sim_card_number` for why the two need width-aware matching, not
         `==`. `logical_channel` disambiguates between a device's own multiple concurrently-pending
         sessions (module docstring) - required, not optional, since a single-field terminal-id
-        match is silently wrong the instant more than one session is pending for the same device."""
-        for session in self._sessions.values():
-            if (
-                _terminal_id_matches_sim_card_number(session.terminal_id, sim_card_number)
-                and session.logical_channel == logical_channel
-                and session.state in (VideoSessionState.REQUESTED, VideoSessionState.ACTIVE)
-            ):
-                return session
-        return None
+        match is silently wrong the instant more than one session is pending for the same device.
+
+        **Bug 2 fix — `is_audio` disambiguates a same-channel LIVE-vs-INTERCOM collision, a real
+        gap this exact matching scheme already had (this module's own docstring already names the
+        analogous same-kind, different-channel case its own fix covers; ADR-0036's own bench test
+        separately documented — and worked around only for that one test, never fixed in code — a
+        "false positive" from this identical ambiguity: an ordinary channel-1 A/V reconnect
+        mis-attributed to a concurrently-pending intercom session on channel 1).** `terminal_id`
+        + `logical_channel` alone cannot tell apart an ordinary LIVE/PLAYBACK session and an
+        INTERCOM session both `REQUESTED`/`ACTIVE` for the identical device+channel — a real,
+        reproducible situation (an operator viewing a device's live multi-camera grid while
+        another operator starts "Talk to Driver" against that same device's first camera, which
+        intercom defaults to, ADR-0036 §6). The ingest frame's own `data_type` field reliably
+        distinguishes the two on the wire (audio, `DATA_TYPE_AUDIO`, only ever carries a genuine
+        intercom stream; every video `data_type` only ever carries ordinary A/V) — `is_audio`,
+        when given, is used to prefer the candidate whose `kind` matches: `INTERCOM` for an audio
+        frame, `LIVE`/`PLAYBACK` for a video frame. Falls back to the first `(terminal_id,
+        logical_channel)` match — the pre-existing, unambiguous-case behavior — whenever there is
+        no real ambiguity to resolve (`is_audio` omitted, only one candidate, or no candidate of
+        the preferred kind exists) - this is strictly additive, never a behavior change for the
+        single-pending-session case every existing caller/test already covers."""
+        candidates = [
+            session
+            for session in self._sessions.values()
+            if _terminal_id_matches_sim_card_number(session.terminal_id, sim_card_number)
+            and session.logical_channel == logical_channel
+            and session.state in (VideoSessionState.REQUESTED, VideoSessionState.ACTIVE)
+        ]
+        if not candidates:
+            return None
+        if is_audio is not None and len(candidates) > 1:
+            for session in candidates:
+                if (session.kind == VideoSessionKind.INTERCOM) == is_audio:
+                    return session
+        return candidates[0]
 
     async def mark_ingest_active(self, session_id: str) -> None:
         session = self._sessions.get(session_id)
@@ -248,7 +299,7 @@ class SessionManager:
         session = self._sessions.pop(session_id, None)
         if session is None:
             return
-        self._on_session_removed(session_id)
+        self._on_session_removed(session_id, "ended", reason)
         await self._signal_device_stop(session)
         await self._event_publisher.publish(
             VideoSessionEnded(
@@ -267,7 +318,17 @@ class SessionManager:
         session = self._sessions.pop(session_id, None)
         if session is None:
             return
-        self._on_session_removed(session_id)
+        self._on_session_removed(session_id, "failed", reason)
+        # Cancel the request device-side (2026-09-02). `end_session` has always done this;
+        # `fail_session` never did - so the dominant failure path here, `ingest_timeout`, told
+        # the MDVR "stream channel N to me" (`0x9101`, which it acknowledges with `result: 0`),
+        # gave up 30s later, and left that request uncancelled on the device forever. The
+        # frontend then immediately requested the *same* channel again, so uncancelled requests
+        # accumulated on a device already measured to saturate under command bursts. A device
+        # that genuinely never started streaming should still be told to stop trying: `0x9102`
+        # for a stream the device isn't running is a harmless no-op, whereas never sending it
+        # leaves real per-channel state stranded on the terminal.
+        await self._signal_device_stop(session)
         await self._event_publisher.publish(
             VideoSessionFailed(
                 session_id=session.session_id,
@@ -286,7 +347,12 @@ class SessionManager:
         `Jt1078SignalCommandRequested` coordination path `device-gateway`'s
         `RedisVideoSignalingConsumer` already consumes from the Business API (`events/
         publisher_port.py`'s own module docstring has the full reasoning)."""
-        if session.kind == VideoSessionKind.LIVE:
+        if session.kind == VideoSessionKind.INTERCOM:
+            command, fields = "live_video_control", {
+                "logical_channel": session.logical_channel,
+                "control": 4,  # close intercom, Table 6.4 (ADR-0036; distinct from LIVE's 0)
+            }
+        elif session.kind == VideoSessionKind.LIVE:
             command, fields = "live_video_control", {
                 "logical_channel": session.logical_channel,
                 "control": 0,  # close A/V transmission, Table 6.4
@@ -303,6 +369,40 @@ class SessionManager:
             fields=fields,
         )
 
+    async def handle_ingest_disconnected(self, session_id: str) -> None:
+        """The device's own media connection for `session_id` just closed — tear the session
+        down now rather than waiting for a timeout to infer it (2026-09-02).
+
+        **Why this exists.** Packet-captured live against the physical `LSZ-C5804DG-Q-F`: a
+        ~14s total radio-link outage (100% ICMP loss, zero TCP on any port) was followed, one
+        second after connectivity returned, by the MDVR sending a clean `FIN,PSH,ACK` on *all
+        four* JT/T 1078 connections at 22:18:15 - it abandons the streams rather than resuming
+        them, while its JT/T 808 control connection reconnects and carries on. The relay saw
+        that FIN immediately and did nothing with it: the session stayed `ACTIVE` until
+        `absolute_idle_seconds` (60s) later, so the operator watched a frozen last frame for a
+        further minute with the UI still claiming "Live" and nothing driving a reconnect.
+
+        This is a *signal*, not an inference — an explicit close from the device is the most
+        direct possible statement that the stream is over, and it arrives ~60s before the idle
+        sweep would have guessed the same thing. Distinguishing `ACTIVE` (media really was
+        flowing, so this is an ordinary end) from `REQUESTED` (the device connected and hung up
+        without ever streaming, a genuine failure to establish) keeps the
+        `VideoSessionEnded`/`VideoSessionFailed` split — and the 4011/4010 WebSocket close codes
+        `useIntercomController` renders differently — honest.
+
+        Idempotent and race-safe: this fires from `IngestServer`'s own `finally` block, which
+        also runs when *we* closed the connection during a normal teardown (explicit stop, idle
+        sweep). By then the session is already gone from `self._sessions`, so this is a no-op —
+        never a double-teardown, never a spurious second `Ended` event.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        if session.state == VideoSessionState.REQUESTED:
+            await self.fail_session(session_id, reason="ingest_disconnected")
+            return
+        await self.end_session(session_id, reason="ingest_disconnected")
+
     async def sweep_idle_sessions(self) -> list[str]:
         """Called periodically by the relay's own composition root (mirrors `device-gateway`'s
         `DeviceSessionManager._sweep_loop` shape) — ends every session past its own idle bound
@@ -317,12 +417,17 @@ class SessionManager:
                     await self.fail_session(session_id, reason="ingest_timeout")
                     acted_on.append(session_id)
                 continue
-            if session.state == VideoSessionState.ACTIVE and session.is_idle_past(
-                viewer_grace_seconds=self._viewer_grace_seconds,
-                absolute_idle_seconds=self._absolute_idle_seconds,
-            ):
-                await self.end_session(session_id, reason="viewer_idle_timeout")
-                acted_on.append(session_id)
+            if session.state == VideoSessionState.ACTIVE:
+                # Distinct reasons (2026-09-02): "the browser went away" and "the device stopped
+                # sending" are opposite problems and must never share one label - see
+                # `VideoSession.idle_reason`.
+                idle_reason = session.idle_reason(
+                    viewer_grace_seconds=self._viewer_grace_seconds,
+                    absolute_idle_seconds=self._absolute_idle_seconds,
+                )
+                if idle_reason is not None:
+                    await self.end_session(session_id, reason=idle_reason)
+                    acted_on.append(session_id)
         return acted_on
 
     @property

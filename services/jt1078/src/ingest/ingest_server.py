@@ -30,6 +30,7 @@ from src.ingest.extended_rtp import ExtendedRtpStreamDemuxer, MalformedExtendedR
 from src.ingest.frame_reassembly import FrameReassembler, ReassembledFrame
 from src.logging_setup import get_logger, log_with_fields
 from src.session.session_manager import SessionManager
+from src.session.uplink_registry import IngestConnectionRegistry
 
 logger = get_logger("jt1078_relay.ingest.server")
 
@@ -46,11 +47,15 @@ class IngestServer:
         port: int,
         session_manager: SessionManager,
         on_reassembled_frame: OnReassembledFrame,
+        uplink_registry: IngestConnectionRegistry | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._session_manager = session_manager
         self._on_reassembled_frame = on_reassembled_frame
+        #: ADR-0036. `None` (default) keeps every pre-existing caller/test unchanged — no uplink
+        #: bridging happens unless a real registry is wired in (`relay.py`'s composition root).
+        self._uplink_registry = uplink_registry
         self._server: asyncio.base_events.Server | None = None
         self._connections: set[asyncio.StreamWriter] = set()
 
@@ -76,6 +81,15 @@ class IngestServer:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         self._connections.add(writer)
+        # Bug 2 observability fix: previously this class logged nothing at all on a bare TCP
+        # connect — the only log lines were `malformed_ingest_frame` (a parse failure) and
+        # `unsolicited_ingest_connection_rejected` (a *decoded* frame with no matching session).
+        # A device that never connects at all and a device that connects but never sends a single
+        # valid frame were therefore indistinguishable after the fact - exactly the ambiguity that
+        # left session `01M1EQZE1D1831D74MHXCTDGQP`'s failure unprovable from logs alone. This one
+        # line closes that gap without changing any behavior.
+        peer = writer.get_extra_info("peername")
+        log_with_fields(logger, 20, "ingest_connection_accepted", peer_address=str(peer))
         demuxer = ExtendedRtpStreamDemuxer()
         reassembler = FrameReassembler()
         session_id: str | None = None
@@ -92,8 +106,12 @@ class IngestServer:
 
                 for frame in frames:
                     if session_id is None:
+                        # Bug 2 fix: `is_audio` lets `resolve_ingest_by_terminal_id` prefer an
+                        # INTERCOM session over a same-channel LIVE/PLAYBACK session (or vice
+                        # versa) when both are pending for this device — see that method's own
+                        # docstring for the full reasoning and the real scenario this closes.
                         session = self._session_manager.resolve_ingest_by_terminal_id(
-                            frame.sim_card_number, frame.logical_channel
+                            frame.sim_card_number, frame.logical_channel, is_audio=frame.is_audio
                         )
                         if session is None:
                             log_with_fields(
@@ -101,10 +119,33 @@ class IngestServer:
                                 30,
                                 "unsolicited_ingest_connection_rejected",
                                 sim_card_number=frame.sim_card_number,
+                                logical_channel=frame.logical_channel,
+                                is_audio=frame.is_audio,
                             )
                             return
                         session_id = session.session_id
+                        # Bug 2 observability fix: the success path previously logged nothing at
+                        # all - a silent correlation is indistinguishable from "no frame ever
+                        # arrived" once the connection later closes. `kind` is the one field that
+                        # would have made the LIVE-vs-INTERCOM ambiguity this fix resolves visible
+                        # in production logs, not just provable by reading the code.
+                        log_with_fields(
+                            logger,
+                            20,
+                            "ingest_connection_correlated",
+                            session_id=session_id,
+                            kind=session.kind.value,
+                            logical_channel=frame.logical_channel,
+                            is_audio=frame.is_audio,
+                        )
                         await self._session_manager.mark_ingest_active(session_id)
+                        if self._uplink_registry is not None:
+                            self._uplink_registry.register(
+                                session_id,
+                                writer=writer,
+                                sim_card_number=frame.sim_card_number,
+                                logical_channel=frame.logical_channel,
+                            )
                     else:
                         self._session_manager.touch_ingest(session_id)
 
@@ -113,5 +154,15 @@ class IngestServer:
                         await self._on_reassembled_frame(session_id, reassembled)
         finally:
             self._connections.discard(writer)
+            if session_id is not None:
+                if self._uplink_registry is not None:
+                    self._uplink_registry.unregister(session_id)
+                # 2026-09-02: act on the device's own close immediately instead of letting the
+                # idle sweep infer it ~60s later. Packet-verified against the physical bench
+                # unit: after a radio-link outage the MDVR sends FIN on every JT/T 1078
+                # connection rather than resuming, and that FIN lands here. A no-op when the
+                # session is already gone (i.e. *we* closed this connection during a normal
+                # teardown) — see `SessionManager.handle_ingest_disconnected`'s own docstring.
+                await self._session_manager.handle_ingest_disconnected(session_id)
             if not writer.is_closing():
                 writer.close()
