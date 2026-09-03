@@ -27,7 +27,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from raad.core.db.base import Base
 from raad.core.db.mixins import UlidPrimaryKeyMixin
 
-_VIDEO_PURPOSE_VALUES = ("live", "playback")
+_VIDEO_PURPOSE_VALUES = ("live", "playback", "intercom")  # ADR-0036 widening
 _VIDEO_SESSION_STATUS_VALUES = ("requested", "active", "ended", "failed")
 
 

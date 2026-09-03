@@ -28,6 +28,13 @@ class RequestPlaybackVideoRequest(BaseModel):
     window_end: datetime
 
 
+class RequestIntercomRequest(BaseModel):
+    """`POST /video/intercom` (ADR-0036) — same body shape as `RequestLiveVideoRequest`."""
+
+    device_id: str
+    camera_id: str
+
+
 class VideoSessionResponse(BaseModel):
     id: str
     organization_id: str
@@ -42,3 +49,6 @@ class VideoSessionResponse(BaseModel):
     ended_at: datetime | None
     created_at: datetime
     stream_url: str | None
+    #: ADR-0036 — populated only by `POST /video/intercom`'s own response; `None` for every
+    #: other route/read path (mirrors `stream_url`'s own established treatment).
+    uplink_url: str | None = None

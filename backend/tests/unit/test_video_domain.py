@@ -117,6 +117,39 @@ class RequestLiveTests(unittest.TestCase):
         self.assertEqual(events[0].payload["purpose"], "live")
 
 
+class RequestIntercomTests(unittest.TestCase):
+    """ADR-0036."""
+
+    def test_request_intercom_starts_requested_with_intercom_purpose(self) -> None:
+        session = VideoSession.request_intercom(
+            id=VideoSessionId(VALID_SESSION_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            device_id=DeviceId(VALID_DEVICE_REF),
+            camera_id=CameraId(VALID_CAMERA_REF),
+            requested_by=UserId(VALID_USER_REF),
+            clock=CLOCK,
+        )
+        self.assertEqual(session.status, VideoSessionStatus.REQUESTED)
+        self.assertEqual(session.purpose, VideoPurpose.INTERCOM)
+        self.assertIsNone(session.window_start)
+        self.assertIsNone(session.window_end)
+        self.assertIsNone(session.started_at)
+
+    def test_request_intercom_records_video_session_requested_event(self) -> None:
+        session = VideoSession.request_intercom(
+            id=VideoSessionId(VALID_SESSION_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            device_id=DeviceId(VALID_DEVICE_REF),
+            camera_id=CameraId(VALID_CAMERA_REF),
+            requested_by=UserId(VALID_USER_REF),
+            clock=CLOCK,
+        )
+        events = session.pull_domain_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "VideoSessionRequested")
+        self.assertEqual(events[0].payload["purpose"], "intercom")
+
+
 class RequestPlaybackTests(unittest.TestCase):
     def test_request_playback_requires_window_end_after_window_start(self) -> None:
         start = datetime(2026, 7, 20, 10, 0, 0)

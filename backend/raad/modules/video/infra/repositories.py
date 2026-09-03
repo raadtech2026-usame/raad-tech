@@ -57,8 +57,19 @@ class SqlAlchemyVideoSessionRepository(
         self._tracked[str(video_session.id)] = (video_session, model)
 
     async def list_all(self) -> list[VideoSession]:
+        """**Must track every returned entity, exactly like `get()` does** — a real, live-found
+        bug (2026-09-01): this used to convert rows straight through `model_to_video_session`
+        without ever registering them via `self._track`, so any caller that mutated an entity
+        obtained here (e.g. `VideoApplicationService.reconcile_stale_intercom_sessions`,
+        ADR-0037 — the first caller to ever do so; every prior `list_all()` caller,
+        `list_active_sessions_for_requester`, was read-only) had its change silently discarded
+        at `commit()`: `flush_tracked_changes()` only re-projects entities in `self._tracked`,
+        and an untracked mutation never reaches the underlying ORM row at all. The in-memory
+        fake repository used by this module's own unit tests could not catch this — it returns
+        the *same* object references it stores, with no object/row mapping step to skip: only a
+        real-database integration test exposed it."""
         rows = await self.list_scoped()
-        return [model_to_video_session(row) for row in rows]
+        return [session for row in rows if (session := self._track(row)) is not None]
 
     def flush_tracked_changes(self) -> None:
         for session, model in self._tracked.values():

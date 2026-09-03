@@ -150,6 +150,60 @@ class StartLiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(order, ["rpc", "signal"])
 
 
+class StartIntercomTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0036 — the only real caller anywhere in this codebase that passes `data_type=2`."""
+
+    async def test_calls_create_intercom_session_and_signals_data_type_two(self) -> None:
+        adapter, rpc, broker = _make_adapter(
+            {
+                "ok": True,
+                "session_id": "vs-1",
+                "viewer_token": "tok-viewer",
+                "uplink_token": "tok-uplink",
+                "ingest_host": "10.0.0.5",
+                "ingest_port": 7910,
+            }
+        )
+
+        urls = await adapter.start_intercom(
+            device_id="device-1",
+            camera_id="camera-1",
+            terminal_id="00000000013800138000",
+            channel_no=1,
+            reference="vs-1",
+        )
+
+        self.assertEqual(len(rpc.calls), 1)
+        command, payload = rpc.calls[0]
+        self.assertEqual(command, "create_intercom_session")
+        self.assertEqual(payload["terminal_id"], "00000000013800138000")
+        self.assertEqual(payload["logical_channel"], 1)
+
+        self.assertEqual(urls.downlink_url, "ws://relay.example.com:7911/viewer?token=tok-viewer")
+        self.assertEqual(urls.uplink_url, "ws://relay.example.com:7911/viewer?token=tok-uplink")
+
+        self.assertEqual(len(broker.published), 1)
+        event = broker.published[0]
+        self.assertEqual(event.payload["command"], "live_video_request")
+        fields = event.payload["fields"]
+        self.assertEqual(fields["server_ip"], "10.0.0.5")
+        self.assertEqual(fields["tcp_port"], 7910)
+        self.assertEqual(fields["logical_channel"], 1)
+        self.assertEqual(fields["data_type"], 2)  # two-way intercom, spec Table 6.2
+
+    async def test_start_live_still_hardcodes_data_type_zero_unchanged(self) -> None:
+        """ADR-0035's own explicit decision, unchanged by this feature: ordinary live video
+        must never regress to requesting intercom by accident."""
+        adapter, _rpc, broker = _make_adapter(
+            {"ok": True, "session_id": "vs-1", "viewer_token": "tok-1",
+             "ingest_host": "10.0.0.5", "ingest_port": 7910}
+        )
+        await adapter.start_live(
+            device_id="d", camera_id="c", terminal_id="t", channel_no=1, reference="vs-1"
+        )
+        self.assertEqual(broker.published[0].payload["fields"]["data_type"], 0)
+
+
 class StartPlaybackTests(unittest.IsolatedAsyncioTestCase):
     async def test_calls_create_playback_session_with_the_time_window(self) -> None:
         adapter, rpc, broker = _make_adapter(

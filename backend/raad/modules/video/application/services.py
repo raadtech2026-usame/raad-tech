@@ -30,7 +30,7 @@ immediately in the API response; it never depended on persisted `status`
 
 from __future__ import annotations
 
-from raad.core.errors.exceptions import NotFoundError
+from raad.core.errors.exceptions import ConflictError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.logging.setup import get_logger
 from raad.core.time.clock import Clock
@@ -38,6 +38,7 @@ from raad.modules.video.application.commands import (
     MarkVideoSessionActiveCommand,
     MarkVideoSessionEndedCommand,
     MarkVideoSessionFailedCommand,
+    RequestIntercomCommand,
     RequestLiveVideoCommand,
     RequestPlaybackVideoCommand,
     StopVideoSessionCommand,
@@ -54,6 +55,7 @@ from raad.modules.video.domain.value_objects import (
     DeviceId,
     OrganizationId,
     UserId,
+    VideoPurpose,
     VideoSessionId,
     VideoSessionStatus,
 )
@@ -157,6 +159,66 @@ class VideoApplicationService:
         )
         # ADR-0026 §7: same reasoning as request_live_video above - no eager activate().
         return video_session_to_dto(session, stream_url=stream_url)
+
+    async def request_intercom(
+        self, command: RequestIntercomCommand, *, uow: VideoUnitOfWork
+    ) -> VideoSessionDTO:
+        """`POST /video/intercom` (ADR-0036). D5 authorization has already run
+        (`purpose="intercom"`) before this is ever called — same posture as
+        `request_live_video`.
+
+        **One active intercom session per device (ADR-0036 §2) — checked here, before any
+        session is persisted or the relay is ever called.** Talking to a bus is inherently
+        exclusive (unlike ordinary video viewing, where multiple simultaneous viewers of the
+        same stream is correct) — two operators must never talk over each other. This is the
+        first of two independent checks (`services/jt1078`'s own `SessionManager` enforces the
+        same invariant a second time, since only that single in-process object can reliably
+        serialize a genuine race between two near-simultaneous requests)."""
+        async with uow:
+            existing = await uow.video_sessions.list_all()
+        if any(
+            session.device_id == DeviceId(command.device_id)
+            and session.purpose == VideoPurpose.INTERCOM
+            and session.status in _OPEN_STATUSES
+            for session in existing
+        ):
+            raise ConflictError(
+                f"An intercom session is already open for device {command.device_id}."
+            )
+
+        async with uow:
+            session = VideoSession.request_intercom(
+                id=VideoSessionId(self._id_generator.new_id()),
+                organization_id=OrganizationId(command.organization_id),
+                device_id=DeviceId(command.device_id),
+                camera_id=CameraId(command.camera_id),
+                requested_by=UserId(command.actor.user_id),
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.video_sessions.add(session)
+            uow.record_events(session.pull_domain_events())
+            await uow.commit()
+
+        if self._video_provider is None:
+            raise NotImplementedError(
+                "No VideoProviderPort is bound - see request_live_video's identical message."
+            )
+
+        urls = await self._video_provider.start_intercom(
+            device_id=command.device_id,
+            camera_id=command.camera_id,
+            terminal_id=command.terminal_id,
+            channel_no=command.channel_no,
+            reference=str(session.id),
+            audio_codec=command.audio_codec,
+        )
+        # ADR-0026 §7's same reasoning as request_live_video: no eager activate() here either -
+        # status stays REQUESTED until the relay's own VideoSessionActivated event confirms real
+        # media is flowing.
+        return video_session_to_dto(
+            session, stream_url=urls.downlink_url, uplink_url=urls.uplink_url
+        )
 
     async def stop_video_session(
         self, command: StopVideoSessionCommand, *, uow: VideoUnitOfWork
@@ -280,6 +342,52 @@ class VideoApplicationService:
             )
             uow.record_events(session.pull_domain_events())
             await uow.commit()
+
+    async def reconcile_stale_intercom_sessions(
+        self, *, stale_after_seconds: float, actor_id: str = "system", uow: VideoUnitOfWork
+    ) -> int:
+        """ADR-0037's own defense-in-depth backstop, scheduled-job entry point (mirrors
+        `BillingApplicationService.sweep_expired_subscriptions`'s exact shape). Independent of
+        whether the relay's own `VideoSessionActivated`/`Ended`/`Failed` event ever successfully
+        arrives and is consumed — the live-found 2026-09-01 incident: a poisoned broker message
+        wedged the shared event-consumer pipeline for over an hour, leaving a `REQUESTED`
+        intercom session's own correctly-published `VideoSessionFailed` event never processed,
+        permanently blocking every other operator's own attempt to talk to that bus (ADR-0036
+        §2's one-active-intercom-session-per-device check, working exactly as designed against
+        now-stale data).
+
+        **Scoped to `purpose=INTERCOM` only, deliberately** — an ordinary `REQUESTED`/`ACTIVE`
+        live/playback session left open by a dead event pipeline is not, by itself, harmful to
+        any *other* user the way a stuck intercom session is (many simultaneous viewers of the
+        same device is already the correct, unblocked behavior for video) - reconciling those too
+        would be solving a problem nothing has actually reported, `.claude/rules/workflow.md`'s
+        own "don't design for hypothetical requirements."
+
+        **`stale_after_seconds` must stay well above the relay's own worst-case internal timeout**
+        (`services/jt1078/src/session/session_manager.py`'s `ingest_timeout_seconds`/
+        `absolute_idle_seconds` defaults) — this is a backstop for when the *primary*, event-
+        driven reconciliation path fails to run at all, never a replacement racing to beat it."""
+        async with uow:
+            now = self._clock.now().replace(tzinfo=None)
+            sessions = await uow.video_sessions.list_all()
+            reconciled = 0
+            for session in sessions:
+                if session.purpose != VideoPurpose.INTERCOM:
+                    continue
+                if session.status not in _OPEN_STATUSES:
+                    continue
+                reference_time = session.started_at or session.created_at
+                age_seconds = (now - reference_time.replace(tzinfo=None)).total_seconds()
+                if age_seconds < stale_after_seconds:
+                    continue
+                session.fail(
+                    clock=self._clock, actor_id=actor_id, reason="reconciliation_stale_timeout"
+                )
+                uow.record_events(session.pull_domain_events())
+                reconciled += 1
+            if reconciled:
+                await uow.commit()
+            return reconciled
 
     @staticmethod
     async def _get_session_or_raise(

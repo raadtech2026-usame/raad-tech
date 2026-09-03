@@ -53,6 +53,8 @@ from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.tracking.application.ports import TrackingUnitOfWork
 from raad.modules.tracking.application.services import TrackingApplicationService
+from raad.modules.video.application.ports import VideoUnitOfWork
+from raad.modules.video.application.services import VideoApplicationService
 
 logger = get_logger("raad.workers.bootstrap")
 
@@ -153,6 +155,30 @@ def _register_scheduled_jobs(
             name="reconcile_expired_payments",
             interval_seconds=settings.workers.payment_reconciliation_interval_seconds,
             handler=reconcile_expired_payments,
+        )
+    )
+
+    async def reconcile_stale_intercom_sessions() -> None:
+        async def _body() -> None:
+            service = container.resolve(VideoApplicationService)
+            reconciled = await service.reconcile_stale_intercom_sessions(
+                stale_after_seconds=settings.workers.intercom_stale_session_timeout_seconds,
+                uow=container.resolve(VideoUnitOfWork),
+            )
+            if reconciled:
+                logger.info("intercom_sessions_reconciled", extra={"count": reconciled})
+
+        await _with_lock(
+            "reconcile_stale_intercom_sessions",
+            int(settings.workers.intercom_reconciliation_interval_seconds),
+            _body,
+        )
+
+    scheduler.register(
+        ScheduledJob(
+            name="reconcile_stale_intercom_sessions",
+            interval_seconds=settings.workers.intercom_reconciliation_interval_seconds,
+            handler=reconcile_stale_intercom_sessions,
         )
     )
 

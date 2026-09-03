@@ -205,6 +205,50 @@ class VideoSession(_AggregateRoot):
         )
         return session
 
+    @classmethod
+    def request_intercom(
+        cls,
+        *,
+        id: VideoSessionId,
+        organization_id: OrganizationId,
+        device_id: DeviceId,
+        camera_id: CameraId,
+        requested_by: UserId,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "VideoSession":
+        """`POST /video/intercom` (ADR-0036). Mirrors `request_live` exactly — no
+        `window_start`/`window_end`, same as LIVE (the `__init__` window validation above only
+        branches on `PLAYBACK`)."""
+        now = clock.now()
+        session = cls(
+            id=id,
+            organization_id=organization_id,
+            device_id=device_id,
+            camera_id=camera_id,
+            purpose=VideoPurpose.INTERCOM,
+            requested_by=requested_by,
+            window_start=None,
+            window_end=None,
+            status=VideoSessionStatus.REQUESTED,
+            started_at=None,
+            ended_at=None,
+            created_at=now,
+        )
+        session._record(
+            video_events.video_session_requested(
+                video_session_id=str(id),
+                organization_id=str(organization_id),
+                device_id=str(device_id),
+                camera_id=str(camera_id),
+                purpose=VideoPurpose.INTERCOM.value,
+                requested_by=str(requested_by),
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+        return session
+
     def activate(self, *, clock: Clock, actor_id: str | None = None) -> None:
         """`video.session_started`. Called once a bound `VideoProviderPort` call actually
         succeeds (`application/services.py`). No guarded transition graph — see module

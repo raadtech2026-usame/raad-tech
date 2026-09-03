@@ -138,6 +138,46 @@ class VideoSessionRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(refetched.started_at)
         self.assertIsNotNone(refetched.ended_at)
 
+    async def test_mutation_after_list_all_persists_without_a_second_add(self) -> None:
+        """ADR-0037 — a real, live-found bug (2026-09-01): `list_all()` used to convert rows
+        straight to domain entities without ever registering them via `self._track`, so
+        `flush_tracked_changes()` silently discarded any mutation made to a `list_all()`-obtained
+        entity at `commit()` time. Confirmed live against the physical stuck-intercom-session
+        incident before this fix; this is the repository-level regression test proving it stays
+        fixed. No in-memory-fake unit test can catch this (the fake returns the same object
+        references it stores, with no object/row mapping step to skip) — only a real database
+        round trip exercises `flush_tracked_changes`."""
+        org_id = self.id_generator.new_id()
+        device_id = f"device-{self.tag}-listall"
+        camera_id = f"camera-{self.tag}-listall"
+        requester_id = self.id_generator.new_id()
+        async with self._new_uow() as uow:
+            session = VideoSession.request_live(
+                id=VideoSessionId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                device_id=DeviceId(device_id),
+                camera_id=CameraId(camera_id),
+                requested_by=UserId(requester_id),
+                clock=self.clock,
+            )
+            uow.video_sessions.add(session)
+            uow.record_events(session.pull_domain_events())
+            await uow.commit()
+            session_id = session.id
+            self._created_session_ids.append(str(session_id))
+
+        async with self._new_uow() as uow:
+            all_sessions = await uow.video_sessions.list_all()
+            loaded = next(s for s in all_sessions if s.id == session_id)
+            loaded.fail(clock=self.clock, reason="test_reconciliation")
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()  # no uow.video_sessions.add(loaded) - must still persist
+
+        async with self._new_uow() as uow:
+            refetched = await uow.video_sessions.get(session_id)
+
+        self.assertEqual(refetched.status.value, "failed")
+
     async def test_playback_session_round_trips_window(self) -> None:
         org_id = self.id_generator.new_id()
         device_id = f"device-{self.tag}-3"

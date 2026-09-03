@@ -72,11 +72,13 @@ from raad.modules.fleet_device.application.queries import (
 from raad.modules.fleet_device.application.services import DeviceApplicationService
 from raad.modules.video.api.deps import get_video_service, get_video_uow
 from raad.modules.video.api.schemas import (
+    RequestIntercomRequest,
     RequestLiveVideoRequest,
     RequestPlaybackVideoRequest,
     VideoSessionResponse,
 )
 from raad.modules.video.application.commands import (
+    RequestIntercomCommand,
     RequestLiveVideoCommand,
     RequestPlaybackVideoCommand,
     StopVideoSessionCommand,
@@ -103,6 +105,7 @@ def _session_dto_to_response(session: VideoSessionDTO) -> VideoSessionResponse:
         ended_at=session.ended_at,
         created_at=session.created_at,
         stream_url=session.stream_url,
+        uplink_url=session.uplink_url,
     )
 
 
@@ -219,6 +222,56 @@ async def request_playback_video(
         audio_codec=device.audio_codec,
     )
     session = await video_service.request_playback_video(command, uow=uow)
+    return _session_dto_to_response(session)
+
+
+@video_router.post(
+    "/intercom",
+    response_model=VideoSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Start a two-way intercom session",
+    description=(
+        "Org Admin (+ permitted RAAD staff) only (ADR-0036) - never Parent, a deliberate "
+        "RBAC exclusion, not merely a D5 one (see that ADR §3). D5-enforced "
+        "(`purpose=\"intercom\"`) before any session is created. Requires `VideoProviderPort` "
+        "to be bound, same posture as `POST /video/live`. Rejects with 409 if this device "
+        "already has an open intercom session (ADR-0036 §2)."
+    ),
+)
+async def request_intercom(
+    request: Request,
+    body: RequestIntercomRequest,
+    principal: Principal = Depends(require_permission(Permission("video.intercom.start"))),
+    video_service: VideoApplicationService = Depends(get_video_service),
+    uow: VideoUnitOfWork = Depends(get_video_uow),
+    device_service: DeviceApplicationService = Depends(get_device_service),
+    device_uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> VideoSessionResponse:
+    device = await _resolve_device_or_raise(
+        body.device_id, device_service=device_service, device_uow=device_uow
+    )
+    camera = _resolve_camera_or_raise(device, body.camera_id)
+
+    container: Container = get_container(request)
+    await enforce_d5(
+        principal=principal,
+        device_organization_id=device.organization_id,
+        device_id=device.id,
+        purpose="intercom",
+        camera_position=camera.position,
+        container=container,
+    )
+
+    command = RequestIntercomCommand(
+        organization_id=device.organization_id,
+        device_id=body.device_id,
+        camera_id=body.camera_id,
+        terminal_id=device.terminal_id,
+        channel_no=camera.channel_no,
+        actor=principal,
+        audio_codec=device.audio_codec,
+    )
+    session = await video_service.request_intercom(command, uow=uow)
     return _session_dto_to_response(session)
 
 
