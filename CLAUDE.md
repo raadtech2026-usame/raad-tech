@@ -625,6 +625,29 @@ Bugs found during implementation that represent a durable rule for future code, 
   `docker-compose.yml`, documented in `docker/.env.example` with no safe universal default (the
   reachable address depends on network topology this file cannot know), and set to a real value
   in this environment's own `docker/.env`.
+- **Two servers of the same kind on one host will silently split the environment in two, and
+  every ordinary check will agree while they do.** Local development ran a native Windows
+  PostgreSQL 17 *and* Docker Compose's `postgres` service, both bound to `0.0.0.0:5432` — Windows
+  lets both bind without either erroring, and the native one won every loopback connection, so
+  Docker's published port was shadowed and the container database was unreachable from the host
+  entirely. Both held a database named `raad`, both accepted the same-shaped URL, and for a time
+  both reported the same Alembic revision. The application wrote to one; Alembic and the whole
+  test suite read the other. Nothing failed. The damage was epistemic: a schema claim verified
+  against one server was read back against the other, so `alembic check`'s perfectly accurate
+  "Target database is not up to date" was misdiagnosed as a stale version marker and nearly
+  "fixed" with `alembic stamp head` — which would have marked two genuinely unapplied migrations
+  as applied and left `video_purpose` permanently missing `intercom`. The two servers also
+  disagreed on the login role (`postgres` vs `raad`), a second axis the URL shape hid just as
+  well. **Rules that follow.** (1) Publish a containerised service on a host port that cannot
+  collide with a conventional local install of the same software (`POSTGRES_PORT=5433`), and
+  record *why* in `.env.example`, or the next person will helpfully set it back. (2) Address it
+  as `127.0.0.1`, never `localhost` — a name can resolve to a different listener than the one
+  intended. (3) **Never conclude anything about "the database" from a connection other than the
+  one under test**: a database name, a port and a migration revision are all non-unique, so
+  identity must come from `select version()` plus `data_directory`, read on the same connection
+  as the claim. (4) Assert that identity in the test suite itself
+  (`backend/tests/integration/test_database_identity_guard.py`), configuration-driven so CI's own
+  server still passes — a split that announces itself costs minutes; one that does not costs days.
 
 ## Frontend Implementation Status
 
@@ -722,6 +745,22 @@ Founder Dashboard's "omit what would 403" precedent.
 Device Gateway's event bus share one local Redis instance by convention
 (`redis://localhost:6379/0`). Live verification of this environment found and fixed a real bug —
 see the LSZ clamping lesson in Permanent Engineering Lessons above.
+
+**Canonical local database (2026-09-04): Docker Compose's `postgres` service, and only that.**
+Containers reach it as `postgres:5432` on the Compose network; Alembic, the test suite and every
+developer command reach the *same* server from Windows as **`127.0.0.1:5433`**
+(`POSTGRES_PORT=5433` in `docker/.env`, host-side publish only — the container-internal port is
+still 5432, so no service wiring changed). The role is `raad`, matching CI's own
+`POSTGRES_USER: raad` and production; a native install's `postgres` superuser is not
+interchangeable with it. Port 5433 exists specifically to keep a conventional local PostgreSQL
+install from shadowing the container — see the two-servers lesson in Permanent Engineering
+Lessons above for what that cost, and
+`backend/tests/integration/test_database_identity_guard.py` for the test that now makes a
+recurrence fail loudly instead of silently. A native PostgreSQL 17 that previously served this
+role is stopped and set to Manual start (not uninstalled; its data directory and a verified
+`pg_dump --format=custom` backup are both retained), and its ~83k rows were **deliberately not
+migrated** — demo/test data only, confirmed with the user, so the container's own dataset stands
+as canonical rather than being merged with it.
 
 **Device onboarding readiness audit** (`docs/architecture/device-onboarding-readiness-audit.md`,
 run before F7): confirmed registration and GPS→Postgres ingestion genuinely work end to end;

@@ -2024,6 +2024,47 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Canonical local PostgreSQL — the two-server split found, resolved, and guarded**
+  (2026-09-04). A routine `alembic check` failure exposed that local development had been running
+  **two** PostgreSQL servers all along: a native Windows PostgreSQL 17.10
+  (`C:/Program Files/PostgreSQL/17/data`) and Docker Compose's `postgres` service (16.15). Both
+  were bound to `0.0.0.0:5432`; Windows permits the double bind, and the native server won every
+  loopback connection, so Docker's published port was shadowed and the container database was
+  unreachable from the host entirely. Containers used `postgres:5432` (the container DB); Alembic,
+  every developer command and the whole test suite used `localhost:5432` (the native DB). Both
+  databases were named `raad`, both accepted the same-shaped URL, and both eventually reported the
+  same Alembic head — so nothing ever failed visibly. **Two real defects were hiding behind it:**
+  the native DB was genuinely two migrations behind (`video_purpose` was missing `intercom`; the
+  four `video.intercom.start` grants were absent), and the two servers used different login roles
+  (`postgres` vs `raad`), an axis the URL shape hid just as well. `alembic upgrade head` applied
+  the two missing migrations to the native DB (additive, reversible, live-verified) before any of
+  the switch-over. **Resolution:** Docker's `postgres` is now the one canonical local database.
+  `docker/.env` publishes it on `POSTGRES_PORT=5433` (host-side only; container-internal stays
+  5432, so no service wiring changed), `backend/.env`'s `RAAD_DB__URL` targets
+  `127.0.0.1:5433` as role `raad`, and only the `postgres` container was recreated (`--dry-run`
+  first, then `--no-deps`; volume `docker_raad_postgres_data` reattached, every other container
+  kept its uptime, restart counts all 0). The native server's ~83k rows were **not merged** —
+  demo/test data only, confirmed with the user — but were backed up first
+  (`pg_dump --format=custom`, 5,074,067 bytes, `pg_restore --list` verified, 262 entries, stored
+  outside the repository); the service is now Stopped/Manual, **not uninstalled**, with its data
+  directory intact. **Guard (commit `94324e6`):**
+  `backend/tests/integration/test_database_identity_guard.py` asserts the connected server's
+  identity — major version, plus `data_directory` when configured — and fails naming both
+  servers, so a recurrence is loud instead of silent. It defaults to major 16 (matching CI's
+  `postgres:16` and compose's `postgres:16-alpine`), so **CI passes unconfigured**; an
+  OS-specific `data_directory` is deliberately not hardcoded, since pinning either Linux's or
+  Windows's path would break the other. Proven by pointing it at the native server: fails with
+  `'17' != '16'`. 13 unit tests cover its pure logic. **Verification after the change:** device-
+  gateway 441, jt1078 relay 223 (+1 skipped), backend unit 1485, architecture 10, contract 2,
+  integration 282 (+1 skipped), frontend 580 across 80 files, `tsc -b` clean, all three compose
+  configurations valid with no warnings, `nginx -t` ok — **2,823 passed, 0 failed**. `alembic
+  check` reports "No new upgrade operations detected." for the first time in the project's local
+  history, against a connection independently confirmed as PostgreSQL 16 / linux-musl /
+  `/var/lib/postgresql/data`. `video_sessions` unchanged at 2,269 throughout; `/health/ready`
+  reports `database`/`redis`/`broker` all ok with backend and worker never restarted. See
+  CLAUDE.md's "Canonical local database" paragraph for the durable architecture fact and its
+  Permanent Engineering Lessons entry for the reasoning rules this produced.
+
 - **Backend CI failure fixed — `test_video_provider_di_wiring.py` job-environment leakage**
   (2026-08-14). The `Backend CI` run on commit `d689c08` (D5 review findings 1+2, tenant-scoping
   `video_sessions`) failed its `Run unit tests` step: 1394 ran, 1 failed —
@@ -2637,6 +2678,34 @@ Reverse-chronological (most recent first):
   firmware update from the supplier, a different bench unit/hardware revision, or direct vendor
   confirmation of this firmware's real preconditions for repeated `0x9101 data_type=2` session
   establishment — see ADR-0035's own Consequences section.
+
+### 23. Native PostgreSQL 17 retained on the dev machine, stopped but not uninstalled
+
+Retiring the second PostgreSQL server (see §9's canonical-database entry) deliberately stopped
+short of uninstalling it, so a mistake would stay recoverable.
+
+- **Current state:** Windows service `postgresql-x64-17` is **Stopped** with startup type
+  **Manual** (`sc.exe qc` confirms `START_TYPE: 3 DEMAND_START`, `sc.exe query` confirms
+  `STATE: 1 STOPPED`). Nothing listens on host port 5432 and no `postgres.exe` process runs. Its
+  data directory (`C:/Program Files/PostgreSQL/17/data`, 106 MB, `PG_VERSION` = 17) is untouched,
+  and a verified `pg_dump --format=custom` backup of its `raad` database is retained outside the
+  repository (`C:/Users/usame/raad-db-backups/native-pg17-raad-20260904-094258.dump`, 5,074,067
+  bytes, 262 archive entries, `pg_restore --list` exit 0).
+- **Why it still exists:** its ~83k rows (33 users, 28 organizations, 15 vehicles, 12 devices, and
+  the students/parents/drivers/routes/trips graph) were confirmed demo/test data with no
+  production value and deliberately **not** merged into the canonical database, which holds a
+  different, sparser dataset (1 organization, 1 vehicle, 1 device, 2,269 `video_sessions` from
+  MDVR bench work). Keeping the server recoverable costs nothing while that judgement is still
+  fresh.
+- **Impact:** none on RAAD. No component references it; the full suite passes with it stopped. It
+  occupies ~106 MB plus the installation, and `Start-Service postgresql-x64-17` would revive it —
+  which would also re-create the port-5432 shadowing problem, now caught by
+  `backend/tests/integration/test_database_identity_guard.py` rather than silently.
+- **Resolution:** uninstall once the canonical setup has run through normal development for a
+  while. Keep the backup outside `C:/Program Files` (it already is) — the Windows uninstaller
+  offers to delete the data directory.
+- **Blocking production?** No. This is a developer-machine cleanup item with no bearing on any
+  deployable; VPS/Coolify deployments never had a second PostgreSQL to begin with.
 
 ---
 
