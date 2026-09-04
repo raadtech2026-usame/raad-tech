@@ -191,7 +191,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from raad.core.errors.exceptions import AuthorizationError, ValidationError
+from raad.core.errors.exceptions import (
+    AuthorizationError,
+    NotFoundError,
+    ValidationError,
+)
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal, Role
@@ -1077,8 +1081,34 @@ async def list_students_for_parent(
     student_parent_service: StudentParentApplicationService = Depends(
         get_student_parent_service
     ),
+    parent_service: ParentApplicationService = Depends(get_parent_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> list[StudentForParentResponse]:
+    # Audit finding B12 — defence in depth against a cross-parent leak.
+    #
+    # This route takes `parent_id` straight from the URL and, until now, checked nothing about
+    # whose parent record it named. It is safe *today* only because of a fact outside this
+    # function: `transport_ops.student_parents.list` happens to be held by
+    # founder/regional_manager/support_staff/org_admin and NOT by `parent` — so no caller who
+    # could abuse it can currently reach it. That is an accident of the RBAC matrix, not a
+    # property of this code, and a single future grant would turn it into a live IDOR silently.
+    #
+    # ADR-0023 closed this class of bug *structurally* for the parent-facing path by giving
+    # `/me/students` no client-supplied identifier at all. This route keeps its path parameter
+    # (staff legitimately query any parent in their scope), so it gets an explicit check instead:
+    # a PARENT caller may only ever read their own record.
+    #
+    # `NotFoundError` (404), never `AuthorizationError` (403) — this codebase's established
+    # convention for out-of-scope resource access (`resolve_cr1_decision`, ADR-0021), so a
+    # probing caller cannot distinguish "exists but not yours" from "does not exist".
+    #
+    # Cross-*tenant* access is already closed independently by ADR-0021's repository scoping;
+    # this closes the cross-*parent*, same-tenant case that scoping alone cannot see.
+    if principal.role is Role.PARENT:
+        own = await parent_service.get_parent_by_user_id(principal.user_id, uow=uow)
+        if own is None or own.id != parent_id:
+            raise NotFoundError(f"Parent {parent_id} not found.")
+
     results = await student_parent_service.list_students_for_parent(
         ListStudentsForParentQuery(parent_id=parent_id), uow=uow
     )
