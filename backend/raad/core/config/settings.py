@@ -245,6 +245,30 @@ class WorkerSettings(BaseModel):
     intercom_stale_session_timeout_seconds: float = 180.0
 
 
+#: Audit finding B3. Substrings that mark a value as a development placeholder rather than a
+#: real secret. Matched case-insensitively against the whole value, so it also catches a
+#: placeholder embedded in a connection URL (`redis://:dev-only-change-me@redis:6379/1`).
+#: Deliberately a small, explicit list rather than an entropy heuristic: a false positive here
+#: blocks a real deployment, so it must only ever fire on values this repository itself ships.
+_PLACEHOLDER_SECRET_MARKERS = (
+    "dev-only-change-me",
+    "change-me",
+    "changeme",
+    "ci-only-not-a-real-secret",
+    "not-a-real-secret",
+    "placeholder",
+)
+
+#: Long enough that a hand-typed value fails. `secrets.token_urlsafe(64)` produces ~86 chars, so
+#: a genuinely generated key clears this comfortably.
+_MIN_PROD_SECRET_LENGTH = 32
+
+
+def _is_placeholder_secret(value: str) -> bool:
+    lowered = value.lower()
+    return any(marker in lowered for marker in _PLACEHOLDER_SECRET_MARKERS)
+
+
 class Settings(BaseSettings):
     """Root settings object. Environment variables use the `RAAD_` prefix and `__` as the
     nested-field delimiter, e.g. `RAAD_DB__URL`, `RAAD_AUTH__JWT_SECRET_KEY`."""
@@ -274,11 +298,85 @@ class Settings(BaseSettings):
 
     def validate_on_startup(self) -> None:
         """Fail-fast checks that must hold before the app is allowed to serve traffic
-        (Backend LLD §12.1). Kept intentionally minimal at this phase — real secret/
-        connectivity checks are added as their owning subsystems (DB, broker, FCM, payment)
-        are wired in later phases."""
-        if self.environment is Environment.PROD and not self.auth.jwt_secret_key:
-            raise ValueError("auth.jwt_secret_key must be set when environment=prod")
+        (Backend LLD §12.1).
+
+        **Hardened per audit finding B3.** This method previously checked one thing — that
+        `auth.jwt_secret_key` was non-empty when `environment=prod` — and `docker/.env.example`
+        ships that key with the literal value `dev-only-change-me`. A non-empty placeholder
+        satisfies a non-empty check, so an operator who copied the template verbatim and set
+        `RAAD_ENVIRONMENT=prod` got a deployment that started cleanly while signing every JWT
+        with a value published in this repository. The check existed and was worthless.
+
+        Every rule below is **prod-only**: dev and staging keep booting from the template
+        unchanged, which is the whole point of having placeholders. Each raises with the exact
+        variable name, because a startup failure that doesn't say what to fix just becomes a
+        deployment outage of a different kind.
+        """
+        if self.environment is not Environment.PROD:
+            return
+
+        problems: list[str] = []
+
+        if not self.auth.jwt_secret_key:
+            problems.append("RAAD_AUTH__JWT_SECRET_KEY must be set")
+        elif _is_placeholder_secret(self.auth.jwt_secret_key):
+            problems.append(
+                "RAAD_AUTH__JWT_SECRET_KEY is still a development placeholder - generate a "
+                'real value: python -c "import secrets; print(secrets.token_urlsafe(64))"'
+            )
+        elif len(self.auth.jwt_secret_key) < _MIN_PROD_SECRET_LENGTH:
+            problems.append(
+                f"RAAD_AUTH__JWT_SECRET_KEY is shorter than {_MIN_PROD_SECRET_LENGTH} "
+                "characters - too short to be a safe HMAC signing key"
+            )
+
+        # A localhost CORS origin in production is either a copy-paste of the dev template (so
+        # the real dashboard's origin is missing and every browser request fails) or a genuine
+        # attempt to allow a local origin against a production API. Both are wrong, and the
+        # first fails in a way that looks like a frontend bug rather than a config one.
+        localhost_origins = [
+            origin
+            for origin in self.cors.allowed_origins
+            if "localhost" in origin or "127.0.0.1" in origin
+        ]
+        if localhost_origins:
+            problems.append(
+                "RAAD_CORS__ALLOWED_ORIGINS still contains development origins "
+                f"({', '.join(localhost_origins)}) - set the deployed frontend's real origin"
+            )
+        if "*" in self.cors.allowed_origins:
+            problems.append(
+                'RAAD_CORS__ALLOWED_ORIGINS must not be "*" in production'
+            )
+
+        if self.db.url and _is_placeholder_secret(self.db.url):
+            problems.append(
+                "RAAD_DB__URL still contains a development placeholder password"
+            )
+        if self.redis.url and _is_placeholder_secret(self.redis.url):
+            problems.append(
+                "RAAD_REDIS__URL still contains a development placeholder password"
+            )
+        if self.broker.url and _is_placeholder_secret(self.broker.url):
+            problems.append(
+                "RAAD_BROKER__URL still contains a development placeholder password"
+            )
+
+        # Audit finding B2 is deliberately NOT enforced here, and that is the correct call.
+        # An unbounded `raad:events` under `maxmemory-policy=noeviction` is a real risk, but
+        # requiring `stream_max_length > 0` would mandate the exact configuration that caused a
+        # live outage on 2026-09-02: trimming evicts the oldest entries, which are the device
+        # registration events `DeviceRegistryProjection` rebuilds from on cold start, and the
+        # physical MDVR stopped authenticating entirely. See `BrokerSettings.stream_max_length`
+        # for the full account. No finite cap is safe until that projection stops depending on
+        # infinite stream history — a design change, not a config value. Until then this is a
+        # monitoring concern (Redis memory), not a startup assertion.
+
+        if problems:
+            raise ValueError(
+                "Refusing to start in production with unsafe configuration:\n  - "
+                + "\n  - ".join(problems)
+            )
 
 
 @lru_cache(maxsize=1)
