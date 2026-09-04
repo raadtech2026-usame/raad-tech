@@ -1,0 +1,109 @@
+# RAAD Platform — Prometheus alerting rules (audit finding B8).
+#
+# **Before this file there were no alert rules at all.** Prometheus scraped one target and stored
+# the samples; nothing ever evaluated them, so every condition below — the API being down, the
+# database being unreachable, a sustained 5xx storm — was visible only to someone who happened to
+# open a graph. For a platform whose users are schools tracking children on buses, "we found out
+# when a parent called" is not an acceptable detection mechanism.
+#
+# **Scope, stated honestly.** Every rule here is built on metrics that genuinely exist today
+# (`raad_dependency_up`, `raad_http_requests_total`, `raad_process_start_time_seconds`, plus
+# Prometheus's own synthetic `up`). Deliberately NOT invented:
+#
+#   - `device-gateway` and `jt1078-relay` expose **no metrics endpoint at all** (verified: no
+#     HTTP server, no `/metrics`, nothing). Adding them as scrape targets would create targets
+#     that are permanently `up == 0`, which is worse than no target — it trains operators to
+#     ignore a firing alert. Giving those two services a real metrics endpoint is genuine new
+#     work in both deployables, tracked as open rather than faked here.
+#   - PostgreSQL and Redis have no exporter. `postgres_exporter`/`redis_exporter` are new
+#     dependencies requiring explicit approval (`.claude/rules/workflow.md` #1/#2), so they are
+#     not added unilaterally. Their health is partially covered anyway by `raad_dependency_up`,
+#     which the backend reports from its own real connectivity checks.
+#
+# **Delivery is still missing.** These rules fire inside Prometheus; routing them to a human
+# needs Alertmanager (another new dependency + a real notification channel). Until that exists,
+# these are visible on Prometheus's own `/alerts` page only — a real, disclosed gap, not a
+# working paging setup.
+
+groups:
+  - name: raad-availability
+    interval: 30s
+    rules:
+      - alert: RaadBackendDown
+        # `up` is synthesized by Prometheus per scrape target; 0 means the scrape itself failed.
+        expr: up{job="raad-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RAAD Business API is not scrapeable"
+          description: >-
+            Prometheus has failed to scrape the Business API for over 2 minutes. Either the
+            process is down or it is not serving /metrics. Every REST route, both WebSocket
+            channels and all device-event consumption are affected.
+
+      - alert: RaadDependencyDown
+        # Reported by the backend's own /health/ready checks, so this catches "the API is up but
+        # its database is not" — a state the `up` metric above cannot see at all.
+        expr: raad_dependency_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RAAD dependency {{ $labels.dependency }} is unreachable"
+          description: >-
+            The Business API reports {{ $labels.dependency }} as unreachable for over 2 minutes.
+            database: all reads/writes fail. redis: caching and rate limiting degrade (fail-open
+            by design). broker: domain events stop reaching device-gateway, notifications and
+            realtime fan-out — silently, which is why this alert exists.
+
+      - alert: RaadBackendRestartLoop
+        # A process start time that keeps moving means the container is crash-looping. Docker's
+        # `restart: unless-stopped` makes that invisible in `docker ps`, which shows a running
+        # container either way.
+        expr: changes(raad_process_start_time_seconds[15m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAAD Business API is restarting repeatedly"
+          description: >-
+            The API process has restarted more than 3 times in 15 minutes. Check container logs
+            for a startup failure — a misconfigured production secret now fails fast at startup
+            by design (Settings.validate_on_startup, audit finding B3), and looks exactly like
+            this.
+
+  - name: raad-errors
+    interval: 30s
+    rules:
+      - alert: RaadHighServerErrorRate
+        # Ratio, not absolute count: an absolute threshold either misses a small deployment's
+        # real outage or screams on a busy one's noise.
+        expr: >-
+          sum(rate(raad_http_requests_total{status=~"5.."}[5m]))
+            /
+          clamp_min(sum(rate(raad_http_requests_total[5m])), 0.001)
+            > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Over 5% of RAAD API requests are failing with 5xx"
+          description: >-
+            Sustained server-error rate above 5% for 5 minutes. Check dependency health first
+            (raad_dependency_up) — a database or broker outage surfaces here too.
+
+      - alert: RaadAuthFailureSpike
+        # A brute-force signal. Account lockout (5 attempts / 15 min) and IP rate limiting
+        # (10 / 60s) already *block* this; the alert exists so somebody also *knows* it happened.
+        expr: >-
+          sum(rate(raad_http_requests_total{route="/api/v1/auth/login",status="401"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained authentication failures against /auth/login"
+          description: >-
+            More than one failed login per second sustained for 10 minutes. Lockout and rate
+            limiting are already rejecting these; investigate whether it is a credential-stuffing
+            attempt or a misconfigured client looping on a stale token.

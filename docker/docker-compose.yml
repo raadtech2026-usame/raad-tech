@@ -358,6 +358,8 @@ services:
     # in docker-compose.prod.yml's own ports: !reset [] overrides.
     volumes:
       - ../infrastructure/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Audit finding B8 — alert rules, referenced by prometheus.yml's own `rule_files`.
+      - ../infrastructure/monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - raad_prometheus_data:/prometheus
     depends_on:
       backend:
