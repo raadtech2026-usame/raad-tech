@@ -109,6 +109,47 @@ compose file is parsed): assign `app.yourdomain.example` to the `frontend` servi
 automatically once DNS resolves — no `certbot`/`prod-tls.conf` step to run yourself, unlike the
 `vps-deployment.md` path.
 
+## Step 4b — Expose the device plane (audit finding B14)
+
+**This step did not exist, and without it a Coolify deployment has no working buses.** Steps 1-4
+assign domains to `frontend` and `backend` and stop there — but `device-gateway` and
+`jt1078-relay` are the two services the physical hardware actually talks to, and neither is
+mentioned anywhere else in this runbook. Deploying by the old instructions produced a platform
+where the dashboard loaded perfectly and no MDVR could ever connect.
+
+**These three ports are raw TCP, not HTTP.** Coolify's Traefik routes HTTP(S) by hostname; it
+cannot route a JT/T 808 socket or a JT/T 1078 extended-RTP stream. They keep their published
+host ports (`docker-compose.coolify.yml` deliberately does not `!reset` them, unlike
+postgres/redis/backend) and are reached by **IP and port**, not by domain:
+
+| Port | Service | Protocol | Who dials it |
+|---|---|---|---|
+| `7808` | `device-gateway` | JT/T 808 over TCP | Every bus terminal |
+| `7809` | `device-gateway` | LSZ proprietary over TCP | Dormant vendor adapter (ADR-0025) |
+| `7910` | `jt1078-relay` | JT/T 1078 extended-RTP over TCP | The MDVR, for media ingest |
+
+Required actions:
+
+1. **Open the VPS firewall** for 7808 and 7910 inbound (7809 only if the LSZ adapter is ever
+   activated). Coolify does not manage these; do it on the host, e.g. `ufw allow 7808/tcp`.
+2. **Set `JT1078_RELAY_PUBLIC_INGEST_HOST` to the VPS's real public IP or hostname.** This is
+   the single most failure-prone value in the whole deployment: left unset it silently falls back
+   to the bind address `0.0.0.0`, which the relay embeds verbatim in the `0x9101` signaling body.
+   The device acknowledges the command (it is valid JT/T 808) and then cannot dial it, so every
+   session times out `failed` with nothing in the JT808 exchange indicating anything is wrong.
+   Live-diagnosed twice; see `docker/.env.example`'s own note.
+3. **DNS for these must be "DNS only", never proxied.** If a `device.yourdomain.example` record
+   is created for operator convenience, set it grey-cloud in Cloudflare — Cloudflare's standard
+   proxy handles HTTP(S) only, and 7808/7910 are not in its proxyable port list. Proxying them
+   silently black-holes every device connection.
+
+**The viewer WebSocket is the exception and is NOT in the table above.** Port 7911 carries
+WS-FLV, which *is* HTTP-upgradable — so assign a domain to `jt1078-relay` (port 7911) the same
+way as `frontend`/`backend` in Step 4, or route it through the gateway path, and set
+`JT1078_SIGNALING_URL=wss://<that domain>` accordingly. It must be reachable over `wss://`: a
+browser on an HTTPS dashboard refuses a plain `ws://` as mixed content, which is what made live
+video and intercom structurally impossible in production before audit finding B1 was fixed.
+
 ## Step 5 — Deploy and verify
 
 Trigger a deploy from Coolify's UI (or `git push` if Coolify's own auto-deploy webhook is
