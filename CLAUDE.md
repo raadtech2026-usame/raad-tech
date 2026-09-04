@@ -30,20 +30,54 @@ that single purpose.
 - Route management
 - Student transportation (linking students to routes/buses, boarding/alighting tracking)
 
-### Explicitly out of scope
+### School ERP — in scope since 2026-09-04 (ADR-0038)
 
-RAAD is **not** a school ERP. Do not add, extend toward, or casually suggest features from these domains,
-even if a request seems adjacent:
+**This reverses the previous permanent "RAAD is not a school ERP" boundary.** Every earlier
+version of this section, and `.claude/rules/architecture.md` #8, made School ERP permanently out
+of scope *"absent an explicit new charter."* The 2026-09-04 user directive is that charter;
+`docs/architecture/adr/0038-school-erp-scope-reversal.md` records it, the audit that preceded it,
+and the module-placement decision it turns on. A reader who finds ERP code in a repository whose
+history says "never build ERP" should land there.
 
-- Classroom/school attendance tracking
-- General school ERP functionality
-- Payroll
-- Exams / gradebook / academic records
-- Learning Management System (LMS) features
+RAAD is now a combined **School Bus Tracking & Transportation Management Platform** *and*
+**School ERP / School Management Platform**. Added to scope:
 
-If a request would pull RAAD toward any of the above, say so explicitly and ask for confirmation
-rather than implementing it. Scope creep into general school-management territory is the main risk
-to design against in this codebase.
+- School/organization profile and academic structure (classes/grades)
+- Full student registration and student records (beyond transportation-only fields)
+- Parents/guardians as school records, not only transportation contacts
+- Teachers/staff where the school-management use case requires it
+- **School finance:** student fee plans, student invoices, student payments, discounts,
+  outstanding balances, student financial history, organization income, organization expenses
+  (with category + reason + optional vehicle), financial categories, payment methods, and
+  financial reporting/dashboards derived from actual transactions
+
+**Two financial domains, never mixed (ADR-0038 §2, ADR-0039).** This distinction is mandatory and
+is a security boundary, not a modelling preference:
+
+| | Issuer | Payer | Module | Aggregates |
+|---|---|---|---|---|
+| **RAAD SaaS billing** | RAAD | Organization | `billing` (C8) | `Plan`, `Subscription`, `Invoice`, `Payment` |
+| **School ERP finance** | Organization | Student/Parent | `school_erp` (C11) | `StudentInvoice`, `StudentPayment`, `FeePlan`, `Income`, `Expense`, `FinancialCategory` |
+
+Two `Invoice`-shaped aggregates exist deliberately. Do not "consolidate" them.
+
+### Still explicitly out of scope
+
+The ERP charter is bounded. Absent a further explicit requirement, do **not** add:
+
+- Learning Management System (LMS) / courseware
+- Exams, gradebook marks, academic assessment records
+- Timetabling / scheduling of classes
+- General (non-school) enterprise ERP functionality
+
+Classroom attendance and payroll are no longer blanket-prohibited — payroll appears only as an
+**expense category** in school finance, and attendance only if a separate requirement asks for
+it. Neither is built today. If a request would pull RAAD toward the four items above, say so
+explicitly and ask for confirmation rather than implementing it.
+
+**ERP access never bypasses transportation security.** An ERP permission grants no tracking,
+video, intercom or device reachability. D5 (video), CR-1 (tracking visibility) and ADR-0026's
+per-parent video grants are evaluated independently of any ERP grant.
 
 ## Business Model (Realigned 2026-07-28)
 

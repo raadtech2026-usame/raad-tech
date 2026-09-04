@@ -16,9 +16,23 @@ Derived from `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md`.
    enforced at the repository layer, not just the UI.
 5. **API-first.** Every capability is exposed through a versioned contract (`/api/v1`) before any UI
    consumes it.
-6. **Ten bounded contexts, fixed set:** iam, organization, fleet_device, transport_ops, tracking,
-   video, notifications, billing, reporting, platform_audit. Adding an eleventh requires an ADR.
+6. **Eleven bounded contexts, fixed set:** iam, organization, fleet_device, transport_ops,
+   tracking, video, notifications, billing, reporting, platform_audit, **school_erp**
+   (the eleventh, added 2026-09-04 by ADR-0038 — the ADR this rule has always required).
+   Adding a twelfth requires its own ADR.
+   **`billing` and `school_erp` are two different financial domains and must never be merged**
+   (ADR-0038 §2): `billing` is RAAD→Organization SaaS billing; `school_erp` is
+   Organization→Student school finance.
 7. **No premature microservices.** Extraction from the monolith follows the documented roadmap
    (Phase 2 §13.3) and is driven by measured load, not speculation.
-8. **Out of scope, permanently, absent an explicit new charter:** classroom/attendance, payroll,
-   exams/gradebook, LMS. Any request pulling toward these must be flagged, not built.
+8. **School ERP is in scope since 2026-09-04 (ADR-0038).** This rule previously read "out of
+   scope, permanently, absent an explicit new charter: classroom/attendance, payroll,
+   exams/gradebook, LMS." The 2026-09-04 user directive is that explicit new charter. In scope
+   now: academic structure (classes/grades), full student registration and records,
+   parents/guardians, staff where the school-management use case requires it, and school finance
+   (fee plans, student invoices/payments, income, expenses, categories, financial reporting).
+   **Still out of scope, absent a further requirement:** LMS/courseware, exams/gradebook marks,
+   timetabling, and general non-school enterprise ERP — any request pulling toward those four
+   must still be flagged, not built. Payroll exists only as an expense *category* in school
+   finance; classroom attendance is not built and needs its own requirement.
+   ERP access never bypasses transportation security (D5/CR-1 are unaffected by any ERP grant).
