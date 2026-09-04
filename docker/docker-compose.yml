@@ -201,6 +201,8 @@ services:
     command: ["/app/backup-loop.sh"]
     environment:
       BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_RETRY_MINUTES: ${BACKUP_RETRY_MINUTES:-15}
+      BACKUP_WAIT_FOR_DB_SECONDS: ${BACKUP_WAIT_FOR_DB_SECONDS:-120}
       PGHOST: postgres
       PGPORT: "5432"
       PGUSER: ${POSTGRES_USER:-raad}
