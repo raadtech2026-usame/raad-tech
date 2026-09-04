@@ -1,0 +1,13 @@
+# Shell scripts must keep LF endings regardless of the developer's platform.
+#
+# `core.autocrlf=true` is the Windows default and rewrites LF to CRLF on checkout. Every script
+# here is executed by busybox `ash` inside an Alpine container (docker/backup.Dockerfile and
+# friends), where a CRLF shebang line fails immediately and unhelpfully:
+#
+#     backup-loop.sh: line 8: : not found
+#     backup-loop.sh: set: line 9: illegal option -
+#
+# The blobs in this repository are already LF; without this file a fresh clone on Windows would
+# still check them out as CRLF and ship a backup/restore service that cannot start. These are the
+# disaster-recovery scripts, so that failure mode is not acceptable.
+*.sh text eol=lf

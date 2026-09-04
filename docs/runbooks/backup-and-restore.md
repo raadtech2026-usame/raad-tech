@@ -128,6 +128,38 @@ The automated round-trip test (`testing/backups/test_backup_restore.sh`, also ru
 change to `backend/**`) does exactly this plus a full restore and data-integrity check — see it
 for the canonical, scripted version of the "Running a restore drill" steps above.
 
+### Restoring a single table — `vehicle_positions` is a trap
+
+`restore.sh` restores the whole database and is unaffected by everything in this subsection. Read
+it only if you are hand-running `pg_restore --table=...` to recover one table during an incident.
+
+Since migration `c8b4d17e9f30` (audit finding B15), `vehicle_positions` is **partitioned**.
+`pg_dump` writes partitioned data under each *partition*, so a dump taken after that migration
+contains no `TABLE DATA public vehicle_positions` entry at all — only
+`vehicle_positions_2026_08`, `vehicle_positions_2026_09`, and so on:
+
+```bash
+pg_restore --list <file>.dump | grep 'TABLE DATA' | grep vehicle_positions
+```
+
+The consequence is the dangerous kind. This command:
+
+```bash
+pg_restore --data-only --table=vehicle_positions ...   # restores NOTHING, exits 0
+```
+
+matches only the parent, which holds no rows itself — so it **silently restores zero rows and
+reports success**. Name the partitions instead:
+
+```bash
+pg_restore --data-only --single-transaction --no-owner   --table=vehicle_positions_2026_08 --table=vehicle_positions_2026_09   -h postgres -U raad -d raad <file>.dump
+```
+
+Always confirm the row count afterwards rather than trusting the exit code — `select count(*)
+from vehicle_positions;`. A dump taken *before* `c8b4d17e9f30` still has the single unpartitioned
+entry and does restore correctly via `--table=vehicle_positions`, which is exactly what makes
+this easy to get wrong: the same command works on an old dump and silently no-ops on a new one.
+
 ## Troubleshooting
 
 **"pg_dump produced no data" / the script exits with `[backup] FATAL: ... is empty`.** The
