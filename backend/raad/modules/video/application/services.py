@@ -343,8 +343,13 @@ class VideoApplicationService:
             uow.record_events(session.pull_domain_events())
             await uow.commit()
 
-    async def reconcile_stale_intercom_sessions(
-        self, *, stale_after_seconds: float, actor_id: str = "system", uow: VideoUnitOfWork
+    async def reconcile_stale_sessions(
+        self,
+        *,
+        stale_after_seconds: float,
+        video_stale_after_seconds: float | None = None,
+        actor_id: str = "system",
+        uow: VideoUnitOfWork,
     ) -> int:
         """ADR-0037's own defense-in-depth backstop, scheduled-job entry point (mirrors
         `BillingApplicationService.sweep_expired_subscriptions`'s exact shape). Independent of
@@ -356,12 +361,23 @@ class VideoApplicationService:
         §2's one-active-intercom-session-per-device check, working exactly as designed against
         now-stale data).
 
-        **Scoped to `purpose=INTERCOM` only, deliberately** — an ordinary `REQUESTED`/`ACTIVE`
-        live/playback session left open by a dead event pipeline is not, by itself, harmful to
-        any *other* user the way a stuck intercom session is (many simultaneous viewers of the
-        same device is already the correct, unblocked behavior for video) - reconciling those too
-        would be solving a problem nothing has actually reported, `.claude/rules/workflow.md`'s
-        own "don't design for hypothetical requirements."
+        **Widened from intercom-only to every purpose (audit finding B7).** This method used to
+        skip anything that was not `purpose=INTERCOM`, reasoning that a stuck live/playback
+        session harms no *other* user the way a stuck intercom session does, and that reconciling
+        them would be solving a problem nothing had reported. The first half of that is still
+        true; the second half stopped being true. A 2026-09-04 audit of the live database found
+        **16 sessions stuck open — 11 `active`, 5 `requested`, the oldest dating to
+        2026-08-19** — accumulating indefinitely with nothing to ever close them. ADR-0024 §16
+        asks for exactly this backstop and it had never been built; the intercom-only scoping
+        was the closest thing to it.
+
+        Two thresholds, because the two cases genuinely differ. A stuck intercom session blocks
+        every other operator from talking to that bus (ADR-0036 §2's one-active-intercom-per-
+        device rule working correctly against stale data), so it must be cleared aggressively.
+        A stuck live/playback session only leaves a misleading row and a small relay slot, and a
+        legitimate viewing session can genuinely run for a long time — so `video_stale_after_
+        seconds` defaults to `stale_after_seconds` but is expected to be set much higher.
+        Failing a session someone is actually watching would be worse than the stale row.
 
         **`stale_after_seconds` must stay well above the relay's own worst-case internal timeout**
         (`services/jt1078/src/session/session_manager.py`'s `ingest_timeout_seconds`/
@@ -371,14 +387,22 @@ class VideoApplicationService:
             now = self._clock.now().replace(tzinfo=None)
             sessions = await uow.video_sessions.list_all()
             reconciled = 0
+            video_threshold = (
+                stale_after_seconds
+                if video_stale_after_seconds is None
+                else video_stale_after_seconds
+            )
             for session in sessions:
-                if session.purpose != VideoPurpose.INTERCOM:
-                    continue
                 if session.status not in _OPEN_STATUSES:
                     continue
+                threshold = (
+                    stale_after_seconds
+                    if session.purpose == VideoPurpose.INTERCOM
+                    else video_threshold
+                )
                 reference_time = session.started_at or session.created_at
                 age_seconds = (now - reference_time.replace(tzinfo=None)).total_seconds()
-                if age_seconds < stale_after_seconds:
+                if age_seconds < threshold:
                     continue
                 session.fail(
                     clock=self._clock, actor_id=actor_id, reason="reconciliation_stale_timeout"

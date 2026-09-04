@@ -204,12 +204,16 @@ def _register_scheduled_jobs(
     async def reconcile_stale_intercom_sessions() -> None:
         async def _body() -> None:
             service = container.resolve(VideoApplicationService)
-            reconciled = await service.reconcile_stale_intercom_sessions(
+            # Audit finding B7 — now reconciles EVERY purpose, not intercom alone. The
+            # registered job name and lock key are deliberately unchanged so a rolling deploy
+            # cannot end up with an old and a new instance holding two different locks.
+            reconciled = await service.reconcile_stale_sessions(
                 stale_after_seconds=settings.workers.intercom_stale_session_timeout_seconds,
+                video_stale_after_seconds=settings.workers.video_stale_session_timeout_seconds,
                 uow=container.resolve(VideoUnitOfWork),
             )
             if reconciled:
-                logger.info("intercom_sessions_reconciled", extra={"count": reconciled})
+                logger.info("video_sessions_reconciled", extra={"count": reconciled})
 
         await _with_lock(
             "reconcile_stale_intercom_sessions",

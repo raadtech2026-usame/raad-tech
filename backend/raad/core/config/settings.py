@@ -233,6 +233,15 @@ class WorkerSettings(BaseModel):
     # src/session/session_manager.py`'s own defaults) - this job must never race the primary,
     # event-driven reconciliation path, only catch what it misses.
     intercom_reconciliation_interval_seconds: float = 60.0
+    #: Audit finding B7 / ADR-0024 §16. The staleness threshold for ordinary live/playback
+    #: sessions, deliberately far higher than the intercom one: a stuck intercom session blocks
+    #: every other operator from that bus and must be cleared aggressively, while a legitimate
+    #: live viewing session can genuinely run for a long time and failing one someone is
+    #: actually watching would be worse than the stale row it prevents. Two hours is comfortably
+    #: longer than any real viewing session observed on the bench, and short enough that stale
+    #: rows cannot accumulate for weeks — as 16 of them did (oldest 2026-08-19) before this
+    #: existed.
+    video_stale_session_timeout_seconds: float = 7200.0
     intercom_stale_session_timeout_seconds: float = 180.0
 
 

@@ -432,7 +432,7 @@ class ReconcileStaleIntercomSessionsTests(unittest.IsolatedAsyncioTestCase):
         stored = uow.video_sessions.by_id[session.id]
         stored.created_at = stored.created_at - timedelta(seconds=500)
 
-        reconciled = await service.reconcile_stale_intercom_sessions(
+        reconciled = await service.reconcile_stale_sessions(
             stale_after_seconds=180, uow=uow
         )
 
@@ -455,7 +455,7 @@ class ReconcileStaleIntercomSessionsTests(unittest.IsolatedAsyncioTestCase):
             uow=uow,
         )
 
-        reconciled = await service.reconcile_stale_intercom_sessions(
+        reconciled = await service.reconcile_stale_sessions(
             stale_after_seconds=180, uow=uow
         )
 
@@ -483,12 +483,23 @@ class ReconcileStaleIntercomSessionsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ConflictError):
             await service.request_intercom(command, uow=uow)
 
-        await service.reconcile_stale_intercom_sessions(stale_after_seconds=180, uow=uow)
+        await service.reconcile_stale_sessions(stale_after_seconds=180, uow=uow)
 
         second = await service.request_intercom(command, uow=uow)  # must not raise now
         self.assertNotEqual(second.id, first.id)
 
-    async def test_non_intercom_sessions_are_never_reconciled(self) -> None:
+    async def test_a_live_session_uses_its_own_higher_threshold(self) -> None:
+        """Audit finding B7 widened this job from intercom-only to every purpose.
+
+        **This test previously asserted the opposite** (`test_non_intercom_sessions_are_never_
+        reconciled`) — that a stale live session was left alone forever. That was the documented
+        behaviour until a 2026-09-04 audit found 16 sessions stuck open in the live database,
+        the oldest from 2026-08-19, with nothing to ever close them.
+
+        Live/playback sessions now reconcile too, but on their own much higher threshold: a
+        legitimate viewing session can genuinely run for a long time, and failing one someone is
+        actually watching would be worse than the stale row it prevents. Below the video
+        threshold it must survive; above it, it must be failed."""
         provider = FakeVideoProvider()
         service = make_service(provider=provider)
         uow = make_uow()
@@ -505,12 +516,19 @@ class ReconcileStaleIntercomSessionsTests(unittest.IsolatedAsyncioTestCase):
         )
         uow.video_sessions.by_id[session.id].created_at -= timedelta(seconds=500)
 
-        reconciled = await service.reconcile_stale_intercom_sessions(
-            stale_after_seconds=180, uow=uow
+        # Past the intercom threshold (180s) but well inside the video one (7200s): untouched.
+        reconciled = await service.reconcile_stale_sessions(
+            stale_after_seconds=180, video_stale_after_seconds=7200, uow=uow
         )
-
         self.assertEqual(reconciled, 0)
         self.assertEqual(uow.video_sessions.by_id[session.id].status.value, "requested")
+
+        # Past its own threshold too: now it is genuinely stale and must be failed.
+        reconciled = await service.reconcile_stale_sessions(
+            stale_after_seconds=180, video_stale_after_seconds=300, uow=uow
+        )
+        self.assertEqual(reconciled, 1)
+        self.assertEqual(uow.video_sessions.by_id[session.id].status.value, "failed")
 
     async def test_an_already_ended_intercom_session_is_not_touched(self) -> None:
         provider = FakeVideoProvider()
@@ -532,7 +550,7 @@ class ReconcileStaleIntercomSessionsTests(unittest.IsolatedAsyncioTestCase):
         )
         uow.video_sessions.by_id[session.id].created_at -= timedelta(seconds=500)
 
-        reconciled = await service.reconcile_stale_intercom_sessions(
+        reconciled = await service.reconcile_stale_sessions(
             stale_after_seconds=180, uow=uow
         )
 
