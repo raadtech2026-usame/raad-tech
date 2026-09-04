@@ -1,5 +1,11 @@
 import { env } from "../../config/env";
 import { ApiError, type ApiErrorDetail } from "./types";
+import {
+  ORGANIZATION_SUBSCRIPTION_INACTIVE,
+  clearSubscriptionBlock,
+  parseSubscriptionBlockDetails,
+  reportSubscriptionBlocked,
+} from "../subscription/subscriptionStatusStore";
 
 /** Set once by `authStore` (avoids a circular import: this module never imports the store).
  * Returns the current access token, or `null` if signed out. */
@@ -96,7 +102,23 @@ async function rawRequest<T>(path: string, options: RequestOptions): Promise<T> 
 
   if (!response.ok) {
     const detail = await parseErrorEnvelope(response);
+    // ADR-0039 §6 — surface a tenant-wide subscription block once, globally, instead of letting
+    // every screen render its own generic red toast for what is really one account-level state.
+    // Presentation only (`.claude/rules/frontend.md` #2): the server has already refused this
+    // request, and nothing the client does here can grant access.
+    if (detail.code === ORGANIZATION_SUBSCRIPTION_INACTIVE) {
+      reportSubscriptionBlocked(
+        detail.message,
+        parseSubscriptionBlockDetails(detail.details),
+      );
+    }
     throw new ApiError(response.status, detail);
+  }
+
+  // A successful authenticated response proves the block is over (the guard runs before every
+  // route), so a tenant that has just paid gets its dashboard back without a hard refresh.
+  if (!options.anonymous) {
+    clearSubscriptionBlock();
   }
 
   return (await response.json()) as T;

@@ -6,6 +6,7 @@ import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { useCurrentPageHeader } from "./PageHeaderContext";
 import styles from "./AppShell.module.css";
+import { SubscriptionInactiveNotice } from "../../shared/subscription/SubscriptionInactiveNotice";
 
 export interface AppShellProps {
   nav: NavItem[];
@@ -41,6 +42,11 @@ export function AppShell({ nav, notificationsPath }: AppShellProps) {
           unreadNotifications={unreadNotifications}
         />
         <div className={styles.content}>
+          {/* ADR-0039 §6 — a tenant-wide subscription block is one account state, so it is
+              surfaced once here rather than as a per-screen error. Above the outlet, not as a
+              modal: Billing stays reachable (ADR-0039 §3's exempt paths) so an Org Admin can
+              actually pay and recover, which a trapping dialog would prevent. */}
+          <SubscriptionInactiveNotice />
           <Outlet />
         </div>
       </div>
