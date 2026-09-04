@@ -105,6 +105,30 @@ def _register_scheduled_jobs(
             _body,
         )
 
+    async def maintain_position_partitions() -> None:
+        """Audit finding B15 — keeps `vehicle_positions`'s monthly partitions provisioned ahead
+        of the calendar and drops fully-expired ones (`.claude/rules/database.md` #6's retention
+        by partition drop). Shares `prune_vehicle_positions`'s interval: both are retention
+        concerns on the same table, and there is no reason to tick them separately."""
+
+        async def _body() -> None:
+            service = container.resolve(TrackingApplicationService)
+            created, dropped = await service.maintain_position_partitions(
+                settings.workers.vehicle_position_retention_days,
+                uow=container.resolve(TrackingUnitOfWork),
+            )
+            if created or dropped:
+                logger.info(
+                    "vehicle_position_partitions_maintained",
+                    extra={"created": created, "dropped": dropped},
+                )
+
+        await _with_lock(
+            "maintain_position_partitions",
+            int(settings.workers.vehicle_position_retention_job_interval_seconds),
+            _body,
+        )
+
     async def sweep_expired_subscriptions() -> None:
         """ADR-0039 §5 — now drives the **full** subscription lifecycle, not just expiry.
 
@@ -148,6 +172,13 @@ def _register_scheduled_jobs(
             _body,
         )
 
+    scheduler.register(
+        ScheduledJob(
+            name="maintain_position_partitions",
+            interval_seconds=settings.workers.vehicle_position_retention_job_interval_seconds,
+            handler=maintain_position_partitions,
+        )
+    )
     scheduler.register(
         ScheduledJob(
             name="prune_vehicle_positions",

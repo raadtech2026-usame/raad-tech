@@ -271,6 +271,31 @@ class TrackingApplicationService:
             cutoff = (now - timedelta(days=retention_days)).replace(tzinfo=None)
             return await uow.vehicle_positions.delete_before(cutoff)
 
+    async def maintain_position_partitions(
+        self,
+        retention_days: int,
+        *,
+        months_ahead: int = 3,
+        uow: TrackingUnitOfWork,
+    ) -> tuple[list[str], list[str]]:
+        """Audit finding B15 — the partition-maintenance scheduled job's entry point.
+
+        Runs alongside `prune_position_history`, not instead of it. This drops whole expired
+        months (`.claude/rules/database.md` #6's "hard-pruned via partition drops"), which is
+        effectively instant and leaves no dead tuples; the row-level `DELETE` remains as the
+        fallback for anything that landed in the `DEFAULT` partition, which should normally be
+        empty precisely because this job provisions months ahead of the calendar.
+
+        Returns `(created, dropped)` partition names so the job can log what actually happened —
+        a run that creates nothing and drops nothing is the steady state and logs nothing.
+        """
+        async with uow:
+            now = self._clock.now()
+            cutoff = (now - timedelta(days=retention_days)).replace(tzinfo=None)
+            return await uow.vehicle_positions.maintain_partitions(
+                now=now, months_ahead=months_ahead, retention_cutoff=cutoff
+            )
+
     async def get_geofence_crossings(
         self, query: GetGeofenceCrossingsQuery, *, uow: TrackingUnitOfWork
     ) -> list[GeofenceCrossingDTO]:

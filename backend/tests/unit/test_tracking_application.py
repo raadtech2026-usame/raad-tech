@@ -81,6 +81,7 @@ class SequentialIdGenerator(IdGenerator):
 class InMemoryVehiclePositionRepository(VehiclePositionRepository):
     def __init__(self) -> None:
         self.by_id: dict[str, VehiclePosition] = {}
+        self.maintain_partitions_calls: list[dict] = []
 
     async def get(self, position_id: VehiclePositionId):
         return self.by_id.get(str(position_id))
@@ -153,6 +154,19 @@ class InMemoryVehiclePositionRepository(VehiclePositionRepository):
 
     def add(self, position: VehiclePosition) -> None:
         self.by_id[str(position.id)] = position
+
+    async def maintain_partitions(
+        self, *, now, months_ahead: int, retention_cutoff
+    ) -> tuple[list[str], list[str]]:
+        """Audit finding B15. Partition DDL is inherently PostgreSQL-specific and has no
+        meaningful in-memory analogue, so this fake records the call and reports that it did
+        nothing. The real behaviour is covered against a live database in
+        `tests/integration/test_vehicle_position_partitions.py`, which is the only place it can
+        be proven — exactly the fake-vs-real split CLAUDE.md's own lessons already warn about."""
+        self.maintain_partitions_calls.append(
+            {"now": now, "months_ahead": months_ahead, "retention_cutoff": retention_cutoff}
+        )
+        return [], []
 
     async def delete_before(self, cutoff) -> int:
         stale_ids = [

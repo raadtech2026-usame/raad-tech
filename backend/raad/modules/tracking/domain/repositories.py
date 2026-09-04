@@ -87,6 +87,32 @@ class VehiclePositionRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def maintain_partitions(
+        self, *, now: datetime, months_ahead: int, retention_cutoff: datetime
+    ) -> tuple[list[str], list[str]]:
+        """Audit finding B15 — keeps `vehicle_positions`'s monthly RANGE partitions provisioned
+        and prunes expired ones. Returns `(created, dropped)` partition names.
+
+        Two jobs, both of which only make sense together:
+
+        **Create ahead.** A month with no partition would land in the `DEFAULT` partition, and
+        PostgreSQL then refuses to attach a real partition for that month while rows for it sit
+        in `DEFAULT`. Provisioning ahead of the calendar is what keeps `DEFAULT` empty and the
+        scheme self-sustaining; a non-empty `DEFAULT` means this job stopped running.
+
+        **Drop expired.** `.claude/rules/database.md` #6 specifies retention by *partition drop*,
+        not per-row `DELETE`. Dropping a whole month is effectively instant and leaves no dead
+        tuples, where deleting ~1.1M rows leaves the table needing a vacuum. `delete_before`
+        below remains as the fallback for anything that did land in `DEFAULT`.
+
+        Deliberately conservative: only partitions whose entire range is strictly older than
+        `retention_cutoff` are dropped. A partition straddling the cutoff is left alone rather
+        than dropped early — losing a bus's GPS history a few days sooner than intended is a
+        worse failure than keeping it a few days longer.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_before(self, cutoff: datetime) -> int:
         """Bulk-deletes every row with `event_time < cutoff`; returns the number deleted.
         Backend Stabilization phase addition for the retention-pruning scheduled job

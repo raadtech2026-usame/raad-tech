@@ -57,6 +57,25 @@ def get_url() -> str:
     return settings.db.url
 
 
+def include_object(object_, name, type_, reflected, compare_to):  # noqa: ANN001, ARG001
+    """Audit finding B15 — hide declarative-partition *children* from autogenerate.
+
+    `vehicle_positions` is `PARTITION BY RANGE (event_time)` with one child table per month
+    (`vehicle_positions_2026_08`, ...) plus a `DEFAULT` partition. Those children are real
+    tables in `pg_class`, but they exist only because the parent's partitioning scheme creates
+    them — no SQLAlchemy model declares them and none ever will.
+
+    Without this filter, autogenerate reflects all 37 of them, finds no matching model, and
+    proposes `DROP TABLE` for every one — i.e. `alembic check` reports permanent false drift,
+    and `alembic revision --autogenerate` would cheerfully emit a migration that deletes the
+    entire GPS history. Matching on the parent's own name prefix keeps the parent itself (and
+    any unrelated table) fully checked.
+    """
+    if type_ in ("table", "index") and name and name.startswith("vehicle_positions_"):
+        return False
+    return True
+
+
 def run_migrations_offline() -> None:
     """Emits SQL to stdout without a live DB connection (`alembic upgrade --sql`)."""
     context.configure(
@@ -64,13 +83,18 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def _do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_object=include_object,
+    )
     with context.begin_transaction():
         context.run_migrations()
 

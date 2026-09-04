@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
@@ -137,6 +137,73 @@ class SqlAlchemyVehiclePositionRepository(
         model = vehicle_position_to_model(position)
         super().add(model)
         self._tracked[str(position.id)] = (position, model)
+
+    async def maintain_partitions(
+        self, *, now: datetime, months_ahead: int, retention_cutoff: datetime
+    ) -> tuple[list[str], list[str]]:
+        """Audit finding B15. See the domain interface for the reasoning; this is the SQL.
+
+        **Every identifier here is constructed from integers this method computes itself** —
+        never from caller-supplied text. Partition names are `f"vehicle_positions_{year}_{month}"`
+        built from a `datetime`, and bounds are ISO dates formatted from the same. Table and
+        partition names cannot be parameterised in DDL, so the only safe construction is one
+        where no string from outside this function ever reaches the statement.
+        """
+        cutoff = _naive(retention_cutoff)
+        created: list[str] = []
+        dropped: list[str] = []
+
+        # --- provision ahead -----------------------------------------------------------------
+        # `now` is supplied by the caller, never read from the system clock here — this codebase
+        # injects a `Clock` precisely so time is testable, and a repository reaching for
+        # `datetime.utcnow()` would make this job impossible to test deterministically.
+        current = _naive(now)
+        year, month = current.year, current.month
+        for _ in range(months_ahead + 1):
+            next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+            name = f"vehicle_positions_{year}_{month:02d}"
+            start = f"{year}-{month:02d}-01"
+            end = f"{next_year}-{next_month:02d}-01"
+            result = await self._session.execute(
+                text("SELECT to_regclass(:name)"), {"name": name}
+            )
+            if result.scalar() is None:
+                await self._session.execute(
+                    text(
+                        f"CREATE TABLE {name} PARTITION OF vehicle_positions "
+                        f"FOR VALUES FROM ('{start}') TO ('{end}')"
+                    )
+                )
+                created.append(name)
+            year, month = next_year, next_month
+
+        # --- drop fully-expired partitions -----------------------------------------------------
+        existing = await self._session.execute(
+            text(
+                "SELECT c.relname FROM pg_class c "
+                "JOIN pg_inherits i ON i.inhrelid = c.oid "
+                "JOIN pg_class p ON p.oid = i.inhparent "
+                "WHERE p.relname = 'vehicle_positions'"
+            )
+        )
+        for (name,) in existing.all():
+            # `vehicle_positions_default` must never be dropped — it is the safety net that
+            # stops a live GPS fix being rejected outright when no month matches.
+            if not name.startswith("vehicle_positions_"):
+                continue
+            suffix = name[len("vehicle_positions_") :]
+            parts = suffix.split("_")
+            if len(parts) != 2 or not all(p.isdigit() for p in parts):
+                continue  # `default`, or anything not month-shaped
+            p_year, p_month = int(parts[0]), int(parts[1])
+            n_year, n_month = (p_year + 1, 1) if p_month == 12 else (p_year, p_month + 1)
+            partition_end = datetime(n_year, n_month, 1)
+            # Strictly older: a partition straddling the cutoff still holds retainable data.
+            if partition_end <= cutoff:
+                await self._session.execute(text(f"DROP TABLE {name}"))
+                dropped.append(name)
+
+        return created, dropped
 
     async def delete_before(self, cutoff: datetime) -> int:
         """`cutoff` is typically a `Clock.now()`-derived, tz-aware value (the scheduled-job
