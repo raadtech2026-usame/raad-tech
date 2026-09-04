@@ -16,15 +16,21 @@ already applies to `Route.remove_stop`/`move_stop`/`Trip.interrupt`/`resume`.
   **Paginated/filterable/sortable per §7/§8** (Pagination/Filtering/Sorting phase): `?page&
   page_size`, `?filter[field]=value`, `?sort=field`, `?q=` — mirrors `organization`/`iam`'s
   identical `list_page`-backed shape.
-- `GET /billing/subscriptions` — list (line 171, "Org Admin/Finance; Parent(own)"). **Not
-  filtered to the caller's own subscriptions** — `list_subscriptions` calls
-  `uow.subscriptions.list_page(...)` unscoped by tenant/ownership (`application/services.py`);
-  the "Parent(own)" half of this row is the same unresolved `ScopeResolver`/ownership-filtering
-  gap every other list endpoint in this codebase already carries (`transport_ops.api.routers`'s
-  own recurring caveat), not a billing-specific omission — pagination/filtering/sorting (added
-  this phase) is an orthogonal, now-resolved concern from that caveat.
-- `GET /billing/invoices` — list (line 172, same "Parent(own)" caveat as subscriptions above).
-  Same pagination/filtering/sorting addition as `/plans`/`/subscriptions` above.
+- `GET /billing/subscriptions` — list (line 171, "Org Admin/Finance"). **Tenant-scoped for real
+  since ADR-0021** — this docstring previously read "Not filtered to the caller's own
+  subscriptions... unscoped by tenant/ownership", which stopped being true when ADR-0021 moved
+  scope enforcement into `SqlAlchemyRepositoryBase._apply_scope`: `list_page` routes through it,
+  and `subscriptions` carries `organization_id`, so an Org Admin sees only their own
+  organization's rows. Corrected here rather than left as a false claim about a security
+  property (found during ADR-0039's own audit).
+  **The "Parent(own)" half of §4.7's role column no longer applies at all** — ADR-0039 §7 revoked
+  `billing.subscriptions.list` from `parent`, since RAAD SaaS subscriptions are billed to the
+  Organization (ADR-0016) and a parent has no legitimate view of them. Parent-facing *school*
+  finance is `school_erp`'s concern (ADR-0038), not this module's.
+- `GET /billing/invoices` — list (line 172). Identically tenant-scoped since ADR-0021 (`invoices`
+  carries `organization_id`), and identically no longer parent-reachable since ADR-0039 §7 —
+  `billing.invoices.list` was the specific stale grant that let a parent enumerate RAAD's own
+  SaaS invoices to their school. Same pagination/filtering/sorting as `/plans` above.
 - `POST /billing/payments` — initiate (line 173, "Org Admin/Finance; Parent(own, allowed even
   when access-denied)"). Requires the `Idempotency-Key` header (API rule #6, API Contracts
   §12) — read directly here via `Header(...)`, not a body field; a missing header is a
@@ -118,6 +124,7 @@ from raad.modules.billing.api.schemas import (
     PaymentListItemResponse,
     PaymentResponse,
     PlanResponse,
+    ExtendGracePeriodRequest,
     SubscriptionResponse,
 )
 from raad.modules.billing.application.commands import InitiatePaymentCommand
@@ -171,6 +178,11 @@ def _subscription_dto_to_response(
         auto_renew=subscription.auto_renew,
         created_at=subscription.created_at,
         updated_at=subscription.updated_at,
+        past_due_since=subscription.past_due_since,
+        grace_period_ends_at=subscription.grace_period_ends_at,
+        suspended_at=subscription.suspended_at,
+        cancelled_at=subscription.cancelled_at,
+        expired_at=subscription.expired_at,
     )
 
 
@@ -274,6 +286,141 @@ async def list_subscriptions(
         uow=uow,
     )
     return to_offset_page_response(page, _subscription_dto_to_response)
+
+
+# --- ADR-0039: organization subscription lifecycle ------------------------------------------
+#
+# Four routes, none of them in API Contracts §4.7 (which documents five billing routes and no
+# subscription-write surface at all) — added under ADR-0039, cited here rather than silently,
+# the same posture `/drivers` and every other post-Phase-3.3 route in this codebase carries.
+#
+# `/subscriptions/current` is deliberately **before** any `/subscriptions/{id}`-shaped path
+# would be: FastAPI matches in declaration order, so a literal segment must be declared first or
+# `current` would be captured as an id.
+
+
+@billing_router.get(
+    "/subscriptions/current",
+    response_model=SubscriptionResponse | None,
+    status_code=status.HTTP_200_OK,
+    summary="The caller's own organization's current subscription",
+    description=(
+        "ADR-0039. Self-scoped: resolves from `principal.organization_id` alone and takes no "
+        "path/query identifier, so there is nothing for a caller to override — the same "
+        "structural IDOR-immunity ADR-0023's `/me` routes established. Returns `null` when the "
+        "organization has no subscription at all. Backs the Org Admin billing/suspension UI."
+    ),
+)
+async def get_current_subscription(
+    principal: Principal = Depends(
+        require_permission(Permission("billing.subscriptions.list"))
+    ),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow),
+) -> SubscriptionResponse | None:
+    if principal.org_id is None:
+        # A platform-staff caller has no own-organization to report. 404 rather than an empty
+        # 200, so "you have no subscription" and "this question doesn't apply to you" stay
+        # distinguishable.
+        raise NotFoundError("This caller has no organization of its own.")
+    subscription = await billing_service.get_current_subscription_for_organization(
+        principal.org_id, uow=uow
+    )
+    return (
+        _subscription_dto_to_response(subscription)
+        if subscription is not None
+        else None
+    )
+
+
+@billing_router.post(
+    "/subscriptions/{subscription_id}/suspend",
+    response_model=SubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Suspend an organization's subscription (platform admin)",
+    description=(
+        "ADR-0039 §5. Blocks **every** user of that organization on their next request "
+        "(`interfaces/http/subscription_guard`), not just its admin — the organization is the "
+        "tenant. Requires `billing.subscriptions.manage`, held only by `founder`/"
+        "`finance_staff`: deliberately not `org_admin`, so a tenant can never lift or apply "
+        "its own suspension."
+    ),
+)
+async def suspend_subscription(
+    subscription_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("billing.subscriptions.manage"))
+    ),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow_unscoped),
+) -> SubscriptionResponse:
+    dto = await billing_service.suspend_subscription(
+        SuspendSubscriptionCommand(subscription_id=subscription_id, actor=principal),
+        uow=uow,
+    )
+    return _subscription_dto_to_response(dto)
+
+
+@billing_router.post(
+    "/subscriptions/{subscription_id}/reactivate",
+    response_model=SubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Reactivate an organization's subscription (platform admin)",
+    description=(
+        "ADR-0039 §5. Returns the organization to `ACTIVE` **without** moving the billing "
+        "period — that is what distinguishes reactivation from renewal. Refuses terminal "
+        "(`cancelled`/`expired`) subscriptions with a `DomainError`: those must come back "
+        "through a real new subscription or an explicit renewal with a fresh period, never a "
+        "status flip that would leave `current_period_end` in the past and have the next "
+        "lifecycle tick immediately re-suspend them."
+    ),
+)
+async def reactivate_subscription(
+    subscription_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("billing.subscriptions.manage"))
+    ),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow_unscoped),
+) -> SubscriptionResponse:
+    dto = await billing_service.reactivate_subscription(
+        ReactivateSubscriptionCommand(
+            subscription_id=subscription_id, actor=principal
+        ),
+        uow=uow,
+    )
+    return _subscription_dto_to_response(dto)
+
+
+@billing_router.post(
+    "/subscriptions/{subscription_id}/extend-grace",
+    response_model=SubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Extend a delinquent organization's grace period (platform admin)",
+    description=(
+        "ADR-0039 §1 / requirement 39G. Moves the subscription to `grace_period`, which grants "
+        "access exactly like `past_due` but records that a human deliberately chose it — making "
+        "the extension an auditable state transition rather than a silent date edit."
+    ),
+)
+async def extend_grace_period(
+    subscription_id: str,
+    payload: ExtendGracePeriodRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("billing.subscriptions.manage"))
+    ),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow_unscoped),
+) -> SubscriptionResponse:
+    dto = await billing_service.extend_grace_period(
+        ExtendGracePeriodCommand(
+            subscription_id=subscription_id,
+            grace_period_ends_at=payload.grace_period_ends_at,
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return _subscription_dto_to_response(dto)
 
 
 @billing_router.get(

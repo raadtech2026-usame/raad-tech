@@ -22,8 +22,12 @@ also get a padlock icon in Swagger, a documented, accepted trade-off against tou
 module's own router file for a purely OpenAPI-visibility change.
 """
 
-from fastapi import APIRouter, Security
+from fastapi import APIRouter, Depends, Security
 from fastapi.security import HTTPBearer
+
+from raad.interfaces.http.subscription_guard import (
+    enforce_organization_subscription,
+)
 
 from raad.modules.billing.api.routers import billing_router
 from raad.modules.fleet_device.api.routers import (
@@ -65,7 +69,22 @@ _bearer_scheme = HTTPBearer(
     auto_error=False,
 )
 
-api_router = APIRouter(prefix="/api/v1", dependencies=[Security(_bearer_scheme)])
+# ADR-0039 §2 — tenant-wide SaaS subscription enforcement, attached **once, here**, rather than
+# per-route. Every `/api/v1` route below inherits it, including any route added later: a new
+# endpoint cannot forget to opt in, it has to deliberately opt out via that module's own
+# `_EXEMPT_PATH_PREFIXES`. This is the literal application of `.claude/rules/backend.md` #6's
+# "a single, tested capability policy ... never scattered `if subscription_active` checks".
+#
+# Ordering relative to `Security(_bearer_scheme)` is irrelevant — that one is OpenAPI-cosmetic
+# and never raises (`auto_error=False`); real JWT verification stays in SecurityContextMiddleware,
+# which has already run and attached `request.state.principal` by the time this dependency does.
+api_router = APIRouter(
+    prefix="/api/v1",
+    dependencies=[
+        Security(_bearer_scheme),
+        Depends(enforce_organization_subscription),
+    ],
+)
 
 api_router.include_router(auth_router, prefix="/auth", tags=["auth"])  # iam (C1)
 api_router.include_router(users_router, prefix="/users", tags=["users"])

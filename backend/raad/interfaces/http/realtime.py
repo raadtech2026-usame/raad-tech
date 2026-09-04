@@ -70,6 +70,12 @@ class WsCloseCode:
     BAD_REQUEST = 4400
     UNAUTHENTICATED = 4401
     FORBIDDEN = 4403
+    #: ADR-0039 §4 — the caller's organization has no usable SaaS subscription. Distinct from
+    #: `FORBIDDEN` deliberately: a client that sees this should surface "your school's
+    #: subscription is inactive" and stop retrying, whereas a plain 4403 means "you personally
+    #: may not watch this vehicle" and reconnecting for a different vehicle is reasonable.
+    #: Mirrors the REST side's own `ORGANIZATION_SUBSCRIPTION_INACTIVE` (403) envelope code.
+    SUBSCRIPTION_INACTIVE = 4402
 
 
 class RealtimeConnection(Protocol):

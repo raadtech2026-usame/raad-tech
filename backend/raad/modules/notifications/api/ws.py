@@ -38,6 +38,7 @@ from raad.core.di.container import Container
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.events.base import DomainEvent
 from raad.core.security.tokens import TokenService
+from raad.interfaces.http.subscription_guard import is_organization_access_allowed
 from raad.interfaces.http.realtime import (
     ConnectionManager,
     WsCloseCode,
@@ -152,6 +153,13 @@ async def run_notifications_websocket(
     )
     if principal is None:
         await websocket.close(code=WsCloseCode.UNAUTHENTICATED)
+        return
+
+    # ADR-0039 §4 — same tenant-wide subscription gate the REST surface and the tracking socket
+    # apply, via the one shared decision function. A suspended organization keeps receiving
+    # nothing here, not "everything except REST".
+    if not await is_organization_access_allowed(principal, container=container):
+        await websocket.close(code=WsCloseCode.SUBSCRIPTION_INACTIVE)
         return
 
     await connections.register(principal.user_id, websocket, principal)

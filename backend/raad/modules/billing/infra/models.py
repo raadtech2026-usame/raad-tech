@@ -65,7 +65,18 @@ from raad.core.db.mixins import AuditedTableMixin, UlidPrimaryKeyMixin
 _BILLING_SCOPE_VALUES = ("organization",)
 _BILLING_CYCLE_VALUES = ("monthly", "quarterly", "annual")
 _PLAN_STATUS_VALUES = ("active", "inactive")
-_SUBSCRIPTION_STATUS_VALUES = ("trial", "active", "suspended", "expired", "cancelled")
+# ADR-0039 adds `past_due`/`grace_period` to Database Design §8.2's original five. Order here is
+# the PostgreSQL enum's own label order after migration `a7f31c92be04` — new labels are appended,
+# since `ALTER TYPE ... ADD VALUE` cannot insert into the middle without recreating the type.
+_SUBSCRIPTION_STATUS_VALUES = (
+    "trial",
+    "active",
+    "suspended",
+    "expired",
+    "cancelled",
+    "past_due",
+    "grace_period",
+)
 _INVOICE_STATUS_VALUES = ("draft", "issued", "paid", "void")
 _PAYMENT_STATUS_VALUES = ("pending", "processing", "paid", "failed", "expired", "refunded")
 _TRANSPORT_FEE_STATUS_VALUES = ("due", "paid", "overdue", "waived")
@@ -134,6 +145,25 @@ class SubscriptionModel(AuditedTableMixin, Base):
         DateTime(timezone=False), nullable=True, index=True
     )
     auto_renew: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # --- ADR-0039 lifecycle timestamps -------------------------------------------------------
+    # All nullable: a subscription that has never gone delinquent legitimately has none of them.
+    # `grace_period_ends_at` is indexed because the lifecycle job's own "grace exhausted" scan
+    # filters on it every tick.
+    past_due_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    grace_period_ends_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, index=True
+    )
+    suspended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    expired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
 
 
 class InvoiceModel(AuditedTableMixin, Base):

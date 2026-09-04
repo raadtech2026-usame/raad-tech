@@ -38,6 +38,7 @@ from datetime import date, datetime, timedelta
 from raad.core.errors.exceptions import AuthorizationError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
+from raad.core.logging.setup import get_logger
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.billing.application.commands import (
@@ -54,6 +55,8 @@ from raad.modules.billing.application.commands import (
     MarkTransportFeePaidCommand,
     OpenOrganizationSubscriptionCommand,
     PaymentCallbackCommand,
+    ExtendGracePeriodCommand,
+    ReactivateSubscriptionCommand,
     SuspendSubscriptionCommand,
     VoidInvoiceCommand,
     WaiveTransportFeeCommand,
@@ -127,6 +130,9 @@ _BILLING_CYCLE_DAYS = {
 
 def _advance_period(start: datetime, cycle: BillingCycle) -> datetime:
     return start + timedelta(days=_BILLING_CYCLE_DAYS[cycle])
+
+
+logger = get_logger(__name__)
 
 
 def _to_naive(value: datetime) -> datetime:
@@ -322,6 +328,186 @@ class BillingApplicationService:
             uow.record_events(subscription.pull_domain_events())
             await uow.commit()
             return subscription_to_dto(subscription)
+
+    async def get_current_subscription_for_organization(
+        self, organization_id: str, *, uow: BillingUnitOfWork
+    ) -> SubscriptionDTO | None:
+        """ADR-0039 — backs tenant-wide access enforcement
+        (`interfaces/http/subscription_guard`).
+
+        **Deliberately not `get_active_subscription_for_organization`.** That method hides
+        `EXPIRED`/`CANCELLED` behind a `None`, which the access policy reads as "never
+        subscribed" and grants. Enforcement must see every state, including the terminal ones —
+        see `SubscriptionRepository.get_current_by_organization`'s own docstring for the full
+        reasoning and why using the wrong finder here would have silently un-enforced the most
+        common production state."""
+        async with uow:
+            subscription = await uow.subscriptions.get_current_by_organization(
+                OrganizationId(organization_id)
+            )
+            return subscription_to_dto(subscription) if subscription is not None else None
+
+    async def extend_grace_period(
+        self,
+        command: ExtendGracePeriodCommand,
+        *,
+        uow: BillingUnitOfWork,
+    ) -> SubscriptionDTO:
+        """ADR-0039 §1 — a platform admin grants a delinquent organization more time
+        (requirement 39G). Moves to `GRACE_PERIOD`, which grants access exactly like `PAST_DUE`
+        but records that a human chose it."""
+        async with uow:
+            subscription = await ensure_subscription_exists(
+                uow, SubscriptionId(command.subscription_id)
+            )
+            subscription.extend_grace_period(
+                grace_period_ends_at=command.grace_period_ends_at,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(subscription.pull_domain_events())
+            await uow.commit()
+            return subscription_to_dto(subscription)
+
+    async def reactivate_subscription(
+        self, command: ReactivateSubscriptionCommand, *, uow: BillingUnitOfWork
+    ) -> SubscriptionDTO:
+        """ADR-0039 §5 — returns a suspended/past-due organization to `ACTIVE` without moving
+        the billing period (requirement 39G's "Reactivate"). `Subscription.reactivate` refuses
+        terminal states; that `DomainError` surfaces through the standard error envelope."""
+        async with uow:
+            subscription = await ensure_subscription_exists(
+                uow, SubscriptionId(command.subscription_id)
+            )
+            subscription.reactivate(
+                clock=self._clock, actor_id=command.actor.user_id
+            )
+            uow.record_events(subscription.pull_domain_events())
+            await uow.commit()
+            return subscription_to_dto(subscription)
+
+    async def advance_subscription_lifecycle(
+        self,
+        *,
+        grace_period_days: int,
+        actor_id: str = "system",
+        uow: BillingUnitOfWork,
+    ) -> dict[str, int]:
+        """ADR-0039 §5 — **replaces `sweep_expired_subscriptions`**, which was the entire
+        billing automation and did only one thing: transition `ACTIVE → EXPIRED` the moment a
+        period ended, without ever checking whether payment had been received, without issuing
+        the next period's invoice, and without any grace concept at all.
+
+        One tick applies, per candidate subscription:
+
+        | From | Condition | To |
+        |---|---|---|
+        | `ACTIVE`/`TRIAL` | period ended, an invoice is unpaid | `PAST_DUE` (grace clock starts) |
+        | `ACTIVE`/`TRIAL` | period ended, all invoices settled, `auto_renew` | renewed + next invoice issued |
+        | `ACTIVE`/`TRIAL` | period ended, all invoices settled, no `auto_renew` | `EXPIRED` |
+        | `PAST_DUE`/`GRACE_PERIOD` | `grace_period_ends_at` passed | `SUSPENDED` |
+
+        **Idempotency comes from state, never from a run marker** (requirement 39J: "Idempotent,
+        safe to run repeatedly"). Every transition is guarded by its own same-state no-op, and
+        invoice issuance is guarded by `exists_for_period`. Running this twice in a row is a
+        no-op the second time — asserted directly by
+        `tests/unit/test_subscription_lifecycle.py`.
+
+        Returns a per-transition count so the scheduled job can log what actually happened
+        rather than a single opaque number.
+        """
+        counts = {"past_due": 0, "renewed": 0, "suspended": 0, "expired": 0}
+        async with uow:
+            now = _to_naive(self._clock.now())
+            candidates = await uow.subscriptions.list_lifecycle_candidates()
+            for subscription in candidates:
+                if subscription.status in (
+                    SubscriptionStatus.PAST_DUE,
+                    SubscriptionStatus.GRACE_PERIOD,
+                ):
+                    grace_end = subscription.grace_period_ends_at
+                    if grace_end is not None and _to_naive(grace_end) <= now:
+                        subscription.suspend(
+                            clock=self._clock, actor_id=actor_id
+                        )
+                        uow.record_events(subscription.pull_domain_events())
+                        counts["suspended"] += 1
+                    continue
+
+                period_end = subscription.current_period_end
+                if period_end is None or _to_naive(period_end) > now:
+                    # Still inside a paid period (or never started billing) — nothing to do.
+                    continue
+
+                has_unpaid = await uow.invoices.has_unpaid_for_subscription(
+                    subscription.id
+                )
+                if has_unpaid:
+                    subscription.mark_past_due(
+                        grace_period_ends_at=self._clock.now()
+                        + timedelta(days=grace_period_days),
+                        clock=self._clock,
+                        actor_id=actor_id,
+                    )
+                    uow.record_events(subscription.pull_domain_events())
+                    counts["past_due"] += 1
+                    continue
+
+                if not subscription.auto_renew:
+                    subscription.expire(clock=self._clock, actor_id=actor_id)
+                    uow.record_events(subscription.pull_domain_events())
+                    counts["expired"] += 1
+                    continue
+
+                plan = await uow.plans.get(subscription.plan_id)
+                if plan is None:
+                    # A subscription pointing at a deleted plan cannot be priced. Skipping is
+                    # deliberate: expiring the tenant over RAAD's own data-integrity problem
+                    # would punish the customer for our bug. Left in place, visibly unadvanced,
+                    # for an operator to notice.
+                    logger.warning(
+                        "subscription_lifecycle_plan_missing",
+                        extra={
+                            "subscription_id": str(subscription.id),
+                            "plan_id": str(subscription.plan_id),
+                        },
+                    )
+                    continue
+
+                period_start = period_end
+                next_period_end = _advance_period(period_start, plan.billing_cycle)
+                already_issued = await uow.invoices.exists_for_period(
+                    subscription.id,
+                    period_start=period_start.date(),
+                    period_end=next_period_end.date(),
+                )
+                if not already_issued:
+                    invoice = Invoice.issue(
+                        id=InvoiceId(self._id_generator.new_id()),
+                        organization_id=subscription.organization_id,
+                        subscription_id=subscription.id,
+                        amount=plan.price,
+                        period_start=period_start.date(),
+                        period_end=next_period_end.date(),
+                        due_at=None,
+                        clock=self._clock,
+                        actor_id=actor_id,
+                    )
+                    uow.invoices.add(invoice)
+                    uow.record_events(invoice.pull_domain_events())
+
+                subscription.renew(
+                    period_start=period_start,
+                    period_end=next_period_end,
+                    clock=self._clock,
+                    actor_id=actor_id,
+                )
+                uow.record_events(subscription.pull_domain_events())
+                counts["renewed"] += 1
+
+            if any(counts.values()):
+                await uow.commit()
+            return counts
 
     async def sweep_expired_subscriptions(
         self, *, actor_id: str = "system", uow: BillingUnitOfWork

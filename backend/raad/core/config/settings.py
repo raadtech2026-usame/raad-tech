@@ -210,6 +210,13 @@ class WorkerSettings(BaseModel):
     # "recommend 90 days, configurable"
     vehicle_position_retention_job_interval_seconds: float = 3600.0
     subscription_sweep_interval_seconds: float = 3600.0
+    #: ADR-0039 §1 — how long an organization keeps working after its billing period ends with
+    #: an unpaid invoice, before it is suspended. Seven days is a deliberate product choice, not
+    #: a number any document supplies: RAAD's customers are schools whose users are tracking
+    #: children on buses, so an abrupt cutoff the moment an invoice slips is the wrong default,
+    #: while an unbounded grace window would make the whole lifecycle decorative. Configurable
+    #: precisely because the right value is a business decision, not an engineering one.
+    subscription_grace_period_days: int = 7
     payment_reconciliation_timeout_minutes: int = 30
     payment_reconciliation_interval_seconds: float = 600.0
     # WebSocket phase: the two realtime fan-out consumers (interfaces/http/realtime.py) are

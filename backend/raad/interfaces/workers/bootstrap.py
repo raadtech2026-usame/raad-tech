@@ -106,13 +106,25 @@ def _register_scheduled_jobs(
         )
 
     async def sweep_expired_subscriptions() -> None:
+        """ADR-0039 §5 — now drives the **full** subscription lifecycle, not just expiry.
+
+        Kept under its original registered job name so the `RedisLockPort` lock key
+        (`sweep_expired_subscriptions`) stays stable across a rolling deploy: renaming it would
+        let an old and a new instance hold two different locks and run the lifecycle
+        concurrently. The behaviour it wraps is what changed, not its identity — and the job
+        itself is idempotent anyway, so a concurrent run would be safe rather than corrupting;
+        the stable key just avoids doing double work for no reason."""
+
         async def _body() -> None:
             service = container.resolve(BillingApplicationService)
-            expired = await service.sweep_expired_subscriptions(
-                uow=container.resolve(BillingUnitOfWork)
+            counts = await service.advance_subscription_lifecycle(
+                grace_period_days=settings.workers.subscription_grace_period_days,
+                uow=container.resolve(BillingUnitOfWork),
             )
-            if expired:
-                logger.info("subscriptions_expired", extra={"count": expired})
+            if any(counts.values()):
+                # Logged per-transition rather than as one opaque total: "3 suspended" and
+                # "3 renewed" are very different operational events.
+                logger.info("subscription_lifecycle_advanced", extra=counts)
 
         await _with_lock(
             "sweep_expired_subscriptions",

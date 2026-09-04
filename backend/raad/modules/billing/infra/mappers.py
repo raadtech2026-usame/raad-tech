@@ -94,6 +94,13 @@ def subscription_to_model(
     model.current_period_start = _to_naive_utc(subscription.current_period_start)
     model.current_period_end = _to_naive_utc(subscription.current_period_end)
     model.auto_renew = subscription.auto_renew
+    # ADR-0039 lifecycle timestamps — same `_to_naive_utc` normalisation as the period columns
+    # above, so a tz-aware `clock.now()` value never reaches a naive Postgres column.
+    model.past_due_since = _to_naive_utc(subscription.past_due_since)
+    model.grace_period_ends_at = _to_naive_utc(subscription.grace_period_ends_at)
+    model.suspended_at = _to_naive_utc(subscription.suspended_at)
+    model.cancelled_at = _to_naive_utc(subscription.cancelled_at)
+    model.expired_at = _to_naive_utc(subscription.expired_at)
     model.created_at = _to_naive_utc(subscription.created_at)
     model.updated_at = _to_naive_utc(subscription.updated_at)
     return model
@@ -110,6 +117,17 @@ def model_to_subscription(model: SubscriptionModel) -> Subscription:
         auto_renew=model.auto_renew,
         created_at=model.created_at,
         updated_at=model.updated_at,
+        # ADR-0039. CLAUDE.md's permanent lesson applies here: every datetime on this mapper
+        # that may later be compared against `Clock.now()` (tz-aware) must go through the same
+        # awareness treatment as the rest — not just the one that first crashed. These five are
+        # read back naive from Postgres exactly like `current_period_*` above, and are compared
+        # against `clock.now()` by the lifecycle job, which normalises via `_to_naive` on its
+        # own side for precisely this reason.
+        past_due_since=model.past_due_since,
+        grace_period_ends_at=model.grace_period_ends_at,
+        suspended_at=model.suspended_at,
+        cancelled_at=model.cancelled_at,
+        expired_at=model.expired_at,
     )
 
 

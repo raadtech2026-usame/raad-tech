@@ -92,6 +92,28 @@ class CancelSubscriptionCommand:
 
 
 @dataclass(frozen=True)
+class ExtendGracePeriodCommand:
+    """ADR-0039 §1 — platform-admin grace extension (requirement 39G).
+
+    `grace_period_ends_at` is supplied by the caller rather than derived from a "number of
+    extra days" here, so the API layer can validate it against the request and the domain
+    receives an absolute instant — the same "resolve time at the edge, never inside the
+    domain" convention every other command in this module follows."""
+
+    subscription_id: str
+    grace_period_ends_at: datetime
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class ReactivateSubscriptionCommand:
+    """ADR-0039 §5 — platform-admin reactivation (requirement 39G)."""
+
+    subscription_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class IssueInvoiceCommand:
     organization_id: str
     subscription_id: str

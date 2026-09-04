@@ -177,11 +177,31 @@ class PlanStatus(str, Enum):
 
 
 class SubscriptionStatus(str, Enum):
-    """Database Design §8.2: `subscriptions.status ENUM(trial,active,suspended,expired,
-    cancelled)`."""
+    """Database Design §8.2's original five values (`trial,active,suspended,expired,cancelled`)
+    plus the two ADR-0039 adds for a real recurring-billing lifecycle (`past_due`,
+    `grace_period`).
+
+    **Why `PAST_DUE` and `GRACE_PERIOD` are both needed, when they look redundant.** Modelled
+    naively they collapse into one another — both mean "unpaid but still allowed in". They are
+    kept distinct because only one of them is a *decision*:
+
+    - `PAST_DUE` is **automatic**: the period ended with an unpaid invoice and the standard
+      grace window is running. Nobody chose this; the clock produced it.
+    - `GRACE_PERIOD` is **granted**: a platform admin explicitly extended grace beyond the
+      automatic window (ADR-0039 §1, serving requirement 39G's "extend grace period where
+      authorized"). That makes the extension a real, auditable state transition rather than a
+      silent date edit, and keeps schools that were given more time distinguishable in
+      reporting from schools that merely drifted.
+
+    Access-wise the two behave identically (both grant) — see
+    `core.policies.organization_access.OrganizationAccessPolicy`, which is the single place that
+    mapping lives. Never re-derive "is this state allowed in?" anywhere else.
+    """
 
     TRIAL = "trial"
     ACTIVE = "active"
+    PAST_DUE = "past_due"
+    GRACE_PERIOD = "grace_period"
     SUSPENDED = "suspended"
     EXPIRED = "expired"
     CANCELLED = "cancelled"

@@ -217,6 +217,68 @@ def subscription_cancelled(
     )
 
 
+def subscription_past_due(
+    *,
+    subscription_id: str,
+    organization_id: str,
+    grace_period_ends_at: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """ADR-0039 §5 — the billing period ended with an unpaid invoice and the automatic grace
+    window has started. Carries `grace_period_ends_at` so a consumer can surface the deadline
+    without a second lookup."""
+    return _new_event(
+        event_type="SubscriptionPastDue",
+        aggregate_type="Subscription",
+        aggregate_id=subscription_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id, "grace_period_ends_at": grace_period_ends_at},
+    )
+
+
+def subscription_grace_period_extended(
+    *,
+    subscription_id: str,
+    organization_id: str,
+    grace_period_ends_at: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """ADR-0039 §1 — a platform admin deliberately extended grace beyond the automatic window.
+    Distinct from `SubscriptionPastDue` precisely because a human decided it."""
+    return _new_event(
+        event_type="SubscriptionGracePeriodExtended",
+        aggregate_type="Subscription",
+        aggregate_id=subscription_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id, "grace_period_ends_at": grace_period_ends_at},
+    )
+
+
+def subscription_reactivated(
+    *,
+    subscription_id: str,
+    organization_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """ADR-0039 §5 — a suspended/past-due subscription was returned to `ACTIVE` without a new
+    billing period being started (unlike `SubscriptionRenewed`, which always moves the period).
+    Kept separate so "we let them back in" and "they paid for another month" are never conflated
+    in the audit trail."""
+    return _new_event(
+        event_type="SubscriptionReactivated",
+        aggregate_type="Subscription",
+        aggregate_id=subscription_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"actor_id": actor_id},
+    )
+
+
 # --- Invoice ---------------------------------------------------------------------------
 
 

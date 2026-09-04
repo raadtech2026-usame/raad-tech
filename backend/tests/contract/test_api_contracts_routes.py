@@ -165,6 +165,29 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/video/intercom",
         "ADR-0036 - two-way intercom, its own video.intercom.start permission, RAAD-staff-only",
     ),
+    # ADR-0039 - organization subscription lifecycle. API Contracts SS4.7 documents five billing
+    # routes and no subscription-write surface at all; these four are the platform-admin
+    # lifecycle controls (requirement 39G/39S) plus the Org Admin's own self-scoped read.
+    (
+        "GET",
+        "/api/v1/billing/subscriptions/current",
+        "ADR-0039 - self-scoped from principal.organization_id, no path/query id to override",
+    ),
+    (
+        "POST",
+        "/api/v1/billing/subscriptions/{subscription_id}/suspend",
+        "ADR-0039 SS5 - platform-admin only, billing.subscriptions.manage (not org_admin)",
+    ),
+    (
+        "POST",
+        "/api/v1/billing/subscriptions/{subscription_id}/reactivate",
+        "ADR-0039 SS5 - platform-admin only, billing.subscriptions.manage (not org_admin)",
+    ),
+    (
+        "POST",
+        "/api/v1/billing/subscriptions/{subscription_id}/extend-grace",
+        "ADR-0039 SS1 - platform-admin grace extension, requirement 39G",
+    ),
     ("GET", "/api/v1/parents/{parent_id}/students", "ListStudentsForParentQuery's own route"),
     ("GET", "/api/v1/students/{student_id}", "uniform-CRUD addition"),
     ("PATCH", "/api/v1/students/{student_id}", "uniform-CRUD addition"),

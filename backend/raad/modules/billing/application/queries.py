@@ -117,6 +117,13 @@ class SubscriptionDTO:
     auto_renew: bool
     created_at: datetime
     updated_at: datetime
+    # ADR-0039 lifecycle timestamps. Defaulted so every pre-existing construction site of this
+    # frozen dataclass (tests, fixtures) stays valid unchanged.
+    past_due_since: datetime | None = None
+    grace_period_ends_at: datetime | None = None
+    suspended_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    expired_at: datetime | None = None
 
 
 def subscription_to_dto(subscription: Subscription) -> SubscriptionDTO:
@@ -130,6 +137,11 @@ def subscription_to_dto(subscription: Subscription) -> SubscriptionDTO:
         auto_renew=subscription.auto_renew,
         created_at=subscription.created_at,
         updated_at=subscription.updated_at,
+        past_due_since=subscription.past_due_since,
+        grace_period_ends_at=subscription.grace_period_ends_at,
+        suspended_at=subscription.suspended_at,
+        cancelled_at=subscription.cancelled_at,
+        expired_at=subscription.expired_at,
     )
 
 

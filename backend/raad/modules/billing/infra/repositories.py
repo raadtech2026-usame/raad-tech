@@ -246,11 +246,43 @@ class SqlAlchemySubscriptionRepository(
     ) -> Subscription | None:
         statement = select(SubscriptionModel).where(
             SubscriptionModel.organization_id == str(organization_id),
-            SubscriptionModel.status.in_(("trial", "active", "suspended")),
+            # ADR-0039 adds `past_due`/`grace_period` to this list. Without them, an
+            # organization sitting in either state would look like it had no subscription at
+            # all to `open_organization_subscription`, which would then happily open a *second*
+            # row for a tenant that already has one in flight — the exact duplicate this
+            # finder's own docstring says it exists to prevent.
+            SubscriptionModel.status.in_(
+                ("trial", "active", "suspended", "past_due", "grace_period")
+            ),
             SubscriptionModel.deleted_at.is_(None),
         )
         result = await self._session.execute(statement)
         return self._track(result.scalars().first())
+
+    async def get_current_by_organization(
+        self, organization_id: OrganizationId
+    ) -> Subscription | None:
+        statement = (
+            select(SubscriptionModel)
+            .where(
+                SubscriptionModel.organization_id == str(organization_id),
+                SubscriptionModel.deleted_at.is_(None),
+            )
+            .order_by(SubscriptionModel.created_at.desc())
+            .limit(1)
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalars().first())
+
+    async def list_lifecycle_candidates(self) -> list[Subscription]:
+        statement = select(SubscriptionModel).where(
+            SubscriptionModel.status.in_(
+                ("trial", "active", "past_due", "grace_period")
+            ),
+            SubscriptionModel.deleted_at.is_(None),
+        )
+        result = await self._session.execute(statement)
+        return [self._track(model) for model in result.scalars().all()]
 
     async def count_by_status(self) -> dict[str, int]:
         """ADR-0020: "Subscription/Billing Status" KPI — one `GROUP BY status` query."""
@@ -359,6 +391,47 @@ class SqlAlchemyInvoiceRepository(
             page=raw_page.page,
             page_size=raw_page.page_size,
         )
+
+    async def has_unpaid_for_subscription(
+        self, subscription_id: SubscriptionId
+    ) -> bool:
+        """ADR-0039 §5. Deliberately **not** `_apply_scope`d: the lifecycle job runs as the
+        platform, across every tenant, and is addressed by an explicit `subscription_id` it
+        already resolved — there is no client-supplied identifier here to scope against."""
+        statement = (
+            select(InvoiceModel.id)
+            .where(
+                InvoiceModel.subscription_id == str(subscription_id),
+                InvoiceModel.deleted_at.is_(None),
+                InvoiceModel.status.notin_(("paid", "void")),
+            )
+            .limit(1)
+        )
+        result = await self._session.execute(statement)
+        return result.scalars().first() is not None
+
+    async def exists_for_period(
+        self,
+        subscription_id: SubscriptionId,
+        *,
+        period_start: date,
+        period_end: date,
+    ) -> bool:
+        """ADR-0039 §5 — the invoice-issuance idempotency guard. Same "job runs platform-wide,
+        addressed by a resolved id" reasoning as `has_unpaid_for_subscription` above for why
+        this is not scope-filtered."""
+        statement = (
+            select(InvoiceModel.id)
+            .where(
+                InvoiceModel.subscription_id == str(subscription_id),
+                InvoiceModel.deleted_at.is_(None),
+                InvoiceModel.period_start == period_start,
+                InvoiceModel.period_end == period_end,
+            )
+            .limit(1)
+        )
+        result = await self._session.execute(statement)
+        return result.scalars().first() is not None
 
     async def sum_paid_amount_between(self, *, start: datetime, end: datetime) -> float:
         """ADR-0020: "Revenue" KPI — see the domain interface's own docstring for the

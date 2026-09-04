@@ -32,7 +32,11 @@ from raad.core.events.redis_streams import (
 from raad.core.health.service import HealthCheckService
 from raad.core.ids.generator import IdGenerator, UlidGenerator
 from raad.core.observability.metrics import MetricsRegistry
-from raad.core.policies import SubscriptionAccessPolicy, VideoAccessPolicy
+from raad.core.policies import (
+    OrganizationAccessPolicy,
+    SubscriptionAccessPolicy,
+    VideoAccessPolicy,
+)
 from raad.core.security.login_rate_limiter import LoginRateLimiter
 from raad.core.security.password_hashing import PasswordHasher, Pbkdf2PasswordHasher
 from raad.core.security.password_policy import PasswordPolicy
@@ -162,6 +166,10 @@ def build_container(settings: Settings) -> Container:
     # Phase 14: stateless, pure decision objects - no constructor dependencies, same
     # unconditional-singleton treatment as any other side-effect-free core service.
     container.bind_singleton(SubscriptionAccessPolicy, SubscriptionAccessPolicy())
+    # ADR-0039 — tenant-wide SaaS access gate, resolved by
+    # `interfaces/http/subscription_guard.enforce_organization_subscription` on every
+    # /api/v1 request. Pure and stateless, so a singleton like every other policy here.
+    container.bind_singleton(OrganizationAccessPolicy, OrganizationAccessPolicy())
     container.bind_singleton(VideoAccessPolicy, VideoAccessPolicy())
     container.bind_singleton(OutboxWriter, OutboxWriter())
     # AuditWriter (ADR-0007) - stateless, same unconditional-singleton treatment as

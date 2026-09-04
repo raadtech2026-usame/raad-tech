@@ -74,6 +74,7 @@ from raad.core.logging.setup import get_logger
 from raad.core.security.permissions import Permission, PermissionEvaluator
 from raad.core.security.tokens import TokenService
 from raad.core.tenancy.principal import Principal
+from raad.interfaces.http.subscription_guard import is_organization_access_allowed
 from raad.interfaces.http.policy_guards import (
     resolve_tracking_decision,
     resolve_vehicle_tracking_context,
@@ -320,6 +321,16 @@ async def run_tracking_websocket(
     )
     if principal is None:
         await websocket.close(code=WsCloseCode.UNAUTHENTICATED)
+        return
+
+    # ADR-0039 §4 — a suspended tenant must not keep consuming realtime services. Evaluated
+    # once here, at connect, using the same shared decision the REST guard uses; `handle_
+    # subscribe` re-runs its own CR-1 check per subscription change, so a socket that switches
+    # vehicles is re-authorized on that axis regardless. See ADR-0039 §4's own disclosed
+    # limitation: an already-open socket that never re-subscribes is not torn down at the
+    # instant of suspension.
+    if not await is_organization_access_allowed(principal, container=container):
+        await websocket.close(code=WsCloseCode.SUBSCRIPTION_INACTIVE)
         return
 
     current_vehicle_id: str | None = None

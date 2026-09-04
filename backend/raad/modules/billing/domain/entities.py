@@ -260,6 +260,11 @@ class Subscription(_AggregateRoot):
         auto_renew: bool,
         created_at: datetime,
         updated_at: datetime,
+        past_due_since: datetime | None = None,
+        grace_period_ends_at: datetime | None = None,
+        suspended_at: datetime | None = None,
+        cancelled_at: datetime | None = None,
+        expired_at: datetime | None = None,
     ) -> None:
         super().__init__()
         self.id = id
@@ -271,6 +276,14 @@ class Subscription(_AggregateRoot):
         self.auto_renew = auto_renew
         self.created_at = created_at
         self.updated_at = updated_at
+        #: ADR-0039 lifecycle timestamps. All five default to `None` so every pre-existing
+        #: construction site (mappers, fixtures, tests written before ADR-0039) stays valid
+        #: unchanged — the same additive-widening posture ADR-0022 used for `PaymentProviderPort`.
+        self.past_due_since = past_due_since
+        self.grace_period_ends_at = grace_period_ends_at
+        self.suspended_at = suspended_at
+        self.cancelled_at = cancelled_at
+        self.expired_at = expired_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Subscription) and self.id == other.id
@@ -331,6 +344,11 @@ class Subscription(_AggregateRoot):
         self.status = SubscriptionStatus.ACTIVE
         self.current_period_start = period_start
         self.current_period_end = period_end
+        # ADR-0039: renewal clears the delinquency clocks. Leaving `grace_period_ends_at` set
+        # would make the very next lifecycle tick suspend an organization that had just paid.
+        self.past_due_since = None
+        self.grace_period_ends_at = None
+        self.suspended_at = None
         self.updated_at = clock.now()
         self._record(
             billing_events.subscription_renewed(
@@ -349,6 +367,7 @@ class Subscription(_AggregateRoot):
         if self.status == SubscriptionStatus.EXPIRED:
             return
         self.status = SubscriptionStatus.EXPIRED
+        self.expired_at = clock.now()  # ADR-0039
         self.updated_at = clock.now()
         self._record(
             billing_events.subscription_expired(
@@ -360,13 +379,16 @@ class Subscription(_AggregateRoot):
         )
 
     def suspend(self, *, clock: Clock, actor_id: str | None = None) -> None:
-        """`SUSPENDED` is a documented `SubscriptionStatus` value (Database Design §8.2) but no
-        document describes what triggers it — implemented for completeness of the documented
-        enum's own state space (mirroring `expire`'s shape), flagged as reachable at this layer
-        only; no caller wires it this phase."""
+        """Suspends the subscription — the state that actually blocks the whole tenant
+        (`core.policies.organization_access.OrganizationAccessPolicy`).
+
+        **This docstring used to end "no caller wires it this phase."** ADR-0039 wires two: the
+        `advance_subscription_lifecycle` scheduled job (grace exhausted) and the platform-admin
+        suspend route. Idempotent same-state no-op."""
         if self.status == SubscriptionStatus.SUSPENDED:
             return
         self.status = SubscriptionStatus.SUSPENDED
+        self.suspended_at = clock.now()  # ADR-0039
         self.updated_at = clock.now()
         self._record(
             billing_events.subscription_suspended(
@@ -377,11 +399,118 @@ class Subscription(_AggregateRoot):
             )
         )
 
+    def mark_past_due(
+        self,
+        *,
+        grace_period_ends_at: datetime,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """ADR-0039 §1/§5 — the billing period ended with an unpaid invoice. Starts the
+        **automatic** grace window; access is still granted throughout it.
+
+        Idempotent by design, and deliberately so on `grace_period_ends_at` too: a second call
+        must **not** push the deadline further out, or a job that ticks every minute would
+        renew the grace window forever and an organization would never actually suspend. The
+        first call wins; later calls are no-ops."""
+        if self.status == SubscriptionStatus.PAST_DUE:
+            return
+        self.status = SubscriptionStatus.PAST_DUE
+        now = clock.now()
+        self.past_due_since = now
+        self.grace_period_ends_at = grace_period_ends_at
+        self.updated_at = now
+        self._record(
+            billing_events.subscription_past_due(
+                subscription_id=str(self.id),
+                organization_id=str(self.organization_id),
+                grace_period_ends_at=grace_period_ends_at.isoformat(),
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+
+    def extend_grace_period(
+        self,
+        *,
+        grace_period_ends_at: datetime,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """ADR-0039 §1 — a platform admin deliberately extends grace beyond the automatic
+        window (requirement 39G). Moves to `GRACE_PERIOD`, which grants access exactly like
+        `PAST_DUE` but records that a human chose it.
+
+        Unlike `mark_past_due` this is **not** same-state idempotent: extending an already-
+        extended grace period is a legitimate repeat action (a second reprieve), and each one
+        is separately audited. A terminal subscription (`CANCELLED`/`EXPIRED`) cannot be
+        extended — reactivate or renew it instead, so the caller can't quietly resurrect a
+        closed account through a grace-period edit."""
+        if self.status in (
+            SubscriptionStatus.CANCELLED,
+            SubscriptionStatus.EXPIRED,
+        ):
+            raise DomainError(
+                f"Cannot extend the grace period of a {self.status.value} subscription"
+            )
+        now = clock.now()
+        self.status = SubscriptionStatus.GRACE_PERIOD
+        self.grace_period_ends_at = grace_period_ends_at
+        if self.past_due_since is None:
+            self.past_due_since = now
+        self.suspended_at = None
+        self.updated_at = now
+        self._record(
+            billing_events.subscription_grace_period_extended(
+                subscription_id=str(self.id),
+                organization_id=str(self.organization_id),
+                grace_period_ends_at=grace_period_ends_at.isoformat(),
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+
+    def reactivate(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        """ADR-0039 §5 — returns a suspended/past-due/grace subscription to `ACTIVE` **without
+        moving the billing period**, which is what distinguishes this from `renew`. Used by the
+        platform-admin reactivate route (requirement 39G) and by the paid-invoice path when the
+        period itself does not advance.
+
+        Deliberately refuses `CANCELLED`/`EXPIRED`: those are terminal, and a closed account
+        should come back through a real new subscription or an explicit renewal with a fresh
+        period, never through a status flip that would leave `current_period_end` in the past
+        and the next lifecycle tick immediately re-suspending it."""
+        if self.status == SubscriptionStatus.ACTIVE:
+            return
+        if self.status in (
+            SubscriptionStatus.CANCELLED,
+            SubscriptionStatus.EXPIRED,
+        ):
+            raise DomainError(
+                f"Cannot reactivate a {self.status.value} subscription - open a new "
+                "subscription or renew with a fresh billing period instead"
+            )
+        now = clock.now()
+        self.status = SubscriptionStatus.ACTIVE
+        self.past_due_since = None
+        self.grace_period_ends_at = None
+        self.suspended_at = None
+        self.updated_at = now
+        self._record(
+            billing_events.subscription_reactivated(
+                subscription_id=str(self.id),
+                organization_id=str(self.organization_id),
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+
     def cancel(self, *, clock: Clock, actor_id: str | None = None) -> None:
         """Same posture as `suspend` — a documented status value with no documented trigger."""
         if self.status == SubscriptionStatus.CANCELLED:
             return
         self.status = SubscriptionStatus.CANCELLED
+        self.cancelled_at = clock.now()  # ADR-0039
         self.updated_at = clock.now()
         self._record(
             billing_events.subscription_cancelled(

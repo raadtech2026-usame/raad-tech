@@ -256,10 +256,34 @@ class InMemorySubscriptionRepository(SubscriptionRepository):
                 s
                 for s in self.by_id.values()
                 if str(s.organization_id) == str(organization_id)
-                and s.status.value in ("trial", "active", "suspended")
+                # ADR-0039: mirrors the real repository's widened IN-list exactly, so a
+                # past_due/grace_period organization is found here too and this fake cannot
+                # quietly disagree with production about whether a duplicate would be opened.
+                and s.status.value
+                in ("trial", "active", "suspended", "past_due", "grace_period")
             ),
             None,
         )
+
+    async def get_current_by_organization(
+        self, organization_id: OrganizationId
+    ) -> Subscription | None:
+        """ADR-0039 — every status, newest first, hiding nothing (see the domain interface's
+        own docstring for why enforcement must not use `get_active_by_organization`)."""
+        matches = [
+            s
+            for s in self.by_id.values()
+            if str(s.organization_id) == str(organization_id)
+        ]
+        matches.sort(key=lambda s: s.created_at, reverse=True)
+        return matches[0] if matches else None
+
+    async def list_lifecycle_candidates(self) -> list[Subscription]:
+        return [
+            s
+            for s in self.by_id.values()
+            if s.status.value in ("trial", "active", "past_due", "grace_period")
+        ]
 
     async def count_by_status(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -305,6 +329,27 @@ class InMemoryInvoiceRepository(InvoiceRepository):
             filters=filters,
             search=search,
             search_field="number",
+        )
+
+    async def has_unpaid_for_subscription(
+        self, subscription_id: SubscriptionId
+    ) -> bool:
+        """ADR-0039. `void` counts as settled, exactly like the real repository — an invoice
+        RAAD itself withdrew must not hold a tenant past-due."""
+        return any(
+            str(i.subscription_id) == str(subscription_id)
+            and i.status.value not in ("paid", "void")
+            for i in self.by_id.values()
+        )
+
+    async def exists_for_period(
+        self, subscription_id: SubscriptionId, *, period_start, period_end
+    ) -> bool:
+        return any(
+            str(i.subscription_id) == str(subscription_id)
+            and i.period_start == period_start
+            and i.period_end == period_end
+            for i in self.by_id.values()
         )
 
     async def sum_paid_amount_between(self, *, start, end) -> float:

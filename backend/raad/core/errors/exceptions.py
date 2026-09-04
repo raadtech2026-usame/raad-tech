@@ -97,6 +97,39 @@ class ParentAccessDeniedError(AuthorizationError):
         self.required_action = required_action
 
 
+class OrganizationSubscriptionInactiveError(AuthorizationError):
+    """ADR-0039 — the caller's own organization has no usable RAAD SaaS subscription
+    (`SUSPENDED`/`EXPIRED`/`CANCELLED`), raised by
+    `interfaces.http.subscription_guard.enforce_organization_subscription`.
+
+    **403, not 402.** `PaymentError` already maps to 402 in this module's own status table, and
+    that code means "this specific payment attempt needs money" — an operational failure of one
+    request. This is an authorization outcome: the caller is authenticated, the resource exists,
+    and they are not permitted to use it. Every other policy denial in this codebase (CR-1, D5)
+    is a 403, and clients already handle it.
+
+    **`details` is graded by role (requirement 39K).** An ordinary organization user gets the
+    generic message and nothing else — a driver has no business reading their school's billing
+    position. An Org Admin additionally gets `status`/`grace_period_ends_at` so they know what to
+    do about it. The caller decides which; this class just carries what it was given.
+    """
+
+    code = "ORGANIZATION_SUBSCRIPTION_INACTIVE"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str | None = None,
+        required_action: str | None = None,
+        details: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.required_action = required_action
+        self.details = details
+
+
 class VideoForbiddenError(AuthorizationError):
     """D5 denial (`.claude/rules/jt1078.md` #1), raised by
     `interfaces.http.policy_guards.enforce_d5` (API Contracts §5.2's documented

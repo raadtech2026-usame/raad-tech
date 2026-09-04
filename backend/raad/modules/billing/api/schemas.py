@@ -51,6 +51,23 @@ class SubscriptionResponse(BaseModel):
     auto_renew: bool
     created_at: datetime
     updated_at: datetime
+    # ADR-0039 lifecycle timestamps. Optional with `None` defaults so this response model stays
+    # backward-compatible for any existing client that does not know about them yet.
+    past_due_since: datetime | None = None
+    grace_period_ends_at: datetime | None = None
+    suspended_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    expired_at: datetime | None = None
+
+
+class ExtendGracePeriodRequest(BaseModel):
+    """ADR-0039 §1 / requirement 39G — platform-admin grace extension.
+
+    An absolute instant rather than a day count: the domain receives an unambiguous deadline,
+    and the API layer (not the domain) owns interpreting the caller's intent — the same
+    "resolve time at the edge" convention every other command in this module follows."""
+
+    grace_period_ends_at: datetime
 
 
 class InvoiceResponse(BaseModel):

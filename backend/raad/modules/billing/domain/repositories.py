@@ -15,7 +15,7 @@ the two that need a dedicated finder).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import date, datetime
 
 from raad.core.pagination import (
     FilterCondition,
@@ -104,6 +104,39 @@ class SubscriptionRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_current_by_organization(
+        self, organization_id: OrganizationId
+    ) -> Subscription | None:
+        """ADR-0039 — the organization's most recent subscription **regardless of status**,
+        newest first.
+
+        **Why this is a separate finder and not a flag on `get_active_by_organization`.** That
+        method deliberately excludes `EXPIRED`/`CANCELLED`, which is correct for its own job
+        ("find a row in flight so we don't open a duplicate") and exactly wrong for access
+        enforcement: an expired organization would come back as `None`, be read as "never
+        subscribed", and — under `OrganizationAccessPolicy`'s deliberate fail-open on `None`
+        (see that policy's own docstring) — be **granted** access. That would have silently
+        defeated the whole point of ADR-0039 for the one state most likely to occur in
+        production. Enforcement therefore asks this method, which hides nothing.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_lifecycle_candidates(self) -> list[Subscription]:
+        """ADR-0039 §5 — every subscription the lifecycle job could still transition
+        (`trial`/`active`/`past_due`/`grace_period`). Terminal states (`suspended` is terminal
+        *for the job*; `expired`/`cancelled` are terminal outright) are excluded in SQL rather
+        than fetched and skipped in Python, which is what the replaced
+        `sweep_expired_subscriptions` did via an unfiltered `list_all()` — an unbounded scan of
+        every subscription ever created, on every tick.
+
+        Deliberately not paginated: this is a platform-wide job, and the candidate set is
+        bounded by the number of paying organizations (tens, not millions). If that assumption
+        ever stops holding, this is the method to add a cursor to.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_active_by_organization(
         self, organization_id: OrganizationId
     ) -> Subscription | None:
@@ -161,6 +194,39 @@ class InvoiceRepository(ABC):
     ) -> OffsetPage[Invoice]:
         """Backs `GET /billing/invoices`'s paginated/filtered/sorted contract (API Contracts
         §7/§8), added under the Pagination/Filtering/Sorting phase."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def has_unpaid_for_subscription(
+        self, subscription_id: SubscriptionId
+    ) -> bool:
+        """ADR-0039 §5 — does this subscription have any invoice not yet `PAID`/`VOID`?
+
+        This is the fact that decides `ACTIVE → PAST_DUE` vs `ACTIVE → renew` when a period
+        rolls over. Expressed as a `bool` rather than returning the invoices themselves because
+        the lifecycle job needs nothing else from them, and a `COUNT`-shaped query stays cheap
+        as invoice history grows.
+
+        `VOID` counts as settled: a voided invoice is one RAAD itself withdrew, and holding a
+        tenant past-due over an invoice we cancelled would be wrong.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def exists_for_period(
+        self,
+        subscription_id: SubscriptionId,
+        *,
+        period_start: date,
+        period_end: date,
+    ) -> bool:
+        """ADR-0039 §5 — is there already an invoice covering exactly this billing period?
+
+        **This is the lifecycle job's idempotency guard for invoice issuance**, and the reason
+        the job can run every minute without generating a duplicate invoice every minute. State,
+        not a run marker: re-running the job is a no-op because the invoice it would create
+        already exists.
+        """
         raise NotImplementedError
 
     @abstractmethod
