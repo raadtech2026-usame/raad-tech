@@ -15,7 +15,16 @@ from abc import ABC, abstractmethod
 from base64 import b64decode, b64encode
 
 _ALGORITHM_ID = "pbkdf2_sha256"
-_DEFAULT_ITERATIONS = 260_000
+#: Audit finding B19. Was 260,000 (Django's own historical default). OWASP's current Password
+#: Storage Cheat Sheet recommends **600,000** for PBKDF2-HMAC-SHA256, and this is a platform
+#: holding data about children, so it should not sit below current guidance.
+#:
+#: **Raising this is safe and needs no migration.** The stored format is
+#: `pbkdf2_sha256$<iterations>$<salt>$<key>` — the iteration count travels with each hash, and
+#: `verify` reads it from the hash rather than from this constant. Existing passwords therefore
+#: keep verifying at 260,000; only newly set/changed passwords use the higher count. Old hashes
+#: are upgraded naturally as users change passwords, with no forced reset and no dual-read path.
+_DEFAULT_ITERATIONS = 600_000
 _SALT_BYTES = 16
 
 
