@@ -358,8 +358,21 @@ services:
       JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS: ${JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS:-5}
       JT1078_RELAY_ABSOLUTE_IDLE_SECONDS: ${JT1078_RELAY_ABSOLUTE_IDLE_SECONDS:-60}
       JT1078_RELAY_VIEWER_GRACE_SECONDS: ${JT1078_RELAY_VIEWER_GRACE_SECONDS:-15}
+      # Audit finding B18 — concurrency ceilings. The global default of 50 comes from Phase 2
+      # §13.1's own "e.g. start 50 global"; it is an illustrative figure from a design document,
+      # NOT a measured capacity for any particular host. Every active session costs a real
+      # ffmpeg G.711A->AAC transcode (ADR-0034) plus per-viewer fan-out, so the true ceiling is
+      # a property of the deployed VPS's CPU and uplink, and no measurement exists in this
+      # repository. Left at 50 deliberately rather than replacing one invented number with
+      # another — but treat it as unvalidated until a real session's CPU/bitrate is measured.
       JT1078_RELAY_MAX_GLOBAL_SESSIONS: ${JT1078_RELAY_MAX_GLOBAL_SESSIONS:-50}
-      JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION: ${JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION:-0}
+      # The per-organization ceiling, by contrast, defaulted to 0 = UNLIMITED, which is wrong on
+      # a multi-tenant platform regardless of host capacity: one organization opening a full
+      # camera grid could consume the entire global pool and lock every other school out of live
+      # video, with no signal that it had happened. 8 is a deliberate starting point — a
+      # ten-bus school watching two buses' four cameras at once — chosen to bound one tenant's
+      # share, not to model host capacity. Raise per deployment if a real fleet needs more.
+      JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION: ${JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION:-8}
       # Shared-stream trimming (2026-09-02) — see `src/broker_config.BrokerConfig.
       # stream_max_length`. Must stay consistent with DEVICE_GATEWAY_STREAM_MAX_LENGTH and the
       # Business API's own RAAD_BROKER__STREAM_MAX_LENGTH: all three write to `raad:events`, and
