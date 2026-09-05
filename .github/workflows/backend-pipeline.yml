@@ -102,6 +102,12 @@ jobs:
       - name: Run architecture boundary-gate tests
         run: python -m unittest discover -s tests/architecture -v
 
+      - name: Run contract tests
+        # Audit finding B17 — this suite existed but was never a CI gate, which is how it drifted
+        # red for 19 undocumented routes (Known Issue #19) without anyone noticing. Its whole
+        # purpose is catching route/documentation drift, so leaving it out of CI defeated it.
+        run: python -m unittest discover -s tests/contract -v
+
       - name: Run integration tests (live Postgres + Redis service containers)
         run: python -m unittest discover -s tests/integration -v
 
