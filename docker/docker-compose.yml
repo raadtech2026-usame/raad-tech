@@ -250,10 +250,22 @@ services:
     # strict improvement over nothing, and is documented here as partial rather than presented
     # as complete.
     #
-    # `pgrep -f` matches the full command line (`python -m raad.interfaces.workers.bootstrap`),
-    # not just the executable name, which would otherwise match every `python` process.
+    # Scans /proc rather than using `pgrep`: this image is python:slim, which ships no `procps`,
+    # so the original `pgrep -f` check failed with "pgrep: not found" on every probe and marked
+    # the worker permanently unhealthy - a healthcheck that only ever reported failure, which is
+    # worse than none because it trains an operator to ignore the status column. Caught live on
+    # 2026-09-05, after the check itself had already been committed.
+    #
+    # Matching on the full command line (`python -m raad.interfaces.workers.bootstrap`), not the
+    # executable name, which would otherwise match any `python` process in the container.
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'raad.interfaces.workers.bootstrap' > /dev/null || exit 1"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,sys; sys.exit(0 if any('raad.interfaces.workers.bootstrap' in open('/proc/'+p+'/cmdline','rb').read().decode('utf-8','ignore') for p in os.listdir('/proc') if p.isdigit()) else 1)",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
