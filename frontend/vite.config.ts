@@ -4,6 +4,25 @@ import { defineConfig } from "vitest/config";
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  server: {
+    /**
+     * Hot reload across a Docker bind mount on Windows/macOS needs polling.
+     *
+     * `docker-compose.dev.yml` bind-mounts the host's `frontend/` into the container so an edit
+     * is visible instantly without an image rebuild. The file *contents* do cross that boundary
+     * correctly - but the inotify events chokidar relies on do not, so Vite never learns the file
+     * changed and keeps serving its cached transform. The failure is silent and genuinely
+     * misleading: the container has the new bytes on disk, `docker exec grep` finds them, and the
+     * dev server still serves the old module to the browser.
+     *
+     * Opt-in via env var rather than always-on: polling wakes the CPU on an interval, and a
+     * developer running Vite natively on the host needs none of it. `docker-compose.dev.yml` sets
+     * CHOKIDAR_USEPOLLING for the containerised case only.
+     */
+    watch: process.env.CHOKIDAR_USEPOLLING
+      ? { usePolling: true, interval: 300 }
+      : undefined,
+  },
   build: {
     rollupOptions: {
       output: {

@@ -13,6 +13,13 @@ services:
 
   backend:
     command: ["uvicorn", "raad.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment:
+      # Same bind-mount problem as the frontend's CHOKIDAR_USEPOLLING below, different watcher:
+      # uvicorn --reload uses `watchfiles`, whose inotify events never fire for edits made on a
+      # Windows/macOS host. Verified live on 2026-09-05 - touching a source file produced no
+      # reload at all, so the running API silently kept serving the previous code even though
+      # `--reload` was active and the mount was correct. Polling is the documented escape hatch.
+      WATCHFILES_FORCE_POLLING: "true"
     volumes:
       - ../backend:/app
 
@@ -31,6 +38,14 @@ services:
       - ../services/jt1078:/app
 
   frontend:
+    environment:
+      # Without this, Vite's watcher never fires for edits made on the Windows/macOS host: the
+      # bind mount carries file *contents* across correctly but not inotify *events*, so the dev
+      # server keeps serving a cached transform of code that has already changed on disk. The
+      # symptom is a source edit that simply never appears in the browser, with no error anywhere
+      # - verified live on 2026-09-05, where the container had the new bytes and Vite still served
+      # the old module. See vite.config.ts's `server.watch` for the matching opt-in.
+      CHOKIDAR_USEPOLLING: "true"
     volumes:
       - ../frontend:/app
       # Anonymous volume over node_modules: without this, the bind mount above would shadow the
