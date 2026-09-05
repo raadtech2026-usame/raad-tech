@@ -2024,6 +2024,59 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Audit remediation B1–B24 committed, and the `vehicle_positions` data-loss incident**
+  (2026-09-04/05). The read-only production-readiness audit's findings were implemented across
+  this session and then committed as 17 reviewed, individually-validated commits rather than one
+  batch. Findings covered: B1, B2 (deferred — see Known Issue #25), B3, B7, B8, B11, B12, B14,
+  B15, B17, B18, B19, B20, B21, B23, B24, plus **ADR-0038** (School ERP scope reversal) and
+  **ADR-0039** (organization subscription lifecycle and access enforcement, migration
+  `a7f31c92be04`). **B27 is NOT ATTRIBUTABLE** — the number appears in no code, document or
+  commit in this repository, so nothing was committed under it.
+
+  **B15 — `vehicle_positions` is now genuinely partitioned** (migration `c8b4d17e9f30`, monthly
+  RANGE by `event_time`, 36 pre-created months + a `DEFAULT` safety partition), closing the gap
+  between `.claude/rules/database.md` #6 and a table that had always been a plain heap. The
+  migration verifies its own copied row count and aborts the transaction on any mismatch;
+  `migrations/env.py` gained an `include_object` filter without which autogenerate proposes
+  `DROP TABLE` for all 37 partitions. Round-trip (upgrade → downgrade → upgrade) verified
+  data-preserving against a seeded throwaway database, `alembic check` clean at every step.
+
+  **The incident.** While writing B15's regression tests, two of them destroyed **380,510 rows**
+  of real bench GPS history. The production code was correct: `maintain_partitions` operates on
+  the whole table, and both tests proved "expired partitions are dropped" by passing a
+  far-**future** retention cutoff (2031, then 2099), which makes *every* real monthly partition
+  fully expired. A safety copy had been taken and was then dropped after it reported the right
+  row count — without re-checking the live table, which was already empty. The test defect, plus
+  discarding the backup without re-verification, is what made it unrecoverable locally.
+
+  **Recovery.** Restored from the backup service's `raad_raad_20260903_144916.dump`:
+  **349,594 rows recovered**, verified to route correctly into `vehicle_positions_2026_08`
+  (343,191) and `_2026_09` (6,403) with the `DEFAULT` partition empty and zero Alembic drift.
+  **30,916 rows (~8%) are permanently unrecoverable** — everything written after the backup at
+  2026-09-03 14:49. This was bench/test telemetry, not customer data, but it was real.
+
+  **Corrective test changes.** Both drop tests now create their own partitions in the far *past*
+  (1990/1991) and use cutoffs that sit before any real data, so they can only ever drop
+  partitions they created. A third defect found during commit staging: the two tests also
+  discarded `maintain_partitions`' `created` return value, leaking an untracked
+  `vehicle_positions_2031_06` into the database on every run — now tracked and torn down. Proven
+  non-destructive against a seeded database: 5,000 rows and 37 partitions before and after, with
+  no leftover test partitions. The test file carries a prominent note recording all of this.
+
+  **Backup hardening (commit `0698971`, plus its config wiring in `f4b7939`).** The incident
+  exposed that three of five dumps in the volume were 0 bytes, and the cause was deterministic,
+  not intermittent: the `backup` container starts before PostgreSQL accepts connections
+  (`depends_on: service_healthy` orders the initial `compose up` only, never a restart-policy
+  restart after a reboot), and `backup.sh`'s existing zero-byte guard was unreachable dead code
+  because `set -e` aborts at the failing `pg_dump` line. A failed dump therefore left behind a
+  plausible-looking artifact, which is precisely what made a wholly broken schedule read as
+  merely flaky. Fixed with an `EXIT` trap that removes any partial dump, a bounded `pg_isready`
+  wait, and a 15-minute retry instead of a full 24-hour interval; `.gitattributes` now forces LF
+  on `*.sh`, since a CRLF checkout on Windows produces a backup service that cannot start at all
+  (verified: `set: illegal option -` under Alpine's busybox ash). Both failure modes were
+  reproduced and confirmed to leave no artifact; `testing/backups/test_backup_restore.sh`
+  round-trips clean.
+
 - **Canonical local PostgreSQL — the two-server split found, resolved, and guarded**
   (2026-09-04). A routine `alembic check` failure exposed that local development had been running
   **two** PostgreSQL servers all along: a native Windows PostgreSQL 17.10
@@ -2653,7 +2706,7 @@ Reverse-chronological (most recent first):
   a real environment should be checked, and consider whether `outbox_relay_batch_size` (currently
   100 per 5s tick) is sized correctly for this platform's real event volume.
 
-### 22. Two-way intercom does not reliably establish on the bench MDVR's current firmware
+### 22. ~~Two-way intercom does not reliably establish on the bench MDVR's current firmware~~ — RESOLVED 2026-09-01 (ADR-0036/ADR-0037)
 
 - **The gap (found live, 2026-08-28, ADR-0035):** a real bench test against the physical bench
   unit (`LSZ-C5804DG-Q-F`, terminal `00000000014482607571`, firmware `TTY3521DV200-A251110`) sent
@@ -2674,10 +2727,27 @@ Reverse-chronological (most recent first):
   video, GPS tracking, and the G.711A→AAC audio path (ADR-0034) are all confirmed unaffected (the
   bench unit remained connected, authenticated, and streaming normal traffic throughout and after
   this test).
-- **Blocking production?** No — intercom was never a shipped capability. Revisit only after a
-  firmware update from the supplier, a different bench unit/hardware revision, or direct vendor
-  confirmation of this firmware's real preconditions for repeated `0x9101 data_type=2` session
-  establishment — see ADR-0035's own Consequences section.
+- **RESOLVED — the ADR-0035 finding was reversed (ADR-0036, 2026-09-01).** ADR-0036 claimed to
+  have updated this entry and did not; the contradiction was caught by the 2026-09-04 audit
+  (finding B24) and is corrected here. **The root cause of the "unreliability" was not the
+  firmware at all**: `JT1078_RELAY_PUBLIC_INGEST_HOST` in `docker/.env` had gone stale after the
+  development machine's network changed, so every `0x9101` told the device to stream to an
+  address it could never reach — the same stale `server_ip` that had also broken ordinary Live
+  Video entirely. With that corrected, a re-test decoded **2,364 real JT/T 1078 extended-RTP
+  frames over 80+ seconds, 100% `data_type=3` (audio), 0% video**, every frame `body_len=320`,
+  closing cleanly on `0x9102 control=4` — proving a genuine, working audio-only intercom channel.
+- **Now implemented and shipped** (commits `9b0935a`, `717db9f`, `89faf3e`, `27e5eae`,
+  `1353e18`): a dedicated `video.intercom.start` permission (four roles; Parent RBAC-excluded),
+  the `intercom` `video_purpose` enum value, relay uplink ingest with a second `role="uplink"`
+  token, browser microphone capture with click-to-talk, and ADR-0037's stale-session
+  reconciliation.
+- **The one thing still genuinely unverified:** the **uplink** direction (browser → MDVR
+  speaker) was proven only as *transport tolerance* — one synthetic frame written back down the
+  socket that the device neither rejected nor disconnected on. **Nobody has stood at the vehicle
+  and heard it.** The downlink (bus microphone → browser) is fully hardware-verified. Do not
+  describe intercom as end-to-end verified until someone confirms audible playback at the bus.
+- **Severity:** ~~Low~~ Resolved (one disclosed unverified direction, tracked above).
+- **Blocking production?** No longer.
 
 ### 23. Native PostgreSQL 17 retained on the dev machine, stopped but not uninstalled
 
@@ -2708,6 +2778,49 @@ short of uninstalling it, so a mistake would stay recoverable.
   deployable; VPS/Coolify deployments never had a second PostgreSQL to begin with.
 
 ---
+
+### 24. No off-site backup copy (audit finding B6) — the risk that nearly materialised
+
+`BACKUP_RCLONE_REMOTE` is still unset, so every dump exists **only** on this host's local disk.
+The backup service warns loudly on every run rather than failing, which is the correct posture for
+an unprovisioned integration — but the warning is not a mitigation.
+
+The 2026-09-04 incident (§9) is exactly the shape of this risk one layer up: recovery depended
+entirely on a single local dump, and the three most recent dumps at that moment were 0 bytes. Had
+the `2026-09-03` dump also been empty or lost, 349,594 rows would have been gone permanently
+rather than 30,916.
+
+- **Blocked on:** a real cloud storage account. `rclone` is already installed in the backup image
+  and speaks 40+ backends, so this is provisioning, not engineering.
+- **Until then:** the local dumps are a single point of failure. Treat any host-disk loss as total
+  data loss.
+
+### 25. Broker stream trimming deliberately DEFERRED at 0 (audit finding B2) — do not "fix" it
+
+`RAAD_BROKER__STREAM_MAX_LENGTH`, `DEVICE_GATEWAY_STREAM_MAX_LENGTH` and
+`JT1078_RELAY_STREAM_MAX_LENGTH` are all `0` (trimming disabled) and **must stay that way** under
+the current design. This is a recorded decision, not an oversight.
+
+The underlying risk is real: `raad:events` is unbounded and Redis runs
+`--maxmemory-policy noeviction`, so it will eventually fill `REDIS_MAXMEMORY` and fail every
+write. But the obvious remedy has already been tried and caused an outage. On **2026-09-02** these
+were briefly set to `100000`; trimming immediately evicted the *oldest* entries, which are the
+`DeviceRegistered`/`DeviceActivated`/`DeviceAssignedToVehicle` events that `device-gateway`'s
+`DeviceRegistryProjection` rebuilds itself from on every cold start (a full `XRANGE`). The
+projection came back empty and the physical MDVR could no longer authenticate at all —
+`authentication_failed` on every `0x0102`.
+
+Device-registration events are by definition the oldest entries and GPS positions are
+high-volume, so **no finite cap is safe**: any value large enough to be useful still evicts the
+founding events eventually. For this consumer `raad:events` is not a transient bus, it is the
+durable log of record.
+
+- **Real fix (not attempted):** make `DeviceRegistryProjection` stop depending on unbounded stream
+  history — persist the projection, or compact registry events onto their own keys. A design
+  change, not a config value.
+- **Until then:** Redis memory is a monitoring concern. Finding B8's new alert rules
+  (`infrastructure/monitoring/prometheus/alerts.yml`) cover it; note there is still no
+  Alertmanager, so a firing alert is visible only in Prometheus' own UI.
 
 ## 11. Deployment Checklist
 
