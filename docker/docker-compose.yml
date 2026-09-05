@@ -1,3 +1,22 @@
+# ==============================================================================================
+# ⚠ THIS FILE IS THE DEVELOPMENT BASE. IT IS NOT A DEPLOYABLE PRODUCTION STACK ON ITS OWN.
+#
+# Audit finding B23. Run alone, this file publishes PostgreSQL on 0.0.0.0:${POSTGRES_PORT} and
+# Redis on 0.0.0.0:${REDIS_PORT} — correct and convenient for local development, and a database
+# and cache exposed to the entire internet on a VPS. It also mounts `dev.conf` (plain HTTP, Vite
+# dev server upstream) rather than a production nginx config.
+#
+# Production must ALWAYS layer an overlay, which resets those published ports (`ports: !reset []`)
+# and swaps the nginx config:
+#
+#   Generic VPS (this stack's own nginx + certbot):
+#     docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml up -d --build
+#
+#   Coolify (Traefik owns TLS; the `gateway` profile stays off):
+#     docker compose -f docker/docker-compose.yml -f docker/docker-compose.coolify.yml up -d --build
+#
+# Pick exactly one overlay — never both (they configure two conflicting reverse proxies).
+# ==============================================================================================
 # RAAD Platform — base Docker Compose service definitions (ADR-0013: docs/architecture/adr/
 # 0013-platform-dockerization.md). Alone, this file fully starts a working dev environment —
 # `docker compose -f docker/docker-compose.yml up -d --build` (or `cd docker && docker compose
@@ -21,6 +40,20 @@
 x-backend-build: &backend-build
   context: ../backend
   dockerfile: ../docker/backend.Dockerfile
+
+# Audit finding B21 — container log rotation. Docker's default `json-file` driver has NO size
+# limit, so a long-running container's log grows until the disk fills. That is not hypothetical
+# here: `device-gateway` emits three INFO lines per healthcheck TCP probe every 10s (~26,000
+# lines/day, before any real device traffic), and `jt1078-relay` logs per-session lifecycle
+# events. On a small VPS the log volume, not the database, is the first thing to exhaust disk.
+#
+# 10 MB x 3 files = 30 MB ceiling per container. Large enough to hold a meaningful incident
+# window, small enough that eleven services cannot collectively fill a modest disk.
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 x-backend-env: &backend-env
   RAAD_ENVIRONMENT: ${RAAD_ENVIRONMENT:-dev}
@@ -57,6 +90,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: raad-postgres
+    logging: *default-logging
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-raad}
@@ -75,6 +109,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: raad-redis
+    logging: *default-logging
     restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6379}:6379"
@@ -136,6 +171,7 @@ services:
   migrate:
     build: *backend-build
     container_name: raad-migrate
+    logging: *default-logging
     command: ["alembic", "upgrade", "head"]
     environment:
       <<: *backend-env
@@ -147,6 +183,7 @@ services:
   backend:
     build: *backend-build
     container_name: raad-backend
+    logging: *default-logging
     restart: unless-stopped
     command: ["uvicorn", "raad.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
@@ -176,6 +213,7 @@ services:
   worker:
     build: *backend-build
     container_name: raad-worker
+    logging: *default-logging
     restart: unless-stopped
     command: ["python", "-m", "raad.interfaces.workers.bootstrap"]
     environment:
@@ -187,12 +225,35 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # Audit finding B11 — the worker previously had NO healthcheck at all, so a crashed or
+    # exited worker looked identical to a healthy one in `docker ps`. That matters more here
+    # than for most services: this container owns the outbox relay, the notification worker and
+    # all three scheduled jobs (including ADR-0039's subscription lifecycle), and every one of
+    # them fails *silently* — events simply stop being published and nobody is told.
+    #
+    # **What this proves and what it does not.** It proves the worker process is running. It
+    # cannot prove the supervised polling loops inside it are still ticking — a loop that dies
+    # while the process lives would still report healthy. Closing that needs a real liveness
+    # signal from the worker itself (a heartbeat row or key it refreshes each tick), which is a
+    # code change deliberately not bundled into this Compose-level fix. Process liveness is a
+    # strict improvement over nothing, and is documented here as partial rather than presented
+    # as complete.
+    #
+    # `pgrep -f` matches the full command line (`python -m raad.interfaces.workers.bootstrap`),
+    # not just the executable name, which would otherwise match every `python` process.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'raad.interfaces.workers.bootstrap' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   backup:
     build:
       context: ..
       dockerfile: docker/backup.Dockerfile
     container_name: raad-backup
+    logging: *default-logging
     restart: unless-stopped
     entrypoint: []
     # The image supplies the tools (pg_dump/pg_restore/rclone) and scripts; backup-loop.sh
@@ -221,6 +282,7 @@ services:
       context: ../services/device-gateway
       dockerfile: ../../docker/device-gateway.Dockerfile
     container_name: raad-device-gateway
+    logging: *default-logging
     restart: unless-stopped
     environment:
       # Must match RAAD_BROKER__URL above exactly (password + db 1) — both deployables publish/
@@ -255,6 +317,7 @@ services:
       context: ../services/jt1078
       dockerfile: ../../docker/jt1078-relay.Dockerfile
     container_name: raad-jt1078-relay
+    logging: *default-logging
     restart: unless-stopped
     environment:
       # Must match RAAD_BROKER__URL/DEVICE_GATEWAY_BROKER_URL exactly (password + db 1) — all
@@ -327,6 +390,7 @@ services:
       dockerfile: ../docker/frontend.Dockerfile
       target: dev
     container_name: raad-frontend
+    logging: *default-logging
     restart: unless-stopped
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost/api/v1}
@@ -349,6 +413,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.53.0
     container_name: raad-prometheus
+    logging: *default-logging
     restart: unless-stopped
     # Priority 1 Item 5 (PROJECT_STATUS.md, "minimum monitoring") — scrapes the Business API's
     # own /metrics (interfaces/http/health.py). Not published to a host port by default (no
@@ -368,6 +433,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     container_name: raad-nginx
+    logging: *default-logging
     restart: unless-stopped
     # `gateway` profile (docker/.env.example's COMPOSE_PROFILES, on by default so every existing
     # dev/generic-VPS command below is unaffected) — lets docker-compose.coolify.yml's deployment
