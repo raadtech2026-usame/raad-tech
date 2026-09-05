@@ -60,10 +60,12 @@ from typing import Any
 from raad.core.di.container import Container
 from raad.core.events.base import DomainEvent
 from raad.core.events.processor import EventProcessor, EventProcessorRegistry
+from raad.core.errors.exceptions import NotFoundError
+from raad.core.logging.setup import get_logger
 from raad.core.policies.subscription_access import (
     AssignmentState,
     SubscriptionAccessPolicy,
-    SubscriptionState,
+    parse_subscription_state,
 )
 from raad.core.tenancy.principal import SYSTEM_PRINCIPAL
 from raad.modules.billing.application.ports import BillingUnitOfWork
@@ -82,6 +84,9 @@ from raad.modules.transport_ops.application.services import (
     StudentParentApplicationService,
     TripApplicationService,
 )
+
+logger = get_logger("raad.notifications.events.subscribers")
+
 
 class _NotificationFanOut:
     """Shared recipient-resolution + CR-1-gating + dispatch logic for every D1 transport
@@ -159,12 +164,27 @@ class _NotificationFanOut:
                     uow=self._container.resolve(NotificationsUnitOfWork),
                 )
 
-    async def resolve_vehicle_id_for_trip(self, trip_id: str) -> str:
+    async def resolve_vehicle_id_for_trip(self, trip_id: str) -> str | None:
+        """Returns `None` when the referenced trip no longer exists.
+
+        `Trip` ids arrive here inside events published by `tracking`, and a trip reference across
+        that module boundary is an opaque id with no foreign key behind it
+        (`.claude/rules/database.md` #3) - so an event outliving its trip is an expected shape,
+        not an anomaly. It was nonetheless raising `NotFoundError` straight out of the processor,
+        which the worker treats as a transient failure: five retries, then the dead-letter queue.
+
+        That is wrong twice over. The condition is permanent, so retrying cannot help; and the
+        resulting ERROR rows crowd out genuine failures - 30 of the 78 DLQ entries on 2026-09-05
+        were this one cause, drowning a handful of real video-session failures.
+        """
         trip_service = self._container.resolve(TripApplicationService)
-        trip = await trip_service.get_trip_by_id(
-            GetTripByIdQuery(trip_id=trip_id),
-            uow=self._container.resolve(TransportOpsUnitOfWork),
-        )
+        try:
+            trip = await trip_service.get_trip_by_id(
+                GetTripByIdQuery(trip_id=trip_id),
+                uow=self._container.resolve(TransportOpsUnitOfWork),
+            )
+        except NotFoundError:
+            return None
         return trip.vehicle_id
 
     async def _is_cr1_granted(self, *, organization_id: str) -> bool:
@@ -176,8 +196,8 @@ class _NotificationFanOut:
         subscription = await billing_service.get_active_subscription_for_organization(
             organization_id, uow=self._container.resolve(BillingUnitOfWork)
         )
-        subscription_state = (
-            SubscriptionState(subscription.status) if subscription is not None else None
+        subscription_state = parse_subscription_state(
+            subscription.status if subscription is not None else None
         )
         decision = SubscriptionAccessPolicy().evaluate(
             assignment_state=AssignmentState.ACTIVE,
@@ -233,6 +253,14 @@ class VehicleApproachingStopNotifier(EventProcessor):
     async def process(self, event: DomainEvent) -> None:
         trip_id = event.payload["trip_id"]
         vehicle_id = await self._fan_out.resolve_vehicle_id_for_trip(trip_id)
+        if vehicle_id is None:
+            # The trip is gone; there is nobody to notify, and no later attempt could change that.
+            # Acknowledged rather than retried - see resolve_vehicle_id_for_trip.
+            logger.info(
+                "notification_skipped_trip_not_found",
+                extra={"event_type": event.event_type, "trip_id": trip_id},
+            )
+            return
         await self._fan_out.notify_vehicle_watchers(
             vehicle_id=vehicle_id,
             organization_id=event.org_id,
@@ -253,6 +281,14 @@ class VehicleArrivedAtOrganizationNotifier(EventProcessor):
     async def process(self, event: DomainEvent) -> None:
         trip_id = event.payload["trip_id"]
         vehicle_id = await self._fan_out.resolve_vehicle_id_for_trip(trip_id)
+        if vehicle_id is None:
+            # The trip is gone; there is nobody to notify, and no later attempt could change that.
+            # Acknowledged rather than retried - see resolve_vehicle_id_for_trip.
+            logger.info(
+                "notification_skipped_trip_not_found",
+                extra={"event_type": event.event_type, "trip_id": trip_id},
+            )
+            return
         await self._fan_out.notify_vehicle_watchers(
             vehicle_id=vehicle_id,
             organization_id=event.org_id,

@@ -25,7 +25,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from raad.core.di.container import Container
+from raad.core.errors.exceptions import NotFoundError
 from raad.core.events.base import DomainEvent
+from raad.core.policies.subscription_access import parse_subscription_state
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.notifications.application.ports import NotificationsUnitOfWork
@@ -34,6 +36,7 @@ from raad.modules.notifications.events.subscribers import (
     TripEndedNotifier,
     TripStartedNotifier,
     VehicleApproachingStopNotifier,
+    VehicleArrivedAtOrganizationNotifier,
     _NotificationFanOut,
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
@@ -128,6 +131,14 @@ class FakeTripService:
 
     async def get_trip_by_id(self, query, *, uow):
         return _TripDTO(vehicle_id=self._vehicle_id)
+
+
+class MissingTripService:
+    """A trip id that no longer resolves. `Trip` references cross a module boundary as opaque ids
+    with no foreign key behind them, so an event outliving its trip is expected, not exceptional."""
+
+    async def get_trip_by_id(self, query, *, uow):
+        raise NotFoundError("Trip not found.")
 
 
 @dataclass
@@ -381,6 +392,67 @@ class EventProcessorTests(unittest.IsolatedAsyncioTestCase):
         await processor.process(event)
         self.assertEqual(len(notifications.created), 1)
         self.assertEqual(notifications.created[0]["type"], "approaching_stop")
+
+
+class DanglingTripReferenceTests(unittest.IsolatedAsyncioTestCase):
+    """Regression: a geofence event whose trip no longer exists must be acknowledged, not retried.
+
+    Found live on 2026-09-05. `resolve_vehicle_id_for_trip` let `NotFoundError` escape the
+    processor, which the worker treated as transient: five retries, then the dead-letter queue. The
+    condition is permanent, so retrying cannot help, and the resulting ERROR rows crowded out real
+    failures - 30 of the 78 DLQ entries were this one cause.
+    """
+
+    async def _process(self, processor_cls, payload):
+        container, notifications = make_container(
+            assignments=[], links_by_student={}, parents_by_id={}
+        )
+        container.bind_singleton(TripApplicationService, MissingTripService())
+        processor = processor_cls(_NotificationFanOut(container))
+        event = make_event(
+            event_type=processor_cls.event_type,
+            aggregate_id="01J8Z3K9G6X8YV5T4N2R7QW3GC",
+            payload=payload,
+        )
+        # The assertion is that this does NOT raise - raising is what dead-lettered the event.
+        await processor.process(event)
+        return notifications
+
+    async def test_approaching_stop_with_a_deleted_trip_is_skipped_not_raised(self) -> None:
+        notifications = await self._process(
+            VehicleApproachingStopNotifier, {"trip_id": "gone", "stop_id": "stop-1"}
+        )
+        self.assertEqual(notifications.created, [])
+
+    async def test_arrived_at_organization_with_a_deleted_trip_is_skipped_not_raised(self) -> None:
+        notifications = await self._process(
+            VehicleArrivedAtOrganizationNotifier, {"trip_id": "gone"}
+        )
+        self.assertEqual(notifications.created, [])
+
+
+class ParseSubscriptionStateTests(unittest.TestCase):
+    """Regression: ADR-0039's two new statuses must not raise out of the notification path.
+
+    `SubscriptionState` deliberately models only the original five values, so
+    `SubscriptionState("past_due")` raised `ValueError`, crashing every parent notification for an
+    organization in either new state. Unmodelled statuses now resolve to None, which the policy
+    already reads as "not ACTIVE".
+    """
+
+    def test_known_statuses_round_trip(self) -> None:
+        for status in ("trial", "active", "suspended", "expired", "cancelled"):
+            with self.subTest(status=status):
+                self.assertIsNotNone(parse_subscription_state(status))
+
+    def test_adr_0039_statuses_resolve_to_none_instead_of_raising(self) -> None:
+        for status in ("past_due", "grace_period"):
+            with self.subTest(status=status):
+                self.assertIsNone(parse_subscription_state(status))
+
+    def test_absent_subscription_and_unknown_status_both_resolve_to_none(self) -> None:
+        self.assertIsNone(parse_subscription_state(None))
+        self.assertIsNone(parse_subscription_state("something_invented_later"))
 
 
 if __name__ == "__main__":

@@ -87,6 +87,35 @@ class SubscriptionState(str, Enum):
     CANCELLED = "cancelled"
 
 
+def parse_subscription_state(status: str | None) -> SubscriptionState | None:
+    """Total mapping from a stored `subscriptions.status` onto this enum's five values.
+
+    ADR-0039 added `past_due` and `grace_period` to the *column* while deliberately leaving this
+    enum at the original five (see `core.policies.organization_access` for why: widening it here
+    would silently change CR-1's parent-notification behaviour as a side effect of a billing
+    change). The consequence was a crash rather than a decision - `SubscriptionState("past_due")`
+    raises `ValueError`, and the notification worker would turn that into a retried, dead-lettered
+    event for every parent notification on an organization in either new state.
+
+    An unmodelled status therefore resolves to `None`, which `SubscriptionAccessPolicy` already
+    treats exactly as this enum's own decision table requires: "not ACTIVE", and so non-granting
+    (LLD 5.4's binary ACTIVE-vs-everything-else reading). That preserves the documented behaviour
+    instead of inventing a richer rule the table does not draw.
+
+    **Flagged, deliberately not decided here:** this means a parent loses non-safety notifications
+    the moment their school goes `past_due`, while ADR-0039 grants that same school continued API
+    access for the whole grace window. The two surfaces disagree. Reconciling them is a product
+    decision about the CR-1 decision table, which ADR-0039 explicitly declined to make; it needs
+    its own ADR, not a quiet edit here.
+    """
+    if status is None:
+        return None
+    try:
+        return SubscriptionState(status)
+    except ValueError:
+        return None
+
+
 _REASON_ASSIGNMENT_INACTIVE = "ASSIGNMENT_INACTIVE"
 _REASON_SUBSCRIPTION_EXPIRED = "SUBSCRIPTION_EXPIRED"
 _ACTION_REDIRECT_TO_PAYMENT = "REDIRECT_TO_PAYMENT"
@@ -121,6 +150,7 @@ class SubscriptionAccessPolicy(Policy):
 
 __all__ = [
     "AssignmentState",
+    "parse_subscription_state",
     "SubscriptionState",
     "SubscriptionAccessPolicy",
 ]
