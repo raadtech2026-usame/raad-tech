@@ -68,6 +68,17 @@ x-backend-env: &backend-env
   # other's data, even though both still share the one Redis *process*/`maxmemory` budget below.
   RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
   RAAD_BROKER__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+  # Shared-stream trimming. This value is read by `core/config/settings.BrokerSettings.
+  # stream_max_length` but was NEVER wired here — so an operator who set it in `docker/.env` got
+  # no effect at all, while the other two writers honoured theirs. Wired now for consistency:
+  # the knob should behave the same way for all three writers.
+  #
+  # **It must stay 0.** See `docker/.env.example`'s own block on these three variables, and
+  # `BrokerSettings.stream_max_length`, for why no finite cap is safe under the current design —
+  # trimming evicts the device-registration events `DeviceRegistryProjection` rebuilds from on
+  # cold start, which took the physical MDVR offline entirely on 2026-09-02. Wiring it does not
+  # make enabling it safe; it makes the (correct) 0 explicit and identical across all three.
+  RAAD_BROKER__STREAM_MAX_LENGTH: ${RAAD_BROKER__STREAM_MAX_LENGTH:-0}
   RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
   RAAD_CORS__ALLOWED_ORIGINS: '${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}'
   RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
