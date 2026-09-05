@@ -1,0 +1,10 @@
+.actions {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.none {
+  color: var(--color-text-muted);
+}

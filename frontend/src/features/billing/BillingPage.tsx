@@ -9,6 +9,7 @@ import { ApiError } from "../../shared/api/types";
 import { Badge } from "../../shared/components/Badge/Badge";
 import { DataTable, type DataTableColumnMeta } from "../../shared/components/Table/DataTable";
 import { FilterChips, type FilterChipOption } from "../../shared/components/Table/FilterChips";
+import { SubscriptionActions } from "./SubscriptionActions";
 import { Pagination } from "../../shared/components/Table/Pagination";
 import { MonoText } from "../../shared/components/Table/cells";
 import { DetailDrawer } from "../../shared/components/Drawer/DetailDrawer";
@@ -48,7 +49,11 @@ const SUBSCRIPTION_STATUS_FILTERS: FilterChipOption[] = [
   { id: "all", label: "All", tone: "neutral" },
   { id: "trial", label: "Trial", tone: "info" },
   { id: "active", label: "Active", tone: "success" },
-  { id: "suspended", label: "Suspended", tone: "warning" },
+  // ADR-0039's two new states. Without these there was no way to filter for exactly the
+  // organizations that need attention - the ones an admin would actually come to this page for.
+  { id: "past_due", label: "Past due", tone: "warning" },
+  { id: "grace_period", label: "Grace period", tone: "warning" },
+  { id: "suspended", label: "Suspended", tone: "danger" },
   { id: "expired", label: "Expired", tone: "danger" },
   { id: "cancelled", label: "Cancelled", tone: "neutral" },
 ];
@@ -87,6 +92,10 @@ export function BillingPage() {
   const principal = useAuthStore((s) => s.principal);
 
   const canSeeAllTabs = principal?.role !== "regional_manager" && principal?.role !== "support_staff";
+  // `billing.subscriptions.manage` is granted to exactly these two roles (migration
+  // a7f31c92be04). org_admin deliberately does not hold it - a school cannot lift its own
+  // suspension - and this page is platform-only anyway.
+  const canManageSubscriptions = principal?.role === "founder" || principal?.role === "finance_staff";
 
   const [activeTab, setActiveTab] = useState<string>("plans");
   const effectiveTab = canSeeAllTabs ? activeTab : "plans";
@@ -244,8 +253,20 @@ export function BillingPage() {
         header: "Auto-renew",
         cell: ({ row }) => (row.original.autoRenew ? "Yes" : "No"),
       },
+      // Only rendered for the roles that actually hold `billing.subscriptions.manage`
+      // (founder / finance_staff, per migration a7f31c92be04). Presentation of a server-enforced
+      // grant, never a substitute for it - the API re-checks on every call regardless.
+      ...(canManageSubscriptions
+        ? [
+            {
+              id: "actions",
+              header: "",
+              cell: ({ row }) => <SubscriptionActions subscription={row.original} />,
+            } satisfies ColumnDef<Subscription, unknown>,
+          ]
+        : []),
     ],
-    [organizationNameById, planNameById],
+    [organizationNameById, planNameById, canManageSubscriptions],
   );
 
   const invoiceColumns = useMemo<ColumnDef<Invoice, unknown>[]>(
