@@ -1,6 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { env } from "../../config/env";
-import { MapboxMapProvider } from "./providers/MapboxMapProvider";
+/**
+ * Audit finding B20 — `MapboxMapProvider` is imported DYNAMICALLY, deliberately, and this must
+ * not be "tidied" back into a static import.
+ *
+ * Mapbox GL is 1.87 MB raw / 521 kB gzipped — by far the largest dependency in this frontend.
+ * A static import here puts it in the initial module graph of every page that renders a map,
+ * and `app/dashboard/LiveOperationsSection` renders one on the dashboard *home*. That made
+ * Mapbox unavoidable for every user on first paint, including Finance Staff who never open a
+ * map, and Vite `modulepreload`-ed it from index.html accordingly.
+ *
+ * Deferring it here rather than at each call site fixes it once for all three importers
+ * (LiveOperationsSection, FleetMapPanel, VehicleMapPanel) and keeps the choice of provider
+ * exactly where `.claude/rules/frontend.md` #6 already says it belongs: this component is "the
+ * one place a concrete provider is named".
+ */
 import type { LatLng, MapProvider } from "./MapProvider";
 import styles from "./MapView.module.css";
 
@@ -60,18 +74,30 @@ export function MapView({ center, zoom, className, onReady }: MapViewProps) {
       return;
     }
 
-    const provider = new MapboxMapProvider();
-    providerRef.current = provider;
     let cancelled = false;
+    const container = containerRef.current;
 
-    provider
-      .mount({
-        container: containerRef.current,
-        center,
-        zoom,
-        accessToken: env.mapboxAccessToken,
+    // The dynamic import IS the deferral — see this module's own note above.
+    import("./providers/MapboxMapProvider")
+      .then(({ MapboxMapProvider }) => {
+        if (cancelled) {
+          return;
+        }
+        const provider = new MapboxMapProvider();
+        providerRef.current = provider;
+        return provider
+          .mount({
+            container,
+            center,
+            zoom,
+            accessToken: env.mapboxAccessToken,
+          })
+          .then(() => provider);
       })
-      .then(() => {
+      .then((provider) => {
+        if (!provider) {
+          return;
+        }
         if (!cancelled) {
           setMountError(null);
           onReady?.(provider);
@@ -85,7 +111,11 @@ export function MapView({ center, zoom, className, onReady }: MapViewProps) {
 
     return () => {
       cancelled = true;
-      provider.unmount();
+      // Read through the ref, not a closure variable: the provider is now created inside an
+      // async import, so at cleanup time it may not exist yet (unmount before the chunk
+      // finished loading). `cancelled` already stops the import chain from mounting in that
+      // case; this just avoids calling `unmount()` on something that was never constructed.
+      providerRef.current?.unmount();
       providerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/unmount once per instance; use onReady's provider handle for live updates, not prop changes.

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Suspense, lazy, type ReactNode } from "react";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { RouteGuard } from "./RouteGuard";
 import { LoginPage } from "./LoginPage";
@@ -8,6 +8,7 @@ import { PlaceholderPage } from "./PlaceholderPage";
 import { DashboardHomePage } from "./DashboardHomePage";
 import { AppShell } from "./layout/AppShell";
 import { platformNav, organizationNav, type NavItem } from "./layout/navConfig";
+import { LoadingScreen } from "../shared/components/LoadingScreen/LoadingScreen";
 import { useAuthStore } from "../shared/stores/authStore";
 import { getDashboardHomePath } from "../shared/auth/dashboard";
 import type { Role } from "../shared/api/types";
@@ -21,11 +22,47 @@ import { ParentsPage } from "../features/transport-ops/parents/ParentsPage";
 import { DriversPage } from "../features/transport-ops/drivers/DriversPage";
 import { RoutesPage } from "../features/transport-ops/routes/RoutesPage";
 import { TripsPage } from "../features/transport-ops/trips/TripsPage";
-import { LiveTrackingPage } from "../features/live-monitoring/LiveTrackingPage";
 import { NotificationsPage } from "../features/notifications/NotificationsPage";
 import { BillingPage } from "../features/billing/BillingPage";
-import { OrgBillingPage } from "../features/billing/OrgBillingPage";
-import { VideoPage } from "../features/video/VideoPage";
+
+
+/**
+ * Audit finding B20 — route-level code splitting.
+ *
+ * Splitting the bundle in `vite.config.ts` was necessary but not sufficient: Rollup emitted
+ * separate `mapbox`/`video`/`stripe` chunks, and then Vite `modulepreload`-ed all three from
+ * `index.html`, so every user still downloaded Mapbox GL, the mpegts.js demuxer and the Stripe
+ * SDK before the login form could paint. Chunks are only actually deferred when nothing in the
+ * initial module graph imports them — which means the *routes* have to be lazy, not just the
+ * vendor code.
+ *
+ * These three pages are the sole importers of those libraries:
+ *   LiveTrackingPage -> mapbox-gl        (~1.87 MB raw)
+ *   VideoPage        -> mpegts.js        (~277 kB raw)
+ *   OrgBillingPage   -> @stripe/*        (~11 kB raw, but Org-Admin-only)
+ *
+ * Every other page stays eagerly imported: they are small, and lazy-loading a cheap route buys
+ * a loading flash for no real saving.
+ */
+const LiveTrackingPage = lazy(() =>
+  import("../features/live-monitoring/LiveTrackingPage").then((m) => ({
+    default: m.LiveTrackingPage,
+  })),
+);
+const VideoPage = lazy(() =>
+  import("../features/video/VideoPage").then((m) => ({ default: m.VideoPage })),
+);
+const OrgBillingPage = lazy(() =>
+  import("../features/billing/OrgBillingPage").then((m) => ({
+    default: m.OrgBillingPage,
+  })),
+);
+
+/** Wraps a lazily-loaded route element. `AppShell` already renders its own chrome, so the
+ * fallback only covers the content area — the sidebar and topbar never flash. */
+function Lazy({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<LoadingScreen />}>{children}</Suspense>;
+}
 
 const PLATFORM_ROLES: Role[] = ["founder", "regional_manager", "support_staff", "finance_staff"];
 const ORGANIZATION_ROLES: Role[] = ["org_admin"];
@@ -135,7 +172,7 @@ const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/drivers": <DriversPage />,
   "/platform/routes": <RoutesPage />,
   "/platform/trips": <TripsPage />,
-  "/platform/tracking": <LiveTrackingPage />,
+  "/platform/tracking": <Lazy><LiveTrackingPage /></Lazy>,
   "/platform/notifications": <NotificationsPage />,
   "/platform/billing": <BillingPage />,
 };
@@ -166,10 +203,10 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/drivers": <DriversPage />,
   "/org/routes": <RoutesPage />,
   "/org/trips": <TripsPage />,
-  "/org/tracking": <LiveTrackingPage />,
-  "/org/video": <VideoPage />,
+  "/org/tracking": <Lazy><LiveTrackingPage /></Lazy>,
+  "/org/video": <Lazy><VideoPage /></Lazy>,
   "/org/notifications": <NotificationsPage />,
-  "/org/billing": <OrgBillingPage />,
+  "/org/billing": <Lazy><OrgBillingPage /></Lazy>,
 };
 
 export const router = createBrowserRouter([
