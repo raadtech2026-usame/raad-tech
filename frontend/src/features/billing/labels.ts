@@ -46,6 +46,10 @@ export function subscriptionStatusLabel(status: SubscriptionStatus): string {
       return "Trial";
     case "active":
       return "Active";
+    case "past_due":
+      return "Past due";
+    case "grace_period":
+      return "Grace period";
     case "suspended":
       return "Suspended";
     case "expired":
@@ -63,8 +67,14 @@ export function subscriptionStatusTone(status: SubscriptionStatus): BadgeVariant
       return "info";
     case "active":
       return "success";
-    case "suspended":
+    // Both are "unpaid but still allowed in", so both read as a warning rather than a failure -
+    // service is not interrupted yet, which is the whole point of the grace window.
+    case "past_due":
       return "warning";
+    case "grace_period":
+      return "warning";
+    case "suspended":
+      return "danger";
     case "expired":
       return "danger";
     case "cancelled":

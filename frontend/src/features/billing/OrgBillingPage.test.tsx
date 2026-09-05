@@ -8,7 +8,7 @@ import type { BillingProviderConfig, Invoice, Payment, Plan, Subscription } from
 
 vi.mock("./api", () => ({
   listPlans: vi.fn(),
-  listSubscriptions: vi.fn(),
+  getCurrentSubscription: vi.fn(),
   listInvoices: vi.fn(),
   listPayments: vi.fn(),
   getBillingProviderConfig: vi.fn(),
@@ -47,7 +47,7 @@ import {
   listInvoices,
   listPayments,
   listPlans,
-  listSubscriptions,
+  getCurrentSubscription,
 } from "./api";
 
 function offsetPage<T>(data: T[]) {
@@ -77,6 +77,11 @@ const SUBSCRIPTION: Subscription = {
   autoRenew: true,
   createdAt: "2026-08-01T00:00:00Z",
   updatedAt: "2026-08-01T00:00:00Z",
+  pastDueSince: null,
+  gracePeriodEndsAt: null,
+  suspendedAt: null,
+  cancelledAt: null,
+  expiredAt: null,
 };
 
 const INVOICE: Invoice = {
@@ -146,7 +151,7 @@ describe("OrgBillingPage", () => {
       updatedAt: "2026-08-01T00:00:00Z",
     });
     vi.mocked(listPlans).mockReset().mockResolvedValue(offsetPage([PLAN]));
-    vi.mocked(listSubscriptions).mockReset().mockResolvedValue(offsetPage([SUBSCRIPTION]));
+    vi.mocked(getCurrentSubscription).mockReset().mockResolvedValue(SUBSCRIPTION);
     vi.mocked(listInvoices).mockReset().mockResolvedValue(offsetPage([INVOICE]));
     vi.mocked(listPayments).mockReset().mockResolvedValue(offsetPage([PAYMENT]));
     vi.mocked(getBillingProviderConfig).mockReset().mockResolvedValue(stripeAvailable());
@@ -170,9 +175,10 @@ describe("OrgBillingPage", () => {
     await screen.findByText("Acme School");
 
     await waitFor(() => {
-      expect(listSubscriptions).toHaveBeenCalledWith(
-        expect.objectContaining({ filters: { organization_id: "org1" } }),
-      );
+      // Self-scoped by construction: the route derives the organization from the caller's own
+      // principal, so there is deliberately no organization_id argument to assert on. Passing
+      // one would be the bug this endpoint exists to remove.
+      expect(getCurrentSubscription).toHaveBeenCalledWith();
       expect(listInvoices).toHaveBeenCalledWith(
         expect.objectContaining({ filters: { subscription_id: "s1" } }),
       );
@@ -183,7 +189,7 @@ describe("OrgBillingPage", () => {
   });
 
   it("shows a 'no subscription' state and never fetches invoices when none exists", async () => {
-    vi.mocked(listSubscriptions).mockResolvedValue(offsetPage([]));
+    vi.mocked(getCurrentSubscription).mockResolvedValue(null);
     renderPage();
 
     expect(await screen.findByText("No subscription on file yet.")).toBeInTheDocument();

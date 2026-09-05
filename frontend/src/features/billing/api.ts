@@ -1,6 +1,6 @@
 import { apiRequest } from "../../shared/api/client";
 import { buildOffsetListQuery, type OffsetListParams } from "../../shared/api/listParams";
-import { toOffsetPage, type OffsetPage, type OffsetPageWire } from "../../shared/api/types";
+import { ApiError, toOffsetPage, type OffsetPage, type OffsetPageWire } from "../../shared/api/types";
 
 /** `billing.domain.value_objects.BillingScope` — ADR-0016 removed the `parent` value (RAAD
  * bills Organizations only now), leaving one active value, kept as a "documented seam for future
@@ -14,8 +14,18 @@ export type BillingCycle = "monthly" | "quarterly" | "annual";
  * its values; a flat active/inactive toggle, mirroring `ParentStatus`'s identical precedent. */
 export type PlanStatus = "active" | "inactive";
 
-/** `billing.domain.value_objects.SubscriptionStatus`. */
-export type SubscriptionStatus = "trial" | "active" | "suspended" | "expired" | "cancelled";
+/** `billing.domain.value_objects.SubscriptionStatus` — Database Design §8.2's original five
+ * plus the two ADR-0039 adds for a real recurring-billing lifecycle. `past_due` is automatic (the
+ * period ended unpaid and the standard window is running); `grace_period` is granted (a platform
+ * admin explicitly extended it). They are deliberately distinct states, not synonyms. */
+export type SubscriptionStatus =
+  | "trial"
+  | "active"
+  | "past_due"
+  | "grace_period"
+  | "suspended"
+  | "expired"
+  | "cancelled";
 
 /** `billing.domain.value_objects.InvoiceStatus` — exhaustively four values, no `failed` member
  * (Database Design §8.3). */
@@ -82,6 +92,13 @@ export interface Subscription {
   autoRenew: boolean;
   createdAt: string;
   updatedAt: string;
+  /** ADR-0039 lifecycle timestamps. Optional on the wire: older responses omit them entirely,
+   * so they are `null` rather than absent once mapped. */
+  pastDueSince: string | null;
+  gracePeriodEndsAt: string | null;
+  suspendedAt: string | null;
+  cancelledAt: string | null;
+  expiredAt: string | null;
 }
 
 interface SubscriptionWire {
@@ -94,6 +111,11 @@ interface SubscriptionWire {
   auto_renew: boolean;
   created_at: string;
   updated_at: string;
+  past_due_since?: string | null;
+  grace_period_ends_at?: string | null;
+  suspended_at?: string | null;
+  cancelled_at?: string | null;
+  expired_at?: string | null;
 }
 
 function toSubscription(wire: SubscriptionWire): Subscription {
@@ -107,6 +129,11 @@ function toSubscription(wire: SubscriptionWire): Subscription {
     autoRenew: wire.auto_renew,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    pastDueSince: wire.past_due_since ?? null,
+    gracePeriodEndsAt: wire.grace_period_ends_at ?? null,
+    suspendedAt: wire.suspended_at ?? null,
+    cancelledAt: wire.cancelled_at ?? null,
+    expiredAt: wire.expired_at ?? null,
   };
 }
 
@@ -348,4 +375,58 @@ export async function listOrganizationsForPicker(): Promise<OrganizationOption[]
   });
   const wire = await apiRequest<OffsetPageWire<OrganizationOptionWire>>(`/organizations?${query}`);
   return wire.data.map((org) => ({ id: org.id, name: org.name }));
+}
+
+// --- ADR-0039 subscription lifecycle ------------------------------------------------------------
+
+/** `GET /billing/subscriptions/current` — the caller's OWN organization's subscription.
+ *
+ * Preferred over filtering `listSubscriptions` by `organization_id`: this route takes no path or
+ * query id at all, so it is self-scoped by construction rather than by a filter a caller could
+ * change. Returns `null` on 404, which is the honest answer for an organization that has never
+ * had a subscription - not an error state the UI should surface as a failure. */
+export async function getCurrentSubscription(): Promise<Subscription | null> {
+  try {
+    const wire = await apiRequest<SubscriptionWire>("/billing/subscriptions/current");
+    return toSubscription(wire);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** `POST /billing/subscriptions/{id}/suspend` — platform-admin only
+ * (`billing.subscriptions.manage`; org_admin does NOT hold it). */
+export async function suspendSubscription(subscriptionId: string): Promise<Subscription> {
+  const wire = await apiRequest<SubscriptionWire>(
+    `/billing/subscriptions/${encodeURIComponent(subscriptionId)}/suspend`,
+    { method: "POST" },
+  );
+  return toSubscription(wire);
+}
+
+/** `POST /billing/subscriptions/{id}/reactivate` — platform-admin only. */
+export async function reactivateSubscription(subscriptionId: string): Promise<Subscription> {
+  const wire = await apiRequest<SubscriptionWire>(
+    `/billing/subscriptions/${encodeURIComponent(subscriptionId)}/reactivate`,
+    { method: "POST" },
+  );
+  return toSubscription(wire);
+}
+
+/** `POST /billing/subscriptions/{id}/extend-grace` — platform-admin only.
+ *
+ * Takes an absolute instant, not a day count: the API owns interpreting the caller's intent, so
+ * the deadline the domain records is unambiguous. Callers pass an ISO-8601 string. */
+export async function extendGracePeriod(
+  subscriptionId: string,
+  gracePeriodEndsAt: string,
+): Promise<Subscription> {
+  const wire = await apiRequest<SubscriptionWire>(
+    `/billing/subscriptions/${encodeURIComponent(subscriptionId)}/extend-grace`,
+    { method: "POST", body: { grace_period_ends_at: gracePeriodEndsAt } },
+  );
+  return toSubscription(wire);
 }

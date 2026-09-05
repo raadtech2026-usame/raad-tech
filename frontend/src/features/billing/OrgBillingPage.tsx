@@ -20,7 +20,7 @@ import {
   listInvoices,
   listPayments,
   listPlans,
-  listSubscriptions,
+  getCurrentSubscription,
   type Invoice,
   type Payment,
 } from "./api";
@@ -224,22 +224,20 @@ export function OrgBillingPage() {
     return map;
   }, [plansLookup.data]);
 
-  // organization_id *is* a whitelisted filter on /billing/subscriptions (unlike /billing/invoices
-  // — see InvoicesSection above), and orgId is known synchronously from the signed-in principal,
-  // so this can query directly without the same mount-ordering concern.
+  // ADR-0039's self-scoped route, not `listSubscriptions` filtered by organization_id.
+  // `GET /billing/subscriptions` is still not scope-filtered server-side, so filtering it
+  // client-side was only ever as trustworthy as the filter itself; `/subscriptions/current`
+  // takes no id at all and derives the organization from the caller's own principal, so there
+  // is nothing to substitute. It also returns the ADR-0039 lifecycle timestamps this card now
+  // shows, which the list route's own response does not guarantee.
   const subscriptionQuery = useQuery({
-    queryKey: ["billing", "subscriptions", "self", orgId],
-    queryFn: () =>
-      listSubscriptions({
-        page: 1,
-        pageSize: 1,
-        sort: { field: "created_at", direction: "desc" },
-        filters: { organization_id: orgId as string },
-        search: "",
-      }),
+    queryKey: ["billing", "subscriptions", "current", orgId],
+    // Wrapped rather than passed by reference: React Query hands its queryFn a context object,
+    // and this endpoint must be called with no arguments at all.
+    queryFn: () => getCurrentSubscription(),
     enabled: orgId !== null,
   });
-  const subscription = subscriptionQuery.data?.data[0] ?? null;
+  const subscription = subscriptionQuery.data ?? null;
 
   const payments = usePaginatedQuery({
     queryKey: ["billing", "payments", "self", orgId],
@@ -306,6 +304,26 @@ export function OrgBillingPage() {
                     : "No active billing period"}
                 </p>
                 <p className={styles.panelStatCaption}>Auto-renew: {subscription.autoRenew ? "On" : "Off"}</p>
+                {/* ADR-0039: a coloured badge alone does not tell an admin what to do. These
+                    lines only render in the states they describe, so an ordinary active
+                    subscription looks exactly as it did before. */}
+                {subscription.status === "past_due" && subscription.pastDueSince && (
+                  <p className={styles.panelStatCaption}>
+                    Payment overdue since {formatDateTime(subscription.pastDueSince)}. Service
+                    continues during the grace window.
+                  </p>
+                )}
+                {subscription.status === "grace_period" && subscription.gracePeriodEndsAt && (
+                  <p className={styles.panelStatCaption}>
+                    Grace period extended to {formatDateTime(subscription.gracePeriodEndsAt)}.
+                  </p>
+                )}
+                {subscription.status === "suspended" && subscription.suspendedAt && (
+                  <p className={styles.panelStatCaption}>
+                    Suspended on {formatDateTime(subscription.suspendedAt)}. Contact RAAD support
+                    to reactivate.
+                  </p>
+                )}
               </>
             ) : (
               <p className={styles.panelStatCaption}>No subscription on file yet.</p>

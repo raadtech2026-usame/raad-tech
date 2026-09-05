@@ -6,14 +6,19 @@ vi.mock("../../shared/api/client", () => ({
 
 import { apiRequest } from "../../shared/api/client";
 import {
+  extendGracePeriod,
   getBillingProviderConfig,
+  getCurrentSubscription,
   initiatePayment,
   listInvoices,
   listOrganizationsForPicker,
   listPayments,
   listPlans,
   listSubscriptions,
+  reactivateSubscription,
+  suspendSubscription,
 } from "./api";
+import { ApiError } from "../../shared/api/types";
 
 const PLAN_WIRE = {
   id: "p1",
@@ -112,6 +117,13 @@ describe("billing api", () => {
       autoRenew: true,
       createdAt: "2026-08-01T00:00:00Z",
       updatedAt: "2026-08-01T00:00:00Z",
+      // ADR-0039 lifecycle timestamps: absent on this wire fixture, so they map to null rather
+      // than undefined - the mapper normalises, so consumers never have to check for both.
+      pastDueSince: null,
+      gracePeriodEndsAt: null,
+      suspendedAt: null,
+      cancelledAt: null,
+      expiredAt: null,
     });
   });
 
@@ -223,5 +235,79 @@ describe("billing api", () => {
     const options = await listOrganizationsForPicker();
 
     expect(options).toEqual([{ id: "org1", name: "Acme School" }]);
+  });
+});
+
+describe("ADR-0039 subscription lifecycle", () => {
+  beforeEach(() => {
+    vi.mocked(apiRequest).mockReset();
+  });
+
+  it("getCurrentSubscription calls the self-scoped route with no id", async () => {
+    vi.mocked(apiRequest).mockResolvedValue(SUBSCRIPTION_WIRE);
+
+    const subscription = await getCurrentSubscription();
+
+    // No path or query id at all - the route is self-scoped by construction, so there is nothing
+    // a caller could substitute to read another organization's subscription.
+    expect(apiRequest).toHaveBeenCalledWith("/billing/subscriptions/current");
+    expect(subscription?.id).toBe("s1");
+  });
+
+  it("getCurrentSubscription returns null on 404 rather than throwing", async () => {
+    // An organization that has never had a subscription is a normal state, not a failure the UI
+    // should render as an error.
+    vi.mocked(apiRequest).mockRejectedValue(new ApiError(404, { code: "not_found", message: "x", correlationId: null }));
+
+    await expect(getCurrentSubscription()).resolves.toBeNull();
+  });
+
+  it("getCurrentSubscription still propagates non-404 failures", async () => {
+    vi.mocked(apiRequest).mockRejectedValue(new ApiError(403, { code: "forbidden", message: "x", correlationId: null }));
+
+    await expect(getCurrentSubscription()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("suspendSubscription POSTs to the suspend route", async () => {
+    vi.mocked(apiRequest).mockResolvedValue({ ...SUBSCRIPTION_WIRE, status: "suspended" });
+
+    const subscription = await suspendSubscription("s1");
+
+    expect(apiRequest).toHaveBeenCalledWith("/billing/subscriptions/s1/suspend", { method: "POST" });
+    expect(subscription.status).toBe("suspended");
+  });
+
+  it("reactivateSubscription POSTs to the reactivate route", async () => {
+    vi.mocked(apiRequest).mockResolvedValue({ ...SUBSCRIPTION_WIRE, status: "active" });
+
+    const subscription = await reactivateSubscription("s1");
+
+    expect(apiRequest).toHaveBeenCalledWith("/billing/subscriptions/s1/reactivate", { method: "POST" });
+    expect(subscription.status).toBe("active");
+  });
+
+  it("extendGracePeriod sends an absolute instant, not a day count", async () => {
+    vi.mocked(apiRequest).mockResolvedValue({
+      ...SUBSCRIPTION_WIRE,
+      status: "grace_period",
+      grace_period_ends_at: "2026-10-01T00:00:00Z",
+    });
+
+    const subscription = await extendGracePeriod("s1", "2026-10-01T00:00:00Z");
+
+    expect(apiRequest).toHaveBeenCalledWith("/billing/subscriptions/s1/extend-grace", {
+      method: "POST",
+      body: { grace_period_ends_at: "2026-10-01T00:00:00Z" },
+    });
+    expect(subscription.status).toBe("grace_period");
+    expect(subscription.gracePeriodEndsAt).toBe("2026-10-01T00:00:00Z");
+  });
+
+  it("encodes the subscription id into the path", async () => {
+    vi.mocked(apiRequest).mockResolvedValue(SUBSCRIPTION_WIRE);
+
+    await suspendSubscription("a/b");
+
+    expect(apiRequest).toHaveBeenCalledWith("/billing/subscriptions/a%2Fb/suspend", { method: "POST" });
   });
 });
