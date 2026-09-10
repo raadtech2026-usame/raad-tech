@@ -1,6 +1,10 @@
 import { Suspense, lazy, type ReactNode } from "react";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { RouteGuard } from "./RouteGuard";
+import { OrganizationDetailsPage } from "../features/organizations/details/OrganizationDetailsPage";
+import { SubscriptionDetailsPage } from "../features/billing/subscription-details/SubscriptionDetailsPage";
+import { SubscriptionGate } from "../shared/subscription/SubscriptionGate";
+import { SubscriptionRequiredPage } from "../features/billing/SubscriptionRequiredPage";
 import { LoginPage } from "./LoginPage";
 import { ChangePasswordRequiredPage } from "./ChangePasswordRequiredPage";
 import { MobileOnlyPage } from "./MobileOnlyPage";
@@ -24,6 +28,9 @@ import { RoutesPage } from "../features/transport-ops/routes/RoutesPage";
 import { TripsPage } from "../features/transport-ops/trips/TripsPage";
 import { NotificationsPage } from "../features/notifications/NotificationsPage";
 import { BillingPage } from "../features/billing/BillingPage";
+import { PlatformFinancePage } from "../features/billing/PlatformFinancePage";
+import { OrgFinancePage } from "../features/school-erp/OrgFinancePage";
+import { ReportsPage } from "../features/reports/ReportsPage";
 
 
 /**
@@ -162,7 +169,23 @@ function buildFeatureRoutes(
  * real, pre-existing, already-flagged gap, not new here). `/org/billing` becomes a dedicated
  * `OrgBillingPage` instead — an Org Admin's own current subscription/plan/invoices/payment
  * history, scoped to `principal.organizationId`, plus a real "Pay Invoice" flow now that a
- * verified `StripePaymentAdapter` can be bound. */
+ * verified `StripePaymentAdapter` can be bound.
+ *
+ * **The ERP finance surfaces (2026-09-05) are the one pair deliberately NOT built as a shared
+ * component**, unlike every entity route above. They read from two different bounded contexts,
+ * which ADR-0038 §2 and ADR-0039 require to stay separate: `/platform/finance`
+ * (`PlatformFinancePage`, in `features/billing/`) is RAAD → Organization revenue, composed
+ * entirely from the existing `GET /admin/platform-stats`, `GET /billing/invoices` and
+ * `GET /billing/payments`; `/org/finance` (`OrgFinancePage`, in `features/school-erp/`) is the
+ * Organization → Student school-finance foundation for the `school_erp` context ADR-0038
+ * opened. One shared page would mean one component reading both financial domains — exactly the
+ * consolidation those ADRs prohibit.
+ *
+ * **`/platform/reports` and `/org/reports` graduate from `PlaceholderPage` (ADR-0040 §6)** as one
+ * shared `ReportsPage`, unlike the finance pair — and for the mirror-image reason. The catalogue
+ * is served by `GET /reports/catalog`, already filtered server-side to what the caller's role can
+ * generate, so one component renders whichever list it is handed; it holds no per-dashboard
+ * knowledge to duplicate. */
 const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/organizations": <OrganizationsPage />,
   "/platform/regions": <RegionsPage />,
@@ -174,6 +197,8 @@ const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/trips": <TripsPage />,
   "/platform/tracking": <Lazy><LiveTrackingPage /></Lazy>,
   "/platform/notifications": <NotificationsPage />,
+  "/platform/finance": <PlatformFinancePage />,
+  "/platform/reports": <ReportsPage />,
   "/platform/billing": <BillingPage />,
 };
 
@@ -206,6 +231,8 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/tracking": <Lazy><LiveTrackingPage /></Lazy>,
   "/org/video": <Lazy><VideoPage /></Lazy>,
   "/org/notifications": <NotificationsPage />,
+  "/org/finance": <OrgFinancePage />,
+  "/org/reports": <ReportsPage />,
   "/org/billing": <Lazy><OrgBillingPage /></Lazy>,
 };
 
@@ -240,10 +267,49 @@ export const router = createBrowserRouter([
     ],
   },
   {
+    // Organization Details lives outside `PLATFORM_BUILT_ROUTES` because it is not a nav item —
+    // it is reached by opening a row on the Organizations list, and carries a path parameter
+    // that `buildFeatureRoutes` (nav-driven, static paths only) has no way to express.
+    path: "/platform/organizations/:organizationId",
+    element: (
+      <RouteGuard allowedRoles={PLATFORM_ROLES} enforcePasswordChange>
+        <AppShell nav={platformNav} notificationsPath="/platform/notifications" />
+      </RouteGuard>
+    ),
+    children: [{ index: true, element: <OrganizationDetailsPage /> }],
+  },
+  {
+    // Subscription Details (Phase 3, 2026-09-10) — same shape as Organization Details directly
+    // above: not a nav item, reached by opening a row on the Billing page's Subscriptions tab,
+    // carrying a path parameter `buildFeatureRoutes` (nav-driven, static paths only) cannot
+    // express.
+    path: "/platform/billing/subscriptions/:subscriptionId",
+    element: (
+      <RouteGuard allowedRoles={PLATFORM_ROLES} enforcePasswordChange>
+        <AppShell nav={platformNav} notificationsPath="/platform/notifications" />
+      </RouteGuard>
+    ),
+    children: [{ index: true, element: <SubscriptionDetailsPage /> }],
+  },
+  {
+    // ADR-0039 (amended 2026-09-09): the subscription payment page sits OUTSIDE the
+    // subscription-gated branch below, and must. It is the recovery path — gating it would make
+    // the redirect loop and the block permanent, the same reason `/billing` is exempt from the
+    // server-side guard. It keeps the ordinary auth and password-change guards.
+    path: "/org/subscription",
+    element: (
+      <RouteGuard allowedRoles={ORGANIZATION_ROLES} enforcePasswordChange>
+        <SubscriptionRequiredPage />
+      </RouteGuard>
+    ),
+  },
+  {
     path: "/org",
     element: (
       <RouteGuard allowedRoles={ORGANIZATION_ROLES} enforcePasswordChange>
-        <AppShell nav={organizationNav} notificationsPath="/org/notifications" />
+        <SubscriptionGate>
+          <AppShell nav={organizationNav} notificationsPath="/org/notifications" />
+        </SubscriptionGate>
       </RouteGuard>
     ),
     children: [
