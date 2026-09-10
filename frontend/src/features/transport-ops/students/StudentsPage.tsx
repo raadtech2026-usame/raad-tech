@@ -22,6 +22,7 @@ import { CreateStudentForm } from "./CreateStudentForm";
 import { LinkGuardianForm } from "./LinkGuardianForm";
 import { AssignStudentForm } from "../student-assignments/AssignStudentForm";
 import { StudentAssignmentSection } from "../student-assignments/StudentAssignmentSection";
+import { IssueInvoiceForm } from "../../school-erp/IssueInvoiceForm";
 import {
   getStudent,
   listGuardiansForStudent,
@@ -159,6 +160,14 @@ function GuardiansSection({
  * #1 guards against — flagged here as a deliberate, narrow exception. There is still no dedicated
  * "Student Assignments" nav page — see `router.tsx`'s own Phase F6 note for why.
  *
+ * **`IssueInvoiceForm` (below) is the same shape one bounded context further out.** It lives in
+ * `features/school-erp/` (module `school_erp`, not `transport_ops`) and is imported as a
+ * component, not as a data read — this page never touches `school-erp/api.ts` directly, so
+ * ADR-0038 §2's domain separation (never merge `school_erp` and anything else at the data layer)
+ * is unbroken; only the *drawer* is composed onto this page, exactly as the requirement asks for
+ * (student + guardian + transport assignment + financial setup as one registration flow).
+ *
+
  * Not yet scope-filtered server-side (CLAUDE.md's own flagged, system-wide gap) — this is now a
  * real, live tenant-isolation leak worth calling out explicitly rather than just citing the
  * general gap: since only `org_admin` can reach this route at all (above), an Org Admin
@@ -179,6 +188,7 @@ export function StudentsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [linkGuardianOpen, setLinkGuardianOpen] = useState(false);
   const [assignRouteOpen, setAssignRouteOpen] = useState(false);
+  const [issueInvoiceOpen, setIssueInvoiceOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
 
   const {
@@ -426,15 +436,15 @@ export function StudentsPage() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={(student) => {
-          // School ERP student-vehicle assignment (2026-09-10): land the admin straight on the
-          // new student's own detail drawer with "Assign to route" already open — the same
-          // `StudentAssignmentSection`/`AssignStudentForm` an existing student already uses, so
-          // registration flows straight into transport assignment without a second, duplicate
-          // "pick a vehicle" mechanism. Vehicle assignment is optional either way: closing this
-          // drawer (Cancel) leaves the student enrolled with no active assignment, exactly the
-          // same as an admin who enrolls today and assigns a route later.
+          // Registration flows straight into both halves of the requirement (2026-09-10):
+          // transport assignment (`AssignStudentForm`, the same one an existing student already
+          // uses) and financial setup (`IssueInvoiceForm`, school_erp). Both open alongside the
+          // student's own detail drawer, and both are optional either way: closing either drawer
+          // (Cancel) leaves the student enrolled with no active assignment/no invoice, exactly
+          // the same as an admin who enrolls today and does either step later.
           setSelectedStudent({ id: student.id, fullName: student.fullName, status: student.status });
           setAssignRouteOpen(true);
+          setIssueInvoiceOpen(true);
         }}
       />
 
@@ -451,6 +461,13 @@ export function StudentsPage() {
         studentId={selectedStudent?.id ?? null}
         studentName={selectedStudent?.fullName}
         organizationId={detail?.organizationId ?? null}
+      />
+
+      <IssueInvoiceForm
+        open={issueInvoiceOpen}
+        onClose={() => setIssueInvoiceOpen(false)}
+        studentId={selectedStudent?.id ?? null}
+        studentName={selectedStudent?.fullName}
       />
     </div>
   );

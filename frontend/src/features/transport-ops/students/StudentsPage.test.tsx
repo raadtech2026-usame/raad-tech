@@ -29,8 +29,19 @@ vi.mock("../student-assignments/api", () => ({
   endStudentAssignment: vi.fn(),
 }));
 
+// `IssueInvoiceForm` (school_erp's financial-setup half of registration, opened alongside
+// `AssignStudentForm`) is a cross-bounded-context component import — mocked here for the same
+// reason `student-assignments/api` is above, via `importOriginal` since only its two functions
+// need a fake, and the rest of `school-erp/api.ts` (types, formatting helpers) stays real.
+vi.mock("../../school-erp/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../school-erp/api")>()),
+  listFeePlans: vi.fn(),
+  issueStudentInvoice: vi.fn(),
+}));
+
 import * as api from "./api";
 import * as assignmentApi from "../student-assignments/api";
+import * as schoolErpApi from "../../school-erp/api";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { StudentsPage } from "./StudentsPage";
 
@@ -96,6 +107,10 @@ describe("StudentsPage", () => {
     vi.mocked(assignmentApi.listVehiclesForPicker).mockReset().mockResolvedValue([]);
     vi.mocked(assignmentApi.assignStudentToRoute).mockReset();
     vi.mocked(assignmentApi.endStudentAssignment).mockReset();
+    vi.mocked(schoolErpApi.listFeePlans)
+      .mockReset()
+      .mockResolvedValue(pageOf([], 0));
+    vi.mocked(schoolErpApi.issueStudentInvoice).mockReset();
   });
 
   it("renders skeleton state while loading, then the fetched students (name + status only)", async () => {
@@ -148,11 +163,12 @@ describe("StudentsPage", () => {
   });
 
   it("opens the new student's detail drawer with transport assignment ready right after enrollment", async () => {
-    // School ERP student-vehicle assignment (2026-09-10): registration must flow straight into
-    // "assign this student to a bus/route" without a second navigation step. Reuses the exact
-    // existing detail-drawer + AssignStudentForm pair an already-enrolled student already uses —
-    // this proves `StudentsPage`'s own `onCreated` wiring actually opens both, not just that
-    // `CreateStudentForm` fires the callback (see `CreateStudentForm.test.tsx` for that half).
+    // Registration must flow straight into both transport assignment and financial setup
+    // without a second navigation step (2026-09-10/2026-09-11). Reuses the exact existing
+    // detail-drawer + AssignStudentForm pair an already-enrolled student already uses, plus the
+    // school_erp `IssueInvoiceForm` — this proves `StudentsPage`'s own `onCreated` wiring
+    // actually opens all three, not just that `CreateStudentForm` fires the callback (see
+    // `CreateStudentForm.test.tsx` for that half).
     vi.mocked(api.listStudents).mockResolvedValue(pageOf([], 0));
     const enrolled: api.Student = {
       id: "01ARZ3NDEKTSV4RRFFQ69G5FDZ",
@@ -179,16 +195,92 @@ describe("StudentsPage", () => {
 
     await waitFor(() => expect(api.enrollStudent).toHaveBeenCalled());
 
-    // Both drawers this flow opens carry the student's name — the detail drawer's title is the
-    // exact string "Yusuf Omar", while the assignment drawer's subtitle embeds it in a sentence
-    // ("Assign Yusuf Omar to a route"), so the query needs `exact: false` to count both; an exact
-    // match against "Yusuf Omar" alone only ever finds the first, even once the second drawer has
-    // genuinely opened (this is what the original assertion here got wrong).
+    // All three drawers this flow opens carry the student's name — the detail drawer's title is
+    // the exact string "Yusuf Omar", while the other two embed it in a sentence, so the query
+    // needs `exact: false` to count them all; an exact match against "Yusuf Omar" alone only
+    // ever finds the first, even once the other two have genuinely opened (this is what the
+    // original assertion here got wrong before the transport-assignment-only version of this
+    // chain was fixed).
     await waitFor(() =>
-      expect(screen.getAllByText("Yusuf Omar", { exact: false }).length).toBeGreaterThanOrEqual(2),
+      expect(screen.getAllByText("Yusuf Omar", { exact: false }).length).toBeGreaterThanOrEqual(3),
     );
     expect(screen.getByText("Assign Yusuf Omar to a route")).toBeInTheDocument();
+    expect(screen.getByText("Issue the first invoice for Yusuf Omar")).toBeInTheDocument();
     expect(api.getStudent).toHaveBeenCalledWith(enrolled.id);
+  });
+
+  it("issues an invoice against the selected fee plan from the financial-setup drawer", async () => {
+    vi.mocked(api.listStudents).mockResolvedValue(pageOf([], 0));
+    const enrolled: api.Student = {
+      id: "01ARZ3NDEKTSV4RRFFQ69G5FDZ",
+      organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
+      fullName: "Yusuf Omar",
+      externalRef: null,
+      status: "active",
+      createdAt: "2026-01-03T00:00:00Z",
+      updatedAt: "2026-01-03T00:00:00Z",
+    };
+    vi.mocked(api.enrollStudent).mockResolvedValue(enrolled);
+    vi.mocked(api.getStudent).mockResolvedValue(enrolled);
+    vi.mocked(schoolErpApi.listFeePlans).mockResolvedValue(
+      pageOf(
+        [
+          {
+            id: "plan-1",
+            organizationId: enrolled.organizationId,
+            name: "Monthly transport",
+            amount: "50.00",
+            currency: "USD",
+            defaultDiscountAmount: "0.00",
+            description: null,
+            status: "active",
+          },
+        ],
+        1,
+      ),
+    );
+    vi.mocked(schoolErpApi.issueStudentInvoice).mockResolvedValue({
+      id: "inv-1",
+      organizationId: enrolled.organizationId,
+      studentId: enrolled.id,
+      feePlanId: "plan-1",
+      period: "2026-09",
+      amount: "50.00",
+      discountAmount: "0.00",
+      netAmount: "50.00",
+      amountPaid: "0.00",
+      balanceDue: "50.00",
+      currency: "USD",
+      dueDate: "2026-09-30",
+      status: "issued",
+      routeId: null,
+      vehicleId: null,
+      driverId: null,
+      notes: null,
+      issuedAt: "2026-01-03T00:00:00Z",
+      paidAt: null,
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("No students yet")).toBeInTheDocument());
+
+    await userEvent.click(screen.getAllByRole("button", { name: "New Student" })[0]);
+    await screen.findByText("Green Valley School");
+    await userEvent.selectOptions(screen.getByLabelText("Organization"), enrolled.organizationId);
+    await userEvent.type(screen.getByPlaceholderText("e.g. Amina Hassan"), "Yusuf Omar");
+    await userEvent.click(screen.getByRole("button", { name: "Enroll student" }));
+
+    await screen.findByText("Issue the first invoice for Yusuf Omar");
+    // With exactly one active fee plan, the form preselects it — the operator is not made to
+    // choose from a list of one.
+    await waitFor(() => expect(screen.getByRole("option", { name: /Monthly transport/ })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Issue invoice" }));
+
+    await waitFor(() =>
+      expect(schoolErpApi.issueStudentInvoice).toHaveBeenCalledWith(
+        expect.objectContaining({ studentId: enrolled.id, feePlanId: "plan-1" }),
+      ),
+    );
   });
 
   it("shows the linked guardians and lets a founder unlink one", async () => {
