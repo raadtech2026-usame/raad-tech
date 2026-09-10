@@ -188,6 +188,12 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/billing/subscriptions/{subscription_id}/extend-grace",
         "ADR-0039 SS1 - platform-admin grace extension, requirement 39G",
     ),
+    (
+        "GET",
+        "/api/v1/billing/subscriptions/{subscription_id}",
+        "uniform-CRUD addition, 2026-09-10 - backs the Founder's Subscription Details page; "
+        "GetSubscriptionByIdQuery/get_subscription_by_id already existed, unwired",
+    ),
     ("GET", "/api/v1/parents/{parent_id}/students", "ListStudentsForParentQuery's own route"),
     ("GET", "/api/v1/students/{student_id}", "uniform-CRUD addition"),
     ("PATCH", "/api/v1/students/{student_id}", "uniform-CRUD addition"),
@@ -336,6 +342,66 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/device-inventory/{inventory_item_id}/allocate",
         "ADR-0018 device inventory & allocation, no API Contracts row",
     ),
+    # ---- ADR-0040: ERP finance & reporting ---------------------------------------------------
+    #
+    # None of these appears in API Contracts SS4.7, which predates the ERP charter entirely
+    # (ADR-0038 opened School ERP scope on 2026-09-04; ADR-0040 implements it). Three financial
+    # domains now live behind three prefixes and are never merged (ADR-0038 SS2):
+    #   /billing          RAAD   -> Organization  (SaaS revenue, C8)
+    #   /school-finance   Org    -> Student       (school finance, C11)
+    #   /platform-finance Vendor -> RAAD          (operating cost, C12)
+    #
+    # billing plan management - ADR-0040 SS4. `Plan` had no write route at all before; all four
+    # are Founder-only behind a new `billing.plans.manage` permission, deliberately distinct
+    # from the read-only `billing.plans.list` five roles already hold.
+    ("POST", "/api/v1/billing/plans", "ADR-0040 SS4 - plan catalogue management, Founder-only"),
+    ("PATCH", "/api/v1/billing/plans/{plan_id}", "ADR-0040 SS4 - repricing applies from the next period"),
+    ("POST", "/api/v1/billing/plans/{plan_id}/activate", "ADR-0040 SS4"),
+    ("POST", "/api/v1/billing/plans/{plan_id}/disable", "ADR-0040 SS4 - withdraws from catalogue, cancels nobody"),
+    # school_erp (C11) - Organization -> Student. org_admin manages; RAAD staff read only.
+    ("GET", "/api/v1/school-finance/categories", "ADR-0040 SS2 - school_erp C11"),
+    ("POST", "/api/v1/school-finance/categories", "ADR-0040 SS2 - school_erp C11"),
+    ("PATCH", "/api/v1/school-finance/categories/{category_id}", "ADR-0040 SS2 - school_erp C11"),
+    ("POST", "/api/v1/school-finance/categories/{category_id}/archive", "ADR-0040 SS2 - archived, never deleted"),
+    ("GET", "/api/v1/school-finance/fee-plans", "ADR-0040 SS2 - school_erp C11"),
+    ("POST", "/api/v1/school-finance/fee-plans", "ADR-0040 SS2 - school_erp C11"),
+    ("PATCH", "/api/v1/school-finance/fee-plans/{fee_plan_id}", "ADR-0040 SS2 - never retro-changes issued invoices"),
+    ("POST", "/api/v1/school-finance/fee-plans/{fee_plan_id}/archive", "ADR-0040 SS2 - school_erp C11"),
+    ("GET", "/api/v1/school-finance/student-invoices", "ADR-0040 SS2 - school_erp C11"),
+    ("POST", "/api/v1/school-finance/student-invoices", "ADR-0040 SS3 - captures transport context at issue time"),
+    ("POST", "/api/v1/school-finance/student-invoices/generate", "ADR-0040 SS2 - idempotent monthly billing run"),
+    ("POST", "/api/v1/school-finance/student-invoices/{invoice_id}/cancel", "ADR-0040 SS2 - cancel/waive"),
+    ("GET", "/api/v1/school-finance/student-invoices/{invoice_id}/payments", "ADR-0040 SS2 - school_erp C11"),
+    ("POST", "/api/v1/school-finance/student-invoices/{invoice_id}/payments", "ADR-0040 SS2 - partial payments supported"),
+    ("GET", "/api/v1/school-finance/student-payments", "ADR-0040 SS2 - school_erp C11"),
+    ("POST", "/api/v1/school-finance/student-payments/{payment_id}/void", "ADR-0040 SS2 - reverses its invoice too"),
+    ("GET", "/api/v1/school-finance/income", "ADR-0040 SS2 - school_erp C11"),
+    ("POST", "/api/v1/school-finance/income", "ADR-0040 SS2 - non-student income only"),
+    ("POST", "/api/v1/school-finance/income/{income_id}/void", "ADR-0040 SS2 - school_erp C11"),
+    ("GET", "/api/v1/school-finance/expenses", "ADR-0040 SS2 - school_erp C11"),
+    ("POST", "/api/v1/school-finance/expenses", "ADR-0040 SS2 - optional per-vehicle attribution"),
+    ("POST", "/api/v1/school-finance/expenses/{expense_id}/void", "ADR-0040 SS2 - school_erp C11"),
+    ("GET", "/api/v1/school-finance/summary", "ADR-0040 SS2 - organization finance KPIs"),
+    ("GET", "/api/v1/school-finance/vehicles", "ADR-0040 SS2 - vehicle financial overview, one grouped query"),
+    ("GET", "/api/v1/school-finance/vehicles/{vehicle_id}/invoices", "ADR-0040 SS2 - backs the printable bus report"),
+    ("GET", "/api/v1/school-finance/students/{student_id}/invoices", "ADR-0040 SS2 - one student's history"),
+    ("GET", "/api/v1/school-finance/profit-and-loss", "ADR-0040 SS2 - from recorded transactions only"),
+    # platform_finance (C12) - Vendor -> RAAD. founder/finance_staff only; no org_admin grant
+    # exists in this namespace at all, and these tables carry no organization_id to scope by.
+    ("GET", "/api/v1/platform-finance/categories", "ADR-0040 SS1 - platform_finance C12"),
+    ("POST", "/api/v1/platform-finance/categories", "ADR-0040 SS1 - platform_finance C12"),
+    ("GET", "/api/v1/platform-finance/expenses", "ADR-0040 SS1 - RAAD operating costs"),
+    ("POST", "/api/v1/platform-finance/expenses", "ADR-0040 SS1 - RAAD operating costs"),
+    ("POST", "/api/v1/platform-finance/expenses/{expense_id}/void", "ADR-0040 SS1"),
+    ("GET", "/api/v1/platform-finance/income", "ADR-0040 SS1 - non-subscription income only"),
+    ("POST", "/api/v1/platform-finance/income", "ADR-0040 SS1 - subscription kind rejected, billing owns it"),
+    ("POST", "/api/v1/platform-finance/income/{income_id}/void", "ADR-0040 SS1"),
+    ("GET", "/api/v1/platform-finance/profit-and-loss", "ADR-0040 SS1 - reads SaaS revenue from billing"),
+    # reporting - ADR-0040 SS6. Synchronous render-and-stream, because Phase-2 SS10.1's object
+    # store does not exist; the async ReportRun aggregate is untouched and still the right home
+    # for long runs once one does.
+    ("GET", "/api/v1/reports/catalog", "ADR-0040 SS6 - role-filtered report catalogue"),
+    ("GET", "/api/v1/reports/{definition_key}/export", "ADR-0040 SS6 - renders PDF/XLSX inline"),
 ]
 
 
@@ -377,6 +443,69 @@ class NoSilentUndocumentedRoutesTests(unittest.TestCase):
             "Routes exist that are neither in API Contracts nor in this suite's own "
             f"ALLOWED_UNDOCUMENTED_EXTRAS accounting — add a citation, don't leave it "
             f"silent: {unexplained}",
+        )
+
+
+def _flattened_route_declaration_order() -> list[tuple[frozenset[str], str]]:
+    """The actual `(methods, relative_path)` sequence FastAPI will try to match against, in
+    the exact order it will try them — i.e. Starlette's own "first full match wins" contract.
+
+    Not `app.openapi()`: that enumerates the documented *set* of paths and says nothing about
+    *order*, which is exactly the axis this test needs. Walks `_IncludedRouter.original_router`
+    (this FastAPI version's mount-style router wrapper) recursively, since a router can itself
+    include sub-routers.
+    """
+    app = create_app()
+
+    def flatten(routes) -> list:
+        out: list = []
+        for route in routes:
+            out.append(route)
+            nested_router = getattr(route, "original_router", None)
+            if nested_router is not None:
+                out.extend(flatten(nested_router.routes))
+        return out
+
+    ordered = []
+    for route in flatten(app.routes):
+        methods = getattr(route, "methods", None)
+        path = getattr(route, "path", None)
+        if methods and path:
+            ordered.append((frozenset(methods), path))
+    return ordered
+
+
+class SubscriptionRouteOrderingTests(unittest.TestCase):
+    """Regression: `GET /billing/subscriptions/{subscription_id}` (added 2026-09-10, backing
+    the Founder's Subscription Details page) must be declared *after* every literal sibling
+    path under `/subscriptions` — `current` above all.
+
+    Starlette dispatches by first full match in declaration order. A `{subscription_id}`
+    route declared before `current` would capture `GET /subscriptions/current` with
+    `subscription_id="current"`, and `ensure_subscription_exists` would raise `NotFoundError`
+    for a request that has nothing to do with a missing subscription — a real, live-reproduced
+    failure mode this codebase has already hit once this phase (three ADR-0039 lifecycle
+    routes going 500 on an unrelated `NameError`). This test makes the ordering invariant the
+    router module's own comment documents into something CI actually checks, rather than a
+    comment a future edit can silently invalidate.
+    """
+
+    def test_literal_subscription_paths_precede_the_by_id_route(self) -> None:
+        order = _flattened_route_declaration_order()
+        get_paths = [path for methods, path in order if "GET" in methods]
+        subscription_get_paths = [p for p in get_paths if p.startswith("/subscriptions")]
+
+        self.assertIn("/subscriptions/current", subscription_get_paths)
+        self.assertIn("/subscriptions/{subscription_id}", subscription_get_paths)
+
+        current_index = subscription_get_paths.index("/subscriptions/current")
+        by_id_index = subscription_get_paths.index("/subscriptions/{subscription_id}")
+        self.assertLess(
+            current_index,
+            by_id_index,
+            "GET /subscriptions/current must be declared before GET "
+            "/subscriptions/{subscription_id}, or it will never be reached — a "
+            "{subscription_id} path parameter matches the literal string 'current' too.",
         )
 
 

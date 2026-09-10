@@ -29,12 +29,28 @@ _SIGNALING_URL = "ws://jt1078-relay:7911"
 
 class VideoProviderDiWiringTests(unittest.TestCase):
     def test_unconfigured_settings_leave_video_provider_port_unbound(self) -> None:
-        container = build_container(Settings(_env_file=None))
+        # `_env_file=None` only skips loading a `.env` FILE — pydantic-settings' `BaseSettings`
+        # still reads real OS environment variables regardless, so this test silently asserted
+        # against whatever ambient `RAAD_BROKER__URL`/`RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL`
+        # the *process* happened to have (both set to real values by `docker-compose.yml` inside
+        # this repo's own dev containers, which never fail this in CI — CI sets neither — but
+        # reliably did when this suite ran inside `raad-backend` itself, 2026-09-10). Passing both
+        # explicitly as empty strings is what actually asserts "unconfigured," everywhere.
+        settings = Settings(
+            _env_file=None,
+            broker=BrokerSettings(url=""),
+            device_plane=DevicePlaneSettings(jt1078_signaling_url=""),
+        )
+        container = build_container(settings)
         with self.assertRaises(LookupError):
             container.resolve(VideoProviderPort)
 
     def test_broker_alone_without_signaling_url_leaves_it_unbound(self) -> None:
-        settings = Settings(_env_file=None, broker=BrokerSettings(url=_BROKER_URL))
+        settings = Settings(
+            _env_file=None,
+            broker=BrokerSettings(url=_BROKER_URL),
+            device_plane=DevicePlaneSettings(jt1078_signaling_url=""),
+        )
         container = build_container(settings)
         with self.assertRaises(LookupError):
             container.resolve(VideoProviderPort)
@@ -76,7 +92,12 @@ class VideoProviderDiWiringTests(unittest.TestCase):
         """The always-constructible, optional-provider posture (mirrors `BillingApplicationService.
         payment_provider`) must still hold - a caller must never fail to even *resolve* the
         service just because no video provider is configured."""
-        container = build_container(Settings(_env_file=None))
+        settings = Settings(
+            _env_file=None,
+            broker=BrokerSettings(url=""),
+            device_plane=DevicePlaneSettings(jt1078_signaling_url=""),
+        )
+        container = build_container(settings)
         service = container.resolve(VideoApplicationService)
         self.assertIsNone(service._video_provider)
 

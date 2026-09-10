@@ -279,16 +279,43 @@ class StudentPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.data[0].full_name, f"Findable-{self.tag}")
 
     async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        """The whitelist is what stops a client filtering on an arbitrary column.
+
+        This used `organization_id` as its example until 2026-09-09, when that field became a
+        legitimate filter here so the Founder's Organization Details page could narrow a list to
+        one organization. `created_by` stands in now: a real column, deliberately not whitelisted.
+        """
         async with self._new_uow() as uow:
             with self.assertRaises(ValidationError):
                 await uow.students.list_page(
                     OffsetPageRequest(),
                     sort=[],
-                    filters=[
-                        FilterCondition(field="organization_id", op="eq", value="x")
-                    ],
+                    filters=[FilterCondition(field="created_by", op="eq", value="x")],
                     search=None,
                 )
+
+    async def test_list_page_accepts_the_organization_id_filter(self) -> None:
+        """The newly whitelisted filter is accepted rather than rejected.
+
+        Whitelisting a tenant column is safe only because `_apply_scope` (ADR-0021) runs on top
+        of every filter — it can narrow within what the caller may already see, never widen past
+        it. The scope behaviour has its own tests; this one pins that the field is reachable at
+        all, which is the change.
+        """
+        async with self._new_uow() as uow:
+            page = await uow.students.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(
+                        field="organization_id",
+                        op="eq",
+                        value=self.id_generator.new_id(),
+                    )
+                ],
+                search=None,
+            )
+        self.assertEqual(page.data, [])
 
     async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
         async with self._new_uow() as uow:
