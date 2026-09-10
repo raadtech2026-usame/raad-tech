@@ -48,6 +48,8 @@ from raad.modules.organization.api.routers import (
     scope_assignments_router,
 )
 from raad.modules.platform_audit.api.routers import admin_router
+from raad.modules.platform_finance.api.routers import platform_finance_router
+from raad.modules.school_erp.api.routers import school_finance_router
 from raad.modules.reporting.api.routers import reports_router
 from raad.modules.tracking.api.routers import tracking_router
 from raad.modules.transport_ops.api.routers import (
@@ -149,6 +151,18 @@ api_router.include_router(
 api_router.include_router(
     admin_router, prefix="/admin", tags=["admin"]
 )  # platform_audit (C10)
+
+# ADR-0038/ADR-0040 — the two ERP finance contexts. Three financial domains now live behind
+# three prefixes, and the prefix is what names which one: `/billing` is RAAD -> Organization,
+# `/school-finance` is Organization -> Student, `/platform-finance` is Vendor -> RAAD. They are
+# never merged (ADR-0038 §2).
+api_router.include_router(
+    school_finance_router, prefix="/school-finance", tags=["school-finance"]
+)  # school_erp (C11)
+
+api_router.include_router(
+    platform_finance_router, prefix="/platform-finance", tags=["platform-finance"]
+)  # platform_finance (C12)
 
 # WebSocket endpoints (/ws/tracking, /ws/notifications, Backend LLD §16.2) are wired
 # separately in interfaces/http/ws.py, mounted directly on the app (not this router) since

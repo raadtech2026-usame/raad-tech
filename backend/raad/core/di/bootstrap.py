@@ -117,6 +117,35 @@ from raad.modules.transport_ops.infra.repositories import (
 )
 from raad.modules.billing.application.ports import BillingUnitOfWork, PaymentProviderPort
 from raad.modules.billing.application.services import BillingApplicationService
+from raad.modules.school_erp.application.ports import (
+    SchoolErpUnitOfWork,
+    StudentTransportContextPort,
+)
+from raad.modules.school_erp.application.services import SchoolErpApplicationService
+from raad.modules.school_erp.infra.repositories import SqlAlchemySchoolErpUnitOfWork
+from raad.modules.platform_finance.application.ports import (
+    PlatformFinanceUnitOfWork,
+    SubscriptionRevenuePort,
+)
+from raad.modules.platform_finance.application.services import (
+    PlatformFinanceApplicationService,
+)
+from raad.modules.platform_finance.infra.repositories import (
+    SqlAlchemyPlatformFinanceUnitOfWork,
+)
+from raad.core.di.report_definitions import register_report_definitions
+from raad.modules.reporting.application.catalog import ReportCatalog
+from raad.modules.reporting.application.export_service import ReportExportService
+from raad.modules.reporting.infra.renderers import (
+    ExcelReportRenderer,
+    PdfReportRenderer,
+)
+from raad.core.di.erp_adapters import (
+    BillingOnboardingAdapter,
+    BillingSubscriptionRevenueAdapter,
+    TransportOpsStudentContextAdapter,
+)
+from raad.modules.organization.application.ports import BillingProvisioningPort
 from raad.modules.billing.infra.adapters import StripePaymentAdapter
 from raad.modules.billing.infra.repositories import SqlAlchemyBillingUnitOfWork
 from raad.modules.notifications.application.ports import NotificationsUnitOfWork
@@ -326,6 +355,54 @@ def build_container(settings: Settings) -> Container:
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
             payment_provider=container.try_resolve(PaymentProviderPort),
+        ),
+    )
+
+    # ADR-0040: the two ERP finance services. Both take an optional cross-module port whose
+    # concrete adapter lives in `core/di/erp_adapters.py` — bound unconditionally because both
+    # adapters resolve their target lazily, per call, so neither forces an import-time
+    # dependency between the modules they bridge. `SchoolErpApplicationService` degrades to
+    # "no transport attribution" and `PlatformFinanceApplicationService` to "0.00 subscription
+    # revenue" if a target is ever unavailable, rather than failing the whole request.
+    container.bind_singleton(
+        StudentTransportContextPort, TransportOpsStudentContextAdapter(container)
+    )
+    container.bind_singleton(
+        SubscriptionRevenuePort, BillingSubscriptionRevenueAdapter(container)
+    )
+    # ADR-0040 §5 — plan selection during organization onboarding.
+    container.bind_singleton(BillingProvisioningPort, BillingOnboardingAdapter(container))
+
+    # ADR-0040 §6 — the report catalogue. Registered here, at the composition root, because it
+    # is the one place allowed to know about several modules at once: each builder reads through
+    # the owning module's application service, so `reporting` itself never imports their domains.
+    _report_catalog = ReportCatalog()
+    register_report_definitions(_report_catalog, container)
+    container.bind_singleton(ReportCatalog, _report_catalog)
+    # The composition root is the one place allowed to know both the application abstraction and
+    # its concrete infrastructure — which is exactly why the API layer resolves the *service*
+    # rather than importing a renderer (architecture gate rule 5).
+    container.bind_singleton(
+        ReportExportService,
+        ReportExportService(
+            catalog=_report_catalog,
+            renderers={"pdf": PdfReportRenderer(), "xlsx": ExcelReportRenderer()},
+        ),
+    )
+    container.bind_singleton(
+        SchoolErpApplicationService,
+        SchoolErpApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+            transport_context=container.try_resolve(StudentTransportContextPort),
+        ),
+    )
+    container.bind_singleton(
+        PlatformFinanceApplicationService,
+        PlatformFinanceApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+            subscription_revenue=container.try_resolve(SubscriptionRevenuePort),
         ),
     )
 
@@ -620,6 +697,7 @@ def build_container(settings: Settings) -> Container:
                 clock=container.resolve(Clock),
                 id_generator=container.resolve(IdGenerator),
                 iam_provisioning=container.resolve(IamProvisioningPort),
+                billing_provisioning=container.try_resolve(BillingProvisioningPort),
             ),
         )
         container.bind_factory(
@@ -678,6 +756,22 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             BillingUnitOfWork,
             lambda: SqlAlchemyBillingUnitOfWork(
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
+            ),
+        )
+        container.bind_factory(
+            SchoolErpUnitOfWork,
+            lambda: SqlAlchemySchoolErpUnitOfWork(
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
+            ),
+        )
+        container.bind_factory(
+            PlatformFinanceUnitOfWork,
+            lambda: SqlAlchemyPlatformFinanceUnitOfWork(
                 session_factory,
                 container.resolve(OutboxWriter),
                 container.resolve(AuditWriter),

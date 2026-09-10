@@ -39,6 +39,8 @@ import raad.modules.notifications.infra.models  # noqa: F401 — registers Notif
 import raad.modules.reporting.infra.models  # noqa: F401 — registers ReportRun model
 import raad.modules.video.infra.models  # noqa: F401 — registers VideoSessionModel
 import raad.modules.platform_audit.infra.models  # noqa: F401 — registers SystemSettingModel
+import raad.modules.school_erp.infra.models  # noqa: F401 — registers FeePlan/StudentInvoice/StudentPayment/Income/Expense/FinancialCategory models (ADR-0040)
+import raad.modules.platform_finance.infra.models  # noqa: F401 — registers PlatformExpense/PlatformIncome/PlatformFinancialCategory models (ADR-0040)
 
 config = context.config
 

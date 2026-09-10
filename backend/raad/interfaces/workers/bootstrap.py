@@ -45,6 +45,8 @@ from raad.core.workers.base import Worker
 from raad.core.workers.health import WorkerHealthRegistry
 from raad.core.workers.lifecycle import WorkerLifecycle
 from raad.core.workers.scheduler import IntervalScheduler, LockPort, ScheduledJob
+from raad.modules.school_erp.application.ports import SchoolErpUnitOfWork
+from raad.modules.school_erp.application.services import SchoolErpApplicationService
 from raad.interfaces.workers.notification_worker import NotificationWorker
 from raad.interfaces.workers.outbox_relay import OutboxRelayWorker
 from raad.interfaces.workers.report_worker import ReportWorker
@@ -165,6 +167,33 @@ def _register_scheduled_jobs(
             _body,
         )
 
+    async def mark_overdue_student_invoices() -> None:
+        """ADR-0040 — flags student invoices whose due date has passed.
+
+        Registered under the same `RedisLockPort` the other three jobs use, so one instance runs
+        it at a time (requirement 39J's "no second scheduler" principle applies here too). The
+        job is idempotent by state: `StudentInvoice.mark_overdue` is a no-op on an invoice that
+        is already overdue, paid or cancelled, so running it twice changes nothing the second
+        time.
+
+        Runs on the subscription sweep's own interval rather than introducing a fourth tunable —
+        both are daily-cadence financial housekeeping, and one knob is easier to operate than two.
+        """
+
+        async def _body() -> None:
+            service = container.resolve(SchoolErpApplicationService)
+            marked = await service.mark_overdue_invoices(
+                uow=container.resolve(SchoolErpUnitOfWork)
+            )
+            if marked:
+                logger.info("student_invoices_marked_overdue", extra={"count": marked})
+
+        await _with_lock(
+            "mark_overdue_student_invoices",
+            int(settings.workers.subscription_sweep_interval_seconds),
+            _body,
+        )
+
     async def reconcile_expired_payments() -> None:
         async def _body() -> None:
             service = container.resolve(BillingApplicationService)
@@ -200,6 +229,13 @@ def _register_scheduled_jobs(
             name="sweep_expired_subscriptions",
             interval_seconds=settings.workers.subscription_sweep_interval_seconds,
             handler=sweep_expired_subscriptions,
+        )
+    )
+    scheduler.register(
+        ScheduledJob(
+            name="mark_overdue_student_invoices",
+            interval_seconds=settings.workers.subscription_sweep_interval_seconds,
+            handler=mark_overdue_student_invoices,
         )
     )
     scheduler.register(

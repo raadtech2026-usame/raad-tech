@@ -16,13 +16,25 @@ Derived from `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md`.
    enforced at the repository layer, not just the UI.
 5. **API-first.** Every capability is exposed through a versioned contract (`/api/v1`) before any UI
    consumes it.
-6. **Eleven bounded contexts, fixed set:** iam, organization, fleet_device, transport_ops,
-   tracking, video, notifications, billing, reporting, platform_audit, **school_erp**
-   (the eleventh, added 2026-09-04 by ADR-0038 — the ADR this rule has always required).
-   Adding a twelfth requires its own ADR.
-   **`billing` and `school_erp` are two different financial domains and must never be merged**
-   (ADR-0038 §2): `billing` is RAAD→Organization SaaS billing; `school_erp` is
-   Organization→Student school finance.
+6. **Twelve bounded contexts, fixed set:** iam, organization, fleet_device, transport_ops,
+   tracking, video, notifications, billing, reporting, platform_audit, **school_erp** (the
+   eleventh, added 2026-09-04 by ADR-0038), **platform_finance** (the twelfth, added 2026-09-05
+   by ADR-0040 §1 — the ADR this rule requires). Adding a thirteenth requires its own ADR.
+   **Three financial domains exist and must never be merged.** Each is a separate module with a
+   separate permission namespace, because the separation is a security boundary rather than a
+   modelling preference (ADR-0038 §2, ADR-0040 §1):
+
+   | Flow | Issuer | Payer | Module |
+   |---|---|---|---|
+   | RAAD SaaS billing | RAAD | Organization | `billing` (C8) |
+   | School ERP finance | Organization | Student/Parent | `school_erp` (C11) |
+   | Platform operations | Vendor/Employee | RAAD | `platform_finance` (C12) |
+
+   `school_erp` and `billing` each own an `Invoice`-shaped aggregate deliberately
+   (`billing.Invoice` vs `school_erp.StudentInvoice`); do not consolidate them.
+   `platform_finance` is platform-scoped — its tables carry **no `organization_id`**, like
+   `plans`/`regions`/`device_inventory`, which is what structurally prevents any organization
+   from reading RAAD's own costs.
 7. **No premature microservices.** Extraction from the monolith follows the documented roadmap
    (Phase 2 §13.3) and is driven by measured load, not speculation.
 8. **School ERP is in scope since 2026-09-04 (ADR-0038).** This rule previously read "out of
