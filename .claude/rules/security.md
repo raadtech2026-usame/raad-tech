@@ -8,7 +8,11 @@ Derived from `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §12 an
 2. **Tenant isolation is defense-in-depth:** `organization_id` enforced at both the repository layer
    and the authorization layer, never only one.
 3. **Region scoping is a second filter on top of tenant scoping** for RAAD staff (Founder = all,
-   Regional Manager = assigned regions, Support = assigned orgs, Finance = billing scope only).
+   Regional Manager = assigned regions, Support = assigned orgs, Finance = financial scope only —
+   `billing` (C8) full access plus **read-only** `school_erp` (C11) and `platform_finance` (C12)
+   grants, ADR-0040 §7: school finance is squarely financial even though it isn't the `billing`
+   module itself. Finance Staff never gets a `school_erp`/`platform_finance` *manage* permission,
+   only `.list`/`.read`).
 4. **The tracking-visibility predicate is: capability ∧ scope ∧ ownership ∧ time-window.** Every
    live-tracking surface (web, mobile, WebSocket, REST) must implement this exact predicate — no
    surface may take a shortcut version of it.

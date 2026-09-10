@@ -559,7 +559,10 @@ implementation history (see `PROJECT_STATUS.md` §3 for current per-feature stat
   LLD's event catalog.
 - **Billing (C8)** — `Plan`, `Subscription`, `Invoice`, `Payment` (no `retry()` — a retry is a
   brand-new `Payment.initiate(...)` with a fresh idempotency key), `TransportFee` — **removed by ADR-0040**,
-  migrated into `school_erp.StudentInvoice` (see ERP Finance below). `Plan`/`Subscription` have no documented write routes at all.
+  migrated into `school_erp.StudentInvoice` (see ERP Finance below). `Plan`/`Subscription` are no
+  longer read-only — `Plan` has the ADR-0040 §5 write surface (`POST/PATCH /billing/plans`,
+  `/activate`, `/disable`, Founder-only) and `Subscription` has the ADR-0039 platform-admin
+  lifecycle actions (suspend/reactivate/extend-grace, `founder`/`finance_staff`).
   **Permanent gotcha:** `payments.idempotency_key` is `CHAR(64)` per the schema authority, and
   PostgreSQL blank-pads `CHAR(n)` storage on `SELECT` (unlike `VARCHAR`) — `infra/mappers.py`'s
   `model_to_payment` strips the padding before it reaches the domain layer; any future `CHAR(n)`
