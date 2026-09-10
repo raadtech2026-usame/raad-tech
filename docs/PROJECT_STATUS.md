@@ -621,8 +621,56 @@ first, not assumed away.
 ## 8. Current Sprint
 
 **Currently Working On:**
-**Nothing — ADR-0032 (Camera Role Taxonomy + D5 Cabin-Facing Exclusion Fix) and ADR-0033
-(Terminal Audio Capability Capture) are both complete (2026-08-27).** At explicit user
+**Nothing — Founder Platform Phase 3 (Subscription Details) and Phase 5 (Platform Reports
+Expansion) are both complete (2026-09-10); Phase 4 (SaaS KPIs — MRR/ARR/ARPU/Churn/Growth) was
+explicitly skipped per user instruction and remains for a future phase.** No new bounded context,
+no schema migration, no new dependency — both phases compose backend reads that already existed.
+
+**Phase 3 — Subscription Details** closes the gap the Subscriptions tab (Billing page, and
+`OrganizationDetailsPage`'s own Subscription tab) always had: a row-level drawer showing eight
+fields and nothing about *why* a subscription is in its current state. `GET
+/billing/subscriptions/{subscription_id}` (uniform-CRUD addition, `billing/api/routers.py`,
+declared after `/subscriptions/current` for the same FastAPI path-matching-order reason that
+route's own comment already documents) backs a new `/platform/billing/subscriptions/:id` page
+(`frontend/src/features/billing/subscription-details/`) — Plan, Organization, Status, Activation/
+Renewal/Expiry dates, Grace period, Billing cycle, Current + Previous Invoices, Payments, and a
+Timeline tab (Status Timeline/Subscription Events, Renewal History, and a broader
+organization-wide Audit Timeline), all composed from `billing`/`platform_audit`'s existing list
+endpoints with one extra filter — no new query. `explainSubscriptionStatus`
+(`statusExplanations.ts`) turns the five ADR-0039 lifecycle timestamps already on `Subscription`
+into one plain-language sentence answering "why Active/Grace/Past due/Suspended/Expired," and the
+Status Timeline tab shows the exact event that produced it. `BillingPage.tsx`'s Subscriptions row
+click now navigates here instead of opening the old read-only drawer (removed); a "View details"
+link was added to `OrganizationDetailsPage`'s own Subscription tab. `platform-analytics/api.ts`'s
+`AuditEntry` now maps `metadata` (the response always carried it; nothing had read it before).
+
+**Phase 5 — Platform Reports Expansion** adds ten report definitions to the existing
+code-resident catalog (`core/di/report_definitions.py`), reusing the identical `_collect`/
+`ReportTable` shape the original eleven already established — zero renderer changes:
+Organizations, Regions, Plans, Vehicles, Drivers, Devices, Audit Logs, Revenue, Revenue by Plan,
+Revenue by Region. The last three join `Payment -> Invoice -> Subscription -> Plan` (and,
+for Revenue by Region, `Organization -> Region`) entirely client-side inside the builder from
+`_collect` reads already available on `BillingUnitOfWork`/`OrganizationUnitOfWork` — no new
+repository method. Audit Logs mirrors `admin.audit.read`'s own role set (`founder`/
+`regional_manager`/`support_staff` — **not** `finance_staff`, matching the CLAUDE.md note this
+file already carries for that permission) rather than reusing the broader `_PLATFORM_ROLES`.
+PDF/Excel/Print already worked generically for every catalog entry; `ReportsPage.tsx` gained a
+client-side search box over the (now ~21-entry) catalog by title/description, the only Reports UI
+change this phase needed. Fifteen new backend unit tests
+(`tests/unit/test_platform_report_definitions.py`) drive the real builders against fake
+`UnitOfWork`s — closing the same "a fake-backed unit test cannot see it" gap this file's own
+Permanent Engineering Lessons name for the original ADR-0040 report bugs, this time before
+shipping rather than after a live defect.
+
+**Verified:** backend `tests/unit` + `tests/architecture` (1683 + 157 subtests) and
+`tests/contract` all green; frontend `tsc --noEmit` clean; affected Vitest suites
+(billing, organizations/details, reports, dashboard) green. Browser/responsive verification and
+production build status are recorded in this session's own final report, not duplicated here.
+
+---
+
+**Previously completed (2026-08-27): ADR-0032 (Camera Role Taxonomy + D5 Cabin-Facing Exclusion
+Fix) and ADR-0033 (Terminal Audio Capability Capture).** At explicit user
 direction ("bench test first, then implement audio / camera roles / ADAS-safety / future-ready
 DMS / intercom, without assuming AAC or inventing hardware capabilities"): the current bench unit
 has an ADAS-relevant road-facing camera and an internal/cabin camera connected; **no DMS
@@ -2023,6 +2071,52 @@ confirmation.
 ## 9. Recent Completed Work
 
 Reverse-chronological (most recent first):
+
+- **ERP workflow completion, audit and seven defect fixes** (2026-09-08). ADR-0040 built the ERP
+  finance engine; this pass audited it against a running stack and closed the gap between "the
+  code exists" and "a bursar can use it". No new bounded context, no new HTTP route, one additive
+  RBAC migration (`c2f4a9d18e37`). See CLAUDE.md's own *ERP Workflow Completion & Audit
+  (2026-09-08)* section for the full narrative; the durable rules are in its Permanent
+  Engineering Lessons.
+
+  **The automatic-accounting rule is enforced and live-verified.** Student transport revenue never
+  requires a manual `Income` record — `Student → StudentInvoice → StudentPayment` is the only
+  path, and P&L's `student_revenue`, the finance summary, per-bus revenue and every report derive
+  from `erp_student_payments`. Proven over real HTTP: a 20.00 payment moved `student_revenue`
+  0.00 → 20.00 with `erp_income` still empty; a 500.00 donation then landed in `other_income`
+  only, never merged.
+
+  **Seven defects fixed, six of which a fully green test suite could not see.** (1)
+  `reporting.reports.request` was checked by both report routes and granted to no role — the
+  entire Reports feature 403'd for every role including Founder. (2) `ReportExportService` never
+  enforced `ReportDefinition.roles`, so fixing (1) alone would have let an Org Admin export
+  `platform.invoices` (deliberately cross-tenant) and `platform.profit_and_loss` (RAAD's own
+  costs, no `organization_id` to scope by). (3) Report builders requested `page_size=1000` against
+  a `MAX_PAGE_SIZE` of 100 — a constructor `ValidationError`, so seven of eleven reports returned
+  422. (4) `_MoneyValidatingModel._money_fields` was a Pydantic private attribute, raising
+  `TypeError` on every money-carrying request: the whole `school_erp` write surface returned 500.
+  (5) The API schema and both application-layer `_decimal` helpers quantised money with banker's
+  rounding *upstream* of `Money`'s documented `ROUND_HALF_UP`, so the domain's stated rule never
+  applied. (6) `sum_by_vehicle_between` grouped by a nullable `vehicle_id` including NULL and the
+  caller keyed it `vehicle_id or ""`, charging every organization-wide expense to the Vehicle
+  Financial Overview's "Unassigned" row. (7) Cross-cutting: `DomainError` was missing from
+  `_STATUS_TABLE`, so every business-rule refusal answered 500 and logged as
+  `unhandled_app_error`; now 400, with `ConflictError`/`RuleViolationError` still 409.
+
+  **Frontend: the workflow became reachable.** Every ERP write function was dead code before this
+  — the page was read-only, so a school could see finance it had no way to enter. Added against
+  already-existing endpoints: fee plans, financial categories, the monthly billing run, **record
+  payment**, void payment, manual income (with the notice that keeps student revenue out of it)
+  and vehicle-attributable expense; the same for RAAD's own ledger on `PlatformFinancePage`.
+  Student/vehicle names replace raw ULIDs across every finance table. Plan catalogue management
+  got its first client (Founder-only), and `CreateOrganizationForm` now sends `plan_id` — without
+  which ADR-0040 §5 was unreachable and every new organization was onboarded with no subscription.
+
+  **Verified:** backend 1647 unit/architecture/contract + 304 integration (1 skipped); frontend
+  639 tests, `tsc` clean, production build clean; migration round-tripped with `alembic check`
+  reporting zero drift; the full fee-plan → invoice → payment → P&L → per-bus chain and all 11
+  reports in both formats exercised over real HTTP. **Not verified:** browser interaction — the
+  Chrome extension is not connected in this environment.
 
 - **Audit remediation B1–B24 committed, and the `vehicle_positions` data-loss incident**
   (2026-09-04/05). The read-only production-readiness audit's findings were implemented across

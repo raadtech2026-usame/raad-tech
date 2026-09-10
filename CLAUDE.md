@@ -79,6 +79,161 @@ explicitly and ask for confirmation rather than implementing it.
 video, intercom or device reachability. D5 (video), CR-1 (tracking visibility) and ADR-0026's
 per-parent video grants are evaluated independently of any ERP grant.
 
+## ERP Finance & Reporting (ADR-0040, 2026-09-05)
+
+ADR-0038 opened the School ERP charter but **added no code**; ADR-0039 then built the
+organization subscription lifecycle. ADR-0040 is the implementation of what remained, and it is
+where a reader should land for the current shape of RAAD's money.
+
+**Three financial domains, three modules, three permission namespaces.** The separation is a
+security boundary, not a modelling preference — merging any two makes a cross-domain permission
+leak permanently easy to reintroduce:
+
+| Flow | Issuer | Payer | Module | Tenant-scoped? |
+|---|---|---|---|---|
+| RAAD SaaS billing | RAAD | Organization | `billing` (C8) | yes |
+| School ERP finance | Organization | Student/Parent | `school_erp` (C11, new) | yes |
+| Platform operations | Vendor/Employee | RAAD | `platform_finance` (C12, new) | **no** |
+
+`platform_finance` carrying **no `organization_id`** is deliberate and load-bearing: there is no
+tenant column for a scope filter to match, so no organization can reach RAAD's own costs. RBAC is
+the entire gate (`founder`/`finance_staff` only; no `org_admin` grant exists in the namespace).
+
+**`school_erp` (C11)** — six aggregates: `FinancialCategory`, `FeePlan`, `StudentInvoice`,
+`StudentPayment`, `Income`, `Expense`. Three things about it are not obvious:
+
+- **Money is `Decimal`, not `float`.** `school_erp.Money` and `platform_finance.Money` reject a
+  non-`Decimal` amount outright and quantise with explicit `ROUND_HALF_UP` (Python's default is
+  banker's rounding, which turns 10.005 into 10.00 — not what a bursar expects). They deliberately
+  do **not** reuse `billing.Money`, which is float-backed and predates ADR-0038 §3's requirement.
+  Amounts cross the outbox and the HTTP wire as exact decimal *strings* for the same reason.
+- **Transport context is captured on the invoice at issue time**, not resolved live (ADR-0040 §3):
+  a bill is a historical record, `.claude/rules/backend.md` #3 forbids the cross-module read a live
+  lookup would need, and it makes per-bus revenue one indexed `GROUP BY`. Resolved through
+  `StudentTransportContextPort`, whose adapter lives in `core/di/erp_adapters.py`.
+- **Partial payment is a stored state, not a derived one.** `StudentInvoice.amount_paid` is
+  maintained by `apply_payment()`, so "who still owes" is a column comparison. `balance_due` is
+  clamped at zero in both Python *and* SQL (`GREATEST(net - paid, 0)`) so one overpaid student can
+  never mask another's real debt inside a per-bus total.
+
+**`transport_fees` is gone.** ADR-0038 left its fate open; ADR-0040 §2 migrated its rows into
+`erp_student_invoices` (status remap `due→issued`, `waived→cancelled`) and dropped the table.
+`billing`'s `TransportFee` aggregate, commands, queries and repository were deleted with it —
+`billing` now has no school→student concept at all.
+
+**Permanent lesson this phase re-paid.** `CHAR(n)` blank-padding bit again, and worse than before:
+a padded `vehicle_id` read back from `erp_student_invoices` becomes a *different `GROUP BY` key*
+from the same id read through a mapper, so the Vehicle Financial Overview silently split one bus
+into two rows and the invoice-to-expense join matched nothing. Both `mappers.py` **and** the
+hand-written aggregate queries in `repositories.py` now strip it — the raw-row reads bypass the
+mappers entirely and needed it independently. Caught only by
+`tests/integration/test_school_erp_repository.py`; a fake-backed unit test cannot see it.
+
+**Plans, onboarding and the lifecycle.** `plans` gained `device_limit`/`user_limit` alongside the
+existing `vehicle_limit` (additive; monthly-vs-annual stays one plan row per tier × cycle, because
+`billing_cycle` drives every period date `Subscription.open`/`renew` computes). `Plan` gained its
+first write surface (`POST/PATCH /billing/plans`, `/activate`, `/disable`, Founder-only behind a
+new `billing.plans.manage`). `OnboardOrganizationCommand` gained an optional `plan_id`, closing the
+follow-up its own docstring had flagged since ADR-0017 — it opens the subscription and issues the
+first invoice through `BillingProvisioningPort`, reusing `open_organization_subscription` so **no
+date arithmetic is reimplemented**. A failure there is logged, not propagated: an organization
+without a subscription is recoverable, and the platform Subscriptions view surfaces it.
+
+**Reporting renders real artifacts.** `openpyxl` (MIT) and `reportlab` (BSD) are the first
+rendering dependencies this repository has taken on, approved before installation
+(`.claude/rules/workflow.md` #1/#2) and confined to `reporting/infra/renderers.py`. Eleven report
+definitions live in a **code-resident** catalogue (`core/di/report_definitions.py`) — not a
+`report_definitions` table, since the schema authority still defines none. Export is
+**synchronous** (`GET /reports/{key}/export?format=pdf|xlsx`): Phase-2 §10.1's object store does
+not exist, so bytes stream back rather than an artifact URL being faked. The async `ReportRun`
+aggregate is untouched and remains the right home for long runs once a store exists.
+
+**Not built, disclosed rather than assumed done:** expense attachments (the nullable
+`attachment_url` column exists; no upload endpoint or blob store does), parent-facing access to
+school invoices (must be per-student-ownership scoped per ADR-0038 — a role-wide grant would
+repeat ADR-0039 §7's stale-grant exposure, so `parent` holds **no** `school_erp.*` permission), and
+scheduled recurring student-invoice generation (the aggregate and the idempotent batch endpoint
+exist and are driven on demand; a cron-driven generator is the natural next slice).
+
+## ERP Workflow Completion & Audit (2026-09-08)
+
+ADR-0040 built the ERP finance *engine*; this pass audited it against a running stack and closed
+the gap between "the code exists" and "a bursar can use it". No new bounded context, no new
+route, no schema change beyond one additive RBAC grant — the ADR's design is unchanged, and
+every fix below is a defect or a missing consumer of something it already built.
+
+**The automatic-accounting rule is now enforced, tested and live-verified.** Student transport
+revenue never requires a manual `Income` record: `Student → StudentInvoice → StudentPayment` is
+the only path, and Profit & Loss's `student_revenue`, the finance summary's `collected_amount`,
+per-bus revenue and every report all derive from `erp_student_payments`. Verified end to end over
+real HTTP against the running API — recording a 20.00 payment moved `student_revenue` 0.00 → 20.00
+with `erp_income` still empty; a separate 500.00 donation then landed in `other_income` only.
+`ProfitAndLossDTO` keeps the two lines apart precisely so a double entry is *visible* rather than
+absorbed. The Income tab now names the already-counted figure and says the ledger is for
+donations/sponsorships/grants/government support — the surface that stops the double entry being
+made at all. Manual income remains possible (a school genuinely receives non-student money); what
+is prevented is it being *necessary*.
+
+**Six real defects, five of them invisible to a fully green test suite.** Each is now covered by
+a regression test, and the durable rule from each is in Permanent Engineering Lessons below.
+
+1. **`reporting.reports.request` was granted to no role.** Both ADR-0040 §6 routes check it; no
+   migration ever inserted it. Every call to the report catalogue and every export returned 403
+   for every role including Founder — the entire Reports feature was unreachable in production.
+   Closed by migration `c2f4a9d18e37` (founder/regional_manager/support_staff/finance_staff/
+   org_admin).
+2. **`ReportExportService.export` never checked `definition.roles`.** One shared permission
+   cannot separate "may export their own school's billing" from "may export RAAD's own costs", so
+   fixing (1) alone would have let an Org Admin export `platform.invoices`/`platform.payments`/
+   `platform.subscriptions` — whose builders set `organization_ids=None` deliberately — and
+   `platform.profit_and_loss`/`platform.expenses`, which read a module with no `organization_id`
+   at all. The two are one fix. Live-verified: 403 for org_admin, 200 for their own reports.
+3. **Report builders asked for `page_size=1000` against a `MAX_PAGE_SIZE` of 100** — a
+   `ValidationError` in the constructor, so seven of eleven reports returned 422 rather than a
+   short report. Replaced by `_collect`, which pages within the allowed size up to the documented
+   1000-row cap and reports the true pre-cap total, with `_metadata` naming the cut when it bites.
+4. **`_MoneyValidatingModel._money_fields` was a Pydantic private attribute**, so reading it in a
+   validator raised `TypeError: argument of type 'ModelPrivateAttr' is not iterable` on *every*
+   money-carrying request: the whole `school_erp` write surface returned 500. Now
+   `MONEY_FIELDS: ClassVar[...]`.
+5. **Three layers rounded money three different ways.** `school_erp.Money` documents explicit
+   `ROUND_HALF_UP` because a bursar expects 10.005 → 10.01, but the API schema and both
+   application-layer `_decimal` helpers quantised *upstream* of it with `quantize`'s default
+   (banker's rounding), so the domain's stated rule never got to apply. All three now round the
+   same way.
+6. **`sum_by_vehicle_between` grouped by a nullable `vehicle_id` including NULL**, and the caller
+   keyed the result by `vehicle_id or ""` — so every organization-wide expense (rent, salaries)
+   was charged to the Vehicle Financial Overview's "Unassigned" row. Live-reproduced with a
+   30.00 unattributed expense. The query now excludes NULL and the service attributes nothing to
+   the Unassigned row; the cost still counts in P&L, where it belongs.
+
+**A seventh, cross-cutting:** `DomainError` was absent from `core/errors/handlers._STATUS_TABLE`
+and fell through to the 500 default, so every business-rule refusal — "Category 'Fuel' is an
+expense category, not an income category" — was served as a server fault, logged as
+`unhandled_app_error`. Now 400, with `ConflictError`/`RuleViolationError` still 409 above it.
+
+**Frontend: the workflow is reachable, not just the read models.** Before this pass every ERP
+write function in `features/school-erp/api.ts` was dead code — the page was read-only, so a
+school could see finance it had no way to enter. Added, all against endpoints that already
+existed: fee-plan create/archive, financial categories, the monthly billing run (multi-select
+cohort, idempotent re-run reported honestly), **record payment** on any unsettled invoice
+(defaulting to the remaining balance, since partial payment is first-class), void payment,
+manual income and vehicle-attributable expense. `PlatformFinancePage` gained the same for RAAD's
+own ledger. Student and vehicle **names** replace raw ULIDs across every finance table, resolved
+through two cached lookups with the id as an honest fallback — ADR-0040 §3 stores ids on the
+invoice on purpose and `.claude/rules/backend.md` #3 forbids the join, so the resolution is
+client-side by necessity. Plan catalogue management (`POST/PATCH /billing/plans`, `/activate`,
+`/disable`) got its first client, Founder-gated; `Plan` now carries `deviceLimit`/`userLimit`.
+`CreateOrganizationForm` sends `plan_id`, which is what makes ADR-0040 §5 reachable at all —
+without it every new organization was onboarded with no subscription and met ADR-0039's
+subscription-inactive gate on first login.
+
+**Verified:** backend 1647 unit/architecture/contract + 304 integration; frontend 639 tests, `tsc`
+clean, production build clean; the full fee-plan → invoice → payment → P&L → per-bus chain and all
+11 reports × both formats exercised over real HTTP against the running stack.
+**Not verified:** browser interaction (the Chrome extension is not connected in this environment)
+— the frontend is covered by component tests, `tsc` and a real production build only.
+
 ## Business Model (Realigned 2026-07-28)
 
 RAAD is a **three-level multi-tenant platform**, in this strict order of authority:
@@ -403,8 +558,8 @@ implementation history (see `PROJECT_STATUS.md` §3 for current per-feature stat
   own status-change events — distinguishable only by `aggregate_type`, never disambiguated in the
   LLD's event catalog.
 - **Billing (C8)** — `Plan`, `Subscription`, `Invoice`, `Payment` (no `retry()` — a retry is a
-  brand-new `Payment.initiate(...)` with a fresh idempotency key), `TransportFee` (no HTTP route,
-  no documented API surface). `Plan`/`Subscription` have no documented write routes at all.
+  brand-new `Payment.initiate(...)` with a fresh idempotency key), `TransportFee` — **removed by ADR-0040**,
+  migrated into `school_erp.StudentInvoice` (see ERP Finance below). `Plan`/`Subscription` have no documented write routes at all.
   **Permanent gotcha:** `payments.idempotency_key` is `CHAR(64)` per the schema authority, and
   PostgreSQL blank-pads `CHAR(n)` storage on `SELECT` (unlike `VARCHAR`) — `infra/mappers.py`'s
   `model_to_payment` strips the padding before it reaches the domain layer; any future `CHAR(n)`
@@ -682,6 +837,50 @@ Bugs found during implementation that represent a durable rule for future code, 
   as the claim. (4) Assert that identity in the test suite itself
   (`backend/tests/integration/test_database_identity_guard.py`), configuration-driven so CI's own
   server still passes — a split that announces itself costs minutes; one that does not costs days.
+- **A permission string is not a grant.** `require_permission(Permission("x"))` compiles, passes
+  every unit test, and 403s every caller in production if no migration ever inserted `x` into
+  `role_permissions` — the string is checked against data, and nothing links the two. Two ADR-0040
+  routes shipped that way and made the whole Reports feature unreachable. **Whenever a route
+  introduces a permission string, diff the set used across `api/routers.py` against the set every
+  migration grants** (a dozen lines of `re.findall`), and grant it in the same change.
+- **One permission covering many resources cannot be the whole authorization gate.** Where a
+  single route serves a catalogue of things with different audiences —
+  `GET /reports/{definition_key}/export` over eleven definitions — the per-resource rule
+  (`ReportDefinition.roles`) must be enforced at the point of *use*, not only where the catalogue
+  is *listed*: a caller can always name a key they were never offered. This is what stood between
+  an Org Admin and a cross-tenant export of every organization's invoices.
+- **A "cap" larger than the layer below allows is an error, not a smaller result.**
+  `OffsetPageRequest` rejects `page_size > MAX_PAGE_SIZE` in its constructor, so a caller asking
+  for 1000 rows got a `ValidationError`, not 100 rows. Page up to the cap
+  (`core/di/report_definitions._collect`) rather than requesting it in one go, and keep the true
+  pre-cap total so a truncated view can say so.
+- **Pydantic v2 turns any underscore-prefixed class attribute into a `ModelPrivateAttr`.** A
+  config tuple named `_money_fields` read back as a descriptor, and `x in cls._money_fields`
+  raised `TypeError` on every request that carried an amount — the entire `school_erp` write
+  surface, 500ing in production against a green suite. Configuration a validator reads must be a
+  `ClassVar` with a plain name. More generally: **the unit tests call application services
+  directly and never build a request model, so anything living purely inside a Pydantic schema is
+  untested by default** — `tests/unit/test_school_erp_api_schemas.py` is the pattern for closing
+  that seam.
+- **Where two layers both quantise money, they must round identically, and the outer one wins.**
+  `Money` documents explicit `ROUND_HALF_UP` (a bursar expects 10.005 → 10.01), but the API schema
+  and the application-layer `_decimal` helpers quantised first with `quantize`'s default —
+  ROUND_HALF_EVEN — leaving the domain's own rule nothing to act on. A rounding convention stated
+  in one layer and defaulted in the layer above it is not in force.
+- **`GROUP BY` on a nullable column silently produces a NULL bucket, and `x or ""` merges it with
+  a real one.** `sum_by_vehicle_between` grouped expenses by a nullable `vehicle_id`; the caller
+  keyed the map by `vehicle_id or ""`, so every unattributed cost was charged to the Vehicle
+  Financial Overview's "Unassigned" row — two different meanings of "no vehicle" collapsed onto
+  one key. Exclude NULL in the query when the aggregate is per-entity, and never map "absent" to
+  the same key as "absent on the other side of the join".
+- **A renderer must coerce what a builder hands it.** One builder leaking a `BillingPeriod` value
+  object into a cell produced a perfectly good PDF (reportlab `str()`s it) and a 500 for XLSX
+  (openpyxl raises). When two backends consume the same intermediate structure, normalise at the
+  boundary — the format that happens to be forgiving is not proof the data is right.
+- **Every `AppError` subclass needs an explicit row in `core/errors/handlers._STATUS_TABLE`.**
+  The fallback is 500, so a plain `DomainError` — a business rule correctly refusing input —
+  answered as a server fault, logged as `unhandled_app_error` and paged an on-call. Base classes
+  go *below* their subclasses in that list, since it is walked most-specific-first.
 
 ## Frontend Implementation Status
 
