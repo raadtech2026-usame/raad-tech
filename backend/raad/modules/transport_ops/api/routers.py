@@ -189,7 +189,7 @@ already applies.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from raad.core.errors.exceptions import (
     AuthorizationError,
@@ -604,14 +604,28 @@ async def list_students(
     ),
 )
 async def count_students(
+    organization_id: str | None = Query(
+        default=None,
+        description=(
+            "Narrow the count to one organization. Omit for the platform-wide total, "
+            "which is what the RAAD dashboard KPI strip uses."
+        ),
+    ),
     principal: Principal = Depends(
         require_permission(Permission("transport_ops.students.count"))
     ),
     student_service: StudentApplicationService = Depends(get_student_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> CountResponse:
+    filters = (
+        [FilterCondition(field="organization_id", op="eq", value=organization_id)]
+        if organization_id
+        else []
+    )
     page = await student_service.list_students(
-        ListStudentsQuery(page_request=OffsetPageRequest(page=1, page_size=1)),
+        ListStudentsQuery(
+            page_request=OffsetPageRequest(page=1, page_size=1), filters=filters
+        ),
         uow=uow,
     )
     return CountResponse(total=page.total)
@@ -810,14 +824,28 @@ async def list_parents(
     ),
 )
 async def count_parents(
+    organization_id: str | None = Query(
+        default=None,
+        description=(
+            "Narrow the count to one organization. Omit for the platform-wide total, "
+            "which is what the RAAD dashboard KPI strip uses."
+        ),
+    ),
     principal: Principal = Depends(
         require_permission(Permission("transport_ops.parents.count"))
     ),
     parent_service: ParentApplicationService = Depends(get_parent_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> CountResponse:
+    filters = (
+        [FilterCondition(field="organization_id", op="eq", value=organization_id)]
+        if organization_id
+        else []
+    )
     page = await parent_service.list_parents(
-        ListParentsQuery(page_request=OffsetPageRequest(page=1, page_size=1)),
+        ListParentsQuery(
+            page_request=OffsetPageRequest(page=1, page_size=1), filters=filters
+        ),
         uow=uow,
     )
     return CountResponse(total=page.total)

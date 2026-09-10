@@ -17,6 +17,7 @@ import {
   Settings,
   UsersRound,
   ScrollText,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import type { Role } from "../../shared/api/types";
@@ -42,7 +43,18 @@ export interface NavHeaderItem {
 
 export type NavItem = NavLinkItem | NavHeaderItem;
 
-const FINANCE_ALLOWED_PATHS = new Set(["/platform", "/platform/organizations", "/platform/billing", "/platform/reports"]);
+/** Finance Staff's own reachable subset (`.claude/rules/security.md` #3, "billing scope only").
+ * `/platform/finance` joins it because that page is exactly this role's remit — it reads only
+ * `GET /admin/platform-stats`, `GET /billing/invoices` and `GET /billing/payments`, all three of
+ * which `finance_staff` already holds a grant for. Presentation only, as ever: the backend's RBAC
+ * matrix remains the real gate (`.claude/rules/frontend.md` #2). */
+const FINANCE_ALLOWED_PATHS = new Set([
+  "/platform",
+  "/platform/organizations",
+  "/platform/finance",
+  "/platform/billing",
+  "/platform/reports",
+]);
 
 function link(label: string, icon: LucideIcon, path: string, roles?: Role[]): NavLinkItem {
   return { type: "link", label, icon, path, roles };
@@ -83,6 +95,7 @@ export const platformNav: NavItem[] = [
   link("Live Tracking", Radio, "/platform/tracking"),
   link("Notifications", Bell, "/platform/notifications"),
   header("Business"),
+  link("Finance", Wallet, "/platform/finance"),
   link("Reports", FileText, "/platform/reports"),
   link("Billing", CreditCard, "/platform/billing"),
   header("Admin"),
@@ -116,6 +129,7 @@ export const organizationNav: NavItem[] = [
   link("Live Video", Video, "/org/video"),
   link("Notifications", Bell, "/org/notifications"),
   header("Business"),
+  link("Finance", Wallet, "/org/finance"),
   link("Reports", FileText, "/org/reports"),
   link("Billing", CreditCard, "/org/billing"),
   header("Settings"),

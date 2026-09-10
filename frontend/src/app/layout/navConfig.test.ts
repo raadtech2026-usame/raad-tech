@@ -15,11 +15,15 @@ describe("getNavForRole — platform nav", () => {
     expect(linkPaths(nav)).toEqual(linkPaths(platformNav));
   });
 
-  it("restricts finance_staff to dashboard/organizations/billing/reports only", () => {
+  it("restricts finance_staff to dashboard/organizations/finance/billing/reports only", () => {
     const nav = getNavForRole(platformNav, "finance_staff");
     expect(linkPaths(nav)).toEqual([
       "/platform",
       "/platform/organizations",
+      // `/platform/finance` (the ERP finance surface) is in this role's remit by definition —
+      // it reads only platform stats, invoices and payments, all three of which `finance_staff`
+      // already holds a grant for.
+      "/platform/finance",
       "/platform/reports",
       "/platform/billing",
     ]);

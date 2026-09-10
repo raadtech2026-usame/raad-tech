@@ -92,8 +92,15 @@ export async function listStudents(params: OffsetListParams): Promise<OffsetPage
  * longer hold, migration `c4d9a2e6f813`). Backs the RAAD Platform's "Total students (count
  * only)" KPI tile without exposing individual student rows — `org_admin`'s own `StudentsPage`
  * still uses `listStudents` above; this is platform-only. */
-export async function countStudents(): Promise<number> {
-  const wire = await apiRequest<{ total: number }>("/students/count");
+export async function countStudents(organizationId?: string): Promise<number> {
+  // RAAD staff hold `.count` but deliberately not `.list` for students and parents — the
+  // platform manages organizations, not individual children and families. `organizationId`
+  // narrows that count to one organization for the Founder's Organization Details page;
+  // omitting it keeps the platform-wide total the dashboard KPI strip uses.
+  const query = organizationId
+    ? `?organization_id=${encodeURIComponent(organizationId)}`
+    : "";
+  const wire = await apiRequest<{ total: number }>(`/students/count${query}`);
   return wire.total;
 }
 

@@ -89,8 +89,15 @@ export async function listParents(params: OffsetListParams): Promise<OffsetPage<
  * longer hold, migration `c4d9a2e6f813`). Backs the RAAD Platform's "Total parents (count
  * only)" KPI tile without exposing individual parent rows — `org_admin`'s own `ParentsPage`
  * still uses `listParents` above; this is platform-only. */
-export async function countParents(): Promise<number> {
-  const wire = await apiRequest<{ total: number }>("/parents/count");
+export async function countParents(organizationId?: string): Promise<number> {
+  // RAAD staff hold `.count` but deliberately not `.list` for students and parents — the
+  // platform manages organizations, not individual children and families. `organizationId`
+  // narrows that count to one organization for the Founder's Organization Details page;
+  // omitting it keeps the platform-wide total the dashboard KPI strip uses.
+  const query = organizationId
+    ? `?organization_id=${encodeURIComponent(organizationId)}`
+    : "";
+  const wire = await apiRequest<{ total: number }>(`/parents/count${query}`);
   return wire.total;
 }
 

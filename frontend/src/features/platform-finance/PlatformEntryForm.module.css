@@ -1,0 +1,58 @@
+/* Drawer-form chrome for the platform ledger. Deliberately its own stylesheet rather than an
+   import from `school-erp/forms.module.css`: the two financial domains are kept apart everywhere
+   else in this codebase, and a shared stylesheet is the kind of coupling that invites a shared
+   component next. */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+@media (max-width: 520px) {
+  .row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The double-count notice on income mode — subscription revenue is billing's, read not entered. */
+.notice {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-default);
+  border-left: 3px solid var(--color-brand-primary);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-subtle);
+}
+
+.noticeIcon {
+  flex-shrink: 0;
+  color: var(--color-brand-primary);
+  margin-top: 1px;
+}
+
+.noticeBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.noticeTitle {
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.noticeText {
+  font-size: var(--text-xs);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-muted);
+}

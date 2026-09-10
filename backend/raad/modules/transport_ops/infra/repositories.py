@@ -167,6 +167,10 @@ class SqlAlchemyStudentRepository(
 
     #: Whitelist for `GET /students` (§8) — limited to columns already on `StudentSummaryResponse`.
     filterable_fields = {
+        # ADR-0021 keeps this honest: `_apply_scope` still narrows every query to the
+        # caller's own scope, so this filter can only narrow *within* what the caller may
+        # already see. It exists so a Founder can focus one organization.
+        "organization_id": FilterField(column="organization_id"),
         "status": FilterField(column="status"),
     }
     sortable_fields = {
@@ -242,6 +246,10 @@ class SqlAlchemyParentRepository(
 
     #: Whitelist for `GET /parents` (§8) — limited to columns already on `ParentSummaryResponse`.
     filterable_fields = {
+        # ADR-0021 keeps this honest: `_apply_scope` still narrows every query to the
+        # caller's own scope, so this filter can only narrow *within* what the caller may
+        # already see. It exists so a Founder can focus one organization.
+        "organization_id": FilterField(column="organization_id"),
         "status": FilterField(column="status"),
     }
     sortable_fields = {
@@ -395,6 +403,10 @@ class SqlAlchemyDriverRepository(
     #: (`Driver` has no `full_name` of its own — `license_no` stands in as the readable
     #: identifying field, mirroring `application/queries.py`'s `DriverSummaryDTO` docstring).
     filterable_fields = {
+        # ADR-0021 keeps this honest: `_apply_scope` still narrows every query to the
+        # caller's own scope, so this filter can only narrow *within* what the caller may
+        # already see. It exists so a Founder can focus one organization.
+        "organization_id": FilterField(column="organization_id"),
         "status": FilterField(column="status"),
     }
     sortable_fields = {
@@ -473,6 +485,10 @@ class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepos
 
     #: Whitelist for `GET /routes` (§8) — limited to columns already on `RouteSummaryResponse`.
     filterable_fields = {
+        # ADR-0021 keeps this honest: `_apply_scope` still narrows every query to the
+        # caller's own scope, so this filter can only narrow *within* what the caller may
+        # already see. It exists so a Founder can focus one organization.
+        "organization_id": FilterField(column="organization_id"),
         "status": FilterField(column="status"),
     }
     sortable_fields = {
