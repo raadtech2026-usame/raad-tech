@@ -10,15 +10,17 @@ import { FormField } from "../../shared/components/FormField/FormField";
 import { Input } from "../../shared/components/Input/Input";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
-import { createFeePlan } from "./api";
+import { createFeePlan, updateFeePlan, type FeePlan } from "./api";
 import styles from "./forms.module.css";
 
 /**
- * Create a fee plan — the named recurring charge a monthly billing run bills students against.
+ * Create or edit a fee plan — the named recurring charge a monthly billing run bills students
+ * against.
  *
  * A plan is a *template*, not a bill: changing or archiving one later never alters an invoice
  * already issued, because each invoice captures its own amount and discount at issue time. That
- * is why this form has no "apply to existing invoices" affordance to offer.
+ * is why this form has no "apply to existing invoices" affordance to offer, and why editing an
+ * amount here is safe even for a plan with issued invoices already outstanding against it.
  */
 
 const AMOUNT_PATTERN = /^\d{1,13}(\.\d{1,2})?$/;
@@ -54,11 +56,14 @@ export interface FeePlanFormProps {
   open: boolean;
   onClose: () => void;
   currency: string;
+  /** Present -> edit this existing plan instead of creating a new one. */
+  editing?: FeePlan | null;
 }
 
-export function FeePlanForm({ open, onClose, currency }: FeePlanFormProps) {
+export function FeePlanForm({ open, onClose, currency, editing = null }: FeePlanFormProps) {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const isEditing = editing !== null;
 
   const {
     register,
@@ -72,33 +77,50 @@ export function FeePlanForm({ open, onClose, currency }: FeePlanFormProps) {
 
   useEffect(() => {
     if (open) {
-      reset({
-        name: "",
-        amount: "",
-        currency,
-        defaultDiscountAmount: "0.00",
-        description: "",
-      });
+      reset(
+        editing
+          ? {
+              name: editing.name,
+              amount: editing.amount,
+              currency: editing.currency,
+              defaultDiscountAmount: editing.defaultDiscountAmount,
+              description: editing.description ?? "",
+            }
+          : {
+              name: "",
+              amount: "",
+              currency,
+              defaultDiscountAmount: "0.00",
+              description: "",
+            },
+      );
     }
-  }, [open, currency, reset]);
+  }, [open, currency, editing, reset]);
 
   const mutation = useMutation({
-    mutationFn: (values: FormValues) =>
-      createFeePlan({
+    mutationFn: (values: FormValues) => {
+      const input = {
         name: values.name,
         amount: values.amount,
         currency: values.currency.toUpperCase(),
         defaultDiscountAmount: values.defaultDiscountAmount || "0.00",
         description: values.description || null,
-      }),
+      };
+      return editing ? updateFeePlan(editing.id, input) : createFeePlan(input);
+    },
     onSuccess: (plan) => {
       queryClient.invalidateQueries({ queryKey: ["school-finance"] });
-      toast.success("Fee plan created", `${plan.name} is ready to bill against.`);
+      toast.success(
+        isEditing ? "Fee plan updated" : "Fee plan created",
+        isEditing
+          ? `${plan.name} has been updated. Already-issued invoices are unaffected.`
+          : `${plan.name} is ready to bill against.`,
+      );
       onClose();
     },
     onError: (error) => {
       toast.error(
-        "Could not create the fee plan",
+        isEditing ? "Could not update the fee plan" : "Could not create the fee plan",
         error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
       );
     },
@@ -116,15 +138,19 @@ export function FeePlanForm({ open, onClose, currency }: FeePlanFormProps) {
       icon={<FileSpreadsheet size={18} />}
       iconTint="var(--color-brand-primary-tint)"
       iconColor="var(--color-brand-primary)"
-      title="New fee plan"
-      subtitle="A recurring charge to bill students against"
+      title={isEditing ? "Edit fee plan" : "New fee plan"}
+      subtitle={
+        isEditing
+          ? "Changes never retro-apply to invoices already issued"
+          : "A recurring charge to bill students against"
+      }
       footer={
         <>
           <Button variant="ghost" onClick={handleClose} disabled={mutation.isPending}>
             Cancel
           </Button>
           <Button type="submit" form="fee-plan-form" loading={mutation.isPending}>
-            Create fee plan
+            {isEditing ? "Save changes" : "Create fee plan"}
           </Button>
         </>
       }

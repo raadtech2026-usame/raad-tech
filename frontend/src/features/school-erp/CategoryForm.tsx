@@ -11,16 +11,18 @@ import { Input } from "../../shared/components/Input/Input";
 import { Select } from "../../shared/components/Select/Select";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
-import { createCategory, type CategoryKind, type FinancialCategory } from "./api";
+import { createCategory, updateCategory, type CategoryKind, type FinancialCategory } from "./api";
 import styles from "./forms.module.css";
 
 /**
- * Create a financial category — the heading income and expenses are filed under, and what the
- * Profit & Loss breakdown groups by.
+ * Create or edit a financial category — the heading income and expenses are filed under, and
+ * what the Profit & Loss breakdown groups by.
  *
  * `kind` is fixed at creation and cannot be changed afterwards: it is what stops an expense being
  * filed under an income heading, and letting it flip would silently reclassify every entry
- * already filed under it.
+ * already filed under it. `PATCH /school-finance/categories/{id}` only accepts `name`/
+ * `description` for exactly this reason, so edit mode hides the kind/parent fields entirely
+ * rather than rendering controls the backend would ignore.
  */
 
 const schema = z.object({
@@ -39,6 +41,8 @@ export interface CategoryFormProps {
   defaultKind: CategoryKind;
   /** Existing categories, so a new one can be nested under a matching-kind parent. */
   categories: FinancialCategory[];
+  /** Present -> edit this existing category's name/description instead of creating a new one. */
+  editing?: FinancialCategory | null;
 }
 
 export function CategoryForm({
@@ -46,9 +50,11 @@ export function CategoryForm({
   onClose,
   defaultKind,
   categories,
+  editing = null,
 }: CategoryFormProps) {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const isEditing = editing !== null;
 
   const {
     register,
@@ -65,9 +71,18 @@ export function CategoryForm({
 
   useEffect(() => {
     if (open) {
-      reset({ name: "", kind: defaultKind, parentCategoryId: "", description: "" });
+      reset(
+        editing
+          ? {
+              name: editing.name,
+              kind: editing.kind,
+              parentCategoryId: editing.parentCategoryId ?? "",
+              description: editing.description ?? "",
+            }
+          : { name: "", kind: defaultKind, parentCategoryId: "", description: "" },
+      );
     }
-  }, [open, defaultKind, reset]);
+  }, [open, defaultKind, editing, reset]);
 
   // A parent must share its child's kind — the backend enforces it, and offering a mismatched
   // parent here would just produce a rejection the operator could not have predicted.
@@ -77,20 +92,30 @@ export function CategoryForm({
 
   const mutation = useMutation({
     mutationFn: (values: FormValues) =>
-      createCategory({
-        name: values.name,
-        kind: values.kind,
-        parentCategoryId: values.parentCategoryId || null,
-        description: values.description || null,
-      }),
+      editing
+        ? updateCategory(editing.id, {
+            name: values.name,
+            description: values.description || null,
+          })
+        : createCategory({
+            name: values.name,
+            kind: values.kind,
+            parentCategoryId: values.parentCategoryId || null,
+            description: values.description || null,
+          }),
     onSuccess: (category) => {
       queryClient.invalidateQueries({ queryKey: ["school-finance"] });
-      toast.success("Category created", `${category.name} can now be used to file entries.`);
+      toast.success(
+        isEditing ? "Category updated" : "Category created",
+        isEditing
+          ? `${category.name} has been renamed.`
+          : `${category.name} can now be used to file entries.`,
+      );
       onClose();
     },
     onError: (error) => {
       toast.error(
-        "Could not create the category",
+        isEditing ? "Could not update the category" : "Could not create the category",
         error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
       );
     },
@@ -108,15 +133,15 @@ export function CategoryForm({
       icon={<Tags size={18} />}
       iconTint="var(--color-brand-primary-tint)"
       iconColor="var(--color-brand-primary)"
-      title="New category"
-      subtitle="A heading for income or expenses"
+      title={isEditing ? "Edit category" : "New category"}
+      subtitle={isEditing ? "Rename or adjust the description" : "A heading for income or expenses"}
       footer={
         <>
           <Button variant="ghost" onClick={handleClose} disabled={mutation.isPending}>
             Cancel
           </Button>
           <Button type="submit" form="category-form" loading={mutation.isPending}>
-            Create category
+            {isEditing ? "Save changes" : "Create category"}
           </Button>
         </>
       }
@@ -135,31 +160,35 @@ export function CategoryForm({
           />
         </FormField>
 
-        <FormField
-          label="Side of the ledger"
-          hint="Fixed once created — it is what keeps an expense out of an income heading."
-          error={errors.kind?.message}
-        >
-          <Select {...register("kind")}>
-            <option value="income">Income</option>
-            <option value="expense">Expense</option>
-          </Select>
-        </FormField>
+        {!isEditing && (
+          <>
+            <FormField
+              label="Side of the ledger"
+              hint="Fixed once created — it is what keeps an expense out of an income heading."
+              error={errors.kind?.message}
+            >
+              <Select {...register("kind")}>
+                <option value="income">Income</option>
+                <option value="expense">Expense</option>
+              </Select>
+            </FormField>
 
-        <FormField
-          label="Nest under"
-          hint="Optional, one level — e.g. “Utilities” → “Electricity”."
-          error={errors.parentCategoryId?.message}
-        >
-          <Select {...register("parentCategoryId")}>
-            <option value="">Top level</option>
-            {parentOptions.map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
-              </option>
-            ))}
-          </Select>
-        </FormField>
+            <FormField
+              label="Nest under"
+              hint="Optional, one level — e.g. “Utilities” → “Electricity”."
+              error={errors.parentCategoryId?.message}
+            >
+              <Select {...register("parentCategoryId")}>
+                <option value="">Top level</option>
+                {parentOptions.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+          </>
+        )}
 
         <FormField label="Description" error={errors.description?.message}>
           <Input {...register("description")} placeholder="Optional" />

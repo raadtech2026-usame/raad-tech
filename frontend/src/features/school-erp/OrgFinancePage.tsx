@@ -31,6 +31,7 @@ import { ApiError } from "../../shared/api/types";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
 import {
   archiveFeePlan,
+  cancelStudentInvoice,
   currentPeriod,
   formatAmount,
   getFinanceSummary,
@@ -45,7 +46,12 @@ import {
   listVehicleFinance,
   listVehiclesForPicker,
   toLabelMap,
+  voidExpense,
+  voidIncome,
   voidStudentPayment,
+  type FeePlan,
+  type FinancialCategory,
+  type LedgerEntry,
   type StudentInvoice,
   type StudentInvoiceStatus,
   type StudentPayment,
@@ -144,6 +150,13 @@ export function OrgFinancePage() {
   const [ledgerFormMode, setLedgerFormMode] = useState<"income" | "expense" | null>(null);
   const [voidingPayment, setVoidingPayment] = useState<StudentPayment | null>(null);
   const [archivingPlanId, setArchivingPlanId] = useState<string | null>(null);
+  const [cancellingInvoice, setCancellingInvoice] = useState<StudentInvoice | null>(null);
+  const [voidingLedgerEntry, setVoidingLedgerEntry] = useState<{
+    entry: LedgerEntry;
+    kind: "income" | "expense";
+  } | null>(null);
+  const [editingFeePlan, setEditingFeePlan] = useState<FeePlan | null>(null);
+  const [editingCategory, setEditingCategory] = useState<FinancialCategory | null>(null);
 
   const summary = useQuery({
     queryKey: ["school-finance", "summary", period],
@@ -253,6 +266,40 @@ export function OrgFinancePage() {
     onError: (error) => {
       toast.error(
         "Could not archive the fee plan",
+        error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
+      );
+    },
+  });
+
+  const cancelInvoiceMutation = useMutation({
+    mutationFn: (invoice: StudentInvoice) =>
+      cancelStudentInvoice(invoice.id, "Cancelled by school"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["school-finance"] });
+      toast.success("Invoice cancelled", "It no longer counts toward billed or outstanding totals.");
+      setCancellingInvoice(null);
+    },
+    onError: (error) => {
+      toast.error(
+        "Could not cancel the invoice",
+        error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
+      );
+    },
+  });
+
+  const voidLedgerMutation = useMutation({
+    mutationFn: (target: { entry: LedgerEntry; kind: "income" | "expense" }) =>
+      target.kind === "income"
+        ? voidIncome(target.entry.id, "Voided by school")
+        : voidExpense(target.entry.id, "Voided by school"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["school-finance"] });
+      toast.success("Entry voided", "It stays on record as voided and no longer counts toward totals.");
+      setVoidingLedgerEntry(null);
+    },
+    onError: (error) => {
+      toast.error(
+        "Could not void the entry",
         error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
       );
     },
@@ -517,14 +564,23 @@ export function OrgFinancePage() {
                           </td>
                           <td className={styles.rowAction}>
                             {isPayable(inv) && (
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                leadingIcon={<Wallet size={13} />}
-                                onClick={() => setPayingInvoice(inv)}
-                              >
-                                Record payment
-                              </Button>
+                              <div className={styles.rowActions}>
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  leadingIcon={<Wallet size={13} />}
+                                  onClick={() => setPayingInvoice(inv)}
+                                >
+                                  Record payment
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setCancellingInvoice(inv)}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -680,6 +736,8 @@ export function OrgFinancePage() {
                         <th>Description</th>
                         {tab === "expenses" && <th>Vehicle</th>}
                         <th>Reference</th>
+                        <th>State</th>
+                        <th aria-label="Actions" />
                       </tr>
                     </thead>
                     <tbody>
@@ -707,6 +765,22 @@ export function OrgFinancePage() {
                             </td>
                           )}
                           <td>{e.reference ?? <span className={styles.muted}>—</span>}</td>
+                          <td>
+                            <Badge variant={e.isVoided ? "danger" : "success"} dot>
+                              {e.isVoided ? "Voided" : "Recorded"}
+                            </Badge>
+                          </td>
+                          <td className={styles.rowAction}>
+                            {!e.isVoided && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setVoidingLedgerEntry({ entry: e, kind: tab === "income" ? "income" : "expense" })}
+                              >
+                                Void
+                              </Button>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -765,13 +839,18 @@ export function OrgFinancePage() {
                           </td>
                           <td className={styles.rowAction}>
                             {plan.status === "active" && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => setArchivingPlanId(plan.id)}
-                              >
-                                Archive
-                              </Button>
+                              <div className={styles.rowActions}>
+                                <Button size="sm" variant="ghost" onClick={() => setEditingFeePlan(plan)}>
+                                  Edit
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setArchivingPlanId(plan.id)}
+                                >
+                                  Archive
+                                </Button>
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -811,6 +890,7 @@ export function OrgFinancePage() {
                         <th>Nested under</th>
                         <th>Description</th>
                         <th>Status</th>
+                        <th aria-label="Actions" />
                       </tr>
                     </thead>
                     <tbody>
@@ -837,6 +917,13 @@ export function OrgFinancePage() {
                             >
                               {category.status === "active" ? "Active" : "Archived"}
                             </Badge>
+                          </td>
+                          <td className={styles.rowAction}>
+                            {category.status === "active" && (
+                              <Button size="sm" variant="ghost" onClick={() => setEditingCategory(category)}>
+                                Edit
+                              </Button>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -967,15 +1054,23 @@ export function OrgFinancePage() {
         period={period}
       />
       <FeePlanForm
-        open={feePlanOpen}
-        onClose={() => setFeePlanOpen(false)}
+        open={feePlanOpen || editingFeePlan !== null}
+        onClose={() => {
+          setFeePlanOpen(false);
+          setEditingFeePlan(null);
+        }}
         currency={currency}
+        editing={editingFeePlan}
       />
       <CategoryForm
-        open={categoryOpen}
-        onClose={() => setCategoryOpen(false)}
+        open={categoryOpen || editingCategory !== null}
+        onClose={() => {
+          setCategoryOpen(false);
+          setEditingCategory(null);
+        }}
         defaultKind="expense"
         categories={categories.data?.data ?? []}
+        editing={editingCategory}
       />
       <LedgerEntryForm
         open={ledgerFormMode !== null}
@@ -1008,6 +1103,36 @@ export function OrgFinancePage() {
         loading={archiveMutation.isPending}
         onConfirm={() => archivingPlanId && archiveMutation.mutate(archivingPlanId)}
         onCancel={() => setArchivingPlanId(null)}
+      />
+
+      <ConfirmDialog
+        open={cancellingInvoice !== null}
+        title="Cancel this invoice?"
+        description={
+          cancellingInvoice
+            ? `${formatAmount(cancellingInvoice.netAmount, cancellingInvoice.currency)} owed by ${studentName(cancellingInvoice.studentId)} will no longer count toward billed or outstanding totals. Any payment already recorded against it is unaffected and must be voided separately if it also needs reversing.`
+            : undefined
+        }
+        confirmLabel="Cancel invoice"
+        tone="danger"
+        loading={cancelInvoiceMutation.isPending}
+        onConfirm={() => cancellingInvoice && cancelInvoiceMutation.mutate(cancellingInvoice)}
+        onCancel={() => setCancellingInvoice(null)}
+      />
+
+      <ConfirmDialog
+        open={voidingLedgerEntry !== null}
+        title={voidingLedgerEntry?.kind === "income" ? "Void this income entry?" : "Void this expense entry?"}
+        description={
+          voidingLedgerEntry
+            ? `${formatAmount(voidingLedgerEntry.entry.amount, voidingLedgerEntry.entry.currency)} will be reversed. The entry stays on record as voided and no longer counts toward Profit & Loss.`
+            : undefined
+        }
+        confirmLabel="Void entry"
+        tone="danger"
+        loading={voidLedgerMutation.isPending}
+        onConfirm={() => voidingLedgerEntry && voidLedgerMutation.mutate(voidingLedgerEntry)}
+        onCancel={() => setVoidingLedgerEntry(null)}
       />
     </div>
   );

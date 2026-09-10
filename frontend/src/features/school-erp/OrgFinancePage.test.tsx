@@ -19,9 +19,15 @@ vi.mock("./api", async (importOriginal) => ({
   listStudentsForPicker: vi.fn(),
   listVehiclesForPicker: vi.fn(),
   recordStudentPayment: vi.fn(),
+  cancelStudentInvoice: vi.fn(),
+  voidIncome: vi.fn(),
+  voidExpense: vi.fn(),
+  updateFeePlan: vi.fn(),
+  updateCategory: vi.fn(),
 }));
 
 import {
+  cancelStudentInvoice,
   getFinanceSummary,
   getProfitAndLoss,
   listCategories,
@@ -34,6 +40,13 @@ import {
   listVehicleFinance,
   listVehiclesForPicker,
   recordStudentPayment,
+  updateCategory,
+  updateFeePlan,
+  voidExpense,
+  voidIncome,
+  type FeePlan,
+  type FinancialCategory,
+  type LedgerEntry,
   type StudentInvoice,
 } from "./api";
 import { OrgFinancePage } from "./OrgFinancePage";
@@ -312,5 +325,172 @@ describe("OrgFinancePage", () => {
     await user.click(screen.getByRole("tab", { name: "Fee plans" }));
     expect(await screen.findByRole("button", { name: /new fee plan/i })).toBeInTheDocument();
     expect(screen.getByText("No fee plans yet")).toBeInTheDocument();
+  });
+
+  // ---- Void / cancel / edit actions (pre-deployment audit §C) -----------------------------
+
+  it("cancels an unsettled invoice after confirmation", async () => {
+    const user = userEvent.setup();
+    vi.mocked(cancelStudentInvoice).mockResolvedValue({ ...INVOICE, status: "cancelled" });
+    renderPage();
+    await screen.findByText("Partially paid");
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /cancel invoice/i }));
+
+    await waitFor(() =>
+      expect(cancelStudentInvoice).toHaveBeenCalledWith("inv-1", expect.any(String)),
+    );
+  });
+
+  it("does not offer Cancel on a settled invoice", async () => {
+    vi.mocked(listStudentInvoices).mockResolvedValue({
+      data: [{ ...INVOICE, status: "paid", amountPaid: "90.00", balanceDue: "0.00" }],
+      page: { total: 1, page: 1, pageSize: 25 },
+    });
+    renderPage();
+
+    await screen.findByText("$0.00");
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  });
+
+  const EXPENSE_ENTRY: LedgerEntry = {
+    id: "exp-1",
+    organizationId: "org-1",
+    categoryId: null,
+    amount: "75.00",
+    currency: "USD",
+    occurredOn: "2026-09-01",
+    description: "Fuel",
+    reference: null,
+    vehicleId: "bus-1",
+    isVoided: false,
+  };
+
+  it("voids an expense entry after confirmation", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listExpenses).mockResolvedValue({
+      data: [EXPENSE_ENTRY],
+      page: { total: 1, page: 1, pageSize: 25 },
+    });
+    vi.mocked(voidExpense).mockResolvedValue({ ...EXPENSE_ENTRY, isVoided: true });
+    renderPage();
+    await screen.findByText("Partially paid");
+
+    await user.click(screen.getByRole("tab", { name: "Expenses" }));
+    await screen.findByText("Fuel");
+    await user.click(screen.getByRole("button", { name: "Void" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/expense entry/i);
+    await user.click(within(dialog).getByRole("button", { name: /void entry/i }));
+
+    await waitFor(() =>
+      expect(voidExpense).toHaveBeenCalledWith("exp-1", expect.any(String)),
+    );
+  });
+
+  it("voids an income entry after confirmation", async () => {
+    const user = userEvent.setup();
+    const incomeEntry: LedgerEntry = { ...EXPENSE_ENTRY, id: "inc-1", description: "Donation" };
+    vi.mocked(listIncome).mockResolvedValue({
+      data: [incomeEntry],
+      page: { total: 1, page: 1, pageSize: 25 },
+    });
+    vi.mocked(voidIncome).mockResolvedValue({ ...incomeEntry, isVoided: true });
+    renderPage();
+    await screen.findByText("Partially paid");
+
+    await user.click(screen.getByRole("tab", { name: "Income" }));
+    await screen.findByText("Donation");
+    await user.click(screen.getByRole("button", { name: "Void" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/income entry/i);
+    await user.click(within(dialog).getByRole("button", { name: /void entry/i }));
+
+    await waitFor(() =>
+      expect(voidIncome).toHaveBeenCalledWith("inc-1", expect.any(String)),
+    );
+  });
+
+  const FEE_PLAN: FeePlan = {
+    id: "plan-1",
+    organizationId: "org-1",
+    name: "Monthly transport",
+    amount: "50.00",
+    currency: "USD",
+    defaultDiscountAmount: "0.00",
+    description: null,
+    status: "active",
+  };
+
+  it("edits an existing fee plan, pre-filled with its current values", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listFeePlans).mockResolvedValue({
+      data: [FEE_PLAN],
+      page: { total: 1, page: 1, pageSize: 25 },
+    });
+    vi.mocked(updateFeePlan).mockResolvedValue({ ...FEE_PLAN, amount: "60.00" });
+    renderPage();
+    await screen.findByText("Partially paid");
+
+    await user.click(screen.getByRole("tab", { name: "Fee plans" }));
+    await screen.findByText("Monthly transport");
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByDisplayValue("Monthly transport")).toBeInTheDocument();
+    expect(within(drawer).getByDisplayValue("50.00")).toBeInTheDocument();
+
+    await user.click(within(drawer).getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() =>
+      expect(updateFeePlan).toHaveBeenCalledWith(
+        "plan-1",
+        expect.objectContaining({ name: "Monthly transport", amount: "50.00" }),
+      ),
+    );
+  });
+
+  const CATEGORY: FinancialCategory = {
+    id: "cat-1",
+    organizationId: "org-1",
+    name: "Fuel",
+    kind: "expense",
+    parentCategoryId: null,
+    description: null,
+    status: "active",
+  };
+
+  it("edits an existing category's name without exposing its fixed kind as editable", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listCategories).mockResolvedValue({
+      data: [CATEGORY],
+      page: { total: 1, page: 1, pageSize: 25 },
+    });
+    vi.mocked(updateCategory).mockResolvedValue({ ...CATEGORY, name: "Fuel & Maintenance" });
+    renderPage();
+    await screen.findByText("Partially paid");
+
+    await user.click(screen.getByRole("tab", { name: "Categories" }));
+    await screen.findByText("Fuel");
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByDisplayValue("Fuel")).toBeInTheDocument();
+    // Kind is fixed once created — the update endpoint doesn't accept it, so edit mode must not
+    // offer a control that would silently be ignored.
+    expect(within(drawer).queryByText("Side of the ledger")).not.toBeInTheDocument();
+
+    await user.click(within(drawer).getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() =>
+      expect(updateCategory).toHaveBeenCalledWith(
+        "cat-1",
+        expect.objectContaining({ name: "Fuel" }),
+      ),
+    );
   });
 });

@@ -496,6 +496,17 @@ export async function generateStudentInvoices(input: {
   return wire.map(toStudentInvoice);
 }
 
+export async function cancelStudentInvoice(
+  invoiceId: string,
+  reason?: string | null,
+): Promise<StudentInvoice> {
+  const wire = await apiRequest<StudentInvoiceWire>(
+    `/school-finance/student-invoices/${encodeURIComponent(invoiceId)}/cancel`,
+    { method: "POST", body: { reason: reason ?? null } },
+  );
+  return toStudentInvoice(wire);
+}
+
 export async function recordStudentPayment(
   invoiceId: string,
   input: {
@@ -544,6 +555,32 @@ export async function createFeePlan(input: {
   return toFeePlan(wire);
 }
 
+export async function updateFeePlan(
+  feePlanId: string,
+  input: {
+    name: string;
+    amount: string;
+    currency: string;
+    defaultDiscountAmount?: string;
+    description?: string | null;
+  },
+): Promise<FeePlan> {
+  const wire = await apiRequest<FeePlanWire>(
+    `/school-finance/fee-plans/${encodeURIComponent(feePlanId)}`,
+    {
+      method: "PATCH",
+      body: {
+        name: input.name,
+        amount: input.amount,
+        currency: input.currency,
+        default_discount_amount: input.defaultDiscountAmount ?? "0.00",
+        description: input.description ?? null,
+      },
+    },
+  );
+  return toFeePlan(wire);
+}
+
 export async function archiveFeePlan(feePlanId: string): Promise<FeePlan> {
   const wire = await apiRequest<FeePlanWire>(
     `/school-finance/fee-plans/${encodeURIComponent(feePlanId)}/archive`,
@@ -567,6 +604,23 @@ export async function createCategory(input: {
       description: input.description ?? null,
     },
   });
+  return toCategory(wire);
+}
+
+export async function updateCategory(
+  categoryId: string,
+  input: { name: string; description?: string | null },
+): Promise<FinancialCategory> {
+  const wire = await apiRequest<CategoryWire>(
+    `/school-finance/categories/${encodeURIComponent(categoryId)}`,
+    {
+      method: "PATCH",
+      body: {
+        name: input.name,
+        description: input.description ?? null,
+      },
+    },
+  );
   return toCategory(wire);
 }
 
@@ -610,6 +664,28 @@ export async function recordExpense(input: {
       vehicle_id: input.vehicleId ?? null,
     },
   });
+  return toLedgerEntry(wire);
+}
+
+export async function voidIncome(
+  incomeId: string,
+  reason?: string | null,
+): Promise<LedgerEntry> {
+  const wire = await apiRequest<LedgerWire>(
+    `/school-finance/income/${encodeURIComponent(incomeId)}/void`,
+    { method: "POST", body: { reason: reason ?? null } },
+  );
+  return toLedgerEntry(wire);
+}
+
+export async function voidExpense(
+  expenseId: string,
+  reason?: string | null,
+): Promise<LedgerEntry> {
+  const wire = await apiRequest<LedgerWire>(
+    `/school-finance/expenses/${encodeURIComponent(expenseId)}/void`,
+    { method: "POST", body: { reason: reason ?? null } },
+  );
   return toLedgerEntry(wire);
 }
 

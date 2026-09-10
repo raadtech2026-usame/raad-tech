@@ -214,6 +214,13 @@
   width: 1%;
 }
 
+/* Multiple row-level actions in one cell — mirrors BillingPage.module.css's own `.rowActions`. */
+.rowActions {
+  display: inline-flex;
+  gap: var(--space-1);
+  justify-content: flex-end;
+}
+
 /* A voided ledger entry stays visible — financial rows are never hard-deleted — but must not
    read as a live figure. */
 .voidedRow td {
