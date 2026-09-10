@@ -7,6 +7,7 @@ instead of the logging/in-memory defaults, without a real Redis connection.
 import json
 import unittest
 
+from src.broker_config import BrokerConfig
 from src.config import RelayConfig
 from src.events.publisher_port import LoggingSessionEventPublisher
 from src.events.redis_session_event_publisher import RedisSessionEventPublisher
@@ -73,19 +74,26 @@ def _config() -> RelayConfig:
 
 class Jt1078RelayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
     async def test_without_a_broker_falls_back_to_logging_and_in_memory_defaults(self) -> None:
-        relay = Jt1078Relay(config=_config())
+        # Environment-coupling fix (2026-09-10): `Jt1078Relay.__init__` defaults an omitted
+        # `broker_config` to `BrokerConfig.from_env()`, which reads the real
+        # `JT1078_RELAY_BROKER_URL` from this process's own environment — set to a real value by
+        # `docker-compose.yml` whenever this suite runs inside the relay's own container, which
+        # silently wired a real Redis client and made this "without a broker" test assert against
+        # a broker that was, in fact, configured. Passing `BrokerConfig()` (its `url=None`
+        # default) explicitly is what actually asserts "no broker," in every environment.
+        relay = Jt1078Relay(config=_config(), broker_config=BrokerConfig())
         self.assertIsInstance(relay._event_publisher, LoggingSessionEventPublisher)
         self.assertIsInstance(relay._token_guard, InMemorySingleUseTokenGuard)
 
     async def test_a_redis_client_wires_the_real_redis_backed_implementations(self) -> None:
         redis = FakeRedis()
-        relay = Jt1078Relay(config=_config(), redis_client=redis)
+        relay = Jt1078Relay(config=_config(), broker_config=BrokerConfig(), redis_client=redis)
         self.assertIsInstance(relay._event_publisher, RedisSessionEventPublisher)
         self.assertIsInstance(relay._token_guard, RedisSingleUseTokenGuard)
         self.assertIsNotNone(relay.session_request_server)
 
     async def test_without_a_broker_no_session_request_server_is_built(self) -> None:
-        relay = Jt1078Relay(config=_config())
+        relay = Jt1078Relay(config=_config(), broker_config=BrokerConfig())
         self.assertIsNone(relay.session_request_server)
 
     async def test_ending_a_session_with_redis_wired_publishes_onto_the_shared_stream(

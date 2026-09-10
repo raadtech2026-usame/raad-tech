@@ -456,7 +456,9 @@ class Jt1078Relay:
 
 async def main() -> None:
     configure_logging(level=logging.INFO)
-    relay = Jt1078Relay()
+    config = RelayConfig.from_env()
+    config.validate_on_startup()
+    relay = Jt1078Relay(config=config)
     await relay.serve_forever()
 
 

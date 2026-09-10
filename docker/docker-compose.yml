@@ -346,10 +346,16 @@ services:
       # Must match RAAD_BROKER__URL/DEVICE_GATEWAY_BROKER_URL exactly (password + db 1) — all
       # three deployables coordinate over the same `raad:events` stream (ADR-0024 §8/§9).
       JT1078_RELAY_BROKER_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
-      # Must match whatever secret a future Business API Jt1078RelayAdapter mints viewer tokens
-      # with (ADR-0022's own "secrets are environment variables" precedent) — no default in
-      # production; left as the dev-only placeholder here since no such adapter exists yet.
+      # Must match whatever secret the Business API's real Jt1078RelayAdapter mints viewer tokens
+      # with (ADR-0022's own "secrets are environment variables" precedent). Dev-only placeholder
+      # here; a real deployment sets both this AND JT1078_RELAY_ENVIRONMENT=prod below, or
+      # RelayConfig.validate_on_startup() (P0 security fix, 2026-09-10) refuses to start rather
+      # than mint/accept viewer tokens signed with a guessable default.
       JT1078_RELAY_VIEWER_TOKEN_SECRET: ${JT1078_RELAY_VIEWER_TOKEN_SECRET:-dev-only-change-me}
+      # This deployable's own environment marker (no shared Settings class with the backend,
+      # `.claude/rules/architecture.md` #2) — only "prod" activates validate_on_startup()'s
+      # secret checks, mirroring RAAD_ENVIRONMENT's own dev-default/prod-gated shape above.
+      JT1078_RELAY_ENVIRONMENT: ${JT1078_RELAY_ENVIRONMENT:-dev}
       # A real, production-blocking gap found live (2026-08-19): this was never wired here at
       # all. `RelayConfig.effective_public_ingest_host` (`services/jt1078/src/config.py`) then
       # silently falls back to `ingest_host`'s own default, `0.0.0.0` — a *bind* address, never
@@ -429,6 +435,15 @@ services:
     logging: *default-logging
     restart: unless-stopped
     environment:
+      # These win over frontend/.env.local, which docker-compose.dev.yml bind-mounts into this
+      # same container: Vite's loadEnv seeds import.meta.env from process.env FIRST and treats an
+      # inline VITE_* variable as higher priority than any .env file, so the value here is what
+      # the dev server actually serves. Two consequences, both live-observed on 2026-09-08:
+      # editing .env.local alone changes nothing inside the container, and a container left
+      # running across an edit to docker/.env keeps serving the value it started with. A stale
+      # Mapbox token survived here that way and 401'd on every style request while the map looked
+      # merely "broken" — after changing a VITE_* value in docker/.env, recreate this service
+      # (`docker compose up -d --force-recreate frontend`), don't just restart it.
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost/api/v1}
       VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost}
       VITE_MAPBOX_ACCESS_TOKEN: ${VITE_MAPBOX_ACCESS_TOKEN:-}

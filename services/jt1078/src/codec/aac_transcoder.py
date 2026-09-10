@@ -73,6 +73,26 @@ class AacTranscoder:
             "-hide_banner",
             "-loglevel",
             "error",
+            # `-analyzeduration 0 -probesize 32` — the real fix for a live-found production bug
+            # (2026-09-10): ffmpeg's generic demuxer defaults to a multi-second stream-analysis
+            # window before it starts emitting ANY decoded frames, even for an explicitly-typed
+            # raw format (`-f alaw`) that needs no analysis at all to know its own sample rate/
+            # channel count. Confirmed by direct reproduction: with only `-flush_packets 1` below,
+            # a live incremental feed (`feed()` called every ~20ms, this class's own real usage
+            # shape) produced literally zero bytes on `pipe:1` until either ~1.5-2s of audio had
+            # accumulated or the process's stdin was closed — a real live viewer would hear no
+            # audio for the first 1.5-2 seconds of every session at best, and never at all for any
+            # session shorter than that, at worst. A single bulk write of the same total byte
+            # count (feeding everything before ffmpeg's first read, which is how a naive manual
+            # test — and nothing else — exercises this) masks the bug entirely, since the
+            # analysis window is satisfied instantly either way. These two flags make ffmpeg trust
+            # the explicit `-f`/`-ar`/`-ac` args instead of measuring the stream itself, which is
+            # exactly correct here: this process's own command line is the only source of that
+            # information, there is nothing left to discover by waiting.
+            "-analyzeduration",
+            "0",
+            "-probesize",
+            "32",
             "-f",
             "alaw",
             "-ar",
@@ -87,6 +107,13 @@ class AacTranscoder:
             "32k",
             "-f",
             "adts",
+            # `-flush_packets 1` — kept alongside the fix above as defense in depth: once the
+            # demuxer-level stall is gone, this still ensures the ADTS muxer issues its own
+            # `avio_flush()` after every packet rather than batching several encoded frames
+            # together before writing to `pipe:1`, keeping steady-state latency low too, not just
+            # the first frame.
+            "-flush_packets",
+            "1",
             "pipe:1",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
