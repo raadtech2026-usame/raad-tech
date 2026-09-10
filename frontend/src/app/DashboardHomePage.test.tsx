@@ -10,22 +10,40 @@ import type { OffsetListParams } from "../shared/api/listParams";
 import type { TripSummary } from "../features/transport-ops/trips/api";
 
 vi.mock("../features/transport-ops/drivers/api", () => ({ listDrivers: vi.fn() }));
-vi.mock("../features/transport-ops/students/api", () => ({ countStudents: vi.fn() }));
-vi.mock("../features/transport-ops/parents/api", () => ({ countParents: vi.fn() }));
+vi.mock("../features/transport-ops/students/api", () => ({ countStudents: vi.fn(), listStudents: vi.fn() }));
+vi.mock("../features/transport-ops/parents/api", () => ({ countParents: vi.fn(), listParents: vi.fn() }));
 vi.mock("../features/platform-analytics/api", () => ({ getPlatformStats: vi.fn(), listAuditEntries: vi.fn() }));
 vi.mock("../features/fleet-devices/vehicles/api", () => ({ listVehicles: vi.fn() }));
+vi.mock("../features/fleet-devices/devices/api", () => ({ listDevices: vi.fn() }));
+vi.mock("../features/transport-ops/routes/api", () => ({ listRoutes: vi.fn() }));
 vi.mock("../features/transport-ops/trips/api", () => ({ listTrips: vi.fn() }));
+// Organization Dashboard's own finance section (school_erp + billing) — mocked the same way
+// every other cross-feature dependency of this page already is; only the two functions this
+// page actually calls need a fake, so the rest of each module (types, formatting helpers)
+// stays real via `importOriginal`.
+vi.mock("../features/billing/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/billing/api")>()),
+  getCurrentSubscription: vi.fn(),
+}));
+vi.mock("../features/school-erp/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../features/school-erp/api")>()),
+  getFinanceSummary: vi.fn(),
+}));
 vi.mock("../shared/map/MapView", () => ({ MapView: () => null }));
 vi.mock("../shared/hooks/useWebSocket", () => ({
   useWebSocketChannel: () => ({ status: "closed", lastCloseCode: null, send: vi.fn() }),
 }));
 
 import { listDrivers } from "../features/transport-ops/drivers/api";
-import { countStudents } from "../features/transport-ops/students/api";
-import { countParents } from "../features/transport-ops/parents/api";
+import { countStudents, listStudents } from "../features/transport-ops/students/api";
+import { countParents, listParents } from "../features/transport-ops/parents/api";
 import { getPlatformStats, listAuditEntries } from "../features/platform-analytics/api";
 import { listVehicles } from "../features/fleet-devices/vehicles/api";
+import { listDevices } from "../features/fleet-devices/devices/api";
+import { listRoutes } from "../features/transport-ops/routes/api";
 import { listTrips } from "../features/transport-ops/trips/api";
+import { getCurrentSubscription } from "../features/billing/api";
+import { getFinanceSummary } from "../features/school-erp/api";
 
 function pageOf(total: number) {
   return { data: [], page: { total, page: 1, pageSize: 1 } };
@@ -84,15 +102,39 @@ function setFounder() {
   });
 }
 
+function setOrgAdmin() {
+  useAuthStore.setState({
+    principal: { userId: "u1", role: "org_admin", organizationId: "org-1", regionIds: [] },
+    accessToken: "t",
+    refreshToken: "r",
+    status: "authenticated",
+    error: null,
+  });
+}
+
 describe("DashboardHomePage", () => {
   beforeEach(() => {
     vi.mocked(listDrivers).mockReset().mockResolvedValue(pageOf(0));
     vi.mocked(countStudents).mockReset().mockResolvedValue(0);
     vi.mocked(countParents).mockReset().mockResolvedValue(0);
+    vi.mocked(listStudents).mockReset().mockResolvedValue(pageOf(0) as never);
+    vi.mocked(listParents).mockReset().mockResolvedValue(pageOf(0) as never);
     vi.mocked(getPlatformStats).mockReset().mockResolvedValue(SAMPLE_PLATFORM_STATS);
     vi.mocked(listAuditEntries).mockReset();
     vi.mocked(listVehicles).mockReset();
+    vi.mocked(listDevices).mockReset().mockResolvedValue(pageOf(0) as never);
+    vi.mocked(listRoutes).mockReset().mockResolvedValue(pageOf(0) as never);
     vi.mocked(listTrips).mockReset();
+    vi.mocked(getCurrentSubscription).mockReset().mockResolvedValue(null);
+    vi.mocked(getFinanceSummary).mockReset().mockResolvedValue({
+      billedAmount: "0.00",
+      collectedAmount: "0.00",
+      outstandingAmount: "0.00",
+      invoiceCount: 0,
+      paidInvoiceCount: 0,
+      overdueInvoiceCount: 0,
+      currency: "USD",
+    });
     mockAuditEntries([]);
     mockVehicleStatusCounts();
     mockTripsInProgress();
@@ -215,18 +257,92 @@ describe("DashboardHomePage", () => {
     expect(screen.queryByText("Organizations")).not.toBeInTheDocument();
   });
 
-  it("hides every platform section entirely for an Org Admin", async () => {
-    useAuthStore.setState({
-      principal: { userId: "u1", role: "org_admin", organizationId: "org-1", regionIds: [] },
-      status: "authenticated",
-    });
+  // ---- Organization Dashboard (fixed 2026-09-10 — this branch used to render nothing at all
+  // but the welcome hero, and a test right here once asserted that emptiness as correct) -------
+
+  it("never calls any platform-only endpoint for an Org Admin", async () => {
+    setOrgAdmin();
 
     renderDashboard();
 
     expect(await screen.findByText(/Welcome/)).toBeInTheDocument();
-    expect(screen.queryByText("Organizations")).not.toBeInTheDocument();
-    expect(screen.queryByText("Total drivers")).not.toBeInTheDocument();
+    // The platform KPI row/audit feed genuinely 403 for this role — proving they're never
+    // called is the regression guard for the bug this branch used to have in the other
+    // direction (rendering platform sections org_admin cannot reach), not just an assertion
+    // that *something* is hidden.
     expect(getPlatformStats).not.toHaveBeenCalled();
+    expect(listAuditEntries).not.toHaveBeenCalled();
+  });
+
+  it("shows the Organization Dashboard's own KPI row, scoped to org-reachable endpoints", async () => {
+    setOrgAdmin();
+    vi.mocked(listVehicles).mockResolvedValue(pageOf(12) as never);
+    vi.mocked(listDevices).mockResolvedValue(pageOf(9) as never);
+    vi.mocked(listDrivers).mockResolvedValue(pageOf(5));
+    vi.mocked(listRoutes).mockResolvedValue(pageOf(4) as never);
+    vi.mocked(listStudents).mockResolvedValue(pageOf(30) as never);
+    vi.mocked(listParents).mockResolvedValue(pageOf(22) as never);
+
+    renderDashboard();
+
+    expect(await screen.findByText("Organization overview")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("12")).toBeInTheDocument());
+    expect(screen.getByText("9")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.getByText("4")).toBeInTheDocument();
+    expect(screen.getByText("30")).toBeInTheDocument();
+    expect(screen.getByText("22")).toBeInTheDocument();
+    // "Vehicles"/"Students" also appear as Quick Actions links on this same page — assert
+    // presence, not uniqueness.
+    expect(screen.getAllByText("Vehicles").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Students").length).toBeGreaterThan(0);
+  });
+
+  it("shows the org's own subscription status and school finance summary", async () => {
+    setOrgAdmin();
+    vi.mocked(getCurrentSubscription).mockResolvedValue({
+      id: "sub-1",
+      organizationId: "org-1",
+      planId: "plan-1",
+      status: "active",
+      currentPeriodStart: "2026-09-01T00:00:00Z",
+      currentPeriodEnd: "2026-10-01T00:00:00Z",
+      autoRenew: true,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      pastDueSince: null,
+      gracePeriodEndsAt: null,
+      suspendedAt: null,
+      cancelledAt: null,
+      expiredAt: null,
+    });
+    vi.mocked(getFinanceSummary).mockResolvedValue({
+      billedAmount: "500.00",
+      collectedAmount: "300.00",
+      outstandingAmount: "200.00",
+      invoiceCount: 10,
+      paidInvoiceCount: 6,
+      overdueInvoiceCount: 2,
+      currency: "USD",
+    });
+
+    renderDashboard();
+
+    expect(await screen.findByText("Subscription")).toBeInTheDocument();
+    expect(await screen.findByText("Active")).toBeInTheDocument();
+    expect(screen.getByText("School finance")).toBeInTheDocument();
+    expect(await screen.findByText("$300.00")).toBeInTheDocument();
+    expect(screen.getByText("$200.00")).toBeInTheDocument();
+  });
+
+  it("gives an Org Admin real quick-action links into their own dashboard, not the platform one", async () => {
+    setOrgAdmin();
+
+    renderDashboard();
+
+    expect(await screen.findByText("Quick actions")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /students/i })).toHaveAttribute("href", "/org/students");
+    expect(screen.getByRole("link", { name: /billing/i })).toHaveAttribute("href", "/org/billing");
   });
 
   it("shows a narrower dashboard for Finance Staff, matching their actual RBAC grants", async () => {

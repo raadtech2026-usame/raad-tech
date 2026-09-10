@@ -12,40 +12,52 @@ import { FleetHealthSection } from "./dashboard/FleetHealthSection";
 import { DeviceHealthSection } from "./dashboard/DeviceHealthSection";
 import { SubscriptionSummaryCard, RevenueSummaryCard } from "./dashboard/BillingSection";
 import { PeopleSection } from "./dashboard/PeopleSection";
+import { OrganizationOverviewSection } from "./dashboard/OrganizationOverviewSection";
+import { SubscriptionStatusCard, SchoolFinanceSummaryCard } from "./dashboard/OrganizationFinanceSection";
+import { QuickActionsSection } from "./dashboard/QuickActionsSection";
 import dashboardStyles from "./dashboard/dashboard.module.css";
 import styles from "./DashboardHomePage.module.css";
 
 /**
- * The RAAD Founder/Platform dashboard — a fleet-management SaaS home page (Fleetio/Samsara/
- * Motive/Linear/Stripe-Admin-comparable layout: a hero KPI row, an operations strip with a live
- * map, an activity/health mid-section, then billing) per the user's explicit brief. **Every
- * number on this page comes from an already-existing backend route** — no new API, no new
- * permission, no fabricated figure: `GET /admin/platform-stats` (ADR-0020) backs the KPI row,
- * Device Health, and Billing; `GET /admin/audit` (existing) backs Recent Activity;
- * `GET /vehicles`/`GET /trips` (existing, count-only reads) back Fleet Health and Live
- * Operations. Wherever a section names a KPI the backend genuinely has no data for (a revenue
- * trend, live fleet-wide vehicle positions beyond one at a time, an activity actor's display
- * name), it shows a real empty/partial state instead — never an invented number.
+ * The RAAD dashboard home page — rendered at both `/platform` (Founder/Regional Manager/Support
+ * Staff/Finance Staff) and `/org` (Org Admin), branching on `getDashboardType(principal.role)`.
  *
- * **Finance Staff sees a narrower page, not a broken one.** Confirmed against the seeded RBAC
- * matrix (`migrations/versions/20260721..._5437a5d1651b...py`), not assumed: `finance_staff`
- * holds none of `fleet_device.vehicles.read`, `transport_ops.{drivers,trips}.list`,
- * `transport_ops.{students,parents}.count`, or `admin.audit.read` — every one of Live
- * Operations/Fleet Health/Recent Activity/People would 403 for this role alone (the other three
- * platform roles all hold every one of those grants). Rather than showing four "could not load"
- * errors for what is actually a permanent, correct restriction, those four sections are omitted
- * for Finance Staff, mirroring `navConfig.ts`'s own `FINANCE_ALLOWED_PATHS` precedent — the KPI
- * row, Device Health, and Billing all key off `admin.platform_stats.read` alone, which Finance
- * Staff does hold (ADR-0020 granted it explicitly for this reason), so those stay visible.
+ * **Platform branch:** a fleet-management SaaS home page (Fleetio/Samsara/Motive/Linear/
+ * Stripe-Admin-comparable layout: a hero KPI row, an operations strip with a live map, an
+ * activity/health mid-section, then billing) per the user's explicit brief. Every number comes
+ * from an already-existing backend route — `GET /admin/platform-stats` (ADR-0020) backs the KPI
+ * row, Device Health, and Billing; `GET /admin/audit` backs Recent Activity; `GET /vehicles`/
+ * `GET /trips` back Fleet Health and Live Operations.
  *
- * 2026-09-05 redesign. Two structural changes, no data change:
- *   - The welcome card is a page hero rather than a boxed card. It was a bordered surface
- *     carrying a gradient and a paragraph of prose, directly above the KPI row — two card-shaped
- *     objects in a row, the first of which said nothing measurable. It is now unboxed greeting
- *     text, so the KPI row is the first *card* on the page and the visual hierarchy starts where
- *     the information does.
- *   - Sections use the shared `PageSection` primitive, so this page and the ERP finance pages
- *     cannot drift apart on section spacing and label treatment.
+ * **Finance Staff sees a narrower platform page, not a broken one.** Confirmed against the
+ * seeded RBAC matrix, not assumed: `finance_staff` holds none of `fleet_device.vehicles.read`,
+ * `transport_ops.{drivers,trips}.list`, `transport_ops.{students,parents}.count`, or
+ * `admin.audit.read` — Live Operations/Fleet Health/Recent Activity/People are omitted for this
+ * role rather than shown four times as "could not load", mirroring `navConfig.ts`'s own
+ * `FINANCE_ALLOWED_PATHS` precedent.
+ *
+ * **Organization branch (fixed 2026-09-10 — a real, previously undetected gap, not a redesign).**
+ * This branch used to not exist at all: `dashboardType === "platform"` gated the entire page
+ * body, so an Org Admin's own `/org` home rendered nothing but the welcome hero — no KPIs, no
+ * fleet, no finance, nothing — and a test (`DashboardHomePage.test.tsx`, "hides every platform
+ * section entirely for an Org Admin") had been written to assert that emptiness as the *intended*
+ * behavior, which is exactly how a missing feature survives a green test suite. `Organization
+ * OverviewSection`/`OrganizationFinanceSection`/`QuickActionsSection` close it, composing
+ * endpoints already confirmed live and reachable for `org_admin` (2026-09-10, real HTTP calls
+ * against a real token — `/vehicles`, `/devices`, `/drivers`, `/routes`, `/trips`, `/students`,
+ * `/parents`, `/billing/subscriptions/current`, `/school-finance/summary`), never the
+ * platform-wide `GET /admin/platform-stats`/`GET /admin/audit` this role cannot reach. No Classes/
+ * Grades — out of scope by explicit direction, and nothing here needed them anyway. "Assigned/
+ * unassigned students" is deliberately not shown: the only backing read, `GET
+ * /student-assignments`, is documented as not yet tenant-scoped server-side (a pre-existing,
+ * separately-tracked gap) — showing a count from it risks either a wrong number or a real
+ * cross-tenant leak, and this page will not paper over that with a number that might be wrong.
+ *
+ * 2026-09-05 redesign (platform branch only). Two structural changes, no data change: the
+ * welcome card became a page hero rather than a boxed card (it carried a gradient and a
+ * paragraph directly above the KPI row — two card-shaped objects in sequence, the first saying
+ * nothing measurable); and sections moved onto the shared `PageSection` primitive, so this page
+ * and the ERP finance pages cannot drift apart on section spacing and label treatment.
  */
 export function DashboardHomePage() {
   const principal = useAuthStore((s) => s.principal);
@@ -118,6 +130,29 @@ export function DashboardHomePage() {
               <PeopleSection />
             </PageSection>
           )}
+        </>
+      )}
+
+      {dashboardType === "organization" && (
+        <>
+          <PageSection title="Organization overview">
+            <OrganizationOverviewSection />
+          </PageSection>
+
+          <PageSection title="Finance">
+            <div className={dashboardStyles.panelRow}>
+              <div className={dashboardStyles.panelHalf}>
+                <SubscriptionStatusCard />
+              </div>
+              <div className={dashboardStyles.panelHalf}>
+                <SchoolFinanceSummaryCard />
+              </div>
+            </div>
+          </PageSection>
+
+          <PageSection title="Quick actions">
+            <QuickActionsSection />
+          </PageSection>
         </>
       )}
     </div>

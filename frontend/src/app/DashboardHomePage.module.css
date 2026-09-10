@@ -40,6 +40,33 @@
   margin: 0;
 }
 
+/* ---- Quick actions (Organization Dashboard) ---- */
+.quickActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.quickAction {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.quickAction:hover {
+  border-color: var(--color-brand-primary);
+  background: var(--color-brand-primary-tint);
+}
+
 @media (max-width: 900px) {
   .page {
     gap: var(--space-6);
