@@ -14,6 +14,10 @@ vi.mock("../platform-finance/api", async (importOriginal) => ({
   getPlatformPnl: vi.fn(),
   listPlatformExpenses: vi.fn(),
   listPlatformIncome: vi.fn(),
+  listPlatformCategories: vi.fn(),
+  createPlatformCategory: vi.fn(),
+  voidPlatformExpense: vi.fn(),
+  voidPlatformIncome: vi.fn(),
 }));
 vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./api")>()),
@@ -23,9 +27,15 @@ vi.mock("./api", async (importOriginal) => ({
 
 import { getPlatformStats } from "../platform-analytics/api";
 import {
+  createPlatformCategory,
   getPlatformPnl,
+  listPlatformCategories,
   listPlatformExpenses,
   listPlatformIncome,
+  voidPlatformExpense,
+  voidPlatformIncome,
+  type PlatformExpense,
+  type PlatformIncome,
 } from "../platform-finance/api";
 import { listInvoices, listPayments } from "./api";
 import { PlatformFinancePage } from "./PlatformFinancePage";
@@ -124,6 +134,7 @@ describe("PlatformFinancePage", () => {
       pageOf<never>([]) as never,
     );
     vi.mocked(listPlatformIncome).mockResolvedValue(pageOf<never>([]) as never);
+    vi.mocked(listPlatformCategories).mockResolvedValue([]);
   });
 
   it("shows month-to-date revenue from platform stats, not a computed guess", async () => {
@@ -209,5 +220,108 @@ describe("PlatformFinancePage", () => {
     expect(
       within(drawer).queryByRole("option", { name: /subscription/i }),
     ).not.toBeInTheDocument();
+  });
+
+  // ---- Categories and void (pre-deployment audit §C: "no frontend at all") -----------------
+
+  it("creates a platform financial category", async () => {
+    const user = userEvent.setup();
+    vi.mocked(createPlatformCategory).mockResolvedValue({
+      id: "cat-1",
+      name: "Cloud infrastructure",
+      kind: "expense",
+      description: null,
+      status: "active",
+    });
+    renderPage();
+    await screen.findByRole("button", { name: /record expense/i });
+
+    await user.click(screen.getByRole("button", { name: /new category/i }));
+    const drawer = await screen.findByRole("dialog");
+    await user.type(within(drawer).getByPlaceholderText("Cloud infrastructure"), "Cloud infrastructure");
+    await user.click(within(drawer).getByRole("button", { name: /create category/i }));
+
+    await waitFor(() =>
+      expect(createPlatformCategory).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "Cloud infrastructure", kind: "expense" }),
+      ),
+    );
+  });
+
+  it("offers a category picker in the entry form, filtered to the matching kind", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listPlatformCategories).mockResolvedValue([
+      { id: "cat-expense", name: "Cloud hosting", kind: "expense", description: null, status: "active" },
+      { id: "cat-income", name: "Reseller margin", kind: "income", description: null, status: "active" },
+    ]);
+    renderPage();
+    await screen.findByRole("button", { name: /record expense/i });
+
+    await user.click(screen.getByRole("button", { name: /record expense/i }));
+    const drawer = await screen.findByRole("dialog");
+    expect(await within(drawer).findByRole("option", { name: "Cloud hosting" })).toBeInTheDocument();
+    expect(within(drawer).queryByRole("option", { name: "Reseller margin" })).not.toBeInTheDocument();
+  });
+
+  it("voids a platform expense after confirmation", async () => {
+    const user = userEvent.setup();
+    const expense: PlatformExpense = {
+      id: "exp-1",
+      kind: "rent",
+      categoryId: null,
+      amount: "500.00",
+      currency: "USD",
+      occurredOn: "2026-09-01",
+      description: null,
+      vendor: "Landlord",
+      reference: null,
+      isVoided: false,
+    };
+    vi.mocked(listPlatformExpenses).mockResolvedValue(pageOf([expense]));
+    vi.mocked(voidPlatformExpense).mockResolvedValue({ ...expense, isVoided: true });
+    renderPage();
+
+    await screen.findByText("Landlord");
+    await user.click(screen.getByRole("button", { name: "Void" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/expense entry/i);
+    await user.click(within(dialog).getByRole("button", { name: /void entry/i }));
+
+    await waitFor(() =>
+      expect(voidPlatformExpense).toHaveBeenCalledWith("exp-1", expect.any(String)),
+    );
+  });
+
+  it("voids a platform income entry after confirmation", async () => {
+    const user = userEvent.setup();
+    const income: PlatformIncome = {
+      id: "inc-1",
+      kind: "grant",
+      categoryId: null,
+      amount: "2000.00",
+      currency: "USD",
+      occurredOn: "2026-09-01",
+      description: null,
+      source: "Ministry of Education",
+      reference: null,
+      isVoided: false,
+    };
+    vi.mocked(listPlatformIncome).mockResolvedValue(pageOf([income]));
+    vi.mocked(voidPlatformIncome).mockResolvedValue({ ...income, isVoided: true });
+    renderPage();
+    await screen.findByRole("button", { name: /record expense/i });
+
+    await user.click(screen.getByRole("tab", { name: "Other income" }));
+    await screen.findByText("Ministry of Education");
+    await user.click(screen.getByRole("button", { name: "Void" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/income entry/i);
+    await user.click(within(dialog).getByRole("button", { name: /void entry/i }));
+
+    await waitFor(() =>
+      expect(voidPlatformIncome).toHaveBeenCalledWith("inc-1", expect.any(String)),
+    );
   });
 });

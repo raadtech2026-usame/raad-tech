@@ -70,6 +70,16 @@ export interface PlatformIncome {
   isVoided: boolean;
 }
 
+export type PlatformCategoryKind = "income" | "expense";
+
+export interface PlatformCategory {
+  id: string;
+  name: string;
+  kind: PlatformCategoryKind;
+  description: string | null;
+  status: "active" | "inactive";
+}
+
 export interface PlatformPnl {
   start: string;
   end: string;
@@ -137,6 +147,69 @@ function toIncome(w: IncomeWire): PlatformIncome {
     reference: w.reference,
     isVoided: w.is_voided,
   };
+}
+
+interface PlatformCategoryWire {
+  id: string;
+  name: string;
+  kind: string;
+  description: string | null;
+  status: string;
+}
+
+function toPlatformCategory(w: PlatformCategoryWire): PlatformCategory {
+  return {
+    id: w.id,
+    name: w.name,
+    kind: w.kind as PlatformCategoryKind,
+    description: w.description,
+    status: w.status as PlatformCategory["status"],
+  };
+}
+
+/** No pagination on the wire — the backend returns the full list (`GET /platform-finance/
+ * categories`), matching how few categories a RAAD-internal ledger realistically has. */
+export async function listPlatformCategories(): Promise<PlatformCategory[]> {
+  const wire = await apiRequest<PlatformCategoryWire[]>("/platform-finance/categories");
+  return wire.map(toPlatformCategory);
+}
+
+export async function createPlatformCategory(input: {
+  name: string;
+  kind: PlatformCategoryKind;
+  description?: string | null;
+}): Promise<PlatformCategory> {
+  const wire = await apiRequest<PlatformCategoryWire>("/platform-finance/categories", {
+    method: "POST",
+    body: {
+      name: input.name,
+      kind: input.kind,
+      description: input.description ?? null,
+    },
+  });
+  return toPlatformCategory(wire);
+}
+
+export async function voidPlatformExpense(
+  expenseId: string,
+  reason?: string | null,
+): Promise<PlatformExpense> {
+  const wire = await apiRequest<ExpenseWire>(
+    `/platform-finance/expenses/${encodeURIComponent(expenseId)}/void`,
+    { method: "POST", body: { reason: reason ?? null } },
+  );
+  return toExpense(wire);
+}
+
+export async function voidPlatformIncome(
+  incomeId: string,
+  reason?: string | null,
+): Promise<PlatformIncome> {
+  const wire = await apiRequest<IncomeWire>(
+    `/platform-finance/income/${encodeURIComponent(incomeId)}/void`,
+    { method: "POST", body: { reason: reason ?? null } },
+  );
+  return toIncome(wire);
 }
 
 export async function listPlatformExpenses(
@@ -218,6 +291,7 @@ export async function recordPlatformIncome(input: {
   source?: string | null;
   description?: string | null;
   reference?: string | null;
+  categoryId?: string | null;
 }): Promise<PlatformIncome> {
   const wire = await apiRequest<IncomeWire>("/platform-finance/income", {
     method: "POST",
@@ -229,6 +303,7 @@ export async function recordPlatformIncome(input: {
       source: input.source ?? null,
       description: input.description ?? null,
       reference: input.reference ?? null,
+      category_id: input.categoryId ?? null,
     },
   });
   return toIncome(wire);

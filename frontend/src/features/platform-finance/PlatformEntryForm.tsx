@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Info, TrendingDown, TrendingUp } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -13,6 +13,7 @@ import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
 import {
   expenseKindLabel,
+  listPlatformCategories,
   recordPlatformExpense,
   recordPlatformIncome,
   type ExpenseKind,
@@ -71,6 +72,7 @@ const schema = z.object({
   counterparty: z.string().max(160).optional(),
   description: z.string().max(500).optional(),
   reference: z.string().max(120).optional(),
+  categoryId: z.string().optional(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -98,6 +100,18 @@ export function PlatformEntryForm({
   const queryClient = useQueryClient();
   const isIncome = mode === "income";
 
+  // Categories are shared across both directions of the ledger but filtered here to the
+  // matching kind, mirroring `school_erp`'s own `CategoryForm` picker convention — an income
+  // entry should never be filed under an expense heading or vice versa.
+  const categoriesQuery = useQuery({
+    queryKey: ["platform-finance", "categories"],
+    queryFn: listPlatformCategories,
+    staleTime: 60_000,
+  });
+  const categoryOptions = (categoriesQuery.data ?? []).filter(
+    (category) => category.kind === mode && category.status === "active",
+  );
+
   const {
     register,
     handleSubmit,
@@ -123,6 +137,7 @@ export function PlatformEntryForm({
         counterparty: "",
         description: "",
         reference: "",
+        categoryId: "",
       });
     }
   }, [open, isIncome, currency, reset]);
@@ -138,6 +153,7 @@ export function PlatformEntryForm({
         occurredOn: values.occurredOn,
         description: values.description || null,
         reference: values.reference || null,
+        categoryId: values.categoryId || null,
       };
       if (isIncome) {
         await recordPlatformIncome({
@@ -250,6 +266,21 @@ export function PlatformEntryForm({
 
         <FormField label="Date" error={errors.occurredOn?.message}>
           <Input type="date" {...register("occurredOn")} invalid={Boolean(errors.occurredOn)} />
+        </FormField>
+
+        <FormField
+          label="Category"
+          hint="Optional, but what the Categories breakdown groups by."
+          error={errors.categoryId?.message}
+        >
+          <Select {...register("categoryId")}>
+            <option value="">Uncategorised</option>
+            {categoryOptions.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </Select>
         </FormField>
 
         <FormField

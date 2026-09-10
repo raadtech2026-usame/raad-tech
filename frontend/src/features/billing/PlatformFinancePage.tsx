@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import clsx from "clsx";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
   Banknote,
@@ -11,18 +11,21 @@ import {
   Plus,
   ReceiptText,
   Scale,
+  Tags,
   TrendingDown,
   TrendingUp,
   Wallet,
 } from "lucide-react";
 import { Button } from "../../shared/components/Button/Button";
 import { Card, CardHeader, CardBody } from "../../shared/components/Card/Card";
+import { ConfirmDialog } from "../../shared/components/ConfirmDialog/ConfirmDialog";
 import { PageSection } from "../../shared/components/PageSection/PageSection";
 import { StatCard } from "../../shared/components/StatCard/StatCard";
 import { Badge } from "../../shared/components/Badge/Badge";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
 import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
 import { Tabs } from "../../shared/components/Tabs/Tabs";
+import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
 import { getPlatformStats, type PlatformStats } from "../platform-analytics/api";
@@ -30,13 +33,19 @@ import { StatBar, type StatBarItem } from "../../app/dashboard/StatBar";
 import {
   expenseKindLabel,
   getPlatformPnl,
+  listPlatformCategories,
   listPlatformExpenses,
   listPlatformIncome,
+  voidPlatformExpense,
+  voidPlatformIncome,
+  type PlatformExpense,
+  type PlatformIncome,
 } from "../platform-finance/api";
 import {
   PlatformEntryForm,
   type PlatformEntryMode,
 } from "../platform-finance/PlatformEntryForm";
+import { PlatformCategoryForm } from "../platform-finance/PlatformCategoryForm";
 import {
   useInvoiceStatusCounts,
   useInvoicesByStatus,
@@ -156,9 +165,17 @@ const OPEX_TABS: { id: OpexTab; label: string }[] = [
 export function PlatformFinancePage() {
   usePageHeader("Finance", "Revenue, receivables and payments across the platform");
 
+  const toast = useToast();
+  const queryClient = useQueryClient();
+
   const [receivablesTab, setReceivablesTab] = useState<ReceivablesTab>("issued");
   const [opexTab, setOpexTab] = useState<OpexTab>("expenses");
   const [entryMode, setEntryMode] = useState<PlatformEntryMode | null>(null);
+  const [categoryFormOpen, setCategoryFormOpen] = useState(false);
+  const [voidingEntry, setVoidingEntry] = useState<{
+    entry: PlatformExpense | PlatformIncome;
+    kind: "income" | "expense";
+  } | null>(null);
 
   const stats = useQuery<PlatformStats>({
     queryKey: ["platform-analytics-stats"],
@@ -195,6 +212,41 @@ export function PlatformFinancePage() {
       listPlatformIncome({ page: 1, pageSize: 15, sort: null, filters: {}, search: "" }),
     staleTime: 60_000,
     enabled: opexTab === "income",
+  });
+  const platformCategories = useQuery({
+    queryKey: ["platform-finance", "categories"],
+    queryFn: listPlatformCategories,
+    staleTime: 60_000,
+  });
+  const categoryNames = new Map((platformCategories.data ?? []).map((c) => [c.id, c.name]));
+
+  const voidMutation = useMutation({
+    // Explicit `Promise<void>` return, mirroring `PlatformEntryForm`'s own mutation for the
+    // identical reason: the two branches resolve to different DTOs (`PlatformExpense` vs
+    // `PlatformIncome`), and `useMutation` infers the union rather than widening, which
+    // `MutationFunction` rejects. Nothing here reads the result, so `void` is both honest and
+    // the narrowest thing that works.
+    mutationFn: async (target: {
+      entry: PlatformExpense | PlatformIncome;
+      kind: "income" | "expense";
+    }): Promise<void> => {
+      if (target.kind === "income") {
+        await voidPlatformIncome(target.entry.id, "Voided by RAAD");
+      } else {
+        await voidPlatformExpense(target.entry.id, "Voided by RAAD");
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["platform-finance"] });
+      toast.success("Entry voided", "It stays on record as voided and no longer counts toward the platform P&L.");
+      setVoidingEntry(null);
+    },
+    onError: (error) => {
+      toast.error(
+        "Could not void the entry",
+        error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
+      );
+    },
   });
 
   const subscriptionItems: StatBarItem[] = stats.data
@@ -519,6 +571,14 @@ export function PlatformFinancePage() {
             />
             <Button
               size="sm"
+              variant="secondary"
+              leadingIcon={<Tags size={14} />}
+              onClick={() => setCategoryFormOpen(true)}
+            >
+              New category
+            </Button>
+            <Button
+              size="sm"
               leadingIcon={<Plus size={14} />}
               onClick={() => setEntryMode(opexTab === "income" ? "income" : "expense")}
             >
@@ -629,8 +689,10 @@ export function PlatformFinancePage() {
                         <tr>
                           <th>Date</th>
                           <th>Heading</th>
+                          <th>Category</th>
                           <th>Vendor</th>
                           <th className={styles.alignRight}>Amount</th>
+                          <th aria-label="Actions" />
                         </tr>
                       </thead>
                       <tbody>
@@ -641,9 +703,25 @@ export function PlatformFinancePage() {
                           >
                             <td>{expense.occurredOn}</td>
                             <td className={styles.strong}>{expenseKindLabel(expense.kind)}</td>
+                            <td>
+                              {expense.categoryId
+                                ? categoryNames.get(expense.categoryId) ?? "—"
+                                : "Uncategorised"}
+                            </td>
                             <td>{expense.vendor ?? "—"}</td>
                             <td className={styles.alignRight}>
                               {formatAmount(Number(expense.amount), expense.currency)}
+                            </td>
+                            <td>
+                              {!expense.isVoided && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setVoidingEntry({ entry: expense, kind: "expense" })}
+                                >
+                                  Void
+                                </Button>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -683,8 +761,10 @@ export function PlatformFinancePage() {
                         <tr>
                           <th>Date</th>
                           <th>Heading</th>
+                          <th>Category</th>
                           <th>Source</th>
                           <th className={styles.alignRight}>Amount</th>
+                          <th aria-label="Actions" />
                         </tr>
                       </thead>
                       <tbody>
@@ -695,9 +775,25 @@ export function PlatformFinancePage() {
                           >
                             <td>{entry.occurredOn}</td>
                             <td className={styles.strong}>{expenseKindLabel(entry.kind)}</td>
+                            <td>
+                              {entry.categoryId
+                                ? categoryNames.get(entry.categoryId) ?? "—"
+                                : "Uncategorised"}
+                            </td>
                             <td>{entry.source ?? "—"}</td>
                             <td className={styles.alignRight}>
                               {formatAmount(Number(entry.amount), entry.currency)}
+                            </td>
+                            <td>
+                              {!entry.isVoided && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setVoidingEntry({ entry, kind: "income" })}
+                                >
+                                  Void
+                                </Button>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -738,6 +834,27 @@ export function PlatformFinancePage() {
         onClose={() => setEntryMode(null)}
         mode={entryMode ?? "expense"}
         currency={platformPnl.data?.currency ?? "USD"}
+      />
+
+      <PlatformCategoryForm
+        open={categoryFormOpen}
+        onClose={() => setCategoryFormOpen(false)}
+        defaultKind={opexTab === "income" ? "income" : "expense"}
+      />
+
+      <ConfirmDialog
+        open={voidingEntry !== null}
+        title={voidingEntry?.kind === "income" ? "Void this income entry?" : "Void this expense entry?"}
+        description={
+          voidingEntry
+            ? `${formatAmount(Number(voidingEntry.entry.amount), voidingEntry.entry.currency)} will be reversed. The entry stays on record as voided and no longer counts toward the platform P&L.`
+            : undefined
+        }
+        confirmLabel="Void entry"
+        tone="danger"
+        loading={voidMutation.isPending}
+        onConfirm={() => voidingEntry && voidMutation.mutate(voidingEntry)}
+        onCancel={() => setVoidingEntry(null)}
       />
     </div>
   );
