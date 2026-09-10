@@ -118,9 +118,18 @@ def _register_scheduled_jobs(
                 uow=container.resolve(TrackingUnitOfWork),
             )
             if created or dropped:
+                # `partitions_created`, not `created`: `created` is a reserved `LogRecord`
+                # attribute (the record's own timestamp), and `logging` raises
+                # `KeyError: "Attempt to overwrite 'created' in LogRecord"` rather than
+                # shadowing it. That exception escaped this job and, before the scheduler
+                # gained per-job isolation, aborted the entire tick — taking the subscription
+                # lifecycle sweep down with it.
                 logger.info(
                     "vehicle_position_partitions_maintained",
-                    extra={"created": created, "dropped": dropped},
+                    extra={
+                        "partitions_created": created,
+                        "partitions_dropped": dropped,
+                    },
                 )
 
         await _with_lock(

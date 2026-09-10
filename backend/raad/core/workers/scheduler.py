@@ -18,7 +18,10 @@ from typing import Awaitable, Callable
 
 from redis.asyncio import Redis
 
+from raad.core.logging.setup import get_logger
 from raad.core.time.clock import Clock
+
+logger = get_logger("raad.workers.scheduler")
 
 
 @dataclass(frozen=True)
@@ -55,13 +58,42 @@ class IntervalScheduler(Scheduler):
         self._jobs.append(job)
 
     async def run_pending(self) -> None:
+        """Runs every due job. **One job's failure never prevents the others from running.**
+
+        This loop used to let an exception propagate straight out. Because the jobs run in
+        registration order and `maintain_position_partitions` is registered first, a single
+        failure in it aborted the whole tick — silently skipping
+        `sweep_expired_subscriptions`, `mark_overdue_student_invoices`,
+        `reconcile_expired_payments` and `reconcile_stale_intercom_sessions`. That is exactly
+        what happened in production: a `KeyError` from a logging call took the subscription
+        lifecycle sweep offline on every tick where the partition job had work to do, so
+        subscriptions sat in `past_due` past their grace deadline and never escalated.
+
+        Per-job isolation matches the shape `core.workers.base.Worker._tick` already
+        established for the supervising loop above this one, and the one CLAUDE.md's Permanent
+        Engineering Lessons names for every `run_forever` consumer in this codebase. Scheduled
+        jobs are independent by definition — nothing here orders them or passes state between
+        them — so there is no case where aborting the rest is the right response to one failing.
+
+        `_last_run` is stamped *before* the handler runs, deliberately and unchanged: a failing
+        job must wait out its own interval rather than retry on every tick of the worker above.
+        """
         now = self._clock.now()
         for job in self._jobs:
             last_run = self._last_run.get(job.name)
             elapsed = (now - last_run).total_seconds() if last_run is not None else None
             if elapsed is None or elapsed >= job.interval_seconds:
                 self._last_run[job.name] = now
-                await job.handler()
+                try:
+                    await job.handler()
+                except Exception:  # noqa: BLE001 - one job must never stop the rest
+                    # `job_name`, not `name`: `name` is a reserved `LogRecord` attribute and
+                    # passing it through `extra` raises `KeyError` inside the logging module —
+                    # which is the very failure this handler exists to contain, and would make
+                    # the error handler itself the next thing to break the loop.
+                    logger.exception(
+                        "scheduled_job_failed", extra={"job_name": job.name}
+                    )
 
 
 class LockPort(ABC):
