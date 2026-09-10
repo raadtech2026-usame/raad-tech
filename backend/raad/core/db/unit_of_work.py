@@ -12,8 +12,11 @@ from abc import ABC, abstractmethod
 from types import TracebackType
 from typing import TYPE_CHECKING, Sequence
 
+from sqlalchemy import Table
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from raad.core.db.base import Base
 from raad.core.events.base import DomainEvent
 from raad.core.tenancy.scope import TenantRegionScope
 
@@ -124,7 +127,65 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     def record_events(self, events: Sequence[DomainEvent]) -> None:
         self._events.extend(events)
 
+    async def _flush_in_dependency_order(self) -> None:
+        """Flushes pending inserts table by table, parents before children.
+
+        **Why this is necessary at all.** SQLAlchemy orders the INSERTs it emits during a flush
+        by *mapper* dependency edges, and those edges come from `relationship()` — **not** from
+        table-level `ForeignKey`s. This codebase declares `relationship()` only for
+        intra-aggregate composition (`DeviceModel.cameras`, `RouteModel.stops`); two separate
+        aggregates always reference each other by a plain FK column with no relationship, because
+        a navigable attribute between aggregates is exactly the coupling DDD forbids here. So for
+        every cross-aggregate FK the ORM has no edge, and the flush falls back to ordering mappers
+        by `_sort_key` — the fully-qualified class name.
+
+        That is alphabetical, and it is silently wrong. `billing` is the proven case:
+        `InvoiceModel` sorts before `SubscriptionModel`, so `open_organization_subscription` —
+        which creates a `Subscription` and its first `Invoice` in one Unit of Work — emitted
+        `INSERT INTO invoices` first and died on `fk_invoices__subscriptions` every single time.
+        No subscription has ever been persisted on a live database as a result.
+
+        **Why the order is derived, not listed.** `MetaData.sorted_tables` is SQLAlchemy's own
+        topological sort of tables *by their ForeignKeys*, which is precisely the information the
+        mapper-level sort is missing. Deriving from it means a new table, a new module or a new
+        FK is ordered correctly the day it is added — a hand-maintained list would be one more
+        thing to forget, and forgetting it looks exactly like this bug.
+
+        **Why not add `relationship()` instead.** It would fix the ordering and break the
+        aggregate boundary: `Invoice` would become reachable from `Subscription`, inviting
+        exactly the cross-aggregate navigation the repository-per-aggregate design exists to
+        prevent. Ordering is a persistence concern and belongs here, in `infra`.
+
+        Single-table flushes — the overwhelming majority — take the fast path and behave exactly
+        as before: one `flush()`, no extra round trips.
+        """
+        session = self.session
+        pending_by_table: dict[Table, list[object]] = {}
+        for instance in session.new:
+            mapper = sa_inspect(instance).mapper
+            pending_by_table.setdefault(mapper.local_table, []).append(instance)
+
+        if len(pending_by_table) < 2:
+            await session.flush()
+            return
+
+        order = {table: index for index, table in enumerate(Base.metadata.sorted_tables)}
+        # An unmapped/unknown table sorts last rather than first: it cannot be a dependency of
+        # anything we know about, and guessing "first" would reintroduce the very failure above.
+        for table in sorted(
+            pending_by_table, key=lambda t: order.get(t, len(order))
+        ):
+            await session.flush(pending_by_table[table])
+        # Catches anything the per-table passes left pending (cascades, mutations on existing
+        # rows), so callers still see one fully-flushed session before the outbox is written.
+        await session.flush()
+
     async def commit(self) -> None:
+        # Before anything else writes to this session. `OutboxWriter`/`AuditWriter` both emit
+        # their own statements, and a statement triggers autoflush — which would flush the
+        # business rows in SQLAlchemy's own broken order before this method ever got the chance
+        # to impose the right one.
+        await self._flush_in_dependency_order()
         await self._outbox_writer.write_all(self.session, self._events)
         await self._audit_writer.write_all(self.session, self._events)
         await self.session.commit()
