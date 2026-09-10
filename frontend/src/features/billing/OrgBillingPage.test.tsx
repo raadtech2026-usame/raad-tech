@@ -62,6 +62,8 @@ const PLAN: Plan = {
   currency: "USD",
   billingCycle: "monthly",
   vehicleLimit: 10,
+  deviceLimit: 20,
+  userLimit: null,
   status: "active",
   createdAt: "2026-08-01T00:00:00Z",
   updatedAt: "2026-08-01T00:00:00Z",

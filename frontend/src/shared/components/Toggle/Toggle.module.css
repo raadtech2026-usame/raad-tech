@@ -33,6 +33,14 @@
   transition: background var(--transition-base);
 }
 
+.wrap:hover .input:not(:disabled) + .track {
+  background: var(--color-border-strong);
+}
+
+.wrap:hover .input:not(:disabled):checked + .track {
+  background: #14913f;
+}
+
 .input:checked + .track {
   background: var(--color-success);
 }
@@ -49,8 +57,8 @@
   height: 19px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
-  transition: transform var(--transition-base);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.18), 0 1px 3px rgba(16, 24, 40, 0.12);
+  transition: transform var(--transition-slow);
 }
 
 .input:checked + .track .thumb {
@@ -70,5 +78,5 @@
 
 .description {
   font-size: var(--text-xs);
-  color: var(--color-text-faint);
+  color: var(--color-text-muted);
 }

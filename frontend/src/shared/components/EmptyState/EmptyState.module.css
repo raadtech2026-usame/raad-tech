@@ -1,7 +1,11 @@
 /*
  * Not present anywhere in the approved design (every table/list mockup shows fixed sample rows,
  * never a zero-results state) — added because every real data-fetching table needs one; a blank
- * white card reading nothing is a worse experience than this design ever intended to ship.
+ * white card reading nothing is a worse experience than that design ever intended to ship.
+ *
+ * 2026-09-05: the icon is a dashed ring rather than a filled tile. An empty state is an absence,
+ * and a solid chip in the middle of one reads as content that failed to load rather than as a
+ * deliberate "there is nothing here yet".
  */
 .wrap {
   display: flex;
@@ -10,30 +14,41 @@
   justify-content: center;
   text-align: center;
   gap: var(--space-3);
-  padding: var(--space-8) var(--space-5);
+  padding: var(--space-9) var(--space-6);
   color: var(--color-text-muted);
 }
 
 .icon {
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-lg);
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-xl);
   background: var(--color-bg-subtle);
+  border: 1px dashed var(--color-border-input);
   color: var(--color-text-faint);
   display: flex;
   align-items: center;
   justify-content: center;
+  margin-bottom: var(--space-1);
 }
 
 .title {
   font-family: var(--font-display);
   font-weight: var(--font-weight-bold);
   font-size: var(--text-lg);
+  letter-spacing: var(--tracking-tight);
   color: var(--color-text-primary);
 }
 
 .description {
-  font-size: var(--text-sm);
-  color: var(--color-text-faint);
-  max-width: 340px;
+  font-size: var(--text-base);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-muted);
+  max-width: 420px;
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .wrap {
+    padding: var(--space-7) var(--space-4);
+  }
 }

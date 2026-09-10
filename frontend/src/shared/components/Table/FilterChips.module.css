@@ -1,21 +1,52 @@
+/* Quick-status filter pills above a table.
+ *
+ * 2026-09-05: the selected state was a fully saturated fill in each chip's own tone, so a row of
+ * five filters painted five saturated blocks and the *selected* one was not reliably the one the
+ * eye landed on. Selection is now carried by weight and containment — a raised white chip with a
+ * strong border — while the tone stays a small dot. One selected item, one loud element. */
+
 .row {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.row::-webkit-scrollbar {
+  display: none;
 }
 
 .chip {
-  font-size: var(--text-xs);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-bold);
-  padding: 7px 13px;
-  border-radius: var(--radius-md);
+  letter-spacing: var(--tracking-tight);
+  padding: 6px var(--space-3);
+  border-radius: var(--radius-sm);
   border: 1px solid transparent;
   cursor: pointer;
-  background: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  white-space: nowrap;
   transition:
     background var(--transition-fast),
-    border-color var(--transition-fast);
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.chip:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--color-text-secondary);
 }
 
 .chip:focus-visible {
@@ -23,77 +54,51 @@
   box-shadow: var(--shadow-focus);
 }
 
-.neutral {
-  color: var(--color-text-secondary);
-  background: var(--color-neutral-tint);
-  border-color: var(--color-neutral-border);
-}
-
-.success {
-  color: var(--color-success-text);
-  background: var(--color-success-tint);
-  border-color: var(--color-success-border);
-}
-
-.warning {
-  color: var(--color-warning-text);
-  background: var(--color-warning-tint);
-  border-color: var(--color-warning-border);
-}
-
-.danger {
-  color: var(--color-danger-text);
-  background: var(--color-danger-tint);
-  border-color: var(--color-danger-border);
-}
-
-.info {
-  color: var(--color-info-text);
+.active {
+  color: var(--color-text-primary);
   background: var(--color-bg-surface);
   border-color: var(--color-border-default);
+  box-shadow: var(--shadow-xs);
 }
 
-.purple {
-  color: var(--color-purple);
-  background: var(--color-purple-tint);
-  border-color: var(--color-purple-border);
+/* Tone marker. `::before` rather than a wrapper element so `FilterChips.tsx` keeps its current
+   markup and its `role="tab"` button stays a single, simple accessible node. */
+.chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: currentColor;
+  opacity: 0.45;
+  transition: opacity var(--transition-fast), background var(--transition-fast);
 }
 
-.active.neutral {
-  color: var(--color-text-secondary);
-  background: var(--color-bg-surface);
-  border-color: var(--color-border-input);
+.active::before {
+  opacity: 1;
 }
 
-.active.success,
-.active.warning,
-.active.danger,
-.active.info,
-.active.purple {
-  color: #fff;
+/* "All" and other untyped filters carry no status meaning, so they carry no dot either. */
+.neutral::before {
+  display: none;
 }
 
-.active.success {
+.success::before {
   background: var(--color-success);
-  border-color: var(--color-success);
 }
 
-.active.warning {
+.warning::before {
   background: var(--color-warning);
-  border-color: var(--color-warning);
 }
 
-.active.danger {
+.danger::before {
   background: var(--color-danger);
-  border-color: var(--color-danger);
 }
 
-.active.info {
+.info::before {
   background: var(--color-brand-primary);
-  border-color: var(--color-brand-primary);
 }
 
-.active.purple {
+.purple::before {
   background: var(--color-purple);
-  border-color: var(--color-purple);
 }

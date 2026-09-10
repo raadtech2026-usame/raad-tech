@@ -1,20 +1,31 @@
 .input {
   width: 100%;
   font-family: var(--font-body);
-  font-size: var(--text-sm);
-  padding: 10px 13px;
-  border: 1px solid var(--color-border-input);
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-medium);
+  padding: 9px var(--space-3);
+  min-height: 38px;
+  border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
   outline: none;
+  box-shadow: var(--shadow-xs);
   transition:
     border-color var(--transition-fast),
-    box-shadow var(--transition-fast);
+    box-shadow var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .input::placeholder {
   color: var(--color-text-faint);
+  font-weight: var(--font-weight-regular);
+}
+
+/* A hover cue on a text field is what tells a user the region is interactive before they commit
+   a click — the same affordance a button gets, at a fraction of the strength. */
+.input:hover:not(:disabled):not(:focus) {
+  border-color: var(--color-border-input);
 }
 
 .input:focus {
@@ -23,9 +34,10 @@
 }
 
 .input:disabled {
-  background: var(--color-bg-subtle);
+  background: var(--color-bg-inset);
   color: var(--color-text-faint);
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .invalid {
@@ -33,7 +45,7 @@
 }
 
 .invalid:focus {
-  box-shadow: 0 0 0 3px rgba(245, 69, 92, 0.22);
+  box-shadow: var(--shadow-focus-danger);
 }
 
 .withIcon {
@@ -41,7 +53,7 @@
 }
 
 .withIcon .input {
-  padding-left: 36px;
+  padding-left: 38px;
 }
 
 .iconSlot {
@@ -52,4 +64,9 @@
   color: var(--color-text-faint);
   display: flex;
   pointer-events: none;
+  transition: color var(--transition-fast);
+}
+
+.withIcon:focus-within .iconSlot {
+  color: var(--color-brand-primary);
 }

@@ -1,8 +1,8 @@
 .page {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 300px 1fr;
   gap: var(--space-5);
-  height: calc(100vh - 160px);
+  height: calc(100vh - 170px);
   min-height: 480px;
 }
 
@@ -35,4 +35,34 @@
   justify-content: center;
   background: var(--color-bg-surface);
   min-height: 320px;
+}
+
+/* Tablet and below: the fixed two-column split stops working — a 300px picker beside a player
+ * leaves the player too narrow to be worth watching. The picker moves above the player and the
+ * page stops being viewport-height-bound, so it scrolls like every other page instead of
+ * squeezing two panels into whatever height is left. */
+@media (max-width: 900px) {
+  .page {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+  }
+
+  .sidebar {
+    overflow-y: visible;
+  }
+
+  .playerArea {
+    min-height: 300px;
+  }
+}
+
+@media (max-width: 600px) {
+  .page {
+    gap: var(--space-4);
+  }
+
+  .playerArea {
+    min-height: 220px;
+  }
 }

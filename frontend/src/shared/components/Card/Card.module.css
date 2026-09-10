@@ -2,19 +2,147 @@
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-card);
   border-radius: var(--radius-2xl);
+  /* Contact shadow only. A card sitting flat on the page with a hairline border is the correct
+     default; reserving real elevation for things that actually float is what makes elevation
+     mean something when it does appear. */
+  box-shadow: var(--shadow-xs);
+  transition:
+    border-color var(--transition-base),
+    box-shadow var(--transition-base),
+    transform var(--transition-base);
 }
 
 .padded {
-  padding: var(--space-5);
+  padding: var(--space-6);
 }
+
+.elevated {
+  box-shadow: var(--shadow-md);
+}
+
+/* Hover for cards that are themselves controls. 2px of travel, not 6 — enough to register as a
+   response, small enough that a grid of them does not visibly jump under a moving cursor. */
+.interactive {
+  cursor: pointer;
+}
+
+.interactive:hover {
+  border-color: var(--color-border-input);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.interactive:focus-visible {
+  border-color: var(--color-brand-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+/* Nested panel: sits inside an already-white card, so it drops the border and steps down onto
+   the inset ground instead of drawing a second box outline within the first. */
+.inset {
+  background: var(--color-bg-inset);
+  border-color: transparent;
+  box-shadow: none;
+  border-radius: var(--radius-lg);
+}
+
+/* ---- Header --------------------------------------------------------------------------- */
 
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 15px 18px;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-6);
   border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.headerIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-inset);
+  color: var(--color-text-secondary);
+}
+
+.headerText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.headerTitle {
   font-family: var(--font-display);
   font-weight: var(--font-weight-bold);
-  font-size: var(--text-2xl);
+  font-size: var(--text-lg);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text-primary);
+  line-height: 1.25;
+}
+
+.headerSubtitle {
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-muted);
+}
+
+.headerAction {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.body {
+  padding: var(--space-5) var(--space-6) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.footer {
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--color-border-subtle);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--color-bg-subtle);
+  border-radius: 0 0 var(--radius-2xl) var(--radius-2xl);
+}
+
+@media (max-width: 900px) {
+  .padded {
+    padding: var(--space-5);
+  }
+
+  .header {
+    padding: var(--space-4) var(--space-5);
+  }
+
+  .body {
+    padding: var(--space-4) var(--space-5) var(--space-5);
+  }
+
+  .footer {
+    padding: var(--space-3) var(--space-5);
+  }
+}
+
+@media (max-width: 600px) {
+  .header {
+    /* A long title plus an action control cannot share one row at this width without the
+       action being squeezed to an unusable size — so it wraps to its own line instead. */
+    flex-wrap: wrap;
+  }
+
+  .headerAction {
+    margin-left: 0;
+    width: 100%;
+  }
 }

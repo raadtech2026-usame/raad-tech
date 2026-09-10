@@ -1,20 +1,28 @@
+/* "Not built yet" route state.
+ *
+ * Deliberately quiet and centred rather than dressed up as a feature: this screen's whole job is
+ * to be unambiguous that the module is not built, so a user never mistakes an empty surface for a
+ * broken one. Same dashed-ring treatment `EmptyState` uses, for the same reason — an absence
+ * should not be drawn with the weight of content. */
 .wrap {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
-  gap: var(--space-3);
-  min-height: 60vh;
+  gap: var(--space-4);
+  min-height: 58vh;
+  padding: var(--space-8) var(--space-5);
   color: var(--color-text-muted);
 }
 
 .icon {
-  width: 52px;
-  height: 52px;
-  border-radius: var(--radius-xl);
-  background: var(--color-brand-primary-tint);
-  color: var(--color-brand-primary);
+  width: 60px;
+  height: 60px;
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-surface);
+  border: 1px dashed var(--color-border-input);
+  color: var(--color-text-faint);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -24,10 +32,28 @@
   font-family: var(--font-display);
   font-weight: var(--font-weight-bold);
   font-size: var(--text-3xl);
+  letter-spacing: var(--tracking-display);
   color: var(--color-text-primary);
 }
 
 .description {
-  font-size: var(--text-sm);
-  max-width: 380px;
+  font-size: var(--text-md);
+  line-height: var(--line-height-normal);
+  max-width: 46ch;
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .wrap {
+    min-height: 48vh;
+    padding: var(--space-7) var(--space-4);
+  }
+
+  .title {
+    font-size: var(--text-2xl);
+  }
+
+  .description {
+    font-size: var(--text-base);
+  }
 }

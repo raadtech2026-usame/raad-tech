@@ -1,22 +1,39 @@
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .label {
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-bold);
   color: var(--color-text-secondary);
+  letter-spacing: var(--tracking-tight);
 }
 
 .hint {
-  font-size: var(--text-2xs);
-  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  line-height: var(--line-height-snug);
+  color: var(--color-text-muted);
 }
 
+/* Marked as an error by more than colour: the leading dot survives a colour-vision deficiency
+   and a monochrome print, which a red-only cue does not. */
 .error {
-  font-size: var(--text-2xs);
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: var(--text-xs);
   color: var(--color-danger-text);
   font-weight: var(--font-weight-semibold);
+}
+
+.error::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--color-danger);
+  flex: 0 0 auto;
 }

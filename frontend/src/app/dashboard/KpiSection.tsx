@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Activity, Building2, Cpu, Truck, Users } from "lucide-react";
 import { Card } from "../../shared/components/Card/Card";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
-import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
+import { StatCard } from "../../shared/components/StatCard/StatCard";
 import { ApiError } from "../../shared/api/types";
 import { getPlatformStats, type PlatformStats } from "../../features/platform-analytics/api";
 import styles from "./KpiSection.module.css";
@@ -15,6 +15,10 @@ const numberFormatter = new Intl.NumberFormat(undefined, { notation: "compact", 
  * `RevenueSummaryCard`, `DeviceHealthSection`) instead of a duplicate flat number in both places.
  * Same `GET /admin/platform-stats` query every other dashboard panel shares (identical
  * `queryKey`, so this costs zero extra network calls beyond the first).
+ *
+ * 2026-09-05: the four hand-built tiles became four `StatCard`s. The `meta` pill shows a real
+ * secondary figure the same payload already carries (active organizations, online devices, MAU)
+ * — never a period-over-period delta, because no endpoint in this product returns one.
  */
 export function KpiSection() {
   const { data, isLoading, isError, error } = useQuery<PlatformStats>({
@@ -35,85 +39,55 @@ export function KpiSection() {
     );
   }
 
+  const pending = isLoading || !data;
+  const activeOrganizations = data?.organizations.byStatus.active ?? 0;
+
   return (
     <div className={styles.grid}>
-      <Card padded className={styles.tile}>
-        <div className={styles.head}>
-          <span className={styles.icon}>
-            <Building2 size={20} />
-          </span>
-          <span className={styles.label}>Organizations</span>
-        </div>
-        {isLoading || !data ? (
-          <Skeleton width={80} height={38} />
-        ) : (
-          <span className={styles.value}>{numberFormatter.format(data.organizations.total)}</span>
-        )}
-        {isLoading || !data ? (
-          <Skeleton width={140} height={13} />
-        ) : (
-          <span className={styles.subtext}>
-            {data.organizations.byStatus.active ?? 0} active · {data.organizations.createdToday} new today
-          </span>
-        )}
-      </Card>
+      <StatCard
+        icon={<Building2 size={18} />}
+        tone="brand"
+        label="Organizations"
+        isLoading={pending}
+        value={data ? numberFormatter.format(data.organizations.total) : "—"}
+        meta={data ? `${numberFormatter.format(activeOrganizations)} active` : undefined}
+        metaTone={activeOrganizations > 0 ? "success" : "neutral"}
+        footnote={data ? `${data.organizations.createdToday} new today` : undefined}
+      />
 
-      <Card padded className={styles.tile}>
-        <div className={styles.head}>
-          <span className={styles.icon}>
-            <Truck size={20} />
-          </span>
-          <span className={styles.label}>Vehicles</span>
-        </div>
-        {isLoading || !data ? (
-          <Skeleton width={80} height={38} />
-        ) : (
-          <span className={styles.value}>{numberFormatter.format(data.vehicles.total)}</span>
-        )}
-        <span className={styles.subtext}>&nbsp;</span>
-      </Card>
+      <StatCard
+        icon={<Truck size={18} />}
+        tone="brand"
+        label="Vehicles"
+        isLoading={pending}
+        value={data ? numberFormatter.format(data.vehicles.total) : "—"}
+        // `PlatformStats.vehicles` carries a flat total and nothing else (ADR-0020) — there is
+        // no status breakdown on this payload to put in a pill, and Fleet Health below is the
+        // panel that legitimately answers that question.
+        footnote="Registered across every organization"
+      />
 
-      <Card padded className={styles.tile}>
-        <div className={styles.head}>
-          <span className={styles.icon}>
-            <Cpu size={20} />
-          </span>
-          <span className={styles.label}>Devices</span>
-        </div>
-        {isLoading || !data ? (
-          <Skeleton width={80} height={38} />
-        ) : (
-          <span className={styles.value}>{numberFormatter.format(data.devices.total)}</span>
-        )}
-        {isLoading || !data ? (
-          <Skeleton width={140} height={13} />
-        ) : (
-          <span className={styles.subtext}>
-            {data.devices.online} online · {data.devices.offline} offline
-          </span>
-        )}
-      </Card>
+      <StatCard
+        icon={<Cpu size={18} />}
+        tone="brand"
+        label="Devices"
+        isLoading={pending}
+        value={data ? numberFormatter.format(data.devices.total) : "—"}
+        meta={data ? `${data.devices.online} online` : undefined}
+        metaTone={data && data.devices.offline > 0 ? "warning" : "success"}
+        footnote={data ? `${data.devices.offline} currently offline` : undefined}
+      />
 
-      <Card padded className={styles.tile}>
-        <div className={styles.head}>
-          <span className={styles.icon}>
-            <Users size={20} />
-          </span>
-          <span className={styles.label}>Users</span>
-        </div>
-        {isLoading || !data ? (
-          <Skeleton width={80} height={38} />
-        ) : (
-          <span className={styles.value}>{numberFormatter.format(data.users.total)}</span>
-        )}
-        {isLoading || !data ? (
-          <Skeleton width={140} height={13} />
-        ) : (
-          <span className={styles.subtext}>
-            {numberFormatter.format(data.users.monthlyActive)} MAU · {data.users.createdToday} new today
-          </span>
-        )}
-      </Card>
+      <StatCard
+        icon={<Users size={18} />}
+        tone="brand"
+        label="Users"
+        isLoading={pending}
+        value={data ? numberFormatter.format(data.users.total) : "—"}
+        meta={data ? `${numberFormatter.format(data.users.monthlyActive)} MAU` : undefined}
+        metaTone="brand"
+        footnote={data ? `${data.users.createdToday} new today` : undefined}
+      />
     </div>
   );
 }

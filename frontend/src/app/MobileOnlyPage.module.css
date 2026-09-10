@@ -7,7 +7,7 @@
   min-height: 100vh;
   text-align: center;
   padding: var(--space-6);
-  background: var(--color-bg-sidebar);
+  background: var(--color-bg-ink);
   color: #fff;
 }
 
@@ -30,6 +30,6 @@
 
 .description {
   font-size: var(--text-sm);
-  color: var(--color-text-sidebar);
+  color: var(--color-text-on-ink-muted);
   max-width: 380px;
 }

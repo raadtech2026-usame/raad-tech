@@ -1,15 +1,19 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-5);
 }
 
+/* Page toolbar: filters on the left, actions on the right. Wraps rather than compressing, so a
+ * long filter row never squeezes the primary action down to an unreadable width. Below the phone
+ * breakpoint it stops being a row at all (see the media query at the foot of this file). */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: var(--space-4);
+  min-width: 0;
 }
 
 .toolbarActions {
@@ -19,7 +23,7 @@
 }
 
 .toolbarActions input {
-  min-width: 220px;
+  min-width: 240px;
 }
 
 .drawerActions {
@@ -31,5 +35,28 @@
 @media (max-width: 900px) {
   .toolbarActions input {
     min-width: 0;
+  }
+}
+
+/* Phone: the toolbar becomes a stack, and every control in it goes full width. A search field
+ * and a "New…" button sharing a 390px row leave both too small to use. */
+@media (max-width: 600px) {
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-3);
+  }
+
+  .toolbarActions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .toolbarActions > * {
+    flex: 1 1 auto;
+  }
+
+  .drawerActions > * {
+    flex: 1 1 auto;
   }
 }

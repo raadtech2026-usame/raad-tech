@@ -107,7 +107,12 @@ describe("DashboardHomePage", () => {
     expect(screen.getByText("Vehicles")).toBeInTheDocument();
     expect(screen.getByText("Devices")).toBeInTheDocument();
     expect(screen.getByText("Users")).toBeInTheDocument();
-    expect(screen.getByText("2 active · 1 new today")).toBeInTheDocument();
+    // The organization card's secondary figures. The 2026-09-05 `StatCard` redesign splits what
+    // used to be one "2 active · 1 new today" caption into a pill (the active count) and a
+    // footnote (today's new organizations) — same two numbers from the same payload, given
+    // separate visual weight rather than joined by a middot.
+    expect(screen.getByText("2 active")).toBeInTheDocument();
+    expect(screen.getAllByText("1 new today").length).toBeGreaterThan(0);
     expect(getPlatformStats).toHaveBeenCalled();
   });
 
@@ -145,6 +150,7 @@ describe("DashboardHomePage", () => {
         action: "VehicleActivated",
         entityType: "Vehicle",
         entityId: "v1",
+        metadata: null,
         createdAt: new Date().toISOString(),
       },
     ]);

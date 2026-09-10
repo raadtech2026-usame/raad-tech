@@ -92,6 +92,7 @@ export function LiveOperationsSection() {
     <Card>
       <CardHeader
         title="Live Operations"
+        subtitle="Trips, vehicles and devices right now"
         action={
           <Link to="/platform/tracking" className={styles.viewAll}>
             View Live Tracking <ArrowUpRight size={14} />

@@ -59,7 +59,7 @@
   width: 72px;
   height: 6px;
   border-radius: 999px;
-  background: var(--color-surface-sunken, rgba(0, 0, 0, 0.12));
+  background: rgba(0, 0, 0, 0.12);
   overflow: hidden;
   flex: none;
 }
@@ -81,8 +81,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-2, 8px);
-  font-size: var(--font-size-xs, 12px);
-  color: var(--color-text-muted, #6b7c8e);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
 }
 
 .micPickerLabel {
@@ -94,9 +94,9 @@
   font: inherit;
   padding: 2px 6px;
   border-radius: var(--radius-sm, 4px);
-  border: 1px solid var(--color-border, #d8dfe8);
-  background: var(--color-surface, #fff);
-  color: var(--color-text, #141922);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
 }
 
 /* Microphone status row — the normal, non-interactive state (Option C). The operator sees what
@@ -106,8 +106,8 @@
   align-items: center;
   gap: var(--space-2, 8px);
   flex-wrap: wrap;
-  font-size: var(--font-size-xs, 12px);
-  color: var(--color-text-muted, #6b7c8e);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
 }
 
 .micStatus {
@@ -117,7 +117,7 @@
 }
 
 .micDevice {
-  color: var(--color-text-muted, #6b7c8e);
+  color: var(--color-text-muted);
 }
 
 .micChange {
@@ -125,7 +125,7 @@
   border: none;
   padding: 0;
   font: inherit;
-  color: var(--color-primary, #1e63ff);
+  color: var(--color-brand-primary);
   text-decoration: underline;
   cursor: pointer;
 }

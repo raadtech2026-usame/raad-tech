@@ -27,7 +27,7 @@ export function FleetHealthSection() {
 
   return (
     <Card>
-      <CardHeader title="Fleet Health" />
+      <CardHeader title="Fleet Health" subtitle="Vehicles by operational status" />
       <div className={sectionStyles.panelBody}>
         {counts.isError ? (
           <EmptyState icon={<Truck size={20} />} title="Could not load fleet health" />

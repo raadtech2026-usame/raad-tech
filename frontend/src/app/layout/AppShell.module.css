@@ -1,8 +1,40 @@
+/* App shell.
+ *
+ * The console sits as a single inset panel on the canvas rather than bleeding to the viewport
+ * edge — the reference design's defining structural move, and the reason the sidebar and content
+ * column read as one object instead of two adjacent full-height slabs. The inset only appears at
+ * laptop width and above: on a tablet or phone, giving up 32px of horizontal space to a
+ * decorative margin is a straight loss. */
+
 .shell {
-  display: flex;
   height: 100vh;
+  /* Modern mobile viewport unit — 100vh on iOS Safari includes the collapsing browser chrome,
+     which pushes the bottom of a fixed-height shell under the address bar. */
+  height: 100dvh;
   overflow: hidden;
   background: var(--color-bg-canvas);
+  padding: 0;
+}
+
+.frame {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+  background: var(--color-bg-surface);
+  overflow: hidden;
+}
+
+@media (min-width: 1280px) {
+  .shell {
+    padding: var(--space-3);
+  }
+
+  .frame {
+    border-radius: var(--radius-3xl);
+    border: 1px solid var(--color-border-default);
+    box-shadow: var(--shadow-md);
+  }
 }
 
 .main {
@@ -10,16 +42,72 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  background: var(--color-bg-subtle);
 }
 
 .content {
   flex: 1;
   overflow-y: auto;
-  padding: 22px 24px 60px;
+  overflow-x: hidden;
+  padding: var(--space-6);
+  /* Keeps the last card clear of the viewport floor when a page scrolls to its end. */
+  padding-bottom: var(--space-11);
+  scroll-behavior: smooth;
+}
+
+/* Caps the reading column on ultra-wide displays and centers it. Without this, a 2560px monitor
+   stretches a four-column KPI row into four very wide, very short cards with an unreadable
+   distance between a label and its value. */
+.contentInner {
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-height: 0;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-sidebar) - 1);
+  background: var(--color-bg-overlay-scrim);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  animation: raad-scrim-in var(--transition-base);
+}
+
+@keyframes raad-scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (min-width: 901px) {
+  .scrim {
+    display: none;
+  }
 }
 
 @media (max-width: 900px) {
   .content {
-    padding: 16px 16px 40px;
+    padding: var(--space-4);
+    padding-bottom: var(--space-9);
+  }
+
+  .contentInner {
+    gap: var(--space-4);
+  }
+}
+
+@media (max-width: 600px) {
+  .content {
+    padding: var(--space-3) var(--space-3) var(--space-8);
   }
 }

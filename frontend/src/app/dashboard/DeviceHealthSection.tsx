@@ -39,7 +39,7 @@ export function DeviceHealthSection() {
 
   return (
     <Card>
-      <CardHeader title="Device Health" />
+      <CardHeader title="Device Health" subtitle="Connectivity and platform dependencies" />
       <div className={sectionStyles.panelBody}>
         {isError ? (
           <EmptyState

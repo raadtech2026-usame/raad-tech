@@ -6,7 +6,7 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-5);
 }
 
 .mapHeaderStatus {
@@ -100,4 +100,29 @@
   align-items: center;
   justify-content: center;
   padding: var(--space-4);
+}
+
+/* Phone. The map and the camera wall are both viewport-height-relative above, which on a short
+ * phone screen leaves each one too small to read while still consuming the whole viewport. Fixed
+ * minimums instead: the page simply scrolls, which is the correct behaviour on a handset. */
+@media (max-width: 600px) {
+  .mapSection,
+  .workspaceMapOnly .mapSection {
+    height: 320px;
+    min-height: 320px;
+  }
+
+  .videoSection {
+    height: auto;
+    min-height: 300px;
+  }
+
+  .videoStateCard {
+    min-height: 260px;
+  }
+
+  .mapHeaderStatus {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
 }

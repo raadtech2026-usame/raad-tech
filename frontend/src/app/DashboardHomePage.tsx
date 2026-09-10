@@ -4,7 +4,7 @@ import { getRoleDisplay } from "../shared/auth/roleDisplay";
 import { getDashboardType } from "../shared/auth/dashboard";
 import { usePageHeader } from "./layout/PageHeaderContext";
 import { Avatar } from "../shared/components/Avatar/Avatar";
-import { Card } from "../shared/components/Card/Card";
+import { PageSection } from "../shared/components/PageSection/PageSection";
 import { KpiSection } from "./dashboard/KpiSection";
 import { LiveOperationsSection } from "./dashboard/LiveOperationsSection";
 import { RecentActivitySection } from "./dashboard/RecentActivitySection";
@@ -16,14 +16,13 @@ import dashboardStyles from "./dashboard/dashboard.module.css";
 import styles from "./DashboardHomePage.module.css";
 
 /**
- * The RAAD Founder/Platform dashboard — redesigned as a fleet-management SaaS home page
- * (Fleetio/Samsara/Motive/Linear/Stripe-Admin-comparable layout: a hero KPI row, an operations
- * strip with a live map, an activity/health mid-section, then billing) per the user's explicit
- * brief. **Every number on this page comes from an already-existing backend route** — no new
- * API, no new permission, no fabricated figure: `GET /admin/platform-stats` (ADR-0020) backs the
- * KPI row, Device Health, and Billing; `GET /admin/audit` (existing, previously unconsumed by
- * any frontend page) backs Recent Activity; `GET /vehicles`/`GET /trips` (existing, count-only
- * reads mirroring this page's own pre-existing drivers-count pattern) back Fleet Health and Live
+ * The RAAD Founder/Platform dashboard — a fleet-management SaaS home page (Fleetio/Samsara/
+ * Motive/Linear/Stripe-Admin-comparable layout: a hero KPI row, an operations strip with a live
+ * map, an activity/health mid-section, then billing) per the user's explicit brief. **Every
+ * number on this page comes from an already-existing backend route** — no new API, no new
+ * permission, no fabricated figure: `GET /admin/platform-stats` (ADR-0020) backs the KPI row,
+ * Device Health, and Billing; `GET /admin/audit` (existing) backs Recent Activity;
+ * `GET /vehicles`/`GET /trips` (existing, count-only reads) back Fleet Health and Live
  * Operations. Wherever a section names a KPI the backend genuinely has no data for (a revenue
  * trend, live fleet-wide vehicle positions beyond one at a time, an activity actor's display
  * name), it shows a real empty/partial state instead — never an invented number.
@@ -38,6 +37,15 @@ import styles from "./DashboardHomePage.module.css";
  * for Finance Staff, mirroring `navConfig.ts`'s own `FINANCE_ALLOWED_PATHS` precedent — the KPI
  * row, Device Health, and Billing all key off `admin.platform_stats.read` alone, which Finance
  * Staff does hold (ADR-0020 granted it explicitly for this reason), so those stay visible.
+ *
+ * 2026-09-05 redesign. Two structural changes, no data change:
+ *   - The welcome card is a page hero rather than a boxed card. It was a bordered surface
+ *     carrying a gradient and a paragraph of prose, directly above the KPI row — two card-shaped
+ *     objects in a row, the first of which said nothing measurable. It is now unboxed greeting
+ *     text, so the KPI row is the first *card* on the page and the visual hierarchy starts where
+ *     the information does.
+ *   - Sections use the shared `PageSection` primitive, so this page and the ERP finance pages
+ *     cannot drift apart on section spacing and label treatment.
  */
 export function DashboardHomePage() {
   const principal = useAuthStore((s) => s.principal);
@@ -52,36 +60,33 @@ export function DashboardHomePage() {
 
   return (
     <div className={clsx(styles.page, "raad-view-transition")}>
-      <Card className={styles.welcomeCard}>
-        {roleDisplay && <Avatar initials={roleDisplay.abbreviation} color={roleDisplay.color} size="lg" />}
-        <div className={styles.welcomeText}>
-          <span className={styles.welcomeTitle}>Welcome{roleDisplay ? `, ${roleDisplay.label}` : ""}</span>
-          <p className={styles.welcomeBody}>
+      <div className={styles.hero}>
+        {roleDisplay && (
+          <Avatar initials={roleDisplay.abbreviation} color={roleDisplay.color} size="lg" square />
+        )}
+        <div className={styles.heroText}>
+          <h2 className={styles.heroTitle}>Welcome{roleDisplay ? `, ${roleDisplay.label}` : ""}</h2>
+          <p className={styles.heroBody}>
             {dashboardType === "platform"
-              ? "This is the RAAD platform console. Fleet, tracking, billing, and reporting summaries will appear here as each module comes online."
-              : "This is your organization's console. Fleet, tracking, and rider summaries for your organization will appear here as each module comes online."}
+              ? "Fleet, tracking, billing and reporting across every organization on the RAAD platform."
+              : "Fleet, tracking and rider activity across your organization."}
           </p>
         </div>
-      </Card>
+      </div>
 
       {dashboardType === "platform" && (
         <>
-          <div className={dashboardStyles.section}>
-            <span className={dashboardStyles.sectionLabel}>Platform overview</span>
+          <PageSection title="Platform overview">
             <KpiSection />
-          </div>
+          </PageSection>
 
           {!isFinanceStaff && (
-            <div className={dashboardStyles.section}>
-              <span className={dashboardStyles.sectionLabel}>Live operations</span>
+            <PageSection title="Live operations">
               <LiveOperationsSection />
-            </div>
+            </PageSection>
           )}
 
-          <div className={dashboardStyles.section}>
-            <span className={dashboardStyles.sectionLabel}>
-              {isFinanceStaff ? "Device health" : "Activity & health"}
-            </span>
+          <PageSection title={isFinanceStaff ? "Device health" : "Activity & health"}>
             {isFinanceStaff ? (
               <DeviceHealthSection />
             ) : (
@@ -95,10 +100,9 @@ export function DashboardHomePage() {
                 </div>
               </div>
             )}
-          </div>
+          </PageSection>
 
-          <div className={dashboardStyles.section}>
-            <span className={dashboardStyles.sectionLabel}>Billing</span>
+          <PageSection title="Billing">
             <div className={dashboardStyles.panelRow}>
               <div className={dashboardStyles.panelHalf}>
                 <SubscriptionSummaryCard />
@@ -107,13 +111,12 @@ export function DashboardHomePage() {
                 <RevenueSummaryCard />
               </div>
             </div>
-          </div>
+          </PageSection>
 
           {!isFinanceStaff && (
-            <div className={dashboardStyles.section}>
-              <span className={dashboardStyles.sectionLabel}>People</span>
+            <PageSection title="People">
               <PeopleSection />
-            </div>
+            </PageSection>
           )}
         </>
       )}

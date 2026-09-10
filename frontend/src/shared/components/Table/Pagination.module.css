@@ -2,10 +2,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 13px 18px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
   font-size: var(--text-xs);
-  color: var(--color-text-faint);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-muted);
+  flex-wrap: wrap;
 }
 
 .controls {
@@ -15,6 +19,14 @@
 }
 
 .pageLabel {
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--font-weight-bold);
   color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 600px) {
+  .bar {
+    justify-content: center;
+    text-align: center;
+  }
 }

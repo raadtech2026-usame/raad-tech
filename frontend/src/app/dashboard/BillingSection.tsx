@@ -60,7 +60,7 @@ export function SubscriptionSummaryCard() {
 
   return (
     <Card>
-      <CardHeader title="Subscriptions" />
+      <CardHeader title="Subscriptions" subtitle="By status, across every organization" />
       <div className={sectionStyles.panelBody}>
         {isError ? (
           <EmptyState
@@ -94,7 +94,7 @@ export function RevenueSummaryCard() {
 
   return (
     <Card>
-      <CardHeader title="Revenue" />
+      <CardHeader title="Revenue" subtitle="Month to date" />
       <div className={sectionStyles.panelBody}>
         {isError ? (
           <EmptyState

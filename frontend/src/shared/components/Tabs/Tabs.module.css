@@ -1,27 +1,63 @@
+/* Segmented control (2026-09-05 redesign, replacing the underline treatment).
+ *
+ * The underline version had to own a full-width rule across the page to read as a tab strip,
+ * which meant every tabbed page carried a horizontal line that belonged to nothing else on it.
+ * A segment group is self-contained: it sits inline next to a section title or a card header —
+ * where the reference design puts it — and takes only the width of its own labels. */
+
 .row {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-5);
-  border-bottom: 1px solid var(--color-border-default);
+  gap: 2px;
+  padding: 3px;
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  max-width: 100%;
+  overflow-x: auto;
+  /* The strip scrolls rather than wrapping when there are more tabs than room: a segmented
+     control that breaks onto a second line stops reading as one control. */
+  scrollbar-width: none;
+}
+
+.row::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
   position: relative;
-  padding: var(--space-3) 0;
+  padding: 7px var(--space-4);
   font-family: var(--font-body);
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--font-weight-bold);
   font-size: var(--text-sm);
+  letter-spacing: var(--tracking-tight);
   color: var(--color-text-muted);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  transition: color var(--transition-fast), border-color var(--transition-fast);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
-.tab:hover {
+.tab:hover:not(.active) {
   color: var(--color-text-secondary);
+  background: rgba(255, 255, 255, 0.6);
 }
 
+.tab:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+/* The selected segment is a raised white chip on the inset track — the same figure/ground
+   relationship the sidebar's active item uses, so "selected" means one thing across the app. */
 .active {
-  color: var(--color-brand-primary);
-  border-bottom-color: var(--color-brand-primary);
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-default);
+  box-shadow: var(--shadow-xs);
 }

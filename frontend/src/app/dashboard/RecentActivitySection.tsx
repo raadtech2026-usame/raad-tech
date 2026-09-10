@@ -34,7 +34,7 @@ export function RecentActivitySection() {
 
   return (
     <Card>
-      <CardHeader title="Recent Activity" />
+      <CardHeader title="Recent Activity" subtitle="Latest entries in the platform audit trail" />
       <div className={styles.body}>
         {isError ? (
           <EmptyState

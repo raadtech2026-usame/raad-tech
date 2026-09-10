@@ -3,10 +3,11 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-4);
-  padding: var(--space-3) var(--space-5);
+  padding: var(--space-4) var(--space-5);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-card);
   border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-xs);
   flex-shrink: 0;
 }
 
@@ -36,6 +37,12 @@
   min-width: 200px;
 }
 
+@media (max-width: 600px) {
+  .vehiclePickerBody {
+    min-width: 0;
+  }
+}
+
 .vehicleSelect {
   font-family: var(--font-display);
   font-weight: var(--font-weight-bold);
@@ -55,10 +62,10 @@
 
 .vehicleHint {
   font-size: var(--text-2xs);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-faint);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--tracking-caps);
 }
 
 .statChips {
@@ -79,14 +86,29 @@
   }
 }
 
+@media (max-width: 600px) {
+  /* The picker and the status chips each take a full row: side by side at phone width the
+     chips wrap to one per line anyway, but with the vehicle name squeezed to a few characters. */
+  .header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-3);
+    padding: var(--space-4);
+  }
+
+  .statChips {
+    width: 100%;
+  }
+}
+
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 7px 12px;
+  padding: 6px var(--space-3);
   border-radius: var(--radius-full);
   background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-subtle);
+  border: 1px solid var(--color-border-default);
 }
 
 .chipIconLive {
@@ -99,20 +121,21 @@
 
 .chipLabel {
   font-size: var(--text-2xs);
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--font-weight-bold);
   color: var(--color-text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: var(--tracking-wide);
 }
 
 .terminalId {
   font-family: var(--font-mono);
-  font-size: var(--text-2xs);
+  font-size: var(--text-xs);
   color: var(--color-text-secondary);
 }
 
 .lastUpdate {
-  font-size: var(--text-2xs);
-  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }

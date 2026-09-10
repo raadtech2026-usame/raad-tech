@@ -1,7 +1,6 @@
 import { useQueries } from "@tanstack/react-query";
 import { Contact, UserRound, Users, type LucideIcon } from "lucide-react";
-import { Card } from "../../shared/components/Card/Card";
-import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
+import { StatCard } from "../../shared/components/StatCard/StatCard";
 import type { OffsetListParams } from "../../shared/api/listParams";
 import { listDrivers } from "../../features/transport-ops/drivers/api";
 import { countStudents } from "../../features/transport-ops/students/api";
@@ -47,19 +46,16 @@ export function PeopleSection() {
         const result = results[index];
         const Icon = stat.icon;
         return (
-          <Card key={stat.key} padded className={styles.tile}>
-            <div className={styles.head}>
-              <span className={styles.icon}>
-                <Icon size={18} />
-              </span>
-              <span className={styles.label}>{stat.label}</span>
-            </div>
-            {result.isLoading ? (
-              <Skeleton width={64} height={30} />
-            ) : (
-              <span className={styles.value}>{result.isError ? "—" : numberFormatter.format(result.data ?? 0)}</span>
-            )}
-          </Card>
+          <StatCard
+            key={stat.key}
+            icon={<Icon size={18} />}
+            tone="neutral"
+            label={stat.label}
+            isLoading={result.isLoading}
+            // An em dash on error, never a zero: "0 parents" and "we could not reach the
+            // parents endpoint" are different facts and must not render the same way.
+            value={result.isError ? "—" : numberFormatter.format(result.data ?? 0)}
+          />
         );
       })}
     </div>
