@@ -1,0 +1,257 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-muted);
+  text-decoration: none;
+}
+
+.backLink:hover {
+  color: var(--color-brand-primary);
+}
+
+.link {
+  color: var(--color-brand-primary);
+  text-decoration: none;
+  font-weight: var(--font-weight-bold);
+  white-space: nowrap;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+/* Fifteen tabs will not fit on one line at any realistic width, so the strip scrolls
+   horizontally rather than wrapping into a block that pushes the content down the page. */
+.tabBar {
+  overflow-x: auto;
+  padding-bottom: var(--space-2);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.sectionTitle {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.count {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* ---- Key/value detail ------------------------------------------------------------------- */
+
+.detail {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.detail div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.detail div:last-child {
+  border-bottom: none;
+}
+
+.detail dt {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.detail dd {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+  text-align: right;
+}
+
+/* ---- Tables ------------------------------------------------------------------------------ */
+
+.tableScroll {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 620px;
+}
+
+.table thead th {
+  text-align: left;
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-extrabold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--color-text-muted);
+  background: var(--color-bg-subtle);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-default);
+  white-space: nowrap;
+}
+
+.table tbody td {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-base);
+  color: var(--color-text-secondary);
+  border-top: 1px solid var(--color-border-subtle);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.alignRight {
+  text-align: right;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.muted {
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+}
+
+/* ---- Count-only tabs (students, parents) -------------------------------------------------- */
+
+.countOnly {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.bigNumber {
+  font-family: var(--font-display);
+  font-size: var(--text-6xl);
+  line-height: 1;
+  letter-spacing: var(--tracking-display);
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.countOnlyLabel {
+  font-size: var(--text-md);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-3);
+}
+
+/* ---- Informational notice ---------------------------------------------------------------- */
+
+.notice {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-default);
+  border-left: 3px solid var(--color-brand-primary);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-subtle);
+}
+
+.noticeIcon {
+  flex-shrink: 0;
+  color: var(--color-brand-primary);
+  margin-top: 2px;
+}
+
+.noticeText {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-secondary);
+  max-width: 76ch;
+}
+
+.noticeText:last-child {
+  margin-bottom: 0;
+}
+
+/* ---- Usage bars --------------------------------------------------------------------------- */
+
+.usageBarWrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 160px;
+}
+
+.usageBar {
+  flex: 1;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-inset);
+  overflow: hidden;
+}
+
+.usageFill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--color-brand-primary);
+  transition: width var(--transition-fast);
+}
+
+.usageWarning {
+  background: var(--color-warning, #d97706);
+}
+
+.usageDanger {
+  background: var(--color-danger, #dc2626);
+}
+
+.usagePct {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+}
+
+.unlimited {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+@media (max-width: 700px) {
+  .bigNumber {
+    font-size: var(--text-4xl);
+  }
+}

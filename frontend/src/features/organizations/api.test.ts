@@ -105,6 +105,7 @@ describe("organizations api", () => {
         org_type: "school",
         region_id: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
         parent_org_id: null,
+        plan_id: null,
         admin_full_name: "Amina Warsame",
         admin_email: "amina@greenvalley.example.com",
         admin_phone: null,

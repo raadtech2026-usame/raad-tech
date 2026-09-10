@@ -107,6 +107,12 @@ export interface CreateOrganizationInput {
   orgType: OrgType;
   regionId: string;
   parentOrgId?: string | null;
+  /** ADR-0040 §5. When supplied, onboarding also opens the organization's subscription and
+   * issues its first invoice, reusing `open_subscription`'s own period arithmetic. Optional so
+   * an organization can be created before its commercial tier is agreed. A failure on the
+   * billing side is logged, not propagated — the organization still exists, and the platform
+   * Subscriptions view surfaces the gap. */
+  planId?: string | null;
   /** ADR-0017: Organization Onboarding is one guided workflow now — these identity fields
    * provision the Organization's first Org Admin login in the same request. At least one of
    * `adminEmail`/`adminPhone` is required (`iam.User`'s own invariant). */
@@ -144,6 +150,7 @@ export async function createOrganization(
       org_type: input.orgType,
       region_id: input.regionId,
       parent_org_id: input.parentOrgId ?? null,
+      plan_id: input.planId ?? null,
       admin_full_name: input.adminFullName,
       admin_email: input.adminEmail ?? null,
       admin_phone: input.adminPhone ?? null,

@@ -11,6 +11,10 @@ import { Input } from "../../shared/components/Input/Input";
 import { Select } from "../../shared/components/Select/Select";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
+// A cross-folder API import, unlike this codebase's usual per-feature discipline — deliberate
+// and narrow: the plan catalogue is `billing`'s own resource, and duplicating a second
+// `GET /billing/plans` client here would be the actual duplication the rule guards against.
+import { listActivePlansForPicker } from "../billing/api";
 import { createOrganization, listRegions, type OnboardedOrganization } from "./api";
 import styles from "./CreateOrganizationForm.module.css";
 
@@ -28,6 +32,10 @@ const schema = z
       .refine((value) => value === "" || ULID_PATTERN.test(value), {
         message: "Must be a valid organization ID (26-character ULID)",
       }),
+    // Optional (ADR-0040 §5): an organization can be onboarded before its commercial tier is
+    // agreed, then have a subscription opened later. Supplying it here is the path that opens
+    // the subscription and issues the first invoice in the same request.
+    planId: z.string(),
     adminFullName: z.string().trim().min(1, "Org Admin name is required"),
     adminEmail: z.string().trim().email("Must be a valid email").or(z.literal("")),
     adminPhone: z.string().trim(),
@@ -46,6 +54,7 @@ const DEFAULT_VALUES: FormValues = {
   name: "",
   regionId: "",
   parentOrgId: "",
+  planId: "",
   adminFullName: "",
   adminEmail: "",
   adminPhone: "",
@@ -95,6 +104,16 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
   // the real, currently-running origin rather than a hardcoded/fabricated subdomain.
   const organizationPortalUrl = `${window.location.origin}/login`;
 
+  // ADR-0040 §5. Onboarding can open the organization's subscription in the same request, which
+  // is what stops a brand-new tenant hitting ADR-0039's subscription-inactive gate on its first
+  // login. Only active organization plans are offered — a disabled tier is not sellable.
+  const plansQuery = useQuery({
+    queryKey: ["billing", "plans", "picker"],
+    queryFn: listActivePlansForPicker,
+    enabled: open,
+    staleTime: 60_000,
+  });
+
   const regionsQuery = useQuery({
     queryKey: ["regions", "picker"],
     queryFn: () =>
@@ -126,6 +145,7 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
         orgType: "school",
         regionId: values.regionId,
         parentOrgId: values.parentOrgId || null,
+        planId: values.planId || null,
         adminFullName: values.adminFullName,
         adminEmail: values.adminEmail || null,
         adminPhone: values.adminPhone || null,
@@ -284,6 +304,25 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
             {regionOptions.map((region) => (
               <option key={region.id} value={region.id}>
                 {region.name}
+              </option>
+            ))}
+          </Select>
+        </FormField>
+
+        <FormField
+          label="Subscription plan"
+          hint={
+            plansQuery.isError
+              ? "Could not load plans — the organization can still be created and subscribed later."
+              : "Optional. Choosing one opens the subscription and issues the first invoice now; leaving it blank creates the organization without one."
+          }
+          error={errors.planId?.message}
+        >
+          <Select {...register("planId")} disabled={plansQuery.isLoading}>
+            <option value="">No plan yet</option>
+            {(plansQuery.data ?? []).map((plan) => (
+              <option key={plan.id} value={plan.id}>
+                {plan.name} — {plan.amount} {plan.currency} / {plan.billingCycle}
               </option>
             ))}
           </Select>

@@ -7,8 +7,10 @@ vi.mock("./api", () => ({
   createOrganization: vi.fn(),
   listRegions: vi.fn(),
 }));
+vi.mock("../billing/api", () => ({ listActivePlansForPicker: vi.fn() }));
 
 import * as api from "./api";
+import { listActivePlansForPicker } from "../billing/api";
 import { useToastStore } from "../../shared/components/Toast/toastStore";
 import { CreateOrganizationForm } from "./CreateOrganizationForm";
 
@@ -54,6 +56,22 @@ describe("CreateOrganizationForm", () => {
       page: { total: 1, page: 1, pageSize: 100 },
     });
     vi.mocked(api.createOrganization).mockReset();
+    vi.mocked(listActivePlansForPicker).mockReset().mockResolvedValue([
+      {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FCP",
+        name: "Standard",
+        billingScope: "organization",
+        amount: 199,
+        currency: "USD",
+        billingCycle: "monthly",
+        vehicleLimit: 10,
+        deviceLimit: 20,
+        userLimit: null,
+        status: "active",
+        createdAt: "2026-08-01T00:00:00Z",
+        updatedAt: "2026-08-01T00:00:00Z",
+      },
+    ]);
     useToastStore.setState({ toasts: [] });
   });
 
@@ -135,6 +153,8 @@ describe("CreateOrganizationForm", () => {
         orgType: "school",
         regionId: REGION.id,
         parentOrgId: null,
+        // ADR-0040 §5: optional, and null when the operator onboards without picking a tier.
+        planId: null,
         adminFullName: "Amina Warsame",
         adminEmail: "amina@greenvalley.example.com",
         adminPhone: null,
@@ -181,5 +201,43 @@ describe("CreateOrganizationForm", () => {
       }),
     );
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("sends the chosen plan so onboarding opens the subscription in the same request", async () => {
+    // ADR-0040 §5. Without this the organization is created with no subscription and its Org
+    // Admin meets ADR-0039's subscription-inactive gate on first login — the whole reason plan
+    // selection belongs in the onboarding request rather than a separate follow-up step.
+    vi.mocked(api.createOrganization).mockResolvedValue({
+      organization: {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        name: "Green Valley School",
+        orgType: "school",
+        parentOrgId: null,
+        regionId: REGION.id,
+        status: "active",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      adminUserId: "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+      temporaryPassword: "Temp-Pass-1234",
+    });
+
+    renderForm();
+    await screen.findByText("Northern Region");
+    await fillRequiredFields();
+    // `FormField` wraps its control in the `<label>`, so the accessible name carries the hint
+    // text too — matched by prefix rather than exact string.
+    await userEvent.selectOptions(
+      await screen.findByLabelText(/^Subscription plan/),
+      "01ARZ3NDEKTSV4RRFFQ69G5FCP",
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Create organization" }));
+
+    await waitFor(() =>
+      expect(api.createOrganization).toHaveBeenCalledWith(
+        expect.objectContaining({ planId: "01ARZ3NDEKTSV4RRFFQ69G5FCP" }),
+      ),
+    );
   });
 });

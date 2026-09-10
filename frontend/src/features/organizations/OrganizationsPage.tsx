@@ -1,17 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
+import { useNavigate } from "react-router-dom";
 import { Building2, Plus, Search } from "lucide-react";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
 import { usePaginatedQuery } from "../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../shared/stores/authStore";
-import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
 import { DataTable, type DataTableColumnMeta } from "../../shared/components/Table/DataTable";
 import { FilterChips, type FilterChipOption } from "../../shared/components/Table/FilterChips";
 import { Pagination } from "../../shared/components/Table/Pagination";
 import { LeadCell, MonoText } from "../../shared/components/Table/cells";
-import { DetailDrawer } from "../../shared/components/Drawer/DetailDrawer";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
 import { Badge } from "../../shared/components/Badge/Badge";
 import { Button } from "../../shared/components/Button/Button";
@@ -20,11 +19,11 @@ import { CreateOrganizationForm } from "./CreateOrganizationForm";
 import {
   listOrganizations,
   listRegions,
-  updateOrganizationStatus,
   type Organization,
-  type OrganizationStatus,
 } from "./api";
 import { orgTypeLabel, statusLabel, statusTone } from "./labels";
+import { listPlans, listSubscriptions } from "../billing/api";
+import { subscriptionStatusLabel, subscriptionStatusTone } from "../billing/labels";
 import styles from "./OrganizationsPage.module.css";
 
 const STATUS_FILTERS: FilterChipOption[] = [
@@ -56,10 +55,7 @@ export function OrganizationsPage() {
   usePageHeader("Organizations", "Platform tenants — schools and transport operators on RAAD");
 
   const principal = useAuthStore((s) => s.principal);
-  const toast = useToast();
-  const queryClient = useQueryClient();
 
-  const [selectedOrg, setSelectedOrg] = useState<Organization | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
 
@@ -109,31 +105,44 @@ export function OrganizationsPage() {
     return map;
   }, [regionsLookup.data]);
 
-  const statusMutation = useMutation({
-    mutationFn: (input: { id: string; status: OrganizationStatus }) =>
-      updateOrganizationStatus(input.id, input.status),
-    onSuccess: (organization) => {
-      queryClient.invalidateQueries({ queryKey: ["organizations", "list"] });
-      setSelectedOrg(organization);
-      toast.success(
-        "Organization updated",
-        `${organization.name} is now ${statusLabel(organization.status).toLowerCase()}.`,
-      );
-    },
-    onError: (mutationError) => {
-      const message =
-        mutationError instanceof ApiError ? mutationError.message : "Could not update the organization.";
-      toast.error("Update failed", message);
-    },
+  const navigate = useNavigate();
+
+  // One request each, joined in memory. Both catalogues are small and capped, so this is a
+  // constant two extra reads for the whole page — never one per row.
+  const subscriptionsLookup = useQuery({
+    queryKey: ["billing", "subscriptions", "org-list-lookup"],
+    queryFn: () =>
+      listSubscriptions({
+        page: 1,
+        pageSize: 100,
+        sort: null,
+        filters: {},
+        search: "",
+      }),
+    staleTime: 60_000,
+  });
+  const plansLookup = useQuery({
+    queryKey: ["billing", "plans", "lookup"],
+    queryFn: () =>
+      listPlans({ page: 1, pageSize: 100, sort: null, filters: {}, search: "" }),
+    staleTime: 5 * 60_000,
   });
 
-  function isPendingFor(status: OrganizationStatus): boolean {
-    return (
-      statusMutation.isPending &&
-      statusMutation.variables?.id === selectedOrg?.id &&
-      statusMutation.variables?.status === status
-    );
-  }
+  const subscriptionByOrg = useMemo(() => {
+    const map = new Map<string, (typeof subscriptionsLookup.data extends undefined ? never : NonNullable<typeof subscriptionsLookup.data>)["data"][number]>();
+    for (const subscription of subscriptionsLookup.data?.data ?? []) {
+      map.set(subscription.organizationId, subscription);
+    }
+    return map;
+  }, [subscriptionsLookup.data]);
+
+  const planNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const plan of plansLookup.data?.data ?? []) {
+      map.set(plan.id, plan.name);
+    }
+    return map;
+  }, [plansLookup.data]);
 
   const columns = useMemo<ColumnDef<Organization, unknown>[]>(
     () => [
@@ -170,13 +179,48 @@ export function OrganizationsPage() {
         ),
       },
       {
+        id: "plan",
+        header: "Plan",
+        cell: ({ row }) => {
+          const subscription = subscriptionByOrg.get(row.original.id);
+          if (!subscription) return <span className={styles.noPlan}>—</span>;
+          return <span>{planNameById.get(subscription.planId) ?? subscription.planId}</span>;
+        },
+      },
+      {
+        id: "subscription",
+        header: "Subscription",
+        cell: ({ row }) => {
+          const subscription = subscriptionByOrg.get(row.original.id);
+          if (subscriptionsLookup.isPending) return <span className={styles.noPlan}>…</span>;
+          // An organization with no subscription cannot open its dashboard at all
+          // (ADR-0039, amended 2026-09-09), so it is called out rather than left blank.
+          if (!subscription) return <Badge variant="danger" dot>No subscription</Badge>;
+          return (
+            <Badge variant={subscriptionStatusTone(subscription.status)} dot>
+              {subscriptionStatusLabel(subscription.status)}
+            </Badge>
+          );
+        },
+      },
+      {
+        id: "renewal",
+        header: "Renews",
+        meta: { align: "right" } satisfies DataTableColumnMeta,
+        cell: ({ row }) => {
+          const subscription = subscriptionByOrg.get(row.original.id);
+          const renewal = subscription?.currentPeriodEnd ?? null;
+          return <span>{renewal ? formatDate(renewal) : "—"}</span>;
+        },
+      },
+      {
         id: "createdAt",
         header: "Created",
         meta: { sortField: "created_at", align: "right" } satisfies DataTableColumnMeta,
         cell: ({ row }) => <span>{formatDate(row.original.createdAt)}</span>,
       },
     ],
-    [regionNameById],
+    [regionNameById, subscriptionByOrg, planNameById, subscriptionsLookup.isPending],
   );
 
   const activeStatusFilter = filters.status ?? "all";
@@ -226,7 +270,9 @@ export function OrganizationsPage() {
             isLoading={isLoading}
             sort={sort}
             onSortChange={toggleSort}
-            onRowClick={setSelectedOrg}
+            onRowClick={(organization) =>
+              navigate(`/platform/organizations/${organization.id}`)
+            }
             emptyState={
               <EmptyState
                 icon={<Building2 size={22} />}
@@ -250,74 +296,7 @@ export function OrganizationsPage() {
         </>
       )}
 
-      <DetailDrawer
-        open={selectedOrg !== null}
-        onClose={() => setSelectedOrg(null)}
-        icon={<Building2 size={22} />}
-        iconTint="var(--color-brand-primary-tint)"
-        iconColor="var(--color-brand-primary)"
-        title={selectedOrg?.name}
-        subtitle={selectedOrg ? orgTypeLabel(selectedOrg.orgType) : undefined}
-        status={
-          selectedOrg && (
-            <Badge variant={statusTone(selectedOrg.status)} dot>
-              {statusLabel(selectedOrg.status)}
-            </Badge>
-          )
-        }
-        rows={
-          selectedOrg
-            ? [
-                {
-                  key: "Region",
-                  value: regionNameById.get(selectedOrg.regionId) ?? selectedOrg.regionId,
-                },
-                ...(selectedOrg.parentOrgId
-                  ? [{ key: "Parent organization", value: selectedOrg.parentOrgId }]
-                  : []),
-                { key: "Organization ID", value: <MonoText>{selectedOrg.id}</MonoText> },
-                { key: "Created", value: formatDate(selectedOrg.createdAt) },
-                { key: "Updated", value: formatDate(selectedOrg.updatedAt) },
-              ]
-            : []
-        }
-        footer={
-          selectedOrg && (
-            <div className={styles.drawerActions}>
-              {selectedOrg.status !== "active" && (
-                <Button
-                  variant="secondary"
-                  loading={isPendingFor("active")}
-                  disabled={statusMutation.isPending}
-                  onClick={() => statusMutation.mutate({ id: selectedOrg.id, status: "active" })}
-                >
-                  Reactivate
-                </Button>
-              )}
-              {selectedOrg.status !== "suspended" && (
-                <Button
-                  variant="secondary"
-                  loading={isPendingFor("suspended")}
-                  disabled={statusMutation.isPending}
-                  onClick={() => statusMutation.mutate({ id: selectedOrg.id, status: "suspended" })}
-                >
-                  Suspend
-                </Button>
-              )}
-              {selectedOrg.status !== "inactive" && (
-                <Button
-                  variant="danger"
-                  loading={isPendingFor("inactive")}
-                  disabled={statusMutation.isPending}
-                  onClick={() => statusMutation.mutate({ id: selectedOrg.id, status: "inactive" })}
-                >
-                  Deactivate
-                </Button>
-              )}
-            </div>
-          )
-        }
-      />
+
 
       <CreateOrganizationForm open={createOpen} onClose={() => setCreateOpen(false)} />
     </div>
