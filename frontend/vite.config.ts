@@ -1,6 +1,15 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
+/**
+ * Minimal ambient declaration for the one Node global this config reads (`CHOKIDAR_USEPOLLING`,
+ * below). `tsconfig.node.json` compiles this file with no Node type definitions available, so
+ * `process` was an unresolved name and `tsc -b` — the first half of `npm run build` — failed on
+ * it. Declared locally rather than adding `@types/node`: a new devDependency needs explicit
+ * approval (`.claude/rules/workflow.md` #1/#2), and this is the only Node API the file touches.
+ */
+declare const process: { env: Record<string, string | undefined> };
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],

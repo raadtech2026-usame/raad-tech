@@ -54,6 +54,16 @@ jobs:
         run: npm ci
 
       - name: Build (includes tsc type-check)
+        env:
+          # Vite inlines VITE_* at build time, so a build that needs a real map must be given the
+          # token here rather than at container-run time. Optional on purpose: this job is a
+          # type-check/test gate that publishes no artifact, and an unset secret resolves to an
+          # empty string, which builds fine (MapView renders its explicit "no Mapbox access token
+          # is configured" state rather than failing). Set the repository secret only if this
+          # workflow ever starts producing a deployable bundle. Safe as a secret even though a
+          # Mapbox pk token is a public, client-side key by design (frontend/.env.example's own
+          # stance) — this keeps the value out of the committed tree per .claude/rules/git.md #4.
+          VITE_MAPBOX_ACCESS_TOKEN: ${{ secrets.VITE_MAPBOX_ACCESS_TOKEN }}
         run: npm run build
 
       - name: Run unit/component tests
