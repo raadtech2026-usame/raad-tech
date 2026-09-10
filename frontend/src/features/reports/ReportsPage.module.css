@@ -1,0 +1,107 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+
+/* `auto-fit` with a generous floor: a report card holds a title, a description and up to four
+   filter fields, so it needs real width before it is worth showing two per row. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.cardHead {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: var(--color-brand-primary-tint);
+  color: var(--color-brand-primary);
+}
+
+.cardText {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.cardTitle {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-lg);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.cardDescription {
+  font-size: var(--text-sm);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+/* Filters sit on the inset ground so they read as inputs *to* the card rather than more of its
+   content — the same figure/ground device the KPI cards use for their figures. */
+.filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-bg-inset);
+  border-radius: var(--radius-lg);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: auto;
+  padding-top: var(--space-1);
+}
+
+@media (max-width: 900px) {
+  .page {
+    gap: var(--space-6);
+  }
+
+  .grid {
+    gap: var(--space-4);
+  }
+}
+
+@media (max-width: 600px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .filters {
+    grid-template-columns: 1fr;
+  }
+
+  /* Full-width buttons: three side by side at phone width leaves each too small to hit. */
+  .actions > * {
+    flex: 1 1 auto;
+  }
+}

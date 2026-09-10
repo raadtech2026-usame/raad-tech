@@ -29,7 +29,17 @@ no approved endpoint yet" posture.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from datetime import date
+
+from fastapi import APIRouter, Depends, Query, Response, status
+from pydantic import BaseModel
+
+from raad.core.di.container import Container
+from raad.core.errors.exceptions import NotFoundError
+from raad.core.tenancy.scope import TenantRegionScope
+from raad.interfaces.http.deps import get_container, get_scope
+from raad.modules.reporting.application.catalog import ReportCatalog, ReportRequest
+from raad.modules.reporting.application.export_service import ReportExportService
 
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
@@ -111,3 +121,102 @@ async def get_report_run(
         uow=uow,
     )
     return _report_run_dto_to_response(report_run)
+
+
+# --- ADR-0040 §6: the report catalogue and synchronous export --------------------------------
+#
+# **Why synchronous.** `ReportRun` (above) models a queued, long-running render whose artifact
+# lands in an object store — and that store does not exist in this repository (Phase-2 §10.1 is
+# unbuilt). Rather than fake an artifact URL, these two routes render on demand and stream the
+# bytes back. `ReportRun` is left exactly as it was, still the right home for long runs once a
+# store exists, with `artifact_url` still honestly unpopulated.
+#
+# The trade-off is stated rather than hidden: a very large report blocks its request. Builders
+# cap themselves at 1000 rows (`core/di/report_definitions.py`), which covers a full school's
+# monthly roster.
+
+
+class ReportDefinitionResponse(BaseModel):
+    key: str
+    title: str
+    description: str
+    scope: str
+    accepts: list[str]
+
+
+@reports_router.get(
+    "/catalog",
+    response_model=list[ReportDefinitionResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List the reports this caller can generate",
+    description=(
+        "Filtered to the definitions this caller's role may actually generate. The export "
+        "route re-checks the same role list before building anything, so naming an unlisted "
+        "key directly is refused rather than served."
+    ),
+)
+async def list_report_catalog(
+    scope: str | None = Query(default=None, pattern="^(platform|organization)$"),
+    principal: Principal = Depends(require_permission(Permission("reporting.reports.request"))),
+    container: Container = Depends(get_container),
+) -> list[ReportDefinitionResponse]:
+    catalog: ReportCatalog = container.resolve(ReportCatalog)
+    return [
+        ReportDefinitionResponse(
+            key=d.key,
+            title=d.title,
+            description=d.description,
+            scope=d.scope,
+            accepts=list(d.accepts),
+        )
+        for d in catalog.list_for(principal, scope=scope)
+    ]
+
+
+@reports_router.get(
+    "/{definition_key}/export",
+    status_code=status.HTTP_200_OK,
+    summary="Render and download a report",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/pdf": {},
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {},
+            },
+            "description": "The rendered report as a file download.",
+        }
+    },
+)
+async def export_report(
+    definition_key: str,
+    format: str = Query(default="pdf", pattern="^(pdf|xlsx)$"),
+    period: str | None = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    start: date | None = Query(default=None),
+    end: date | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    principal: Principal = Depends(require_permission(Permission("reporting.reports.request"))),
+    scope: TenantRegionScope = Depends(get_scope),
+    container: Container = Depends(get_container),
+) -> Response:
+    export_service: ReportExportService = container.resolve(ReportExportService)
+    rendered = await export_service.export(
+        definition_key=definition_key,
+        format=format,
+        request=ReportRequest(
+            principal=principal,
+            organization_id=principal.org_id,
+            start=start,
+            end=end,
+            period=period,
+            vehicle_id=vehicle_id,
+            scope=scope,
+        ),
+    )
+    return Response(
+        content=rendered.content,
+        media_type=rendered.media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{rendered.filename}"'
+        },
+    )

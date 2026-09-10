@@ -20,6 +20,17 @@
 # official `stripe` SDK to match this codebase's own established "hand-roll a narrow, well-
 # understood need" pattern rather than pull a heavier dependency; Stripe's REST API (Payment
 # Intents) is simple and well-documented enough to call directly. MIT license.
+#
+# ADR-0040 §6 (ERP Finance & Reporting) adds `openpyxl` and `reportlab`, the first rendering
+# dependencies this project has taken on. Both were approved explicitly before installation
+# (`.claude/rules/workflow.md` #1/#2). They exist to bind `reporting.application.ports.
+# ReportRendererPort`, which had been deliberately unbound since it was defined — every ERP and
+# platform report is exportable to real .xlsx and .pdf, not a CSV pretending to be one.
+#   * openpyxl  (MIT)  — .xlsx writer, pure Python, no native build step.
+#   * reportlab (BSD-3-Clause) — .pdf generation; its `platypus` layer does the table pagination
+#     a multi-page bus roster needs, which hand-rolled PDF byte assembly would not.
+# Both are imported only inside `reporting/infra/renderers.py`; nothing else in the codebase
+# touches them, so the blast radius of either is one module.
 
 [project]
 name = "raad-business-api"
@@ -36,6 +47,8 @@ dependencies = [
     "asyncpg>=0.29",
     "redis>=5.0",
     "httpx>=0.27",
+    "openpyxl>=3.1",
+    "reportlab>=4.0",
 ]
 
 [build-system]
