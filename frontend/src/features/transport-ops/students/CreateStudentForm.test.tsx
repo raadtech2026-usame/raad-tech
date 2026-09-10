@@ -29,11 +29,11 @@ const STUDENT: api.Student = {
   updatedAt: "2026-01-01T00:00:00Z",
 };
 
-function renderForm(onClose = vi.fn()) {
+function renderForm(onClose = vi.fn(), onCreated?: (student: api.Student) => void) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <CreateStudentForm open onClose={onClose} />
+      <CreateStudentForm open onClose={onClose} onCreated={onCreated} />
     </QueryClientProvider>,
   );
   return { onClose };
@@ -117,6 +117,22 @@ describe("CreateStudentForm", () => {
       variant: "success",
       title: "Student enrolled",
     });
+  });
+
+  it("calls onCreated with the enrolled student so a caller can chain into transport assignment", async () => {
+    vi.mocked(api.enrollStudent).mockResolvedValue(STUDENT);
+    const onCreated = vi.fn();
+    const { onClose } = renderForm(vi.fn(), onCreated);
+    await screen.findByText(ORG_OPTION.name);
+
+    await userEvent.selectOptions(screen.getByLabelText("Organization"), ORG_OPTION.id);
+    await userEvent.type(screen.getByPlaceholderText("e.g. Amina Hassan"), "Amina Hassan");
+    await userEvent.click(screen.getByRole("button", { name: "Enroll student" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    // onCreated fires after onClose (StudentsPage.tsx's own ordering: close the enrollment
+    // drawer, then open the assignment drawer for the student just returned).
+    expect(onCreated).toHaveBeenCalledWith(STUDENT);
   });
 
   it("surfaces a backend validation error via a toast and keeps the drawer open", async () => {

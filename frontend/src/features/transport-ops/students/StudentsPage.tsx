@@ -422,7 +422,21 @@ export function StudentsPage() {
         }
       />
 
-      <CreateStudentForm open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CreateStudentForm
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(student) => {
+          // School ERP student-vehicle assignment (2026-09-10): land the admin straight on the
+          // new student's own detail drawer with "Assign to route" already open — the same
+          // `StudentAssignmentSection`/`AssignStudentForm` an existing student already uses, so
+          // registration flows straight into transport assignment without a second, duplicate
+          // "pick a vehicle" mechanism. Vehicle assignment is optional either way: closing this
+          // drawer (Cancel) leaves the student enrolled with no active assignment, exactly the
+          // same as an admin who enrolls today and assigns a route later.
+          setSelectedStudent({ id: student.id, fullName: student.fullName, status: student.status });
+          setAssignRouteOpen(true);
+        }}
+      />
 
       <LinkGuardianForm
         open={linkGuardianOpen}

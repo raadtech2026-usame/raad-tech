@@ -12,7 +12,7 @@ import { Select } from "../../../shared/components/Select/Select";
 import { useToast } from "../../../shared/components/Toast/toastStore";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { ApiError } from "../../../shared/api/types";
-import { enrollStudent, listOrganizationsForPicker } from "./api";
+import { enrollStudent, listOrganizationsForPicker, type Student } from "./api";
 import styles from "./CreateStudentForm.module.css";
 
 // Matches `transport_ops.domain.value_objects`'s own `_ULID_PATTERN` (Crockford Base32, 26
@@ -57,6 +57,11 @@ const DEFAULT_VALUES: FormValues = { organizationId: "", fullName: "", externalR
 export interface CreateStudentFormProps {
   open: boolean;
   onClose: () => void;
+  /** Fired once enrollment succeeds, before `onClose()` — lets the caller (`StudentsPage`)
+   * immediately follow registration with transport-assignment (`AssignStudentForm`, School ERP
+   * student-bus/vehicle assignment) without this form needing to know that flow exists. Optional
+   * so any other future caller of this form is unaffected. */
+  onCreated?: (student: Student) => void;
 }
 
 /**
@@ -70,7 +75,7 @@ export interface CreateStudentFormProps {
  * sees a `GET /organizations` picker instead (this module's own self-contained
  * `listOrganizationsForPicker`).
  */
-export function CreateStudentForm({ open, onClose }: CreateStudentFormProps) {
+export function CreateStudentForm({ open, onClose, onCreated }: CreateStudentFormProps) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const principal = useAuthStore((s) => s.principal);
@@ -109,6 +114,7 @@ export function CreateStudentForm({ open, onClose }: CreateStudentFormProps) {
       toast.success("Student enrolled", `${student.fullName} has been enrolled.`);
       reset(DEFAULT_VALUES);
       onClose();
+      onCreated?.(student);
     },
     onError: (error) => {
       const message = error instanceof ApiError ? error.message : "Could not enroll the student.";

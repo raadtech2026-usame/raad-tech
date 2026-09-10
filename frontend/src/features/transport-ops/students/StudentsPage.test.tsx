@@ -147,6 +147,46 @@ describe("StudentsPage", () => {
     expect(within(dialog).getByText("STU-00231")).toBeInTheDocument();
   });
 
+  it("opens the new student's detail drawer with transport assignment ready right after enrollment", async () => {
+    // School ERP student-vehicle assignment (2026-09-10): registration must flow straight into
+    // "assign this student to a bus/route" without a second navigation step. Reuses the exact
+    // existing detail-drawer + AssignStudentForm pair an already-enrolled student already uses —
+    // this proves `StudentsPage`'s own `onCreated` wiring actually opens both, not just that
+    // `CreateStudentForm` fires the callback (see `CreateStudentForm.test.tsx` for that half).
+    vi.mocked(api.listStudents).mockResolvedValue(pageOf([], 0));
+    const enrolled: api.Student = {
+      id: "01ARZ3NDEKTSV4RRFFQ69G5FDZ",
+      organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
+      fullName: "Yusuf Omar",
+      externalRef: null,
+      status: "active",
+      createdAt: "2026-01-03T00:00:00Z",
+      updatedAt: "2026-01-03T00:00:00Z",
+    };
+    vi.mocked(api.enrollStudent).mockResolvedValue(enrolled);
+    vi.mocked(api.getStudent).mockResolvedValue(enrolled);
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("No students yet")).toBeInTheDocument());
+
+    // Two "New Student" buttons render when the table is empty (header + empty-state CTA) —
+    // either opens the identical `CreateStudentForm`, so the first is as good as either.
+    await userEvent.click(screen.getAllByRole("button", { name: "New Student" })[0]);
+    await screen.findByText("Green Valley School");
+    await userEvent.selectOptions(screen.getByLabelText("Organization"), enrolled.organizationId);
+    await userEvent.type(screen.getByPlaceholderText("e.g. Amina Hassan"), "Yusuf Omar");
+    await userEvent.click(screen.getByRole("button", { name: "Enroll student" }));
+
+    await waitFor(() => expect(api.enrollStudent).toHaveBeenCalled());
+
+    // Both drawers this flow opens share the "Yusuf Omar" title text — asserting there are two
+    // (detail drawer + assignment drawer) is a more precise proof of the chain than asserting one
+    // dialog's contents, since either drawer alone would still contain the student's name once.
+    await waitFor(() => expect(screen.getAllByText("Yusuf Omar").length).toBeGreaterThanOrEqual(2));
+    expect(screen.getByRole("heading", { name: "Assign to route" })).toBeInTheDocument();
+    expect(api.getStudent).toHaveBeenCalledWith(enrolled.id);
+  });
+
   it("shows the linked guardians and lets a founder unlink one", async () => {
     vi.mocked(api.listStudents).mockResolvedValue(pageOf([STUDENT_SUMMARY], 1));
     vi.mocked(api.listGuardiansForStudent).mockResolvedValue([GUARDIAN]);
