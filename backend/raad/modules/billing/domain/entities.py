@@ -4,7 +4,7 @@ buffer the resulting `DomainEvent`s, matching `transport_ops.domain.entities`'s 
 (`Clock` passed in, never called internally).
 
 **Phase 15 scope: all five documented aggregates** (`Plan`, `Subscription`, `Invoice`,
-`Payment`, `TransportFee`) — see `value_objects.py`'s module docstring for the full scope note
+`Payment`) — see `value_objects.py`'s module docstring for the full scope note
 and the cross-module-reference/undocumented-enum reasoning shared by all five.
 
 **No LLD aggregate contract skeleton exists for any of these five** (unlike `Trip`/
@@ -53,12 +53,6 @@ business rule no document states.
 format). `Invoice.issue()` sets it to the invoice's own id string — avoids inventing a
 sequential/formatted numbering scheme (e.g. "INV-2026-0001") no document specifies, while still
 satisfying the documented uniqueness constraint trivially (ids are already globally unique).
-
-**`transport_fees.period`'s type is undocumented** (§8.5 gives only the bare column name
-`period`, unlike every sibling table's fully-typed columns). Modeled as a plain label string
-(e.g. `"2026-07"`) rather than a `period_start`/`period_end` pair — `subscriptions`/`invoices`
-both spell out an explicit start/end pair *when that's what they mean*; `transport_fees` giving
-only one field is read as a single informal label, not an under-specified pair.
 """
 
 from __future__ import annotations
@@ -80,11 +74,8 @@ from raad.modules.billing.domain.value_objects import (
     PaymentStatus,
     PlanId,
     PlanStatus,
-    StudentId,
     SubscriptionId,
     SubscriptionStatus,
-    TransportFeeId,
-    TransportFeeStatus,
 )
 
 _PLAN_NAME_MAX_LENGTH = 160  # Database Design §8.1 gives no explicit length (compact
@@ -151,6 +142,8 @@ class Plan(_AggregateRoot):
         price: Money,
         billing_cycle: BillingCycle,
         vehicle_limit: int | None,
+        device_limit: int | None,
+        user_limit: int | None,
         status: PlanStatus,
         created_at: datetime,
         updated_at: datetime,
@@ -162,7 +155,13 @@ class Plan(_AggregateRoot):
         self.billing_scope = billing_scope
         self.price = price
         self.billing_cycle = billing_cycle
+        #: ADR-0040 §4 — "included buses / devices / users". `vehicle_limit` predates this and
+        #: already meant included buses; the two new siblings complete the set. All three stay
+        #: `None`-able, which means "unlimited" — the shape `vehicle_limit` already established,
+        #: and what an Enterprise tier needs.
         self.vehicle_limit = vehicle_limit
+        self.device_limit = device_limit
+        self.user_limit = user_limit
         self.status = status
         self.created_at = created_at
         self.updated_at = updated_at
@@ -183,6 +182,8 @@ class Plan(_AggregateRoot):
         price: Money,
         billing_cycle: BillingCycle,
         vehicle_limit: int | None = None,
+        device_limit: int | None = None,
+        user_limit: int | None = None,
         clock: Clock,
         actor_id: str | None = None,
     ) -> "Plan":
@@ -198,6 +199,8 @@ class Plan(_AggregateRoot):
             price=price,
             billing_cycle=billing_cycle,
             vehicle_limit=vehicle_limit,
+            device_limit=device_limit,
+            user_limit=user_limit,
             status=PlanStatus.ACTIVE,
             created_at=now,
             updated_at=now,
@@ -211,11 +214,57 @@ class Plan(_AggregateRoot):
                 currency=price.currency,
                 billing_cycle=billing_cycle.value,
                 vehicle_limit=vehicle_limit,
+                device_limit=device_limit,
+                user_limit=user_limit,
                 occurred_at=clock.now(),
                 actor_id=actor_id,
             )
         )
         return plan
+
+    def update_details(
+        self,
+        *,
+        name: str,
+        price: Money,
+        vehicle_limit: int | None,
+        device_limit: int | None,
+        user_limit: int | None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """ADR-0040 §4 — the plan catalogue gains a real management surface.
+
+        **Repricing a plan never retro-changes an already-issued invoice.** `Invoice` captures
+        its own amount at issue time, so a price change applies from the next billing period
+        onward; the alternative — rewriting history on invoices a customer may already have
+        paid — is not something a billing system may do silently.
+
+        `billing_scope` and `billing_cycle` are deliberately *not* updatable: both are structural
+        (the cycle drives every period date `Subscription.open`/`renew` computes), so changing
+        one under a live subscription would silently move its renewal date. A different cycle is
+        a different plan row — which is exactly the shape ADR-0040 §4 chose for monthly-vs-annual.
+        """
+        _validate_plan_name(name)
+        self.name = name
+        self.price = price
+        self.vehicle_limit = vehicle_limit
+        self.device_limit = device_limit
+        self.user_limit = user_limit
+        self.updated_at = clock.now()
+        self._record(
+            billing_events.plan_updated(
+                plan_id=str(self.id),
+                name=name,
+                amount=price.amount,
+                currency=price.currency,
+                vehicle_limit=vehicle_limit,
+                device_limit=device_limit,
+                user_limit=user_limit,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
 
     def activate(self, *, clock: Clock, actor_id: str | None = None) -> None:
         if self.status == PlanStatus.ACTIVE:
@@ -644,7 +693,7 @@ class Invoice(_AggregateRoot):
 
 class Payment(_AggregateRoot):
     """`payments` (Database Design §8.4). **No `+ standard audit cols` line in §8.3's table** —
-    unlike `Plan`/`Subscription`/`Invoice`/`TransportFee`, this table lists exactly its own
+    unlike `Plan`/`Subscription`/`Invoice`, this table lists exactly its own
     columns (including its own `created_at`/`confirmed_at` pair), the identical situation
     `student_parents`/`device_assignments` already establish elsewhere in this codebase for a
     table whose own timestamp columns already serve the audit purpose (`infra/models.py`'s own
@@ -858,114 +907,6 @@ class Payment(_AggregateRoot):
         self._record(
             billing_events.payment_expired(
                 payment_id=str(self.id),
-                organization_id=str(self.organization_id),
-                occurred_at=clock.now(),
-                actor_id=actor_id,
-            )
-        )
-
-
-class TransportFee(_AggregateRoot):
-    """`transport_fees` (Database Design §8.5): "separate from subscription" — informational to
-    parents, never gates safety or platform access by itself (§8.5's own closing line). No
-    documented API surface at all this phase (confirmed by a dedicated documentation audit
-    before this phase) — domain/application/infra complete, no HTTP route, the same "use-case
-    exists, no approved endpoint yet" posture `Route.remove_stop`/`Trip.interrupt` establish.
-    """
-
-    def __init__(
-        self,
-        *,
-        id: TransportFeeId,
-        organization_id: OrganizationId,
-        student_id: StudentId,
-        period: str,
-        amount: Money,
-        status: TransportFeeStatus,
-    ) -> None:
-        super().__init__()
-        if not period:
-            raise DomainError("TransportFee period must not be empty")
-        self.id = id
-        self.organization_id = organization_id
-        self.student_id = student_id
-        self.period = period
-        self.amount = amount
-        self.status = status
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, TransportFee) and self.id == other.id
-
-    def __hash__(self) -> int:
-        return hash(self.id)
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        id: TransportFeeId,
-        organization_id: OrganizationId,
-        student_id: StudentId,
-        period: str,
-        amount: Money,
-        clock: Clock,
-        actor_id: str | None = None,
-    ) -> "TransportFee":
-        fee = cls(
-            id=id,
-            organization_id=organization_id,
-            student_id=student_id,
-            period=period,
-            amount=amount,
-            status=TransportFeeStatus.DUE,
-        )
-        fee._record(
-            billing_events.transport_fee_created(
-                transport_fee_id=str(id),
-                organization_id=str(organization_id),
-                student_id=str(student_id),
-                period=period,
-                amount=amount.amount,
-                currency=amount.currency,
-                occurred_at=clock.now(),
-                actor_id=actor_id,
-            )
-        )
-        return fee
-
-    def mark_paid(self, *, clock: Clock, actor_id: str | None = None) -> None:
-        if self.status == TransportFeeStatus.PAID:
-            return
-        self.status = TransportFeeStatus.PAID
-        self._record(
-            billing_events.transport_fee_paid(
-                transport_fee_id=str(self.id),
-                organization_id=str(self.organization_id),
-                occurred_at=clock.now(),
-                actor_id=actor_id,
-            )
-        )
-
-    def mark_overdue(self, *, clock: Clock, actor_id: str | None = None) -> None:
-        if self.status == TransportFeeStatus.OVERDUE:
-            return
-        self.status = TransportFeeStatus.OVERDUE
-        self._record(
-            billing_events.transport_fee_overdue(
-                transport_fee_id=str(self.id),
-                organization_id=str(self.organization_id),
-                occurred_at=clock.now(),
-                actor_id=actor_id,
-            )
-        )
-
-    def waive(self, *, clock: Clock, actor_id: str | None = None) -> None:
-        if self.status == TransportFeeStatus.WAIVED:
-            return
-        self.status = TransportFeeStatus.WAIVED
-        self._record(
-            billing_events.transport_fee_waived(
-                transport_fee_id=str(self.id),
                 organization_id=str(self.organization_id),
                 occurred_at=clock.now(),
                 actor_id=actor_id,

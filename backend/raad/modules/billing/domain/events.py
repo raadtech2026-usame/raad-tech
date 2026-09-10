@@ -20,7 +20,6 @@ already establishes for its own five phases:**
 - `PlanCreated`/`PlanActivated`/`PlanDisabled`, `SubscriptionOpened`/`SubscriptionSuspended`/
   `SubscriptionCancelled`, `InvoiceIssued`/`InvoicePaid`/`InvoiceVoided`,
   `PaymentInitiated`/`PaymentProcessing`/`PaymentExpired`,
-  `TransportFeeCreated`/`TransportFeePaid`/`TransportFeeOverdue`/`TransportFeeWaived` — no
   approved document names any of these; chosen to match each aggregate's own domain method
   names 1:1 and the established PascalCase-past-tense convention, the same posture
   `RouteCreated`/`TripScheduled`/`StudentAssignmentCreated` already establish for their own
@@ -70,6 +69,8 @@ def plan_created(
     currency: str,
     billing_cycle: str,
     vehicle_limit: int | None,
+    device_limit: int | None = None,
+    user_limit: int | None = None,
     occurred_at: datetime,
     actor_id: str | None,
 ) -> DomainEvent:
@@ -86,6 +87,40 @@ def plan_created(
             "currency": currency,
             "billing_cycle": billing_cycle,
             "vehicle_limit": vehicle_limit,
+            "device_limit": device_limit,
+            "user_limit": user_limit,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def plan_updated(
+    *,
+    plan_id: str,
+    name: str,
+    amount: float,
+    currency: str,
+    vehicle_limit: int | None,
+    device_limit: int | None,
+    user_limit: int | None,
+    occurred_at: datetime,
+    actor_id: str | None = None,
+) -> DomainEvent:
+    """ADR-0040 §4. `Plan` had no update path before — its catalogue was seed-only."""
+    return _new_event(
+        event_type="PlanUpdated",
+        aggregate_type="Plan",
+        aggregate_id=plan_id,
+        org_id=None,
+        occurred_at=occurred_at,
+        payload={
+            "plan_id": plan_id,
+            "name": name,
+            "amount": amount,
+            "currency": currency,
+            "vehicle_limit": vehicle_limit,
+            "device_limit": device_limit,
+            "user_limit": user_limit,
             "actor_id": actor_id,
         },
     )
@@ -446,87 +481,6 @@ def payment_expired(
         event_type="PaymentExpired",
         aggregate_type="Payment",
         aggregate_id=payment_id,
-        org_id=organization_id,
-        occurred_at=occurred_at,
-        payload={"actor_id": actor_id},
-    )
-
-
-# --- TransportFee ------------------------------------------------------------------------
-
-
-def transport_fee_created(
-    *,
-    transport_fee_id: str,
-    organization_id: str,
-    student_id: str,
-    period: str,
-    amount: float,
-    currency: str,
-    occurred_at: datetime,
-    actor_id: str | None,
-) -> DomainEvent:
-    return _new_event(
-        event_type="TransportFeeCreated",
-        aggregate_type="TransportFee",
-        aggregate_id=transport_fee_id,
-        org_id=organization_id,
-        occurred_at=occurred_at,
-        payload={
-            "student_id": student_id,
-            "period": period,
-            "amount": amount,
-            "currency": currency,
-            "actor_id": actor_id,
-        },
-    )
-
-
-def transport_fee_paid(
-    *,
-    transport_fee_id: str,
-    organization_id: str,
-    occurred_at: datetime,
-    actor_id: str | None,
-) -> DomainEvent:
-    return _new_event(
-        event_type="TransportFeePaid",
-        aggregate_type="TransportFee",
-        aggregate_id=transport_fee_id,
-        org_id=organization_id,
-        occurred_at=occurred_at,
-        payload={"actor_id": actor_id},
-    )
-
-
-def transport_fee_overdue(
-    *,
-    transport_fee_id: str,
-    organization_id: str,
-    occurred_at: datetime,
-    actor_id: str | None,
-) -> DomainEvent:
-    return _new_event(
-        event_type="TransportFeeOverdue",
-        aggregate_type="TransportFee",
-        aggregate_id=transport_fee_id,
-        org_id=organization_id,
-        occurred_at=occurred_at,
-        payload={"actor_id": actor_id},
-    )
-
-
-def transport_fee_waived(
-    *,
-    transport_fee_id: str,
-    organization_id: str,
-    occurred_at: datetime,
-    actor_id: str | None,
-) -> DomainEvent:
-    return _new_event(
-        event_type="TransportFeeWaived",
-        aggregate_type="TransportFee",
-        aggregate_id=transport_fee_id,
         org_id=organization_id,
         occurred_at=occurred_at,
         payload={"actor_id": actor_id},

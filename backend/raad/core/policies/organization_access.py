@@ -65,22 +65,37 @@ class OrganizationSubscriptionState(str, Enum):
     CANCELLED = "cancelled"
 
 
-#: States in which the tenant may use the application (ADR-0039 §1's own table).
+#: States in which the tenant may use the application.
 #:
-#: `PAST_DUE` and `GRACE_PERIOD` grant deliberately: that is what a grace period *is*. The
-#: business rule being encoded is "stop paying and you eventually lose access", not "miss a
-#: payment date by an hour and your buses go dark" — for a platform whose users are schools
-#: tracking children, an abrupt cutoff at the stroke of the billing date is the wrong default.
-#: `TRIAL` grants because a subscription that has not started billing yet has nothing to be
+#: **Amended 2026-09-09 (direct user directive), narrowing ADR-0039 §1's original table.**
+#: `PAST_DUE` used to grant; it now denies. The rule the platform owner asked for is "an unpaid
+#: invoice closes the dashboard", and `past_due` is precisely the state that means *unpaid and
+#: past the due date*. It was the single widest hole in the enforcement: an organization could
+#: stop paying and keep full access indefinitely, because nothing escalated `past_due` on its own
+#: without the scheduled sweep completing.
+#:
+#: `GRACE_PERIOD` still grants, and that distinction is the whole point of the amendment. A grace
+#: period that does not grant access is not a grace period — it is just a slower `suspended`, and
+#: ADR-0039's lifecycle would have no state left that means "we know you are late, keep working
+#: while you sort it out". Access ends when grace *ends*, which is exactly what the platform owner
+#: described. For a product whose users are schools tracking children, that ordering matters:
+#: the cutoff is deliberate and dated, never a surprise at the stroke of a billing hour.
+#:
+#: `TRIAL` grants because a subscription that has not started billing has nothing to be
 #: delinquent about.
 _GRANTING_STATES = frozenset(
     {
         OrganizationSubscriptionState.TRIAL,
         OrganizationSubscriptionState.ACTIVE,
-        OrganizationSubscriptionState.PAST_DUE,
         OrganizationSubscriptionState.GRACE_PERIOD,
     }
 )
+
+#: Denial reason for a tenant that has no subscription row at all, distinct from a tenant whose
+#: subscription has lapsed. The two need different copy and different operator action — "nobody
+#: ever sold this school a plan" is a provisioning problem, "they stopped paying" is a billing
+#: one — so the wire contract distinguishes them rather than making the client guess.
+ORGANIZATION_SUBSCRIPTION_MISSING = "ORGANIZATION_SUBSCRIPTION_MISSING"
 
 
 class OrganizationAccessPolicy(Policy):
@@ -103,22 +118,30 @@ class OrganizationAccessPolicy(Policy):
         `subscription_state` — the organization's own subscription status, or `None` when the
         organization has **no subscription row at all**.
 
-        **`None` grants, and that is a deliberate, load-bearing choice, not an oversight.** An
-        organization with no subscription has never been sold a plan — it is not delinquent, it
-        is un-onboarded. RAAD creates the Organization and selects its Plan in one orchestrated
-        flow (ADR-0017), so in normal operation this state is transient. Denying on `None`
-        would mean a single failed/partial onboarding, or any future code path that creates an
-        Organization before its Subscription, locks the tenant out completely with an error
-        message about a subscription that was never supposed to exist yet — turning a
-        provisioning bug into a total outage for that school. Fail-open here is bounded (it
-        cannot resurrect a *suspended* tenant, only a never-subscribed one) and is the reverse
-        of the usual rule precisely because the blast radius points the other way.
+        **`None` now denies (amended 2026-09-09, direct user directive).** It used to grant, on
+        the reasoning that an organization with no subscription is un-onboarded rather than
+        delinquent, and that denying would turn a provisioning bug into a total outage for that
+        school. That reasoning was sound and the outcome was still wrong: a provisioning bug is
+        exactly what happened — `open_organization_subscription` failed on every call for the
+        entire life of the feature — and this fail-open is what made it invisible. Every
+        organization on the platform had unrestricted access with no subscription, and no surface
+        anywhere reported it. Fail-open turned a loud, one-organization failure into a silent,
+        platform-wide one.
+
+        Two things make denying safe now, and both had to land first: onboarding no longer
+        reports success when provisioning fails (it compensates and re-raises), so this state can
+        no longer be *created* silently; and `/billing` stays exempt from the guard, so an
+        affected organization can still reach the page that fixes it.
         """
         if is_platform_role:
             return PolicyDecision(allowed=True)
 
         if subscription_state is None:
-            return PolicyDecision(allowed=True)
+            return PolicyDecision(
+                allowed=False,
+                reason=ORGANIZATION_SUBSCRIPTION_MISSING,
+                required_action="REDIRECT_TO_PAYMENT",
+            )
 
         if subscription_state in _GRANTING_STATES:
             return PolicyDecision(allowed=True)
@@ -134,6 +157,7 @@ class OrganizationAccessPolicy(Policy):
 
 __all__ = [
     "ORGANIZATION_SUBSCRIPTION_INACTIVE",
+    "ORGANIZATION_SUBSCRIPTION_MISSING",
     "OrganizationAccessPolicy",
     "OrganizationSubscriptionState",
 ]

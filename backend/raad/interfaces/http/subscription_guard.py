@@ -32,6 +32,8 @@ from fastapi import Depends, Request
 from raad.core.di.container import Container
 from raad.core.errors.exceptions import OrganizationSubscriptionInactiveError
 from raad.core.policies.organization_access import (
+    ORGANIZATION_SUBSCRIPTION_INACTIVE,
+    ORGANIZATION_SUBSCRIPTION_MISSING,
     OrganizationAccessPolicy,
     OrganizationSubscriptionState,
 )
@@ -84,13 +86,34 @@ def _is_exempt(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in _EXEMPT_PATH_PREFIXES)
 
 
+#: Denial copy, keyed by the policy's own reason code. Two distinct situations need two distinct
+#: messages: an organization nobody ever sold a plan to is a provisioning problem for RAAD to
+#: fix, while a lapsed subscription is a payment the school itself can make. Telling a bursar to
+#: "renew" when no plan was ever assigned sends them looking for a button that cannot help them.
+_MESSAGES = {
+    ORGANIZATION_SUBSCRIPTION_INACTIVE: (
+        "Your organization's RAAD subscription is not active. Settle the outstanding invoice "
+        "to restore access."
+    ),
+    ORGANIZATION_SUBSCRIPTION_MISSING: (
+        "Your organization does not have a RAAD subscription yet. Contact RAAD support to have "
+        "a plan assigned."
+    ),
+}
+
+
 def _details_for(principal: Principal, subscription) -> dict | None:
     """Requirement 39K's graded disclosure. An ordinary member (Driver, Parent, and any future
     non-admin tenant role) gets nothing beyond the generic message — a driver has no business
     reading their school's billing position, and leaking "amount due" to every parent would be
     a real disclosure problem. An Org Admin gets what they need to act."""
-    if principal.role is not Role.ORG_ADMIN or subscription is None:
+    if principal.role is not Role.ORG_ADMIN:
         return None
+    if subscription is None:
+        # An Org Admin blocked for having *no* subscription still needs to be told that, or the
+        # payment page can only show a generic failure and the operator cannot tell "never sold
+        # a plan" apart from "stopped paying". Carries no billing figures because there are none.
+        return {"subscription_status": None}
     return {
         "subscription_status": subscription.status,
         "current_period_end": (
@@ -226,8 +249,7 @@ async def enforce_organization_subscription(
         return
 
     raise OrganizationSubscriptionInactiveError(
-        "Your organization's RAAD subscription is inactive. Please contact your "
-        "organization administrator or RAAD support.",
+        _MESSAGES.get(decision.reason, _MESSAGES[ORGANIZATION_SUBSCRIPTION_INACTIVE]),
         reason=decision.reason,
         required_action=decision.required_action,
         details=_details_for(principal, subscription),

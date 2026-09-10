@@ -33,7 +33,12 @@ class RegisterOrganizationRequest(BaseModel):
     """ADR-0017: Organization Onboarding is one guided workflow now, not two disconnected
     steps — this request also carries the identity fields needed to provision the
     Organization's first Org Admin login (`admin_email`/`admin_phone`: at least one required,
-    `iam.User`'s own invariant)."""
+    `iam.User`'s own invariant).
+
+    **ADR-0040 §5 adds `plan_id`.** Supplying it opens the organization's subscription and
+    issues its first invoice in the same workflow, with period dates computed by `billing` from
+    the plan's own cycle. Optional, so the pre-ADR-0040 onboarding contract still works
+    unchanged."""
 
     name: str
     org_type: str
@@ -42,6 +47,7 @@ class RegisterOrganizationRequest(BaseModel):
     admin_full_name: str
     admin_email: str | None = None
     admin_phone: str | None = None
+    plan_id: str | None = None
 
 
 class OrganizationOnboardedResponse(BaseModel):

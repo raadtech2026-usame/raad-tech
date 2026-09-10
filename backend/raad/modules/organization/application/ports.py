@@ -65,3 +65,48 @@ class IamProvisioningPort(ABC):
         actor: Principal,
     ) -> tuple[str, str]:
         raise NotImplementedError
+
+    @abstractmethod
+    async def disable_user(self, *, user_id: str, actor: Principal) -> None:
+        """Compensation for a partially-completed onboarding.
+
+        Onboarding spans three modules and therefore three Units of Work — one database
+        transaction cannot cover them (`.claude/rules/backend.md` #3 keeps each module's
+        persistence its own). When a later step fails, the admin account already created for an
+        organization that will not exist has to be revoked, or onboarding leaves a live login
+        attached to a deactivated tenant. This is the saga's compensating action, not an
+        ordinary lifecycle operation.
+        """
+        raise NotImplementedError
+
+
+class BillingProvisioningPort(ABC):
+    """ADR-0040 §5 — opens an Organization's subscription during onboarding.
+
+    Same provisioning-port shape ADR-0003 established and ADR-0017 reused for
+    `IamProvisioningPort`: `organization` depends on the *abstraction* only, and the concrete
+    adapter lives in `core/di/` (the composition root), so this module never imports `billing`.
+
+    **No date arithmetic here.** The adapter delegates to `BillingApplicationService.
+    open_organization_subscription`, which already computes period start/end from the plan's own
+    billing cycle and issues the first invoice. Re-deriving those dates on this side would be a
+    second, drifting implementation of RAAD's billing calendar.
+    """
+
+    @abstractmethod
+    async def ensure_plan_is_offerable(self, *, plan_id: str) -> None:
+        """Validates the plan **before** onboarding commits anything at all.
+
+        The single most valuable ordering decision in this workflow. Onboarding cannot be one
+        transaction, so the next best guarantee is that its most likely failure — a plan id that
+        does not exist or is no longer sold — is discovered while there is still nothing to undo.
+        Raises `NotFoundError` for an unknown plan and `DomainError` for an inactive one; both
+        reach the caller as a 4xx before an `Organization` row is written.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def open_subscription_for_organization(
+        self, *, organization_id: str, plan_id: str, actor: Principal
+    ) -> None:
+        raise NotImplementedError

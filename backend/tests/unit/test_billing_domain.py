@@ -21,14 +21,12 @@ from raad.modules.billing.domain.entities import (
     Payment,
     Plan,
     Subscription,
-    TransportFee,
 )
 from raad.modules.billing.domain.repositories import (
     InvoiceRepository,
     PaymentRepository,
     PlanRepository,
     SubscriptionRepository,
-    TransportFeeRepository,
 )
 from raad.modules.billing.domain.value_objects import (
     BillingCycle,
@@ -41,18 +39,14 @@ from raad.modules.billing.domain.value_objects import (
     PaymentStatus,
     PlanId,
     PlanStatus,
-    StudentId,
     SubscriptionId,
     SubscriptionStatus,
-    TransportFeeId,
-    TransportFeeStatus,
 )
 
 VALID_PLAN_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3PN"
 VALID_SUBSCRIPTION_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3SB"
 VALID_INVOICE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3JV"
 VALID_PAYMENT_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3PY"
-VALID_TRANSPORT_FEE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3TF"
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
 VALID_STUDENT_REF = "some-opaque-student-ref"
 
@@ -92,11 +86,6 @@ class UlidValueObjectValidationTests(unittest.TestCase):
     def test_payment_id_valid_ulid_constructs(self) -> None:
         self.assertEqual(str(PaymentId(VALID_PAYMENT_ULID)), VALID_PAYMENT_ULID)
 
-    def test_transport_fee_id_valid_ulid_constructs(self) -> None:
-        self.assertEqual(
-            str(TransportFeeId(VALID_TRANSPORT_FEE_ULID)), VALID_TRANSPORT_FEE_ULID
-        )
-
 
 class OpaqueCrossModuleValueObjectTests(unittest.TestCase):
     def test_organization_id_non_empty_constructs(self) -> None:
@@ -106,12 +95,7 @@ class OpaqueCrossModuleValueObjectTests(unittest.TestCase):
         with self.assertRaises(DomainError):
             OrganizationId("")
 
-    def test_student_id_arbitrary_non_ulid_string_is_accepted(self) -> None:
-        self.assertEqual(str(StudentId(VALID_STUDENT_REF)), VALID_STUDENT_REF)
 
-    def test_student_id_empty_raises_domain_error(self) -> None:
-        with self.assertRaises(DomainError):
-            StudentId("")
 
 
 class MoneyValidationTests(unittest.TestCase):
@@ -454,67 +438,13 @@ class PaymentTests(unittest.TestCase):
         self.assertFalse(hasattr(payment, "retry"))
 
 
-# --- TransportFee ----------------------------------------------------------------------------
-
-
-class TransportFeeTests(unittest.TestCase):
-    def _make_fee(self) -> TransportFee:
-        return TransportFee.create(
-            id=TransportFeeId(VALID_TRANSPORT_FEE_ULID),
-            organization_id=OrganizationId(VALID_ORG_ULID),
-            student_id=StudentId(VALID_STUDENT_REF),
-            period="2026-07",
-            amount=Money(20.00, "USD"),
-            clock=CLOCK,
-        )
-
-    def test_create_starts_due(self) -> None:
-        fee = self._make_fee()
-        self.assertEqual(fee.status, TransportFeeStatus.DUE)
-
-    def test_create_with_empty_period_raises_domain_error(self) -> None:
-        with self.assertRaises(DomainError):
-            TransportFee.create(
-                id=TransportFeeId(VALID_TRANSPORT_FEE_ULID),
-                organization_id=OrganizationId(VALID_ORG_ULID),
-                student_id=StudentId(VALID_STUDENT_REF),
-                period="",
-                amount=Money(20.00, "USD"),
-                clock=CLOCK,
-            )
-
-    def test_mark_paid_records_event(self) -> None:
-        fee = self._make_fee()
-        fee.pull_domain_events()
-        fee.mark_paid(clock=CLOCK)
-        self.assertEqual(fee.status, TransportFeeStatus.PAID)
-        events = fee.pull_domain_events()
-        self.assertEqual(events[0].event_type, "TransportFeePaid")
-
-    def test_mark_overdue_records_event(self) -> None:
-        fee = self._make_fee()
-        fee.pull_domain_events()
-        fee.mark_overdue(clock=CLOCK)
-        self.assertEqual(fee.status, TransportFeeStatus.OVERDUE)
-        events = fee.pull_domain_events()
-        self.assertEqual(events[0].event_type, "TransportFeeOverdue")
-
-    def test_waive_records_event(self) -> None:
-        fee = self._make_fee()
-        fee.pull_domain_events()
-        fee.waive(clock=CLOCK)
-        self.assertEqual(fee.status, TransportFeeStatus.WAIVED)
-        events = fee.pull_domain_events()
-        self.assertEqual(events[0].event_type, "TransportFeeWaived")
-
-    def test_waive_when_already_waived_is_idempotent_no_op(self) -> None:
-        fee = self._make_fee()
-        fee.waive(clock=CLOCK)
-        fee.pull_domain_events()
-        fee.waive(clock=CLOCK)
-        self.assertEqual(fee.pull_domain_events(), [])
-
-
+# --- TransportFee tests removed by ADR-0040 -------------------------------------------------
+#
+# `billing.TransportFee` no longer exists: school->student fees are now `school_erp`'s
+# `StudentInvoice`/`StudentPayment` (ADR-0038 §2), and migration `7387f1b2ee6a` moved
+# `transport_fees` into `erp_student_invoices` and dropped it. These cases were deleted rather
+# than ported — the new aggregate is a materially different shape (partial payments, discount,
+# transport context), and `tests/unit/test_school_erp_domain.py` covers it directly.
 # --- Repository interface shape -----------------------------------------------------------
 
 
@@ -534,10 +464,6 @@ class RepositoryInterfaceShapeTests(unittest.TestCase):
     def test_payment_repository_declares_expected_methods(self) -> None:
         for method in ("get", "add", "list_all", "get_by_idempotency_key"):
             self.assertTrue(hasattr(PaymentRepository, method))
-
-    def test_transport_fee_repository_declares_expected_methods(self) -> None:
-        for method in ("get", "add", "list_all"):
-            self.assertTrue(hasattr(TransportFeeRepository, method))
 
 
 if __name__ == "__main__":

@@ -15,8 +15,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from raad.core.errors.exceptions import NotFoundError
+from raad.core.errors.exceptions import DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
+from raad.core.logging.setup import get_logger
 from raad.core.pagination import OffsetPage
 from raad.core.tenancy.principal import Role
 from raad.core.time.clock import Clock
@@ -37,6 +38,7 @@ from raad.modules.organization.application.commands import (
     UpdateOrganizationGeofenceCommand,
 )
 from raad.modules.organization.application.ports import (
+    BillingProvisioningPort,
     IamProvisioningPort,
     OrganizationUnitOfWork,
 )
@@ -61,6 +63,9 @@ from raad.modules.organization.domain.entities import Organization, Region
 from raad.modules.organization.domain.value_objects import OrganizationId, RegionId
 
 
+logger = get_logger("raad.organization.onboarding")
+
+
 class OrganizationApplicationService:
     """Organization lifecycle use-cases: register, suspend, reactivate, deactivate, and the
     `GetOrganizationByIdQuery` read path. `onboard_organization` (ADR-0017) additionally
@@ -72,10 +77,14 @@ class OrganizationApplicationService:
         clock: Clock,
         id_generator: IdGenerator,
         iam_provisioning: IamProvisioningPort,
+        billing_provisioning: BillingProvisioningPort | None = None,
     ) -> None:
         self._clock = clock
         self._id_generator = id_generator
         self._iam_provisioning = iam_provisioning
+        #: ADR-0040 §5. Optional so the service stays constructible without `billing` wired —
+        #: onboarding then simply skips subscription creation, exactly as it did before.
+        self._billing_provisioning = billing_provisioning
 
     async def onboard_organization(
         self, command: OnboardOrganizationCommand, *, uow: OrganizationUnitOfWork
@@ -86,14 +95,47 @@ class OrganizationApplicationService:
         just-created `organization_id`. Returns `(OrganizationDTO, admin_user_id,
         temporary_password)`; the temporary password is surfaced exactly once, for hand-off.
 
-        Accepted, bounded gap (mirrors ADR-0003's identical Failure Handling trade-off): if the
-        `iam` call fails after the `Organization` commit succeeds, the Organization is left
-        without an Org Admin rather than being automatically rolled back or compensated —
-        evaluated and deliberately deferred at implementation time, not silently dropped.
+        **ADR-0040 §5 adds plan selection.** When `command.plan_id` is supplied, a third,
+        independent commit opens the subscription and issues the first invoice via
+        `BillingProvisioningPort`.
 
-        Plan selection is deliberately not part of this method yet — see
-        `OnboardOrganizationCommand`'s own docstring for why (a real, flagged follow-up now
-        that ADR-0016 has landed, not attempted this phase)."""
+        **This is a saga, and it fails loudly (revised 2026-09-09).** It previously caught and
+        logged a subscription-provisioning failure and returned success anyway. That is how a
+        total billing outage went unnoticed: every onboarding answered `201 Created` while
+        `open_organization_subscription` raised an `IntegrityError` on every single call, so the
+        platform accumulated organizations that could never be billed and were never reported as
+        broken. Three changes together close it:
+
+        1. **Fail fast.** The plan is validated before *anything* is committed, which removes the
+           likeliest failure from the window where compensation is needed at all.
+        2. **Compensate.** A failure after the organization commits disables the admin account
+           and deactivates the organization (`_compensate_onboarding`), so no half-provisioned
+           tenant is left live.
+        3. **Re-raise.** The caller sees the real error and the route answers 4xx/5xx — never
+           `201` for an onboarding that did not complete.
+
+        True cross-module atomicity remains impossible by design: three modules own three Units
+        of Work and `.claude/rules/backend.md` #3 keeps each module's persistence its own. A saga
+        with compensation is the correct pattern under that constraint, and is what ADR-0003's
+        Failure Handling section anticipated rather than the silent partial state it settled for.
+        """
+        # --- Step 0: validate everything that can be validated before anything is written ----
+        #
+        # Onboarding spans three modules and therefore three Units of Work; one database
+        # transaction cannot cover them (`.claude/rules/backend.md` #3). The next best guarantee
+        # is to make the likely failures happen while there is still nothing to undo. A plan id
+        # that does not exist, or a plan that is no longer sold, is by far the most likely — so
+        # it is checked here, before the `Organization` row exists.
+        if command.plan_id:
+            if self._billing_provisioning is None:
+                raise DomainError(
+                    "A plan was selected but billing is not configured on this deployment; "
+                    "the organization was not created."
+                )
+            await self._billing_provisioning.ensure_plan_is_offerable(
+                plan_id=command.plan_id
+            )
+
         async with uow:
             region_id = RegionId(command.region_id)
             await ensure_region_exists(uow, region_id)
@@ -117,17 +159,93 @@ class OrganizationApplicationService:
             uow.record_events(organization.pull_domain_events())
             await uow.commit()
 
-        admin_user_id, temporary_password = (
-            await self._iam_provisioning.create_user_with_temporary_password(
-                organization_id=str(organization.id),
-                role=Role.ORG_ADMIN,
-                email=command.admin_email,
-                phone=command.admin_phone,
-                full_name=command.admin_full_name,
-                actor=command.actor,
+        # --- Steps 1-2: the two cross-module commits, with compensation on failure ----------
+        #
+        # Anything that fails from here on leaves committed state behind, so each failure runs
+        # the saga's compensating actions and then **re-raises**. Nothing is swallowed: the
+        # route must not answer 201 for an organization that did not finish onboarding.
+        admin_user_id: str | None = None
+        try:
+            admin_user_id, temporary_password = (
+                await self._iam_provisioning.create_user_with_temporary_password(
+                    organization_id=str(organization.id),
+                    role=Role.ORG_ADMIN,
+                    email=command.admin_email,
+                    phone=command.admin_phone,
+                    full_name=command.admin_full_name,
+                    actor=command.actor,
+                )
             )
-        )
+            if command.plan_id and self._billing_provisioning is not None:
+                await self._billing_provisioning.open_subscription_for_organization(
+                    organization_id=str(organization.id),
+                    plan_id=command.plan_id,
+                    actor=command.actor,
+                )
+        except Exception:
+            await self._compensate_onboarding(
+                organization_id=str(organization.id),
+                admin_user_id=admin_user_id,
+                command=command,
+                uow=uow,
+            )
+            raise
+
         return organization_to_dto(organization), admin_user_id, temporary_password
+
+    async def _compensate_onboarding(
+        self,
+        *,
+        organization_id: str,
+        admin_user_id: str | None,
+        command: OnboardOrganizationCommand,
+        uow: OrganizationUnitOfWork,
+    ) -> None:
+        """Undo the committed steps of a failed onboarding, best-effort, then let the caller
+        re-raise the original failure.
+
+        **Compensation, not rollback.** The organization and the admin user were each committed
+        by their own module's Unit of Work; no later transaction can revert them. What it can do
+        is leave the tenant in a state that is inert and obviously incomplete rather than
+        half-live: the `Organization` is deactivated and the admin account disabled, both through
+        their owning aggregate's own transition, so both raise their domain event and land in
+        `audit_entries`. An operator sees an inactive organization with a disabled admin and a
+        logged reason — not an active tenant that silently cannot bill.
+
+        **Compensation failures are logged, never raised.** The caller is already unwinding a
+        real error, and replacing it with a secondary failure from the cleanup would hide the
+        cause. Each step is independent so that one failing does not skip the other.
+        """
+        if admin_user_id is not None:
+            try:
+                await self._iam_provisioning.disable_user(
+                    user_id=admin_user_id, actor=command.actor
+                )
+            except Exception:  # noqa: BLE001 - see docstring
+                logger.exception(
+                    "onboarding_compensation_failed_disabling_admin",
+                    extra={
+                        "onboarded_organization_id": organization_id,
+                        "onboarded_admin_user_id": admin_user_id,
+                    },
+                )
+
+        try:
+            async with uow:
+                organization = await uow.organizations.get(
+                    OrganizationId(organization_id)
+                )
+                if organization is not None:
+                    organization.deactivate(
+                        clock=self._clock, actor_id=command.actor.user_id
+                    )
+                    uow.record_events(organization.pull_domain_events())
+                    await uow.commit()
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.exception(
+                "onboarding_compensation_failed_deactivating_organization",
+                extra={"onboarded_organization_id": organization_id},
+            )
 
     async def register_organization(
         self, command: RegisterOrganizationCommand, *, uow: OrganizationUnitOfWork

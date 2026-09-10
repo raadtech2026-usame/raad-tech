@@ -31,7 +31,10 @@ from typing import Callable
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.tenancy.resolver import ScopeResolver
 from raad.core.tenancy.scope import TenantRegionScope
-from raad.modules.iam.application.commands import CreateUserWithTemporaryPasswordCommand
+from raad.modules.iam.application.commands import (
+    CreateUserWithTemporaryPasswordCommand,
+    DisableUserCommand,
+)
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.services import UserApplicationService
 from raad.modules.organization.application.ports import (
@@ -114,3 +117,15 @@ class IamUserProvisioningAdapter(IamProvisioningPort):
             command, uow=uow
         )
         return user_dto.id, temporary_password
+
+    async def disable_user(self, *, user_id: str, actor: Principal) -> None:
+        """Saga compensation — see `IamProvisioningPort.disable_user`.
+
+        Goes through the same public application-service surface every other call here uses, so
+        the revocation raises its own `UserDisabled` domain event and lands in `audit_entries`
+        exactly like an operator-initiated disable would. A silent revocation would be worse
+        than none: the account would be unusable with no record of why.
+        """
+        await self._user_service.disable_user(
+            DisableUserCommand(user_id=user_id, actor=actor), uow=self._uow_factory()
+        )

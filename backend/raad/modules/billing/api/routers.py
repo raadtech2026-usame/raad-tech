@@ -84,7 +84,7 @@ before this; see `PaymentListItemResponse`'s own docstring (`api/schemas.py`) fo
 fuller shape than `PaymentResponse`. Gated by a new `billing.payments.list` permission.
 
 **Not exposed this phase** (uniform-CRUD `GET/PATCH/DELETE` beyond what's listed above): no row
-in §4.7 documents a per-id `GET` for `Plan`/`Subscription`/`Invoice`, and `TransportFee` has no
+in §4.7 documents a per-id `GET` for `Plan`/`Subscription`/`Invoice`, and no
 HTTP route at all (confirmed absent from §4.7's table; `domain/entities.py`'s own docstring
 already flags this).
 """
@@ -119,6 +119,8 @@ from raad.modules.billing.api.deps import (
     get_billing_uow_unscoped,
 )
 from raad.modules.billing.api.schemas import (
+    CreatePlanRequest,
+    UpdatePlanRequest,
     InitiatePaymentRequest,
     InvoiceResponse,
     PaymentListItemResponse,
@@ -127,13 +129,29 @@ from raad.modules.billing.api.schemas import (
     ExtendGracePeriodRequest,
     SubscriptionResponse,
 )
-from raad.modules.billing.application.commands import InitiatePaymentCommand
+from raad.modules.billing.application.commands import (
+    ActivatePlanCommand,
+    CreatePlanCommand,
+    DisablePlanCommand,
+    # ADR-0039's three platform-admin lifecycle actions. Absent from this import list until
+    # 2026-09-09, so `POST /billing/subscriptions/{id}/suspend`, `/reactivate` and
+    # `/extend-grace` every one raised `NameError` at request time and answered 500 — the whole
+    # admin half of the subscription lifecycle was unreachable. Nothing caught it: the contract
+    # suite checks route *existence* through `app.openapi()` without issuing a request, and the
+    # unit tests call `BillingApplicationService` directly, so no test ever executed this module.
+    ExtendGracePeriodCommand,
+    InitiatePaymentCommand,
+    ReactivateSubscriptionCommand,
+    SuspendSubscriptionCommand,
+    UpdatePlanCommand,
+)
 from raad.modules.billing.application.ports import (
     BillingUnitOfWork,
     PaymentProviderPort,
     UnhandledWebhookEventError,
 )
 from raad.modules.billing.application.queries import (
+    GetSubscriptionByIdQuery,
     InvoiceDTO,
     ListInvoicesQuery,
     ListPaymentsQuery,
@@ -159,6 +177,8 @@ def _plan_dto_to_response(plan: PlanDTO) -> PlanResponse:
         currency=plan.currency,
         billing_cycle=plan.billing_cycle,
         vehicle_limit=plan.vehicle_limit,
+        device_limit=plan.device_limit,
+        user_limit=plan.user_limit,
         status=plan.status,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
@@ -296,7 +316,9 @@ async def list_subscriptions(
 #
 # `/subscriptions/current` is deliberately **before** any `/subscriptions/{id}`-shaped path
 # would be: FastAPI matches in declaration order, so a literal segment must be declared first or
-# `current` would be captured as an id.
+# `current` would be captured as an id. The uniform-CRUD `GET /subscriptions/{subscription_id}`
+# added below (2026-09-10, Subscription Details) is declared *after* this whole block for the
+# identical reason — it must come after `current`, not before it.
 
 
 @billing_router.get(
@@ -421,6 +443,41 @@ async def extend_grace_period(
         uow=uow,
     )
     return _subscription_dto_to_response(dto)
+
+
+@billing_router.get(
+    "/subscriptions/{subscription_id}",
+    response_model=SubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a subscription by id",
+    description=(
+        "Uniform-CRUD addition, not in API Contracts §4.7 (which documents `GET "
+        "/subscriptions` — list only — cited here rather than silently, the same posture "
+        "`/drivers` and every other post-Phase-3.3 route in this codebase carries). Backs the "
+        "Founder's Subscription Details troubleshooting page. Not new business logic: "
+        "`BillingApplicationService.get_subscription_by_id`/`GetSubscriptionByIdQuery` already "
+        "existed, built and unit-tested, with no route wired to them — the same "
+        "\"use-case-exists-no-approved-endpoint-yet\" gap this codebase names for "
+        "`Route.remove_stop`/`Trip.interrupt`, now closed for this one specifically because the "
+        "Founder needs a stable, shareable link to one subscription rather than paging through "
+        "the list and matching an id by eye. **Declared after every `/subscriptions/...` route "
+        "above**, `current` included — FastAPI matches path templates in declaration order, and "
+        "a `{subscription_id}` segment declared first would swallow every literal sibling path "
+        "(`current`, and each action verb) as if it were an id."
+    ),
+)
+async def get_subscription_by_id(
+    subscription_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("billing.subscriptions.list"))
+    ),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow),
+) -> SubscriptionResponse:
+    subscription = await billing_service.get_subscription_by_id(
+        GetSubscriptionByIdQuery(subscription_id=subscription_id), uow=uow
+    )
+    return _subscription_dto_to_response(subscription)
 
 
 @billing_router.get(
@@ -583,3 +640,113 @@ async def payment_callback(
         return Response(status_code=status.HTTP_200_OK)
 
     return Response(status_code=status.HTTP_200_OK)
+
+
+# --- ADR-0040 §4: plan catalogue management -------------------------------------------------
+#
+# `Plan` had no write route at all before this — the catalogue could only be seeded. All four
+# routes are Founder-only via a new `billing.plans.manage` permission, deliberately distinct from
+# the read-only `billing.plans.list` five roles already hold: changing what RAAD charges is
+# materially more sensitive than reading the price list (`.claude/rules/security.md` #1).
+
+
+@billing_router.post(
+    "/plans",
+    response_model=PlanResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a subscription plan",
+)
+async def create_plan(
+    body: CreatePlanRequest,
+    principal: Principal = Depends(require_permission(Permission("billing.plans.manage"))),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow),
+) -> PlanResponse:
+    plan = await billing_service.create_plan(
+        CreatePlanCommand(
+            name=body.name,
+            billing_scope=body.billing_scope,
+            amount=body.amount,
+            currency=body.currency,
+            billing_cycle=body.billing_cycle,
+            vehicle_limit=body.vehicle_limit,
+            device_limit=body.device_limit,
+            user_limit=body.user_limit,
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return _plan_dto_to_response(plan)
+
+
+@billing_router.patch(
+    "/plans/{plan_id}",
+    response_model=PlanResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update a subscription plan",
+    description=(
+        "Repricing applies from the next billing period onward — an already-issued invoice keeps "
+        "the amount it was issued at."
+    ),
+)
+async def update_plan(
+    plan_id: str,
+    body: UpdatePlanRequest,
+    principal: Principal = Depends(require_permission(Permission("billing.plans.manage"))),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow),
+) -> PlanResponse:
+    plan = await billing_service.update_plan(
+        UpdatePlanCommand(
+            plan_id=plan_id,
+            name=body.name,
+            amount=body.amount,
+            currency=body.currency,
+            vehicle_limit=body.vehicle_limit,
+            device_limit=body.device_limit,
+            user_limit=body.user_limit,
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return _plan_dto_to_response(plan)
+
+
+@billing_router.post(
+    "/plans/{plan_id}/activate",
+    response_model=PlanResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Activate a plan (make it sellable)",
+)
+async def activate_plan(
+    plan_id: str,
+    principal: Principal = Depends(require_permission(Permission("billing.plans.manage"))),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow),
+) -> PlanResponse:
+    plan = await billing_service.activate_plan(
+        ActivatePlanCommand(plan_id=plan_id, actor=principal), uow=uow
+    )
+    return _plan_dto_to_response(plan)
+
+
+@billing_router.post(
+    "/plans/{plan_id}/disable",
+    response_model=PlanResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Disable a plan (stop offering it)",
+    description=(
+        "Existing subscriptions on a disabled plan are unaffected — this withdraws the plan from "
+        "the catalogue, it does not cancel anyone's service."
+    ),
+)
+async def disable_plan(
+    plan_id: str,
+    principal: Principal = Depends(require_permission(Permission("billing.plans.manage"))),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow),
+) -> PlanResponse:
+    plan = await billing_service.disable_plan(
+        DisablePlanCommand(plan_id=plan_id, actor=principal), uow=uow
+    )
+    return _plan_dto_to_response(plan)

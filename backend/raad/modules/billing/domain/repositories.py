@@ -4,9 +4,9 @@
 completed precedent in `transport_ops.domain.repositories`.
 
 `PlanRepository`/`SubscriptionRepository`/`InvoiceRepository`/`PaymentRepository`/
-`TransportFeeRepository` — `get`/`add`/`list_all`, the same minimal shape `DriverRepository`
+— `get`/`add`/`list_all`, the same minimal shape `DriverRepository`
 establishes for an aggregate with no module-owned uniqueness constraint beyond its own primary
-key (none of `plans`/`subscriptions`/`invoices`/`payments`/`transport_fees` declare a `UX` on
+key (none of `plans`/`subscriptions`/`invoices`/`payments` declare a `UX` on
 anything other than `payments.idempotency_key`/`payments.provider_ref` and `invoices.number` —
 see `PaymentRepository.get_by_idempotency_key` and `InvoiceRepository`'s own docstring below for
 the two that need a dedicated finder).
@@ -28,7 +28,6 @@ from raad.modules.billing.domain.entities import (
     Payment,
     Plan,
     Subscription,
-    TransportFee,
 )
 from raad.modules.billing.domain.value_objects import (
     InvoiceId,
@@ -36,7 +35,6 @@ from raad.modules.billing.domain.value_objects import (
     PaymentId,
     PlanId,
     SubscriptionId,
-    TransportFeeId,
 )
 
 
@@ -269,21 +267,4 @@ class PaymentRepository(ABC):
         provider_ref` (Database Design §8.4, `infra/models.py`) is this method's DB-level
         backstop, the same defense-in-depth pattern `get_by_idempotency_key` above already
         establishes."""
-        raise NotImplementedError
-
-
-class TransportFeeRepository(ABC):
-    @abstractmethod
-    async def get(self, transport_fee_id: TransportFeeId) -> TransportFee | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def add(self, transport_fee: TransportFee) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def list_all(self) -> list[TransportFee]:
-        """No documented API surface reaches this (`entities.py`'s `TransportFee` docstring) —
-        still implemented for the same reason `Route.remove_stop`'s command/service exist
-        without an HTTP route: a complete, tested use-case at the layers below the router."""
         raise NotImplementedError

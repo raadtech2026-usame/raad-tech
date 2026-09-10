@@ -207,3 +207,61 @@ per ADR-0038 must be per-student-ownership scoped, never a role-wide grant.
   suspension (§4); a subscription-state cache; the Org Admin and Platform Admin subscription UI
   (requirements 39R/39S) — backend first, frontend in the next slice; and the entire School ERP
   (ADR-0038), which the user sequenced after this.
+
+## Amendment (2026-09-09) — the access rule narrows, and why it had to
+
+Recorded here rather than edited into the sections above, matching this repository's convention
+of treating an ADR as a historical record.
+
+**Two states move from granting to denying.** `_GRANTING_STATES` was
+`{TRIAL, ACTIVE, PAST_DUE, GRACE_PERIOD}` and a `None` subscription granted outright. It is now
+`{TRIAL, ACTIVE, GRACE_PERIOD}`, and `None` denies with its own reason code
+(`ORGANIZATION_SUBSCRIPTION_MISSING`, distinct from `..._INACTIVE`).
+
+- **`PAST_DUE` now denies.** The platform owner's rule is that an unpaid invoice closes the
+  dashboard, and `past_due` is precisely the state meaning *unpaid and past the due date*. It was
+  the widest hole in the enforcement: an organization could stop paying and keep working
+  indefinitely, because nothing escalated it without the scheduled sweep completing.
+- **`GRACE_PERIOD` still grants**, deliberately, and this distinction is the point of the
+  amendment. A grace period that does not grant access is not a grace period — it is a slower
+  suspension, and the lifecycle would have no state left meaning "we know you are late, keep
+  working while you sort it out". Access ends when grace *ends*.
+- **`None` now denies.** §1's original reasoning — that a never-subscribed organization is
+  un-onboarded rather than delinquent, and that denying would turn a provisioning bug into a
+  total outage — was sound, and the outcome was still wrong. A provisioning bug is exactly what
+  happened: `open_organization_subscription` raised on every call for the entire life of the
+  feature (a flush-ordering defect, see ADR-0040's own implementation notes), so **no
+  subscription had ever been persisted on a live database**. This fail-open is what made a
+  platform-wide billing outage invisible: every organization had unrestricted access with no
+  subscription and no surface reported it. Fail-open converted a loud, single-organization
+  failure into a silent, total one.
+
+**Two things had to land before denying on `None` was safe, and both did.** Onboarding no longer
+reports success when provisioning fails — it validates the plan before writing anything,
+compensates by deactivating the organization and disabling the admin account, and re-raises — so
+this state can no longer be *created* silently. And `/billing` remains exempt from the guard, so
+an affected organization can still reach the page that fixes it.
+
+**Existing organizations were backfilled, not locked out.**
+`python -m raad.interfaces.cli.backfill_subscriptions --plan-id <ULID> --apply` opens a
+subscription for every organization that has none, through `open_organization_subscription`
+itself, so period dates come from the plan's own billing cycle and the domain events and audit
+rows are identical to an onboarding-created subscription. It is dry-run by default and
+idempotent. Organizations with no user account at all — the residue of the failed onboarding
+retries — are reported and deliberately skipped rather than billed; see
+`docs/runbooks/orphaned-onboarding-cleanup.sql`.
+
+**Three platform-admin routes were dead and are now fixed.**
+`POST /billing/subscriptions/{id}/suspend`, `/reactivate` and `/extend-grace` referenced command
+classes that `billing/api/routers.py` never imported, so every call raised `NameError` and
+answered 500 — the whole admin half of this ADR's lifecycle was unreachable. Neither the contract
+suite (which inspects `app.openapi()` without issuing a request) nor the unit tests (which call
+the application service directly) executed a router module. `tests/architecture/
+test_no_undefined_names.py` now fails on this class of defect anywhere in the codebase.
+
+**Frontend.** `SubscriptionGate` wraps `AppShell` on `/org/*` and redirects a blocked tenant to
+`/org/subscription` **before** any protected page mounts; that route sits outside the gated
+branch, or the redirect would loop. `SubscriptionRequiredPage` shows the plan, status, invoice
+amount, due date and instructions, and distinguishes "never assigned a plan" from "subscription
+lapsed" because the operator action differs. Presentation only — the server guard is unchanged as
+the real enforcement.

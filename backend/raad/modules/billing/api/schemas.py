@@ -4,9 +4,10 @@ translation. Mirrors `transport_ops.api.schemas`'s shape exactly.
 
 Only the five documented `/billing/*` endpoints (API Contracts §4.7 lines 170-174) get a
 request/response shape here — `Plan`/`Subscription` have no documented write routes at all (no
-`POST/PATCH/DELETE /billing/plans` or `/billing/subscriptions` anywhere in §4.7's table; the
-user's own task scope explicitly forbids building them), so no `Create*Request`/`Update*Request`
-exists for either. List responses use the same single-DTO shape `application/queries.py` already
+`POST/PATCH/DELETE /billing/plans` or `/billing/subscriptions` anywhere in §4.7's table).
+**ADR-0040 §4 adds a plan-management surface anyway** — `CreatePlanRequest`/`UpdatePlanRequest`
+below, Founder-only — because the ERP requires a real plan catalogue; `Subscription` still has no
+create/update request shape here, its lifecycle being owned by ADR-0039's own routes and job. List responses use the same single-DTO shape `application/queries.py` already
 committed to (no Summary/Full split — see that file's own docstring).
 
 **`PaymentResponse` deliberately does not follow this module's `id` field-naming precedent.**
@@ -25,7 +26,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PlanResponse(BaseModel):
@@ -36,6 +37,8 @@ class PlanResponse(BaseModel):
     currency: str
     billing_cycle: str
     vehicle_limit: int | None
+    device_limit: int | None
+    user_limit: int | None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -130,3 +133,35 @@ class PaymentListItemResponse(BaseModel):
     failure_reason: str | None
     created_at: datetime
     confirmed_at: datetime | None
+
+
+class CreatePlanRequest(BaseModel):
+    """ADR-0040 §4 — the plan catalogue's first write surface.
+
+    Monthly and annual pricing are **separate plan rows** sharing a name, not two prices on one
+    row: `billing_cycle` drives every period date `Subscription.open`/`renew` computes, so a row
+    carrying both prices would make "which amount applies" ambiguous at invoice-issue time. The
+    catalogue UI groups rows by name to present them as one commercial tier.
+    """
+
+    name: str = Field(min_length=1, max_length=160)
+    billing_scope: str = Field(default="organization", pattern="^organization$")
+    amount: float = Field(ge=0)
+    currency: str = Field(min_length=3, max_length=3)
+    billing_cycle: str = Field(pattern="^(monthly|quarterly|annual)$")
+    #: `null` means unlimited on all three — what an Enterprise tier needs.
+    vehicle_limit: int | None = Field(default=None, ge=0)
+    device_limit: int | None = Field(default=None, ge=0)
+    user_limit: int | None = Field(default=None, ge=0)
+
+
+class UpdatePlanRequest(BaseModel):
+    """`billing_scope`/`billing_cycle` are deliberately absent — both are structural, and
+    changing a cycle under a live subscription would silently move its renewal date."""
+
+    name: str = Field(min_length=1, max_length=160)
+    amount: float = Field(ge=0)
+    currency: str = Field(min_length=3, max_length=3)
+    vehicle_limit: int | None = Field(default=None, ge=0)
+    device_limit: int | None = Field(default=None, ge=0)
+    user_limit: int | None = Field(default=None, ge=0)

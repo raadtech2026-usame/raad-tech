@@ -10,7 +10,7 @@ status transitions, Invoice issuance/void, Payment idempotency (find-or-return),
 PENDING" behavior, the successful-charge path with a bound fake provider,
 `handle_payment_callback`'s paid/failed cascades (paid: Invoice.mark_paid + Subscription.renew in
 the same transaction; failed: only Payment mutated, Invoice left untouched — the resolved
-Invoice-vs-Payment "FAILED" conflict), and TransportFee CRUD-lite.
+Invoice-vs-Payment "FAILED" conflict).
 """
 
 from __future__ import annotations
@@ -32,19 +32,15 @@ from raad.modules.billing.application.commands import (
     ActivatePlanCommand,
     CancelSubscriptionCommand,
     CreatePlanCommand,
-    CreateTransportFeeCommand,
     DisablePlanCommand,
     ExpireSubscriptionCommand,
     InitiatePaymentCommand,
     IssueInvoiceCommand,
     MarkPaymentExpiredCommand,
-    MarkTransportFeeOverdueCommand,
-    MarkTransportFeePaidCommand,
     PaymentCallbackCommand,
     OpenOrganizationSubscriptionCommand,
     SuspendSubscriptionCommand,
     VoidInvoiceCommand,
-    WaiveTransportFeeCommand,
 )
 from raad.modules.billing.application.ports import (
     BillingUnitOfWork,
@@ -58,12 +54,10 @@ from raad.modules.billing.application.queries import (
     GetPaymentByIdQuery,
     GetPlanByIdQuery,
     GetSubscriptionByIdQuery,
-    GetTransportFeeByIdQuery,
     ListInvoicesQuery,
     ListPaymentsQuery,
     ListPlansQuery,
     ListSubscriptionsQuery,
-    ListTransportFeesQuery,
 )
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.billing.domain.entities import (
@@ -71,14 +65,12 @@ from raad.modules.billing.domain.entities import (
     Payment,
     Plan,
     Subscription,
-    TransportFee,
 )
 from raad.modules.billing.domain.repositories import (
     InvoiceRepository,
     PaymentRepository,
     PlanRepository,
     SubscriptionRepository,
-    TransportFeeRepository,
 )
 from raad.modules.billing.domain.value_objects import (
     InvoiceId,
@@ -89,7 +81,6 @@ from raad.modules.billing.domain.value_objects import (
     PlanId,
     SubscriptionId,
     SubscriptionStatus,
-    TransportFeeId,
 )
 
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
@@ -403,19 +394,6 @@ class InMemoryPaymentRepository(PaymentRepository):
         )
 
 
-class InMemoryTransportFeeRepository(TransportFeeRepository):
-    def __init__(self) -> None:
-        self.by_id: dict[str, TransportFee] = {}
-
-    async def get(self, transport_fee_id: TransportFeeId) -> TransportFee | None:
-        return self.by_id.get(str(transport_fee_id))
-
-    def add(self, transport_fee: TransportFee) -> None:
-        self.by_id[str(transport_fee.id)] = transport_fee
-
-    async def list_all(self) -> list[TransportFee]:
-        return list(self.by_id.values())
-
 
 class FakeBillingUnitOfWork(BillingUnitOfWork):
     def __init__(
@@ -424,13 +402,11 @@ class FakeBillingUnitOfWork(BillingUnitOfWork):
         subscriptions: InMemorySubscriptionRepository,
         invoices: InMemoryInvoiceRepository,
         payments: InMemoryPaymentRepository,
-        transport_fees: InMemoryTransportFeeRepository,
     ) -> None:
         self.plans = plans
         self.subscriptions = subscriptions
         self.invoices = invoices
         self.payments = payments
-        self.transport_fees = transport_fees
         self.recorded_events = []
         self.commit_count = 0
         self.rollback_count = 0
@@ -479,7 +455,6 @@ def make_uow() -> FakeBillingUnitOfWork:
         InMemorySubscriptionRepository(),
         InMemoryInvoiceRepository(),
         InMemoryPaymentRepository(),
-        InMemoryTransportFeeRepository(),
     )
 
 
@@ -1109,78 +1084,12 @@ class PaymentApplicationTests(unittest.IsolatedAsyncioTestCase):
             )
 
 
-class TransportFeeApplicationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_create_mark_paid_overdue_waive_lifecycle(self) -> None:
-        service = make_service()
-        uow = make_uow()
-        fee = await service.create_transport_fee(
-            CreateTransportFeeCommand(
-                organization_id=VALID_ORG_ULID,
-                student_id="student-ref-001",
-                period="2026-07",
-                amount=20.00,
-                currency="USD",
-                actor=make_actor(),
-            ),
-            uow=uow,
-        )
-        self.assertEqual(fee.status, "due")
 
-        overdue = await service.mark_transport_fee_overdue(
-            MarkTransportFeeOverdueCommand(transport_fee_id=fee.id, actor=make_actor()),
-            uow=uow,
-        )
-        self.assertEqual(overdue.status, "overdue")
-
-        paid = await service.mark_transport_fee_paid(
-            MarkTransportFeePaidCommand(transport_fee_id=fee.id, actor=make_actor()), uow=uow
-        )
-        self.assertEqual(paid.status, "paid")
-
-    async def test_waive_transport_fee(self) -> None:
-        service = make_service()
-        uow = make_uow()
-        fee = await service.create_transport_fee(
-            CreateTransportFeeCommand(
-                organization_id=VALID_ORG_ULID,
-                student_id="student-ref-002",
-                period="2026-08",
-                amount=20.00,
-                currency="USD",
-                actor=make_actor(),
-            ),
-            uow=uow,
-        )
-        waived = await service.waive_transport_fee(
-            WaiveTransportFeeCommand(transport_fee_id=fee.id, actor=make_actor()), uow=uow
-        )
-        self.assertEqual(waived.status, "waived")
-
-    async def test_get_transport_fee_by_id_not_found_raises(self) -> None:
-        service = make_service()
-        uow = make_uow()
-        with self.assertRaises(NotFoundError):
-            await service.get_transport_fee_by_id(
-                GetTransportFeeByIdQuery(transport_fee_id=NON_EXISTENT_ID), uow=uow
-            )
-
-    async def test_list_transport_fees_returns_all(self) -> None:
-        service = make_service()
-        uow = make_uow()
-        await service.create_transport_fee(
-            CreateTransportFeeCommand(
-                organization_id=VALID_ORG_ULID,
-                student_id="student-ref-003",
-                period="2026-09",
-                amount=20.00,
-                currency="USD",
-                actor=make_actor(),
-            ),
-            uow=uow,
-        )
-        fees = await service.list_transport_fees(ListTransportFeesQuery(), uow=uow)
-        self.assertEqual(len(fees), 1)
-
+# --- TransportFee tests removed by ADR-0040 -------------------------------------------------
+#
+# `billing.TransportFee` no longer exists — school->student fees moved to `school_erp`
+# (ADR-0038 §2), migration `7387f1b2ee6a`. Deleted rather than ported: the replacement aggregate
+# has a materially different shape (partial payments, discount, transport context).
 
 class ScheduledJobApplicationTests(unittest.IsolatedAsyncioTestCase):
     """`sweep_expired_subscriptions`/`reconcile_expired_payments` (Backend Stabilization phase)

@@ -11,7 +11,7 @@ needed a lighter list projection for), so the split would add ten classes for no
 gain. `Plan`/`Subscription`/`Invoice` now carry `created_at`/`updated_at`, closing the
 module-wide gap this docstring used to flag — `Payment` deliberately still omits them
 (`infra/models.py`'s own docstring: no `+ standard audit cols` line in Database Design §8.4,
-unlike its three siblings), and `TransportFee` has no HTTP route exposing it at all.
+unlike its three siblings).
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from raad.modules.billing.domain.entities import (
     Payment,
     Plan,
     Subscription,
-    TransportFee,
 )
 
 
@@ -59,6 +58,8 @@ class PlanDTO:
     currency: str
     billing_cycle: str
     vehicle_limit: int | None
+    device_limit: int | None
+    user_limit: int | None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -73,6 +74,8 @@ def plan_to_dto(plan: Plan) -> PlanDTO:
         currency=plan.price.currency,
         billing_cycle=plan.billing_cycle.value,
         vehicle_limit=plan.vehicle_limit,
+        device_limit=plan.device_limit,
+        user_limit=plan.user_limit,
         status=plan.status.value,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
@@ -246,37 +249,4 @@ def payment_to_dto(payment: Payment) -> PaymentDTO:
         created_at=payment.created_at,
         confirmed_at=payment.confirmed_at,
         failure_reason=payment.failure_reason,
-    )
-
-
-@dataclass(frozen=True)
-class GetTransportFeeByIdQuery:
-    transport_fee_id: str
-
-
-@dataclass(frozen=True)
-class ListTransportFeesQuery:
-    pass
-
-
-@dataclass(frozen=True)
-class TransportFeeDTO:
-    id: str
-    organization_id: str
-    student_id: str
-    period: str
-    amount: float
-    currency: str
-    status: str
-
-
-def transport_fee_to_dto(transport_fee: TransportFee) -> TransportFeeDTO:
-    return TransportFeeDTO(
-        id=str(transport_fee.id),
-        organization_id=str(transport_fee.organization_id),
-        student_id=str(transport_fee.student_id),
-        period=transport_fee.period,
-        amount=transport_fee.amount.amount,
-        currency=transport_fee.amount.currency,
-        status=transport_fee.status.value,
     )

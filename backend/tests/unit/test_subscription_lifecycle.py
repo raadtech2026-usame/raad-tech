@@ -25,6 +25,7 @@ from raad.core.errors.exceptions import (
 )
 from raad.core.policies.organization_access import (
     ORGANIZATION_SUBSCRIPTION_INACTIVE,
+    ORGANIZATION_SUBSCRIPTION_MISSING,
     OrganizationAccessPolicy,
     OrganizationSubscriptionState,
 )
@@ -120,13 +121,16 @@ class OrganizationAccessPolicyTests(unittest.TestCase):
         self.policy = OrganizationAccessPolicy()
 
     def test_granting_states_allow_a_tenant_user(self) -> None:
-        """TRIAL/ACTIVE/PAST_DUE/GRACE_PERIOD all grant. `PAST_DUE` and `GRACE_PERIOD` granting
-        is the whole point of a grace window — a school whose invoice slipped by an hour must
-        not have its buses go dark."""
+        """TRIAL/ACTIVE/GRACE_PERIOD grant (amended 2026-09-09).
+
+        `GRACE_PERIOD` still grants and that is deliberate: a grace period that does not grant
+        access is not a grace period, it is a slower suspension, and the lifecycle would have no
+        state left meaning "we know you are late, keep working while you sort it out". Access
+        ends when grace *ends*. `PAST_DUE` moved to the denying set — see the test below.
+        """
         for state in (
             OrganizationSubscriptionState.TRIAL,
             OrganizationSubscriptionState.ACTIVE,
-            OrganizationSubscriptionState.PAST_DUE,
             OrganizationSubscriptionState.GRACE_PERIOD,
         ):
             with self.subTest(state=state):
@@ -134,6 +138,21 @@ class OrganizationAccessPolicyTests(unittest.TestCase):
                     subscription_state=state, is_platform_role=False
                 )
                 self.assertTrue(decision.allowed)
+
+    def test_past_due_denies(self) -> None:
+        """Amended 2026-09-09 (direct user directive): an unpaid invoice closes the dashboard.
+
+        This was the widest hole in the enforcement — `past_due` literally means unpaid and past
+        the due date, yet it granted full access, and nothing escalated it without the scheduled
+        sweep completing. A tenant could simply stop paying and keep working indefinitely.
+        """
+        decision = self.policy.evaluate(
+            subscription_state=OrganizationSubscriptionState.PAST_DUE,
+            is_platform_role=False,
+        )
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, ORGANIZATION_SUBSCRIPTION_INACTIVE)
+        self.assertEqual(decision.required_action, "REDIRECT_TO_PAYMENT")
 
     def test_terminal_states_deny_a_tenant_user(self) -> None:
         """Scenarios 4 and 14: SUSPENDED and EXPIRED both block. CANCELLED too."""
@@ -161,15 +180,43 @@ class OrganizationAccessPolicyTests(unittest.TestCase):
                     ).allowed
                 )
 
-    def test_no_subscription_row_grants(self) -> None:
-        """A never-subscribed organization is un-onboarded, not delinquent. Denying here would
-        turn a partial-provisioning bug into a total outage for that school — see the policy's
-        own docstring for why this fail-open is deliberate and bounded."""
-        self.assertTrue(
-            self.policy.evaluate(
-                subscription_state=None, is_platform_role=False
-            ).allowed
-        )
+    def test_no_subscription_row_denies_with_its_own_reason(self) -> None:
+        """Amended 2026-09-09: `None` denies, and says so distinctly.
+
+        It used to grant, reasoning that a never-subscribed organization is un-onboarded rather
+        than delinquent and that denying would turn a provisioning bug into a total outage. The
+        reasoning was sound and the outcome was still wrong: a provisioning bug is exactly what
+        happened — subscription creation failed on every call for the life of the feature — and
+        this fail-open is what made it invisible. Every organization had unrestricted access with
+        no subscription and nothing reported it.
+
+        The reason code is deliberately *not* the lapsed-subscription one: "nobody ever sold this
+        school a plan" is a provisioning problem and "they stopped paying" is a billing one, and
+        the operator action differs.
+        """
+        decision = self.policy.evaluate(subscription_state=None, is_platform_role=False)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, ORGANIZATION_SUBSCRIPTION_MISSING)
+        self.assertEqual(decision.required_action, "REDIRECT_TO_PAYMENT")
+
+    def test_only_the_three_documented_states_grant(self) -> None:
+        """Exhaustive: every state not explicitly granted must deny.
+
+        Written as a closed sweep over the enum rather than a list of cases, so adding a new
+        subscription state fails here until someone decides, on purpose, which side it belongs
+        on — the alternative is a new state silently defaulting to whichever branch it hits.
+        """
+        granting = {
+            OrganizationSubscriptionState.TRIAL,
+            OrganizationSubscriptionState.ACTIVE,
+            OrganizationSubscriptionState.GRACE_PERIOD,
+        }
+        for state in OrganizationSubscriptionState:
+            with self.subTest(state=state):
+                allowed = self.policy.evaluate(
+                    subscription_state=state, is_platform_role=False
+                ).allowed
+                self.assertEqual(allowed, state in granting)
 
 
 # =============================================================================================

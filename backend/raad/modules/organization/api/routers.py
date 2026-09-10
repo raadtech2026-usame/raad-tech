@@ -209,6 +209,7 @@ async def register_organization(
         admin_email=body.admin_email,
         admin_phone=body.admin_phone,
         actor=principal,
+        plan_id=body.plan_id,
     )
     organization, admin_user_id, temporary_password = await org_service.onboard_organization(
         command, uow=uow

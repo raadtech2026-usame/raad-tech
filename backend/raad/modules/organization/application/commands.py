@@ -33,13 +33,11 @@ class OnboardOrganizationCommand:
     replaces the previously fully-manual, disconnected two-step process (`POST /organizations`
     then a separate, unlinked `POST /users`).
 
-    **Plan selection is still not part of this command.** It was originally deferred pending
-    ADR-0016 (Organization-Only Billing), which has since landed — `billing.Subscription` now
-    keys on `organization_id` alone, so the shape this command would have been throwaway code
-    against no longer applies. Wiring "select a subscription plan" into onboarding remains a
-    real, flagged follow-up (not attempted this phase — a new command field plus an
-    `OrganizationApplicationService.onboard_organization` orchestration change, outside this
-    phase's own scope of removing the parent-billing path), not a silent omission."""
+    **Plan selection is wired as of ADR-0040 §5** — the "real, flagged follow-up" this
+    docstring previously described. `plan_id` is optional: supplying it opens the organization's
+    subscription and issues its first invoice through `BillingProvisioningPort` (period dates
+    computed by `billing` from the plan's own cycle, never recomputed here); omitting it keeps
+    the pre-ADR-0040 behaviour exactly, so the existing onboarding contract is unbroken."""
 
     name: str
     org_type: OrgType
@@ -49,6 +47,7 @@ class OnboardOrganizationCommand:
     admin_email: str | None
     admin_phone: str | None
     actor: Principal
+    plan_id: str | None = None
 
 
 @dataclass(frozen=True)

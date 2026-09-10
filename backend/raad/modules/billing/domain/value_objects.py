@@ -1,5 +1,5 @@
 """Billing value objects (Backend LLD §5.1; Database Design §8.1-§8.5; ADR-0001: `billing` owns
-`Subscription`/`Plan`/`Invoice`/`Payment`/`TransportFee`, Phase-2 §2.1's C8 row). Immutable,
+`Subscription`/`Plan`/`Invoice`/`Payment`, Phase-2 §2.1's C8 row). Immutable,
 equality-by-value, framework-free — no SQLAlchemy/Pydantic/FastAPI. Validation raises
 `DomainError` (`core.errors.exceptions`), mirroring every other module's identical convention.
 
@@ -8,10 +8,11 @@ incremental one-aggregate-per-phase build-out) — this phase's own task explici
 "the complete Billing bounded context... end-to-end in a single implementation."
 
 **Cross-module references stay opaque, never re-validated.** `organization_id` (every table)
-and `transport_fees.student_id` (→ `transport_ops.Student`) are cross-module references —
-opaque, non-empty strings only, the same treatment `transport_ops.domain.value_objects.
-VehicleId` already establishes for its own cross-module reference to `fleet_device.Vehicle`
-(`.claude/rules/database.md` #3).
+is a cross-module reference — an opaque, non-empty string only, the same treatment
+`transport_ops.domain.value_objects.VehicleId` already establishes for its own cross-module
+reference to `fleet_device.Vehicle` (`.claude/rules/database.md` #3).
+
+**ADR-0040 removed `TransportFee` from this module.** School->student fees are now the `school_erp` context's `StudentInvoice`/`StudentPayment` (ADR-0038 §2); `transport_fees` was migrated into `erp_student_invoices` and dropped. `billing` carries no school->student concept at all.
 
 **RAAD business model realignment (ADR-0016): `Subscription` is organization-only now.**
 `SubscriberType`/`SubscriberId` (the former polymorphic organization-or-parent subscriber
@@ -35,7 +36,7 @@ split (e.g. `Trip.route_id: RouteId` vs `Trip.vehicle_id: VehicleId`).
   `transport_ops.domain.value_objects.ParentStatus`'s identical situation: the simplest
   defensible choice, a flat `active`/`inactive` toggle, not an invented richer lifecycle.
 - Every other enum here (`BillingScope`, `BillingCycle`, `SubscriptionStatus`,
-  `InvoiceStatus`, `PaymentStatus`, `TransportFeeStatus`) **is** explicitly spelled out in
+  `InvoiceStatus`, `PaymentStatus`) **is** explicitly spelled out in
   Database Design §8.1-§8.5 and used verbatim (`BillingScope`'s own `PARENT` value now removed
   per ADR-0016, see module docstring above).
 
@@ -74,20 +75,6 @@ class OrganizationId:
     def __str__(self) -> str:
         return self.value
 
-
-@dataclass(frozen=True)
-class StudentId:
-    """Cross-module reference to a `transport_ops.Student` — opaque, non-empty string only, the
-    same treatment `OrganizationId` above gets."""
-
-    value: str
-
-    def __post_init__(self) -> None:
-        if not self.value:
-            raise DomainError("StudentId must not be empty")
-
-    def __str__(self) -> str:
-        return self.value
 
 
 @dataclass(frozen=True)
@@ -133,18 +120,6 @@ class PaymentId:
     def __post_init__(self) -> None:
         if not _ULID_PATTERN.match(self.value):
             raise DomainError(f"PaymentId must be a 26-character ULID: {self.value!r}")
-
-    def __str__(self) -> str:
-        return self.value
-
-
-@dataclass(frozen=True)
-class TransportFeeId:
-    value: str
-
-    def __post_init__(self) -> None:
-        if not _ULID_PATTERN.match(self.value):
-            raise DomainError(f"TransportFeeId must be a 26-character ULID: {self.value!r}")
 
     def __str__(self) -> str:
         return self.value
@@ -230,19 +205,10 @@ class PaymentStatus(str, Enum):
     REFUNDED = "refunded"
 
 
-class TransportFeeStatus(str, Enum):
-    """Database Design §8.5: `transport_fees.status ENUM(due,paid,overdue,waived)`."""
-
-    DUE = "due"
-    PAID = "paid"
-    OVERDUE = "overdue"
-    WAIVED = "waived"
-
-
 @dataclass(frozen=True)
 class Money:
     """`amount`/`currency` appear together on every Billing table (`plans.price_amount`,
-    `invoices.amount`, `payments.amount`, `transport_fees.amount`, each paired with a
+    `invoices.amount` and `payments.amount`, each paired with a
     `currency CHAR(3)`) — grouped into one value object rather than two parallel primitive
     fields threaded through every aggregate/method, the same "small immutable VO for a
     recurring column pair" reasoning Backend LLD §5.1 itself invites (its own value-object

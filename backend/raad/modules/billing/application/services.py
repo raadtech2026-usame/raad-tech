@@ -43,23 +43,20 @@ from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.billing.application.commands import (
     ActivatePlanCommand,
+    UpdatePlanCommand,
     CancelSubscriptionCommand,
     CreatePlanCommand,
-    CreateTransportFeeCommand,
     DisablePlanCommand,
     ExpireSubscriptionCommand,
     InitiatePaymentCommand,
     IssueInvoiceCommand,
     MarkPaymentExpiredCommand,
-    MarkTransportFeeOverdueCommand,
-    MarkTransportFeePaidCommand,
     OpenOrganizationSubscriptionCommand,
     PaymentCallbackCommand,
     ExtendGracePeriodCommand,
     ReactivateSubscriptionCommand,
     SuspendSubscriptionCommand,
     VoidInvoiceCommand,
-    WaiveTransportFeeCommand,
 )
 from raad.modules.billing.application.ports import (
     BillingUnitOfWork,
@@ -73,22 +70,18 @@ from raad.modules.billing.application.queries import (
     GetPaymentByIdQuery,
     GetPlanByIdQuery,
     GetSubscriptionByIdQuery,
-    GetTransportFeeByIdQuery,
     InvoiceDTO,
     ListInvoicesQuery,
     ListPaymentsQuery,
     ListPlansQuery,
     ListSubscriptionsQuery,
-    ListTransportFeesQuery,
     PaymentDTO,
     PlanDTO,
     SubscriptionDTO,
-    TransportFeeDTO,
     invoice_to_dto,
     payment_to_dto,
     plan_to_dto,
     subscription_to_dto,
-    transport_fee_to_dto,
 )
 from raad.modules.billing.application.validators import (
     ensure_invoice_exists,
@@ -100,7 +93,6 @@ from raad.modules.billing.domain.entities import (
     Payment,
     Plan,
     Subscription,
-    TransportFee,
 )
 from raad.modules.billing.domain.value_objects import (
     BillingCycle,
@@ -111,10 +103,8 @@ from raad.modules.billing.domain.value_objects import (
     PaymentId,
     PaymentStatus,
     PlanId,
-    StudentId,
     SubscriptionId,
     SubscriptionStatus,
-    TransportFeeId,
 )
 
 # Phase-2 §20.2 documents the renewal *workflow*, never a calendar-accurate period-length
@@ -200,10 +190,30 @@ class BillingApplicationService:
                 price=Money(command.amount, command.currency),
                 billing_cycle=BillingCycle(command.billing_cycle),
                 vehicle_limit=command.vehicle_limit,
+                device_limit=command.device_limit,
+                user_limit=command.user_limit,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )
             uow.plans.add(plan)
+            uow.record_events(plan.pull_domain_events())
+            await uow.commit()
+            return plan_to_dto(plan)
+
+    async def update_plan(
+        self, command: UpdatePlanCommand, *, uow: BillingUnitOfWork
+    ) -> PlanDTO:
+        async with uow:
+            plan = await self._get_plan_or_raise(uow, command.plan_id)
+            plan.update_details(
+                name=command.name,
+                price=Money(command.amount, command.currency),
+                vehicle_limit=command.vehicle_limit,
+                device_limit=command.device_limit,
+                user_limit=command.user_limit,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
             uow.record_events(plan.pull_domain_events())
             await uow.commit()
             return plan_to_dto(plan)
@@ -964,85 +974,6 @@ class BillingApplicationService:
         if payment is None:
             raise NotFoundError(f"Payment {payment_id} not found.")
         return payment
-
-    # --- TransportFee ------------------------------------------------------------------------
-
-    async def create_transport_fee(
-        self, command: CreateTransportFeeCommand, *, uow: BillingUnitOfWork
-    ) -> TransportFeeDTO:
-        async with uow:
-            fee = TransportFee.create(
-                id=TransportFeeId(self._id_generator.new_id()),
-                organization_id=OrganizationId(command.organization_id),
-                student_id=StudentId(command.student_id),
-                period=command.period,
-                amount=Money(command.amount, command.currency),
-                clock=self._clock,
-                actor_id=command.actor.user_id,
-            )
-            uow.transport_fees.add(fee)
-            uow.record_events(fee.pull_domain_events())
-            await uow.commit()
-            return transport_fee_to_dto(fee)
-
-    async def mark_transport_fee_paid(
-        self, command: MarkTransportFeePaidCommand, *, uow: BillingUnitOfWork
-    ) -> TransportFeeDTO:
-        async with uow:
-            fee = await self._get_transport_fee_or_raise(
-                uow, command.transport_fee_id
-            )
-            fee.mark_paid(clock=self._clock, actor_id=command.actor.user_id)
-            uow.record_events(fee.pull_domain_events())
-            await uow.commit()
-            return transport_fee_to_dto(fee)
-
-    async def mark_transport_fee_overdue(
-        self, command: MarkTransportFeeOverdueCommand, *, uow: BillingUnitOfWork
-    ) -> TransportFeeDTO:
-        async with uow:
-            fee = await self._get_transport_fee_or_raise(
-                uow, command.transport_fee_id
-            )
-            fee.mark_overdue(clock=self._clock, actor_id=command.actor.user_id)
-            uow.record_events(fee.pull_domain_events())
-            await uow.commit()
-            return transport_fee_to_dto(fee)
-
-    async def waive_transport_fee(
-        self, command: WaiveTransportFeeCommand, *, uow: BillingUnitOfWork
-    ) -> TransportFeeDTO:
-        async with uow:
-            fee = await self._get_transport_fee_or_raise(
-                uow, command.transport_fee_id
-            )
-            fee.waive(clock=self._clock, actor_id=command.actor.user_id)
-            uow.record_events(fee.pull_domain_events())
-            await uow.commit()
-            return transport_fee_to_dto(fee)
-
-    async def get_transport_fee_by_id(
-        self, query: GetTransportFeeByIdQuery, *, uow: BillingUnitOfWork
-    ) -> TransportFeeDTO:
-        async with uow:
-            fee = await self._get_transport_fee_or_raise(uow, query.transport_fee_id)
-            return transport_fee_to_dto(fee)
-
-    async def list_transport_fees(
-        self, query: ListTransportFeesQuery, *, uow: BillingUnitOfWork
-    ) -> list[TransportFeeDTO]:
-        async with uow:
-            fees = await uow.transport_fees.list_all()
-            return [transport_fee_to_dto(fee) for fee in fees]
-
-    @staticmethod
-    async def _get_transport_fee_or_raise(
-        uow: BillingUnitOfWork, transport_fee_id: str
-    ) -> TransportFee:
-        fee = await uow.transport_fees.get(TransportFeeId(transport_fee_id))
-        if fee is None:
-            raise NotFoundError(f"TransportFee {transport_fee_id} not found.")
-        return fee
 
 
 def _mask_msisdn(msisdn: str | None) -> str | None:

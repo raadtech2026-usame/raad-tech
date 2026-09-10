@@ -27,7 +27,7 @@ implemented this phase, see `infra/adapters.py`) — this command's shape
 already-normalized outcome, not a claim about EVC Plus's real webhook contract.
 
 **Every other command** (`Plan`/`Subscription` status transitions, `Invoice` issuance/voiding,
-`TransportFee` lifecycle) has no approved document naming it, 1:1 with each aggregate's own
+lifecycle) has no approved document naming it, 1:1 with each aggregate's own
 domain method names — the same "flagged, not silently assumed" naming posture every prior
 phase's own unnamed commands already carry.
 """
@@ -48,6 +48,27 @@ class CreatePlanCommand:
     currency: str
     billing_cycle: str
     vehicle_limit: int | None
+    actor: Principal
+    # ADR-0040 §4. Declared after `actor` with defaults, because a frozen dataclass cannot have
+    # a non-default field follow a defaulted one — and every call site already uses keywords, so
+    # the position is irrelevant to callers. Defaulting to `None` (unlimited) also keeps the
+    # pre-ADR-0040 construction shape valid.
+    device_limit: int | None = None
+    user_limit: int | None = None
+
+
+@dataclass(frozen=True)
+class UpdatePlanCommand:
+    """ADR-0040 §4. `billing_scope`/`billing_cycle` are absent on purpose — see
+    `Plan.update_details`'s docstring for why both are structural rather than editable."""
+
+    plan_id: str
+    name: str
+    amount: float
+    currency: str
+    vehicle_limit: int | None
+    device_limit: int | None
+    user_limit: int | None
     actor: Principal
 
 
@@ -173,32 +194,4 @@ class MarkPaymentExpiredCommand:
     details" exclusion)."""
 
     payment_id: str
-    actor: Principal
-
-
-@dataclass(frozen=True)
-class CreateTransportFeeCommand:
-    organization_id: str
-    student_id: str
-    period: str
-    amount: float
-    currency: str
-    actor: Principal
-
-
-@dataclass(frozen=True)
-class MarkTransportFeePaidCommand:
-    transport_fee_id: str
-    actor: Principal
-
-
-@dataclass(frozen=True)
-class MarkTransportFeeOverdueCommand:
-    transport_fee_id: str
-    actor: Principal
-
-
-@dataclass(frozen=True)
-class WaiveTransportFeeCommand:
-    transport_fee_id: str
     actor: Principal

@@ -6,7 +6,7 @@ aggregate-out" rule). Mirrors `transport_ops.infra.repositories`'s identity-map/
 rationale (a handler mutating a `get()`-returned domain object needs this bridge, since
 SQLAlchemy only dirty-tracks its own ORM rows, not detached domain objects).
 
-**Tenant-scoping (ADR-0021).** `subscriptions`/`invoices`/`payments`/`transport_fees` are now
+**Tenant-scoping (ADR-0021).** `subscriptions`/`invoices`/`payments` are now
 constructed with the caller's resolved `TenantRegionScope` (`SqlAlchemyBillingUnitOfWork.
 __aenter__`, set from `api/deps.get_billing_uow`'s `Depends(get_scope)`) — `get_by_id`/
 `list_page`/`list_all` all apply it automatically via the base class, mirroring `fleet_device`/
@@ -51,14 +51,12 @@ from raad.modules.billing.domain.entities import (
     Payment,
     Plan,
     Subscription,
-    TransportFee,
 )
 from raad.modules.billing.domain.repositories import (
     InvoiceRepository,
     PaymentRepository,
     PlanRepository,
     SubscriptionRepository,
-    TransportFeeRepository,
 )
 from raad.modules.billing.domain.value_objects import (
     InvoiceId,
@@ -66,7 +64,6 @@ from raad.modules.billing.domain.value_objects import (
     PaymentId,
     PlanId,
     SubscriptionId,
-    TransportFeeId,
 )
 from raad.modules.billing.infra.mappers import (
     _to_naive_utc,
@@ -75,18 +72,15 @@ from raad.modules.billing.infra.mappers import (
     model_to_payment,
     model_to_plan,
     model_to_subscription,
-    model_to_transport_fee,
     payment_to_model,
     plan_to_model,
     subscription_to_model,
-    transport_fee_to_model,
 )
 from raad.modules.billing.infra.models import (
     InvoiceModel,
     PaymentModel,
     PlanModel,
     SubscriptionModel,
-    TransportFeeModel,
 )
 
 
@@ -332,6 +326,10 @@ class SqlAlchemyInvoiceRepository(
     #: `InvoiceResponse`. `period_start`/`period_end` need `value_type=date` (`FilterField`'s
     #: own docstring) since `InvoiceModel` stores them as native PostgreSQL `DATE`, not text.
     filterable_fields = {
+        # ADR-0021 keeps this honest: `_apply_scope` still narrows every query to the
+        # caller's own scope, so this filter can only narrow *within* what the caller may
+        # already see. It exists so a Founder can focus one organization.
+        "organization_id": FilterField(column="organization_id"),
         "subscription_id": FilterField(column="subscription_id"),
         "status": FilterField(column="status"),
         "currency": FilterField(column="currency"),
@@ -550,44 +548,8 @@ class SqlAlchemyPaymentRepository(
         return payment
 
 
-class SqlAlchemyTransportFeeRepository(
-    SqlAlchemyRepositoryBase[TransportFeeModel], TransportFeeRepository
-):
-    model = TransportFeeModel
-
-    def __init__(
-        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
-    ) -> None:
-        super().__init__(session, scope=scope)
-        self._tracked: dict[str, tuple[TransportFee, TransportFeeModel]] = {}
-
-    async def get(self, transport_fee_id: TransportFeeId) -> TransportFee | None:
-        row = await self.get_by_id(str(transport_fee_id))
-        return self._track(row)
-
-    def add(self, transport_fee: TransportFee) -> None:
-        model = transport_fee_to_model(transport_fee)
-        super().add(model)
-        self._tracked[str(transport_fee.id)] = (transport_fee, model)
-
-    async def list_all(self) -> list[TransportFee]:
-        rows = await self.list_scoped()
-        return [model_to_transport_fee(row) for row in rows]
-
-    def flush_tracked_changes(self) -> None:
-        for fee, model in self._tracked.values():
-            transport_fee_to_model(fee, existing=model)
-
-    def _track(self, row: TransportFeeModel | None) -> TransportFee | None:
-        if row is None:
-            return None
-        fee = model_to_transport_fee(row)
-        self._tracked[row.id] = (fee, row)
-        return fee
-
-
 class SqlAlchemyBillingUnitOfWork(SqlAlchemyUnitOfWork, BillingUnitOfWork):
-    """Concrete `BillingUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `billing`'s five
+    """Concrete `BillingUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `billing`'s four
     repositories once the session is open, and re-syncs every tracked aggregate's in-place
     mutations onto its ORM row immediately before delegating to `SqlAlchemyUnitOfWork.commit()`
     — identical shape to `transport_ops.infra.repositories.SqlAlchemyTransportOpsUnitOfWork`.
@@ -597,7 +559,6 @@ class SqlAlchemyBillingUnitOfWork(SqlAlchemyUnitOfWork, BillingUnitOfWork):
     subscriptions: SqlAlchemySubscriptionRepository
     invoices: SqlAlchemyInvoiceRepository
     payments: SqlAlchemyPaymentRepository
-    transport_fees: SqlAlchemyTransportFeeRepository
 
     async def __aenter__(self) -> "SqlAlchemyBillingUnitOfWork":
         await super().__aenter__()
@@ -607,9 +568,6 @@ class SqlAlchemyBillingUnitOfWork(SqlAlchemyUnitOfWork, BillingUnitOfWork):
         )
         self.invoices = SqlAlchemyInvoiceRepository(self.session, scope=self.scope)
         self.payments = SqlAlchemyPaymentRepository(self.session, scope=self.scope)
-        self.transport_fees = SqlAlchemyTransportFeeRepository(
-            self.session, scope=self.scope
-        )
         return self
 
     async def commit(self) -> None:
@@ -617,5 +575,4 @@ class SqlAlchemyBillingUnitOfWork(SqlAlchemyUnitOfWork, BillingUnitOfWork):
         self.subscriptions.flush_tracked_changes()
         self.invoices.flush_tracked_changes()
         self.payments.flush_tracked_changes()
-        self.transport_fees.flush_tracked_changes()
         await super().commit()

@@ -36,7 +36,6 @@ from raad.modules.billing.domain.repositories import (
     PaymentRepository,
     PlanRepository,
     SubscriptionRepository,
-    TransportFeeRepository,
 )
 from raad.modules.billing.domain.value_objects import Money
 
@@ -129,4 +128,3 @@ class BillingUnitOfWork(UnitOfWork):
     subscriptions: SubscriptionRepository
     invoices: InvoiceRepository
     payments: PaymentRepository
-    transport_fees: TransportFeeRepository

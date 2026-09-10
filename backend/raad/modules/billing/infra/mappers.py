@@ -16,7 +16,6 @@ from raad.modules.billing.domain.entities import (
     Payment,
     Plan,
     Subscription,
-    TransportFee,
 )
 from raad.modules.billing.domain.value_objects import (
     BillingCycle,
@@ -29,18 +28,14 @@ from raad.modules.billing.domain.value_objects import (
     PaymentStatus,
     PlanId,
     PlanStatus,
-    StudentId,
     SubscriptionId,
     SubscriptionStatus,
-    TransportFeeId,
-    TransportFeeStatus,
 )
 from raad.modules.billing.infra.models import (
     InvoiceModel,
     PaymentModel,
     PlanModel,
     SubscriptionModel,
-    TransportFeeModel,
 )
 
 
@@ -62,6 +57,8 @@ def plan_to_model(plan: Plan, *, existing: PlanModel | None = None) -> PlanModel
     model.currency = plan.price.currency
     model.billing_cycle = plan.billing_cycle.value
     model.vehicle_limit = plan.vehicle_limit
+    model.device_limit = plan.device_limit
+    model.user_limit = plan.user_limit
     model.status = plan.status.value
     model.created_at = _to_naive_utc(plan.created_at)
     model.updated_at = _to_naive_utc(plan.updated_at)
@@ -76,6 +73,8 @@ def model_to_plan(model: PlanModel) -> Plan:
         price=Money(model.price_amount, model.currency),
         billing_cycle=BillingCycle(model.billing_cycle),
         vehicle_limit=model.vehicle_limit,
+        device_limit=model.device_limit,
+        user_limit=model.user_limit,
         status=PlanStatus(model.status),
         created_at=model.created_at,
         updated_at=model.updated_at,
@@ -208,28 +207,4 @@ def model_to_payment(model: PaymentModel) -> Payment:
         created_at=model.created_at,
         confirmed_at=model.confirmed_at,
         failure_reason=model.failure_reason,
-    )
-
-
-def transport_fee_to_model(
-    fee: TransportFee, *, existing: TransportFeeModel | None = None
-) -> TransportFeeModel:
-    model = existing if existing is not None else TransportFeeModel(id=str(fee.id))
-    model.organization_id = str(fee.organization_id)
-    model.student_id = str(fee.student_id)
-    model.period = fee.period
-    model.amount = fee.amount.amount
-    model.currency = fee.amount.currency
-    model.status = fee.status.value
-    return model
-
-
-def model_to_transport_fee(model: TransportFeeModel) -> TransportFee:
-    return TransportFee(
-        id=TransportFeeId(model.id),
-        organization_id=OrganizationId(model.organization_id),
-        student_id=StudentId(model.student_id),
-        period=model.period,
-        amount=Money(model.amount, model.currency),
-        status=TransportFeeStatus(model.status),
     )

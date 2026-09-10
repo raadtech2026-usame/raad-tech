@@ -14,7 +14,7 @@ in `test_postgres_repository_invariants.py`, not duplicated here.
 **Requires a reachable PostgreSQL database** configured via `RAAD_DB__URL` (`.env`). Skipped
 entirely (not failed) when unavailable. Every test inserts rows tagged with a unique per-run
 marker and deletes them in `tearDown` in FK-respecting order (payments before invoices before
-subscriptions before plans; transport_fees independently), leaving the schema exactly as found.
+subscriptions before plans), leaving the schema exactly as found.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
-from raad.modules.billing.domain.entities import Invoice, Payment, Plan, Subscription, TransportFee
+from raad.modules.billing.domain.entities import Invoice, Payment, Plan, Subscription
 from raad.modules.billing.domain.value_objects import (
     BillingCycle,
     BillingScope,
@@ -43,9 +43,7 @@ from raad.modules.billing.domain.value_objects import (
     OrganizationId,
     PaymentId,
     PlanId,
-    StudentId,
     SubscriptionId,
-    TransportFeeId,
 )
 from raad.modules.billing.infra.repositories import SqlAlchemyBillingUnitOfWork
 
@@ -75,7 +73,6 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self._created_invoice_ids: list[str] = []
         self._created_subscription_ids: list[str] = []
         self._created_plan_ids: list[str] = []
-        self._created_transport_fee_ids: list[str] = []
 
     async def asyncTearDown(self) -> None:
         async with self.engine.begin() as conn:
@@ -99,13 +96,6 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
                     text("DELETE FROM plans WHERE id = ANY(:ids)"),
                     {"ids": self._created_plan_ids},
                 )
-            if self._created_transport_fee_ids:
-                await conn.execute(
-                    text("DELETE FROM transport_fees WHERE id = ANY(:ids)"),
-                    {"ids": self._created_transport_fee_ids},
-                )
-        await self.engine.dispose()
-
     def _new_uow(self) -> SqlAlchemyBillingUnitOfWork:
         return SqlAlchemyBillingUnitOfWork(self.session_factory, self.outbox_writer, self.audit_writer)
 
@@ -352,28 +342,9 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refetched.status.value, "paid")
         self.assertEqual(refetched.provider_ref, "EVC-REF-XYZ")
 
-    async def test_transport_fee_add_then_get_round_trips(self) -> None:
-        org_id = self.id_generator.new_id()
-        async with self._new_uow() as uow:
-            fee = TransportFee.create(
-                id=TransportFeeId(self.id_generator.new_id()),
-                organization_id=OrganizationId(org_id),
-                student_id=StudentId(self.id_generator.new_id()),
-                period="2026-07",
-                amount=Money(20.00, "USD"),
-                clock=self.clock,
-            )
-            uow.transport_fees.add(fee)
-            uow.record_events(fee.pull_domain_events())
-            await uow.commit()
-            self._created_transport_fee_ids.append(str(fee.id))
-
-        async with self._new_uow() as uow:
-            fetched = await uow.transport_fees.get(fee.id)
-
-        self.assertIsNotNone(fetched)
-        self.assertEqual(fetched.status.value, "due")
-
+    # `test_transport_fee_add_then_get_round_trips` removed by ADR-0040 — `transport_fees` was
+    # migrated into `erp_student_invoices` and dropped (migration `7387f1b2ee6a`). Its
+    # replacement is covered by `tests/integration/test_school_erp_repository.py`.
 
 @unittest.skipUnless(_db_available(), _SKIP_REASON)
 class PlanPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
@@ -823,14 +794,43 @@ class InvoicePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(str(invoice.id), {str(i.id) for i in page.data})
 
     async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
+        """The whitelist is what stops a client filtering on an arbitrary column.
+
+        This used `organization_id` as its example until 2026-09-09, when that field became a
+        legitimate filter here so the Founder's Organization Details page could narrow a list to
+        one organization. `created_by` stands in now: a real column, deliberately not whitelisted.
+        """
         async with self._new_uow() as uow:
             with self.assertRaises(ValidationError):
                 await uow.invoices.list_page(
                     OffsetPageRequest(),
                     sort=[],
-                    filters=[FilterCondition(field="organization_id", op="eq", value="x")],
+                    filters=[FilterCondition(field="created_by", op="eq", value="x")],
                     search=None,
                 )
+
+    async def test_list_page_accepts_the_organization_id_filter(self) -> None:
+        """The newly whitelisted filter is accepted rather than rejected.
+
+        Whitelisting a tenant column is safe only because `_apply_scope` (ADR-0021) runs on top
+        of every filter — it can narrow within what the caller may already see, never widen past
+        it. The scope behaviour has its own tests; this one pins that the field is reachable at
+        all, which is the change.
+        """
+        async with self._new_uow() as uow:
+            page = await uow.invoices.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[
+                    FilterCondition(
+                        field="organization_id",
+                        op="eq",
+                        value=self.id_generator.new_id(),
+                    )
+                ],
+                search=None,
+            )
+        self.assertEqual(page.data, [])
 
     async def test_list_page_rejects_non_whitelisted_sort_field(self) -> None:
         async with self._new_uow() as uow:

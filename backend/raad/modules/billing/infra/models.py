@@ -8,8 +8,7 @@ reasoning). Every other table's `organization_id` is a plain indexed column, nev
 FK — cross-context reference (`.claude/rules/database.md` #3), the same treatment every other
 module's own `organization_id` gets. `subscriptions.subscriber_id`
 (→ `organization.Organization` or `transport_ops.Parent`, disambiguated by `subscriber_type`)
-and `transport_fees.student_id` (→ `transport_ops.Student`) are likewise plain indexed columns,
-never FKs — cross-module references.
+are likewise plain indexed columns, never FKs — cross-module references.
 
 `subscriptions.plan_id`, `invoices.subscription_id`, `payments.invoice_id` **are** real database
 `ForeignKey`s — all three are same-module, in-context references (`plans`/`subscriptions`/
@@ -24,7 +23,7 @@ former polymorphic `subscriber_type`/`subscriber_id` columns are dropped — `or
 **`PaymentModel` composes `UlidPrimaryKeyMixin` only, not `AuditedTableMixin`.** Database
 Design §8.4's `payments` table lists exactly its own columns (including its own `created_at`/
 `confirmed_at` pair) with no "+ standard audit cols" line — unlike `plans`/`subscriptions`/
-`invoices`/`transport_fees`, which each end with one. This is the identical situation
+`invoices`, which each end with one. This is the identical situation
 `transport_ops.infra.models.StudentParentModel`/`fleet_device.infra.models.
 DeviceAssignmentModel` already establish for a table whose own timestamp columns already serve
 the audit purpose — confirmed by re-reading §8.4 in full before implementing, not assumed from
@@ -79,7 +78,6 @@ _SUBSCRIPTION_STATUS_VALUES = (
 )
 _INVOICE_STATUS_VALUES = ("draft", "issued", "paid", "void")
 _PAYMENT_STATUS_VALUES = ("pending", "processing", "paid", "failed", "expired", "refunded")
-_TRANSPORT_FEE_STATUS_VALUES = ("due", "paid", "overdue", "waived")
 
 # Database Design §8.1 gives `plans.name` no explicit length (compact notation) - mirrors
 # transport_ops.RouteModel.name's identical VARCHAR(160) precedent (`domain/entities.py`'s own
@@ -89,9 +87,6 @@ _PLAN_NAME_LENGTH = 160
 # `Invoice.issue()` sets it to the invoice's own 26-char ULID id, so 64 gives headroom without
 # claiming a specific documented format.
 _INVOICE_NUMBER_LENGTH = 64
-# §8.5 gives `transport_fees.period` no type at all - modeled as a short label
-# (`domain/entities.py`'s own note); 20 chars comfortably fits e.g. "2026-07" plus headroom.
-_TRANSPORT_FEE_PERIOD_LENGTH = 20
 
 
 class PlanModel(AuditedTableMixin, Base):
@@ -111,6 +106,9 @@ class PlanModel(AuditedTableMixin, Base):
         SqlEnum(*_BILLING_CYCLE_VALUES, name="billing_cycle"), nullable=False
     )
     vehicle_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: ADR-0040 §4. Nullable = unlimited, matching `vehicle_limit`'s existing meaning.
+    device_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(
         SqlEnum(*_PLAN_STATUS_VALUES, name="plan_status"), nullable=False, index=True
     )
@@ -225,23 +223,4 @@ class PaymentModel(UlidPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
     confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
-    )
-
-
-class TransportFeeModel(AuditedTableMixin, Base):
-    """`transport_fees` (Database Design §8.5)."""
-
-    __tablename__ = "transport_fees"
-
-    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
-    student_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
-    period: Mapped[str] = mapped_column(
-        VARCHAR(_TRANSPORT_FEE_PERIOD_LENGTH), nullable=False
-    )
-    amount: Mapped[float] = mapped_column(DECIMAL(12, 2, asdecimal=False), nullable=False)
-    currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
-    status: Mapped[str] = mapped_column(
-        SqlEnum(*_TRANSPORT_FEE_STATUS_VALUES, name="transport_fee_status"),
-        nullable=False,
-        index=True,
     )

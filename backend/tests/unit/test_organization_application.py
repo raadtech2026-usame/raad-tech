@@ -33,6 +33,7 @@ from raad.modules.organization.application.commands import (
     UpdateOrganizationGeofenceCommand,
 )
 from raad.modules.organization.application.ports import (
+    BillingProvisioningPort,
     IamProvisioningPort,
     OrganizationUnitOfWork,
 )
@@ -284,6 +285,7 @@ def make_actor() -> Principal:
 
 
 VALID_ADMIN_USER_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MF"
+VALID_PLAN_ULID = "01J8Z3K9G6X8YV5T4N2R7QPLN1"
 FAKE_ADMIN_TEMPORARY_PASSWORD = "Fake-Temp-Pw9!"
 
 
@@ -292,8 +294,10 @@ class FakeIamProvisioningPort(IamProvisioningPort):
     `test_transport_ops_parent_application.py`'s identical fake (ADR-0003) for the full
     rationale. Records every call for assertions."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, fail_with: Exception | None = None) -> None:
         self.calls: list[dict] = []
+        self.disabled_user_ids: list[str] = []
+        self.fail_with = fail_with
 
     async def create_user_with_temporary_password(
         self,
@@ -315,7 +319,50 @@ class FakeIamProvisioningPort(IamProvisioningPort):
                 "actor": actor,
             }
         )
+        if self.fail_with is not None:
+            raise self.fail_with
         return VALID_ADMIN_USER_ULID, FAKE_ADMIN_TEMPORARY_PASSWORD
+
+    async def disable_user(self, *, user_id: str, actor: Principal) -> None:
+        """Saga compensation. Recorded rather than asserted inline so a test can prove the
+        admin account created by a failed onboarding is actually revoked."""
+        self.disabled_user_ids.append(user_id)
+
+
+class FakeBillingProvisioningPort(BillingProvisioningPort):
+    """Stands in for `core.di.erp_adapters.BillingOnboardingAdapter` (ADR-0040 §5).
+
+    `offerable_plan_ids` is the fail-fast surface: a plan absent from it raises exactly as the
+    real adapter does for an unknown or inactive plan, and it must raise *before* the service
+    writes anything.
+    """
+
+    def __init__(
+        self,
+        *,
+        offerable_plan_ids: set[str] | None = None,
+        open_failure: Exception | None = None,
+    ) -> None:
+        self.offerable_plan_ids = (
+            offerable_plan_ids if offerable_plan_ids is not None else {VALID_PLAN_ULID}
+        )
+        self.open_failure = open_failure
+        self.validated_plan_ids: list[str] = []
+        self.opened: list[dict] = []
+
+    async def ensure_plan_is_offerable(self, *, plan_id: str) -> None:
+        self.validated_plan_ids.append(plan_id)
+        if plan_id not in self.offerable_plan_ids:
+            raise NotFoundError(f"Plan {plan_id} not found.")
+
+    async def open_subscription_for_organization(
+        self, *, organization_id: str, plan_id: str, actor: Principal
+    ) -> None:
+        self.opened.append(
+            {"organization_id": organization_id, "plan_id": plan_id, "actor": actor}
+        )
+        if self.open_failure is not None:
+            raise self.open_failure
 
 
 def make_services() -> tuple[
@@ -424,6 +471,159 @@ class OnboardOrganizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(uow.commit_count, 0)
         # A missing region fails before the Organization ever commits - iam is never called.
         self.assertEqual(iam_provisioning.calls, [])
+
+
+class OnboardingSagaTests(unittest.IsolatedAsyncioTestCase):
+    """Onboarding is a saga: fail fast, compensate, re-raise (2026-09-09).
+
+    Every test here defends a behaviour whose absence produced a silent, total billing outage —
+    onboarding answered `201 Created` while `open_organization_subscription` raised on every
+    single call, so organizations accumulated that could never be billed and nothing said so.
+    """
+
+    def _services(self, *, billing=None, iam=None):
+        clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        iam_provisioning = iam or FakeIamProvisioningPort()
+        billing_provisioning = billing or FakeBillingProvisioningPort()
+        org_service = OrganizationApplicationService(
+            clock=clock,
+            id_generator=SequentialIdGenerator(),
+            iam_provisioning=iam_provisioning,
+            billing_provisioning=billing_provisioning,
+        )
+        region_service = RegionApplicationService(
+            clock=clock, id_generator=SequentialIdGenerator()
+        )
+        uow = FakeOrganizationUnitOfWork(
+            InMemoryOrganizationRepository(), InMemoryRegionRepository()
+        )
+        return org_service, region_service, uow, iam_provisioning, billing_provisioning
+
+    @staticmethod
+    def _command(region_id: str, plan_id):
+        return OnboardOrganizationCommand(
+            name="Sunrise School",
+            org_type=OrgType.SCHOOL,
+            region_id=region_id,
+            parent_org_id=None,
+            admin_full_name="Amina Warsame",
+            admin_email="amina@sunrise.example.com",
+            admin_phone=None,
+            actor=make_actor(),
+            plan_id=plan_id,
+        )
+
+    async def test_a_selected_plan_opens_the_subscription(self) -> None:
+        org_service, region_service, uow, _iam, billing = self._services()
+        region_id = await _seed_region(region_service, uow)
+
+        organization, _admin, _pw = await org_service.onboard_organization(
+            self._command(region_id, VALID_PLAN_ULID), uow=uow
+        )
+
+        self.assertEqual(len(billing.opened), 1)
+        self.assertEqual(billing.opened[0]["plan_id"], VALID_PLAN_ULID)
+        self.assertEqual(billing.opened[0]["organization_id"], organization.id)
+
+    async def test_an_unknown_plan_is_rejected_before_anything_is_written(self) -> None:
+        """Fail fast. Having nothing to compensate beats compensating correctly."""
+        org_service, region_service, uow, iam, billing = self._services()
+        region_id = await _seed_region(region_service, uow)
+        commits_before = uow.commit_count
+
+        with self.assertRaises(NotFoundError):
+            await org_service.onboard_organization(
+                self._command(region_id, NON_EXISTENT_ULID), uow=uow
+            )
+
+        self.assertEqual(billing.validated_plan_ids, [NON_EXISTENT_ULID])
+        self.assertEqual(uow.commit_count, commits_before)  # no Organization committed
+        self.assertEqual(iam.calls, [])  # no admin account created
+        self.assertEqual(billing.opened, [])
+
+    async def test_a_failed_subscription_propagates_instead_of_reporting_success(
+        self,
+    ) -> None:
+        """The exact defect: this used to be caught, logged, and reported as success."""
+        billing = FakeBillingProvisioningPort(open_failure=RuntimeError("FK violation"))
+        org_service, region_service, uow, _iam, _billing = self._services(billing=billing)
+        region_id = await _seed_region(region_service, uow)
+
+        with self.assertRaises(RuntimeError):
+            await org_service.onboard_organization(
+                self._command(region_id, VALID_PLAN_ULID), uow=uow
+            )
+
+    async def test_a_failed_subscription_compensates_the_organization_and_admin(
+        self,
+    ) -> None:
+        billing = FakeBillingProvisioningPort(open_failure=RuntimeError("FK violation"))
+        org_service, region_service, uow, iam, _billing = self._services(billing=billing)
+        region_id = await _seed_region(region_service, uow)
+
+        with self.assertRaises(RuntimeError):
+            await org_service.onboard_organization(
+                self._command(region_id, VALID_PLAN_ULID), uow=uow
+            )
+
+        # The admin account created moments earlier is revoked...
+        self.assertEqual(iam.disabled_user_ids, [VALID_ADMIN_USER_ULID])
+        # ...and the organization is left inert rather than live-but-unbillable.
+        organizations = list(uow.organizations.by_id.values())
+        self.assertEqual(len(organizations), 1)
+        self.assertEqual(organizations[0].status.value, "inactive")
+
+    async def test_a_failed_admin_provisioning_deactivates_the_organization(self) -> None:
+        """Compensation must also cover the step that has no admin id to revoke yet."""
+        iam = FakeIamProvisioningPort(fail_with=RuntimeError("duplicate phone"))
+        org_service, region_service, uow, _iam, _billing = self._services(iam=iam)
+        region_id = await _seed_region(region_service, uow)
+
+        with self.assertRaises(RuntimeError):
+            await org_service.onboard_organization(
+                self._command(region_id, VALID_PLAN_ULID), uow=uow
+            )
+
+        self.assertEqual(iam.disabled_user_ids, [])  # nothing was created to revoke
+        organizations = list(uow.organizations.by_id.values())
+        self.assertEqual(organizations[0].status.value, "inactive")
+
+    async def test_onboarding_without_a_plan_never_touches_billing(self) -> None:
+        """The pre-ADR-0040 contract is unbroken: a plan stays optional."""
+        org_service, region_service, uow, _iam, billing = self._services()
+        region_id = await _seed_region(region_service, uow)
+
+        organization, _admin, _pw = await org_service.onboard_organization(
+            self._command(region_id, None), uow=uow
+        )
+
+        self.assertEqual(organization.status, "active")
+        self.assertEqual(billing.validated_plan_ids, [])
+        self.assertEqual(billing.opened, [])
+
+    async def test_selecting_a_plan_with_billing_unconfigured_is_refused(self) -> None:
+        """Silently ignoring the plan is what produced unbillable organizations."""
+        clock = FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        org_service = OrganizationApplicationService(
+            clock=clock,
+            id_generator=SequentialIdGenerator(),
+            iam_provisioning=FakeIamProvisioningPort(),
+            billing_provisioning=None,
+        )
+        region_service = RegionApplicationService(
+            clock=clock, id_generator=SequentialIdGenerator()
+        )
+        uow = FakeOrganizationUnitOfWork(
+            InMemoryOrganizationRepository(), InMemoryRegionRepository()
+        )
+        region_id = await _seed_region(region_service, uow)
+        commits_before = uow.commit_count
+
+        with self.assertRaises(DomainError):
+            await org_service.onboard_organization(
+                self._command(region_id, VALID_PLAN_ULID), uow=uow
+            )
+        self.assertEqual(uow.commit_count, commits_before)
 
 
 class RegisterOrganizationTests(unittest.IsolatedAsyncioTestCase):
