@@ -20,6 +20,7 @@ from raad.core.errors.exceptions import (
     AuthenticationError,
     AuthorizationError,
     ConflictError,
+    DomainError,
     ExternalServiceError,
     InfrastructureError,
     NotFoundError,
@@ -41,6 +42,15 @@ _STATUS_TABLE: list[tuple[type[AppError], int]] = [
     (NotFoundError, 404),
     (ConflictError, 409),
     (RuleViolationError, 409),
+    # Their shared base, and it must stay *below* them so those two keep resolving to 409.
+    #
+    # A `DomainError` is a business rule refusing caller input — "Category 'Fuel' is an expense
+    # category, not an income category", "Fee plan belongs to a different organization",
+    # "amount must not be negative". It was absent from this table, so it fell through to the
+    # 500 default: the API answered a clear, correct refusal with a server-fault status, which
+    # logged it as `unhandled_app_error`, would page an on-call, and told every client the
+    # request could be retried unchanged. Live-reproduced against `POST /school-finance/income`.
+    (DomainError, 400),
     (PaymentError, 402),
     (RateLimitedError, 429),
     (ExternalServiceError, 502),
