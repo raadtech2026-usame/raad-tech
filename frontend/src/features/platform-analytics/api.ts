@@ -126,7 +126,13 @@ export async function getPlatformStats(): Promise<PlatformStats> {
  * `core/audit/writer.py`'s own module docstring), `entityType`/`entityId` map from
  * `aggregate_type`/`aggregate_id`. No actor *name* is available here — only `actorUserId` (a raw
  * ULID) — resolving it to a display name would need a second, per-row user lookup this frontend
- * does not perform; consumers show the action/entity/time only. */
+ * does not perform; consumers show the action/entity/time only.
+ *
+ * `metadata` is the domain event's own payload (e.g. a `SubscriptionGracePeriodExtended` entry
+ * carries `grace_period_ends_at`) — the response has always carried it (`api/schemas.py`'s
+ * `AuditEntryResponse.metadata`); it was simply never mapped here because no consumer needed it
+ * before the Subscription Details troubleshooting page (2026-09-10), which reads it to explain
+ * *why* a transition happened, not only that it did. */
 export interface AuditEntry {
   id: string;
   organizationId: string | null;
@@ -134,6 +140,7 @@ export interface AuditEntry {
   action: string;
   entityType: string | null;
   entityId: string | null;
+  metadata: Record<string, unknown> | null;
   createdAt: string;
 }
 
@@ -144,6 +151,7 @@ interface AuditEntryWire {
   action: string;
   entity_type: string | null;
   entity_id: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -155,6 +163,7 @@ function toAuditEntry(wire: AuditEntryWire): AuditEntry {
     action: wire.action,
     entityType: wire.entity_type,
     entityId: wire.entity_id,
+    metadata: wire.metadata ?? null,
     createdAt: wire.created_at,
   };
 }

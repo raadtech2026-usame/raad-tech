@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuthStore } from "../../shared/stores/authStore";
 import { BillingPage } from "./BillingPage";
@@ -27,6 +28,8 @@ const PLAN: Plan = {
   currency: "USD",
   billingCycle: "monthly",
   vehicleLimit: 10,
+  deviceLimit: 20,
+  userLimit: null,
   status: "active",
   createdAt: "2026-08-01T00:00:00Z",
   updatedAt: "2026-08-01T00:00:00Z",
@@ -40,6 +43,14 @@ const SUBSCRIPTION: Subscription = {
   currentPeriodStart: "2026-08-01T00:00:00Z",
   currentPeriodEnd: "2026-09-01T00:00:00Z",
   autoRenew: true,
+  // The five lifecycle timestamps ADR-0039 added to `Subscription`. All null here on purpose:
+  // this fixture is a plain `active` subscription that has never gone past due, been granted a
+  // grace period, been suspended, cancelled, or expired.
+  pastDueSince: null,
+  gracePeriodEndsAt: null,
+  suspendedAt: null,
+  cancelledAt: null,
+  expiredAt: null,
   createdAt: "2026-08-01T00:00:00Z",
   updatedAt: "2026-08-01T00:00:00Z",
 };
@@ -65,7 +76,9 @@ function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <BillingPage />
+      <MemoryRouter>
+        <BillingPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -108,6 +121,32 @@ describe("BillingPage", () => {
 
     expect(await screen.findByText("Acme School")).toBeInTheDocument();
     await waitFor(() => expect(listSubscriptions).toHaveBeenCalled());
+  });
+
+  it("navigates to the Subscription Details page on row click (Phase 3)", async () => {
+    setRole("founder");
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/platform/billing"]}>
+          <Routes>
+            <Route path="/platform/billing" element={<BillingPage />} />
+            <Route
+              path="/platform/billing/subscriptions/:subscriptionId"
+              element={<div>Subscription details page</div>}
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Standard");
+    await user.click(screen.getByRole("tab", { name: "Subscriptions" }));
+    const row = await screen.findByText("Acme School");
+    await user.click(row);
+
+    expect(await screen.findByText("Subscription details page")).toBeInTheDocument();
   });
 
   it("switches to Invoices and shows the invoice number and amount", async () => {

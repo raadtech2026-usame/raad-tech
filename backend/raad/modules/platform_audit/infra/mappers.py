@@ -20,19 +20,32 @@ from raad.modules.platform_audit.domain.value_objects import (
 from raad.modules.platform_audit.infra.models import SystemSettingModel
 
 
+def _unpadded(value: str | None) -> str | None:
+    """`audit_entries.organization_id`/`actor_user_id`/`entity_id`/`correlation_id` are all
+    `CHAR(26)` (Database Design §8.7) — PostgreSQL blank-pads `CHAR(n)` storage on `SELECT`
+    (unlike `VARCHAR`), the same permanent lesson `billing.infra.mappers.model_to_payment`
+    already applies to `payments.idempotency_key`. A 26-character ULID happens to fill the
+    column exactly, so this was invisible for every ordinary actor id — until `SYSTEM_PRINCIPAL`
+    (`core/audit/writer.py`), whose `user_id` is the literal short string `"system"`, came back
+    over the wire as `"system"` followed by twenty blank spaces. Live-reproduced via `GET
+    /admin/audit?filter[entity_type]=Subscription...`: every system-triggered lifecycle event's
+    `actor_user_id` carried the padding straight into the JSON response."""
+    return value.rstrip() if value is not None else None
+
+
 def audit_entry_model_to_domain(model: AuditEntryRecord) -> AuditEntry:
+    organization_id = _unpadded(model.organization_id)
+    actor_user_id = _unpadded(model.actor_user_id)
     return AuditEntry(
         id=AuditEntryId(model.id),
-        organization_id=OrganizationId(model.organization_id)
-        if model.organization_id
-        else None,
-        actor_user_id=UserId(model.actor_user_id) if model.actor_user_id else None,
+        organization_id=OrganizationId(organization_id) if organization_id else None,
+        actor_user_id=UserId(actor_user_id) if actor_user_id else None,
         action=model.action,
         entity_type=model.entity_type,
-        entity_id=model.entity_id,
+        entity_id=_unpadded(model.entity_id),
         metadata=model.metadata_json,
         ip=model.ip,
-        correlation_id=model.correlation_id,
+        correlation_id=_unpadded(model.correlation_id),
         created_at=model.created_at,
     )
 

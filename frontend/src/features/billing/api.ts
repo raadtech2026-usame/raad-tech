@@ -38,7 +38,11 @@ export interface Plan {
   amount: number;
   currency: string;
   billingCycle: BillingCycle;
+  /** Included allowances. All three are `null` for "unlimited" — ADR-0040 §4 added
+   * `deviceLimit`/`userLimit` alongside the pre-existing `vehicleLimit`. */
   vehicleLimit: number | null;
+  deviceLimit: number | null;
+  userLimit: number | null;
   status: PlanStatus;
   createdAt: string;
   updatedAt: string;
@@ -52,6 +56,8 @@ interface PlanWire {
   currency: string;
   billing_cycle: string;
   vehicle_limit: number | null;
+  device_limit: number | null;
+  user_limit: number | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -66,6 +72,10 @@ function toPlan(wire: PlanWire): Plan {
     currency: wire.currency,
     billingCycle: wire.billing_cycle as BillingCycle,
     vehicleLimit: wire.vehicle_limit,
+    // `?? null` rather than a bare read: a response predating ADR-0040's additive migration
+    // omits both keys, and `undefined` would break the `number | null` contract downstream.
+    deviceLimit: wire.device_limit ?? null,
+    userLimit: wire.user_limit ?? null,
     status: wire.status as PlanStatus,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
@@ -80,6 +90,85 @@ function toPlan(wire: PlanWire): Plan {
 export async function listPlans(params: OffsetListParams): Promise<OffsetPage<Plan>> {
   const wire = await apiRequest<OffsetPageWire<PlanWire>>(`/billing/plans?${buildOffsetListQuery(params)}`);
   return toOffsetPage(wire, toPlan);
+}
+
+/* ---- Plan catalogue writes (ADR-0040 §4) --------------------------------------------------
+ *
+ * Founder-only, behind `billing.plans.manage` — deliberately distinct from the read-only
+ * `billing.plans.list` five roles hold, because changing what RAAD charges is materially more
+ * sensitive than reading the price list.
+ *
+ * **Monthly and annual are separate plan rows sharing a name**, not two prices on one row:
+ * `billingCycle` drives every period date a subscription computes, so one row carrying both
+ * would make "which amount applies" ambiguous at invoice-issue time. The catalogue UI groups by
+ * name to present them as one commercial tier.
+ *
+ * Editing a plan never retro-changes an already-issued invoice — invoices capture their own
+ * amount at issue time — so there is no "apply to existing subscriptions" affordance to offer.
+ */
+
+export interface PlanInput {
+  name: string;
+  amount: number;
+  currency: string;
+  vehicleLimit: number | null;
+  deviceLimit: number | null;
+  userLimit: number | null;
+}
+
+export async function createPlan(
+  input: PlanInput & { billingCycle: BillingCycle },
+): Promise<Plan> {
+  const wire = await apiRequest<PlanWire>("/billing/plans", {
+    method: "POST",
+    body: {
+      name: input.name,
+      billing_scope: "organization",
+      amount: input.amount,
+      currency: input.currency,
+      billing_cycle: input.billingCycle,
+      vehicle_limit: input.vehicleLimit,
+      device_limit: input.deviceLimit,
+      user_limit: input.userLimit,
+    },
+  });
+  return toPlan(wire);
+}
+
+export async function updatePlan(planId: string, input: PlanInput): Promise<Plan> {
+  const wire = await apiRequest<PlanWire>(`/billing/plans/${encodeURIComponent(planId)}`, {
+    method: "PATCH",
+    body: {
+      name: input.name,
+      amount: input.amount,
+      currency: input.currency,
+      vehicle_limit: input.vehicleLimit,
+      device_limit: input.deviceLimit,
+      user_limit: input.userLimit,
+    },
+  });
+  return toPlan(wire);
+}
+
+export async function setPlanStatus(planId: string, active: boolean): Promise<Plan> {
+  const wire = await apiRequest<PlanWire>(
+    `/billing/plans/${encodeURIComponent(planId)}/${active ? "activate" : "disable"}`,
+    { method: "POST" },
+  );
+  return toPlan(wire);
+}
+
+/** Active organization plans, for the onboarding picker. Small and cached — the catalogue is a
+ * handful of rows, not a paginated list. */
+export async function listActivePlansForPicker(): Promise<Plan[]> {
+  const page = await listPlans({
+    page: 1,
+    pageSize: 100,
+    sort: { field: "amount", direction: "asc" },
+    filters: { status: "active", billing_scope: "organization" },
+    search: "",
+  });
+  return page.data;
 }
 
 export interface Subscription {
@@ -150,6 +239,19 @@ export async function listSubscriptions(params: OffsetListParams): Promise<Offse
     `/billing/subscriptions?${buildOffsetListQuery(params)}`,
   );
   return toOffsetPage(wire, toSubscription);
+}
+
+/** `GET /billing/subscriptions/{id}` — uniform-CRUD addition backing the Founder's Subscription
+ * Details page (2026-09-10). `list_subscriptions`/`get_subscription_by_id` share the same
+ * `billing.subscriptions.list` permission and the same `toSubscription` wire mapping above — one
+ * subscription read, not a second implementation of it. 404s (never 403s) for an unknown id: a
+ * subscription id is not information worth hiding cross-tenant existence of, the same posture
+ * every other by-id route in this API takes. */
+export async function getSubscription(subscriptionId: string): Promise<Subscription> {
+  const wire = await apiRequest<SubscriptionWire>(
+    `/billing/subscriptions/${encodeURIComponent(subscriptionId)}`,
+  );
+  return toSubscription(wire);
 }
 
 export interface Invoice {

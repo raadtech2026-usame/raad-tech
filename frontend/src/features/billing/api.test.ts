@@ -28,6 +28,8 @@ const PLAN_WIRE = {
   currency: "USD",
   billing_cycle: "monthly",
   vehicle_limit: 10,
+  device_limit: 20,
+  user_limit: null,
   status: "active",
   created_at: "2026-08-01T00:00:00Z",
   updated_at: "2026-08-01T00:00:00Z",
@@ -95,10 +97,27 @@ describe("billing api", () => {
       currency: "USD",
       billingCycle: "monthly",
       vehicleLimit: 10,
+      deviceLimit: 20,
+      userLimit: null,
       status: "active",
       createdAt: "2026-08-01T00:00:00Z",
       updatedAt: "2026-08-01T00:00:00Z",
     });
+  });
+
+  it("maps a plan response that predates the device/user limit columns", async () => {
+    // ADR-0040 §4's migration is additive; a cached or older response omits both keys, and
+    // `undefined` would break the `number | null` contract every consumer reads.
+    const { device_limit: _d, user_limit: _u, ...legacy } = PLAN_WIRE;
+    vi.mocked(apiRequest).mockResolvedValue({
+      data: [legacy],
+      page: { total: 1, page: 1, page_size: 25 },
+    });
+
+    const page = await listPlans({ page: 1, pageSize: 25, sort: null, filters: {}, search: "" });
+
+    expect(page.data[0].deviceLimit).toBeNull();
+    expect(page.data[0].userLimit).toBeNull();
   });
 
   it("listSubscriptions maps the wire shape to camelCase", async () => {

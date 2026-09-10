@@ -1,26 +1,32 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { CreditCard, FileText, Layers, Search } from "lucide-react";
+import { CreditCard, FileText, Layers, Plus, Search } from "lucide-react";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
 import { usePaginatedQuery } from "../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../shared/stores/authStore";
 import { ApiError } from "../../shared/api/types";
 import { Badge } from "../../shared/components/Badge/Badge";
+import { Button } from "../../shared/components/Button/Button";
+import { ConfirmDialog } from "../../shared/components/ConfirmDialog/ConfirmDialog";
 import { DataTable, type DataTableColumnMeta } from "../../shared/components/Table/DataTable";
 import { FilterChips, type FilterChipOption } from "../../shared/components/Table/FilterChips";
+import { PlanForm } from "./PlanForm";
 import { SubscriptionActions } from "./SubscriptionActions";
 import { Pagination } from "../../shared/components/Table/Pagination";
 import { MonoText } from "../../shared/components/Table/cells";
 import { DetailDrawer } from "../../shared/components/Drawer/DetailDrawer";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
 import { Input } from "../../shared/components/Input/Input";
+import { useToast } from "../../shared/components/Toast/toastStore";
 import { Tabs } from "../../shared/components/Tabs/Tabs";
 import {
   listInvoices,
   listOrganizationsForPicker,
   listPlans,
   listSubscriptions,
+  setPlanStatus,
   type Invoice,
   type Plan,
   type Subscription,
@@ -90,19 +96,50 @@ const TAB_OPTIONS = [
 export function BillingPage() {
   usePageHeader("Billing", "Plans, subscriptions, and invoices across RAAD");
   const principal = useAuthStore((s) => s.principal);
+  const navigate = useNavigate();
 
   const canSeeAllTabs = principal?.role !== "regional_manager" && principal?.role !== "support_staff";
   // `billing.subscriptions.manage` is granted to exactly these two roles (migration
   // a7f31c92be04). org_admin deliberately does not hold it - a school cannot lift its own
   // suspension - and this page is platform-only anyway.
   const canManageSubscriptions = principal?.role === "founder" || principal?.role === "finance_staff";
+  // `billing.plans.manage` is Founder-only (ADR-0040 §7, migration b5c81f3d47a9) — deliberately
+  // narrower than the read-only `billing.plans.list` five roles hold, because changing what RAAD
+  // charges is materially more sensitive than reading the price list. Presentation only; the
+  // backend's RBAC check is the real gate either way.
+  const canManagePlans = principal?.role === "founder";
 
   const [activeTab, setActiveTab] = useState<string>("plans");
   const effectiveTab = canSeeAllTabs ? activeTab : "plans";
 
   const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
-  const [selectedSubscription, setSelectedSubscription] = useState<Subscription | null>(null);
+  const [planFormOpen, setPlanFormOpen] = useState(false);
+  const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
+  const [togglingPlan, setTogglingPlan] = useState<Plan | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
+
+  const queryClient = useQueryClient();
+  const toast = useToast();
+
+  const planStatusMutation = useMutation({
+    mutationFn: (plan: Plan) => setPlanStatus(plan.id, plan.status !== "active"),
+    onSuccess: (saved) => {
+      queryClient.invalidateQueries({ queryKey: ["billing", "plans"] });
+      toast.success(
+        saved.status === "active" ? "Plan activated" : "Plan disabled",
+        saved.status === "active"
+          ? `${saved.name} can be selected when onboarding an organization.`
+          : `${saved.name} is no longer offered. Subscriptions already on it are unaffected.`,
+      );
+      setTogglingPlan(null);
+    },
+    onError: (error) => {
+      toast.error(
+        "Could not change the plan status",
+        error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
+      );
+    },
+  });
 
   const [planSearchInput, setPlanSearchInput] = useState("");
   const [invoiceSearchInput, setInvoiceSearchInput] = useState("");
@@ -194,9 +231,23 @@ export function BillingPage() {
       },
       {
         id: "vehicleLimit",
-        header: "Vehicle limit",
+        header: "Vehicles",
         meta: { align: "right" } satisfies DataTableColumnMeta,
         cell: ({ row }) => row.original.vehicleLimit ?? "Unlimited",
+      },
+      // ADR-0040 §4 added both alongside the pre-existing vehicle allowance; a tier's included
+      // hardware and seats are as much a part of "what am I buying" as its bus count.
+      {
+        id: "deviceLimit",
+        header: "Devices",
+        meta: { align: "right" } satisfies DataTableColumnMeta,
+        cell: ({ row }) => row.original.deviceLimit ?? "Unlimited",
+      },
+      {
+        id: "userLimit",
+        header: "Users",
+        meta: { align: "right" } satisfies DataTableColumnMeta,
+        cell: ({ row }) => row.original.userLimit ?? "Unlimited",
       },
       {
         id: "status",
@@ -208,8 +259,39 @@ export function BillingPage() {
           </Badge>
         ),
       },
+      ...(canManagePlans
+        ? [
+            {
+              id: "actions",
+              header: "",
+              meta: { align: "right" } satisfies DataTableColumnMeta,
+              cell: ({ row }: { row: { original: Plan } }) => (
+                <div
+                  className={styles.rowActions}
+                  // The row itself opens the read-only detail drawer; these are distinct
+                  // actions and must not also trigger it.
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setEditingPlan(row.original);
+                      setPlanFormOpen(true);
+                    }}
+                  >
+                    Edit
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setTogglingPlan(row.original)}>
+                    {row.original.status === "active" ? "Disable" : "Activate"}
+                  </Button>
+                </div>
+              ),
+            } as ColumnDef<Plan, unknown>,
+          ]
+        : []),
     ],
-    [],
+    [canManagePlans],
   );
 
   const subscriptionColumns = useMemo<ColumnDef<Subscription, unknown>[]>(
@@ -339,6 +421,17 @@ export function BillingPage() {
               onChange={(event) => setPlanSearchInput(event.target.value)}
               aria-label="Search plans"
             />
+            {canManagePlans && (
+              <Button
+                leadingIcon={<Plus size={14} />}
+                onClick={() => {
+                  setEditingPlan(null);
+                  setPlanFormOpen(true);
+                }}
+              >
+                New plan
+              </Button>
+            )}
           </div>
 
           {plans.isError ? (
@@ -394,7 +487,7 @@ export function BillingPage() {
                 isLoading={subscriptions.isLoading}
                 sort={subscriptions.sort}
                 onSortChange={subscriptions.toggleSort}
-                onRowClick={setSelectedSubscription}
+                onRowClick={(row) => navigate(`/platform/billing/subscriptions/${row.id}`)}
                 emptyState={
                   <EmptyState
                     icon={<CreditCard size={22} />}
@@ -486,35 +579,6 @@ export function BillingPage() {
       />
 
       <DetailDrawer
-        open={selectedSubscription !== null}
-        onClose={() => setSelectedSubscription(null)}
-        icon={<CreditCard size={22} />}
-        iconTint="var(--color-brand-primary-tint)"
-        iconColor="var(--color-brand-primary)"
-        title={selectedSubscription ? organizationNameById.get(selectedSubscription.organizationId) ?? selectedSubscription.organizationId : undefined}
-        subtitle={selectedSubscription ? planNameById.get(selectedSubscription.planId) ?? selectedSubscription.planId : undefined}
-        status={
-          selectedSubscription && (
-            <Badge variant={subscriptionStatusTone(selectedSubscription.status)} dot>
-              {subscriptionStatusLabel(selectedSubscription.status)}
-            </Badge>
-          )
-        }
-        rows={
-          selectedSubscription
-            ? [
-                { key: "Current period start", value: formatDateTime(selectedSubscription.currentPeriodStart) },
-                { key: "Current period end", value: formatDateTime(selectedSubscription.currentPeriodEnd) },
-                { key: "Auto-renew", value: selectedSubscription.autoRenew ? "Yes" : "No" },
-                { key: "Subscription ID", value: <MonoText>{selectedSubscription.id}</MonoText> },
-                { key: "Created", value: formatDateTime(selectedSubscription.createdAt) },
-                { key: "Updated", value: formatDateTime(selectedSubscription.updatedAt) },
-              ]
-            : []
-        }
-      />
-
-      <DetailDrawer
         open={selectedInvoice !== null}
         onClose={() => setSelectedInvoice(null)}
         icon={<FileText size={22} />}
@@ -542,6 +606,32 @@ export function BillingPage() {
               ]
             : []
         }
+      />
+
+      <PlanForm
+        open={planFormOpen}
+        onClose={() => {
+          setPlanFormOpen(false);
+          setEditingPlan(null);
+        }}
+        plan={editingPlan}
+      />
+
+      <ConfirmDialog
+        open={togglingPlan !== null}
+        title={togglingPlan?.status === "active" ? "Disable this plan?" : "Activate this plan?"}
+        description={
+          togglingPlan?.status === "active"
+            ? `${togglingPlan.name} will no longer be offered when onboarding an organization. Subscriptions already on it keep running and keep billing normally.`
+            : togglingPlan
+              ? `${togglingPlan.name} will be selectable again when onboarding an organization.`
+              : undefined
+        }
+        confirmLabel={togglingPlan?.status === "active" ? "Disable plan" : "Activate plan"}
+        tone={togglingPlan?.status === "active" ? "danger" : "primary"}
+        loading={planStatusMutation.isPending}
+        onConfirm={() => togglingPlan && planStatusMutation.mutate(togglingPlan)}
+        onCancel={() => setTogglingPlan(null)}
       />
     </div>
   );
