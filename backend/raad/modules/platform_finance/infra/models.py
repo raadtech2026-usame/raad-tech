@@ -73,7 +73,7 @@ class PlatformExpenseModel(AuditedTableMixin, Base):
         SqlEnum(*_EXPENSE_KIND_VALUES, name="platform_expense_kind"), nullable=False
     )
     category_id: Mapped[str | None] = mapped_column(
-        CHAR(26), ForeignKey("platform_financial_categories.id"), nullable=True
+        CHAR(26), ForeignKey("platform_financial_categories.id"), nullable=True, index=True
     )
     amount: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
@@ -98,7 +98,7 @@ class PlatformIncomeModel(AuditedTableMixin, Base):
         SqlEnum(*_INCOME_KIND_VALUES, name="platform_income_kind"), nullable=False
     )
     category_id: Mapped[str | None] = mapped_column(
-        CHAR(26), ForeignKey("platform_financial_categories.id"), nullable=True
+        CHAR(26), ForeignKey("platform_financial_categories.id"), nullable=True, index=True
     )
     amount: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)

@@ -130,7 +130,7 @@ class StudentInvoiceModel(AuditedTableMixin, Base):
     organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
     student_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
     fee_plan_id: Mapped[str | None] = mapped_column(
-        CHAR(26), ForeignKey("erp_fee_plans.id"), nullable=True
+        CHAR(26), ForeignKey("erp_fee_plans.id"), nullable=True, index=True
     )
     period: Mapped[str] = mapped_column(CHAR(7), nullable=False)
     amount: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
@@ -210,7 +210,7 @@ class IncomeModel(AuditedTableMixin, Base):
 
     organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
     category_id: Mapped[str | None] = mapped_column(
-        CHAR(26), ForeignKey("erp_financial_categories.id"), nullable=True
+        CHAR(26), ForeignKey("erp_financial_categories.id"), nullable=True, index=True
     )
     amount: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
@@ -232,7 +232,7 @@ class ExpenseModel(AuditedTableMixin, Base):
 
     organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
     category_id: Mapped[str | None] = mapped_column(
-        CHAR(26), ForeignKey("erp_financial_categories.id"), nullable=True
+        CHAR(26), ForeignKey("erp_financial_categories.id"), nullable=True, index=True
     )
     amount: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
