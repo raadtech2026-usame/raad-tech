@@ -35,11 +35,43 @@ class ServerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         return reader, writer
 
     async def test_accepts_multiple_connections(self) -> None:
-        for _ in range(5):
-            await self._open_client()
-        await asyncio.sleep(0.05)
-        self.assertEqual(self.server.manager.connection_count, 5)
-        self.assertEqual(self.server.session_count, 5)
+        # Root-cause fix (2026-09-10, two real bugs compounding): a client's `open_connection()`
+        # returning only proves the OS-level TCP handshake completed — the server's own
+        # `handle_client` callback (which actually constructs the `Connection`/`ConnectionSession`
+        # and registers them) still has to be scheduled and run on the event loop, so a fixed
+        # `await asyncio.sleep(0.05)` after opening all five is a guess at how long that takes,
+        # not a guarantee — the one genuinely flaky case CLAUDE.md's own test history already
+        # disclosed (440/441, "one flaky"), reproduced here under real host load. But a longer
+        # *fixed* sleep is the wrong fix: `asyncSetUp`'s shared `self.server` runs with
+        # `idle_timeout_seconds=0.2`/`sweep_interval_seconds=0.05` for `test_idle_timeout_closes_
+        # connection`/`test_activity_resets_idle_timeout` below, and these five clients never send
+        # a byte — waiting any real fraction of a second risks the idle sweep evicting them as
+        # "idle" before the assertion ever runs (confirmed live: an initial 5-second poll made
+        # this test fail *worse*, `0 != 5` instead of the original `3 != 5`, because sweeps had
+        # time to clear every connection). The fix mirrors `test_frame_too_large_closes_connection`
+        # below's own established pattern: a dedicated server with no aggressive idle timeout,
+        # so accepting connections is never in a race against evicting them.
+        long_idle_server = Jt808Server(
+            ServerConfig(host="127.0.0.1", port=0, idle_timeout_seconds=30.0, sweep_interval_seconds=5.0)
+        )
+        await long_idle_server.start()
+        try:
+            for _ in range(5):
+                reader, writer = await asyncio.open_connection(
+                    "127.0.0.1", long_idle_server.bound_port
+                )
+                self._client_writers.append(writer)
+
+            deadline = asyncio.get_running_loop().time() + 2.0
+            while (
+                long_idle_server.manager.connection_count < 5
+                and asyncio.get_running_loop().time() < deadline
+            ):
+                await asyncio.sleep(0.01)
+            self.assertEqual(long_idle_server.manager.connection_count, 5)
+            self.assertEqual(long_idle_server.session_count, 5)
+        finally:
+            await long_idle_server.stop()
 
     async def test_frame_boundary_detection_across_writes(self) -> None:
         received: list[bytes] = []

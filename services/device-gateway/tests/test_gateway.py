@@ -9,6 +9,7 @@ import json
 import unittest
 from datetime import datetime, timezone
 
+from src.broker_config import BrokerConfig
 from src.events.device_position_reported import DevicePositionReported
 from src.events.redis_event_publisher import RedisEventPublisher
 from src.gateway import DeviceGateway
@@ -222,8 +223,22 @@ class FakeRedis:
 
 
 class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
+    """Every construction below passes `broker_config=BrokerConfig()` explicitly (2026-09-10
+    fix for a real, live-reproduced hang): `DeviceGateway.__init__` defaults an omitted
+    `broker_config` to `BrokerConfig.from_env()`, which reads the real `DEVICE_GATEWAY_BROKER_URL`
+    from this process's own environment — set to a real value by `docker-compose.yml` whenever
+    this suite runs inside device-gateway's own container. That wires a genuine
+    `RedisDeviceRegistryConsumer` against this dev environment's real, intentionally-never-
+    trimmed `raad:events` stream (CLAUDE.md's own documented reason it stays unbounded), and
+    `DeviceGateway.start()` unconditionally calls `replay_from_start()` — a full `XRANGE` over
+    that entire real stream — before returning. `test_start_binds_both_adapters_to_independent_
+    real_ports` hung this way for over 10 minutes locally, root-caused by direct reproduction
+    (traced construction vs. `start()` separately), not assumed. `BrokerConfig()`'s `url=None`
+    default is what actually asserts "no broker," in every environment."""
+
     async def test_both_adapters_are_registered_by_name(self) -> None:
         gateway = DeviceGateway(
+            broker_config=BrokerConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -232,6 +247,7 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_start_binds_both_adapters_to_independent_real_ports(self) -> None:
         gateway = DeviceGateway(
+            broker_config=BrokerConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -254,6 +270,7 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
         publisher = RecordingEventPublisher()
         gateway = DeviceGateway(
             event_publisher=publisher,
+            broker_config=BrokerConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -262,6 +279,7 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stop_is_safe_to_call_on_both_adapters(self) -> None:
         gateway = DeviceGateway(
+            broker_config=BrokerConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -270,6 +288,7 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_adapter_name_raises_lookup_error(self) -> None:
         gateway = DeviceGateway(
+            broker_config=BrokerConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -286,7 +305,10 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
         from src.vendors.jt808.handlers.provisioning_port import NullDeviceProvisioningPort
         from src.vendors.lsz.handlers.provisioning_port import NullMdvrDeviceProvisioningPort
 
+        # `broker_config=BrokerConfig()` explicit — see `DeviceGatewayTests`'s class docstring
+        # for the full 2026-09-10 root cause.
         gateway = DeviceGateway(
+            broker_config=BrokerConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -368,7 +390,13 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
     async def test_without_a_broker_jt808_falls_back_to_in_memory_session_registry(self) -> None:
         from src.session.device_session_registry import DeviceSessionRegistry
 
+        # `broker_config=BrokerConfig()` explicit (2026-09-10 environment-coupling fix, see
+        # `DeviceGatewayTests`'s own class docstring above for the full root cause) — an omitted
+        # `broker_config` reads the real `DEVICE_GATEWAY_BROKER_URL` this container's own
+        # `docker-compose.yml` sets, which silently wires a real Redis-backed registry instead of
+        # the in-memory one this test asserts.
         gateway = DeviceGateway(
+            broker_config=BrokerConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -548,7 +576,11 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         await gateway.stop()  # must not raise or hang
 
     async def test_without_a_broker_no_video_signaling_consumer_is_built(self) -> None:
+        # `broker_config=BrokerConfig()` explicit — see `DeviceGatewayTests`'s class docstring
+        # for the full 2026-09-10 root cause (an omitted `broker_config` reads the real
+        # `DEVICE_GATEWAY_BROKER_URL` this container's own `docker-compose.yml` sets).
         gateway = DeviceGateway(
+            broker_config=BrokerConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )

@@ -46,6 +46,21 @@ logger = get_logger("device_gateway.connection")
 
 FrameHandler = Callable[[str, bytes], Awaitable[None]]
 
+#: `StreamWriter.wait_closed()` (see `close()` below) has a real, live-reproduced failure mode:
+#: when a peer closes its own side abruptly (writes nothing, calls `writer.close()` with no
+#: `wait_closed()`/graceful shutdown of its own — exactly how a device dropping off a cellular
+#: link behaves, and exactly what `tests/test_gateway.py::
+#: test_start_binds_both_adapters_to_independent_real_ports` does), the transport's own
+#: `connection_lost` callback does not always fire in time to resolve `wait_closed()`'s waiter,
+#: and the coroutine blocks forever — hanging this connection's own `close()`, which hangs
+#: `ConnectionManager.shutdown()`, which hangs `DeviceGateway.stop()` for the entire process.
+#: Bounded here rather than left unbounded: a server's own graceful-shutdown path must never be
+#: at the mercy of a peer's cooperation to finish (the same "fail loud/bounded, never silently
+#: hang" posture this codebase already applies to every other supervised loop, CLAUDE.md's own
+#: Permanent Engineering Lessons). 5 seconds is generously longer than any real local TCP close
+#: ever takes; it exists only to bound the pathological case, not to shorten the normal one.
+_WAIT_CLOSED_TIMEOUT_SECONDS = 5.0
+
 
 class Connection:
     def __init__(
@@ -120,13 +135,48 @@ class Connection:
         await self._write_queue.put(None)  # sentinel: let the write loop drain and exit
         current = asyncio.current_task()
         if self._write_task is not None and self._write_task is not current:
-            await self._write_task
+            # Bounded, same reasoning as `_WAIT_CLOSED_TIMEOUT_SECONDS` below: `_write_loop`'s own
+            # `await self._writer.drain()` blocks until the OS has buffer room to accept more
+            # bytes, which never happens if the peer has stopped reading (a slow/vanished device,
+            # or — live-reproduced during this codebase's own test suite — a test client that
+            # only ever writes and never drains the server's responses). An unbounded `await`
+            # here hangs `close()` forever, and when `close()` is called from
+            # `ConnectionManager._sweep_once()`'s own idle sweep, that hangs the sweep task's own
+            # cancellation in `stop_sweep()`, which hangs every caller up to `DeviceGateway.stop()`
+            # — the same failure shape `_WAIT_CLOSED_TIMEOUT_SECONDS` already exists to prevent,
+            # now applied symmetrically to the write side.
+            try:
+                await asyncio.wait_for(
+                    self._write_task, timeout=_WAIT_CLOSED_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                # `wait_for` already cancelled `_write_task` on timeout; this just consumes the
+                # resulting `CancelledError` so it never propagates as an unhandled exception.
+                log_with_fields(
+                    logger,
+                    30,
+                    "write_task_drain_timed_out",
+                    connection_id=self.connection_id,
+                    reason=reason,
+                )
+            except asyncio.CancelledError:
+                pass
 
         try:
             self._writer.close()
-            await self._writer.wait_closed()
+            await asyncio.wait_for(
+                self._writer.wait_closed(), timeout=_WAIT_CLOSED_TIMEOUT_SECONDS
+            )
         except (ConnectionError, OSError):
             pass  # peer already gone — closing is still successful from our side
+        except asyncio.TimeoutError:
+            log_with_fields(
+                logger,
+                30,
+                "wait_closed_timed_out",
+                connection_id=self.connection_id,
+                reason=reason,
+            )
 
         if (
             self._read_task is not None
