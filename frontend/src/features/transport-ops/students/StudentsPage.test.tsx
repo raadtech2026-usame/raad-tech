@@ -179,11 +179,15 @@ describe("StudentsPage", () => {
 
     await waitFor(() => expect(api.enrollStudent).toHaveBeenCalled());
 
-    // Both drawers this flow opens share the "Yusuf Omar" title text — asserting there are two
-    // (detail drawer + assignment drawer) is a more precise proof of the chain than asserting one
-    // dialog's contents, since either drawer alone would still contain the student's name once.
-    await waitFor(() => expect(screen.getAllByText("Yusuf Omar").length).toBeGreaterThanOrEqual(2));
-    expect(screen.getByRole("heading", { name: "Assign to route" })).toBeInTheDocument();
+    // Both drawers this flow opens carry the student's name — the detail drawer's title is the
+    // exact string "Yusuf Omar", while the assignment drawer's subtitle embeds it in a sentence
+    // ("Assign Yusuf Omar to a route"), so the query needs `exact: false` to count both; an exact
+    // match against "Yusuf Omar" alone only ever finds the first, even once the second drawer has
+    // genuinely opened (this is what the original assertion here got wrong).
+    await waitFor(() =>
+      expect(screen.getAllByText("Yusuf Omar", { exact: false }).length).toBeGreaterThanOrEqual(2),
+    );
+    expect(screen.getByText("Assign Yusuf Omar to a route")).toBeInTheDocument();
     expect(api.getStudent).toHaveBeenCalledWith(enrolled.id);
   });
 
