@@ -25,7 +25,7 @@
 #     -f docker/docker-compose.yml -f docker/docker-compose.coolify.yml \
 #     config --no-interpolate --no-path-resolution > docker/docker-compose.coolify.full.yml
 #
-# REQUIRED POST-GENERATION PATCH (Coolify deployment failure, found 2026-09-13): the command
+# REQUIRED POST-GENERATION PATCH 1 (Coolify deployment failure, found 2026-09-13): the command
 # above reproduces `services.backup.entrypoint: []` verbatim from docker-compose.yml's own
 # `entrypoint: []` (a standard, valid Compose directive clearing the postgres:16-alpine base
 # image's own ENTRYPOINT so `command: ["/app/backup-loop.sh"]` runs directly). Coolify v4.3.19's
@@ -39,13 +39,58 @@
 # Engine container config (`Entrypoint: []`, same `Cmd`) — only the YAML field's declared type
 # changes, from array to string, which is what satisfies Coolify's stricter schema.
 #
+# REQUIRED POST-GENERATION PATCH 2 (Coolify deployment failure, found 2026-09-13, root-caused
+# 2026-09-14): every `build.context` and relative bind-mount `source:` in this file must be
+# written relative to the REPOSITORY ROOT, not relative to this file's own `docker/` directory —
+# the opposite of what a plain `docker compose -f docker/docker-compose.coolify.full.yml build`
+# would need (which resolves relative paths against the compose file's own directory, the
+# Compose Specification's documented default). Root cause, confirmed against Coolify's own
+# source, not inferred: `app/Jobs/ApplicationDeploymentJob.php` builds every Compose deployment
+# with `--project-directory {workdir} -f {workdir}{docker_compose_location} build`, i.e. it
+# unconditionally pins `--project-directory` to the repository root regardless of where the
+# compose file itself lives. Per the Compose Specification, an *explicit* `--project-directory`
+# is what relative paths resolve against, not the compose file's directory — so a path written
+# as `../backend` (correct for `docker/`-relative resolution) instead resolves to one level
+# *above* the repository root under Coolify's forced invocation, landing outside the cloned repo
+# entirely (`unable to prepare context: path "/artifacts/backend" not found` and identically for
+# `frontend`, `services/device-gateway`, `services/jt1078`, and every relative bind-mount
+# `source:` — nginx's/prometheus's own config mounts included). This is a confirmed, open,
+# contributor-acknowledged upstream Coolify bug (coollabsio/coolify#5182 — a project contributor
+# cites this exact source line and states "coolify sets the compose project directory to be the
+# root of the repo instead of the location of the compose file... yes its a bug"), reproduced
+# empirically in this environment by running `docker compose --project-directory . -f
+# docker/docker-compose.coolify.full.yml config` and observing every affected path resolve one
+# directory level above this repository's own root. "Preserve Repository During Deployment"
+# (a Coolify setting) does NOT fix this — it only controls whether repo files stay available for
+# *volume* mounts post-build, not how `build.context` is resolved during the build itself.
+# `dockerfile:` fields need no matching change: per the Compose Specification, a relative
+# `dockerfile:` path is always resolved relative to `context:` (confirmed by inspecting this
+# environment's own `docker compose config` output — `dockerfile:` stays an unresolved relative
+# string while `context:` alone gets resolved to an absolute path), so each `context:`'s real
+# target directory is unchanged, only how its string is written.
+#
+# DISCLOSED COUPLING RISK: Patch 2 makes this file's paths correct *only* under Coolify's current,
+# buggy forced `--project-directory`. If Coolify fixes coollabsio/coolify#5182 upstream, this
+# file's paths would need to revert to `docker/`-relative (i.e., undo Patch 2) — check that issue
+# before ever regenerating this file after a Coolify upgrade, not just before every use.
+# Practical consequence, verified in this environment: this file can no longer be built directly
+# with a plain `docker compose -f docker/docker-compose.coolify.full.yml build` — that resolves
+# `context: backend` against `docker/` (Compose's default project-directory) and looks for a
+# nonexistent `docker/backend`. To exercise this file manually (outside Coolify), pass the same
+# flag Coolify does, from the repository root:
+#   docker compose --project-directory . -f docker/docker-compose.coolify.full.yml build
+# `docker/docker-compose.yml`/`docker-compose.prod.yml` (the actual dev/generic-VPS path) are
+# unaffected — they are never run this way and keep working exactly as before.
+#
 # In Coolify: New Resource -> Docker Compose -> Raw, pointing at this exact file. Then follow
 # docs/runbooks/coolify-deployment.md Steps 3-7 verbatim (env vars via Coolify's own UI, domain
 # assignment, the device-plane firewall/DNS step) — none of that is expressible inside a Compose
 # file and none of it changed by generating this one.
 #
-# Three things this merge faithfully carries over, disclosed rather than silently fixed, since
-# fixing any of them would be a service-definition change beyond what the merge itself produces:
+# Four things this merge faithfully carries over or requires patching, disclosed rather than
+# silently fixed or hidden, since fixing any of them invisibly would be a service-definition
+# change beyond what the merge itself produces (1-2) or would silently regress on a plain
+# regeneration (3-4):
 #   1. `COMPOSE_PROFILES` must be left unset/empty in Coolify's own environment-variable store.
 #      `nginx` is still present below (gated behind `profiles: [gateway]`, from the base file,
 #      untouched by the Coolify overlay) — it only starts if that profile is activated. `certbot`
@@ -56,9 +101,14 @@
 #      own nginx instead. This mismatch is inherited unchanged from the source files (the same gap
 #      exists in a docker-compose.prod.yml merge) — not introduced or corrected here.
 #   3. `services.backup.entrypoint` is `""` here, not the `[]` a straight regeneration would
-#      produce — see the REQUIRED POST-GENERATION PATCH note above. Re-running the regenerate
-#      command without reapplying this one-line patch will silently reintroduce the Coolify
-#      validation failure.
+#      produce — see REQUIRED POST-GENERATION PATCH 1 above. Re-running the regenerate command
+#      without reapplying this one-line patch will silently reintroduce that Coolify validation
+#      failure.
+#   4. Every `build.context` and relative bind-mount `source:` below is repository-root-relative
+#      (e.g. `context: backend`, not `context: ../backend`), not the `docker/`-relative form a
+#      straight regeneration would produce — see REQUIRED POST-GENERATION PATCH 2 above and its
+#      disclosed coupling risk. Re-running the regenerate command without reapplying this patch
+#      will silently reintroduce the "unable to prepare context: path ... not found" failure.
 # ==============================================================================================
 name: docker
 networks:
@@ -67,7 +117,7 @@ networks:
 services:
   backend:
     build:
-      context: ../backend
+      context: backend
       dockerfile: ../docker/backend.Dockerfile
     command:
       - uvicorn
@@ -120,7 +170,7 @@ services:
     restart: unless-stopped
   backup:
     build:
-      context: ..
+      context: .
       dockerfile: docker/backup.Dockerfile
     command:
       - /app/backup-loop.sh
@@ -156,7 +206,7 @@ services:
         volume: {}
   device-gateway:
     build:
-      context: ../services/device-gateway
+      context: services/device-gateway
       dockerfile: ../../docker/device-gateway.Dockerfile
     container_name: raad-device-gateway
     depends_on:
@@ -195,7 +245,7 @@ services:
         VITE_MAPBOX_ACCESS_TOKEN: ${VITE_MAPBOX_ACCESS_TOKEN:-}
         VITE_STRIPE_PUBLISHABLE_KEY: ${VITE_STRIPE_PUBLISHABLE_KEY:-}
         VITE_WS_BASE_URL: ${VITE_WS_BASE_URL}
-      context: ../frontend
+      context: frontend
       dockerfile: ../docker/frontend.Dockerfile
       target: prod
     container_name: raad-frontend
@@ -227,12 +277,12 @@ services:
       - bind:
           create_host_path: true
         read_only: true
-        source: ../infrastructure/nginx/conf.d/frontend.conf
+        source: infrastructure/nginx/conf.d/frontend.conf
         target: /etc/nginx/conf.d/default.conf
         type: bind
   jt1078-relay:
     build:
-      context: ../services/jt1078
+      context: services/jt1078
       dockerfile: ../../docker/jt1078-relay.Dockerfile
     container_name: raad-jt1078-relay
     depends_on:
@@ -274,7 +324,7 @@ services:
     restart: unless-stopped
   migrate:
     build:
-      context: ../backend
+      context: backend
       dockerfile: ../docker/backend.Dockerfile
     command:
       - alembic
@@ -342,7 +392,7 @@ services:
       - bind:
           create_host_path: true
         read_only: true
-        source: ../infrastructure/nginx/conf.d/dev.conf
+        source: infrastructure/nginx/conf.d/dev.conf
         target: /etc/nginx/conf.d/default.conf
         type: bind
   postgres:
@@ -391,13 +441,13 @@ services:
       - bind:
           create_host_path: true
         read_only: true
-        source: ../infrastructure/monitoring/prometheus/prometheus.yml
+        source: infrastructure/monitoring/prometheus/prometheus.yml
         target: /etc/prometheus/prometheus.yml
         type: bind
       - bind:
           create_host_path: true
         read_only: true
-        source: ../infrastructure/monitoring/prometheus/alerts.yml
+        source: infrastructure/monitoring/prometheus/alerts.yml
         target: /etc/prometheus/alerts.yml
         type: bind
       - source: raad_prometheus_data
@@ -443,7 +493,7 @@ services:
         volume: {}
   worker:
     build:
-      context: ../backend
+      context: backend
       dockerfile: ../docker/backend.Dockerfile
     command:
       - python
@@ -502,7 +552,7 @@ volumes:
   raad_redis_data:
     name: docker_raad_redis_data
 x-backend-build:
-  context: ../backend
+  context: backend
   dockerfile: ../docker/backend.Dockerfile
 x-backend-env:
   RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
