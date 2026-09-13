@@ -1462,3 +1462,115 @@ the pre-existing, separately-tracked JT808 `LatestPositionWriter` wiring gap thi
 "Device onboarding readiness audit" section already names as open, not new to this ADR and not
 required to close it; populates automatically once that gap is separately closed. The 100-vehicle
 cap is a real ceiling, not a soft default.
+
+## Parent Invoice as a Real Financial Aggregate (ADR-0042, 2026-09-11)
+
+Direct continuation of the previous day's Parent-centric work (ADR-0041, "Parent & Student Domain
+Restructure + Parent Payments"), at explicit user directive: a master re-architecture asking
+**Parent** — not Student — to be the transportation payer, with a **real** Parent Invoice, not a
+grouped view. This is a deliberate, explicit reversal of ADR-0041 §1, by the same authority that
+accepted it one day earlier — the same posture this file already applies to ADR-0025 over
+ADR-0009 and ADR-0038 over the prior ERP-out-of-scope stance. ADR-0041 is not edited; ADR-0042
+(`docs/architecture/adr/0042-parent-invoice-as-primary-financial-aggregate.md`) is where a reader
+following it forward should land for §1 specifically — every other ADR-0041 decision (nested
+Parent+Student transactional registration, report preview reusing the export code path) is
+unaffected.
+
+**Two new real aggregates in `school_erp` (C11), alongside the existing six.**
+`ParentBillingProfile` — one per `(organization_id, parent_id)`, carrying `monthly_fee`,
+`billing_start_period`, `due_day`; no `FeePlan` reference, since Fee Plans must stay optional and
+never gate Parent registration. `ParentInvoice` — the real monthly bill, owning `ParentInvoiceLine`
+children (one per billed child, equal-split allocation of the family total, remainder cents to the
+first lines, transport context captured at generation time — the identical "a bill is a historical
+record" reasoning ADR-0040 §3 already established for `StudentInvoice`). Unique on
+`(organization_id, parent_id, period)`, the idempotency guard behind monthly generation.
+**`StudentInvoice`/`StudentPayment`/`FeePlan` are kept, completely unmodified** — the historical
+record of the workflow that produced them; nothing new reads or writes them, and the legacy
+per-student issue/generate/pay routes stay callable. Payment status (`unpaid`/`partial`/`paid`,
+plus `cancelled`) lives directly on `ParentInvoice` — no separate payment-transaction aggregate,
+per the directive's own explicit "no payment method/reference/history in the UI" instruction; every
+transition still reaches `audit_entries` for free via the existing outbox pipeline (ADR-0007).
+
+**Non-destructive migration, not a move.** `20260911_1000_d4e8f2a71c53` creates the three new
+tables purely additively, then backfills: every non-cancelled `erp_student_invoices` row whose
+student resolves to exactly one parent (via `student_parents`, preferring the `is_primary` link,
+else the lexicographically-first `parent_id` — a disclosed, deterministic tiebreak for a genuinely
+ambiguous case) is *copied* into a new `erp_parent_invoices` row grouped by `(parent, period)`,
+with one `erp_parent_invoice_lines` row per source invoice. The source rows are untouched. A
+student with no linked parent is skipped and counted, never guessed at. Live-run against this
+environment's own seeded data: 6 Parent Invoices created from 10 eligible `erp_student_invoices`
+rows, 1 skipped for lacking a resolvable parent — logged in the migration's own one-line summary.
+A second migration (`a9c73e5f0b8d`) grants the new `school_erp.parent_billing_profiles.*`/
+`.parent_invoices.*` permissions using the identical `org_admin`-manage / RAAD-staff-list-only /
+`parent`-none role split every other `school_erp.*` pair already uses.
+
+**A real, reproducible migration authoring bug found and fixed in this same pass**: pre-creating a
+brand-new PostgreSQL ENUM via an explicit `.create(bind, checkfirst=True)` call before
+`op.create_table` raised a spurious `DuplicateObjectError` against this project's async-engine-
+bridged Alembic connection, even against a verified-empty `pg_type` (confirmed via direct `psql`
+immediately before each failing attempt). The fix — and the pattern every future brand-new-table
+migration in this chain should follow — is to declare the `ENUM` inline on its owning column with
+no pre-`create()` call and no `create_type=False`, letting `op.create_table`'s own DDL compilation
+create the type the first time it's referenced (the pattern every prior *new-table* migration in
+this chain, e.g. `erp_fee_plan_status` in `7387f1b2ee6a`, already used without incident).
+`ba7616be7d03`'s own explicit pre-create remains correct for its own case — `op.add_column` on an
+*existing* table has no automatic type-creation to rely on, unlike `create_table`.
+
+**Reporting repointed, not rebuilt.** `get_finance_summary`/`get_vehicle_financial_overview` (now
+reading `ParentInvoiceRepository`'s grouped queries, including a disclosed pro-rata collected-share
+allocation for per-vehicle figures — `line.amount * invoice.amount_paid / invoice.amount`, since
+payment is recorded against the whole family invoice, never per child) and `get_profit_and_loss`
+(its `student_revenue` line — wire field name kept stable, every consumer's own label now reads
+"Parent Transportation Collections" — now sourced from `sum_collected_between`, filtered by each
+invoice's own `invoice_date` since this model keeps no separate payment-transaction ledger to filter
+a payment date from) all moved from `SchoolErpApplicationService`'s `StudentInvoice`/
+`StudentPayment` reads to the new tables. `org.outstanding_balances` is renamed to `org.receivables`
+or (catalogue-key rename only, no migration — `ReportDefinition` is code-resident) and repointed;
+`org.parent_invoices`/`org.parent_payment_status` now read `ParentInvoiceRepository` directly, no
+longer a `StudentInvoice` grouping scan; `org.student_billing`/`org.bus_report` stay registered,
+unchanged, reading the frozen historical `StudentInvoice` table, but are no longer the frontend
+Report Center's primary listing. `org.vehicle_revenue` needed no change — it already calls the
+(now-repointed) `get_vehicle_financial_overview`.
+
+**A second real bug found while wiring `ParentFinanceApplicationService.list_parent_invoices` to
+the two report builders that call it with `page_size=1000`**: the rewrite's first pass passed
+`page_size` straight into `OffsetPageRequest`, which rejects any value above `MAX_PAGE_SIZE` (100)
+in its own constructor — exactly the "a cap larger than the layer below allows is an error, not a
+smaller result" Permanent Lesson this file already documents for report builders, now also true one
+layer up, in the service method reports call *through*. Fixed by paging internally in
+`MAX_PAGE_SIZE` chunks up to the requested size when it exceeds the cap, mirroring `core/di/
+report_definitions._collect`'s own established technique.
+
+**Frontend: the whole workflow reachable end to end, in the directive's own vocabulary.**
+`CreateParentForm.tsx` gained a "Parent billing" section in the same nested registration
+transaction's own drawer — `monthlyFee` left blank means "configure later"; filled in, it commits a
+second, independently-committed `PUT .../billing-profile` call after `POST /parents` succeeds (the
+same disclosed "second call, second transaction, second module" gap ADR-0003's own IAM-user-
+provisioning precedent already accepts). `ParentsPage.tsx`'s detail drawer gained `Billing` (the
+family's `ParentBillingProfile`, editable via the new `BillingProfileForm.tsx`) and
+`Current invoice` (this family's most recent real `ParentInvoice`, with the "Update Payment Status"
+action placed directly beside it, per the directive's own mockup) sections, replacing the old
+`PaymentHistorySection`/`RecordParentPaymentForm` outright. The new `SetInvoicePaymentStatusForm.tsx`
+is the *entire* payment surface this frontend now has: a plain Unpaid/Partial/Paid radiogroup, an
+amount field that appears only for Partial, and a `ConfirmDialog` step before saving any actual
+status change — no payment method, reference, or history anywhere. `OrgFinancePage.tsx`'s
+"Parent invoices" tab now lists real invoices (`row.id`, not a `(parentId, period)` composite key),
+its KPI row reads "Expected Billing"/"Collected"/"Receivables"/"Net Result", and "Generate invoices"
+became "Generate monthly invoices" — one click against the new `POST /parent-invoices/generate`,
+no fee-plan/student picker, since the Billing Profile already names the parent and the fee.
+
+**Live-verified end to end against the running stack and its own real (small, seeded) dataset** —
+not a fake-backed test claim: `alembic upgrade head` (and a full downgrade→downgrade→upgrade round
+trip, `alembic check` clean both times), `PUT .../billing-profile` → `POST .../generate` (idempotent
+re-run against an already-migrated period correctly skipped; a fresh period correctly issued
+`$80.00 unpaid`, `due_date` honoring the profile's own `due_day`) → `PATCH .../payment-status`
+(`partial` → `$30.00`/`$50.00` balance, then `paid` → full/`$0.00`) → `GET /school-finance/summary`
+(billed/collected/outstanding moved by exactly the same amounts) → `GET /school-finance/vehicles`
+and `GET /school-finance/profit-and-loss` (the P&L's own `student_revenue` line matched the finance
+summary's `collected_amount` exactly, proving no double-count) → all four updated/new report
+`preview` endpoints, plus a real PDF and a real XLSX export. Backend: 1734 unit/architecture/
+contract tests + 157 subtests, 335 integration tests (1 pre-existing, unrelated Redis skip) — all
+green. Frontend: 708 tests, `tsc -b` clean, production build clean.
+**Not verified:** browser/UI interaction — the Chrome extension was not connected in this
+environment for this pass, the same disclosed limitation this file already carries for several
+earlier phases; every workflow above was instead verified directly against the running API.
