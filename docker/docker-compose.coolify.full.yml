@@ -25,13 +25,27 @@
 #     -f docker/docker-compose.yml -f docker/docker-compose.coolify.yml \
 #     config --no-interpolate --no-path-resolution > docker/docker-compose.coolify.full.yml
 #
+# REQUIRED POST-GENERATION PATCH (Coolify deployment failure, found 2026-09-13): the command
+# above reproduces `services.backup.entrypoint: []` verbatim from docker-compose.yml's own
+# `entrypoint: []` (a standard, valid Compose directive clearing the postgres:16-alpine base
+# image's own ENTRYPOINT so `command: ["/app/backup-loop.sh"]` runs directly). Coolify v4.3.19's
+# own Compose-file validator rejects the empty-*array* form outright: "services.backup.entrypoint
+# must be a null" — it only accepts a string or null for this field, unlike `docker compose
+# config` itself, which accepts and normalizes both forms identically. After running the
+# regenerate command above, manually change that one line from `entrypoint: []` to
+# `entrypoint: ""` (empty string, not empty array) before committing. This is not a behavior
+# change: empirically verified in this environment (`docker inspect` on a container created from
+# each form) that `entrypoint: []` and `entrypoint: ""` compile to the byte-identical Docker
+# Engine container config (`Entrypoint: []`, same `Cmd`) — only the YAML field's declared type
+# changes, from array to string, which is what satisfies Coolify's stricter schema.
+#
 # In Coolify: New Resource -> Docker Compose -> Raw, pointing at this exact file. Then follow
 # docs/runbooks/coolify-deployment.md Steps 3-7 verbatim (env vars via Coolify's own UI, domain
 # assignment, the device-plane firewall/DNS step) — none of that is expressible inside a Compose
 # file and none of it changed by generating this one.
 #
-# Two things this merge faithfully carries over, disclosed rather than silently fixed, since
-# fixing either would be a service-definition change beyond what the merge itself produces:
+# Three things this merge faithfully carries over, disclosed rather than silently fixed, since
+# fixing any of them would be a service-definition change beyond what the merge itself produces:
 #   1. `COMPOSE_PROFILES` must be left unset/empty in Coolify's own environment-variable store.
 #      `nginx` is still present below (gated behind `profiles: [gateway]`, from the base file,
 #      untouched by the Coolify overlay) — it only starts if that profile is activated. `certbot`
@@ -41,6 +55,10 @@
 #      even though this overlay builds `frontend` with `target: prod`, which serves on 80 via its
 #      own nginx instead. This mismatch is inherited unchanged from the source files (the same gap
 #      exists in a docker-compose.prod.yml merge) — not introduced or corrected here.
+#   3. `services.backup.entrypoint` is `""` here, not the `[]` a straight regeneration would
+#      produce — see the REQUIRED POST-GENERATION PATCH note above. Re-running the regenerate
+#      command without reapplying this one-line patch will silently reintroduce the Coolify
+#      validation failure.
 # ==============================================================================================
 name: docker
 networks:
@@ -111,7 +129,7 @@ services:
       postgres:
         condition: service_healthy
         required: true
-    entrypoint: []
+    entrypoint: ""
     environment:
       BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
       BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE:-}
