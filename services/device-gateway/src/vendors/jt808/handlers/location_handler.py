@@ -50,6 +50,25 @@ sending only `0x0200` position reports and no heartbeats would otherwise never b
 sweep while actively transmitting GPS). `touch()` is safe to call unconditionally here: it is a
 no-op on an unknown `terminal_id`, and this handler already requires a resolved session before
 reaching this point, so the call always targets a real one.
+
+**`latest_position_writer` (root-cause fix — RAAD Live Tracking wrong-location investigation).**
+Previously this constructor took only `event_publisher`, so this adapter — confirmed as the
+live, primary GPS adapter for the procured hardware (ADR-0025 §4) — never wrote the
+`vehicle:{id}:last` Redis snapshot `RedisLatestPositionPort.get_latest`/
+`GET /tracking/vehicles/{id}/latest` read: `gateway.DeviceGateway._build_latest_position_writer`
+wired it only into the dormant LSZ adapter, per an assumption from before ADR-0025 reversed
+which vendor protocol is actually live. Mirrors `vendors.lsz.handlers.position_handler.
+MdvrPositionHandler`'s existing `write()`-before-`publish()` shape exactly, and — per that
+writer's own gating — only ever updates the snapshot for a position with `is_gps_valid=True`, so
+a fix-invalid report can never overwrite a genuinely live last-known-good position.
+
+**`gps_valid` (root-cause fix): the wire's own "positioned" bit, further narrowed by
+`gps_validation.is_plausible_coordinate`.** Neither check alone is sufficient: a device can
+report "positioned" against a stale/frozen/garbage coordinate, and a numerically in-range
+coordinate carries no guarantee the device actually had a fix when it produced it. Both must
+hold for `DevicePositionReported.is_gps_valid=True` — see that event's own module docstring for
+the full downstream handling (persisted for audit either way, never silently dropped; never
+treated as "live" when `False`).
 """
 
 from __future__ import annotations
@@ -59,6 +78,8 @@ from datetime import datetime, timezone
 from src.vendors.jt808.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
 from src.events.device_position_reported import DevicePositionReported
 from src.events.publisher_port import EventPublisher
+from src.gps_validation import is_plausible_coordinate
+from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
 from src.vendors.jt808.handlers.position_body import parse_position_report_body
 from src.logging_setup import get_logger, log_with_fields
 from src.vendors.jt808.protocol.message import InboundMessage
@@ -67,8 +88,14 @@ logger = get_logger("jt808.handlers.location")
 
 
 class LocationHandler(MessageHandler):
-    def __init__(self, event_publisher: EventPublisher) -> None:
+    def __init__(
+        self,
+        event_publisher: EventPublisher,
+        *,
+        latest_position_writer: LatestPositionWriter | None = None,
+    ) -> None:
         self._event_publisher = event_publisher
+        self._latest_position_writer = latest_position_writer or LoggingLatestPositionWriter()
 
     async def handle(
         self, message: InboundMessage, context: HandlerContext
@@ -92,6 +119,9 @@ class LocationHandler(MessageHandler):
         await context.device_sessions.touch(message.terminal_id)
 
         report = parse_position_report_body(message.body)
+        is_gps_valid = report.gps_valid and is_plausible_coordinate(
+            report.latitude, report.longitude
+        )
 
         event = DevicePositionReported(
             organization_id=session.organization_id,
@@ -107,7 +137,9 @@ class LocationHandler(MessageHandler):
             event_time=report.event_time,
             is_backfill=False,
             received_at=datetime.now(timezone.utc),
+            is_gps_valid=is_gps_valid,
         )
+        await self._latest_position_writer.write(event)
         await self._event_publisher.publish(event)
 
         log_with_fields(
@@ -117,5 +149,6 @@ class LocationHandler(MessageHandler):
             connection_id=context.connection_id,
             terminal_id=message.terminal_id,
             is_backfill=False,
+            is_gps_valid=is_gps_valid,
         )
         return HandlerResult.no_response()

@@ -26,12 +26,16 @@ const mockProvider = {
   fitBounds: vi.fn(),
   addMarker: vi.fn(),
   updateMarker: vi.fn(),
+  updateMarkerPopup: vi.fn(),
   removeMarker: vi.fn(),
+  onMarkerClick: vi.fn(),
   addGeoJsonSource: vi.fn(),
   addLineLayer: vi.fn(),
   addCircleLayer: vi.fn(),
+  addPointLayer: vi.fn(),
   removeLayer: vi.fn(),
   removeSource: vi.fn(),
+  onUserPanOrZoom: vi.fn(() => vi.fn()),
 };
 
 vi.mock("../../shared/map/MapView", () => ({
@@ -242,12 +246,39 @@ describe("LiveTrackingPage", () => {
       });
     });
 
-    expect(mockProvider.addMarker).toHaveBeenCalledWith({
-      id: "live-vehicle",
-      position: { lat: 2.05, lng: 45.32 },
-      headingDeg: 180,
-    });
+    expect(mockProvider.addMarker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "live-vehicle",
+        position: { lat: 2.05, lng: 45.32 },
+        headingDeg: 180,
+      }),
+    );
     expect(screen.queryByText("No live position data")).not.toBeInTheDocument();
+  });
+
+  it("gives the selected vehicle's marker a hover popup carrying its real plate/label (root-cause fix, vehicle-popup staleness investigation)", async () => {
+    const { rerenderSame } = renderPage();
+    const select = await screen.findByLabelText("Vehicle");
+    await userEvent.selectOptions(select, VEHICLE.id);
+    wsReturn.status = "open";
+    rerenderSame();
+
+    act(() => {
+      latestOnMessage?.({
+        type: "position",
+        vehicle_id: VEHICLE.id,
+        trip_id: null,
+        lat: 2.05,
+        lng: 45.32,
+        speed_kph: 30,
+        heading_deg: 180,
+        event_time: "2026-01-01T00:00:00Z",
+      });
+    });
+
+    const call = vi.mocked(mockProvider.addMarker).mock.calls.at(-1)![0];
+    expect(call.popupHtml).toContain(VEHICLE.plateNo);
+    expect(call.popupHtml).toContain(VEHICLE.label);
   });
 
   it("updates (not re-adds) the marker on a second position frame for the same vehicle", async () => {
@@ -593,12 +624,14 @@ describe("LiveTrackingPage", () => {
       // VEHICLE_ONLINE_B has none yet (the disclosed ADR-0031 gap) and gets one only once a
       // live `/ws/tracking` frame arrives — covered by the realtime-update test below.
       await waitFor(() =>
-        expect(mockProvider.addMarker).toHaveBeenCalledWith({
-          id: "veh-a",
-          position: { lat: 2.05, lng: 45.32 },
-          headingDeg: 90,
-          element: expect.any(Object),
-        }),
+        expect(mockProvider.addMarker).toHaveBeenCalledWith(
+          expect.objectContaining({
+            id: "veh-a",
+            position: { lat: 2.05, lng: 45.32 },
+            headingDeg: 90,
+            element: expect.any(Object),
+          }),
+        ),
       );
       expect(mockProvider.addMarker).not.toHaveBeenCalledWith(
         expect.objectContaining({ id: "veh-b" }),
@@ -633,6 +666,46 @@ describe("LiveTrackingPage", () => {
           expect.objectContaining({ id: "veh-b", position: { lat: 3.1, lng: 46.2 } }),
         ),
       );
+    });
+
+    it("refreshes an existing online vehicle's popup content in place on a subsequent /ws/tracking frame, never recreating its marker (root-cause fix, vehicle-popup staleness investigation)", async () => {
+      vi.mocked(api.listOnlineVehicles).mockResolvedValue({
+        vehicles: [VEHICLE_ONLINE_A],
+        totalOnline: 1,
+      });
+      renderPage();
+      const select = await screen.findByLabelText("Vehicle");
+      await userEvent.selectOptions(select, ALL_VEHICLES_ID);
+      await waitFor(() =>
+        expect(mockProvider.addMarker).toHaveBeenCalledWith(expect.objectContaining({ id: "veh-a" })),
+      );
+      mockProvider.addMarker.mockClear();
+      wsReturn.status = "open";
+
+      act(() => {
+        latestOnMessage?.({
+          type: "position",
+          vehicle_id: "veh-a",
+          trip_id: null,
+          lat: 2.06,
+          lng: 45.33,
+          speed_kph: 40,
+          heading_deg: 91,
+          event_time: "2026-01-01T00:10:00Z",
+        });
+      });
+
+      await waitFor(() =>
+        expect(mockProvider.updateMarkerPopup).toHaveBeenCalledWith("veh-a", expect.any(String)),
+      );
+      // Never a second marker for the same vehicle — the popup updates in place.
+      expect(mockProvider.addMarker).not.toHaveBeenCalled();
+      const [, html] = vi.mocked(mockProvider.updateMarkerPopup).mock.calls.at(-1)!;
+      expect(html).toContain("AAA-111");
+      // The refreshed "Last GPS" reflects the *new* frame's timestamp, not the one the marker
+      // was originally created with — proof the popup content actually changed, not just that
+      // the (mocked) method was called.
+      expect(html).toContain(new Date("2026-01-01T00:10:00Z").toLocaleTimeString());
     });
 
     it("switching from All Vehicles back to an individual vehicle restores single-vehicle Map + Live Video exactly", async () => {

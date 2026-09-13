@@ -99,6 +99,7 @@ class VehiclePosition:
         event_time: datetime,
         received_at: datetime,
         is_backfill: bool,
+        is_gps_valid: bool = True,
     ) -> None:
         self.id = id
         self.organization_id = organization_id
@@ -112,6 +113,7 @@ class VehiclePosition:
         self.event_time = event_time
         self.received_at = received_at
         self.is_backfill = is_backfill
+        self.is_gps_valid = is_gps_valid
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, VehiclePosition) and self.id == other.id
@@ -135,6 +137,7 @@ class VehiclePosition:
         heading_deg: HeadingDegrees | None = None,
         alarm_flags: AlarmFlags | None = None,
         is_backfill: bool = False,
+        is_gps_valid: bool = True,
     ) -> "VehiclePosition":
         """`event_time` is the device-reported time, passed through verbatim and never
         overwritten — buffered/backfilled positions (JT808 `0x0704`, late `0x0200`) publish
@@ -142,7 +145,20 @@ class VehiclePosition:
         (`.claude/rules/jt808.md` #3). `received_at` is this module's own ingest time
         (Database Design §7.1), taken from `clock` — never `event_time` — so the two stay
         independently meaningful (live-view filtering compares `event_time` to "now"; ingest
-        latency is measured from `received_at`)."""
+        latency is measured from `received_at`).
+
+        `is_gps_valid` (root-cause fix, RAAD Live Tracking wrong-location investigation):
+        `True` only when the device-plane ACL (`services/device-gateway`) confirmed both a
+        genuine wire-level GPS fix *and* a plausible coordinate (finite, in-range, not
+        null-island) at the moment this position was reported — see `gps_validation.
+        is_plausible_coordinate` on that side, and `DevicePositionReported`'s own module
+        docstring for the full record. Always persisted, never used to reject the position
+        outright: `position`/`GeoPoint` may still hold a numerically valid-but-implausible or
+        stale coordinate here, preserved verbatim for audit/debugging
+        (`docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md`'s own "never invent a
+        vehicle location, but never lie by silence either" posture) — callers that need "is
+        this the vehicle's real live position" must check this flag, not just that a position
+        exists."""
         return cls(
             id=id,
             organization_id=organization_id,
@@ -156,6 +172,7 @@ class VehiclePosition:
             event_time=event_time,
             received_at=clock.now(),
             is_backfill=is_backfill,
+            is_gps_valid=is_gps_valid,
         )
 
 

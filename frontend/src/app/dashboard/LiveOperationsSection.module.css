@@ -109,6 +109,39 @@
   color: var(--color-text-muted);
 }
 
+/* The vehicle hover popup — same fields/markup as `FleetMapPanel`'s own (`buildVehiclePopupHtml`,
+ * `features/live-monitoring/vehicleMarker.ts`), styled identically per this feature's own CSS
+ * module rather than importing another feature folder's module CSS. */
+.popup {
+  min-width: 140px;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.popupTitle {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 2px;
+}
+
+.popupStatus {
+  display: inline-block;
+  font-weight: 600;
+  font-size: var(--text-xs);
+  color: var(--color-success-text);
+  margin-bottom: 2px;
+}
+
+.popupStatus[data-fix-status="stale"],
+.popupStatus[data-fix-status="no_fix"] {
+  color: var(--color-warning-text);
+}
+
+.popupMuted {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
 @media (max-width: 900px) {
   .strip {
     padding: var(--space-4) var(--space-5);

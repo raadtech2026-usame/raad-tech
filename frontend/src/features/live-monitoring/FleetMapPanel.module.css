@@ -33,22 +33,37 @@
   pointer-events: none;
 }
 
-/* The marker itself — a simple, clearly-clickable colored pin. Kept intentionally plain
- * (no per-vehicle status coloring beyond "online," since this endpoint only ever returns
- * online vehicles) — a future status-differentiated palette is a presentation-only addition,
- * not a data-model one. */
-.marker {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--color-brand-primary);
-  border: 2px solid #fff;
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.35);
-  cursor: pointer;
+/* Marker appearance itself now lives in `vehicleMarker.module.css` (the shared bus-icon marker,
+ * Mapbox UI upgrade) — this file only styles the hover popup card `MapboxMapProvider` renders
+ * via `Popup.setHTML`, whose markup is a plain string (not a JSX tree), so these class names are
+ * referenced by their hashed values interpolated directly into that string (`FleetMapPanel.tsx`'s
+ * own `popupHtml`), not written as JSX here. */
+.popup {
+  min-width: 140px;
+  font-size: var(--text-sm);
+  line-height: 1.4;
 }
 
-.marker:hover,
-.marker:focus-visible {
-  outline: 2px solid var(--color-brand-primary);
-  outline-offset: 2px;
+.popupTitle {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 2px;
+}
+
+.popupStatus {
+  display: inline-block;
+  font-weight: 600;
+  font-size: var(--text-xs);
+  color: var(--color-success-text);
+  margin-bottom: 2px;
+}
+
+.popupStatus[data-fix-status="stale"],
+.popupStatus[data-fix-status="no_fix"] {
+  color: var(--color-warning-text);
+}
+
+.popupMuted {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
 }

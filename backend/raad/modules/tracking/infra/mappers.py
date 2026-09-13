@@ -81,6 +81,7 @@ def vehicle_position_to_model(
         position.alarm_flags.value if position.alarm_flags is not None else None
     )
     model.is_backfill = position.is_backfill
+    model.is_gps_valid = position.is_gps_valid
     model.received_at = _naive(position.received_at)
     return model
 
@@ -103,6 +104,7 @@ def model_to_vehicle_position(model: VehiclePositionModel) -> VehiclePosition:
         event_time=model.event_time,
         received_at=model.received_at,
         is_backfill=model.is_backfill,
+        is_gps_valid=model.is_gps_valid,
     )
 
 

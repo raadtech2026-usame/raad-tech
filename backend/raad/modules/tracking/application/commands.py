@@ -34,7 +34,13 @@ from raad.modules.tracking.domain.value_objects import GeofenceEventType
 @dataclass(frozen=True)
 class RecordVehiclePositionCommand:
     """A live GPS fix (JT808 `0x0200`). `event_time` is the device-reported time — never
-    replaced with "now" (`.claude/rules/jt808.md` #3)."""
+    replaced with "now" (`.claude/rules/jt808.md` #3).
+
+    `is_gps_valid` (root-cause fix, RAAD Live Tracking wrong-location investigation) defaults
+    to `True` so every existing caller/test need not change — but the device-plane event
+    consumer (`tracking.events.subscribers.DevicePositionReportedProcessor`) always supplies it
+    explicitly from `DevicePositionReported.is_gps_valid`. See `domain.entities.VehiclePosition.
+    record`'s own docstring for the full field contract."""
 
     organization_id: str
     vehicle_id: str
@@ -46,6 +52,7 @@ class RecordVehiclePositionCommand:
     speed_kph: int | None = None
     heading_deg: int | None = None
     alarm_flags: int | None = None
+    is_gps_valid: bool = True
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,7 @@ class RecordBackfillPositionCommand:
     speed_kph: int | None = None
     heading_deg: int | None = None
     alarm_flags: int | None = None
+    is_gps_valid: bool = True
 
 
 # --- Geofence evaluation (Phase 2 §22.2/§22.3) ---------------------------------------------

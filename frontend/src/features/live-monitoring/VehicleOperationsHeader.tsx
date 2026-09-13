@@ -1,8 +1,9 @@
-import { Bus, Cpu, Radio, Video, WifiOff } from "lucide-react";
+import { Bus, Cpu, Video, WifiOff } from "lucide-react";
 import { Badge } from "../../shared/components/Badge/Badge";
 import { Select } from "../../shared/components/Select/Select";
 import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
 import type { ActiveDevice, VehicleOption } from "./api";
+import { GpsFixBadge } from "./GpsFixBadge";
 import type { VehicleActiveDeviceStatus } from "./useVehicleActiveDevice";
 import type { UseVehiclePositionResult } from "./useVehiclePosition";
 import styles from "./VehicleOperationsHeader.module.css";
@@ -17,7 +18,10 @@ export interface VehicleOperationsHeaderProps {
   vehiclesLoading: boolean;
   selectedVehicleId: string;
   onSelectVehicle: (vehicleId: string) => void;
-  gps: Pick<UseVehiclePositionResult, "wsStatus" | "isAuthOrPolicyClose" | "livePosition">;
+  gps: Pick<
+    UseVehiclePositionResult,
+    "wsStatus" | "isAuthOrPolicyClose" | "livePosition" | "gpsFixStatus"
+  >;
   deviceStatus: VehicleActiveDeviceStatus;
   device: ActiveDevice | null;
   /** Whether this session's role may reach live video at all (ADR-0029) — gates only the
@@ -50,7 +54,8 @@ export function VehicleOperationsHeader({
 }: VehicleOperationsHeaderProps) {
   const isFleetMode = selectedVehicleId === ALL_VEHICLES_ID;
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId) ?? null;
-  const gpsLive = selectedVehicleId !== "" && gps.wsStatus === "open" && !gps.isAuthOrPolicyClose;
+  const gpsConnected =
+    selectedVehicleId !== "" && gps.wsStatus === "open" && !gps.isAuthOrPolicyClose;
   const deviceOnline = deviceStatus === "ready" && device !== null && device.isOnline;
   const cameraCount = deviceStatus === "ready" && device !== null ? device.cameras.length : null;
 
@@ -93,15 +98,17 @@ export function VehicleOperationsHeader({
       {selectedVehicleId !== "" && !isFleetMode && (
         <div className={styles.statChips}>
           <div className={styles.chip} data-testid="chip-gps">
-            {gpsLive ? (
-              <Radio size={14} className={styles.chipIconLive} />
-            ) : (
-              <WifiOff size={14} className={styles.chipIconMuted} />
-            )}
             <span className={styles.chipLabel}>GPS</span>
-            <Badge variant={gpsLive ? "success" : "neutral"} dot pulsing={gpsLive}>
-              {gpsLive ? "Live" : gps.isAuthOrPolicyClose ? "Not authorized" : "Connecting"}
-            </Badge>
+            {gpsConnected ? (
+              <GpsFixBadge status={gps.gpsFixStatus} />
+            ) : (
+              <>
+                <WifiOff size={14} className={styles.chipIconMuted} />
+                <Badge variant="neutral">
+                  {gps.isAuthOrPolicyClose ? "Not authorized" : "Connecting"}
+                </Badge>
+              </>
+            )}
           </div>
 
           <div className={styles.chip} data-testid="chip-device">
@@ -132,7 +139,8 @@ export function VehicleOperationsHeader({
 
           {gps.livePosition && (
             <span className={styles.lastUpdate}>
-              Last GPS update {new Date(gps.livePosition.eventTime).toLocaleTimeString()}
+              {gps.gpsFixStatus === "no_fix" ? "Last valid position" : "Last GPS update"}{" "}
+              {new Date(gps.livePosition.eventTime).toLocaleTimeString()}
             </span>
           )}
         </div>

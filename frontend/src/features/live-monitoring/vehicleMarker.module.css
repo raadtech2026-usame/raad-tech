@@ -1,0 +1,92 @@
+.root {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  cursor: pointer;
+}
+
+.badge {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--color-brand-primary);
+  color: #fff;
+  border: 2px solid #fff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.35);
+  transition: background-color 0.15s ease;
+}
+
+.root:hover .badge,
+.root:focus-visible .badge {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+.root[data-fix-status="stale"] .badge,
+.root[data-fix-status="no_fix"] .badge {
+  background: var(--color-warning);
+}
+
+.root.selected .badge {
+  box-shadow:
+    0 0 0 3px var(--color-brand-primary-tint-strong),
+    0 2px 6px rgba(15, 23, 42, 0.35);
+}
+
+/* Live pulse ring — reserved for a genuinely fresh, valid fix, matching `LiveIndicator`'s own
+ * "motion signals this is updating right now" convention elsewhere in this app. */
+.root[data-fix-status="live"] .badge::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 2px solid var(--color-brand-primary);
+  opacity: 0.6;
+  animation: pulse 2s ease-out infinite;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+/* The heading indicator — a small triangle rotated independently of `.root` (via its own
+ * `transform`, set imperatively in MapboxMapProvider) so the bus glyph inside `.badge` always
+ * stays upright. Hidden until a real heading is known. */
+.heading {
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  margin-left: -5px;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 8px solid var(--color-brand-primary);
+  transform-origin: 5px 26px; /* rotates around the badge's own center */
+  display: none;
+}
+
+.root[data-fix-status="stale"] .heading,
+.root[data-fix-status="no_fix"] .heading {
+  border-bottom-color: var(--color-warning);
+}
+
+.heading[data-visible="true"] {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root[data-fix-status="live"] .badge::after {
+    animation: none;
+  }
+}

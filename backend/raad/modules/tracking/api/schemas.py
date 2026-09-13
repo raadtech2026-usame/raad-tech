@@ -29,6 +29,7 @@ class VehiclePositionResponse(BaseModel):
     event_time: datetime
     received_at: datetime
     is_backfill: bool
+    is_gps_valid: bool
 
 
 class OnlineVehiclePositionResponse(BaseModel):

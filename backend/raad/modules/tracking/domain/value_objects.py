@@ -30,6 +30,7 @@ name, type, and semantics.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -171,6 +172,17 @@ class GeoPoint:
     longitude: float
 
     def __post_init__(self) -> None:
+        # `math.isfinite` rejects NaN/+Inf/-Inf explicitly, rather than relying on the range
+        # comparisons below happening to also reject them (NaN compares False to everything,
+        # which does reject it today, but silently and only as a side effect — a future change
+        # to how this is compared should not be able to quietly reopen that gap). RAAD Live
+        # Tracking wrong-location investigation: "reject NaN, Infinity... malformed coordinates"
+        # is an explicit production-safety requirement, not just an incidental property here.
+        if not (math.isfinite(self.latitude) and math.isfinite(self.longitude)):
+            raise DomainError(
+                f"latitude/longitude must be finite numbers: "
+                f"{self.latitude!r}, {self.longitude!r}"
+            )
         if not (_LATITUDE_MIN <= self.latitude <= _LATITUDE_MAX):
             raise DomainError(
                 f"latitude must be between {_LATITUDE_MIN} and {_LATITUDE_MAX}: "

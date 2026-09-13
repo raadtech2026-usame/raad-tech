@@ -208,7 +208,17 @@ def _position_frame(payload: dict[str, Any]) -> dict[str, Any]:
     broker event's payload — see this module's own docstring for the field-naming reasoning
     (in particular: the *inbound* `DevicePositionReported` payload carries `latitude`/
     `longitude`, not `lat`/`lng` — this function's own bug, fixed in the same phase as this
-    docstring). The *outbound* frame's own `lat`/`lng` keys are unchanged."""
+    docstring). The *outbound* frame's own `lat`/`lng` keys are unchanged.
+
+    **`is_gps_valid` (root-cause fix, RAAD Live Tracking wrong-location investigation) —
+    additive, backward-compatible field (`.claude/rules/api.md` #1).** This channel forwards
+    every accepted position report directly off the raw broker payload, unfiltered by design (a
+    parent whose access is later revoked must stop receiving frames on the *next* position, see
+    this module's own docstring) — including one with no genuine GPS fix. Previously the frame
+    carried no signal at all for this, so the frontend had no way to distinguish a live update
+    from a stale/implausible one and simply recentered the map on every frame regardless. `True`
+    when the payload carries no such key (a broker event published before this field existed),
+    matching every other optional-payload-key default in this function."""
     return {
         "type": "position",
         "vehicle_id": payload.get("vehicle_id"),
@@ -218,6 +228,7 @@ def _position_frame(payload: dict[str, Any]) -> dict[str, Any]:
         "speed_kph": payload.get("speed_kph"),
         "heading_deg": payload.get("heading_deg"),
         "event_time": payload.get("event_time"),
+        "is_gps_valid": payload.get("is_gps_valid", True),
     }
 
 

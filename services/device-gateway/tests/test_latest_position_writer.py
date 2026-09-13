@@ -23,7 +23,12 @@ from src.latest_position.writer_port import LoggingLatestPositionWriter
 _NOW = datetime(2026, 7, 24, 10, 0, 0, tzinfo=timezone.utc)
 
 
-def _make_event(*, is_backfill: bool = False, trip_id: str | None = None) -> DevicePositionReported:
+def _make_event(
+    *,
+    is_backfill: bool = False,
+    trip_id: str | None = None,
+    is_gps_valid: bool = True,
+) -> DevicePositionReported:
     return DevicePositionReported(
         organization_id="org-1",
         vehicle_id="vehicle-1",
@@ -38,6 +43,7 @@ def _make_event(*, is_backfill: bool = False, trip_id: str | None = None) -> Dev
         event_time=_NOW,
         is_backfill=is_backfill,
         received_at=_NOW,
+        is_gps_valid=is_gps_valid,
     )
 
 
@@ -73,6 +79,7 @@ class ToSnapshotPayloadTests(unittest.TestCase):
                 "alarm_flags",
                 "event_time",
                 "is_backfill",
+                "is_gps_valid",
             },
         )
         self.assertEqual(payload["organization_id"], "org-1")
@@ -84,6 +91,7 @@ class ToSnapshotPayloadTests(unittest.TestCase):
         self.assertEqual(payload["alarm_flags"], 0)
         self.assertEqual(payload["event_time"], _NOW.isoformat())
         self.assertFalse(payload["is_backfill"])
+        self.assertTrue(payload["is_gps_valid"])
 
     def test_null_trip_id_stays_null_not_omitted(self) -> None:
         payload = to_snapshot_payload(_make_event(trip_id=None))
@@ -110,6 +118,17 @@ class RedisLatestPositionWriterTests(unittest.IsolatedAsyncioTestCase):
         writer = RedisLatestPositionWriter(redis)
 
         await writer.write(_make_event(is_backfill=True))
+
+        self.assertEqual(redis.sets, [])
+
+    async def test_gps_invalid_positions_never_overwrite_the_live_snapshot(self) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation: a report with no
+        genuine GPS fix (or an implausible coordinate) must never overwrite a last-known-good
+        position already sitting in Redis with something worse."""
+        redis = FakeRedisKeyValue()
+        writer = RedisLatestPositionWriter(redis)
+
+        await writer.write(_make_event(is_gps_valid=False))
 
         self.assertEqual(redis.sets, [])
 

@@ -10,6 +10,7 @@ import unittest
 from datetime import datetime, timezone
 
 from src.broker_config import BrokerConfig
+from src.cache_config import CacheConfig
 from src.events.device_position_reported import DevicePositionReported
 from src.events.redis_event_publisher import RedisEventPublisher
 from src.gateway import DeviceGateway
@@ -234,11 +235,19 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
     that entire real stream — before returning. `test_start_binds_both_adapters_to_independent_
     real_ports` hung this way for over 10 minutes locally, root-caused by direct reproduction
     (traced construction vs. `start()` separately), not assumed. `BrokerConfig()`'s `url=None`
-    default is what actually asserts "no broker," in every environment."""
+    default is what actually asserts "no broker," in every environment.
+
+    **`cache_config=CacheConfig()` (or `cache_redis_client=redis`) alongside every
+    `broker_config`/`redis_client` above, for the identical reason** (root-cause fix, RAAD Live
+    Tracking wrong-location investigation): `docker-compose.yml` now also sets a real
+    `DEVICE_GATEWAY_REDIS_URL` inside this container, and an omitted `cache_config` would
+    otherwise read it via `CacheConfig.from_env()`, silently diverging from what each test
+    actually means to exercise."""
 
     async def test_both_adapters_are_registered_by_name(self) -> None:
         gateway = DeviceGateway(
             broker_config=BrokerConfig(),
+            cache_config=CacheConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -248,6 +257,7 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_start_binds_both_adapters_to_independent_real_ports(self) -> None:
         gateway = DeviceGateway(
             broker_config=BrokerConfig(),
+            cache_config=CacheConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -271,6 +281,7 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway = DeviceGateway(
             event_publisher=publisher,
             broker_config=BrokerConfig(),
+            cache_config=CacheConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -280,6 +291,7 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_stop_is_safe_to_call_on_both_adapters(self) -> None:
         gateway = DeviceGateway(
             broker_config=BrokerConfig(),
+            cache_config=CacheConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -289,6 +301,7 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_adapter_name_raises_lookup_error(self) -> None:
         gateway = DeviceGateway(
             broker_config=BrokerConfig(),
+            cache_config=CacheConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -309,6 +322,7 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
         # for the full 2026-09-10 root cause.
         gateway = DeviceGateway(
             broker_config=BrokerConfig(),
+            cache_config=CacheConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -320,6 +334,22 @@ class DeviceGatewayTests(unittest.IsolatedAsyncioTestCase):
             gateway.adapter("jt808").device_provisioning, NullDeviceProvisioningPort
         )
         self.assertIsNone(gateway.registry_projection)
+
+    async def test_without_a_broker_or_cache_latest_position_writer_degrades_to_logging(
+        self,
+    ) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation: an unconfigured
+        cache must degrade to a safe no-op, never raise, mirroring `event_publisher`'s own
+        `LoggingEventPublisher` fallback immediately above."""
+        from src.latest_position.writer_port import LoggingLatestPositionWriter
+
+        gateway = DeviceGateway(
+            broker_config=BrokerConfig(),
+            cache_config=CacheConfig(),
+            jt808_config=Jt808Config(host="127.0.0.1", port=0),
+            lsz_config=LszConfig(host="127.0.0.1", port=0),
+        )
+        self.assertIsInstance(gateway._latest_position_writer, LoggingLatestPositionWriter)
 
 
 class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
@@ -334,6 +364,7 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         redis = FakeRedis()
         gateway = DeviceGateway(
             redis_client=redis,
+            cache_redis_client=redis,
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -341,10 +372,49 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(gateway.adapter("lsz").event_publisher, RedisEventPublisher)
         self.assertIs(gateway.adapter("jt808").event_publisher, gateway.adapter("lsz").event_publisher)
 
+    async def test_cache_config_url_wires_a_distinct_redis_client_for_the_latest_position_writer(
+        self,
+    ) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation: when
+        `DEVICE_GATEWAY_REDIS_URL` (or an injected `cache_redis_client`) is configured
+        separately from the broker connection, `RedisLatestPositionWriter` must be built on
+        *that* client, never the broker one — this is the exact split whose absence sent every
+        `vehicle:{id}:last` write to the wrong logical Redis DB."""
+        from src.latest_position.redis_latest_position_writer import RedisLatestPositionWriter
+
+        broker_redis = FakeRedis()
+        cache_redis = FakeRedis()
+        gateway = DeviceGateway(
+            redis_client=broker_redis,
+            cache_redis_client=cache_redis,
+            jt808_config=Jt808Config(host="127.0.0.1", port=0),
+            lsz_config=LszConfig(host="127.0.0.1", port=0),
+        )
+        self.assertIsInstance(gateway._latest_position_writer, RedisLatestPositionWriter)
+        self.assertIs(gateway._latest_position_writer._redis, cache_redis)
+        self.assertIsNot(gateway._latest_position_writer._redis, broker_redis)
+
+    async def test_cache_client_falls_back_to_the_broker_client_when_unconfigured(self) -> None:
+        """A deployment/test that hasn't split cache from broker (no distinct cache URL/client
+        given at all) still gets a working — if unsplit — cache, matching every test in this
+        file that injects one `redis_client` for everything."""
+        from src.latest_position.redis_latest_position_writer import RedisLatestPositionWriter
+
+        redis = FakeRedis()
+        gateway = DeviceGateway(
+            redis_client=redis,
+            cache_config=CacheConfig(),  # explicit: no DEVICE_GATEWAY_REDIS_URL configured
+            jt808_config=Jt808Config(host="127.0.0.1", port=0),
+            lsz_config=LszConfig(host="127.0.0.1", port=0),
+        )
+        self.assertIsInstance(gateway._latest_position_writer, RedisLatestPositionWriter)
+        self.assertIs(gateway._latest_position_writer._redis, redis)
+
     async def test_redis_client_wires_projection_backed_lsz_provisioning(self) -> None:
         redis = FakeRedis()
         gateway = DeviceGateway(
             redis_client=redis,
+            cache_redis_client=redis,
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -361,6 +431,7 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         redis = FakeRedis()
         gateway = DeviceGateway(
             redis_client=redis,
+            cache_redis_client=redis,
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -380,6 +451,7 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         redis = FakeRedis()
         gateway = DeviceGateway(
             redis_client=redis,
+            cache_redis_client=redis,
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -397,6 +469,7 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         # the in-memory one this test asserts.
         gateway = DeviceGateway(
             broker_config=BrokerConfig(),
+            cache_config=CacheConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -504,6 +577,7 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
 
         gateway = DeviceGateway(
             redis_client=redis,
+            cache_redis_client=redis,
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -555,6 +629,7 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         redis._next_id = 2
         gateway = DeviceGateway(
             redis_client=redis,
+            cache_redis_client=redis,
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -569,6 +644,7 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         redis = FakeRedis()
         gateway = DeviceGateway(
             redis_client=redis,
+            cache_redis_client=redis,
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -581,6 +657,7 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         # `DEVICE_GATEWAY_BROKER_URL` this container's own `docker-compose.yml` sets).
         gateway = DeviceGateway(
             broker_config=BrokerConfig(),
+            cache_config=CacheConfig(),
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -592,6 +669,7 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
         redis = FakeRedis()
         gateway = DeviceGateway(
             redis_client=redis,
+            cache_redis_client=redis,
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )
@@ -622,6 +700,7 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
 
         gateway = DeviceGateway(
             redis_client=redis,
+            cache_redis_client=redis,
             jt808_config=Jt808Config(host="127.0.0.1", port=0),
             lsz_config=LszConfig(host="127.0.0.1", port=0),
         )

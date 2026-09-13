@@ -140,6 +140,7 @@ class TrackingApplicationService:
                 else None
             ),
             is_backfill=is_backfill,
+            is_gps_valid=command.is_gps_valid,
         )
 
     # --- Geofence evaluation & recording -------------------------------------------------

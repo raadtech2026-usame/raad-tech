@@ -121,6 +121,12 @@ class RedisLatestPositionPort(LatestPositionPort):
             event_time=_parse_event_time(payload["event_time"]),
             received_at=self._clock.now(),
             is_backfill=bool(payload.get("is_backfill", False)),
+            # Root-cause fix (RAAD Live Tracking wrong-location investigation):
+            # `RedisLatestPositionWriter.write` (device-gateway) now only ever writes this key
+            # for a `is_gps_valid=True` position, so this is always `True` in practice —
+            # defaulted `True` on read anyway (never silently `False`) for a pre-existing key
+            # written before this field existed.
+            is_gps_valid=bool(payload.get("is_gps_valid", True)),
         )
 
 

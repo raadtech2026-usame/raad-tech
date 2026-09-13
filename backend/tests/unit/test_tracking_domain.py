@@ -8,6 +8,7 @@ distance/containment/transition-detection correctness.
 
 from __future__ import annotations
 
+import math
 import unittest
 from datetime import datetime, timezone
 
@@ -59,6 +60,36 @@ class GeoPointTests(unittest.TestCase):
     def test_accepts_boundary_values(self) -> None:
         GeoPoint(latitude=90.0, longitude=180.0)
         GeoPoint(latitude=-90.0, longitude=-180.0)
+
+    def test_rejects_nan_latitude(self) -> None:
+        """Production-safety requirement (RAAD Live Tracking investigation): "reject NaN,
+        Infinity... malformed coordinates" — explicit `math.isfinite` guard, not merely an
+        incidental side effect of the range comparison."""
+        with self.assertRaises(DomainError):
+            GeoPoint(latitude=math.nan, longitude=45.0)
+
+    def test_rejects_nan_longitude(self) -> None:
+        with self.assertRaises(DomainError):
+            GeoPoint(latitude=2.0, longitude=math.nan)
+
+    def test_rejects_infinite_latitude(self) -> None:
+        with self.assertRaises(DomainError):
+            GeoPoint(latitude=math.inf, longitude=45.0)
+        with self.assertRaises(DomainError):
+            GeoPoint(latitude=-math.inf, longitude=45.0)
+
+    def test_rejects_infinite_longitude(self) -> None:
+        with self.assertRaises(DomainError):
+            GeoPoint(latitude=2.0, longitude=math.inf)
+
+    def test_null_island_is_a_valid_geopoint(self) -> None:
+        """`GeoPoint` is a purely structural/geometric bound (finite, in-range) — it is
+        deliberately NOT where "is this coordinate plausible as a real vehicle location" is
+        decided (that is `is_gps_valid`, computed at the device-plane ACL boundary and carried
+        on `VehiclePosition` itself). Rejecting (0, 0) here would also break its own legitimate
+        use as an arbitrary reference point in `GeofenceEvaluationServiceTests` below, and would
+        make it impossible to persist a genuinely-reported null-island reading for audit."""
+        GeoPoint(latitude=0.0, longitude=0.0)
 
 
 class SpeedKphTests(unittest.TestCase):
@@ -163,6 +194,35 @@ class VehiclePositionRecordTests(unittest.TestCase):
             clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
         )
         self.assertIsNone(position.trip_id)
+
+    def test_is_gps_valid_defaults_to_true(self) -> None:
+        position = VehiclePosition.record(
+            id=VehiclePositionId(VALID_POSITION_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            vehicle_id=VehicleId(VALID_POSITION_ULID),
+            device_id=DeviceId(VALID_POSITION_ULID),
+            position=GeoPoint(latitude=2.05, longitude=45.32),
+            event_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        self.assertTrue(position.is_gps_valid)
+
+    def test_is_gps_valid_false_is_preserved_not_rejected(self) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation: a fix-invalid
+        position must still be constructible and persisted (for audit/debugging), only flagged
+        — never silently dropped."""
+        position = VehiclePosition.record(
+            id=VehiclePositionId(VALID_POSITION_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            vehicle_id=VehicleId(VALID_POSITION_ULID),
+            device_id=DeviceId(VALID_POSITION_ULID),
+            position=GeoPoint(latitude=22.672803, longitude=114.059395),  # Shenzhen
+            event_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            is_gps_valid=False,
+        )
+        self.assertFalse(position.is_gps_valid)
+        self.assertAlmostEqual(position.position.latitude, 22.672803)
 
     def test_position_emits_no_domain_event(self) -> None:
         """Regression: VehiclePosition is not an aggregate root and has no

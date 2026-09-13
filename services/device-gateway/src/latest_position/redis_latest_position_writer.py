@@ -23,6 +23,20 @@ guard is currently unreachable in production — kept anyway since `DevicePositi
 is_backfill` is already part of the event this writer receives, and silently omitting the guard
 now would be a live bug the instant buffered-data support is ever added.
 
+**Fix-invalid positions never update this key either (root-cause fix — RAAD Live Tracking
+wrong-location investigation).** `DevicePositionReported.is_gps_valid` is `False` when the
+device itself reported no live GPS fix, or when the resulting coordinate fails `gps_validation.
+is_plausible_coordinate` (out-of-range/NaN/Infinity/null-island) — see that event's own module
+docstring for the full record of how an un-gated write here let a stale/implausible reading (for
+this vendor's hardware, a cached factory coordinate in Shenzhen, China) reach the "current
+position" every reader of this key treats as ground truth. Skipping the write, rather than
+writing the fix-invalid position anyway, is deliberate: `vehicle:{id}:last` is defined as "the
+current live position," and the single most useful thing this cache can do when a report is not
+trustworthy is nothing — leave the last genuinely valid position in place rather than replace it
+with a worse answer. The raw report is never lost either way: it is still published via
+`event_publisher` and persisted by the Business API's `vehicle_positions` history table
+(`tracking.domain.entities.VehiclePosition.is_gps_valid`), flagged, for audit/debugging.
+
 **Requires a `decode_responses=True` client** — same requirement and same reasoning as
 `RedisEventPublisher`'s own docstring (this class passes/reads plain `str`).
 """
@@ -43,7 +57,11 @@ def _key(vehicle_id: str) -> str:
 
 
 def to_snapshot_payload(event: DevicePositionReported) -> dict[str, Any]:
-    """Pure — see module docstring for why this is split out from `write()`."""
+    """Pure — see module docstring for why this is split out from `write()`. `is_gps_valid` is
+    always `true` on anything this writer actually persists (see `write()`'s own gate) — carried
+    in the payload anyway so the Business API's parser (`tracking.infra.adapters.
+    RedisLatestPositionPort._parse`) never has to guess a default for a field this wire contract
+    documents explicitly."""
     return {
         "organization_id": event.organization_id,
         "vehicle_id": event.vehicle_id,
@@ -56,6 +74,7 @@ def to_snapshot_payload(event: DevicePositionReported) -> dict[str, Any]:
         "alarm_flags": event.alarm_flags,
         "event_time": event.event_time.isoformat(),
         "is_backfill": event.is_backfill,
+        "is_gps_valid": event.is_gps_valid,
     }
 
 
@@ -65,5 +84,7 @@ class RedisLatestPositionWriter(LatestPositionWriter):
 
     async def write(self, event: DevicePositionReported) -> None:
         if event.is_backfill:
+            return
+        if not event.is_gps_valid:
             return
         await self._redis.set(_key(event.vehicle_id), json.dumps(to_snapshot_payload(event)))

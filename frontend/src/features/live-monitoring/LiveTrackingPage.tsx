@@ -5,13 +5,13 @@ import { Cpu, Video, WifiOff } from "lucide-react";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
 import { Card, CardHeader } from "../../shared/components/Card/Card";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
-import { LiveIndicator } from "../../shared/components/LiveIndicator/LiveIndicator";
 import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
 import { useAuthStore } from "../../shared/stores/authStore";
 import type { Role } from "../../shared/api/types";
 import { MultiCameraVideoPanel } from "../video/MultiCameraVideoPanel";
 import { listOnlineVehicles, listVehiclesForTracking } from "./api";
 import { FleetMapPanel } from "./FleetMapPanel";
+import { GpsFixBadge } from "./GpsFixBadge";
 import { useActiveTripRoute } from "./useActiveTripRoute";
 import { useVehicleActiveDevice } from "./useVehicleActiveDevice";
 import { useVehiclePosition } from "./useVehiclePosition";
@@ -121,21 +121,30 @@ export function LiveTrackingPage() {
   const { routeStops } = useActiveTripRoute(individualVehicleId);
   const activeDevice = useVehicleActiveDevice(individualVehicleId);
 
-  const position = gps.livePosition
-    ? gps.livePosition
-    : gps.snapshotQuery.data
-      ? {
-          lat: gps.snapshotQuery.data.latitude,
-          lng: gps.snapshotQuery.data.longitude,
-          headingDeg: gps.snapshotQuery.data.headingDeg,
-        }
-      : null;
+  // The selected vehicle's own plate/label — for the map marker's hover-popup title
+  // (`VehicleMapPanel` has no vehicle metadata of its own; this page already fetches the full
+  // picker list). `undefined` until `vehiclesQuery` resolves or if the id isn't found; the popup
+  // falls back to the raw id until then, self-correcting once this resolves (see
+  // `VehicleMapPanel`'s own popup effect).
+  const selectedVehicle = vehiclesQuery.data?.find((vehicle) => vehicle.id === selectedVehicleId);
+  const vehicleTitle = selectedVehicle
+    ? selectedVehicle.label
+      ? `${selectedVehicle.plateNo} — ${selectedVehicle.label}`
+      : selectedVehicle.plateNo
+    : undefined;
 
+  // Root-cause fix (RAAD Live Tracking wrong-location investigation): `gps.livePosition` is now
+  // the hook's own merged "last known GOOD position" (REST snapshot, seeded once, then only
+  // ever advanced by a valid-fix live frame) — this page no longer merges snapshot/live itself,
+  // and — critically — never renders a position the hook itself flagged fix-invalid.
+  const position = gps.livePosition;
+
+  const isConnected = gps.wsStatus === "open" && !gps.isAuthOrPolicyClose;
   const mapHeaderStatus =
     individualVehicleId === "" ? undefined : (
       <div className={styles.mapHeaderStatus}>
-        {gps.wsStatus === "open" && !gps.isAuthOrPolicyClose ? (
-          <LiveIndicator>Live</LiveIndicator>
+        {isConnected ? (
+          <GpsFixBadge status={gps.gpsFixStatus} />
         ) : (
           <span className={styles.disconnected}>
             <WifiOff size={14} />
@@ -144,7 +153,8 @@ export function LiveTrackingPage() {
         )}
         {gps.livePosition && (
           <span className={styles.lastUpdate}>
-            Last update {new Date(gps.livePosition.eventTime).toLocaleTimeString()}
+            {gps.gpsFixStatus === "no_fix" ? "Last valid position" : "Last GPS update"}{" "}
+            {new Date(gps.livePosition.eventTime).toLocaleTimeString()}
           </span>
         )}
       </div>
@@ -188,7 +198,10 @@ export function LiveTrackingPage() {
               vehicleId={selectedVehicleId}
               position={position}
               hasKnownPosition={gps.hasKnownPosition}
+              gpsFixStatus={gps.gpsFixStatus}
               isPositionLoading={gps.snapshotQuery.isLoading}
+              vehicleTitle={vehicleTitle}
+              speedKph={gps.snapshotQuery.data?.speedKph ?? null}
               routeStops={routeStops}
               headerStatus={mapHeaderStatus}
             />

@@ -312,6 +312,14 @@ services:
       # consume the same `raad:events` stream (ADR-0010), so a mismatched password or db number
       # here would silently split them onto two disjoint, unrelated streams.
       DEVICE_GATEWAY_BROKER_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      # Root-cause fix (RAAD Live Tracking wrong-location investigation): must match
+      # RAAD_REDIS__URL above exactly (password + db 0) — RedisLatestPositionWriter's
+      # `vehicle:{id}:last` write (this deployable) and RedisLatestPositionPort's read (the
+      # Business API) must land on the same logical Redis DB. Previously absent entirely, so
+      # this deployable reused DEVICE_GATEWAY_BROKER_URL (db 1) for the snapshot write too —
+      # live-confirmed in this session: the write always succeeded, into a DB nothing ever read
+      # from. See `services/device-gateway/src/cache_config.py`'s own module docstring.
+      DEVICE_GATEWAY_REDIS_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
       # Shared-stream trimming (2026-09-02) — this deployable is the highest-volume writer to
       # `raad:events` (one event per GPS position report), so its own cap matters most. See
       # `src/broker_config.BrokerConfig.stream_max_length`.

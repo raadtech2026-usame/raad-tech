@@ -1,9 +1,9 @@
 import { useEffect } from "react";
-import { useVehiclePosition, type LivePosition } from "./useVehiclePosition";
+import { useVehiclePosition, type GpsFixStatus, type LivePosition } from "./useVehiclePosition";
 
 export interface FleetVehicleTrackerProps {
   vehicleId: string;
-  onPositionChange: (vehicleId: string, position: LivePosition) => void;
+  onPositionChange: (vehicleId: string, position: LivePosition, gpsFixStatus: GpsFixStatus) => void;
 }
 
 /**
@@ -23,16 +23,16 @@ export interface FleetVehicleTrackerProps {
  * records the scalability analysis behind capping how many of these ever mount at once.
  */
 export function FleetVehicleTracker({ vehicleId, onPositionChange }: FleetVehicleTrackerProps) {
-  const { livePosition } = useVehiclePosition(vehicleId);
+  const { livePosition, gpsFixStatus } = useVehiclePosition(vehicleId);
 
   useEffect(() => {
     if (livePosition) {
-      onPositionChange(vehicleId, livePosition);
+      onPositionChange(vehicleId, livePosition, gpsFixStatus);
     }
     // `onPositionChange` is a parent-owned callback whose identity may change across renders;
-    // this effect only needs to fire again when this tile's own position actually changes.
+    // this effect only needs to fire again when this tile's own position/fix-state changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicleId, livePosition]);
+  }, [vehicleId, livePosition, gpsFixStatus]);
 
   return null;
 }

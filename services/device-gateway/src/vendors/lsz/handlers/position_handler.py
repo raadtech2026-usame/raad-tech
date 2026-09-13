@@ -70,6 +70,15 @@ Business API side as this deployable's job — see `src/latest_position/writer_p
 docstring for the full ownership rationale. `latest_position_writer` defaults to
 `LoggingLatestPositionWriter` (degrades to a log line, never an exception) when no Redis is
 configured, mirroring `event_publisher`'s own `LoggingEventPublisher` default below.
+
+**`location.fix_valid` is now threaded through as `is_gps_valid` (root-cause fix — RAAD Live
+Tracking wrong-location investigation).** Previously parsed by `protocol.location_status.
+parse_location_status` (the wire's own 'A'/'V' positioning-status flag) and then silently
+discarded — this handler published and cached every position identically regardless of whether
+the device actually had a GPS fix. Combined with `gps_validation.is_plausible_coordinate` (a
+numerically in-range coordinate is not on its own proof of a genuine fix) into one
+`is_gps_valid` flag on `DevicePositionReported` — see that event's own module docstring for the
+full downstream handling this closes.
 """
 
 from __future__ import annotations
@@ -78,6 +87,7 @@ from datetime import datetime, timezone
 
 from src.events.device_position_reported import DevicePositionReported
 from src.events.publisher_port import EventPublisher
+from src.gps_validation import is_plausible_coordinate
 from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
 from src.logging_setup import get_logger, log_with_fields
 from src.vendors.lsz.dispatcher.handler import (
@@ -145,6 +155,9 @@ class MdvrPositionHandler(MdvrMessageHandler):
         await context.device_sessions.touch(message.device_serial_number)
 
         location, _remainder = parse_location_status(message.fields)
+        is_gps_valid = location.fix_valid and is_plausible_coordinate(
+            location.latitude, location.longitude
+        )
 
         event = DevicePositionReported(
             organization_id=session.organization_id,
@@ -160,6 +173,7 @@ class MdvrPositionHandler(MdvrMessageHandler):
             event_time=parse_sent_at(message.sent_at_raw),
             is_backfill=False,
             received_at=datetime.now(timezone.utc),
+            is_gps_valid=is_gps_valid,
         )
         await self._latest_position_writer.write(event)
         await self._event_publisher.publish(event)
@@ -171,5 +185,6 @@ class MdvrPositionHandler(MdvrMessageHandler):
             connection_id=context.connection_id,
             device_serial_number=message.device_serial_number,
             fix_valid=location.fix_valid,
+            is_gps_valid=is_gps_valid,
         )
         return MdvrHandlerResult.no_response()

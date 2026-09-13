@@ -33,6 +33,10 @@ vi.mock("../shared/map/MapView", () => ({ MapView: () => null }));
 vi.mock("../shared/hooks/useWebSocket", () => ({
   useWebSocketChannel: () => ({ status: "closed", lastCloseCode: null, send: vi.fn() }),
 }));
+// `LiveOperationsSection` now reuses `useVehiclePosition` (the same hook `LiveTrackingPage` uses),
+// which seeds itself from this REST snapshot — mocked so the "previews the map" test below never
+// makes a real network call.
+vi.mock("../features/live-monitoring/api", () => ({ getLatestVehiclePosition: vi.fn() }));
 
 import { listDrivers } from "../features/transport-ops/drivers/api";
 import { countStudents, listStudents } from "../features/transport-ops/students/api";
@@ -44,6 +48,7 @@ import { listRoutes } from "../features/transport-ops/routes/api";
 import { listTrips } from "../features/transport-ops/trips/api";
 import { getCurrentSubscription } from "../features/billing/api";
 import { getFinanceSummary } from "../features/school-erp/api";
+import { getLatestVehiclePosition } from "../features/live-monitoring/api";
 
 function pageOf(total: number) {
   return { data: [], page: { total, page: 1, pageSize: 1 } };
@@ -125,6 +130,7 @@ describe("DashboardHomePage", () => {
     vi.mocked(listDevices).mockReset().mockResolvedValue(pageOf(0) as never);
     vi.mocked(listRoutes).mockReset().mockResolvedValue(pageOf(0) as never);
     vi.mocked(listTrips).mockReset();
+    vi.mocked(getLatestVehiclePosition).mockReset().mockResolvedValue(null);
     vi.mocked(getCurrentSubscription).mockReset().mockResolvedValue(null);
     vi.mocked(getFinanceSummary).mockReset().mockResolvedValue({
       billedAmount: "0.00",

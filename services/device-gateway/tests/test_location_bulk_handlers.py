@@ -46,6 +46,14 @@ class RecordingEventPublisher:
         self.published.append(event)
 
 
+class RecordingLatestPositionWriter:
+    def __init__(self) -> None:
+        self.written: list[DevicePositionReported] = []
+
+    async def write(self, event: DevicePositionReported) -> None:
+        self.written.append(event)
+
+
 class LocationHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def _authenticated_context(self, **kwargs) -> HandlerContext:
         async def noop_close(cid, reason):
@@ -249,6 +257,81 @@ class LocationHandlerTests(unittest.IsolatedAsyncioTestCase):
             publisher.published[0].event_time, publisher.published[1].event_time
         )
 
+    async def test_positioned_status_bit_yields_gps_valid_true(self) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation."""
+        publisher = RecordingEventPublisher()
+        handler = LocationHandler(publisher)
+        context = await self._authenticated_context()
+
+        await handler.handle(
+            _make_message(0x0200, body=_build_body(status=0b0010)), context
+        )
+
+        self.assertTrue(publisher.published[0].is_gps_valid)
+
+    async def test_not_positioned_status_bit_yields_gps_valid_false(self) -> None:
+        publisher = RecordingEventPublisher()
+        handler = LocationHandler(publisher)
+        context = await self._authenticated_context()
+
+        await handler.handle(
+            _make_message(0x0200, body=_build_body(status=0b0000)), context
+        )
+
+        self.assertFalse(publisher.published[0].is_gps_valid)
+
+    async def test_positioned_but_implausible_coordinate_yields_gps_valid_false(
+        self,
+    ) -> None:
+        """The wire's own "positioned" bit alone is not sufficient — an implausible
+        coordinate (here, null island) must still be flagged invalid."""
+        publisher = RecordingEventPublisher()
+        handler = LocationHandler(publisher)
+        context = await self._authenticated_context()
+
+        await handler.handle(
+            _make_message(
+                0x0200,
+                body=_build_body(status=0b0010, raw_latitude=0, raw_longitude=0),
+            ),
+            context,
+        )
+
+        self.assertFalse(publisher.published[0].is_gps_valid)
+
+    async def test_writes_to_latest_position_writer_when_gps_valid(self) -> None:
+        """Root-cause fix: `LocationHandler` previously took no `latest_position_writer` at
+        all, so the live, primary JT/T 808 adapter never updated `vehicle:{id}:last`."""
+        publisher = RecordingEventPublisher()
+        writer = RecordingLatestPositionWriter()
+        handler = LocationHandler(publisher, latest_position_writer=writer)
+        context = await self._authenticated_context()
+
+        await handler.handle(
+            _make_message(0x0200, body=_build_body(status=0b0010)), context
+        )
+
+        self.assertEqual(len(writer.written), 1)
+        self.assertTrue(writer.written[0].is_gps_valid)
+
+    async def test_does_not_gate_publishing_when_gps_invalid(self) -> None:
+        """A fix-invalid report is still published/persisted for audit — only the "latest
+        known live position" cache must skip it (enforced inside the writer itself)."""
+        publisher = RecordingEventPublisher()
+        writer = RecordingLatestPositionWriter()
+        handler = LocationHandler(publisher, latest_position_writer=writer)
+        context = await self._authenticated_context()
+
+        await handler.handle(
+            _make_message(0x0200, body=_build_body(status=0b0000)), context
+        )
+
+        self.assertEqual(len(publisher.published), 1)
+        self.assertFalse(publisher.published[0].is_gps_valid)
+        # The writer is still called — gating is that port's own responsibility (tested in
+        # test_latest_position_writer.py), not this handler's.
+        self.assertEqual(len(writer.written), 1)
+
 
 class BulkLocationHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def _authenticated_context(self) -> HandlerContext:
@@ -350,6 +433,21 @@ class BulkLocationHandlerTests(unittest.IsolatedAsyncioTestCase):
             await handler.handle(_make_message(0x0704, body=b"\x00"), context)
 
         self.assertEqual(publisher.published, [])
+
+    async def test_batch_items_carry_gps_valid_per_item(self) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation: each batch item's
+        own "positioned" status bit is evaluated independently, not once for the whole message."""
+        publisher = RecordingEventPublisher()
+        handler = BulkLocationHandler(publisher)
+        context = await self._authenticated_context()
+
+        body = self._bulk_body(
+            [_build_body(status=0b0010), _build_body(status=0b0000)]
+        )
+        await handler.handle(_make_message(0x0704, body=body), context)
+
+        self.assertTrue(publisher.published[0].is_gps_valid)
+        self.assertFalse(publisher.published[1].is_gps_valid)
 
     async def test_unauthenticated_terminal_drops_batch_without_publishing(
         self,

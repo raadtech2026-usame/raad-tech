@@ -61,6 +61,18 @@ structured log line, never a crash. A real outbox+broker implementation is injec
 one is built (a later phase, once a broker dependency is proposed and approved per `.claude/
 rules/workflow.md` #1/#2).
 
+**`latest_position_writer` (root-cause fix, RAAD Live Tracking wrong-location investigation —
+constructor parameter, previously absent entirely).** `LocationHandler` now writes the
+`vehicle:{id}:last` Redis snapshot on every accepted `0x0200`, mirroring `vendors.lsz.server.
+MdvrServer`'s existing identical parameter. This was the one adapter `gateway.
+DeviceGateway._build_latest_position_writer` deliberately left unwired, per that method's own
+now-corrected docstring: it wired the writer only into the LSZ adapter, an assumption from
+before ADR-0025 confirmed JT/T 808 — not LSZ — is the live protocol for the procured hardware.
+Left unwired, `GET /tracking/vehicles/{id}/latest` and the ADR-0031 Fleet Overview snapshot could
+never reflect a real position from this, the actually-connected adapter. Defaults to
+`LoggingLatestPositionWriter` (degrades to a log line, never an exception), the same posture
+`event_publisher` above already takes for its own optional dependency.
+
 **`device_session_registry` (P0 #2 fix, device-gateway session-durability audit, 2026-08-25,
 constructor parameter):** the `DeviceSessionRegistryPort` implementation backing
 `device_sessions`/`DeviceSessionManager`. Defaults to the in-memory `DeviceSessionRegistry` —
@@ -105,6 +117,7 @@ from src.vendors.jt808.handlers.provisioning_port import (
 )
 from src.vendors.jt808.handlers.registration_handler import TerminalRegistrationHandler
 from src.vendors.jt808.handlers.resource_list_handler import ResourceListHandler
+from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.vendors.jt808.protocol.exceptions import ProtocolError
 from src.vendors.jt808.protocol.framing import FrameBuffer
@@ -138,10 +151,12 @@ class Jt808Server(DeviceProtocolAdapter):
         device_provisioning: DeviceProvisioningPort | None = None,
         event_publisher: EventPublisher | None = None,
         device_session_registry: DeviceSessionRegistryPort | None = None,
+        latest_position_writer: LatestPositionWriter | None = None,
     ) -> None:
         self._config = config or ServerConfig.from_env()
         self._device_provisioning = device_provisioning or NullDeviceProvisioningPort()
         self._event_publisher = event_publisher or LoggingEventPublisher()
+        self._latest_position_writer = latest_position_writer or LoggingLatestPositionWriter()
         self._sessions = SessionRegistry()
         self._device_session_registry = device_session_registry or DeviceSessionRegistry()
         self._device_sessions = DeviceSessionManager(
@@ -183,7 +198,10 @@ class Jt808Server(DeviceProtocolAdapter):
         )
         self._handler_registry.register(
             message_ids.LOCATION_REPORT,
-            LocationHandler(self._event_publisher),
+            LocationHandler(
+                self._event_publisher,
+                latest_position_writer=self._latest_position_writer,
+            ),
         )
         self._handler_registry.register(
             message_ids.BULK_LOCATION_REPORT,

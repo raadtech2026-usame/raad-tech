@@ -203,6 +203,12 @@ class DevicePositionReportedProcessor(EventProcessor):
         service = self._container.resolve(TrackingApplicationService)
         uow = self._container.resolve(TrackingUnitOfWork)
 
+        # Root-cause fix (RAAD Live Tracking wrong-location investigation): `True` when the
+        # payload carries no such key (a broker event published by a device-gateway build
+        # predating this field), matching every other `payload.get(..., default)` fallback in
+        # this method.
+        is_gps_valid = bool(payload.get("is_gps_valid", True))
+
         if payload.get("is_backfill", False):
             await service.record_backfill_position(
                 RecordBackfillPositionCommand(
@@ -216,6 +222,7 @@ class DevicePositionReportedProcessor(EventProcessor):
                     speed_kph=payload.get("speed_kph"),
                     heading_deg=payload.get("heading_deg"),
                     alarm_flags=payload.get("alarm_flags"),
+                    is_gps_valid=is_gps_valid,
                 ),
                 uow=uow,
             )
@@ -233,10 +240,15 @@ class DevicePositionReportedProcessor(EventProcessor):
                     speed_kph=payload.get("speed_kph"),
                     heading_deg=payload.get("heading_deg"),
                     alarm_flags=payload.get("alarm_flags"),
+                    is_gps_valid=is_gps_valid,
                 ),
                 uow=uow,
             )
-            if trip is not None:
+            # A fix-invalid position is still persisted above (for audit/debugging), but must
+            # never drive geofence evaluation — an implausible/stale coordinate could otherwise
+            # fire a spurious "arrived at organization"/"exited" crossing (and its parent
+            # notification) off data nobody should trust as the vehicle's real location.
+            if trip is not None and is_gps_valid:
                 await self._evaluate_geofence(
                     organization_id=organization_id,
                     trip=trip,

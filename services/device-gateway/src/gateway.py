@@ -32,6 +32,15 @@ what it already defaulted to (`LoggingEventPublisher`,
 `NullMdvrDeviceProvisioningPort`/`NullDeviceProvisioningPort`, in-memory `DeviceSessionRegistry`)
 — nothing about the unconfigured path changes.
 
+**A second, distinct Redis connection (`CacheConfig`/`DEVICE_GATEWAY_REDIS_URL`) backs
+`RedisLatestPositionWriter` (root-cause fix, RAAD Live Tracking wrong-location investigation) —
+never the broker connection above.** This stack's own db-split convention (CLAUDE.md Permanent
+Engineering Lessons) puts the broker on a different logical Redis DB than the cache
+`vehicle:{id}:last` lives on; reusing the broker client for both, as this file previously did
+unconditionally, silently wrote the snapshot to the wrong DB in any environment that actually
+follows that convention (confirmed live in this session). See `cache_config.py`'s own module
+docstring for the full record.
+
 Each adapter's own `serve_forever()` remains for standalone single-adapter use (its own tests, or
 running just one adapter in isolation) — this composition root calls `start()`/`stop()` on each
 adapter directly instead, since letting every adapter install its own `SIGINT`/`SIGTERM` handler
@@ -60,6 +69,7 @@ from redis.asyncio import Redis
 
 from src.adapter import DeviceProtocolAdapter
 from src.broker_config import BrokerConfig
+from src.cache_config import CacheConfig
 from src.events.publisher_port import EventPublisher, LoggingEventPublisher
 from src.events.redis_event_publisher import RedisEventPublisher
 from src.latest_position.redis_latest_position_writer import RedisLatestPositionWriter
@@ -89,10 +99,18 @@ class DeviceGateway:
         jt808_config: Jt808Config | None = None,
         lsz_config: LszConfig | None = None,
         broker_config: BrokerConfig | None = None,
+        cache_config: CacheConfig | None = None,
         redis_client: Redis | None = None,
+        cache_redis_client: Redis | None = None,
     ) -> None:
         self._broker_config = broker_config or BrokerConfig.from_env()
+        self._cache_config = cache_config or CacheConfig.from_env()
         self._redis_client = redis_client or self._build_redis_client()
+        # Root-cause fix (RAAD Live Tracking wrong-location investigation) — a Redis connection
+        # distinct from `self._redis_client` (the broker client): see `cache_config.py`'s own
+        # module docstring for the exact bug this closes. `cache_redis_client`, if given
+        # explicitly, wins outright (mirrors `redis_client`'s own precedent).
+        self._cache_redis_client = cache_redis_client or self._build_cache_redis_client()
 
         self._registry_projection: DeviceRegistryProjection | None = None
         self._registry_consumer: RedisDeviceRegistryConsumer | None = None
@@ -110,6 +128,7 @@ class DeviceGateway:
             device_provisioning=jt808_provisioning,
             event_publisher=self._event_publisher,
             device_session_registry=self._build_jt808_session_registry(),
+            latest_position_writer=self._latest_position_writer,
         )
         self._adapters: list[DeviceProtocolAdapter] = [
             self._jt808_server,
@@ -130,6 +149,16 @@ class DeviceGateway:
             return None
         return Redis.from_url(self._broker_config.url, decode_responses=True)
 
+    def _build_cache_redis_client(self) -> Redis | None:
+        """Root-cause fix (RAAD Live Tracking wrong-location investigation) — see
+        `cache_config.py`'s own module docstring for the full bug this closes. Falls back to
+        `self._redis_client` (the broker connection) when `DEVICE_GATEWAY_REDIS_URL` isn't
+        configured, so a deployment/test that hasn't split cache from broker still gets a
+        working (if unsplit) cache rather than silently losing the write."""
+        if self._cache_config.url is not None:
+            return Redis.from_url(self._cache_config.url, decode_responses=True)
+        return self._redis_client
+
     def _build_event_publisher(self) -> EventPublisher:
         if self._redis_client is not None:
             return RedisEventPublisher(
@@ -138,12 +167,23 @@ class DeviceGateway:
         return LoggingEventPublisher()
 
     def _build_latest_position_writer(self) -> LatestPositionWriter:
-        """`vehicle:{id}:last` snapshot writer (roadmap A2) — same shared Redis client and same
-        conditional-on-broker-config pattern as `_build_event_publisher` above. Only wired into
-        `MdvrServer` (the LSZ adapter, the currently-integrated hardware) — `Jt808Server` stays
-        untouched per CLAUDE.md's "kept, untouched, dormant" posture for the JT/T 808 code."""
-        if self._redis_client is not None:
-            return RedisLatestPositionWriter(self._redis_client)
+        """`vehicle:{id}:last` snapshot writer (roadmap A2), on the dedicated cache connection
+        (`self._cache_redis_client`) — never the broker connection, per `cache_config.py`'s own
+        module docstring.
+
+        **Corrected (RAAD Live Tracking wrong-location investigation): wired into both
+        adapters, not LSZ alone.** This docstring previously said the writer was "only wired
+        into `MdvrServer` (the LSZ adapter, the currently-integrated hardware) — `Jt808Server`
+        stays untouched per CLAUDE.md's 'kept, untouched, dormant' posture for the JT/T 808
+        code" — an assumption from before ADR-0025 (2026-08-10) reversed which vendor protocol
+        is actually live: the procured hardware is confirmed JT/T 808-2019-compliant, and
+        `Jt808Server`/`vendors/jt808/` is now this deployable's own live, primary GPS adapter
+        (`.claude/rules/jt808.md`'s own status paragraph), while `vendors/lsz/` is the one kept
+        dormant. Leaving `Jt808Server` unwired meant `vehicle:{id}:last` — and therefore
+        `GET /tracking/vehicles/{id}/latest` and the ADR-0031 Fleet Overview snapshot — could
+        never reflect a real position from the adapter actually talking to the hardware."""
+        if self._cache_redis_client is not None:
+            return RedisLatestPositionWriter(self._cache_redis_client)
         return LoggingLatestPositionWriter()
 
     def _build_jt808_session_registry(self) -> RedisDeviceSessionRegistry | None:

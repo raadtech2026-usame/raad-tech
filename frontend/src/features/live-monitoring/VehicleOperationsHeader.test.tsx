@@ -24,7 +24,12 @@ function baseProps(overrides: Partial<VehicleOperationsHeaderProps> = {}): Vehic
     vehiclesLoading: false,
     selectedVehicleId: "",
     onSelectVehicle: vi.fn(),
-    gps: { wsStatus: "connecting", isAuthOrPolicyClose: false, livePosition: null },
+    gps: {
+      wsStatus: "connecting",
+      isAuthOrPolicyClose: false,
+      livePosition: null,
+      gpsFixStatus: "no_fix",
+    },
     deviceStatus: "idle",
     device: null,
     showCameraChip: true,
@@ -48,16 +53,40 @@ describe("VehicleOperationsHeader", () => {
     expect(onSelectVehicle).toHaveBeenCalledWith("v2");
   });
 
-  it("shows GPS Live only when the socket is open and not policy-closed", () => {
+  it("shows GPS Live only when the socket is open, not policy-closed, and the fix is live", () => {
     render(
       <VehicleOperationsHeader
         {...baseProps({
           selectedVehicleId: "v1",
-          gps: { wsStatus: "open", isAuthOrPolicyClose: false, livePosition: null },
+          gps: {
+            wsStatus: "open",
+            isAuthOrPolicyClose: false,
+            livePosition: { lat: 2.05, lng: 45.32, headingDeg: 90, eventTime: "2026-01-01T00:00:00Z" },
+            gpsFixStatus: "live",
+          },
         })}
       />,
     );
     expect(screen.getByTestId("chip-gps")).toHaveTextContent("Live");
+  });
+
+  it("shows 'No Fix' (root-cause fix) when the socket is open but the device reports no GPS fix", () => {
+    // The exact production bug this investigation started from: a connected socket must never
+    // be conflated with a trustworthy position.
+    render(
+      <VehicleOperationsHeader
+        {...baseProps({
+          selectedVehicleId: "v1",
+          gps: {
+            wsStatus: "open",
+            isAuthOrPolicyClose: false,
+            livePosition: { lat: 2.05, lng: 45.32, headingDeg: 90, eventTime: "2026-01-01T00:00:00Z" },
+            gpsFixStatus: "no_fix",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByTestId("chip-gps")).toHaveTextContent("No Fix");
   });
 
   it("shows 'Not authorized' rather than a silent connecting state on a policy close", () => {
@@ -65,7 +94,12 @@ describe("VehicleOperationsHeader", () => {
       <VehicleOperationsHeader
         {...baseProps({
           selectedVehicleId: "v1",
-          gps: { wsStatus: "closed", isAuthOrPolicyClose: true, livePosition: null },
+          gps: {
+            wsStatus: "closed",
+            isAuthOrPolicyClose: true,
+            livePosition: null,
+            gpsFixStatus: "no_fix",
+          },
         })}
       />,
     );
@@ -118,10 +152,28 @@ describe("VehicleOperationsHeader", () => {
             wsStatus: "open",
             isAuthOrPolicyClose: false,
             livePosition: { lat: 2.05, lng: 45.32, headingDeg: 90, eventTime: "2026-01-01T00:00:00Z" },
+            gpsFixStatus: "live",
           },
         })}
       />,
     );
     expect(screen.getByText(/Last GPS update/)).toBeInTheDocument();
+  });
+
+  it("shows 'Last valid position' instead of 'Last GPS update' while the fix is invalid", () => {
+    render(
+      <VehicleOperationsHeader
+        {...baseProps({
+          selectedVehicleId: "v1",
+          gps: {
+            wsStatus: "open",
+            isAuthOrPolicyClose: false,
+            livePosition: { lat: 2.05, lng: 45.32, headingDeg: 90, eventTime: "2026-01-01T00:00:00Z" },
+            gpsFixStatus: "no_fix",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText(/Last valid position/)).toBeInTheDocument();
   });
 });

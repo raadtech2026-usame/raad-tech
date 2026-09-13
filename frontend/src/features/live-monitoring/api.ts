@@ -4,7 +4,14 @@ import type { OffsetPageWire } from "../../shared/api/types";
 import { ApiError } from "../../shared/api/types";
 
 /** `VehiclePositionResponse` (`tracking/api/schemas.py`) — the shape `GET /tracking/vehicles/
- * {id}/latest` returns. */
+ * {id}/latest` returns.
+ *
+ * `isGpsValid` (root-cause fix, RAAD Live Tracking wrong-location investigation): `false` means
+ * the device-plane ACL (`services/device-gateway`) could not confirm a genuine GPS fix behind
+ * this coordinate at report time — never invented client-side. This endpoint is Redis-backed
+ * (`vehicle:{id}:last`) and, since the same fix, only ever caches a fix-valid position, so this
+ * is `true` in practice for anything this call returns — carried anyway so this type matches the
+ * wire contract exactly and this endpoint's behavior isn't silently assumed to never change. */
 export interface VehiclePosition {
   vehicleId: string;
   tripId: string | null;
@@ -13,6 +20,7 @@ export interface VehiclePosition {
   speedKph: number;
   headingDeg: number;
   eventTime: string;
+  isGpsValid: boolean;
 }
 
 interface VehiclePositionWire {
@@ -23,6 +31,7 @@ interface VehiclePositionWire {
   speed_kph: number;
   heading_deg: number;
   event_time: string;
+  is_gps_valid: boolean;
 }
 
 function toVehiclePosition(wire: VehiclePositionWire): VehiclePosition {
@@ -34,6 +43,7 @@ function toVehiclePosition(wire: VehiclePositionWire): VehiclePosition {
     speedKph: wire.speed_kph,
     headingDeg: wire.heading_deg,
     eventTime: wire.event_time,
+    isGpsValid: wire.is_gps_valid,
   };
 }
 
@@ -71,6 +81,13 @@ export interface PositionFrame {
   speed_kph: number;
   heading_deg: number;
   event_time: string;
+  /** Root-cause fix (RAAD Live Tracking wrong-location investigation) — `false` means the
+   * device had no confirmed GPS fix when this report was made (a stale/implausible coordinate
+   * may follow, e.g. a cached factory location). Unlike the REST snapshot, this channel
+   * forwards every accepted position report unfiltered (`tracking/api/ws.py`'s own docstring:
+   * a revoked subscriber must stop on the *next* frame), so this field can genuinely be `false`
+   * here — callers must not treat every frame as an update to the vehicle's live position. */
+  is_gps_valid: boolean;
 }
 
 export interface SubscriptionClosedFrame {

@@ -40,7 +40,10 @@ _LOCATION_STATUS_FIELDS = [
 
 
 def _make_message(
-    *, device_serial_number: str = "00007", drive_flag: str = "1"
+    *,
+    device_serial_number: str = "00007",
+    drive_flag: str = "1",
+    location_fields: list[str] | None = None,
 ) -> MdvrInboundMessage:
     return MdvrInboundMessage(
         keyword="V114",
@@ -48,10 +51,14 @@ def _make_message(
         device_serial_number=device_serial_number,
         workstation_serial_number=None,
         sent_at_raw="180903 135949",
-        fields=_LOCATION_STATUS_FIELDS + [drive_flag],
+        fields=(location_fields or _LOCATION_STATUS_FIELDS) + [drive_flag],
         declared_length=165,
         received_at=datetime.now(timezone.utc),
     )
+
+
+def _fields_with_positioning_status(status_token: str) -> list[str]:
+    return [status_token] + _LOCATION_STATUS_FIELDS[1:]
 
 
 class RecordingEventPublisher:
@@ -122,6 +129,36 @@ class MdvrPositionHandlerTests(unittest.IsolatedAsyncioTestCase):
         # come through as the documented "uncertain -> 0" default, not the raw out-of-range value.
         self.assertEqual(event.heading_deg, 0)
         self.assertEqual(event.alarm_flags, 0)
+        # Root-cause fix — RAAD Live Tracking wrong-location investigation: a genuine 'A' (fix
+        # valid) flag over a numerically-plausible coordinate must flag is_gps_valid=True.
+        self.assertTrue(event.is_gps_valid)
+
+    async def test_void_fix_flag_yields_gps_valid_false(self) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation: previously
+        `location.fix_valid` (the wire's own 'A'/'V' flag) was parsed and then discarded, so a
+        device reporting no fix ('V') was published and cached identically to a live one — for
+        this vendor's hardware, that let a stale cached factory coordinate (Shenzhen, China)
+        reach the live map indistinguishably from a genuine Mogadishu reading."""
+        publisher = RecordingEventPublisher()
+        handler = MdvrPositionHandler(publisher)
+        context = await self._authenticated_context()
+
+        void_fields = _fields_with_positioning_status("V0010")
+        await handler.handle(_make_message(location_fields=void_fields), context)
+
+        self.assertFalse(publisher.published[0].is_gps_valid)
+
+    async def test_valid_fix_flag_over_null_island_still_yields_gps_valid_false(self) -> None:
+        """The wire's own 'A' flag alone is not sufficient — a numerically implausible
+        coordinate (null island) must still be flagged invalid."""
+        publisher = RecordingEventPublisher()
+        handler = MdvrPositionHandler(publisher)
+        context = await self._authenticated_context()
+
+        null_island_fields = ["A0010", "0", "0", "0", "0", "0", "0"] + _LOCATION_STATUS_FIELDS[7:]
+        await handler.handle(_make_message(location_fields=null_island_fields), context)
+
+        self.assertFalse(publisher.published[0].is_gps_valid)
 
     async def test_position_report_from_unauthenticated_device_is_dropped_not_crashed(
         self,

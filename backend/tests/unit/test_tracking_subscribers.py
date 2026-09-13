@@ -194,6 +194,57 @@ class DevicePositionReportedProcessorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(command.heading_deg)
         self.assertIsNone(command.alarm_flags)
 
+    async def test_missing_is_gps_valid_defaults_to_true(self) -> None:
+        event = _make_event(
+            {
+                "organization_id": VALID_ORG_ULID,
+                "vehicle_id": "vehicle-1",
+                "device_id": "device-1",
+                "latitude": 22.0,
+                "longitude": 114.0,
+                "event_time": "2026-07-24T09:00:00+00:00",
+            }
+        )
+        await self.processor.process(event)
+
+        self.assertTrue(self.service.recorded_positions[0].is_gps_valid)
+
+    async def test_is_gps_valid_false_is_forwarded_to_the_command(self) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation: a fix-invalid
+        report must still be recorded (for audit), carrying its own flag through verbatim."""
+        event = _make_event(
+            {
+                "organization_id": VALID_ORG_ULID,
+                "vehicle_id": "vehicle-1",
+                "device_id": "device-1",
+                "latitude": 22.672803,
+                "longitude": 114.059395,
+                "event_time": "2026-07-24T09:00:00+00:00",
+                "is_backfill": False,
+                "is_gps_valid": False,
+            }
+        )
+        await self.processor.process(event)
+
+        self.assertFalse(self.service.recorded_positions[0].is_gps_valid)
+
+    async def test_is_gps_valid_false_is_forwarded_for_backfill_too(self) -> None:
+        event = _make_event(
+            {
+                "organization_id": VALID_ORG_ULID,
+                "vehicle_id": "vehicle-1",
+                "device_id": "device-1",
+                "latitude": 22.0,
+                "longitude": 114.0,
+                "event_time": "2026-07-24T09:00:00+00:00",
+                "is_backfill": True,
+                "is_gps_valid": False,
+            }
+        )
+        await self.processor.process(event)
+
+        self.assertFalse(self.service.recorded_backfills[0].is_gps_valid)
+
     async def test_event_org_id_is_preferred_over_payload_organization_id(self) -> None:
         other_org = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
         event = _make_event(
@@ -661,6 +712,36 @@ class GeofenceEvaluationTests(unittest.IsolatedAsyncioTestCase):
         await processor.process(event)
 
         self.assertEqual(tracking_service.recorded_crossings, [])
+
+    async def test_gps_invalid_position_never_triggers_geofence_evaluation(self) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation: an implausible/
+        stale coordinate (e.g. a device reporting no fix) must never be able to fire a spurious
+        arrived/exited-geofence event — mirrors the backfill exemption immediately above."""
+        stop = _make_stop(id="stop-1", sequence_no=1, geofence_radius_m=100)
+        route = _make_route([stop])
+        organization = _make_organization(latitude=0.0, longitude=0.0, geofence_radius_m=50)
+        clock = _MutableClock(datetime(2026, 7, 26, 9, 0, 0, tzinfo=timezone.utc))
+        processor, tracking_service, _state_port = self._make_processor(
+            route=route, organization=organization, clock=clock
+        )
+
+        event = _make_event(
+            {
+                "organization_id": VALID_ORG_ULID,
+                "vehicle_id": "vehicle-1",
+                "device_id": "device-1",
+                "latitude": 0.0,
+                "longitude": 0.0,
+                "event_time": "2026-07-26T09:00:00+00:00",
+                "is_backfill": False,
+                "is_gps_valid": False,
+            }
+        )
+        await processor.process(event)
+
+        self.assertEqual(tracking_service.recorded_crossings, [])
+        # The position is still recorded (for audit) — only geofence evaluation is skipped.
+        self.assertEqual(len(tracking_service.recorded_positions), 1)
 
     async def test_no_active_trip_skips_geofence_evaluation(self) -> None:
         stop = _make_stop(id="stop-1", sequence_no=1, geofence_radius_m=100)

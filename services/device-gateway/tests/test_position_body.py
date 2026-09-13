@@ -161,6 +161,21 @@ class PositionBodyParsingTests(unittest.TestCase):
         with self.assertRaises(MalformedFrameError):
             parse_position_report_body(_build_body(time_bytes=bad_time))
 
+    def test_status_bit_1_set_means_gps_valid(self) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation: status bit 1
+        ("positioned") was previously parsed nowhere at all, so a device reporting "not
+        positioned" was indistinguishable from a genuine live fix downstream."""
+        report = parse_position_report_body(_build_body(status=0b0010))  # positioned only
+        self.assertTrue(report.gps_valid)
+
+    def test_status_bit_1_clear_means_gps_invalid(self) -> None:
+        report = parse_position_report_body(_build_body(status=0b0000))  # not positioned
+        self.assertFalse(report.gps_valid)
+
+    def test_gps_valid_is_independent_of_hemisphere_bits(self) -> None:
+        report = parse_position_report_body(_build_body(status=0b1110))  # positioned, S, W
+        self.assertTrue(report.gps_valid)
+
 
 if __name__ == "__main__":
     unittest.main()

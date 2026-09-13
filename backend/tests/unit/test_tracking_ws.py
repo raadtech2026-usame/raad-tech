@@ -483,6 +483,7 @@ class PositionFrameTests(unittest.TestCase):
         "alarm_flags": 0,
         "event_time": "2026-07-22T08:00:00Z",
         "is_backfill": False,
+        "is_gps_valid": True,
     }
 
     def test_maps_latitude_longitude_to_the_outbound_lat_lng_keys(self) -> None:
@@ -508,6 +509,7 @@ class PositionFrameTests(unittest.TestCase):
                 "speed_kph": 34,
                 "heading_deg": 120,
                 "event_time": "2026-07-22T08:00:00Z",
+                "is_gps_valid": True,
             },
         )
 
@@ -519,6 +521,21 @@ class PositionFrameTests(unittest.TestCase):
 
         self.assertIsNone(frame["lat"])
         self.assertIsNone(frame["lng"])
+
+    def test_missing_is_gps_valid_defaults_to_true(self) -> None:
+        """A broker event published before this field existed (or by a not-yet-updated
+        device-gateway build) must not be treated as fix-invalid by omission."""
+        frame = _position_frame({"vehicle_id": "veh-1"})
+
+        self.assertTrue(frame["is_gps_valid"])
+
+    def test_is_gps_valid_false_forwards_verbatim(self) -> None:
+        """Root-cause fix — RAAD Live Tracking wrong-location investigation: this channel must
+        forward a fix-invalid report's own flag, not silently default it away."""
+        payload = dict(self.REALISTIC_PAYLOAD, is_gps_valid=False)
+        frame = _position_frame(payload)
+
+        self.assertFalse(frame["is_gps_valid"])
 
 
 class TrackingFanoutHandlerTests(unittest.IsolatedAsyncioTestCase):
@@ -549,6 +566,7 @@ class TrackingFanoutHandlerTests(unittest.IsolatedAsyncioTestCase):
                 "speed_kph": 34,
                 "heading_deg": 120,
                 "event_time": "2026-07-22T08:00:00Z",
+                "is_gps_valid": True,
             },
         )
 

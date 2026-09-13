@@ -6,7 +6,8 @@ import { LiveIndicator } from "../../shared/components/LiveIndicator/LiveIndicat
 import { MapView } from "../../shared/map/MapView";
 import type { MapProvider } from "../../shared/map/MapProvider";
 import { FleetVehicleTracker } from "./FleetVehicleTracker";
-import type { LivePosition } from "./useVehiclePosition";
+import type { GpsFixStatus, LivePosition } from "./useVehiclePosition";
+import { buildVehiclePopupHtml, createVehicleMarkerElement, updateVehicleMarkerFixStatus } from "./vehicleMarker";
 import type { OnlineVehicle } from "./api";
 import styles from "./FleetMapPanel.module.css";
 
@@ -22,29 +23,18 @@ export interface FleetMapPanelProps {
   onSelectVehicle: (vehicleId: string) => void;
 }
 
-function markerTooltip(vehicle: OnlineVehicle, position: { speedKph: number | null }): string {
-  const lines = [vehicle.label ? `${vehicle.plateNo} — ${vehicle.label}` : vehicle.plateNo, "Online"];
-  if (position.speedKph !== null) {
-    lines.push(`${position.speedKph} km/h`);
-  }
-  lines.push("Click to view this vehicle");
-  return lines.join("\n");
-}
-
-function createMarkerElement(vehicle: OnlineVehicle, onClick: () => void): HTMLDivElement {
-  const el = document.createElement("div");
-  el.className = styles.marker;
-  el.setAttribute("role", "button");
-  el.setAttribute("tabindex", "0");
-  el.setAttribute("aria-label", `${vehicle.label ?? vehicle.plateNo} — click to view`);
-  el.addEventListener("click", onClick);
-  el.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      onClick();
-    }
-  });
-  return el;
+function popupHtml(vehicle: OnlineVehicle, position: ResolvedPosition): string {
+  const title = vehicle.label ? `${vehicle.plateNo} — ${vehicle.label}` : vehicle.plateNo;
+  return buildVehiclePopupHtml(
+    {
+      title,
+      fixStatus: position.fixStatus,
+      speedKph: position.speedKph,
+      eventTime: position.eventTime,
+      actionHint: "Click to view this vehicle",
+    },
+    { popup: styles.popup, title: styles.popupTitle, status: styles.popupStatus, muted: styles.popupMuted },
+  );
 }
 
 interface ResolvedPosition {
@@ -52,6 +42,8 @@ interface ResolvedPosition {
   lng: number;
   headingDeg?: number;
   speedKph: number | null;
+  eventTime: string;
+  fixStatus: GpsFixStatus;
 }
 
 /**
@@ -67,12 +59,24 @@ interface ResolvedPosition {
  * **Realtime updates reuse the existing `/ws/tracking` infrastructure unchanged**: one
  * `FleetVehicleTracker` (one independent `useVehiclePosition` instance) per vehicle in the
  * capped online set the backend already returned — never a new WebSocket protocol, never REST
- * polling (ADR-0031's own scalability analysis).
+ * polling (ADR-0031's own scalability analysis). Each tracker also reports the vehicle's own
+ * `GpsFixStatus` (root-cause fix, RAAD Live Tracking wrong-location investigation), which colors
+ * that vehicle's marker exactly as `VehicleMapPanel`'s own marker is colored — a vehicle whose
+ * device is reporting but has no genuine GPS fix is never shown identically to one with a live,
+ * valid position.
+ *
+ * **No clustering** — ADR-0031's own scalability analysis capped this view at
+ * `FLEET_OVERVIEW_MAX_ONLINE_VEHICLES` (100) precisely because RAAD's realistic per-organization
+ * fleet size (tens to a couple hundred buses) never needs it; clustering is real added
+ * complexity (expand-on-zoom behavior, cluster styling) this view's own scale doesn't justify —
+ * revisit only if that cap is ever raised.
  */
 export function FleetMapPanel({ vehicles, totalOnline, isLoading, onSelectVehicle }: FleetMapPanelProps) {
   const providerRef = useRef<MapProvider | null>(null);
   const markerElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
-  const [livePositions, setLivePositions] = useState<Record<string, LivePosition>>({});
+  const [livePositions, setLivePositions] = useState<
+    Record<string, { position: LivePosition; fixStatus: GpsFixStatus }>
+  >({});
   const hasFitBoundsRef = useRef(false);
 
   // A fresh fleet-map mount (or a changed vehicle set) never carries over the previous set's
@@ -83,23 +87,30 @@ export function FleetMapPanel({ vehicles, totalOnline, isLoading, onSelectVehicl
     hasFitBoundsRef.current = false;
   }, [vehicles]);
 
-  const handlePositionChange = (vehicleId: string, position: LivePosition) => {
-    setLivePositions((prev) => ({ ...prev, [vehicleId]: position }));
+  const handlePositionChange = (
+    vehicleId: string,
+    position: LivePosition,
+    fixStatus: GpsFixStatus,
+  ) => {
+    setLivePositions((prev) => ({ ...prev, [vehicleId]: { position, fixStatus } }));
   };
 
   // Effective position per vehicle: a live `/ws/tracking` frame once one has arrived, falling
-  // back to the snapshot's own `position` (itself `null` today for every vehicle — ADR-0031's
-  // disclosed JT808-writer gap — until that's separately closed).
+  // back to the snapshot's own `position` (Redis-backed and, since the root-cause fix, always a
+  // confirmed valid-fix reading when present — so a snapshot-only vehicle is shown "live" rather
+  // than an invented intermediate state).
   const resolvedPositions = useMemo(() => {
     const map = new Map<string, ResolvedPosition>();
     for (const vehicle of vehicles) {
       const live = livePositions[vehicle.vehicleId];
       if (live) {
         map.set(vehicle.vehicleId, {
-          lat: live.lat,
-          lng: live.lng,
-          headingDeg: live.headingDeg,
+          lat: live.position.lat,
+          lng: live.position.lng,
+          headingDeg: live.position.headingDeg,
           speedKph: vehicle.position?.speedKph ?? null,
+          eventTime: live.position.eventTime,
+          fixStatus: live.fixStatus,
         });
       } else if (vehicle.position) {
         map.set(vehicle.vehicleId, {
@@ -107,6 +118,8 @@ export function FleetMapPanel({ vehicles, totalOnline, isLoading, onSelectVehicl
           lng: vehicle.position.longitude,
           headingDeg: vehicle.position.headingDeg ?? undefined,
           speedKph: vehicle.position.speedKph,
+          eventTime: vehicle.position.eventTime,
+          fixStatus: "live",
         });
       }
     }
@@ -131,15 +144,29 @@ export function FleetMapPanel({ vehicles, totalOnline, isLoading, onSelectVehicl
       const existingElement = markerElementsRef.current.get(vehicle.vehicleId);
       if (existingElement) {
         provider.updateMarker(vehicle.vehicleId, { lat: position.lat, lng: position.lng }, position.headingDeg);
-        existingElement.title = markerTooltip(vehicle, position);
+        updateVehicleMarkerFixStatus(existingElement, position.fixStatus);
+        // Root-cause fix (vehicle-popup staleness investigation): previously the popup's speed/
+        // fix-status/last-GPS text was set once, at `addMarker` time, and never touched again —
+        // now refreshed on every position/status tick, in place, via `updateMarkerPopup`.
+        provider.updateMarkerPopup(vehicle.vehicleId, popupHtml(vehicle, position));
       } else {
-        const element = createMarkerElement(vehicle, () => onSelectVehicle(vehicle.vehicleId));
-        element.title = markerTooltip(vehicle, position);
+        const element = createVehicleMarkerElement({
+          fixStatus: position.fixStatus,
+          ariaLabel: `${vehicle.label ?? vehicle.plateNo} — click to view`,
+        });
+        element.addEventListener("click", () => onSelectVehicle(vehicle.vehicleId));
+        element.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelectVehicle(vehicle.vehicleId);
+          }
+        });
         provider.addMarker({
           id: vehicle.vehicleId,
           position: { lat: position.lat, lng: position.lng },
           headingDeg: position.headingDeg,
           element,
+          popupHtml: popupHtml(vehicle, position),
         });
         markerElementsRef.current.set(vehicle.vehicleId, element);
       }

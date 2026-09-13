@@ -17,8 +17,9 @@ against the original Table 23 citation below — unchanged):
 | 0      | alarm flag  | DWORD   | bit definitions Table 24 / Table 5.10 (32 bits, cross-checked |
 |        |             |         | 1:1 against the supplier spec — identical) — opaque bitfield, |
 |        |             |         | not decoded here |
-| 4      | status      | DWORD   | bit definitions Table 25 / Table 5.9 — decoded only for the |
-|        |             |         | two bits this parser needs: bit 2 (0=N/1=S), bit 3 (0=E/1=W) |
+| 4      | status      | DWORD   | bit definitions Table 25 / Table 5.9 — decoded for three |
+|        |             |         | bits: bit 1 (0=not positioned/1=positioned), bit 2 (0=N/1=S), |
+|        |             |         | bit 3 (0=E/1=W) |
 | 8      | latitude    | DWORD   | degrees * 10^6, unsigned magnitude (sign from status bit 2) |
 | 12     | longitude   | DWORD   | degrees * 10^6, unsigned magnitude (sign from status bit 3) |
 | 16     | altitude    | WORD    | meters |
@@ -43,6 +44,14 @@ west longitude (negate) — applied here so this parser's output is already sign
 one-to-one, even though this module never imports or constructs that type itself (`handlers/
 __init__.py`'s architecture boundary — see `location_handler.py`'s module docstring).
 
+**`gps_valid` (root-cause fix — RAAD Live Tracking wrong-location investigation): status bit 1,
+Table 25's own "定位" flag (0 = not positioned, 1 = positioned).** Previously parsed nowhere at
+all — every `0x0200`/`0x0704` item was published and treated as an equally-trustworthy live fix
+regardless of whether the device actually had a GPS lock, which is how a stale/cached factory
+coordinate from a genuine fix-loss moment could reach the live map unchallenged. See `src/
+gps_validation.py` and `DevicePositionReported`'s own module docstring for the full downstream
+handling — this parser's only job is to surface the bit honestly, never to interpret it.
+
 **Speed conversion:** the wire unit is 1/10 km/h; the canonical `PositionReport`/Tracking's
 `SpeedKph` are whole km/h (`SMALLINT`, Database Design). No approved document specifies a
 rounding mode for this narrowing conversion — `round()` (nearest, ties-to-even) is used as the
@@ -65,6 +74,7 @@ from src.vendors.jt808.protocol.exceptions import MalformedFrameError
 
 _FIXED_BODY_LENGTH = 28
 
+_STATUS_BIT_POSITIONED = 0b0010  # bit 1
 _STATUS_BIT_SOUTH_LATITUDE = 0b0100  # bit 2
 _STATUS_BIT_WEST_LONGITUDE = 0b1000  # bit 3
 
@@ -79,6 +89,7 @@ class PositionReportBody:
     speed_kph: int
     heading_deg: int
     event_time: datetime  # UTC
+    gps_valid: bool
 
 
 def parse_position_report_body(body: bytes) -> PositionReportBody:
@@ -113,4 +124,5 @@ def parse_position_report_body(body: bytes) -> PositionReportBody:
         speed_kph=round(raw_speed / 10),
         heading_deg=heading_deg,
         event_time=event_time,
+        gps_valid=bool(status & _STATUS_BIT_POSITIONED),
     )

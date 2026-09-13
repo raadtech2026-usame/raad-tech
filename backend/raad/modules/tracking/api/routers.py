@@ -132,6 +132,7 @@ def _position_dto_to_response(position: VehiclePositionDTO) -> VehiclePositionRe
         event_time=position.event_time,
         received_at=position.received_at,
         is_backfill=position.is_backfill,
+        is_gps_valid=position.is_gps_valid,
     )
 
 

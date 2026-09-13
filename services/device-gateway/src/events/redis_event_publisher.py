@@ -108,6 +108,7 @@ def _fields_for(event: DeviceEvent) -> dict[str, str]:
                 "alarm_flags": event.alarm_flags,
                 "event_time": event.event_time.isoformat(),
                 "is_backfill": event.is_backfill,
+                "is_gps_valid": event.is_gps_valid,
             },
         )
     if isinstance(event, DeviceOnline):

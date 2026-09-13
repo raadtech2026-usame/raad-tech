@@ -26,6 +26,13 @@ enforce no uniqueness constraint on `(vehicle_id, event_time)` either (confirmed
 task's own "(if documented)" qualifier, this handler invents no dedup logic — two items sharing
 an `event_time` (a real possibility: some terminals resend an un-acked buffered fix) both
 publish as separate events, exactly as received.
+
+**`is_gps_valid` (root-cause fix — see `location_handler.py`'s own docstring for the full
+record): computed identically per item**, the wire's own "positioned" status bit narrowed by
+`gps_validation.is_plausible_coordinate`. No `latest_position_writer` call here — every item in
+a `0x0704` message is `is_backfill=True`, and `RedisLatestPositionWriter.write` already skips
+backfilled positions unconditionally (a late/buffered point must never overwrite a fresher live
+reading), so wiring the writer into this handler would only ever be a no-op.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from datetime import datetime, timezone
 from src.vendors.jt808.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
 from src.events.device_position_reported import DevicePositionReported
 from src.events.publisher_port import EventPublisher
+from src.gps_validation import is_plausible_coordinate
 from src.vendors.jt808.handlers.bulk_position_body import parse_bulk_position_report
 from src.logging_setup import get_logger, log_with_fields
 from src.vendors.jt808.protocol.message import InboundMessage
@@ -82,6 +90,8 @@ class BulkLocationHandler(MessageHandler):
                 event_time=report.event_time,
                 is_backfill=True,
                 received_at=datetime.now(timezone.utc),
+                is_gps_valid=report.gps_valid
+                and is_plausible_coordinate(report.latitude, report.longitude),
             )
             await self._event_publisher.publish(
                 event

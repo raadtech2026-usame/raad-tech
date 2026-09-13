@@ -68,6 +68,7 @@ class VehiclePositionDTO:
     event_time: datetime
     received_at: datetime
     is_backfill: bool
+    is_gps_valid: bool
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,7 @@ def vehicle_position_to_dto(position: VehiclePosition) -> VehiclePositionDTO:
         event_time=position.event_time,
         received_at=position.received_at,
         is_backfill=position.is_backfill,
+        is_gps_valid=position.is_gps_valid,
     )
 
 

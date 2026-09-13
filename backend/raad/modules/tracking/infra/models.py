@@ -119,6 +119,15 @@ class VehiclePositionModel(UlidPrimaryKeyMixin, Base):
     heading_deg: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     alarm_flags: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_backfill: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # RAAD Live Tracking wrong-location investigation (root-cause fix): `True` only when the
+    # device-plane ACL confirmed both a genuine GPS fix and a plausible coordinate at report
+    # time (`gps_validation.is_plausible_coordinate`, `services/device-gateway`) — see
+    # `domain/entities.VehiclePosition.record`'s own docstring. `server_default=true` so the
+    # additive migration backfills every pre-existing row as valid (this codebase has no reason
+    # to doubt history recorded before this column existed).
+    is_gps_valid: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true"
+    )
     event_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), primary_key=True
     )

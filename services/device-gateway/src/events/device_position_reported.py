@@ -34,7 +34,26 @@ event**, even though `DeviceSession` types them as optional pass-through fields 
 report from a session missing any of the three cannot be mapped to a valid event and is
 dropped-with-audit-log by the handler instead of being published with a hole in it (see
 `location_handler.py`).
-"""
+
+**`is_gps_valid` (root-cause fix, RAAD Live Tracking wrong-location investigation).** Neither
+vendor adapter previously propagated the wire-level GPS fix-validity signal past its own ACL
+parsing step: JT/T 808's `status` DWORD bit 1 ("positioned", `position_body.py`) and the LSZ
+protocol's 'A'/'V' positioning-status flag (`vendors/lsz/protocol/location_status.
+LocationStatus.fix_valid`) were both parsed and then silently discarded before a
+`DevicePositionReported` was ever constructed — every position report was published and treated
+as an equally-trustworthy live fix regardless of whether the device actually had one. A device
+without a live fix (cold start, indoor parking, antenna fault) commonly reports its last cached/
+factory fix rather than a zeroed one; for this vendor's procured hardware, that cached fix is a
+Shenzhen, China coordinate left over from factory testing — which is how a real "China" reading
+reached the Live Tracking map despite the vehicle actually being in Mogadishu. `is_gps_valid` is
+`True` only when the device itself reported a live fix **and** the resulting coordinate passes
+`gps_validation.is_plausible_coordinate` (finite, in-range, not null-island) — see `src/
+gps_validation.py`. It is carried all the way to the Business API (`tracking.domain.entities.
+VehiclePosition.is_gps_valid`, persisted on `vehicle_positions`) so a flagged position is still
+stored for audit/debugging (never silently dropped) but is never treated as the current live
+position: `RedisLatestPositionWriter`/`RedisLatestPositionPort` (`vehicle:{id}:last`) only ever
+reflect a valid fix, and `/ws/tracking` forwards this flag verbatim so the frontend can show
+"GPS: No Fix" instead of silently relocating the marker to a stale/implausible reading."""
 
 from __future__ import annotations
 
@@ -57,3 +76,4 @@ class DevicePositionReported:
     event_time: datetime
     is_backfill: bool
     received_at: datetime
+    is_gps_valid: bool = True
