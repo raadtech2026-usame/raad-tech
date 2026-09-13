@@ -57,6 +57,18 @@ services:
     volumes:
       - ../infrastructure/nginx/conf.d/frontend.conf:/etc/nginx/conf.d/default.conf:ro
     ports: !reset []
+    # Corrects the base file's dev-target healthcheck (docker-compose.yml's own frontend
+    # healthcheck probes port 5173, the Vite dev server) — this override's own `build.target:
+    # prod` above serves via nginx on port 80 instead, so that probe can never succeed against
+    # this image and left the container permanently "unhealthy" in production. Identical fix
+    # applied in docker-compose.coolify.yml, which has the same target: prod / port-5173
+    # mismatch.
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   nginx:
     # `volumes: !reset`, not a plain merge — the base file's dev.conf mount targets this same
