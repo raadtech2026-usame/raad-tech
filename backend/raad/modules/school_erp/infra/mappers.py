@@ -25,6 +25,9 @@ from raad.modules.school_erp.domain.entities import (
     FeePlan,
     FinancialCategory,
     Income,
+    ParentBillingProfile,
+    ParentInvoice,
+    ParentInvoiceLine,
     StudentInvoice,
     StudentPayment,
 )
@@ -40,6 +43,12 @@ from raad.modules.school_erp.domain.value_objects import (
     IncomeId,
     Money,
     OrganizationId,
+    ParentBillingProfileId,
+    ParentBillingProfileStatus,
+    ParentId,
+    ParentInvoiceId,
+    ParentInvoiceLineId,
+    ParentInvoiceStatus,
     RouteId,
     StudentId,
     StudentInvoiceId,
@@ -53,6 +62,9 @@ from raad.modules.school_erp.infra.models import (
     FeePlanModel,
     FinancialCategoryModel,
     IncomeModel,
+    ParentBillingProfileModel,
+    ParentInvoiceLineModel,
+    ParentInvoiceModel,
     StudentInvoiceModel,
     StudentPaymentModel,
 )
@@ -335,4 +347,136 @@ def model_to_expense(model: ExpenseModel) -> Expense:
         is_voided=model.is_voided,
         created_at=model.created_at,
         updated_at=model.updated_at,
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# ParentBillingProfile / ParentInvoice (ADR-0042)
+# --------------------------------------------------------------------------------------------
+
+
+def parent_billing_profile_to_model(
+    profile: ParentBillingProfile, *, existing: ParentBillingProfileModel | None = None
+) -> ParentBillingProfileModel:
+    model = (
+        existing if existing is not None else ParentBillingProfileModel(id=str(profile.id))
+    )
+    model.organization_id = str(profile.organization_id)
+    model.parent_id = str(profile.parent_id)
+    model.monthly_fee = profile.monthly_fee.amount
+    model.currency = profile.monthly_fee.currency
+    model.billing_start_period = str(profile.billing_start_period)
+    model.due_day = profile.due_day
+    model.status = profile.status.value
+    model.created_at = _to_naive_utc(profile.created_at)
+    model.updated_at = _to_naive_utc(profile.updated_at)
+    return model
+
+
+def model_to_parent_billing_profile(model: ParentBillingProfileModel) -> ParentBillingProfile:
+    return ParentBillingProfile(
+        id=ParentBillingProfileId(_char(model.id)),
+        organization_id=OrganizationId(_char(model.organization_id)),
+        parent_id=ParentId(_char(model.parent_id)),
+        monthly_fee=Money(amount=_dec(model.monthly_fee), currency=_char(model.currency)),
+        billing_start_period=BillingPeriod(_char(model.billing_start_period)),
+        due_day=model.due_day,
+        status=ParentBillingProfileStatus(model.status),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def _parent_invoice_line_to_model(
+    line: ParentInvoiceLine,
+    *,
+    parent_invoice_id: str,
+    organization_id: str,
+    currency: str,
+    existing: ParentInvoiceLineModel | None = None,
+) -> ParentInvoiceLineModel:
+    model = existing if existing is not None else ParentInvoiceLineModel(id=str(line.id))
+    model.organization_id = organization_id
+    model.parent_invoice_id = parent_invoice_id
+    model.student_id = str(line.student_id)
+    model.vehicle_id = str(line.vehicle_id) if line.vehicle_id else None
+    model.route_id = str(line.route_id) if line.route_id else None
+    model.amount = line.amount.amount
+    return model
+
+
+def _model_to_parent_invoice_line(model: ParentInvoiceLineModel, *, currency: str) -> ParentInvoiceLine:
+    return ParentInvoiceLine(
+        id=ParentInvoiceLineId(_char(model.id)),
+        student_id=StudentId(_char(model.student_id)),
+        amount=Money(amount=_dec(model.amount), currency=currency),
+        vehicle_id=VehicleId(_char(model.vehicle_id)) if model.vehicle_id else None,
+        route_id=RouteId(_char(model.route_id)) if model.route_id else None,
+    )
+
+
+def parent_invoice_to_model(
+    invoice: ParentInvoice, *, existing: ParentInvoiceModel | None = None
+) -> ParentInvoiceModel:
+    """Projects a `ParentInvoice` aggregate (including its lines) onto its ORM row — mirrors
+    `route_to_model`'s exact add/update/remove child-collection sync rules (this module's own
+    first parent/child aggregate before ADR-0042)."""
+    model = existing if existing is not None else ParentInvoiceModel(id=str(invoice.id))
+    model.organization_id = str(invoice.organization_id)
+    model.parent_id = str(invoice.parent_id)
+    model.period = str(invoice.period)
+    model.amount = invoice.amount.amount
+    model.currency = invoice.amount.currency
+    model.amount_paid = invoice.amount_paid
+    model.status = invoice.status.value
+    model.invoice_date = invoice.invoice_date
+    model.due_date = invoice.due_date
+    model.notes = invoice.notes
+    model.created_at = _to_naive_utc(invoice.created_at)
+    model.updated_at = _to_naive_utc(invoice.updated_at)
+
+    existing_rows = {row.id: row for row in model.lines}
+    current_ids = {str(line.id) for line in invoice.lines}
+    for row_id, row in list(existing_rows.items()):
+        if row_id not in current_ids:
+            model.lines.remove(row)  # cascade="all, delete-orphan" deletes the orphaned row
+
+    for line in invoice.lines:
+        row = existing_rows.get(str(line.id))
+        if row is not None:
+            _parent_invoice_line_to_model(
+                line,
+                parent_invoice_id=str(invoice.id),
+                organization_id=str(invoice.organization_id),
+                currency=invoice.amount.currency,
+                existing=row,
+            )
+        else:
+            model.lines.append(
+                _parent_invoice_line_to_model(
+                    line,
+                    parent_invoice_id=str(invoice.id),
+                    organization_id=str(invoice.organization_id),
+                    currency=invoice.amount.currency,
+                )
+            )
+    return model
+
+
+def model_to_parent_invoice(model: ParentInvoiceModel) -> ParentInvoice:
+    currency = _char(model.currency)
+    return ParentInvoice(
+        id=ParentInvoiceId(_char(model.id)),
+        organization_id=OrganizationId(_char(model.organization_id)),
+        parent_id=ParentId(_char(model.parent_id)),
+        period=BillingPeriod(_char(model.period)),
+        amount=Money(amount=_dec(model.amount), currency=currency),
+        amount_paid=_dec(model.amount_paid),
+        status=ParentInvoiceStatus(model.status),
+        invoice_date=model.invoice_date,
+        due_date=model.due_date,
+        notes=model.notes,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        lines=[_model_to_parent_invoice_line(row, currency=currency) for row in model.lines],
     )

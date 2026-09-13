@@ -4,84 +4,121 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OffsetPage } from "../../shared/api/types";
+import { useCurrentPageHeader } from "../../app/layout/PageHeaderContext";
 
 vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./api")>()),
   getFinanceSummary: vi.fn(),
-  listVehicleFinance: vi.fn(),
   getProfitAndLoss: vi.fn(),
-  listStudentInvoices: vi.fn(),
-  listStudentPayments: vi.fn(),
   listIncome: vi.fn(),
   listExpenses: vi.fn(),
-  listFeePlans: vi.fn(),
   listCategories: vi.fn(),
-  listStudentsForPicker: vi.fn(),
   listVehiclesForPicker: vi.fn(),
-  recordStudentPayment: vi.fn(),
-  cancelStudentInvoice: vi.fn(),
   voidIncome: vi.fn(),
   voidExpense: vi.fn(),
-  updateFeePlan: vi.fn(),
   updateCategory: vi.fn(),
 }));
 
+// ADR-0042 — the real Parent Invoice aggregate this page's own invoices tab now uses, owned by
+// `transport_ops/parents` (the same cross-bounded-context reuse this page's own imports already
+// establish for `ParentFinancialSummary`). `listParentsForPicker`/`getParent`/
+// `listStudentsForParent` back the new Parent filter's own `ParentSearchSelect`.
+vi.mock("../transport-ops/parents/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../transport-ops/parents/api")>()),
+  listParentInvoices: vi.fn(),
+  getParentInvoiceDetail: vi.fn(),
+  setParentInvoicePaymentStatus: vi.fn(),
+  generateParentInvoices: vi.fn(),
+  listParentsForPicker: vi.fn(),
+  getParent: vi.fn(),
+  listStudentsForParent: vi.fn(),
+}));
+
 import {
-  cancelStudentInvoice,
   getFinanceSummary,
   getProfitAndLoss,
   listCategories,
   listExpenses,
-  listFeePlans,
   listIncome,
-  listStudentInvoices,
-  listStudentPayments,
-  listStudentsForPicker,
-  listVehicleFinance,
   listVehiclesForPicker,
-  recordStudentPayment,
   updateCategory,
-  updateFeePlan,
   voidExpense,
   voidIncome,
-  type FeePlan,
   type FinancialCategory,
   type LedgerEntry,
-  type StudentInvoice,
 } from "./api";
+import {
+  generateParentInvoices,
+  getParent,
+  getParentInvoiceDetail,
+  listParentInvoices,
+  listParentsForPicker,
+  listStudentsForParent,
+  setParentInvoicePaymentStatus,
+  type ParentInvoiceDetail,
+  type ParentInvoiceSummary,
+} from "../transport-ops/parents/api";
 import { OrgFinancePage } from "./OrgFinancePage";
 
 function emptyPage<T>(): OffsetPage<T> {
   return { data: [], page: { total: 0, page: 1, pageSize: 25 } };
 }
 
-const INVOICE: StudentInvoice = {
-  id: "inv-1",
-  organizationId: "org-1",
-  studentId: "student-1",
-  feePlanId: null,
+const PARENT_INVOICE: ParentInvoiceSummary = {
+  id: "invoice-1",
+  parentId: "parent-1",
+  parentName: "Fatima Ali",
   period: "2026-09",
-  amount: "100.00",
-  discountAmount: "10.00",
-  netAmount: "90.00",
+  invoiceNumber: "2026-09-PARENT1",
+  childrenCount: 2,
+  amount: "90.00",
   amountPaid: "40.00",
   balanceDue: "50.00",
-  currency: "USD",
+  status: "partial",
+  invoiceDate: "2026-09-01",
   dueDate: "2026-09-30",
-  status: "partially_paid",
-  routeId: "route-1",
-  vehicleId: "bus-1",
-  driverId: null,
-  notes: null,
-  issuedAt: "2026-09-01T00:00:00Z",
-  paidAt: null,
+  currency: "USD",
 };
+
+const PARENT_INVOICE_DETAIL: ParentInvoiceDetail = {
+  id: "invoice-1",
+  parentId: "parent-1",
+  parentName: "Fatima Ali",
+  period: "2026-09",
+  invoiceNumber: "2026-09-PARENT1",
+  amount: "90.00",
+  amountPaid: "40.00",
+  balanceDue: "50.00",
+  status: "partial",
+  currency: "USD",
+  invoiceDate: "2026-09-01",
+  dueDate: "2026-09-30",
+  notes: null,
+  lines: [
+    {
+      studentId: "student-1",
+      fullName: "Amina Hassan",
+      amount: "45.00",
+      vehicleId: "bus-1",
+      routeId: "route-1",
+    },
+  ],
+};
+
+/** Renders `OrgFinancePage` alongside a small probe that surfaces `usePageHeader`'s own state as
+ * plain text — `AppShell`'s `TopBar` is the store's only other consumer, and mounting the whole
+ * shell just to read a subtitle would be disproportionate to what's being checked. */
+function HeaderSubtitleProbe() {
+  const { subtitle } = useCurrentPageHeader();
+  return <span data-testid="header-subtitle">{subtitle}</span>;
+}
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
+        <HeaderSubtitleProbe />
         <OrgFinancePage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -89,7 +126,7 @@ function renderPage() {
 }
 
 /**
- * The Organization school-finance surface (ADR-0038, ADR-0040 §2).
+ * The Organization school-finance surface (ADR-0038, ADR-0040 §2, Finance UI cleanup 2026-09-12).
  *
  * These tests pin three properties. Two were here from the start: every figure comes from a real
  * read (nothing is fabricated or derived client-side), and the ADR-0038 §2 boundary between
@@ -98,6 +135,10 @@ function renderPage() {
  * The third is the automatic-accounting rule: recording a family's payment is the *only* action
  * that produces student revenue, and the Income ledger must actively steer an operator away from
  * entering that same money by hand — which is how a school ends up counting it twice.
+ *
+ * The Finance UI cleanup (2026-09-12) added a fourth: the page is Parent-based end to end — no
+ * Vehicle Financial Overview, no Payments/Fee plans tabs, full monetary values, and a Parent
+ * Invoices filter bar (Parent/Status/Vehicle/date-range) that never asks for a raw id.
  */
 describe("OrgFinancePage", () => {
   beforeEach(() => {
@@ -110,21 +151,6 @@ describe("OrgFinancePage", () => {
       overdueInvoiceCount: 2,
       currency: "USD",
     });
-    vi.mocked(listVehicleFinance).mockResolvedValue([
-      {
-        vehicleId: "bus-1",
-        studentCount: 30,
-        invoiceCount: 30,
-        billedAmount: "900.00",
-        collectedAmount: "600.00",
-        outstandingAmount: "300.00",
-        paidStudentCount: 20,
-        unpaidStudentCount: 10,
-        expenseAmount: "150.00",
-        netAmount: "450.00",
-        currency: "USD",
-      },
-    ]);
     vi.mocked(getProfitAndLoss).mockResolvedValue({
       start: "2025-09-05",
       end: "2026-09-05",
@@ -137,38 +163,30 @@ describe("OrgFinancePage", () => {
       expensesByCategory: {},
       currency: "USD",
     });
-    vi.mocked(listStudentInvoices).mockResolvedValue({
-      data: [INVOICE],
+    vi.mocked(listParentInvoices).mockResolvedValue({
+      data: [PARENT_INVOICE],
       page: { total: 1, page: 1, pageSize: 25 },
     });
-    vi.mocked(listStudentPayments).mockResolvedValue(emptyPage());
+    vi.mocked(getParentInvoiceDetail).mockResolvedValue(PARENT_INVOICE_DETAIL);
     vi.mocked(listIncome).mockResolvedValue(emptyPage());
     vi.mocked(listExpenses).mockResolvedValue(emptyPage());
-    vi.mocked(listFeePlans).mockResolvedValue(emptyPage());
     vi.mocked(listCategories).mockResolvedValue(emptyPage());
-    vi.mocked(listStudentsForPicker).mockResolvedValue([
-      { id: "student-1", label: "Amina Hassan" },
-    ]);
     vi.mocked(listVehiclesForPicker).mockResolvedValue([
       { id: "bus-1", label: "BUS-042 · Route A" },
     ]);
-    vi.mocked(recordStudentPayment).mockResolvedValue({
-      id: "pay-1",
-      organizationId: "org-1",
-      invoiceId: "inv-1",
-      studentId: "student-1",
-      amount: "50.00",
-      currency: "USD",
-      method: "cash",
-      reference: null,
-      receivedOn: "2026-09-08",
-      notes: null,
-      isVoided: false,
-      voidedReason: null,
+    vi.mocked(listParentsForPicker).mockReset().mockResolvedValue([]);
+    vi.mocked(getParent).mockReset();
+    vi.mocked(listStudentsForParent).mockReset();
+    vi.mocked(setParentInvoicePaymentStatus).mockResolvedValue({
+      ...PARENT_INVOICE,
+      status: "paid",
+      amountPaid: "90.00",
+      balanceDue: "0.00",
     });
+    vi.mocked(generateParentInvoices).mockResolvedValue([]);
   });
 
-  it("renders the KPI row from the finance summary endpoint", async () => {
+  it("renders the KPI row from the finance summary endpoint, with full (never truncated) amounts", async () => {
     renderPage();
 
     expect(await screen.findByText("$1,200.00")).toBeInTheDocument();
@@ -176,68 +194,281 @@ describe("OrgFinancePage", () => {
     expect(screen.getAllByText("$800.00").length).toBeGreaterThan(0);
     expect(screen.getByText("$400.00")).toBeInTheDocument();
     expect(screen.getByText("12 invoices")).toBeInTheDocument();
-    expect(screen.getByText("2 overdue")).toBeInTheDocument();
+    // "8 settled" (Student-billing-flavoured) is gone — Parent-oriented wording instead.
+    expect(screen.getByText("8 paid")).toBeInTheDocument();
+    expect(screen.queryByText(/settled/i)).not.toBeInTheDocument();
   });
 
-  it("shows revenue, collections, outstanding and attributed cost per bus", async () => {
+  it("computes the Net Result KPI over the same period as the rest of the Overview row, not a silently-mixed trailing-12-month figure", async () => {
     renderPage();
 
-    // Students on the bus, and the paid/unpaid split — the core of the requirement.
-    expect(await screen.findByText("30")).toBeInTheDocument();
-    expect(screen.getByText("20")).toBeInTheDocument();
-    expect(screen.getByText("$900.00")).toBeInTheDocument();
-    expect(screen.getByText("$150.00")).toBeInTheDocument();
+    await screen.findByText("$1,200.00");
+    expect(getProfitAndLoss).toHaveBeenCalled();
+    // Net Result no longer carries a "12 months" pill next to Overview siblings scoped to one
+    // calendar period — it reads as this same period's own figure.
+    expect(screen.queryByText("12 months")).not.toBeInTheDocument();
+    expect(screen.getByText(/this period's collected parent revenue/i)).toBeInTheDocument();
   });
 
-  it("names the bus and the student rather than showing raw ids", async () => {
+  it("has no Vehicle Financial Overview / Revenue per bus section anywhere on the page", async () => {
     renderPage();
+    await screen.findByText("$1,200.00");
 
-    // `vehicle_id`/`student_id` are all an invoice carries (ADR-0040 §3); the label is resolved
-    // from a cached lookup so the operator reads a plate, not a ULID.
-    expect(await screen.findByText("Amina Hassan")).toBeInTheDocument();
-    expect(screen.getAllByText("BUS-042 · Route A").length).toBeGreaterThan(0);
-    expect(screen.queryByText("student-1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Vehicle financial overview")).not.toBeInTheDocument();
+    expect(screen.queryByText("Revenue per bus")).not.toBeInTheDocument();
   });
 
-  it("falls back to the raw id when a lookup cannot resolve a name", async () => {
-    vi.mocked(listStudentsForPicker).mockResolvedValue([]);
+  it("no longer describes itself as student billing in the page subtitle", async () => {
     renderPage();
 
-    // A student removed since being billed still shows something traceable, never a blank.
-    expect(await screen.findByText("student-1")).toBeInTheDocument();
+    expect(await screen.findByTestId("header-subtitle")).toHaveTextContent(
+      "School income, parent billing and expenses",
+    );
+    expect(screen.queryByText(/student billing/i)).not.toBeInTheDocument();
   });
 
-  it("renders a partially-paid invoice with its real balance, not a recomputed one", async () => {
+  it("shows only Parent invoices / Income / Expenses / Categories tabs — Payments and Fee plans are gone", async () => {
+    renderPage();
+    await screen.findByText("2026-09-PARENT1");
+
+    expect(screen.getByRole("tab", { name: "Parent invoices" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Income" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Expenses" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Categories" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Payments" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Fee plans" })).not.toBeInTheDocument();
+  });
+
+  it("names the parent and shows the children count, grouped by (parent, period) (ADR-0041 §1)", async () => {
     renderPage();
 
-    expect(await screen.findByText("Partially paid")).toBeInTheDocument();
-    // 90.00 net (100 less a 10 discount), 40.00 paid, 50.00 still owed — all server-computed.
-    expect(screen.getByText("$90.00")).toBeInTheDocument();
-    expect(screen.getByText("$40.00")).toBeInTheDocument();
-    expect(screen.getAllByText("$50.00").length).toBeGreaterThan(0);
+    expect(await screen.findByText("Fatima Ali")).toBeInTheDocument();
+    expect(screen.getByText("2026-09-PARENT1")).toBeInTheDocument();
+    // childrenCount, not a raw list of student ids — the row is family-level.
+    expect(screen.getByText("2")).toBeInTheDocument();
+  });
+
+  it("uses Receivable rather than Balance/Outstanding as the table's column header", async () => {
+    renderPage();
+    await screen.findByText("2026-09-PARENT1");
+
+    expect(screen.getByRole("columnheader", { name: "Receivable" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Balance" })).not.toBeInTheDocument();
+  });
+
+  it("renders every required Parent Invoice table column and action (table layout fix, 2026-09-12)", async () => {
+    renderPage();
+    await screen.findByText("2026-09-PARENT1");
+
+    for (const name of [
+      "Invoice",
+      "Parent",
+      "Children",
+      "Period",
+      "Amount",
+      "Paid",
+      "Receivable",
+      "Status",
+    ]) {
+      expect(screen.getByRole("columnheader", { name })).toBeInTheDocument();
+    }
+    expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /payment status/i })).toBeInTheDocument();
+  });
+
+  it("renders a long Parent name in full — never truncated with an ellipsis (table layout fix, 2026-09-12)", async () => {
+    const longName = "Abdirahman Mohamed Warsame Hassan Ali Yusuf";
+    vi.mocked(listParentInvoices).mockResolvedValue({
+      data: [{ ...PARENT_INVOICE, parentName: longName }],
+      page: { total: 1, page: 1, pageSize: 25 },
+    });
+    renderPage();
+
+    expect(await screen.findByText(longName)).toBeInTheDocument();
+  });
+
+  it("keeps financial amounts fully visible in the table — the Finance Overview truncation fix must not regress here", async () => {
+    vi.mocked(listParentInvoices).mockResolvedValue({
+      data: [{ ...PARENT_INVOICE, amount: "12500.00", amountPaid: "5000.00", balanceDue: "7500.00" }],
+      page: { total: 1, page: 1, pageSize: 25 },
+    });
+    renderPage();
+
+    expect(await screen.findByText("USD 12500.00")).toBeInTheDocument();
+    expect(screen.getByText("USD 5000.00")).toBeInTheDocument();
+    expect(screen.getByText("USD 7500.00")).toBeInTheDocument();
+  });
+
+  it("shows a filtered empty state (not the zero-billing state) when a filter narrows the list to nothing", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("2026-09-PARENT1");
+
+    vi.mocked(listParentInvoices).mockResolvedValue(emptyPage());
+    await user.selectOptions(screen.getByLabelText("Filter parent invoices by vehicle"), "bus-1");
+
+    expect(await screen.findByText("No parent invoices found")).toBeInTheDocument();
+    expect(screen.queryByText("No parent invoices yet")).not.toBeInTheDocument();
+  });
+
+  it("shows the zero-billing empty state when no filters are active and there truly are no invoices", async () => {
+    vi.mocked(listParentInvoices).mockResolvedValue(emptyPage());
+    renderPage();
+
+    expect(await screen.findByText("No parent invoices yet")).toBeInTheDocument();
+    expect(screen.queryByText("No parent invoices found")).not.toBeInTheDocument();
+  });
+
+  it("renders a partially-paid parent invoice with its real balance, not a recomputed one", async () => {
+    renderPage();
+
+    const row = (await screen.findByText("2026-09-PARENT1")).closest("tr")!;
+    expect(within(row).getByText("Partial")).toBeInTheDocument();
+    // 90.00 billed, 40.00 paid, 50.00 still owed — all server-computed on the real ParentInvoice.
+    expect(within(row).getByText("USD 90.00")).toBeInTheDocument();
+    expect(within(row).getByText("USD 40.00")).toBeInTheDocument();
+    expect(within(row).getByText("USD 50.00")).toBeInTheDocument();
+  });
+
+  it("opens the Parent Invoice detail drawer and shows the child line items behind it", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("Fatima Ali");
+
+    await user.click(screen.getByRole("button", { name: "View" }));
+
+    const dialog = await screen.findByRole("dialog");
+    // The per-child breakdown ADR-0042 says a real Parent Invoice must never lose.
+    expect(await within(dialog).findByText("Amina Hassan")).toBeInTheDocument();
+    expect(getParentInvoiceDetail).toHaveBeenCalledWith("invoice-1");
   });
 
   it("only fetches a ledger tab's data once that tab is selected", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("Partially paid");
+    await screen.findByText("2026-09-PARENT1");
 
-    // Payments are not fetched while the Invoices tab is active — six ledger endpoints firing
-    // on every page load is exactly the waste `enabled` exists to prevent.
-    expect(listStudentPayments).not.toHaveBeenCalled();
+    // Income is not fetched while the Invoices tab is active — every ledger endpoint firing on
+    // every page load is exactly the waste `enabled` exists to prevent.
+    expect(listIncome).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("tab", { name: "Payments" }));
-    await waitFor(() => expect(listStudentPayments).toHaveBeenCalled());
+    await user.click(screen.getByRole("tab", { name: "Income" }));
+    await waitFor(() => expect(listIncome).toHaveBeenCalled());
   });
 
-  it("shows the profit & loss lines separately, so student fees stay distinguishable", async () => {
-    renderPage();
+  // ---- Parent Invoices filter bar (Finance UI cleanup, 2026-09-12) ------------------------
 
-    expect(await screen.findByText(/Student fee revenue \(collected\)/)).toBeInTheDocument();
-    expect(screen.getByText(/^Other income$/)).toBeInTheDocument();
-    // "Net profit" is both a KPI card label and the P&L bottom line — both are intended.
-    expect(screen.getAllByText("Net profit").length).toBe(2);
-    expect(screen.getAllByText("$550.00").length).toBeGreaterThan(0);
+  describe("Parent Invoices filter bar", () => {
+    it("filters by Payment Status without touching the underlying status logic", async () => {
+      const user = userEvent.setup();
+      renderPage();
+      await screen.findByText("2026-09-PARENT1");
+      vi.mocked(listParentInvoices).mockClear();
+
+      await user.selectOptions(
+        screen.getByLabelText("Filter parent invoices by payment status"),
+        "paid",
+      );
+
+      await waitFor(() =>
+        expect(listParentInvoices).toHaveBeenCalledWith(
+          expect.objectContaining({ status: "paid" }),
+        ),
+      );
+    });
+
+    it("filters by a human-readable Vehicle option, never a raw vehicle id in the UI", async () => {
+      const user = userEvent.setup();
+      renderPage();
+      await screen.findByText("2026-09-PARENT1");
+
+      const vehicleSelect = screen.getByLabelText("Filter parent invoices by vehicle") as HTMLSelectElement;
+      expect(within(vehicleSelect).getByText("All Vehicles")).toBeInTheDocument();
+      expect(within(vehicleSelect).getByText("BUS-042 · Route A")).toBeInTheDocument();
+      expect(within(vehicleSelect).queryByText("bus-1")).not.toBeInTheDocument();
+
+      vi.mocked(listParentInvoices).mockClear();
+      await user.selectOptions(vehicleSelect, "bus-1");
+
+      await waitFor(() =>
+        expect(listParentInvoices).toHaveBeenCalledWith(
+          expect.objectContaining({ vehicleId: "bus-1" }),
+        ),
+      );
+    });
+
+    it("defaults to All Vehicles — no vehicle restriction sent (null, not an empty string)", async () => {
+      renderPage();
+      await screen.findByText("2026-09-PARENT1");
+
+      // The very first request, before any filter is touched, must carry no vehicle
+      // restriction at all — `""` (the "All Vehicles" option's own value) is sent as `null`,
+      // never as an empty-string id the backend would try to match against a real vehicle.
+      await waitFor(() =>
+        expect(listParentInvoices).toHaveBeenCalledWith(
+          expect.objectContaining({ vehicleId: null }),
+        ),
+      );
+    });
+
+    it("filters by a From/To date range using real date inputs, not a YYYY-MM period field", async () => {
+      renderPage();
+      await screen.findByText("2026-09-PARENT1");
+
+      const from = screen.getByLabelText("Filter parent invoices from this date");
+      const to = screen.getByLabelText("Filter parent invoices to this date");
+      expect(from).toHaveAttribute("type", "date");
+      expect(to).toHaveAttribute("type", "date");
+      expect(screen.queryByPlaceholderText("2026-09")).not.toBeInTheDocument();
+
+      vi.mocked(listParentInvoices).mockClear();
+      await userEvent.type(from, "2026-09-01");
+      await userEvent.type(to, "2026-09-30");
+
+      await waitFor(() =>
+        expect(listParentInvoices).toHaveBeenCalledWith(
+          expect.objectContaining({ dateFrom: "2026-09-01", dateTo: "2026-09-30" }),
+        ),
+      );
+    });
+
+    it("searches and filters by Parent name — never asking for a Parent ID/UUID", async () => {
+      const user = userEvent.setup();
+      vi.mocked(listParentsForPicker).mockResolvedValue([
+        { id: "parent-1", fullName: "Fatima Ali", status: "active" },
+      ]);
+      vi.mocked(getParent).mockResolvedValue({
+        id: "parent-1",
+        organizationId: "org-1",
+        userId: "user-1",
+        fullName: "Fatima Ali",
+        phone: "+252611111111",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        alternatePhone: null,
+        address: null,
+        emergencyContactName: null,
+        emergencyContactPhone: null,
+        notes: null,
+      });
+      vi.mocked(listStudentsForParent).mockResolvedValue([]);
+      renderPage();
+      await screen.findByText("2026-09-PARENT1");
+      vi.mocked(listParentInvoices).mockClear();
+
+      const search = screen.getByLabelText("Filter parent invoices by parent");
+      expect(screen.queryByText(/parent id/i)).not.toBeInTheDocument();
+      await user.click(search);
+      await user.type(search, "Fatima");
+      await user.click(await screen.findByRole("option", { name: "Fatima Ali" }));
+
+      await waitFor(() =>
+        expect(listParentInvoices).toHaveBeenCalledWith(
+          expect.objectContaining({ parentId: "parent-1" }),
+        ),
+      );
+    });
   });
 
   it("keeps RAAD platform billing a separate domain, linked rather than merged", async () => {
@@ -253,53 +484,49 @@ describe("OrgFinancePage", () => {
     );
   });
 
-  it("surfaces a failed load rather than rendering a zero", async () => {
-    vi.mocked(listVehicleFinance).mockRejectedValue(new Error("boom"));
-    renderPage();
-
-    expect(await screen.findByText("Could not load vehicle finance")).toBeInTheDocument();
-  });
-
   // ---- The workflow -----------------------------------------------------------------------
 
-  it("offers Record payment on an unsettled invoice and posts the remaining balance", async () => {
+  it("offers Payment status on an unsettled Parent Invoice, confirms, and PATCHes the new status (ADR-0042 Part 9)", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("Partially paid");
+    await screen.findByText("Fatima Ali");
 
-    await user.click(screen.getByRole("button", { name: /record payment/i }));
+    await user.click(screen.getByRole("button", { name: /payment status/i }));
 
     const drawer = await screen.findByRole("dialog");
-    // Pre-filled with what is still owed, not the invoice total — a part payment already
-    // happened and re-charging the full amount would be wrong.
-    expect(within(drawer).getByDisplayValue("50.00")).toBeInTheDocument();
+    // The invoice was already `partial` — selecting Paid changes the status, which triggers the
+    // directive's own required confirmation step before saving.
+    await user.click(within(drawer).getByRole("radio", { name: "Paid" }));
+    await user.click(within(drawer).getByRole("button", { name: "Save" }));
 
-    await user.click(within(drawer).getByRole("button", { name: /^record payment$/i }));
+    const confirmDialog = await screen.findByText(/confirm payment status/i);
+    await user.click(within(confirmDialog.closest('[role="dialog"]') ?? document.body).getByRole("button", {
+      name: /confirm & save/i,
+    }));
 
     await waitFor(() =>
-      expect(recordStudentPayment).toHaveBeenCalledWith(
-        "inv-1",
-        expect.objectContaining({ amount: "50.00", currency: "USD", method: "cash" }),
+      expect(setParentInvoicePaymentStatus).toHaveBeenCalledWith(
+        "invoice-1",
+        expect.objectContaining({ status: "paid" }),
       ),
     );
   });
 
-  it("does not offer Record payment on a settled invoice", async () => {
-    vi.mocked(listStudentInvoices).mockResolvedValue({
-      data: [{ ...INVOICE, status: "paid", amountPaid: "90.00", balanceDue: "0.00" }],
+  it("does not offer Payment status on a cancelled Parent Invoice", async () => {
+    vi.mocked(listParentInvoices).mockResolvedValue({
+      data: [{ ...PARENT_INVOICE, status: "cancelled", amountPaid: "0.00", balanceDue: "90.00" }],
       page: { total: 1, page: 1, pageSize: 25 },
     });
     renderPage();
 
-    // "Paid" is both this invoice's status badge and a column header, so scope to the badge.
-    expect(await screen.findByText("$0.00")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /record payment/i })).not.toBeInTheDocument();
+    await screen.findByText("Fatima Ali");
+    expect(screen.queryByRole("button", { name: /payment status/i })).not.toBeInTheDocument();
   });
 
   it("tells the operator on the Income tab that student revenue is already counted", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("Partially paid");
+    await screen.findByText("2026-09-PARENT1");
 
     await user.click(screen.getByRole("tab", { name: "Income" }));
 
@@ -315,45 +542,7 @@ describe("OrgFinancePage", () => {
     ).toMatch(/donations,\s+sponsorships, grants/i);
   });
 
-  it("exposes the fee-plan and billing-run steps that start the workflow", async () => {
-    const user = userEvent.setup();
-    renderPage();
-    await screen.findByText("Partially paid");
-
-    expect(screen.getByRole("button", { name: /generate invoices/i })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Fee plans" }));
-    expect(await screen.findByRole("button", { name: /new fee plan/i })).toBeInTheDocument();
-    expect(screen.getByText("No fee plans yet")).toBeInTheDocument();
-  });
-
-  // ---- Void / cancel / edit actions (pre-deployment audit §C) -----------------------------
-
-  it("cancels an unsettled invoice after confirmation", async () => {
-    const user = userEvent.setup();
-    vi.mocked(cancelStudentInvoice).mockResolvedValue({ ...INVOICE, status: "cancelled" });
-    renderPage();
-    await screen.findByText("Partially paid");
-
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-    const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: /cancel invoice/i }));
-
-    await waitFor(() =>
-      expect(cancelStudentInvoice).toHaveBeenCalledWith("inv-1", expect.any(String)),
-    );
-  });
-
-  it("does not offer Cancel on a settled invoice", async () => {
-    vi.mocked(listStudentInvoices).mockResolvedValue({
-      data: [{ ...INVOICE, status: "paid", amountPaid: "90.00", balanceDue: "0.00" }],
-      page: { total: 1, page: 1, pageSize: 25 },
-    });
-    renderPage();
-
-    await screen.findByText("$0.00");
-    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
-  });
+  // ---- Void / edit actions (pre-deployment audit §C) --------------------------------------
 
   const EXPENSE_ENTRY: LedgerEntry = {
     id: "exp-1",
@@ -376,7 +565,7 @@ describe("OrgFinancePage", () => {
     });
     vi.mocked(voidExpense).mockResolvedValue({ ...EXPENSE_ENTRY, isVoided: true });
     renderPage();
-    await screen.findByText("Partially paid");
+    await screen.findByText("2026-09-PARENT1");
 
     await user.click(screen.getByRole("tab", { name: "Expenses" }));
     await screen.findByText("Fuel");
@@ -400,7 +589,7 @@ describe("OrgFinancePage", () => {
     });
     vi.mocked(voidIncome).mockResolvedValue({ ...incomeEntry, isVoided: true });
     renderPage();
-    await screen.findByText("Partially paid");
+    await screen.findByText("2026-09-PARENT1");
 
     await user.click(screen.getByRole("tab", { name: "Income" }));
     await screen.findByText("Donation");
@@ -412,45 +601,6 @@ describe("OrgFinancePage", () => {
 
     await waitFor(() =>
       expect(voidIncome).toHaveBeenCalledWith("inc-1", expect.any(String)),
-    );
-  });
-
-  const FEE_PLAN: FeePlan = {
-    id: "plan-1",
-    organizationId: "org-1",
-    name: "Monthly transport",
-    amount: "50.00",
-    currency: "USD",
-    defaultDiscountAmount: "0.00",
-    description: null,
-    status: "active",
-  };
-
-  it("edits an existing fee plan, pre-filled with its current values", async () => {
-    const user = userEvent.setup();
-    vi.mocked(listFeePlans).mockResolvedValue({
-      data: [FEE_PLAN],
-      page: { total: 1, page: 1, pageSize: 25 },
-    });
-    vi.mocked(updateFeePlan).mockResolvedValue({ ...FEE_PLAN, amount: "60.00" });
-    renderPage();
-    await screen.findByText("Partially paid");
-
-    await user.click(screen.getByRole("tab", { name: "Fee plans" }));
-    await screen.findByText("Monthly transport");
-    await user.click(screen.getByRole("button", { name: "Edit" }));
-
-    const drawer = await screen.findByRole("dialog");
-    expect(within(drawer).getByDisplayValue("Monthly transport")).toBeInTheDocument();
-    expect(within(drawer).getByDisplayValue("50.00")).toBeInTheDocument();
-
-    await user.click(within(drawer).getByRole("button", { name: /save changes/i }));
-
-    await waitFor(() =>
-      expect(updateFeePlan).toHaveBeenCalledWith(
-        "plan-1",
-        expect.objectContaining({ name: "Monthly transport", amount: "50.00" }),
-      ),
     );
   });
 
@@ -472,7 +622,7 @@ describe("OrgFinancePage", () => {
     });
     vi.mocked(updateCategory).mockResolvedValue({ ...CATEGORY, name: "Fuel & Maintenance" });
     renderPage();
-    await screen.findByText("Partially paid");
+    await screen.findByText("2026-09-PARENT1");
 
     await user.click(screen.getByRole("tab", { name: "Categories" }));
     await screen.findByText("Fuel");

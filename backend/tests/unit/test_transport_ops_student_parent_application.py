@@ -76,6 +76,10 @@ class InMemoryStudentRepository(StudentRepository):
     async def list_all(self) -> list[Student]:
         return list(self.by_id.values())
 
+    async def list_by_ids(self, student_ids: list[str]) -> list[Student]:
+        wanted = set(student_ids)
+        return [s for s in self.by_id.values() if str(s.id) in wanted]
+
     async def list_page(
         self,
         page_request: OffsetPageRequest,
@@ -139,6 +143,10 @@ class InMemoryParentRepository(ParentRepository):
             page_size=page_request.page_size,
         )
 
+    async def list_by_ids(self, parent_ids: list[str]) -> list[Parent]:
+        wanted = set(parent_ids)
+        return [p for p in self.by_id.values() if str(p.id) in wanted]
+
 
 class InMemoryStudentParentRepository(StudentParentRepository):
     def __init__(self) -> None:
@@ -168,6 +176,10 @@ class InMemoryStudentParentRepository(StudentParentRepository):
             for link in self.by_key.values()
             if str(link.parent_id) == str(parent_id)
         ]
+
+    async def list_by_students(self, student_ids: list[StudentId]) -> list[StudentParent]:
+        wanted = {str(sid) for sid in student_ids}
+        return [link for link in self.by_key.values() if str(link.student_id) in wanted]
 
 
 class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):

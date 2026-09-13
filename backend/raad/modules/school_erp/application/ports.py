@@ -27,6 +27,8 @@ from raad.modules.school_erp.domain.repositories import (
     FeePlanRepository,
     FinancialCategoryRepository,
     IncomeRepository,
+    ParentBillingProfileRepository,
+    ParentInvoiceRepository,
     StudentInvoiceRepository,
     StudentPaymentRepository,
 )
@@ -78,3 +80,7 @@ class SchoolErpUnitOfWork(UnitOfWork):
     student_payments: StudentPaymentRepository
     income: IncomeRepository
     expenses: ExpenseRepository
+    #: ADR-0042: the real Parent-facing billing aggregates. `student_invoices`/`student_payments`
+    #: above are unmodified and remain the historical record (ADR-0042 decision 2).
+    parent_billing_profiles: ParentBillingProfileRepository
+    parent_invoices: ParentInvoiceRepository

@@ -57,6 +57,7 @@ class _StudentForParentDTO:
     status: str
     relationship: str | None
     is_primary: bool
+    date_of_birth: object = None
 
 
 class _FakeStudentParentService:

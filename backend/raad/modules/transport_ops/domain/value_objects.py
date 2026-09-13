@@ -92,6 +92,16 @@ _ULID_PATTERN = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 _PHONE_MAX_LENGTH = 32
 _E164_PATTERN = re.compile(r"^\+[1-9]\d{1,14}$")
 
+# 2026-09-10 explicit user directive: additive profile fields on `students`/`parents`, not in
+# Database Design §6.2/§6.3 — no approved document gives these a length, so these are this
+# change's own defensible bounds, sized like the nearest analogous field already in this schema
+# where one exists (`_EMERGENCY_CONTACT_NAME_MAX_LENGTH` mirrors `_FULL_NAME_MAX_LENGTH` in
+# entities.py; `_NOTES_MAX_LENGTH` mirrors `school_erp.domain.entities._MAX_DESCRIPTION`, the
+# only other free-text "notes" bound in this codebase), a plain free-text single line otherwise.
+_ADDRESS_MAX_LENGTH = 255
+_EMERGENCY_CONTACT_NAME_MAX_LENGTH = 200
+_NOTES_MAX_LENGTH = 500
+
 
 @dataclass(frozen=True)
 class StudentId:
@@ -138,6 +148,19 @@ class StudentStatus(str, Enum):
     DISABLED = "disabled"
     GRADUATED = "graduated"
     TRANSFERRED = "transferred"
+
+
+class Gender(str, Enum):
+    """2026-09-10 explicit user directive (Parent & Student Domain Restructure): `students`
+    gains an optional `gender` column, not present in Database Design §6.2. Three values,
+    matching the closed set every other demographic field in this codebase uses when a school
+    system needs one (no broader document defines this field, so this is this change's own
+    minimal, defensible enum, mirroring `ParentStatus`/`DriverStatus`'s own "flagged, not
+    guessed" precedent for an undocumented-but-required field)."""
+
+    MALE = "male"
+    FEMALE = "female"
+    OTHER = "other"
 
 
 @dataclass(frozen=True)

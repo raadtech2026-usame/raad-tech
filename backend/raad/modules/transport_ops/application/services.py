@@ -74,11 +74,35 @@ I/O-dependent uniqueness guard) `RouteApplicationService.create_route` already e
 `remove_student_assignment`/`transfer_student_assignment`/`graduate_student_assignment`/
 `disable_student_assignment` all mirror `StudentApplicationService`'s four identically-shaped
 status methods exactly — load, call the one matching domain method, commit.
+
+**Finance UI cleanup addition (2026-09-12): `ensure_family_vehicle_consistency`.** Added right
+after `ensure_student_has_no_active_assignment`, before the aggregate factory — RAAD's
+one-family-one-vehicle rule (every child of the same Parent rides the same bus) had no
+enforcement anywhere until now; the Parent Invoice Vehicle filter (`school_erp`) reads a family's
+one vehicle, and a family that could split across buses would make that filter's own semantics
+ambiguous. See `validators.py`'s own docstring for the full reasoning.
+
+**Family/Parent transportation correction (2026-09-12), superseding the paragraph above's own
+framing.** A validator alone only rejects a *conflicting* second assignment — it does nothing to
+give the admin one place to set a family's Vehicle/Route/Stops in the first place, so the actual
+workflow still asked an admin to open each Student separately. RAAD's business model is that
+**Parent/family, not Student, is the transportation unit**: `register_parent_with_children`
+below now accepts the family's route/stops/vehicle directly (optional — a parent can still be
+registered with no transportation yet) and assigns every listed child to it, identically, inside
+the same transaction that creates them. `ParentApplicationService.set_family_transportation` is
+the one place to assign it for the first time on an existing parent, or change it later — it
+ends every linked child's current active `StudentAssignment` and recreates it against the new
+route/stops/vehicle, for every child, atomically. Because both paths only ever assign one shared
+route/stops/vehicle to every child of a Parent in one call, a family split across two buses is no
+longer just rejected (`ensure_family_vehicle_consistency`, kept as a defense-in-depth safety net
+over the older, still-reachable `assign_student_to_route` single-student endpoint) — there is
+simply no path left that assigns one child without assigning all of that Parent's children the
+same way.
 """
 
 from __future__ import annotations
 
-from raad.core.errors.exceptions import AuthorizationError, NotFoundError
+from raad.core.errors.exceptions import AuthorizationError, NotFoundError, ValidationError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
 from raad.core.tenancy.principal import Principal, Role
@@ -108,12 +132,14 @@ from raad.modules.transport_ops.application.commands import (
     MoveStopCommand,
     RegisterDriverCommand,
     RegisterParentCommand,
+    RegisterParentWithChildrenCommand,
     RemoveStopFromRouteCommand,
     RemoveStudentAssignmentCommand,
     ResumeTripCommand,
     RevokeParentVideoLiveAccessCommand,
     RevokeParentVideoPlaybackAccessCommand,
     ScheduleTripCommand,
+    SetFamilyTransportationCommand,
     StartTripCommand,
     TransferStudentAssignmentCommand,
     TransferStudentCommand,
@@ -179,6 +205,7 @@ from raad.modules.transport_ops.application.queries import (
 )
 from raad.modules.transport_ops.application.validators import (
     ensure_driver_exists,
+    ensure_family_vehicle_consistency,
     ensure_link_exists,
     ensure_link_not_duplicate,
     ensure_parent_exists,
@@ -200,6 +227,7 @@ from raad.modules.transport_ops.domain.entities import (
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
+    Gender,
     OrganizationId,
     ParentId,
     PhoneNumber,
@@ -271,6 +299,9 @@ class StudentApplicationService:
                 organization_id=OrganizationId(command.organization_id),
                 full_name=command.full_name,
                 external_ref=command.external_ref,
+                date_of_birth=command.date_of_birth,
+                gender=Gender(command.gender) if command.gender else None,
+                notes=command.notes,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )
@@ -287,6 +318,9 @@ class StudentApplicationService:
             student.update_details(
                 full_name=command.full_name,
                 external_ref=command.external_ref,
+                date_of_birth=command.date_of_birth,
+                gender=Gender(command.gender) if command.gender else None,
+                notes=command.notes,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )
@@ -359,6 +393,17 @@ class StudentApplicationService:
                 page_size=page.page_size,
             )
 
+    async def list_students_by_ids(
+        self, student_ids: list[str], *, uow: TransportOpsUnitOfWork
+    ) -> list[StudentDTO]:
+        """Report Center re-design (2026-09-11) — the bulk read a roster-shaped report needs:
+        many `Student` rows in one call, mirroring `ParentApplicationService.list_parents_by_ids`
+        (ADR-0041 §1) exactly, the same "the one legal repository call, on this module's own
+        behalf" reasoning."""
+        async with uow:
+            students = await uow.students.list_by_ids(student_ids)
+            return [student_to_dto(student) for student in students]
+
     @staticmethod
     async def _get_student_or_raise(
         uow: TransportOpsUnitOfWork, student_id: str
@@ -418,6 +463,17 @@ class ParentApplicationService:
                 user_id=UserId(user_id),
                 full_name=command.full_name,
                 phone=PhoneNumber(command.phone) if command.phone else None,
+                alternate_phone=(
+                    PhoneNumber(command.alternate_phone) if command.alternate_phone else None
+                ),
+                address=command.address,
+                emergency_contact_name=command.emergency_contact_name,
+                emergency_contact_phone=(
+                    PhoneNumber(command.emergency_contact_phone)
+                    if command.emergency_contact_phone
+                    else None
+                ),
+                notes=command.notes,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )
@@ -425,6 +481,137 @@ class ParentApplicationService:
             uow.record_events(parent.pull_domain_events())
             await uow.commit()
             return parent_to_dto(parent), temporary_password
+
+    async def register_parent_with_children(
+        self,
+        command: RegisterParentWithChildrenCommand,
+        *,
+        uow: TransportOpsUnitOfWork,
+    ) -> tuple[ParentDTO, list[StudentDTO], str]:
+        """ADR-0041 §2 — the primary "Add Parent -> add children -> Save" registration flow.
+        Identical IAM-provisioning step to `register_parent` above (its own, independently
+        committed transaction — ADR-0003, unavoidable across the module boundary), then **one**
+        `TransportOpsUnitOfWork` transaction creates the `Parent`, every child `Student`, and
+        every `StudentParent` link together: if any child fails validation, the whole
+        transaction rolls back — no orphan `Parent`, no orphan `Student`, no partial link set.
+
+        Same accepted, bounded gap as `register_parent`: a `Parent`+children failure after the
+        `User` was already created leaves that `User` orphaned, not a new gap this introduces.
+
+        **Family transportation.** When `command.route_id` is given, every child created below
+        is assigned to that exact same route/stops/vehicle — one `ensure_route_exists`/
+        `ensure_pickup_and_dropoff_stops_exist` check for the whole family, not one per child,
+        since they all share the identical values by construction (see module docstring's
+        2026-09-12 addition)."""
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
+        if command.route_id is not None and (
+            command.pickup_stop_id is None or command.dropoff_stop_id is None
+        ):
+            raise ValidationError(
+                "Family transportation requires 'route_id', 'pickup_stop_id', and "
+                "'dropoff_stop_id' together.",
+                details={"fields": ["route_id", "pickup_stop_id", "dropoff_stop_id"]},
+            )
+        user_id, temporary_password = (
+            await self._user_provisioning.create_user_with_temporary_password(
+                organization_id=command.organization_id,
+                role=Role.PARENT,
+                email=command.email,
+                phone=command.phone,
+                full_name=command.full_name,
+                actor=command.actor,
+            )
+        )
+        async with uow:
+            parent = Parent.register(
+                id=ParentId(self._id_generator.new_id()),
+                organization_id=OrganizationId(command.organization_id),
+                user_id=UserId(user_id),
+                full_name=command.full_name,
+                phone=PhoneNumber(command.phone) if command.phone else None,
+                alternate_phone=(
+                    PhoneNumber(command.alternate_phone) if command.alternate_phone else None
+                ),
+                address=command.address,
+                emergency_contact_name=command.emergency_contact_name,
+                emergency_contact_phone=(
+                    PhoneNumber(command.emergency_contact_phone)
+                    if command.emergency_contact_phone
+                    else None
+                ),
+                notes=command.notes,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.parents.add(parent)
+            events = list(parent.pull_domain_events())
+
+            family_route: Route | None = None
+            family_vehicle_id: VehicleId | None = None
+            if command.route_id is not None:
+                family_route = await ensure_route_exists(uow, RouteId(command.route_id))
+                ensure_pickup_and_dropoff_stops_exist(
+                    family_route,
+                    StopId(command.pickup_stop_id),
+                    StopId(command.dropoff_stop_id),
+                )
+                family_vehicle_id = (
+                    VehicleId(command.vehicle_id) if command.vehicle_id is not None else None
+                )
+
+            student_dtos: list[StudentDTO] = []
+            for child in command.children:
+                student = Student.enroll(
+                    id=StudentId(self._id_generator.new_id()),
+                    organization_id=OrganizationId(command.organization_id),
+                    full_name=child.full_name,
+                    external_ref=child.external_ref,
+                    date_of_birth=child.date_of_birth,
+                    gender=Gender(child.gender) if child.gender else None,
+                    notes=child.notes,
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                )
+                uow.students.add(student)
+                events += student.pull_domain_events()
+
+                link = StudentParent.link(
+                    student_id=student.id,
+                    student_organization_id=student.organization_id,
+                    parent_id=parent.id,
+                    parent_organization_id=parent.organization_id,
+                    relationship=child.relationship,
+                    is_primary=child.is_primary,
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                )
+                uow.student_parents.add(link)
+                events += link.pull_domain_events()
+
+                if family_route is not None:
+                    assignment = StudentAssignment.assign(
+                        id=StudentAssignmentId(self._id_generator.new_id()),
+                        organization_id=OrganizationId(command.organization_id),
+                        student_id=student.id,
+                        student_organization_id=student.organization_id,
+                        route_id=family_route.id,
+                        route_organization_id=family_route.organization_id,
+                        pickup_stop_id=StopId(command.pickup_stop_id),
+                        dropoff_stop_id=StopId(command.dropoff_stop_id),
+                        vehicle_id=family_vehicle_id,
+                        clock=self._clock,
+                        actor_id=command.actor.user_id,
+                    )
+                    uow.student_assignments.add(assignment)
+                    events += assignment.pull_domain_events()
+
+                student_dtos.append(student_to_dto(student))
+
+            uow.record_events(events)
+            await uow.commit()
+            return parent_to_dto(parent), student_dtos, temporary_password
 
     async def update_parent(
         self, command: UpdateParentCommand, *, uow: TransportOpsUnitOfWork
@@ -434,12 +621,81 @@ class ParentApplicationService:
             parent.update_details(
                 full_name=command.full_name,
                 phone=PhoneNumber(command.phone) if command.phone else None,
+                alternate_phone=(
+                    PhoneNumber(command.alternate_phone) if command.alternate_phone else None
+                ),
+                address=command.address,
+                emergency_contact_name=command.emergency_contact_name,
+                emergency_contact_phone=(
+                    PhoneNumber(command.emergency_contact_phone)
+                    if command.emergency_contact_phone
+                    else None
+                ),
+                notes=command.notes,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )
             uow.record_events(parent.pull_domain_events())
             await uow.commit()
             return parent_to_dto(parent)
+
+    async def set_family_transportation(
+        self, command: SetFamilyTransportationCommand, *, uow: TransportOpsUnitOfWork
+    ) -> list[StudentAssignmentDTO]:
+        """2026-09-12 business-model correction — the one place a family's Vehicle/Route/Stops
+        is assigned or changed, per RAAD's "one Parent/family = one bus" rule (module docstring's
+        Family/Parent transportation correction). Validates the route/stops once, then for every
+        Student currently linked to this Parent (`student_parents.list_by_parent`): ends that
+        child's current active `StudentAssignment` if one exists (`StudentAssignment.remove` —
+        an admin correction, not a real-world transfer/graduation, mirroring `assign_student_to_
+        route`'s own "a new assignment, not a status flip" precedent for the analogous single-
+        student case) and creates a fresh one against the new route/stops/vehicle — all in one
+        transaction, so the family can never be left split across two buses mid-change. A Parent
+        with no linked children yet is a legal no-op (nothing to assign); running this again once
+        children exist re-syncs every one of them, including any added after the last run."""
+        async with uow:
+            parent = await self._get_parent_or_raise(uow, command.parent_id)
+            route = await ensure_route_exists(uow, RouteId(command.route_id))
+            ensure_pickup_and_dropoff_stops_exist(
+                route, StopId(command.pickup_stop_id), StopId(command.dropoff_stop_id)
+            )
+            new_vehicle_id = (
+                VehicleId(command.vehicle_id) if command.vehicle_id is not None else None
+            )
+            links = await uow.student_parents.list_by_parent(parent.id)
+            events = []
+            assignments: list[StudentAssignment] = []
+            for link in links:
+                student = await uow.students.get(link.student_id)
+                if student is None:
+                    # Soft-deleted student — same skip `list_students_for_parent` already
+                    # applies for an orphaned link.
+                    continue
+                existing = await uow.student_assignments.active_assignment_for_student(
+                    student.id
+                )
+                if existing is not None:
+                    existing.remove(clock=self._clock, actor_id=command.actor.user_id)
+                    events += existing.pull_domain_events()
+                assignment = StudentAssignment.assign(
+                    id=StudentAssignmentId(self._id_generator.new_id()),
+                    organization_id=parent.organization_id,
+                    student_id=student.id,
+                    student_organization_id=student.organization_id,
+                    route_id=route.id,
+                    route_organization_id=route.organization_id,
+                    pickup_stop_id=StopId(command.pickup_stop_id),
+                    dropoff_stop_id=StopId(command.dropoff_stop_id),
+                    vehicle_id=new_vehicle_id,
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                )
+                uow.student_assignments.add(assignment)
+                events += assignment.pull_domain_events()
+                assignments.append(assignment)
+            uow.record_events(events)
+            await uow.commit()
+            return [student_assignment_to_dto(assignment) for assignment in assignments]
 
     async def activate_parent(
         self, command: ActivateParentCommand, *, uow: TransportOpsUnitOfWork
@@ -522,6 +778,17 @@ class ParentApplicationService:
         async with uow:
             parent = await uow.parents.get_by_user_id(UserId(user_id))
             return parent_to_dto(parent) if parent is not None else None
+
+    async def list_parents_by_ids(
+        self, parent_ids: list[str], *, uow: TransportOpsUnitOfWork
+    ) -> list[ParentDTO]:
+        """ADR-0041 §1 — the bulk read the Parent Invoice read model needs: many `Parent`
+        rows in one call, for `school_erp.ParentFinanceApplicationService` to compose (never a
+        cross-module DB read — this is the application-layer method that does the one legal
+        repository call, `ParentRepository.list_by_ids`, on this module's own behalf)."""
+        async with uow:
+            parents = await uow.parents.list_by_ids(parent_ids)
+            return [parent_to_dto(parent) for parent in parents]
 
     async def list_parents(
         self, query: ListParentsQuery, *, uow: TransportOpsUnitOfWork
@@ -629,6 +896,18 @@ class StudentParentApplicationService:
                     continue
                 result.append(student_for_parent_to_dto(student, link))
             return result
+
+    async def list_links_for_students(
+        self, student_ids: list[str], *, uow: TransportOpsUnitOfWork
+    ) -> list[StudentParentDTO]:
+        """ADR-0041 §1 — the bulk `student_id -> parent_id` resolution the Parent Invoice read
+        model needs, one call for many students at once (`StudentParentRepository.
+        list_by_students`), for `school_erp.ParentFinanceApplicationService` to compose."""
+        async with uow:
+            links = await uow.student_parents.list_by_students(
+                [StudentId(sid) for sid in student_ids]
+            )
+            return [student_parent_to_dto(link) for link in links]
 
 
 class DriverApplicationService:
@@ -1093,6 +1372,10 @@ class StudentAssignmentApplicationService:
                 StopId(command.dropoff_stop_id),
             )
             await ensure_student_has_no_active_assignment(uow, student.id)
+            new_vehicle_id = (
+                VehicleId(command.vehicle_id) if command.vehicle_id is not None else None
+            )
+            await ensure_family_vehicle_consistency(uow, student.id, new_vehicle_id)
 
             assignment = StudentAssignment.assign(
                 id=StudentAssignmentId(self._id_generator.new_id()),
@@ -1103,11 +1386,7 @@ class StudentAssignmentApplicationService:
                 route_organization_id=route.organization_id,
                 pickup_stop_id=StopId(command.pickup_stop_id),
                 dropoff_stop_id=StopId(command.dropoff_stop_id),
-                vehicle_id=(
-                    VehicleId(command.vehicle_id)
-                    if command.vehicle_id is not None
-                    else None
-                ),
+                vehicle_id=new_vehicle_id,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )

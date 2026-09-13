@@ -60,10 +60,13 @@ from raad.modules.school_erp.application.ports import (
 )
 from raad.modules.school_erp.application.services import SchoolErpApplicationService
 from raad.modules.school_erp.domain.entities import (
+    BilledChild,
     Expense,
     FeePlan,
     FinancialCategory,
     Income,
+    ParentBillingProfile,
+    ParentInvoice,
     StudentInvoice,
     StudentPayment,
 )
@@ -73,6 +76,8 @@ from raad.modules.school_erp.domain.repositories import (
     FinanceTotals,
     FinancialCategoryRepository,
     IncomeRepository,
+    ParentBillingProfileRepository,
+    ParentInvoiceRepository,
     StudentInvoiceRepository,
     StudentPaymentRepository,
     VehicleFinancialSummary,
@@ -85,6 +90,11 @@ from raad.modules.school_erp.domain.value_objects import (
     IncomeId,
     Money,
     OrganizationId,
+    ParentBillingProfileId,
+    ParentBillingProfileStatus,
+    ParentId,
+    ParentInvoiceId,
+    ParentInvoiceStatus,
     StudentId,
     StudentInvoiceId,
     StudentInvoiceStatus,
@@ -98,6 +108,12 @@ STUDENT_A = "01J8Z3K9G6X8YV5T4N2R7QSTDA"
 STUDENT_B = "01J8Z3K9G6X8YV5T4N2R7QSTDB"
 BUS_1 = "01J8Z3K9G6X8YV5T4N2R7QBS01"
 BUS_2 = "01J8Z3K9G6X8YV5T4N2R7QBS02"
+#: ADR-0042 — the Parent-facing tests below seed one parent per (student, bus) pair, mirroring
+#: the pre-ADR-0042 tests' own "two independent $50 StudentInvoices" shape as two independent
+#: $50 ParentInvoices, since `ParentInvoice.generate` splits one family's total evenly across
+#: *its own* children rather than accepting a custom amount per line.
+PARENT_A = "01J8Z3K9G6X8YV5T4N2R7QPRTA"
+PARENT_B = "01J8Z3K9G6X8YV5T4N2R7QPRTB"
 
 
 class FixedClock(Clock):
@@ -436,6 +452,172 @@ class InMemoryExpenseRepository(ExpenseRepository):
         return totals
 
 
+class InMemoryParentBillingProfileRepository(ParentBillingProfileRepository):
+    """ADR-0042. Not exercised by the P&L/Finance-Summary/Vehicle-Overview tests below (they
+    seed `ParentInvoice` rows directly), but the fake `SchoolErpUnitOfWork` must implement the
+    full port regardless."""
+
+    def __init__(self) -> None:
+        self.by_id: dict[str, ParentBillingProfile] = {}
+
+    async def get(self, profile_id: ParentBillingProfileId) -> ParentBillingProfile | None:
+        return self.by_id.get(str(profile_id))
+
+    async def get_by_parent(self, parent_id: ParentId) -> ParentBillingProfile | None:
+        return next(
+            (p for p in self.by_id.values() if str(p.parent_id) == str(parent_id)), None
+        )
+
+    def add(self, profile: ParentBillingProfile) -> None:
+        self.by_id[str(profile.id)] = profile
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[ParentBillingProfile]:
+        return _paginate(list(self.by_id.values()), page_request)
+
+    async def list_active_for_billing(
+        self, *, as_of_period: BillingPeriod
+    ) -> list[ParentBillingProfile]:
+        return [
+            p
+            for p in self.by_id.values()
+            if p.status is ParentBillingProfileStatus.ACTIVE
+            and str(p.billing_start_period) <= str(as_of_period)
+        ]
+
+
+class InMemoryParentInvoiceRepository(ParentInvoiceRepository):
+    """ADR-0042 — mirrors `SqlAlchemyParentInvoiceRepository`'s own grouped-query semantics
+    closely enough to test the service/reports that consume them: cancelled invoices excluded,
+    balances clamped at zero, and `summarise_by_vehicle`'s pro-rata collected-share allocation
+    (`line.amount * invoice.amount_paid / invoice.amount`) reproduced exactly."""
+
+    def __init__(self) -> None:
+        self.by_id: dict[str, ParentInvoice] = {}
+
+    async def get(self, invoice_id: ParentInvoiceId) -> ParentInvoice | None:
+        return self.by_id.get(str(invoice_id))
+
+    async def get_by_parent_period(
+        self, *, parent_id: ParentId, period: BillingPeriod
+    ) -> ParentInvoice | None:
+        return next(
+            (
+                i
+                for i in self.by_id.values()
+                if str(i.parent_id) == str(parent_id) and str(i.period) == str(period)
+            ),
+            None,
+        )
+
+    async def exists_for_parent_period(
+        self, *, parent_id: ParentId, period: BillingPeriod
+    ) -> bool:
+        return any(
+            str(i.parent_id) == str(parent_id)
+            and str(i.period) == str(period)
+            and i.status is not ParentInvoiceStatus.CANCELLED
+            for i in self.by_id.values()
+        )
+
+    def add(self, invoice: ParentInvoice) -> None:
+        self.by_id[str(invoice.id)] = invoice
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[ParentInvoice]:
+        return _paginate(list(self.by_id.values()), page_request)
+
+    async def list_for_parent(self, parent_id: ParentId) -> list[ParentInvoice]:
+        return [i for i in self.by_id.values() if str(i.parent_id) == str(parent_id)]
+
+    def _live(self, *, period: BillingPeriod | None) -> list[ParentInvoice]:
+        return [
+            i
+            for i in self.by_id.values()
+            if i.status is not ParentInvoiceStatus.CANCELLED
+            and (period is None or str(i.period) == str(period))
+        ]
+
+    async def summarise_totals(self, *, period: BillingPeriod | None = None) -> FinanceTotals:
+        invoices = self._live(period=period)
+        return FinanceTotals(
+            billed_amount=sum((i.amount.amount for i in invoices), Decimal("0.00")),
+            collected_amount=sum((i.amount_paid for i in invoices), Decimal("0.00")),
+            outstanding_amount=sum((i.balance_due for i in invoices), Decimal("0.00")),
+            invoice_count=len(invoices),
+            paid_invoice_count=len(
+                [i for i in invoices if i.status is ParentInvoiceStatus.PAID]
+            ),
+            overdue_invoice_count=0,
+            currency=invoices[0].amount.currency if invoices else "USD",
+        )
+
+    async def summarise_by_vehicle(
+        self, *, period: BillingPeriod | None = None
+    ) -> list[VehicleFinancialSummary]:
+        buckets: dict[str | None, list[tuple]] = {}
+        for invoice in self._live(period=period):
+            share_ratio = (
+                invoice.amount_paid / invoice.amount.amount
+                if invoice.amount.amount > Decimal("0.00")
+                else Decimal("0.00")
+            )
+            is_settled = invoice.amount_paid >= invoice.amount.amount
+            for line in invoice.lines:
+                key = str(line.vehicle_id) if line.vehicle_id else None
+                collected_share = (line.amount.amount * share_ratio).quantize(Decimal("0.01"))
+                buckets.setdefault(key, []).append(
+                    (line, invoice, collected_share, is_settled)
+                )
+
+        summaries = []
+        for vehicle_id, rows in sorted(buckets.items(), key=lambda kv: kv[0] or ""):
+            billed = sum((line.amount.amount for line, _, _, _ in rows), Decimal("0.00"))
+            collected = sum((share for _, _, share, _ in rows), Decimal("0.00"))
+            outstanding = max(billed - collected, Decimal("0.00"))
+            settled_students = {
+                str(line.student_id) for line, _, _, settled in rows if settled
+            }
+            all_students = {str(line.student_id) for line, _, _, _ in rows}
+            summaries.append(
+                VehicleFinancialSummary(
+                    vehicle_id=vehicle_id,
+                    student_count=len(all_students),
+                    invoice_count=len({str(inv.id) for _, inv, _, _ in rows}),
+                    billed_amount=billed,
+                    collected_amount=collected,
+                    outstanding_amount=outstanding,
+                    paid_student_count=len(settled_students),
+                    unpaid_student_count=len(all_students - settled_students),
+                    currency=rows[0][1].amount.currency,
+                )
+            )
+        return summaries
+
+    async def sum_collected_between(self, *, start: date, end: date) -> Decimal:
+        return sum(
+            (
+                i.amount_paid
+                for i in self.by_id.values()
+                if i.status is not ParentInvoiceStatus.CANCELLED
+                and start <= i.invoice_date <= end
+            ),
+            Decimal("0.00"),
+        )
+
+
 class FakeSchoolErpUnitOfWork(SchoolErpUnitOfWork):
     def __init__(self) -> None:
         self.financial_categories = InMemoryFinancialCategoryRepository()
@@ -444,6 +626,8 @@ class FakeSchoolErpUnitOfWork(SchoolErpUnitOfWork):
         self.student_payments = InMemoryStudentPaymentRepository()
         self.income = InMemoryIncomeRepository()
         self.expenses = InMemoryExpenseRepository()
+        self.parent_billing_profiles = InMemoryParentBillingProfileRepository()
+        self.parent_invoices = InMemoryParentInvoiceRepository()
         self.recorded_events: list = []
         self.commit_count = 0
         self.rollback_count = 0
@@ -496,6 +680,10 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         )
         self.service = make_service(self.transport)
         self.actor = org_admin()
+        #: A dedicated id generator for `_seed_parent_invoice` — independent of whatever
+        #: `SequentialIdGenerator` `make_service` constructs internally for the service under
+        #: test, so seeded fixture ids can never collide with ids the service itself mints.
+        self.ids = SequentialIdGenerator()
 
     async def _fee_plan(self, amount: str = "50.00", discount: str = "0.00") -> str:
         plan = await self.service.create_fee_plan(
@@ -569,6 +757,48 @@ class _Base(unittest.IsolatedAsyncioTestCase):
             uow=self.uow,
         )
         return category.id
+
+    def _seed_parent_invoice(
+        self,
+        parent_id: str,
+        *,
+        student_id: str,
+        vehicle_id: str | None,
+        amount: str,
+        period: str = "2026-09",
+        amount_paid: str | None = None,
+    ) -> ParentInvoice:
+        """ADR-0042 — seeds one real `ParentInvoice` directly onto the fake `parent_invoices`
+        repository, the same way the real `generate_parent_invoices` use case would produce one
+        for a single-child family. `amount_paid`, when given, is applied via the identical
+        `set_payment_status` domain method the real payment-status endpoint calls."""
+        invoice = ParentInvoice.generate(
+            id=ParentInvoiceId(f"{self.ids.new_id()}"),
+            organization_id=OrganizationId(ORG),
+            parent_id=ParentId(parent_id),
+            period=BillingPeriod(period),
+            amount=Money(amount=Decimal(amount), currency="USD"),
+            due_date=date(2026, 9, 30),
+            children=[
+                BilledChild(
+                    line_id=self.ids.new_id(), student_id=student_id, vehicle_id=vehicle_id
+                )
+            ],
+            clock=CLOCK,
+            actor_id=self.actor.user_id,
+        )
+        if amount_paid is not None:
+            paid = Decimal(amount_paid)
+            total = Decimal(amount)
+            if paid >= total:
+                status = ParentInvoiceStatus.PAID
+            elif paid <= Decimal("0.00"):
+                status = ParentInvoiceStatus.UNPAID
+            else:
+                status = ParentInvoiceStatus.PARTIAL
+            invoice.set_payment_status(status=status, amount_paid=paid, clock=CLOCK)
+        self.uow.parent_invoices.add(invoice)
+        return invoice
 
 
 # --- The billing run -------------------------------------------------------------------------
@@ -732,17 +962,28 @@ class StudentPaymentTests(_Base):
 
 
 class ProfitAndLossTests(_Base):
-    async def test_student_revenue_comes_from_payments_with_no_income_row(self) -> None:
-        """Student → invoice → payment → P&L, with `erp_income` never written.
+    """ADR-0042: `get_profit_and_loss` now reads `ParentInvoice` (`sum_collected_between`,
+    filtered by `invoice_date`), not `StudentPayment` — see that repository method's own
+    docstring for why `invoice_date` is the correct, disclosed basis in a model with no separate
+    payment-transaction ledger."""
+
+    async def test_student_revenue_comes_from_parent_invoices_with_no_income_row(self) -> None:
+        """Parent → Parent Invoice → payment status → P&L, with `erp_income` never written.
 
         This is the automatic-accounting requirement in one assertion: a school that has billed
-        and been paid sees the money in `student_revenue` without anyone creating an `Income`
-        record, so there is no manual step to forget and no second entry to double-count.
+        and collected sees the money in `student_revenue` (the DTO's wire field name; every
+        consumer's own label reads "Parent Transportation Collections") without anyone creating
+        an `Income` record, so there is no manual step to forget and no second entry to
+        double-count.
         """
-        plan_id = await self._fee_plan("50.00")
-        invoices = await self._generate(plan_id, [STUDENT_A, STUDENT_B])
-        await self._pay(invoices[0].id, "50.00")
-        await self._pay(invoices[1].id, "20.00")
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=BUS_1, amount="50.00",
+            amount_paid="50.00",
+        )
+        self._seed_parent_invoice(
+            PARENT_B, student_id=STUDENT_B, vehicle_id=BUS_2, amount="50.00",
+            amount_paid="20.00",
+        )
 
         pnl = await self.service.get_profit_and_loss(
             start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
@@ -756,9 +997,10 @@ class ProfitAndLossTests(_Base):
     async def test_manual_income_is_a_separate_line_and_is_not_double_counted(
         self,
     ) -> None:
-        plan_id = await self._fee_plan("50.00")
-        (invoice,) = await self._generate(plan_id, [STUDENT_A])
-        await self._pay(invoice.id, "50.00")
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=BUS_1, amount="50.00",
+            amount_paid="50.00",
+        )
 
         category_id = await self._income_category()
         await self.service.record_income(
@@ -783,13 +1025,9 @@ class ProfitAndLossTests(_Base):
         self.assertEqual(pnl.other_income, "500.00")
         self.assertEqual(pnl.total_income, "550.00")
 
-    async def test_a_voided_payment_leaves_the_period_revenue(self) -> None:
-        plan_id = await self._fee_plan("50.00")
-        (invoice,) = await self._generate(plan_id, [STUDENT_A])
-        payment = await self._pay(invoice.id, "50.00")
-        await self.service.void_student_payment(
-            VoidStudentPaymentCommand(payment_id=payment.id, reason=None, actor=self.actor),
-            uow=self.uow,
+    async def test_an_unpaid_invoice_contributes_no_revenue(self) -> None:
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=BUS_1, amount="50.00"
         )
 
         pnl = await self.service.get_profit_and_loss(
@@ -798,9 +1036,10 @@ class ProfitAndLossTests(_Base):
         self.assertEqual(pnl.student_revenue, "0.00")
 
     async def test_expenses_reduce_net_profit(self) -> None:
-        plan_id = await self._fee_plan("50.00")
-        (invoice,) = await self._generate(plan_id, [STUDENT_A])
-        await self._pay(invoice.id, "50.00")
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=BUS_1, amount="50.00",
+            amount_paid="50.00",
+        )
 
         category_id = await self._expense_category()
         await self.service.record_expense(
@@ -827,10 +1066,14 @@ class ProfitAndLossTests(_Base):
 
 class FinanceSummaryTests(_Base):
     async def test_summary_tracks_billed_collected_and_outstanding(self) -> None:
-        plan_id = await self._fee_plan("50.00")
-        invoices = await self._generate(plan_id, [STUDENT_A, STUDENT_B])
-        await self._pay(invoices[0].id, "50.00")
-        await self._pay(invoices[1].id, "20.00")
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=BUS_1, amount="50.00",
+            amount_paid="50.00",
+        )
+        self._seed_parent_invoice(
+            PARENT_B, student_id=STUDENT_B, vehicle_id=BUS_2, amount="50.00",
+            amount_paid="20.00",
+        )
 
         summary = await self.service.get_finance_summary(period="2026-09", uow=self.uow)
 
@@ -843,9 +1086,13 @@ class FinanceSummaryTests(_Base):
 
 class VehicleFinancialOverviewTests(_Base):
     async def test_per_bus_revenue_moves_on_the_payment_alone(self) -> None:
-        plan_id = await self._fee_plan("50.00")
-        invoices = await self._generate(plan_id, [STUDENT_A, STUDENT_B])
-        await self._pay(invoices[0].id, "50.00")
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=BUS_1, amount="50.00",
+            amount_paid="50.00",
+        )
+        self._seed_parent_invoice(
+            PARENT_B, student_id=STUDENT_B, vehicle_id=BUS_2, amount="50.00"
+        )
 
         rows = await self.service.get_vehicle_financial_overview(
             period="2026-09", uow=self.uow
@@ -859,9 +1106,13 @@ class VehicleFinancialOverviewTests(_Base):
         self.assertEqual(self.uow.income.by_id, {})
 
     async def test_a_vehicle_expense_is_attributed_to_that_bus_only(self) -> None:
-        plan_id = await self._fee_plan("50.00")
-        invoices = await self._generate(plan_id, [STUDENT_A, STUDENT_B])
-        await self._pay(invoices[0].id, "50.00")
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=BUS_1, amount="50.00",
+            amount_paid="50.00",
+        )
+        self._seed_parent_invoice(
+            PARENT_B, student_id=STUDENT_B, vehicle_id=BUS_2, amount="50.00"
+        )
         category_id = await self._expense_category()
         await self.service.record_expense(
             RecordExpenseCommand(
@@ -900,21 +1151,11 @@ class UnattributedExpenseTests(_Base):
         NULL bucket and the service keyed the map by `vehicle_id or ""` — collapsing "no bus
         named on the expense" and "no bus on the invoice" onto the same key.
         """
-        plan_id = await self._fee_plan("50.00")
-        # A student with no transport assignment — its invoice lands in the Unassigned row.
-        service = make_service(FakeTransportContextPort({}))
-        (invoice,) = await service.generate_student_invoices(
-            GenerateStudentInvoicesCommand(
-                organization_id=ORG,
-                period="2026-09",
-                due_date=date(2026, 9, 30),
-                fee_plan_id=plan_id,
-                student_ids=[STUDENT_A],
-                actor=self.actor,
-            ),
-            uow=self.uow,
+        # A student with no transport assignment — its invoice line lands in the Unassigned row.
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=None, amount="50.00",
+            amount_paid="50.00",
         )
-        await self._pay(invoice.id, "50.00")
 
         category_id = await self._expense_category()
         await self.service.record_expense(

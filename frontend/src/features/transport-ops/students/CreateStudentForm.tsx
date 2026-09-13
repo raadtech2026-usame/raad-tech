@@ -23,6 +23,8 @@ const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 // `full_name VARCHAR(200)`, `external_ref VARCHAR(64)`).
 const FULL_NAME_MAX_LENGTH = 200;
 const EXTERNAL_REF_MAX_LENGTH = 64;
+// 2026-09-10 additive profile field bound — see `value_objects.py`'s own module comment.
+const NOTES_MAX_LENGTH = 500;
 
 /** `organizationId` is only a real form field for a signed-in principal with no organization of
  * their own — see `CreateVehicleForm.tsx`'s identical `buildSchema` precedent for the full
@@ -47,12 +49,28 @@ function buildSchema(requiresOrganizationPicker: boolean) {
       .string()
       .trim()
       .max(EXTERNAL_REF_MAX_LENGTH, `External reference must be at most ${EXTERNAL_REF_MAX_LENGTH} characters`),
+    dateOfBirth: z
+      .string()
+      .trim()
+      .refine(
+        (value) => value === "" || new Date(value).getTime() <= Date.now(),
+        "Date of birth must not be in the future",
+      ),
+    gender: z.enum(["", "male", "female", "other"]),
+    notes: z.string().trim().max(NOTES_MAX_LENGTH, `Notes must be at most ${NOTES_MAX_LENGTH} characters`),
   });
 }
 
 type FormValues = z.infer<ReturnType<typeof buildSchema>>;
 
-const DEFAULT_VALUES: FormValues = { organizationId: "", fullName: "", externalRef: "" };
+const DEFAULT_VALUES: FormValues = {
+  organizationId: "",
+  fullName: "",
+  externalRef: "",
+  dateOfBirth: "",
+  gender: "",
+  notes: "",
+};
 
 export interface CreateStudentFormProps {
   open: boolean;
@@ -108,6 +126,9 @@ export function CreateStudentForm({ open, onClose, onCreated }: CreateStudentFor
         organizationId: ownOrganizationId ?? values.organizationId,
         fullName: values.fullName,
         externalRef: values.externalRef || null,
+        dateOfBirth: values.dateOfBirth || null,
+        gender: values.gender || null,
+        notes: values.notes || null,
       }),
     onSuccess: (student) => {
       queryClient.invalidateQueries({ queryKey: ["students", "list"] });
@@ -183,6 +204,23 @@ export function CreateStudentForm({ open, onClose, onCreated }: CreateStudentFor
           error={errors.externalRef?.message}
         >
           <Input placeholder="e.g. STU-00231" invalid={!!errors.externalRef} {...register("externalRef")} />
+        </FormField>
+
+        <FormField label="Date of birth" hint="Optional." error={errors.dateOfBirth?.message}>
+          <Input type="date" invalid={!!errors.dateOfBirth} {...register("dateOfBirth")} />
+        </FormField>
+
+        <FormField label="Gender" hint="Optional." error={errors.gender?.message}>
+          <Select {...register("gender")} aria-label="Gender">
+            <option value="">Not specified</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value="other">Other</option>
+          </Select>
+        </FormField>
+
+        <FormField label="Notes" hint="Optional." error={errors.notes?.message}>
+          <Input placeholder="Optional" invalid={!!errors.notes} {...register("notes")} />
         </FormField>
       </form>
     </FormDrawer>

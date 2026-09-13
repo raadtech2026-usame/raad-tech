@@ -52,6 +52,7 @@ from raad.modules.transport_ops.domain.entities import (
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     DriverStatus,
+    Gender,
     OrganizationId,
     ParentId,
     ParentStatus,
@@ -95,6 +96,9 @@ def student_to_model(
     model.status = student.status.value
     model.created_at = _to_naive_utc(student.created_at)
     model.updated_at = _to_naive_utc(student.updated_at)
+    model.date_of_birth = student.date_of_birth
+    model.gender = student.gender.value if student.gender is not None else None
+    model.notes = student.notes
     return model
 
 
@@ -107,6 +111,9 @@ def model_to_student(model: StudentModel) -> Student:
         status=StudentStatus(model.status),
         created_at=model.created_at,
         updated_at=model.updated_at,
+        date_of_birth=model.date_of_birth,
+        gender=Gender(model.gender) if model.gender else None,
+        notes=model.notes,
     )
 
 
@@ -125,6 +132,17 @@ def parent_to_model(
     model.has_video_playback_access = parent.has_video_playback_access
     model.created_at = _to_naive_utc(parent.created_at)
     model.updated_at = _to_naive_utc(parent.updated_at)
+    model.alternate_phone = (
+        str(parent.alternate_phone) if parent.alternate_phone is not None else None
+    )
+    model.address = parent.address
+    model.emergency_contact_name = parent.emergency_contact_name
+    model.emergency_contact_phone = (
+        str(parent.emergency_contact_phone)
+        if parent.emergency_contact_phone is not None
+        else None
+    )
+    model.notes = parent.notes
     return model
 
 
@@ -140,6 +158,15 @@ def model_to_parent(model: ParentModel) -> Parent:
         updated_at=model.updated_at,
         has_video_live_access=model.has_video_live_access,
         has_video_playback_access=model.has_video_playback_access,
+        alternate_phone=PhoneNumber(model.alternate_phone) if model.alternate_phone else None,
+        address=model.address,
+        emergency_contact_name=model.emergency_contact_name,
+        emergency_contact_phone=(
+            PhoneNumber(model.emergency_contact_phone)
+            if model.emergency_contact_phone
+            else None
+        ),
+        notes=model.notes,
     )
 
 

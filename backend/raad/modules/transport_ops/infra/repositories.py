@@ -49,7 +49,7 @@ none for it.
 
 **Phase 10.8 addition: `SqlAlchemyDriverRepository`.** Mirrors `SqlAlchemyParentRepository`'s
 exact identity-map/`flush_tracked_changes`/`list_all` shape (single-column `.id` PK, same
-unrestricted-`TenantRegionScope` caveat, pending the same system-wide `ScopeResolver` binding).
+ADR-0021 tenant-scoped posture — see the module docstring's own "Tenant-scoping" note).
 
 **Phase 11 addition: `SqlAlchemyRouteRepository`.** Mirrors `fleet_device.infra.repositories.
 SqlAlchemyDeviceRepository`'s exact shape — `RouteModel.stops` rides the selectin-eager
@@ -76,9 +76,9 @@ one-active-per-owner finder.
 Contracts §7/§8). Each composes the shared `SqlAlchemyRepositoryBase.list_page` (`core/db/
 repository.py`) the identical way `organization.infra.repositories.
 SqlAlchemyOrganizationRepository.list_page`/`iam.infra.repositories.SqlAlchemyUserRepository.
-list_page` already do: an unrestricted `TenantRegionScope(organization_ids=None)` — the same
-"same unscoped posture as `list_all`" caveat every `list_all` in this file already carries, not
-a new gap — followed by re-tracking every returned row through the repository's own `_track`
+list_page` already do: the caller's own resolved `TenantRegionScope` (ADR-0021, see this
+module docstring's own "Tenant-scoping" note above) — followed by re-tracking every returned
+row through the repository's own `_track`
 helper (so a paginated result participates in the identity-map/`flush_tracked_changes` bridge
 exactly like `get()`'s result does). Each repository's `filterable_fields`/`sortable_fields`/
 `searchable_fields` whitelist is limited to columns already exposed on that aggregate's
@@ -195,8 +195,8 @@ class SqlAlchemyStudentRepository(
         self._tracked[str(student.id)] = (student, model)
 
     async def list_all(self) -> list[Student]:
-        """See module docstring: unrestricted `TenantRegionScope` today, pending a system-wide
-        `ScopeResolver` binding — not a Student-specific gap."""
+        """Tenant-scoped via `list_scoped`'s own `_apply_scope` call (ADR-0021) — see the
+        module docstring's "Tenant-scoping" note."""
         rows = await self.list_scoped()
         return [model_to_student(row) for row in rows]
 
@@ -208,7 +208,8 @@ class SqlAlchemyStudentRepository(
         filters: list[FilterCondition],
         search: str | None,
     ) -> OffsetPage[Student]:
-        """Same unrestricted-scope posture as `list_all` above."""
+        """Tenant-scoped exactly like `list_all` above (ADR-0021, `_apply_scope`) — not the
+        unrestricted posture this docstring described before that fix landed."""
         raw_page = await super().list_page(
             page_request,
             sort=sort,
@@ -221,6 +222,20 @@ class SqlAlchemyStudentRepository(
             page=raw_page.page,
             page_size=raw_page.page_size,
         )
+
+    async def list_by_ids(self, student_ids: list[str]) -> list[Student]:
+        """Report Center re-design — mirrors `SqlAlchemyParentRepository.list_by_ids` exactly,
+        including its identical tenant-scoping posture (an id outside the caller's own scope is
+        silently absent, never surfaced)."""
+        if not student_ids:
+            return []
+        statement = self._apply_scope(
+            select(StudentModel).where(
+                StudentModel.id.in_(student_ids), StudentModel.deleted_at.is_(None)
+            )
+        )
+        result = await self._session.execute(statement)
+        return [self._track(row) for row in result.scalars().all()]  # type: ignore[misc]
 
     def flush_tracked_changes(self) -> None:
         for student, model in self._tracked.values():
@@ -238,25 +253,29 @@ class SqlAlchemyParentRepository(
     SqlAlchemyRepositoryBase[ParentModel], ParentRepository
 ):
     """Mirrors `SqlAlchemyStudentRepository`'s exact identity-map/`flush_tracked_changes`
-    shape, including `list_all`'s same unrestricted-`TenantRegionScope` caveat (Phase 10.3's
-    module docstring, unchanged this phase — still a system-wide `ScopeResolver` gap, not a
-    `Parent`-specific one)."""
+    shape, including `list_all`'s ADR-0021 tenant-scoped posture (see the module docstring's
+    own "Tenant-scoping" note)."""
 
     model = ParentModel
 
-    #: Whitelist for `GET /parents` (§8) — limited to columns already on `ParentSummaryResponse`.
+    #: Whitelist for `GET /parents` (§8) — limited to columns already on `ParentSummaryResponse`,
+    #: plus `phone` (2026-09-10, Parent & Student Domain Restructure): duplicate-parent
+    #: protection and "search parent by name or phone" both need an exact/partial phone match,
+    #: and `_apply_scope` (ADR-0021) still narrows every query to the caller's own tenant first,
+    #: so this never becomes a cross-organization phone lookup.
     filterable_fields = {
         # ADR-0021 keeps this honest: `_apply_scope` still narrows every query to the
         # caller's own scope, so this filter can only narrow *within* what the caller may
         # already see. It exists so a Founder can focus one organization.
         "organization_id": FilterField(column="organization_id"),
         "status": FilterField(column="status"),
+        "phone": FilterField(column="phone"),
     }
     sortable_fields = {
         "full_name": "full_name",
         "status": "status",
     }
-    searchable_fields = ("full_name",)
+    searchable_fields = ("full_name", "phone")
 
     def __init__(
         self, session: AsyncSession, *, scope: TenantRegionScope | None = None
@@ -292,7 +311,8 @@ class SqlAlchemyParentRepository(
         filters: list[FilterCondition],
         search: str | None,
     ) -> OffsetPage[Parent]:
-        """Same unrestricted-scope posture as `list_all` above."""
+        """Tenant-scoped exactly like `list_all` above (ADR-0021, `_apply_scope`) — not the
+        unrestricted posture this docstring described before that fix landed."""
         raw_page = await super().list_page(
             page_request,
             sort=sort,
@@ -305,6 +325,19 @@ class SqlAlchemyParentRepository(
             page=raw_page.page,
             page_size=raw_page.page_size,
         )
+
+    async def list_by_ids(self, parent_ids: list[str]) -> list[Parent]:
+        """ADR-0041 §1. Tenant-scoped via `_apply_scope`, same as every other read here — an id
+        outside the caller's own scope is silently absent, never surfaced."""
+        if not parent_ids:
+            return []
+        statement = self._apply_scope(
+            select(ParentModel).where(
+                ParentModel.id.in_(parent_ids), ParentModel.deleted_at.is_(None)
+            )
+        )
+        result = await self._session.execute(statement)
+        return [self._track(row) for row in result.scalars().all()]  # type: ignore[misc]
 
     def flush_tracked_changes(self) -> None:
         for parent, model in self._tracked.values():
@@ -382,6 +415,18 @@ class SqlAlchemyStudentParentRepository(StudentParentRepository):
         result = await self._session.execute(statement)
         return [self._track(row) for row in result.scalars().all()]
 
+    async def list_by_students(self, student_ids: list[StudentId]) -> list[StudentParent]:
+        """ADR-0041 §1. `student_id IN (...)` short-circuits to an empty list for an empty
+        input — SQLAlchemy renders `IN ()` as a query that never matches, which works but is
+        wasted round trip for a caller that already knows there is nothing to ask about."""
+        if not student_ids:
+            return []
+        statement = select(StudentParentModel).where(
+            StudentParentModel.student_id.in_([str(sid) for sid in student_ids])
+        )
+        result = await self._session.execute(statement)
+        return [self._track(row) for row in result.scalars().all()]
+
     def _track(self, row: StudentParentModel | None) -> StudentParent | None:
         if row is None:
             return None
@@ -394,8 +439,8 @@ class SqlAlchemyDriverRepository(
     SqlAlchemyRepositoryBase[DriverModel], DriverRepository
 ):
     """Mirrors `SqlAlchemyParentRepository`'s exact identity-map/`flush_tracked_changes` shape,
-    including `list_all`'s same unrestricted-`TenantRegionScope` caveat (still a system-wide
-    `ScopeResolver` gap, not a `Driver`-specific one)."""
+    including `list_all`'s ADR-0021 tenant-scoped posture (see the module docstring's own
+    "Tenant-scoping" note)."""
 
     model = DriverModel
 
@@ -449,7 +494,8 @@ class SqlAlchemyDriverRepository(
         filters: list[FilterCondition],
         search: str | None,
     ) -> OffsetPage[Driver]:
-        """Same unrestricted-scope posture as `list_all` above."""
+        """Tenant-scoped exactly like `list_all` above (ADR-0021, `_apply_scope`) — not the
+        unrestricted posture this docstring described before that fix landed."""
         raw_page = await super().list_page(
             page_request,
             sort=sort,
@@ -479,7 +525,7 @@ class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepos
     """Mirrors `fleet_device.infra.repositories.SqlAlchemyDeviceRepository`'s exact shape —
     `flush_tracked_changes` re-projects the whole aggregate (stops included) via
     `route_to_model`, the same "Device+Camera" precedent, including `list_all`'s same
-    unrestricted-`TenantRegionScope` caveat as every other `list_all` in this module."""
+    ADR-0021 tenant-scoped posture as every other `list_all` in this module."""
 
     model = RouteModel
 
@@ -531,7 +577,8 @@ class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepos
         filters: list[FilterCondition],
         search: str | None,
     ) -> OffsetPage[Route]:
-        """Same unrestricted-scope posture as `list_all` above."""
+        """Tenant-scoped exactly like `list_all` above (ADR-0021, `_apply_scope`) — not the
+        unrestricted posture this docstring described before that fix landed."""
         raw_page = await super().list_page(
             page_request,
             sort=sort,
@@ -559,8 +606,8 @@ class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepos
 
 class SqlAlchemyTripRepository(SqlAlchemyRepositoryBase[TripModel], TripRepository):
     """Mirrors `SqlAlchemyDriverRepository`'s exact identity-map/`flush_tracked_changes` shape,
-    including `list_all`'s same unrestricted-`TenantRegionScope` caveat as every other
-    `list_all` in this module."""
+    including `list_all`'s same ADR-0021 tenant-scoped posture as every other `list_all` in
+    this module."""
 
     model = TripModel
 
@@ -612,7 +659,8 @@ class SqlAlchemyTripRepository(SqlAlchemyRepositoryBase[TripModel], TripReposito
         filters: list[FilterCondition],
         search: str | None,
     ) -> OffsetPage[Trip]:
-        """Same unrestricted-scope posture as `list_all` above."""
+        """Tenant-scoped exactly like `list_all` above (ADR-0021, `_apply_scope`) — not the
+        unrestricted posture this docstring described before that fix landed."""
         raw_page = await super().list_page(
             page_request,
             sort=sort,
@@ -658,8 +706,8 @@ class SqlAlchemyStudentAssignmentRepository(
     SqlAlchemyRepositoryBase[StudentAssignmentModel], StudentAssignmentRepository
 ):
     """Mirrors `SqlAlchemyTripRepository`'s exact identity-map/`flush_tracked_changes` shape,
-    including `list_all`'s same unrestricted-`TenantRegionScope` caveat as every other
-    `list_all` in this module."""
+    including `list_all`'s same ADR-0021 tenant-scoped posture as every other `list_all` in
+    this module."""
 
     model = StudentAssignmentModel
 
@@ -704,7 +752,8 @@ class SqlAlchemyStudentAssignmentRepository(
         filters: list[FilterCondition],
         search: str | None,
     ) -> OffsetPage[StudentAssignment]:
-        """Same unrestricted-scope posture as `list_all` above."""
+        """Tenant-scoped exactly like `list_all` above (ADR-0021, `_apply_scope`) — not the
+        unrestricted posture this docstring described before that fix landed."""
         raw_page = await super().list_page(
             page_request,
             sort=sort,

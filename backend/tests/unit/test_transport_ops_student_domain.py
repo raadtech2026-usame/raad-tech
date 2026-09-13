@@ -9,7 +9,7 @@ verification list for this phase.
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from raad.core.errors.exceptions import DomainError
 from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
@@ -17,6 +17,7 @@ from raad.core.time.clock import Clock
 from raad.modules.transport_ops.domain.entities import Student
 from raad.modules.transport_ops.domain.repositories import StudentRepository
 from raad.modules.transport_ops.domain.value_objects import (
+    Gender,
     OrganizationId,
     StudentId,
     StudentStatus,
@@ -315,6 +316,80 @@ class StudentUpdateDetailsTests(unittest.TestCase):
         self.assertIsNone(student.external_ref)
 
 
+class StudentProfileFieldsTests(unittest.TestCase):
+    """2026-09-10 explicit user directive (Parent & Student Domain Restructure) — additive
+    `date_of_birth`/`gender`/`notes` fields, not in Database Design §6.2."""
+
+    def setUp(self) -> None:
+        self.clock = FixedClock(datetime(2026, 9, 10, tzinfo=timezone.utc))
+
+    def test_enroll_accepts_date_of_birth_gender_and_notes(self) -> None:
+        student = Student.enroll(
+            id=StudentId(VALID_STUDENT_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            full_name="Amina Ali",
+            date_of_birth=date(2015, 3, 4),
+            gender=Gender.FEMALE,
+            notes="Allergic to peanuts.",
+            clock=self.clock,
+        )
+        self.assertEqual(student.date_of_birth, date(2015, 3, 4))
+        self.assertEqual(student.gender, Gender.FEMALE)
+        self.assertEqual(student.notes, "Allergic to peanuts.")
+
+    def test_enroll_rejects_future_date_of_birth(self) -> None:
+        with self.assertRaises(DomainError):
+            Student.enroll(
+                id=StudentId(VALID_STUDENT_ULID),
+                organization_id=OrganizationId(VALID_ORG_ULID),
+                full_name="Amina Ali",
+                date_of_birth=date(2026, 9, 11),
+                clock=self.clock,
+            )
+
+    def test_enroll_rejects_implausibly_distant_date_of_birth(self) -> None:
+        with self.assertRaises(DomainError):
+            Student.enroll(
+                id=StudentId(VALID_STUDENT_ULID),
+                organization_id=OrganizationId(VALID_ORG_ULID),
+                full_name="Amina Ali",
+                date_of_birth=date(1900, 1, 1),
+                clock=self.clock,
+            )
+
+    def test_construction_rejects_notes_over_500_chars(self) -> None:
+        with self.assertRaises(DomainError):
+            make_student(notes="X" * 501)
+
+    def test_update_details_changes_profile_fields_and_is_idempotent(self) -> None:
+        student = make_student()
+        student.update_details(
+            full_name=student.full_name,
+            external_ref=student.external_ref,
+            date_of_birth=date(2016, 1, 1),
+            gender=Gender.MALE,
+            notes="Uses an inhaler.",
+            clock=self.clock,
+            actor_id="admin-1",
+        )
+        self.assertEqual(student.date_of_birth, date(2016, 1, 1))
+        self.assertEqual(student.gender, Gender.MALE)
+        self.assertEqual(student.notes, "Uses an inhaler.")
+        self.assertEqual(len(student.pull_domain_events()), 1)
+
+        # A second call with the exact same values is a no-op — no event, matching every other
+        # field on this method.
+        student.update_details(
+            full_name=student.full_name,
+            external_ref=student.external_ref,
+            date_of_birth=date(2016, 1, 1),
+            gender=Gender.MALE,
+            notes="Uses an inhaler.",
+            clock=self.clock,
+        )
+        self.assertEqual(student.pull_domain_events(), [])
+
+
 class DomainEventBufferingTests(unittest.TestCase):
     def test_pull_domain_events_drains_the_buffer(self) -> None:
         clock = FixedClock(datetime(2026, 7, 16, tzinfo=timezone.utc))
@@ -360,6 +435,10 @@ class StudentRepositoryInterfaceTests(unittest.TestCase):
 
             async def list_all(self) -> list[Student]:
                 return list(self._students.values())
+
+            async def list_by_ids(self, student_ids: list[str]) -> list[Student]:
+                wanted = set(student_ids)
+                return [s for s in self._students.values() if str(s.id) in wanted]
 
             async def list_page(
                 self,

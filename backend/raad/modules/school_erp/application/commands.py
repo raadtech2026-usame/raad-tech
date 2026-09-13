@@ -186,3 +186,70 @@ class VoidExpenseCommand:
     expense_id: str
     reason: str | None
     actor: Principal
+
+
+# ---- ParentBillingProfile / ParentInvoice (ADR-0042, 2026-09-11) ---------------------------
+
+
+@dataclass(frozen=True)
+class CreateOrUpdateParentBillingProfileCommand:
+    """One family's actual recurring transportation charge (the directive's Part 5). Creates a
+    new `ParentBillingProfile` if the parent has none yet, otherwise edits the existing one in
+    place (`ParentBillingProfile.update_fee`) — never a second row per parent
+    (`ux_erp_parent_billing_profiles__org_parent`). Editing never rewrites an already-generated
+    `ParentInvoice`, which froze its own amount at generation time."""
+
+    organization_id: str
+    parent_id: str
+    monthly_fee: str
+    currency: str
+    billing_start_period: str
+    due_day: int
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class SetParentBillingProfileStatusCommand:
+    billing_profile_id: str
+    is_active: bool
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class GenerateParentInvoicesCommand:
+    """The monthly billing run (the directive's Part 18) — every `active` `ParentBillingProfile`
+    whose `billing_start_period` has arrived is picked up automatically; there is no
+    `student_ids`/`fee_plan_id` to supply, unlike the legacy `GenerateStudentInvoicesCommand`,
+    because the billing profile already names its own parent and fee. Idempotent: a parent who
+    already has a non-cancelled invoice for the period is skipped, not double-charged."""
+
+    organization_id: str
+    period: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class SetParentInvoicePaymentStatusCommand:
+    """The entire user-facing payment workflow (the directive's Part 9): `status` is one of
+    `unpaid`/`partial`/`paid`; `amount_paid` is required only when `status == "partial"`."""
+
+    invoice_id: str
+    status: str
+    amount_paid: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class CancelParentInvoiceCommand:
+    invoice_id: str
+    reason: str | None
+    actor: Principal
+
+
+# ---- Parent financial summary (2026-09-10 explicit user directive) -------------------------
+#
+# `RecordParentPaymentCommand` (the allocate-across-many-outstanding-`StudentInvoice`s quick-pay
+# action) is **removed** here — see ADR-0042's own "Correction made during implementation" note.
+# Part 9 of the 2026-09-11 directive sets payment status directly on one `ParentInvoice`
+# (`SetParentInvoicePaymentStatusCommand`, above); there is nothing left to allocate across once
+# `ParentInvoice` is itself the per-family document, and no payment history is exposed at all.

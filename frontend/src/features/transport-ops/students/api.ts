@@ -12,9 +12,14 @@ import { toOffsetPage, type OffsetPage, type OffsetPageWire } from "../../../sha
  * `"active"` is also accepted there, reaching `activate_student`). */
 export type StudentStatus = "active" | "disabled" | "graduated" | "transferred";
 
+/** `transport_ops.domain.value_objects.Gender` (2026-09-10, Parent & Student Domain Restructure)
+ * — an additive, optional field, not in Database Design §6.2 (see that value object's own
+ * module comment for the "why now" note). */
+export type StudentGender = "male" | "female" | "other";
+
 /** Full `StudentResponse` shape (`transport_ops.api.schemas`) — returned by `GET /students/{id}`
  * only. See `StudentSummary` below for why `GET /students` (the list route) cannot return this
- * shape. */
+ * shape. Fields after `updatedAt` are the additive profile fields (2026-09-10) — all optional. */
 export interface Student {
   id: string;
   organizationId: string;
@@ -23,6 +28,9 @@ export interface Student {
   status: StudentStatus;
   createdAt: string;
   updatedAt: string;
+  dateOfBirth: string | null;
+  gender: StudentGender | null;
+  notes: string | null;
 }
 
 /** `StudentSummaryResponse` (`transport_ops/api/schemas.py`) — the *only* shape `GET /students`
@@ -49,6 +57,9 @@ interface StudentWire {
   status: string;
   created_at: string;
   updated_at: string;
+  date_of_birth: string | null;
+  gender: string | null;
+  notes: string | null;
 }
 
 /** Wire shape of `StudentSummaryResponse`. */
@@ -67,6 +78,9 @@ function toStudent(wire: StudentWire): Student {
     status: wire.status as StudentStatus,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    dateOfBirth: wire.date_of_birth,
+    gender: wire.gender as StudentGender | null,
+    notes: wire.notes,
   };
 }
 
@@ -116,11 +130,15 @@ export interface EnrollStudentInput {
   organizationId: string;
   fullName: string;
   externalRef?: string | null;
+  dateOfBirth?: string | null;
+  gender?: StudentGender | null;
+  notes?: string | null;
 }
 
-/** `POST /students` (`EnrollStudentRequest`, `transport_ops.api.schemas`) exactly:
- * `organization_id`, `full_name`, `external_ref`. Per the seeded RBAC matrix (`migrations/
- * versions/20260721_0900_5437a5d1651b_iam_create_role_permissions_table.py`), only `founder`/
+/** `POST /students` (`EnrollStudentRequest`, `transport_ops.api.schemas`): `organization_id`,
+ * `full_name`, `external_ref`, plus the additive `date_of_birth`/`gender`/`notes` profile fields
+ * (2026-09-10). Per the seeded RBAC matrix (`migrations/versions/
+ * 20260721_0900_5437a5d1651b_iam_create_role_permissions_table.py`), only `founder`/
  * `org_admin` hold `transport_ops.students.create` — `StudentsPage`'s own `canManage` flag
  * mirrors this as a presentation hint only (`.claude/rules/frontend.md` #2). */
 export async function enrollStudent(input: EnrollStudentInput): Promise<Student> {
@@ -130,6 +148,35 @@ export async function enrollStudent(input: EnrollStudentInput): Promise<Student>
       organization_id: input.organizationId,
       full_name: input.fullName,
       external_ref: input.externalRef ?? null,
+      date_of_birth: input.dateOfBirth ?? null,
+      gender: input.gender ?? null,
+      notes: input.notes ?? null,
+    },
+  });
+  return toStudent(wire);
+}
+
+export interface UpdateStudentInput {
+  fullName: string;
+  externalRef?: string | null;
+  dateOfBirth?: string | null;
+  gender?: StudentGender | null;
+  notes?: string | null;
+}
+
+/** `PATCH /students/{id}` (`UpdateStudentRequest`) — full editable profile (never `status`,
+ * which has its own dedicated `POST /students/{id}/status` route and `updateStudentStatus`
+ * function below). Protects relationships/financial history structurally: this route has no way
+ * to touch `student_parents` links, `student_assignments`, or `erp_student_invoices` rows. */
+export async function updateStudent(id: string, input: UpdateStudentInput): Promise<Student> {
+  const wire = await apiRequest<StudentWire>(`/students/${id}`, {
+    method: "PATCH",
+    body: {
+      full_name: input.fullName,
+      external_ref: input.externalRef ?? null,
+      date_of_birth: input.dateOfBirth ?? null,
+      gender: input.gender ?? null,
+      notes: input.notes ?? null,
     },
   });
   return toStudent(wire);
@@ -234,41 +281,11 @@ export async function unlinkGuardianFromStudent(studentId: string, parentId: str
   await apiRequest<void>(`/students/${studentId}/parents/${parentId}`, { method: "DELETE" });
 }
 
-export interface ParentOption {
-  id: string;
-  fullName: string;
-  status: string;
-}
-
-interface ParentOptionWire {
-  id: string;
-  full_name: string;
-  status: string;
-}
-
-/** Minimal, read-only `GET /parents` lookup backing `LinkGuardianForm`'s parent picker.
- *
- * **Cannot pre-filter to the student's own organization — a real, flagged gap, not a silently
- * faked filter.** Unlike `fleet_device`'s `AssignDeviceForm`/`listVehiclesForPicker` (which
- * filters by `organization_id`, a real whitelisted `Vehicle` filter), `GET /parents`'s own
- * whitelist (`modules/transport_ops/infra/repositories.py`'s `SqlAlchemyParentRepository.
- * filterable_fields`) exposes only `status`, and `ParentSummaryResponse` carries no
- * `organization_id` field to filter by client-side either. This picker therefore lists every
- * active parent (up to 100, matching every other picker in this codebase's own 100-cap
- * convention — `listOrganizationsForPicker` below), relying entirely on the backend's own
- * `StudentParent.link` cross-organization rejection (surfaced via toast, see
- * `linkGuardianToStudent`'s docstring) to catch a wrong-org selection at submit time. */
-export async function listParentsForPicker(search: string): Promise<ParentOption[]> {
-  const query = buildOffsetListQuery({
-    page: 1,
-    pageSize: 100,
-    sort: { field: "full_name", direction: "asc" },
-    filters: { status: "active" },
-    search,
-  });
-  const wire = await apiRequest<OffsetPageWire<ParentOptionWire>>(`/parents?${query}`);
-  return wire.data.map((parent) => ({ id: parent.id, fullName: parent.full_name, status: parent.status }));
-}
+// `listParentsForPicker`/`ParentOption` (a minimal `GET /parents` lookup for `LinkGuardianForm`'s
+// old plain `<Select>`) were removed 2026-09-10: `LinkGuardianForm` now uses `ParentSearchSelect`
+// (`../parents/ParentSearchSelect.tsx`), which calls `../parents/api.ts`'s own picker directly —
+// the cross-organization caveat this function's docstring used to carry is unchanged, just
+// documented there instead now.
 
 export interface OrganizationOption {
   id: string;

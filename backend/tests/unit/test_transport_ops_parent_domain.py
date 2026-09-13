@@ -386,6 +386,77 @@ class ParentUpdateDetailsTests(unittest.TestCase):
         self.assertIsNone(parent.phone)
 
 
+class ParentProfileFieldsTests(unittest.TestCase):
+    """2026-09-10 explicit user directive (Parent & Student Domain Restructure) — additive
+    `alternate_phone`/`address`/`emergency_contact_name`/`emergency_contact_phone`/`notes`
+    fields, not in Database Design §6.3."""
+
+    def setUp(self) -> None:
+        self.clock = FixedClock(datetime(2026, 9, 10, tzinfo=timezone.utc))
+
+    def test_register_accepts_the_additive_profile_fields(self) -> None:
+        parent = Parent.register(
+            id=ParentId(VALID_PARENT_ULID),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            user_id=UserId(VALID_USER_ULID),
+            full_name="Fatima Hassan",
+            phone=PhoneNumber("+252700000000"),
+            alternate_phone=PhoneNumber("+252611111111"),
+            address="Hodan District, Mogadishu",
+            emergency_contact_name="Ahmed Hassan",
+            emergency_contact_phone=PhoneNumber("+252622222222"),
+            notes="Prefers SMS over calls.",
+            clock=self.clock,
+        )
+        self.assertEqual(str(parent.alternate_phone), "+252611111111")
+        self.assertEqual(parent.address, "Hodan District, Mogadishu")
+        self.assertEqual(parent.emergency_contact_name, "Ahmed Hassan")
+        self.assertEqual(str(parent.emergency_contact_phone), "+252622222222")
+        self.assertEqual(parent.notes, "Prefers SMS over calls.")
+
+    def test_construction_rejects_address_over_255_chars(self) -> None:
+        with self.assertRaises(DomainError):
+            make_parent(address="A" * 256)
+
+    def test_construction_rejects_emergency_contact_name_over_200_chars(self) -> None:
+        with self.assertRaises(DomainError):
+            make_parent(emergency_contact_name="A" * 201)
+
+    def test_construction_rejects_notes_over_500_chars(self) -> None:
+        with self.assertRaises(DomainError):
+            make_parent(notes="A" * 501)
+
+    def test_update_details_changes_profile_fields_and_is_idempotent(self) -> None:
+        parent = make_parent()
+        parent.update_details(
+            full_name=parent.full_name,
+            phone=parent.phone,
+            alternate_phone=PhoneNumber("+252611111111"),
+            address="Hodan District, Mogadishu",
+            emergency_contact_name="Ahmed Hassan",
+            emergency_contact_phone=PhoneNumber("+252622222222"),
+            notes="Prefers SMS over calls.",
+            clock=self.clock,
+            actor_id="admin-1",
+        )
+        self.assertEqual(str(parent.alternate_phone), "+252611111111")
+        self.assertEqual(parent.address, "Hodan District, Mogadishu")
+        self.assertEqual(len(parent.pull_domain_events()), 1)
+
+        # A second, identical call is a no-op — no event, matching every other field.
+        parent.update_details(
+            full_name=parent.full_name,
+            phone=parent.phone,
+            alternate_phone=PhoneNumber("+252611111111"),
+            address="Hodan District, Mogadishu",
+            emergency_contact_name="Ahmed Hassan",
+            emergency_contact_phone=PhoneNumber("+252622222222"),
+            notes="Prefers SMS over calls.",
+            clock=self.clock,
+        )
+        self.assertEqual(parent.pull_domain_events(), [])
+
+
 class DomainEventBufferingTests(unittest.TestCase):
     def test_pull_domain_events_drains_the_buffer(self) -> None:
         clock = FixedClock(datetime(2026, 7, 17, tzinfo=timezone.utc))
@@ -463,6 +534,10 @@ class ParentRepositoryInterfaceTests(unittest.TestCase):
                     page=page_request.page,
                     page_size=page_request.page_size,
                 )
+
+            async def list_by_ids(self, parent_ids: list[str]) -> list[Parent]:
+                wanted = set(parent_ids)
+                return [p for p in self._parents.values() if str(p.id) in wanted]
 
         repo = InMemoryParentRepository()
         parent = make_parent()

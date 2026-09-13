@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Plus, Search, UserMinus, UserPlus, Users } from "lucide-react";
+import { Pencil, Plus, Search, UserMinus, UserPlus, Users } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
@@ -19,6 +19,7 @@ import { IconButton } from "../../../shared/components/IconButton/IconButton";
 import { Input } from "../../../shared/components/Input/Input";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { CreateStudentForm } from "./CreateStudentForm";
+import { EditStudentForm } from "./EditStudentForm";
 import { LinkGuardianForm } from "./LinkGuardianForm";
 import { AssignStudentForm } from "../student-assignments/AssignStudentForm";
 import { StudentAssignmentSection } from "../student-assignments/StudentAssignmentSection";
@@ -168,14 +169,9 @@ function GuardiansSection({
  * (student + guardian + transport assignment + financial setup as one registration flow).
  *
 
- * Not yet scope-filtered server-side (CLAUDE.md's own flagged, system-wide gap) — this is now a
- * real, live tenant-isolation leak worth calling out explicitly rather than just citing the
- * general gap: since only `org_admin` can reach this route at all (above), an Org Admin
- * currently sees every organization's students here, not just their own. Pre-existing (this
- * page's underlying query was never scoped for any caller, including `org_admin`), not
- * introduced or worsened by removing platform-staff access — but now the *only* remaining
- * viewer of this page is directly affected by it, where before platform staff's identical
- * unscoped view was the more visible instance of the same gap.
+ * **Tenant-scoped server-side** (ADR-0021's `_apply_scope`, verified against the running
+ * repository code, 2026-09-10 — corrects this docstring's own earlier, stale claim of an
+ * unscoped list route) — an Org Admin only ever sees their own organization's students here.
  */
 export function StudentsPage() {
   usePageHeader("Students", "Students enrolled in your organization");
@@ -186,6 +182,7 @@ export function StudentsPage() {
 
   const [selectedStudent, setSelectedStudent] = useState<StudentSummary | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [linkGuardianOpen, setLinkGuardianOpen] = useState(false);
   const [assignRouteOpen, setAssignRouteOpen] = useState(false);
   const [issueInvoiceOpen, setIssueInvoiceOpen] = useState(false);
@@ -400,6 +397,9 @@ export function StudentsPage() {
                       value: organizationNameById.get(detail.organizationId) ?? detail.organizationId,
                     },
                     { key: "External reference", value: detail.externalRef ?? "Not set" },
+                    { key: "Date of birth", value: detail.dateOfBirth ?? "Not set" },
+                    { key: "Gender", value: detail.gender ?? "Not set" },
+                    { key: "Notes", value: detail.notes ?? "Not set" },
                     { key: "Student ID", value: <MonoText>{detail.id}</MonoText> },
                     { key: "Created", value: formatDate(detail.createdAt) },
                     { key: "Updated", value: formatDate(detail.updatedAt) },
@@ -410,6 +410,9 @@ export function StudentsPage() {
           selectedStudent &&
           canManage && (
             <div className={styles.drawerActions}>
+              <Button variant="secondary" leadingIcon={<Pencil size={13} />} onClick={() => setEditOpen(true)}>
+                Edit
+              </Button>
               {ALL_STATUSES.filter((status) => status !== selectedStudent.status).map((status) => (
                 <Button
                   key={status}
@@ -436,17 +439,23 @@ export function StudentsPage() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={(student) => {
-          // Registration flows straight into both halves of the requirement (2026-09-10):
-          // transport assignment (`AssignStudentForm`, the same one an existing student already
-          // uses) and financial setup (`IssueInvoiceForm`, school_erp). Both open alongside the
-          // student's own detail drawer, and both are optional either way: closing either drawer
-          // (Cancel) leaves the student enrolled with no active assignment/no invoice, exactly
-          // the same as an admin who enrolls today and does either step later.
+          // Registration flows straight into every part of the task's own described flow
+          // (2026-09-10): guardian linking (`LinkGuardianForm`, search an existing parent by
+          // name or phone — see "Add Student -> search parent -> assign vehicle -> save" in the
+          // task's own UX section), transport assignment (`AssignStudentForm`), and financial
+          // setup (`IssueInvoiceForm`, school_erp). All three open alongside the student's own
+          // detail drawer, and all three are optional either way: closing any one of them
+          // (Cancel) leaves the student enrolled with no link/no active assignment/no invoice,
+          // exactly the same as an admin who enrolls today and does any step later from the
+          // drawer's own actions.
           setSelectedStudent({ id: student.id, fullName: student.fullName, status: student.status });
+          setLinkGuardianOpen(true);
           setAssignRouteOpen(true);
           setIssueInvoiceOpen(true);
         }}
       />
+
+      <EditStudentForm open={editOpen} onClose={() => setEditOpen(false)} student={detail ?? null} />
 
       <LinkGuardianForm
         open={linkGuardianOpen}

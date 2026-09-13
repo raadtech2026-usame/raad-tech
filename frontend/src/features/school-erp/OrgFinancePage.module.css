@@ -269,3 +269,54 @@
   font-size: var(--text-xs);
   color: var(--color-text-muted);
 }
+
+/* ---- Parent Invoices (ADR-0041 §1, refined for the Finance UI cleanup, 2026-09-12) ------------
+ * Root-cause fix: `CardBody`'s own `.body` rule sets `flex-direction: column` — this class only
+ * added `flex-wrap` on top of it, without ever overriding the axis, so the filters actually
+ * stacked one full-width field per row rather than sitting in a compact horizontal bar. That
+ * stack (Parent/Status/Vehicle/From/To, each with its own label) is exactly the "large empty
+ * body area before the invoice rows" the filter bar used to leave. `flex-direction: row` here
+ * fixes the axis; the tightened bottom padding removes the leftover gap before the table. */
+.filterRow {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: flex-end;
+  padding-bottom: var(--space-4);
+}
+
+.filterRow > * {
+  min-width: 160px;
+}
+
+.childLineItems {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-card);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+}
+
+.childLineItemsTitle {
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-2xs);
+  color: var(--color-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.childLineItemRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.childLineItemRow:first-of-type {
+  border-top: none;
+}

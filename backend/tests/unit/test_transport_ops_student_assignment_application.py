@@ -46,14 +46,17 @@ from raad.modules.transport_ops.domain.entities import (
     Stop,
     Student,
     StudentAssignment,
+    StudentParent,
 )
 from raad.modules.transport_ops.domain.repositories import (
     RouteRepository,
     StudentAssignmentRepository,
+    StudentParentRepository,
     StudentRepository,
 )
 from raad.modules.transport_ops.domain.value_objects import (
     OrganizationId,
+    ParentId,
     RouteId,
     RouteStatus,
     StopId,
@@ -72,9 +75,12 @@ VALID_PICKUP_STOP_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3P1"
 VALID_DROPOFF_STOP_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3D1"
 OTHER_STOP_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3P9"
 VALID_VEHICLE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3VE"
+OTHER_VEHICLE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3V2"
 NON_EXISTENT_STUDENT_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
 NON_EXISTENT_ROUTE_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZX"
 NON_EXISTENT_ASSIGNMENT_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZW"
+VALID_PARENT_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3PA"
+SIBLING_STUDENT_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3S2"
 
 
 class FixedClock(Clock):
@@ -218,6 +224,10 @@ class InMemoryStudentRepository(StudentRepository):
     async def list_all(self) -> list[Student]:
         return list(self.by_id.values())
 
+    async def list_by_ids(self, student_ids: list[str]) -> list[Student]:
+        wanted = set(student_ids)
+        return [s for s in self.by_id.values() if str(s.id) in wanted]
+
     async def list_page(
         self,
         page_request: OffsetPageRequest,
@@ -278,16 +288,46 @@ class InMemoryRouteRepository(RouteRepository):
         )
 
 
+class InMemoryStudentParentRepository(StudentParentRepository):
+    """Mirrors `test_transport_ops_student_parent_application.py`'s own identically-named fake
+    (duplicated per test file rather than shared, this codebase's own established precedent) —
+    needed here only for `ensure_family_vehicle_consistency`'s sibling lookup."""
+
+    def __init__(self) -> None:
+        self.by_key: dict[tuple[str, str], StudentParent] = {}
+
+    async def get(self, student_id: StudentId, parent_id: ParentId) -> StudentParent | None:
+        return self.by_key.get((str(student_id), str(parent_id)))
+
+    def add(self, link: StudentParent) -> None:
+        self.by_key[(str(link.student_id), str(link.parent_id))] = link
+
+    async def remove(self, link: StudentParent) -> None:
+        self.by_key.pop((str(link.student_id), str(link.parent_id)), None)
+
+    async def list_by_student(self, student_id: StudentId) -> list[StudentParent]:
+        return [link for link in self.by_key.values() if str(link.student_id) == str(student_id)]
+
+    async def list_by_parent(self, parent_id: ParentId) -> list[StudentParent]:
+        return [link for link in self.by_key.values() if str(link.parent_id) == str(parent_id)]
+
+    async def list_by_students(self, student_ids: list[StudentId]) -> list[StudentParent]:
+        wanted = {str(sid) for sid in student_ids}
+        return [link for link in self.by_key.values() if str(link.student_id) in wanted]
+
+
 class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
     def __init__(
         self,
         student_assignments: InMemoryStudentAssignmentRepository,
         students: InMemoryStudentRepository,
         routes: InMemoryRouteRepository,
+        student_parents: InMemoryStudentParentRepository,
     ) -> None:
         self.student_assignments = student_assignments
         self.students = students
         self.routes = routes
+        self.student_parents = student_parents
         self.recorded_events = []
         self.commit_count = 0
         self.rollback_count = 0
@@ -363,8 +403,28 @@ def make_service() -> tuple[
         InMemoryStudentAssignmentRepository(),
         InMemoryStudentRepository(),
         InMemoryRouteRepository(),
+        InMemoryStudentParentRepository(),
     )
     return service, uow
+
+
+def link_parent(
+    uow: FakeTransportOpsUnitOfWork,
+    *,
+    student_id: str = VALID_STUDENT_ULID,
+    parent_id: str = VALID_PARENT_ULID,
+) -> None:
+    """Family/vehicle-consistency tests need a real `student_parents` link — `StudentParent`'s
+    own constructor validates `relationship`, mirroring `test_transport_ops_student_parent_
+    application.py`'s own fixture shape."""
+    uow.student_parents.add(
+        StudentParent(
+            student_id=StudentId(student_id),
+            parent_id=ParentId(parent_id),
+            relationship=None,
+            is_primary=True,
+        )
+    )
 
 
 def seed_student_and_route(uow: FakeTransportOpsUnitOfWork) -> None:
@@ -511,6 +571,79 @@ class AssignStudentToRouteTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ConflictError):
             await service.assign_student_to_route(make_assign_command(), uow=uow)
+
+
+class FamilyVehicleConsistencyTests(unittest.IsolatedAsyncioTestCase):
+    """RAAD's own family/vehicle business rule (Finance UI cleanup, 2026-09-12): one Parent/
+    family = one Vehicle — every Student linked to the same Parent must ride the same bus, never
+    a different one each."""
+
+    def _seed_sibling(self, uow: FakeTransportOpsUnitOfWork) -> None:
+        uow.students.add(make_student(student_id=SIBLING_STUDENT_ULID))
+
+    async def test_rejects_a_second_child_assigned_to_a_different_vehicle(self) -> None:
+        service, uow = make_service()
+        seed_student_and_route(uow)
+        self._seed_sibling(uow)
+        link_parent(uow, student_id=VALID_STUDENT_ULID)
+        link_parent(uow, student_id=SIBLING_STUDENT_ULID)
+
+        # First child rides VALID_VEHICLE_ULID.
+        await service.assign_student_to_route(make_assign_command(), uow=uow)
+
+        # Second child (same parent) attempts a *different* vehicle — must be rejected.
+        with self.assertRaises(ConflictError):
+            await service.assign_student_to_route(
+                make_assign_command(
+                    student_id=SIBLING_STUDENT_ULID, vehicle_id=OTHER_VEHICLE_ULID
+                ),
+                uow=uow,
+            )
+        # The rejected attempt must not have been persisted.
+        self.assertEqual(len(uow.student_assignments.by_id), 1)
+
+    async def test_allows_a_second_child_assigned_to_the_same_vehicle(self) -> None:
+        service, uow = make_service()
+        seed_student_and_route(uow)
+        self._seed_sibling(uow)
+        link_parent(uow, student_id=VALID_STUDENT_ULID)
+        link_parent(uow, student_id=SIBLING_STUDENT_ULID)
+
+        await service.assign_student_to_route(make_assign_command(), uow=uow)
+        dto = await service.assign_student_to_route(
+            make_assign_command(student_id=SIBLING_STUDENT_ULID, vehicle_id=VALID_VEHICLE_ULID),
+            uow=uow,
+        )
+        self.assertEqual(dto.vehicle_id, VALID_VEHICLE_ULID)
+
+    async def test_allows_a_second_child_with_no_vehicle_yet(self) -> None:
+        """A sibling can be assigned to a route with no vehicle decided yet — the rule is about a
+        genuine mismatch between two actual vehicles, never about requiring one up front."""
+        service, uow = make_service()
+        seed_student_and_route(uow)
+        self._seed_sibling(uow)
+        link_parent(uow, student_id=VALID_STUDENT_ULID)
+        link_parent(uow, student_id=SIBLING_STUDENT_ULID)
+
+        await service.assign_student_to_route(make_assign_command(), uow=uow)
+        dto = await service.assign_student_to_route(
+            make_assign_command(student_id=SIBLING_STUDENT_ULID, vehicle_id=None), uow=uow
+        )
+        self.assertIsNone(dto.vehicle_id)
+
+    async def test_unrelated_students_may_use_different_vehicles(self) -> None:
+        """No shared Parent at all — the family rule does not reach across unrelated families."""
+        service, uow = make_service()
+        seed_student_and_route(uow)
+        self._seed_sibling(uow)
+        # Deliberately no `link_parent` calls at all — the two students are unrelated.
+
+        await service.assign_student_to_route(make_assign_command(), uow=uow)
+        dto = await service.assign_student_to_route(
+            make_assign_command(student_id=SIBLING_STUDENT_ULID, vehicle_id=OTHER_VEHICLE_ULID),
+            uow=uow,
+        )
+        self.assertEqual(dto.vehicle_id, OTHER_VEHICLE_ULID)
 
 
 class StudentAssignmentStatusOrchestrationTests(unittest.IsolatedAsyncioTestCase):

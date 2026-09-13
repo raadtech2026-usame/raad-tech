@@ -1,38 +1,19 @@
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { UserPlus } from "lucide-react";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
 import { Button } from "../../../shared/components/Button/Button";
 import { FormDrawer } from "../../../shared/components/Drawer/FormDrawer";
 import { FormField } from "../../../shared/components/FormField/FormField";
 import { Input } from "../../../shared/components/Input/Input";
-import { Select } from "../../../shared/components/Select/Select";
 import { Toggle } from "../../../shared/components/Toggle/Toggle";
 import { useToast } from "../../../shared/components/Toast/toastStore";
 import { ApiError } from "../../../shared/api/types";
-import { linkGuardianToStudent, listParentsForPicker } from "./api";
+import { ParentSearchSelect, type SelectedParent } from "../parents/ParentSearchSelect";
+import { linkGuardianToStudent } from "./api";
 import styles from "./LinkGuardianForm.module.css";
 
-// Matches `transport_ops.domain.value_objects`'s own `_ULID_PATTERN`.
-const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 // `entities.py`'s `_RELATIONSHIP_MAX_LENGTH` (Database Design §6.4: `relationship VARCHAR(40)`).
 const RELATIONSHIP_MAX_LENGTH = 40;
-
-const schema = z.object({
-  parentId: z
-    .string()
-    .min(1, "Parent is required")
-    .refine((value) => ULID_PATTERN.test(value), { message: "Select a valid parent" }),
-  relationship: z
-    .string()
-    .trim()
-    .max(RELATIONSHIP_MAX_LENGTH, `Relationship must be at most ${RELATIONSHIP_MAX_LENGTH} characters`),
-  isPrimary: z.boolean(),
-});
-
-type FormValues = z.infer<typeof schema>;
-const DEFAULT_VALUES: FormValues = { parentId: "", relationship: "", isPrimary: false };
 
 export interface LinkGuardianFormProps {
   open: boolean;
@@ -42,63 +23,54 @@ export interface LinkGuardianFormProps {
 }
 
 /**
- * The "Add guardian" action on the student detail drawer — a distinct, explicit UI action, never
- * folded silently into a form field, matching `AssignDeviceForm.tsx`'s precedent for how a
- * distinct backend command (here, `POST /students/{student_id}/parents`,
- * `LinkParentToStudentRequest`) becomes its own dedicated form rather than a hidden field on
- * `CreateStudentForm`.
+ * The "Add guardian" action on the student detail drawer — also auto-opened once, right after
+ * enrollment (`StudentsPage.tsx`'s `onCreated` chain, alongside `AssignStudentForm`/
+ * `IssueInvoiceForm`), matching the task's own "search existing parent → select → student
+ * appears under parent" flow without folding a second aggregate's worth of fields into
+ * `CreateStudentForm` itself.
+ *
+ * **2026-09-10: the parent picker is now `ParentSearchSelect`** (search by name or phone, shows
+ * the selected parent's phone and existing children count before submitting) — previously a
+ * plain `<Select>` of up to 100 loaded parents with no search and no context. The backend
+ * operation this form calls (`POST /students/{student_id}/parents`, `LinkParentToStudentRequest`)
+ * is unchanged.
  *
  * This is the roadmap's own "first genuinely relational UI" (`docs/architecture/
  * frontend-flutter-master-roadmap.md`'s Phase F4 entry) — linking is initiated from the Student
- * side only (this form); the Parent detail drawer shows the mirror-image "Linked students" list
- * read-only plus an unlink action (`ParentsPage.tsx`), so the relationship is genuinely
- * bidirectionally *visible* even though it is only creatable from one side, a deliberate scope
- * choice rather than building two divergent forms for the identical link operation.
+ * side only; the Parent detail drawer shows the mirror-image "Linked students" list read-only
+ * plus an unlink action (`ParentsPage.tsx`), so the relationship is genuinely bidirectionally
+ * *visible* even though it is only creatable from one side.
  *
  * **The two failure shapes this form surfaces honestly** — see `./api.ts`'s
  * `linkGuardianToStudent` docstring for the full backend citation: a duplicate link
- * (`ConflictError`, 409) and a cross-organization link (a raw `DomainError`, which
- * `core/errors/handlers.py`'s status table maps to a generic 500). Both are shown verbatim via a
- * toast using `error.message`, and the drawer stays open for another attempt — the same
- * safety-adjacent "don't swallow or misreport a real conflict" precedent
- * `AssignDeviceForm.tsx`'s own docstring establishes for the fleet_device module.
+ * (`ConflictError`, 409) and a cross-organization link (a raw `DomainError`, mapped to a generic
+ * 500 by `core/errors/handlers.py`'s status table). Both are shown verbatim via a toast using
+ * `error.message`, and the drawer stays open for another attempt.
  */
 export function LinkGuardianForm({ open, onClose, studentId, studentName }: LinkGuardianFormProps) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  const parentsQuery = useQuery({
-    queryKey: ["parents", "link-picker"],
-    queryFn: () => listParentsForPicker(""),
-    enabled: open,
-    staleTime: 30_000,
-  });
-
-  const {
-    register,
-    handleSubmit,
-    reset,
-    formState: { errors, isSubmitting },
-  } = useForm<FormValues>({
-    resolver: zodResolver(schema),
-    defaultValues: DEFAULT_VALUES,
-  });
+  const [parent, setParent] = useState<SelectedParent | null>(null);
+  const [relationship, setRelationship] = useState("");
+  const [isPrimary, setIsPrimary] = useState(false);
+  const [relationshipError, setRelationshipError] = useState<string | undefined>(undefined);
 
   const mutation = useMutation({
-    mutationFn: (values: FormValues) => {
-      if (!studentId) {
-        return Promise.reject(new Error("No student selected."));
+    mutationFn: () => {
+      if (!studentId || !parent) {
+        return Promise.reject(new Error("Select a parent first."));
       }
       return linkGuardianToStudent(studentId, {
-        parentId: values.parentId,
-        relationship: values.relationship || null,
-        isPrimary: values.isPrimary,
+        parentId: parent.id,
+        relationship: relationship || null,
+        isPrimary,
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["students", "guardians", studentId] });
       toast.success("Guardian linked", "The parent has been linked to this student.");
-      reset(DEFAULT_VALUES);
+      resetAll();
       onClose();
     },
     onError: (error) => {
@@ -107,25 +79,39 @@ export function LinkGuardianForm({ open, onClose, studentId, studentName }: Link
     },
   });
 
+  function resetAll(): void {
+    setParent(null);
+    setRelationship("");
+    setIsPrimary(false);
+    setRelationshipError(undefined);
+  }
+
   function handleClose(): void {
     if (mutation.isPending) {
       return;
     }
-    reset(DEFAULT_VALUES);
+    resetAll();
     mutation.reset();
     onClose();
   }
 
-  const onValid = handleSubmit((values) => mutation.mutate(values));
+  function handleSubmit(): void {
+    if (!parent) {
+      return;
+    }
+    if (relationship.length > RELATIONSHIP_MAX_LENGTH) {
+      setRelationshipError(`Relationship must be at most ${RELATIONSHIP_MAX_LENGTH} characters`);
+      return;
+    }
+    setRelationshipError(undefined);
+    mutation.mutate();
+  }
 
   // Hooks above always run in the same order regardless; the early return only affects what
-  // renders, mirroring `AssignDeviceForm.tsx`'s identical `device === null` guard.
+  // renders, mirroring `AssignStudentForm.tsx`'s identical `studentId === null` guard.
   if (!open || !studentId) {
     return null;
   }
-
-  const parentOptions = parentsQuery.data ?? [];
-  const parentError = errors.parentId?.message ?? (parentsQuery.isError ? "Could not load parents." : undefined);
 
   return (
     <FormDrawer
@@ -141,32 +127,31 @@ export function LinkGuardianForm({ open, onClose, studentId, studentName }: Link
           <Button type="button" variant="secondary" onClick={handleClose} disabled={mutation.isPending}>
             Cancel
           </Button>
-          <Button type="button" variant="primary" loading={isSubmitting || mutation.isPending} onClick={onValid}>
+          <Button type="button" variant="primary" loading={mutation.isPending} disabled={!parent} onClick={handleSubmit}>
             Link guardian
           </Button>
         </div>
       }
     >
-      <form className={styles.form} onSubmit={onValid} noValidate>
-        <FormField label="Parent" error={parentError}>
-          <Select {...register("parentId")} disabled={parentsQuery.isLoading} aria-label="Parent">
-            <option value="">{parentsQuery.isLoading ? "Loading parents…" : "Select a parent"}</option>
-            {parentOptions.map((parent) => (
-              <option key={parent.id} value={parent.id}>
-                {parent.fullName}
-              </option>
-            ))}
-          </Select>
+      <form className={styles.form} onSubmit={(event) => event.preventDefault()} noValidate>
+        <FormField label="Parent">
+          <ParentSearchSelect value={parent} onChange={setParent} aria-label="Parent" />
         </FormField>
 
-        <FormField label="Relationship" hint="Optional — e.g. Mother, Father, Guardian." error={errors.relationship?.message}>
-          <Input placeholder="e.g. Mother" invalid={!!errors.relationship} {...register("relationship")} />
+        <FormField label="Relationship" hint="Optional — e.g. Mother, Father, Guardian." error={relationshipError}>
+          <Input
+            placeholder="e.g. Mother"
+            invalid={!!relationshipError}
+            value={relationship}
+            onChange={(event) => setRelationship(event.target.value)}
+          />
         </FormField>
 
         <Toggle
           label="Primary guardian"
           description="The main point of contact for this student."
-          {...register("isPrimary")}
+          checked={isPrimary}
+          onChange={(event) => setIsPrimary(event.target.checked)}
         />
       </form>
     </FormDrawer>

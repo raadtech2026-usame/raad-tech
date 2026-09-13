@@ -35,11 +35,12 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    SmallInteger,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy import Enum as SqlEnum
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from raad.core.db.base import Base
 from raad.core.db.mixins import AuditedTableMixin
@@ -63,6 +64,8 @@ _STUDENT_PAYMENT_METHOD_VALUES = (
     "card",
     "other",
 )
+_PARENT_BILLING_PROFILE_STATUS_VALUES = ("active", "inactive")
+_PARENT_INVOICE_STATUS_VALUES = ("unpaid", "partial", "paid", "cancelled")
 
 
 class FinancialCategoryModel(AuditedTableMixin, Base):
@@ -248,4 +251,123 @@ class ExpenseModel(AuditedTableMixin, Base):
     __table_args__ = (
         Index("ix_erp_expenses__org_occurred", "organization_id", "occurred_on"),
         Index("ix_erp_expenses__org_vehicle", "organization_id", "vehicle_id"),
+    )
+
+
+# ==================================================================================================
+# ParentBillingProfile / ParentInvoice (ADR-0042, 2026-09-11 — supersedes ADR-0041 §1)
+# ==================================================================================================
+#
+# The real Parent-facing billing aggregates. `StudentInvoiceModel`/`StudentPaymentModel`/
+# `FeePlanModel` above are unmodified and remain the historical record of the workflow that
+# produced them (ADR-0042 decision 2) — nothing below has a foreign key into them.
+
+
+class ParentBillingProfileModel(AuditedTableMixin, Base):
+    """One family's actual recurring transportation charge (ADR-0042 decision 1). At most one
+    *active* profile per parent is a business rule, not a schema one — the unique constraint is
+    on `(organization_id, parent_id)` unconditionally, so a family's billing is edited in place
+    (`ParentBillingProfile.update_fee`) rather than superseded by a second row."""
+
+    __tablename__ = "erp_parent_billing_profiles"
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    parent_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    monthly_fee: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    billing_start_period: Mapped[str] = mapped_column(CHAR(7), nullable=False)
+    due_day: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    status: Mapped[str] = mapped_column(
+        SqlEnum(*_PARENT_BILLING_PROFILE_STATUS_VALUES, name="erp_parent_billing_profile_status"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "parent_id",
+            name="ux_erp_parent_billing_profiles__org_parent",
+        ),
+        Index(
+            "ix_erp_parent_billing_profiles__org_status", "organization_id", "status"
+        ),
+    )
+
+
+class ParentInvoiceModel(AuditedTableMixin, Base):
+    """One period's real bill to one parent (ADR-0042 decision 1) — not a grouping, a row.
+    `(organization_id, parent_id, period)` is unique, the idempotency guard behind
+    `exists_for_parent_period` (an application-level pre-check backed by this real index, the
+    same two-layer pattern `ux_erp_student_invoices__student_period` already establishes)."""
+
+    __tablename__ = "erp_parent_invoices"
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    parent_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    period: Mapped[str] = mapped_column(CHAR(7), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    amount_paid: Mapped[Decimal] = mapped_column(
+        DECIMAL(12, 2), nullable=False, default=Decimal("0.00")
+    )
+    status: Mapped[str] = mapped_column(
+        SqlEnum(*_PARENT_INVOICE_STATUS_VALUES, name="erp_parent_invoice_status"),
+        nullable=False,
+    )
+    invoice_date: Mapped[date] = mapped_column(DATE, nullable=False)
+    due_date: Mapped[date] = mapped_column(DATE, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Line child rows load eagerly with the invoice (selectin) - the ParentInvoice aggregate
+    # owns its lines, mirroring `RouteModel.stops`'s identical parent/child-entity shape exactly.
+    lines: Mapped[list["ParentInvoiceLineModel"]] = relationship(
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "parent_id",
+            "period",
+            name="ux_erp_parent_invoices__org_parent_period",
+        ),
+        # Backs "who has not paid" and the Receivables report.
+        Index(
+            "ix_erp_parent_invoices__org_status_due",
+            "organization_id",
+            "status",
+            "due_date",
+        ),
+        Index("ix_erp_parent_invoices__org_period", "organization_id", "period"),
+    )
+
+
+class ParentInvoiceLineModel(AuditedTableMixin, Base):
+    """One billed child's own share of a `ParentInvoiceModel`'s frozen total, plus the transport
+    context captured at generation time — the identical fields `StudentInvoiceModel` already
+    carries for the same reason (ADR-0040 §3), now living on the line rather than the invoice
+    itself. `vehicle_id` is indexed so the Vehicle Financial Overview's grouped query stays one
+    query, not a join fan-out per report load."""
+
+    __tablename__ = "erp_parent_invoice_lines"
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    parent_invoice_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("erp_parent_invoices.id"), nullable=False, index=True
+    )
+    student_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    vehicle_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True, index=True)
+    route_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
+
+    invoice: Mapped[ParentInvoiceModel] = relationship(back_populates="lines")
+
+    __table_args__ = (
+        Index(
+            "ix_erp_parent_invoice_lines__org_vehicle_period",
+            "organization_id",
+            "vehicle_id",
+        ),
     )

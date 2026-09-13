@@ -142,6 +142,22 @@ class ReportDefinitionResponse(BaseModel):
     description: str
     scope: str
     accepts: list[str]
+    category: str
+
+
+class ReportTableResponse(BaseModel):
+    """ADR-0041 §3 — the JSON shape of `GET /reports/{key}/preview`, one field-for-field mirror
+    of `application.report_table.ReportTable`. Built by the exact same `ReportExportService.
+    build_table` call `export_report` below now also uses, so a preview and its PDF/XLSX can
+    never disagree — one source of truth, not two calculations of the same numbers."""
+
+    title: str
+    subtitle: str | None
+    headers: list[str]
+    rows: list[list[str]]
+    metadata: dict[str, str]
+    numeric_columns: list[int]
+    total_row: list[str] | None
 
 
 @reports_router.get(
@@ -168,6 +184,7 @@ async def list_report_catalog(
             description=d.description,
             scope=d.scope,
             accepts=list(d.accepts),
+            category=d.category,
         )
         for d in catalog.list_for(principal, scope=scope)
     ]
@@ -195,6 +212,11 @@ async def export_report(
     start: date | None = Query(default=None),
     end: date | None = Query(default=None),
     vehicle_id: str | None = Query(default=None),
+    parent_id: str | None = Query(default=None),
+    payment_method: str | None = Query(default=None),
+    status_filter: str | None = Query(
+        default=None, alias="status", pattern="^(unpaid|partial|paid|cancelled)$"
+    ),
     principal: Principal = Depends(require_permission(Permission("reporting.reports.request"))),
     scope: TenantRegionScope = Depends(get_scope),
     container: Container = Depends(get_container),
@@ -210,6 +232,9 @@ async def export_report(
             end=end,
             period=period,
             vehicle_id=vehicle_id,
+            parent_id=parent_id,
+            payment_method=payment_method,
+            status=status_filter,
             scope=scope,
         ),
     )
@@ -219,4 +244,58 @@ async def export_report(
         headers={
             "Content-Disposition": f'attachment; filename="{rendered.filename}"'
         },
+    )
+
+
+@reports_router.get(
+    "/{definition_key}/preview",
+    response_model=ReportTableResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Render a report as JSON, for an in-app preview before export",
+    description=(
+        "ADR-0041 §3 — the same permission check and the same `definition.build(request)` call "
+        "`export` makes (via the shared `ReportExportService.build_table`), returned as JSON "
+        "instead of PDF/XLSX bytes. A preview and its export can never disagree: both read the "
+        "identical `ReportTable`."
+    ),
+)
+async def preview_report(
+    definition_key: str,
+    period: str | None = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    start: date | None = Query(default=None),
+    end: date | None = Query(default=None),
+    vehicle_id: str | None = Query(default=None),
+    parent_id: str | None = Query(default=None),
+    payment_method: str | None = Query(default=None),
+    status_filter: str | None = Query(
+        default=None, alias="status", pattern="^(unpaid|partial|paid|cancelled)$"
+    ),
+    principal: Principal = Depends(require_permission(Permission("reporting.reports.request"))),
+    scope: TenantRegionScope = Depends(get_scope),
+    container: Container = Depends(get_container),
+) -> ReportTableResponse:
+    export_service: ReportExportService = container.resolve(ReportExportService)
+    table = await export_service.build_table(
+        definition_key=definition_key,
+        request=ReportRequest(
+            principal=principal,
+            organization_id=principal.org_id,
+            start=start,
+            end=end,
+            period=period,
+            vehicle_id=vehicle_id,
+            parent_id=parent_id,
+            payment_method=payment_method,
+            status=status_filter,
+            scope=scope,
+        ),
+    )
+    return ReportTableResponse(
+        title=table.title,
+        subtitle=table.subtitle,
+        headers=table.headers,
+        rows=table.rows,
+        metadata=table.metadata,
+        numeric_columns=table.numeric_columns,
+        total_row=table.total_row,
     )

@@ -12,9 +12,9 @@ import {
   linkGuardianToStudent,
   listGuardiansForStudent,
   listOrganizationsForPicker,
-  listParentsForPicker,
   listStudents,
   unlinkGuardianFromStudent,
+  updateStudent,
   updateStudentStatus,
 } from "./api";
 
@@ -26,6 +26,9 @@ const STUDENT_WIRE = {
   status: "active",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",
+  date_of_birth: "2015-03-04",
+  gender: "female",
+  notes: "Allergic to peanuts.",
 };
 
 const STUDENT_SUMMARY_WIRE = {
@@ -36,11 +39,6 @@ const STUDENT_SUMMARY_WIRE = {
 
 const ORG_WIRE = {
   data: [{ id: "01ARZ3NDEKTSV4RRFFQ69G5FBW", name: "Green Valley School" }],
-  page: { total: 1, page: 1, page_size: 100 },
-};
-
-const PARENT_OPTION_WIRE = {
-  data: [{ id: "01ARZ3NDEKTSV4RRFFQ69G5FCX", full_name: "Fatima Ali", status: "active" }],
   page: { total: 1, page: 1, page_size: 100 },
 };
 
@@ -81,7 +79,7 @@ describe("students api", () => {
     expect(result).toBe(42);
   });
 
-  it("getStudent maps the full response to camelCase, including fields the list route omits", async () => {
+  it("getStudent maps the full response to camelCase, including the additive profile fields", async () => {
     vi.mocked(apiRequest).mockResolvedValueOnce(STUDENT_WIRE);
 
     const result = await getStudent("01ARZ3NDEKTSV4RRFFQ69G5FAV");
@@ -95,16 +93,22 @@ describe("students api", () => {
       status: "active",
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-02T00:00:00Z",
+      dateOfBirth: "2015-03-04",
+      gender: "female",
+      notes: "Allergic to peanuts.",
     });
   });
 
-  it("enrollStudent posts the exact EnrollStudentRequest shape", async () => {
+  it("enrollStudent posts the exact EnrollStudentRequest shape, including the additive profile fields", async () => {
     vi.mocked(apiRequest).mockResolvedValueOnce(STUDENT_WIRE);
 
     await enrollStudent({
       organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
       fullName: "Amina Hassan",
       externalRef: "STU-00231",
+      dateOfBirth: "2015-03-04",
+      gender: "female",
+      notes: "Allergic to peanuts.",
     });
 
     expect(apiRequest).toHaveBeenCalledWith("/students", {
@@ -113,11 +117,14 @@ describe("students api", () => {
         organization_id: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
         full_name: "Amina Hassan",
         external_ref: "STU-00231",
+        date_of_birth: "2015-03-04",
+        gender: "female",
+        notes: "Allergic to peanuts.",
       },
     });
   });
 
-  it("enrollStudent defaults external_ref to null when omitted", async () => {
+  it("enrollStudent defaults every optional field to null when omitted", async () => {
     vi.mocked(apiRequest).mockResolvedValueOnce(STUDENT_WIRE);
 
     await enrollStudent({ organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW", fullName: "Amina Hassan" });
@@ -128,6 +135,32 @@ describe("students api", () => {
         organization_id: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
         full_name: "Amina Hassan",
         external_ref: null,
+        date_of_birth: null,
+        gender: null,
+        notes: null,
+      },
+    });
+  });
+
+  it("updateStudent PATCHes the full editable profile, never status", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce(STUDENT_WIRE);
+
+    await updateStudent("01ARZ3NDEKTSV4RRFFQ69G5FAV", {
+      fullName: "Amina Hassan",
+      externalRef: "STU-00231",
+      dateOfBirth: "2015-03-04",
+      gender: "female",
+      notes: "Allergic to peanuts.",
+    });
+
+    expect(apiRequest).toHaveBeenCalledWith("/students/01ARZ3NDEKTSV4RRFFQ69G5FAV", {
+      method: "PATCH",
+      body: {
+        full_name: "Amina Hassan",
+        external_ref: "STU-00231",
+        date_of_birth: "2015-03-04",
+        gender: "female",
+        notes: "Allergic to peanuts.",
       },
     });
   });
@@ -211,17 +244,6 @@ describe("students api", () => {
       "/students/01ARZ3NDEKTSV4RRFFQ69G5FAV/parents/01ARZ3NDEKTSV4RRFFQ69G5FCX",
       { method: "DELETE" },
     );
-  });
-
-  it("listParentsForPicker filters to active parents only, sorted by name", async () => {
-    vi.mocked(apiRequest).mockResolvedValueOnce(PARENT_OPTION_WIRE);
-
-    const result = await listParentsForPicker("");
-
-    expect(apiRequest).toHaveBeenCalledWith(
-      "/parents?page=1&page_size=100&sort=full_name&filter%5Bstatus%5D=active",
-    );
-    expect(result).toEqual([{ id: "01ARZ3NDEKTSV4RRFFQ69G5FCX", fullName: "Fatima Ali", status: "active" }]);
   });
 
   it("listOrganizationsForPicker maps the page envelope to a minimal option list", async () => {

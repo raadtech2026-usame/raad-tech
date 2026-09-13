@@ -8,12 +8,21 @@ vi.mock("./api", () => ({
   listStudents: vi.fn(),
   getStudent: vi.fn(),
   enrollStudent: vi.fn(),
+  updateStudent: vi.fn(),
   updateStudentStatus: vi.fn(),
   listGuardiansForStudent: vi.fn(),
   linkGuardianToStudent: vi.fn(),
   unlinkGuardianFromStudent: vi.fn(),
-  listParentsForPicker: vi.fn(),
   listOrganizationsForPicker: vi.fn(),
+}));
+
+// `LinkGuardianForm` now uses `ParentSearchSelect` (`../parents/ParentSearchSelect.tsx`), which
+// reads `../parents/api.ts` directly rather than a `./api.ts` picker — mocked here the same way
+// every other cross-module dependency of this test file already is.
+vi.mock("../parents/api", () => ({
+  listParentsForPicker: vi.fn(),
+  getParent: vi.fn(),
+  listStudentsForParent: vi.fn(),
 }));
 
 // `StudentAssignmentSection`/`AssignStudentForm` (Phase F6) are rendered inside this page's own
@@ -40,6 +49,7 @@ vi.mock("../../school-erp/api", async (importOriginal) => ({
 }));
 
 import * as api from "./api";
+import * as parentsApi from "../parents/api";
 import * as assignmentApi from "../student-assignments/api";
 import * as schoolErpApi from "../../school-erp/api";
 import { useAuthStore } from "../../../shared/stores/authStore";
@@ -59,6 +69,9 @@ const STUDENT_DETAIL: api.Student = {
   status: "active",
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-02T00:00:00Z",
+  dateOfBirth: null,
+  gender: null,
+  notes: null,
 };
 
 const GUARDIAN: api.GuardianLink = {
@@ -97,7 +110,10 @@ describe("StudentsPage", () => {
     vi.mocked(api.updateStudentStatus).mockReset();
     vi.mocked(api.listGuardiansForStudent).mockReset().mockResolvedValue([]);
     vi.mocked(api.unlinkGuardianFromStudent).mockReset();
-    vi.mocked(api.listParentsForPicker).mockReset().mockResolvedValue([]);
+    vi.mocked(api.updateStudent).mockReset();
+    vi.mocked(parentsApi.listParentsForPicker).mockReset().mockResolvedValue([]);
+    vi.mocked(parentsApi.getParent).mockReset();
+    vi.mocked(parentsApi.listStudentsForParent).mockReset().mockResolvedValue([]);
     vi.mocked(api.listOrganizationsForPicker)
       .mockReset()
       .mockResolvedValue([{ id: "01ARZ3NDEKTSV4RRFFQ69G5FBW", name: "Green Valley School" }]);
@@ -178,6 +194,9 @@ describe("StudentsPage", () => {
       status: "active",
       createdAt: "2026-01-03T00:00:00Z",
       updatedAt: "2026-01-03T00:00:00Z",
+      dateOfBirth: null,
+      gender: null,
+      notes: null,
     };
     vi.mocked(api.enrollStudent).mockResolvedValue(enrolled);
     vi.mocked(api.getStudent).mockResolvedValue(enrolled);
@@ -202,8 +221,9 @@ describe("StudentsPage", () => {
     // original assertion here got wrong before the transport-assignment-only version of this
     // chain was fixed).
     await waitFor(() =>
-      expect(screen.getAllByText("Yusuf Omar", { exact: false }).length).toBeGreaterThanOrEqual(3),
+      expect(screen.getAllByText("Yusuf Omar", { exact: false }).length).toBeGreaterThanOrEqual(4),
     );
+    expect(screen.getByText("Link a parent to Yusuf Omar")).toBeInTheDocument();
     expect(screen.getByText("Assign Yusuf Omar to a route")).toBeInTheDocument();
     expect(screen.getByText("Issue the first invoice for Yusuf Omar")).toBeInTheDocument();
     expect(api.getStudent).toHaveBeenCalledWith(enrolled.id);
@@ -219,6 +239,9 @@ describe("StudentsPage", () => {
       status: "active",
       createdAt: "2026-01-03T00:00:00Z",
       updatedAt: "2026-01-03T00:00:00Z",
+      dateOfBirth: null,
+      gender: null,
+      notes: null,
     };
     vi.mocked(api.enrollStudent).mockResolvedValue(enrolled);
     vi.mocked(api.getStudent).mockResolvedValue(enrolled);
@@ -365,5 +388,30 @@ describe("StudentsPage", () => {
     expect(within(dialog).queryByRole("button", { name: "Mark graduated" })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Add guardian" })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Unlink Fatima Ali" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("lets a founder edit a student's profile from the detail drawer", async () => {
+    vi.mocked(api.listStudents).mockResolvedValue(pageOf([STUDENT_SUMMARY], 1));
+    vi.mocked(api.updateStudent).mockResolvedValue({ ...STUDENT_DETAIL, notes: "Allergic to peanuts." });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Amina Hassan")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Amina Hassan"));
+
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Edit" }));
+
+    const editDialog = await screen.findByText("Edit student");
+    expect(editDialog).toBeInTheDocument();
+    await userEvent.type(screen.getByPlaceholderText("Optional"), "Allergic to peanuts.");
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(api.updateStudent).toHaveBeenCalledWith(
+        STUDENT_SUMMARY.id,
+        expect.objectContaining({ notes: "Allergic to peanuts." }),
+      ),
+    );
   });
 });

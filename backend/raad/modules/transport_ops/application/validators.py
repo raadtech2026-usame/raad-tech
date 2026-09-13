@@ -61,6 +61,18 @@ assignment` mirrors `ensure_vehicle_has_no_active_trip` exactly — defense-in-d
 `StudentAssignmentRepository.active_assignment_for_student`. `StudentAssignment`'s own
 existence-checking lives on `StudentAssignmentApplicationService._get_assignment_or_raise`, not
 here, for the same reason every other aggregate in this module keeps that check off this file.
+
+**Finance UI cleanup addition (2026-09-12) — `ensure_family_vehicle_consistency`.** RAAD's own
+family/vehicle business rule: every Student under the same Parent rides the same Vehicle (a
+family never splits across buses — the Parent Invoice Vehicle filter reads *the family's* vehicle,
+not an individual child's). Nothing previously enforced this — `StudentAssignment.assign()` took
+whatever `vehicle_id` a caller supplied with no cross-sibling check at all. `vehicle_id` is set
+exactly once, at `assign()` time, and never changed after (`domain/entities.py`'s own docstring),
+so this is checked only there, the same "defense-in-depth over a business invariant, at the one
+place it can ever be violated" shape every `ensure_*` function above already establishes. Needs
+`student_parents` (to find the student's own parent(s), then that parent's *other* children) and
+`student_assignments` (each sibling's own active vehicle) — both already same-module repositories
+on this same `TransportOpsUnitOfWork`, so this is ordinary in-context I/O, not a cross-module read.
 """
 
 from __future__ import annotations
@@ -186,3 +198,49 @@ async def ensure_student_has_no_active_assignment(
             f"Student {student_id} already has an active assignment {active.id} "
             "(one active assignment per student, Database Design §6.7)."
         )
+
+
+async def ensure_family_vehicle_consistency(
+    uow: TransportOpsUnitOfWork, student_id: StudentId, vehicle_id: VehicleId | None
+) -> None:
+    """RAAD's family/vehicle business rule: one Parent/family = one Vehicle — every Student
+    belonging to the same Parent must ride the same bus, never a different one each. `None` (no
+    vehicle chosen yet for this assignment) never conflicts with anything — the rule is about a
+    genuine mismatch between two *actual* vehicles, not about requiring one up front. A student
+    with no linked parent yet has nothing to be consistent with, so this is a no-op for them too.
+
+    Walks every parent linked to `student_id`, then every *other* student linked to that same
+    parent (a sibling), and checks that sibling's own current active assignment (if any). A
+    sibling with no active assignment, or an active assignment with no vehicle yet, never
+    conflicts — only a sibling already riding a *different*, non-null vehicle does.
+
+    **2026-09-12: demoted to a defense-in-depth safety net, not the primary enforcement.** The
+    primary path is now `ParentApplicationService.register_parent_with_children`/`set_family_
+    transportation` (`services.py`) — both assign one shared route/stops/vehicle to every one of
+    a Parent's children at once, so a family can no longer be split across two buses by
+    construction, not merely by a rejected second attempt. This check stays, unchanged, as the
+    guard over the still-reachable single-student `assign_student_to_route` endpoint, so that
+    path alone can never violate the same invariant."""
+    if vehicle_id is None:
+        return
+    links = await uow.student_parents.list_by_student(student_id)
+    for link in links:
+        siblings = await uow.student_parents.list_by_parent(link.parent_id)
+        for sibling_link in siblings:
+            if sibling_link.student_id == student_id:
+                continue
+            sibling_assignment = await uow.student_assignments.active_assignment_for_student(
+                sibling_link.student_id
+            )
+            if (
+                sibling_assignment is not None
+                and sibling_assignment.vehicle_id is not None
+                and sibling_assignment.vehicle_id != vehicle_id
+            ):
+                raise ConflictError(
+                    f"Cannot assign Student {student_id} to vehicle {vehicle_id}: sibling "
+                    f"Student {sibling_link.student_id} (same Parent {link.parent_id}) is "
+                    f"already assigned to vehicle {sibling_assignment.vehicle_id}. RAAD's "
+                    "family/vehicle rule requires every child of the same Parent to ride the "
+                    "same Vehicle."
+                )

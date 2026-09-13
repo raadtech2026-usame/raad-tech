@@ -5,20 +5,42 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", () => ({
   linkGuardianToStudent: vi.fn(),
+}));
+
+vi.mock("../parents/api", () => ({
   listParentsForPicker: vi.fn(),
+  getParent: vi.fn(),
+  listStudentsForParent: vi.fn(),
 }));
 
 import * as api from "./api";
+import * as parentsApi from "../parents/api";
 import { useToastStore } from "../../../shared/components/Toast/toastStore";
 import { ApiError } from "../../../shared/api/types";
 import { LinkGuardianForm } from "./LinkGuardianForm";
 
 const STUDENT_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
-const PARENT_OPTION: api.ParentOption = {
+const PARENT_OPTION: parentsApi.ParentOption = {
   id: "01ARZ3NDEKTSV4RRFFQ69G5FCX",
   fullName: "Fatima Ali",
   status: "active",
+};
+
+const PARENT_DETAIL: parentsApi.Parent = {
+  id: PARENT_OPTION.id,
+  organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
+  userId: "01ARZ3NDEKTSV4RRFFQ69G5FGA",
+  fullName: "Fatima Ali",
+  phone: "+252612345678",
+  status: "active",
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+  alternatePhone: null,
+  address: null,
+  emergencyContactName: null,
+  emergencyContactPhone: null,
+  notes: null,
 };
 
 function renderForm(overrides: Partial<Parameters<typeof LinkGuardianForm>[0]> = {}) {
@@ -32,36 +54,51 @@ function renderForm(overrides: Partial<Parameters<typeof LinkGuardianForm>[0]> =
   return { onClose };
 }
 
+/** Types into the `ParentSearchSelect` search field, waits for the result, and selects it —
+ * exercising the same flow a real admin follows. */
+async function selectParent(): Promise<void> {
+  const input = screen.getByLabelText("Parent");
+  await userEvent.click(input);
+  await userEvent.type(input, "Fatima");
+  const option = await screen.findByRole("option", { name: "Fatima Ali" });
+  await userEvent.click(option);
+  await screen.findByText(/\+252612345678/);
+}
+
 describe("LinkGuardianForm", () => {
   beforeEach(() => {
-    vi.mocked(api.listParentsForPicker).mockReset().mockResolvedValue([PARENT_OPTION]);
+    vi.mocked(parentsApi.listParentsForPicker).mockReset().mockResolvedValue([PARENT_OPTION]);
+    vi.mocked(parentsApi.getParent).mockReset().mockResolvedValue(PARENT_DETAIL);
+    vi.mocked(parentsApi.listStudentsForParent).mockReset().mockResolvedValue([]);
     vi.mocked(api.linkGuardianToStudent).mockReset();
     useToastStore.setState({ toasts: [] });
   });
 
-  it("fetches the parent picker on open", async () => {
+  it("searches by name and shows the existing children count once a parent is selected", async () => {
+    vi.mocked(parentsApi.listStudentsForParent).mockResolvedValue([
+      { studentId: "s1", fullName: "Mohamed Ahmed", status: "active", relationship: "Mother", isPrimary: true, dateOfBirth: null },
+      { studentId: "s2", fullName: "Aisha Ahmed", status: "active", relationship: "Mother", isPrimary: false, dateOfBirth: null },
+    ]);
     renderForm();
 
-    await waitFor(() => expect(api.listParentsForPicker).toHaveBeenCalledWith(""));
-    expect(await screen.findByText("Fatima Ali")).toBeInTheDocument();
+    await selectParent();
+
+    expect(screen.getByText("Fatima Ali")).toBeInTheDocument();
+    expect(screen.getByText(/2 existing children/)).toBeInTheDocument();
   });
 
   it("requires a parent to be selected before submitting", async () => {
     renderForm();
-    await screen.findByText("Fatima Ali");
 
-    await userEvent.click(screen.getByRole("button", { name: "Link guardian" }));
-
-    expect(await screen.findByText("Parent is required")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Link guardian" })).toBeDisabled();
     expect(api.linkGuardianToStudent).not.toHaveBeenCalled();
   });
 
   it("links the selected parent with relationship/primary defaults and reports success", async () => {
     vi.mocked(api.linkGuardianToStudent).mockResolvedValue(undefined);
     const { onClose } = renderForm();
-    await screen.findByText("Fatima Ali");
 
-    await userEvent.selectOptions(screen.getByLabelText("Parent"), PARENT_OPTION.id);
+    await selectParent();
     await userEvent.click(screen.getByRole("button", { name: "Link guardian" }));
 
     await waitFor(() =>
@@ -78,9 +115,8 @@ describe("LinkGuardianForm", () => {
   it("submits the relationship text and primary toggle when set", async () => {
     vi.mocked(api.linkGuardianToStudent).mockResolvedValue(undefined);
     renderForm();
-    await screen.findByText("Fatima Ali");
 
-    await userEvent.selectOptions(screen.getByLabelText("Parent"), PARENT_OPTION.id);
+    await selectParent();
     await userEvent.type(screen.getByPlaceholderText("e.g. Mother"), "Mother");
     await userEvent.click(screen.getByRole("switch"));
     await userEvent.click(screen.getByRole("button", { name: "Link guardian" }));
@@ -104,9 +140,7 @@ describe("LinkGuardianForm", () => {
     );
 
     const { onClose } = renderForm();
-    await screen.findByText("Fatima Ali");
-
-    await userEvent.selectOptions(screen.getByLabelText("Parent"), PARENT_OPTION.id);
+    await selectParent();
     await userEvent.click(screen.getByRole("button", { name: "Link guardian" }));
 
     await waitFor(() =>
@@ -120,11 +154,6 @@ describe("LinkGuardianForm", () => {
   });
 
   it("surfaces the backend's cross-organization rejection (a raw DomainError, mapped to HTTP 500) via a toast", async () => {
-    // `StudentParent.link`'s cross-organization guard raises a plain `DomainError`, which
-    // `core/errors/handlers.py`'s `_STATUS_TABLE` does not special-case (only its `ConflictError`/
-    // `RuleViolationError` subclasses are listed) — it falls through to the generic
-    // `status_code >= 500` branch. The frontend still shows the real domain message via
-    // `error.message`, exactly like every other `ApiError` consumer in this codebase.
     vi.mocked(api.linkGuardianToStudent).mockRejectedValue(
       new ApiError(500, {
         code: "DOMAIN_ERROR",
@@ -134,9 +163,7 @@ describe("LinkGuardianForm", () => {
     );
 
     const { onClose } = renderForm();
-    await screen.findByText("Fatima Ali");
-
-    await userEvent.selectOptions(screen.getByLabelText("Parent"), PARENT_OPTION.id);
+    await selectParent();
     await userEvent.click(screen.getByRole("button", { name: "Link guardian" }));
 
     await waitFor(() =>

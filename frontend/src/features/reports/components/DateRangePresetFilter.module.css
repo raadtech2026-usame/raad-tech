@@ -1,0 +1,11 @@
+.row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(140px, 1fr) minmax(140px, 1fr);
+  gap: var(--space-3);
+}
+
+@media (max-width: 560px) {
+  .row {
+    grid-template-columns: 1fr;
+  }
+}

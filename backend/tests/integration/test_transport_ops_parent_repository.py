@@ -35,12 +35,14 @@ from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
-from raad.modules.transport_ops.domain.entities import Parent
+from raad.core.errors.exceptions import DomainError
+from raad.modules.transport_ops.domain.entities import Parent, Student, StudentParent
 from raad.modules.transport_ops.domain.value_objects import (
     OrganizationId,
     ParentId,
     ParentStatus,
     PhoneNumber,
+    StudentId,
     UserId,
 )
 from raad.modules.transport_ops.infra.repositories import (
@@ -116,6 +118,42 @@ class ParentRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched.full_name, "Fatima Hassan")
         self.assertEqual(str(fetched.phone), "+252700000000")
         self.assertEqual(fetched.status, ParentStatus.ACTIVE)
+
+    async def test_round_trips_the_additive_profile_fields(self) -> None:
+        """2026-09-10 explicit user directive (Parent & Student Domain Restructure) —
+        `alternate_phone`/`address`/`emergency_contact_name`/`emergency_contact_phone`/`notes`
+        must survive a real Postgres round trip."""
+        org_id = self.id_generator.new_id()
+        user_id = self.id_generator.new_id()
+        async with self._new_uow() as uow:
+            parent = Parent.register(
+                id=ParentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                user_id=UserId(user_id),
+                full_name="Fatima Hassan",
+                phone=PhoneNumber("+252700000000"),
+                alternate_phone=PhoneNumber("+252611111111"),
+                address="Hodan District, Mogadishu",
+                emergency_contact_name="Ahmed Hassan",
+                emergency_contact_phone=PhoneNumber("+252622222222"),
+                notes="Prefers SMS over calls.",
+                clock=self.clock,
+            )
+            uow.parents.add(parent)
+            uow.record_events(parent.pull_domain_events())
+            await uow.commit()
+            parent_id = parent.id
+            self._created_ids.append(str(parent_id))
+
+        async with self._new_uow() as uow:
+            fetched = await uow.parents.get(parent_id)
+
+        self.assertIsNotNone(fetched)
+        self.assertEqual(str(fetched.alternate_phone), "+252611111111")
+        self.assertEqual(fetched.address, "Hodan District, Mogadishu")
+        self.assertEqual(fetched.emergency_contact_name, "Ahmed Hassan")
+        self.assertEqual(str(fetched.emergency_contact_phone), "+252622222222")
+        self.assertEqual(fetched.notes, "Prefers SMS over calls.")
 
     async def test_mutation_after_get_persists_without_a_second_add(self) -> None:
         """Proves the identity-map/`flush_tracked_changes` bridge described in
@@ -280,6 +318,75 @@ class ParentPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
             [f"Gamma-{self.tag}", f"Beta-{self.tag}", f"Alpha-{self.tag}"],
         )
 
+    async def test_list_page_filters_by_exact_phone(self) -> None:
+        """2026-09-10 explicit user directive (Parent & Student Domain Restructure) — `phone`
+        is now filterable, backing duplicate-parent detection: `GET /parents?filter[phone]=...`
+        must find the one existing parent with that exact number within the caller's own
+        organization."""
+        org_id = self.id_generator.new_id()
+        # E.164 (`\d` only) — `self.tag` is hex and may contain letters, so a distinct numeric
+        # suffix is generated here rather than reused from it.
+        phone_suffix = f"{uuid.uuid4().int % 10**8:08d}"
+        target_phone = f"+2526{phone_suffix}"
+        async with self._new_uow() as uow:
+            match = Parent.register(
+                id=ParentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                user_id=UserId(self.id_generator.new_id()),
+                full_name=f"Match Parent {self.tag}",
+                phone=PhoneNumber(target_phone),
+                clock=self.clock,
+            )
+            other = Parent.register(
+                id=ParentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                user_id=UserId(self.id_generator.new_id()),
+                full_name=f"Other Parent {self.tag}",
+                phone=PhoneNumber("+252699999999"),
+                clock=self.clock,
+            )
+            uow.parents.add(match)
+            uow.parents.add(other)
+            uow.record_events(match.pull_domain_events())
+            uow.record_events(other.pull_domain_events())
+            await uow.commit()
+            self._created_ids.extend([str(match.id), str(other.id)])
+
+        async with self._new_uow() as uow:
+            page = await uow.parents.list_page(
+                OffsetPageRequest(),
+                sort=[],
+                filters=[FilterCondition(field="phone", op="eq", value=target_phone)],
+                search=None,
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(str(page.data[0].id), str(match.id))
+
+    async def test_list_page_search_matches_phone_substring(self) -> None:
+        org_id = self.id_generator.new_id()
+        phone_suffix = f"{uuid.uuid4().int % 10**8:08d}"
+        target_phone = f"+2526{phone_suffix}"
+        async with self._new_uow() as uow:
+            parent = Parent.register(
+                id=ParentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                user_id=UserId(self.id_generator.new_id()),
+                full_name="Searchable By Phone",
+                phone=PhoneNumber(target_phone),
+                clock=self.clock,
+            )
+            uow.parents.add(parent)
+            uow.record_events(parent.pull_domain_events())
+            await uow.commit()
+            self._created_ids.append(str(parent.id))
+
+        async with self._new_uow() as uow:
+            page = await uow.parents.list_page(
+                OffsetPageRequest(), sort=[], filters=[], search=phone_suffix
+            )
+        self.assertEqual(page.total, 1)
+        self.assertEqual(str(page.data[0].id), str(parent.id))
+
     async def test_list_page_rejects_non_whitelisted_filter_field(self) -> None:
         async with self._new_uow() as uow:
             with self.assertRaises(ValidationError):
@@ -398,6 +505,103 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         visible_ids = {str(p.id) for p in visible}
         self.assertIn(parent_a, visible_ids)
         self.assertIn(parent_b, visible_ids)
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class RegisterParentWithChildrenTransactionTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0041 §2's real-database counterpart to `tests/unit/
+    test_transport_ops_parent_application.py::RegisterParentWithChildrenTests` — proves the
+    actual Postgres rollback guarantee the in-memory fakes there cannot model: when one child in
+    a Parent+children registration is invalid, **nothing** from that attempt is left behind, not
+    even the Parent or the valid sibling created earlier in the same `async with uow:` block."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.outbox_writer = OutboxWriter()
+        self.audit_writer = AuditWriter()
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self._created_parent_ids: list[str] = []
+        self._created_student_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_student_ids:
+                await conn.execute(
+                    text("DELETE FROM student_parents WHERE student_id = ANY(:ids)"),
+                    {"ids": self._created_student_ids},
+                )
+                await conn.execute(
+                    text("DELETE FROM students WHERE id = ANY(:ids)"),
+                    {"ids": self._created_student_ids},
+                )
+            if self._created_parent_ids:
+                await conn.execute(
+                    text("DELETE FROM parents WHERE id = ANY(:ids)"),
+                    {"ids": self._created_parent_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self) -> SqlAlchemyTransportOpsUnitOfWork:
+        return SqlAlchemyTransportOpsUnitOfWork(
+            self.session_factory, self.outbox_writer, self.audit_writer
+        )
+
+    async def test_an_invalid_child_leaves_no_parent_and_no_valid_sibling_behind(self) -> None:
+        org_id = self.id_generator.new_id()
+        user_id = self.id_generator.new_id()
+        parent_id = ParentId(self.id_generator.new_id())
+        valid_student_id = StudentId(self.id_generator.new_id())
+        self._created_parent_ids.append(str(parent_id))
+        self._created_student_ids.append(str(valid_student_id))
+
+        with self.assertRaises(DomainError):
+            async with self._new_uow() as uow:
+                parent = Parent.register(
+                    id=parent_id,
+                    organization_id=OrganizationId(org_id),
+                    user_id=UserId(user_id),
+                    full_name=f"Ahmed Mohamed {self.tag}",
+                    clock=self.clock,
+                )
+                uow.parents.add(parent)
+
+                valid_child = Student.enroll(
+                    id=valid_student_id,
+                    organization_id=OrganizationId(org_id),
+                    full_name=f"Mohamed Ahmed {self.tag}",
+                    clock=self.clock,
+                )
+                uow.students.add(valid_child)
+                link = StudentParent.link(
+                    student_id=valid_child.id,
+                    student_organization_id=valid_child.organization_id,
+                    parent_id=parent.id,
+                    parent_organization_id=parent.organization_id,
+                    clock=self.clock,
+                )
+                uow.student_parents.add(link)
+
+                # The invalid child — constructed only to prove the transaction never reaches
+                # `commit()`. `Student.enroll` itself raises for an empty full_name before any
+                # further code in this block runs.
+                Student.enroll(
+                    id=StudentId(self.id_generator.new_id()),
+                    organization_id=OrganizationId(org_id),
+                    full_name="",
+                    clock=self.clock,
+                )
+                await uow.commit()
+
+        # Real Postgres rollback: neither the Parent nor the valid sibling Student exist.
+        async with self._new_uow() as uow:
+            fetched_parent = await uow.parents.get(parent_id)
+            fetched_student = await uow.students.get(valid_student_id)
+        self.assertIsNone(fetched_parent)
+        self.assertIsNone(fetched_student)
 
 
 if __name__ == "__main__":

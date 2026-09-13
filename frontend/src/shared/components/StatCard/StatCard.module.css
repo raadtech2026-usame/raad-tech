@@ -61,9 +61,10 @@
 
 .panel {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
+  gap: var(--space-2) var(--space-3);
   background: var(--color-bg-inset);
   border-radius: var(--radius-lg);
   padding: var(--space-4) var(--space-4);
@@ -71,17 +72,23 @@
   transition: background var(--transition-base);
 }
 
+/* Root-cause fix (Finance page UI cleanup, 2026-09-12): a wide formatted amount (e.g.
+ * "$1,234.00") was silently clipped to "$1,2..." by `overflow:hidden`/`text-overflow:ellipsis`
+ * with no visible affordance to see the rest — a monetary value must never be hidden behind an
+ * ellipsis. The figure now wraps onto a second line (`.panel`'s own `flex-wrap` above lets `.meta`
+ * drop below it first) rather than ever truncating; `clamp()` also shrinks the type a little at
+ * the narrow end before it needs to wrap at all. */
 .value {
   font-family: var(--font-display);
   font-weight: var(--font-weight-bold);
-  font-size: var(--text-4xl);
-  line-height: 1;
+  font-size: clamp(1.5rem, 1.1rem + 1.5vw, var(--text-4xl));
+  line-height: 1.15;
   letter-spacing: var(--tracking-display);
   color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: break-word;
+  white-space: normal;
 }
 
 .meta {

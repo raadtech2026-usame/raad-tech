@@ -16,19 +16,27 @@ import dataclasses
 import unittest
 from datetime import datetime, timezone
 
-from raad.core.errors.exceptions import AuthorizationError, DomainError, NotFoundError
+from raad.core.errors.exceptions import (
+    AuthorizationError,
+    DomainError,
+    NotFoundError,
+    ValidationError,
+)
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import (
     ActivateParentCommand,
+    ChildEnrollmentSpec,
     DisableParentCommand,
     GrantParentVideoLiveAccessCommand,
     GrantParentVideoPlaybackAccessCommand,
     RegisterParentCommand,
+    RegisterParentWithChildrenCommand,
     RevokeParentVideoLiveAccessCommand,
     RevokeParentVideoPlaybackAccessCommand,
+    SetFamilyTransportationCommand,
     UpdateParentCommand,
 )
 from raad.modules.transport_ops.application.ports import (
@@ -44,13 +52,32 @@ from raad.modules.transport_ops.application.queries import (
     parent_to_summary_dto,
 )
 from raad.modules.transport_ops.application.services import ParentApplicationService
-from raad.modules.transport_ops.domain.entities import Parent
-from raad.modules.transport_ops.domain.repositories import ParentRepository
+from raad.modules.transport_ops.domain.entities import (
+    Parent,
+    Route,
+    Stop,
+    Student,
+    StudentAssignment,
+    StudentParent,
+)
+from raad.modules.transport_ops.domain.repositories import (
+    ParentRepository,
+    RouteRepository,
+    StudentAssignmentRepository,
+    StudentParentRepository,
+    StudentRepository,
+)
 from raad.modules.transport_ops.domain.value_objects import (
     OrganizationId,
     ParentId,
     ParentStatus,
     PhoneNumber,
+    RouteId,
+    RouteStatus,
+    StopId,
+    StudentAssignmentId,
+    StudentAssignmentStatus,
+    StudentId,
     UserId,
 )
 
@@ -61,6 +88,16 @@ VALID_USER_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3ME"
 # exercises the NotFoundError path, distinct from ParentId's own malformed-shape DomainError.
 NON_EXISTENT_PARENT_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZZ"
 FAKE_TEMPORARY_PASSWORD = "Fake-Temp-Pw9!"
+# Family-transportation fixtures (2026-09-12 business-model correction).
+VALID_ROUTE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3RT"
+VALID_PICKUP_STOP_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3P1"
+VALID_DROPOFF_STOP_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3D1"
+OTHER_ROUTE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3R2"
+OTHER_PICKUP_STOP_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3P2"
+OTHER_DROPOFF_STOP_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3D2"
+VALID_VEHICLE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3VE"
+OTHER_VEHICLE_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3V2"
+NON_EXISTENT_ROUTE_ID = "01J8Z3K9G6X8YV5T4N2R7QW3ZX"
 
 
 class FixedClock(Clock):
@@ -179,10 +216,138 @@ class InMemoryParentRepository(ParentRepository):
             search=search,
         )
 
+    async def list_by_ids(self, parent_ids: list[str]) -> list[Parent]:
+        wanted = set(parent_ids)
+        return [p for p in self.by_id.values() if str(p.id) in wanted]
+
+
+class InMemoryStudentRepository(StudentRepository):
+    """Minimal fake — only `add` is exercised by `register_parent_with_children`."""
+
+    def __init__(self) -> None:
+        self.by_id: dict[str, Student] = {}
+
+    async def get(self, student_id: StudentId) -> Student | None:
+        return self.by_id.get(str(student_id))
+
+    def add(self, student: Student) -> None:
+        self.by_id[str(student.id)] = student
+
+    async def list_all(self) -> list[Student]:
+        return list(self.by_id.values())
+
+    async def list_by_ids(self, student_ids: list[str]) -> list[Student]:
+        wanted = set(student_ids)
+        return [s for s in self.by_id.values() if str(s.id) in wanted]
+
+    async def list_page(self, page_request, *, sort, filters, search):
+        raise NotImplementedError
+
+
+class InMemoryStudentParentRepository(StudentParentRepository):
+    """Minimal fake — only `add` is exercised by `register_parent_with_children`."""
+
+    def __init__(self) -> None:
+        self.links: list[StudentParent] = []
+
+    async def get(self, student_id: StudentId, parent_id: ParentId) -> StudentParent | None:
+        return next(
+            (
+                link
+                for link in self.links
+                if link.student_id == student_id and link.parent_id == parent_id
+            ),
+            None,
+        )
+
+    def add(self, link: StudentParent) -> None:
+        self.links.append(link)
+
+    async def remove(self, link: StudentParent) -> None:
+        raise NotImplementedError
+
+    async def list_by_student(self, student_id: StudentId) -> list[StudentParent]:
+        return [link for link in self.links if link.student_id == student_id]
+
+    async def list_by_parent(self, parent_id: ParentId) -> list[StudentParent]:
+        return [link for link in self.links if link.parent_id == parent_id]
+
+    async def list_by_students(self, student_ids: list[StudentId]) -> list[StudentParent]:
+        wanted = {str(sid) for sid in student_ids}
+        return [link for link in self.links if str(link.student_id) in wanted]
+
+
+class InMemoryRouteRepository(RouteRepository):
+    """Minimal fake — needed for `register_parent_with_children`'s/`set_family_transportation`'s
+    family-transportation validation (2026-09-12), mirroring `test_transport_ops_student_
+    assignment_application.py`'s own identically-named fake (duplicated per test file, this
+    codebase's own established precedent)."""
+
+    def __init__(self) -> None:
+        self.by_id: dict[str, Route] = {}
+
+    async def get(self, route_id: RouteId) -> Route | None:
+        return self.by_id.get(str(route_id))
+
+    async def get_by_name(self, name: str) -> Route | None:
+        return next((r for r in self.by_id.values() if r.name == name), None)
+
+    def add(self, route: Route) -> None:
+        self.by_id[str(route.id)] = route
+
+    async def list_all(self) -> list[Route]:
+        return list(self.by_id.values())
+
+    async def list_page(self, page_request, *, sort, filters, search):
+        raise NotImplementedError
+
+
+class InMemoryStudentAssignmentRepository(StudentAssignmentRepository):
+    """Minimal fake — needed for `set_family_transportation`'s per-child assign/end cascade."""
+
+    def __init__(self) -> None:
+        self.by_id: dict[str, StudentAssignment] = {}
+
+    async def get(self, student_assignment_id: StudentAssignmentId) -> StudentAssignment | None:
+        return self.by_id.get(str(student_assignment_id))
+
+    def add(self, assignment: StudentAssignment) -> None:
+        self.by_id[str(assignment.id)] = assignment
+
+    async def list_all(self) -> list[StudentAssignment]:
+        return list(self.by_id.values())
+
+    async def list_page(self, page_request, *, sort, filters, search):
+        raise NotImplementedError
+
+    async def active_assignment_for_student(
+        self, student_id: StudentId
+    ) -> StudentAssignment | None:
+        return next(
+            (
+                assignment
+                for assignment in self.by_id.values()
+                if str(assignment.student_id) == str(student_id)
+                and assignment.status == StudentAssignmentStatus.ACTIVE
+            ),
+            None,
+        )
+
 
 class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
-    def __init__(self, parents: InMemoryParentRepository) -> None:
+    def __init__(
+        self,
+        parents: InMemoryParentRepository,
+        students: InMemoryStudentRepository | None = None,
+        student_parents: InMemoryStudentParentRepository | None = None,
+        routes: InMemoryRouteRepository | None = None,
+        student_assignments: InMemoryStudentAssignmentRepository | None = None,
+    ) -> None:
         self.parents = parents
+        self.students = students or InMemoryStudentRepository()
+        self.student_parents = student_parents or InMemoryStudentParentRepository()
+        self.routes = routes or InMemoryRouteRepository()
+        self.student_assignments = student_assignments or InMemoryStudentAssignmentRepository()
         self.recorded_events = []
         self.commit_count = 0
         self.rollback_count = 0
@@ -231,6 +396,43 @@ class FakeUserProvisioningPort(UserProvisioningPort):
 
 def make_actor(org_id: str = VALID_ORG_ULID) -> Principal:
     return Principal(user_id="admin-1", role=Role.ORG_ADMIN, org_id=org_id)
+
+
+def make_route(
+    route_id: str = VALID_ROUTE_ULID,
+    organization_id: str = VALID_ORG_ULID,
+    *,
+    pickup_stop_id: str = VALID_PICKUP_STOP_ULID,
+    dropoff_stop_id: str = VALID_DROPOFF_STOP_ULID,
+) -> Route:
+    """Family-transportation fixture (2026-09-12) — mirrors `test_transport_ops_student_
+    assignment_application.py`'s own identically-shaped `make_route` helper."""
+    return Route(
+        id=RouteId(route_id),
+        organization_id=OrganizationId(organization_id),
+        name=f"Route {route_id[-4:]}",
+        status=RouteStatus.ACTIVE,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        stops=[
+            Stop(
+                id=StopId(pickup_stop_id),
+                name="Pickup",
+                latitude=2.5,
+                longitude=45.3,
+                sequence_no=1,
+                geofence_radius_m=None,
+            ),
+            Stop(
+                id=StopId(dropoff_stop_id),
+                name="Dropoff",
+                latitude=2.6,
+                longitude=45.4,
+                sequence_no=2,
+                geofence_radius_m=None,
+            ),
+        ],
+    )
 
 
 def make_service() -> tuple[ParentApplicationService, FakeTransportOpsUnitOfWork, FakeUserProvisioningPort]:
@@ -351,6 +553,29 @@ class ParentApplicationServiceRegisterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(dto.id, uow.parents.by_id)
         self.assertEqual(uow.commit_count, 1)
 
+    async def test_register_parent_passes_through_the_additive_profile_fields(self) -> None:
+        """2026-09-10 explicit user directive (Parent & Student Domain Restructure)."""
+        service, uow, _provisioning = make_service()
+        command = RegisterParentCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Fatima Hassan",
+            email=None,
+            phone="+252700000000",
+            actor=make_actor(),
+            alternate_phone="+252611111111",
+            address="Hodan District, Mogadishu",
+            emergency_contact_name="Ahmed Hassan",
+            emergency_contact_phone="+252622222222",
+            notes="Prefers SMS over calls.",
+        )
+        dto, _temporary_password = await service.register_parent(command, uow=uow)
+
+        self.assertEqual(dto.alternate_phone, "+252611111111")
+        self.assertEqual(dto.address, "Hodan District, Mogadishu")
+        self.assertEqual(dto.emergency_contact_name, "Ahmed Hassan")
+        self.assertEqual(dto.emergency_contact_phone, "+252622222222")
+        self.assertEqual(dto.notes, "Prefers SMS over calls.")
+
     async def test_register_parent_calls_user_provisioning_with_role_parent(self) -> None:
         service, uow, provisioning = make_service()
         actor = make_actor()
@@ -444,6 +669,344 @@ class ParentApplicationServiceRegisterTests(unittest.IsolatedAsyncioTestCase):
             await service.register_parent(command, uow=uow)
         self.assertEqual(uow.commit_count, 0)
         self.assertEqual(provisioning.calls, [])
+
+
+class RegisterParentWithChildrenTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0041 §2 — the "Add Parent -> add children -> Save" transactional flow."""
+
+    async def test_creates_parent_and_every_child_and_links_each_one(self) -> None:
+        service, uow, provisioning = make_service()
+        command = RegisterParentWithChildrenCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Ahmed Mohamed",
+            email=None,
+            phone="+252611111111",
+            actor=make_actor(),
+            children=[
+                ChildEnrollmentSpec(full_name="Mohamed Ahmed", relationship="Father", is_primary=True),
+                ChildEnrollmentSpec(full_name="Aisha Ahmed", relationship="Father"),
+                ChildEnrollmentSpec(full_name="Omar Ahmed", relationship="Father"),
+            ],
+        )
+        parent, children, temporary_password = await service.register_parent_with_children(
+            command, uow=uow
+        )
+
+        self.assertEqual(parent.full_name, "Ahmed Mohamed")
+        self.assertEqual(len(children), 3)
+        self.assertEqual({c.full_name for c in children}, {"Mohamed Ahmed", "Aisha Ahmed", "Omar Ahmed"})
+        self.assertEqual(temporary_password, FAKE_TEMPORARY_PASSWORD)
+
+        # Every child actually persisted, and actually linked to the new parent.
+        self.assertEqual(len(uow.students.by_id), 3)
+        self.assertEqual(len(uow.student_parents.links), 3)
+        for link in uow.student_parents.links:
+            self.assertEqual(str(link.parent_id), parent.id)
+
+        # One transaction, one commit - not one per child.
+        self.assertEqual(uow.commit_count, 1)
+
+    async def test_zero_children_behaves_like_register_parent(self) -> None:
+        service, uow, _ = make_service()
+        command = RegisterParentWithChildrenCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Solo Parent",
+            email=None,
+            phone="+252622222222",
+            actor=make_actor(),
+            children=[],
+        )
+        parent, children, _ = await service.register_parent_with_children(command, uow=uow)
+        self.assertEqual(children, [])
+        self.assertEqual(len(uow.parents.by_id), 1)
+        self.assertEqual(uow.commit_count, 1)
+
+    async def test_an_invalid_child_never_commits(self) -> None:
+        """The unit-level proof of atomicity: nothing is durable unless `commit()` is reached,
+        exactly once, for the whole family. (The in-memory fakes here mutate their own `by_id`
+        dict synchronously on `add()`, the same way every other fake repository in this test
+        file does — they do not model real rollback; that guarantee is the real SQLAlchemy
+        `UnitOfWork`'s job, proven instead by
+        `test_transport_ops_parent_repository.py::RegisterParentWithChildrenTransactionTests`
+        against a real Postgres transaction.)"""
+        service, uow, _ = make_service()
+        command = RegisterParentWithChildrenCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Ahmed Mohamed",
+            email=None,
+            phone="+252611111111",
+            actor=make_actor(),
+            children=[
+                ChildEnrollmentSpec(full_name="Mohamed Ahmed"),
+                ChildEnrollmentSpec(full_name=""),  # invalid: empty full_name
+            ],
+        )
+        with self.assertRaises(DomainError):
+            await service.register_parent_with_children(command, uow=uow)
+        self.assertEqual(uow.commit_count, 0)
+
+    async def test_cross_organization_actor_is_rejected_before_any_write(self) -> None:
+        service, uow, provisioning = make_service()
+        command = RegisterParentWithChildrenCommand(
+            organization_id=OTHER_ORG_ULID,
+            full_name="Ahmed Mohamed",
+            email=None,
+            phone=None,
+            actor=make_actor(org_id=VALID_ORG_ULID),
+            children=[ChildEnrollmentSpec(full_name="Mohamed Ahmed")],
+        )
+        with self.assertRaises(AuthorizationError):
+            await service.register_parent_with_children(command, uow=uow)
+        self.assertEqual(uow.commit_count, 0)
+        self.assertEqual(provisioning.calls, [])
+
+    async def test_each_child_records_its_own_date_of_birth_and_gender_and_notes(self) -> None:
+        service, uow, _ = make_service()
+        command = RegisterParentWithChildrenCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Ahmed Mohamed",
+            email=None,
+            phone="+252611111111",
+            actor=make_actor(),
+            children=[
+                ChildEnrollmentSpec(
+                    full_name="Mohamed Ahmed",
+                    date_of_birth=None,
+                    gender="male",
+                    notes="Allergic to peanuts.",
+                )
+            ],
+        )
+        _, children, _ = await service.register_parent_with_children(command, uow=uow)
+        self.assertEqual(children[0].gender, "male")
+        self.assertEqual(children[0].notes, "Allergic to peanuts.")
+
+
+class RegisterParentWithChildrenFamilyTransportationTests(unittest.IsolatedAsyncioTestCase):
+    """2026-09-12 business-model correction: family transportation is set once, at registration,
+    for every listed child together — not per child afterward."""
+
+    async def test_every_child_gets_the_same_route_and_vehicle_in_one_transaction(self) -> None:
+        service, uow, _ = make_service()
+        uow.routes.add(make_route())
+        command = RegisterParentWithChildrenCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Ahmed Mohamed",
+            email=None,
+            phone="+252611111111",
+            actor=make_actor(),
+            children=[
+                ChildEnrollmentSpec(full_name="Mohamed Ahmed"),
+                ChildEnrollmentSpec(full_name="Aisha Ahmed"),
+            ],
+            route_id=VALID_ROUTE_ULID,
+            pickup_stop_id=VALID_PICKUP_STOP_ULID,
+            dropoff_stop_id=VALID_DROPOFF_STOP_ULID,
+            vehicle_id=VALID_VEHICLE_ULID,
+        )
+        _parent, children, _ = await service.register_parent_with_children(command, uow=uow)
+
+        self.assertEqual(len(uow.student_assignments.by_id), 2)
+        assignments = list(uow.student_assignments.by_id.values())
+        self.assertEqual({str(a.route_id) for a in assignments}, {VALID_ROUTE_ULID})
+        self.assertEqual({str(a.vehicle_id) for a in assignments}, {VALID_VEHICLE_ULID})
+        self.assertEqual(
+            {str(a.student_id) for a in assignments},
+            {child.id for child in children},
+        )
+        # Still one commit for the whole family, transportation included.
+        self.assertEqual(uow.commit_count, 1)
+
+    async def test_omitting_route_id_creates_no_assignments(self) -> None:
+        service, uow, _ = make_service()
+        command = RegisterParentWithChildrenCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Ahmed Mohamed",
+            email=None,
+            phone="+252611111111",
+            actor=make_actor(),
+            children=[ChildEnrollmentSpec(full_name="Mohamed Ahmed")],
+        )
+        await service.register_parent_with_children(command, uow=uow)
+        self.assertEqual(uow.student_assignments.by_id, {})
+
+    async def test_route_id_without_pickup_stop_id_raises_validation_error(self) -> None:
+        service, uow, _ = make_service()
+        uow.routes.add(make_route())
+        command = RegisterParentWithChildrenCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Ahmed Mohamed",
+            email=None,
+            phone="+252611111111",
+            actor=make_actor(),
+            children=[ChildEnrollmentSpec(full_name="Mohamed Ahmed")],
+            route_id=VALID_ROUTE_ULID,
+            pickup_stop_id=None,
+            dropoff_stop_id=None,
+        )
+        with self.assertRaises(ValidationError):
+            await service.register_parent_with_children(command, uow=uow)
+        self.assertEqual(uow.commit_count, 0)
+        self.assertEqual(uow.parents.by_id, {})
+
+    async def test_unknown_route_id_raises_not_found_before_any_write(self) -> None:
+        service, uow, _ = make_service()
+        command = RegisterParentWithChildrenCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Ahmed Mohamed",
+            email=None,
+            phone="+252611111111",
+            actor=make_actor(),
+            children=[ChildEnrollmentSpec(full_name="Mohamed Ahmed")],
+            route_id=NON_EXISTENT_ROUTE_ID,
+            pickup_stop_id=VALID_PICKUP_STOP_ULID,
+            dropoff_stop_id=VALID_DROPOFF_STOP_ULID,
+        )
+        with self.assertRaises(NotFoundError):
+            await service.register_parent_with_children(command, uow=uow)
+        self.assertEqual(uow.commit_count, 0)
+
+
+class SetFamilyTransportationTests(unittest.IsolatedAsyncioTestCase):
+    """2026-09-12 business-model correction — the one place a family's Vehicle/Route/Stops is
+    assigned for the first time or changed later, cascading to every one of a Parent's linked
+    children in one transaction."""
+
+    async def _register_parent_with_children(
+        self, service: ParentApplicationService, uow: FakeTransportOpsUnitOfWork, count: int
+    ) -> tuple[str, list[str]]:
+        command = RegisterParentWithChildrenCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Ahmed Mohamed",
+            email=None,
+            phone="+252611111111",
+            actor=make_actor(),
+            children=[ChildEnrollmentSpec(full_name=f"Child {i}") for i in range(count)],
+        )
+        parent, children, _ = await service.register_parent_with_children(command, uow=uow)
+        uow.recorded_events.clear()
+        return parent.id, [child.id for child in children]
+
+    async def test_assigns_every_linked_child_to_the_same_route_and_vehicle(self) -> None:
+        service, uow, _ = make_service()
+        uow.routes.add(make_route())
+        parent_id, child_ids = await self._register_parent_with_children(service, uow, 2)
+
+        assignments = await service.set_family_transportation(
+            SetFamilyTransportationCommand(
+                parent_id=parent_id,
+                route_id=VALID_ROUTE_ULID,
+                pickup_stop_id=VALID_PICKUP_STOP_ULID,
+                dropoff_stop_id=VALID_DROPOFF_STOP_ULID,
+                vehicle_id=VALID_VEHICLE_ULID,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual(len(assignments), 2)
+        self.assertEqual({a.student_id for a in assignments}, set(child_ids))
+        self.assertEqual({a.route_id for a in assignments}, {VALID_ROUTE_ULID})
+        self.assertEqual({a.vehicle_id for a in assignments}, {VALID_VEHICLE_ULID})
+        self.assertEqual({a.status for a in assignments}, {"active"})
+
+    async def test_changing_transportation_ends_the_old_assignment_and_creates_a_new_one(
+        self,
+    ) -> None:
+        service, uow, _ = make_service()
+        uow.routes.add(make_route())
+        uow.routes.add(
+            make_route(
+                OTHER_ROUTE_ULID,
+                pickup_stop_id=OTHER_PICKUP_STOP_ULID,
+                dropoff_stop_id=OTHER_DROPOFF_STOP_ULID,
+            )
+        )
+        parent_id, child_ids = await self._register_parent_with_children(service, uow, 1)
+        await service.set_family_transportation(
+            SetFamilyTransportationCommand(
+                parent_id=parent_id,
+                route_id=VALID_ROUTE_ULID,
+                pickup_stop_id=VALID_PICKUP_STOP_ULID,
+                dropoff_stop_id=VALID_DROPOFF_STOP_ULID,
+                vehicle_id=VALID_VEHICLE_ULID,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        first_assignment_id = next(iter(uow.student_assignments.by_id))
+
+        new_assignments = await service.set_family_transportation(
+            SetFamilyTransportationCommand(
+                parent_id=parent_id,
+                route_id=OTHER_ROUTE_ULID,
+                pickup_stop_id=OTHER_PICKUP_STOP_ULID,
+                dropoff_stop_id=OTHER_DROPOFF_STOP_ULID,
+                vehicle_id=OTHER_VEHICLE_ULID,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        # The old assignment is ended (`removed`), not deleted - a new one is created for the
+        # new route/vehicle. Exactly one ACTIVE assignment exists for the student afterward.
+        old_assignment = uow.student_assignments.by_id[first_assignment_id]
+        self.assertEqual(old_assignment.status.value, "removed")
+        self.assertEqual(len(new_assignments), 1)
+        self.assertEqual(new_assignments[0].route_id, OTHER_ROUTE_ULID)
+        self.assertEqual(new_assignments[0].vehicle_id, OTHER_VEHICLE_ULID)
+        active = await uow.student_assignments.active_assignment_for_student(
+            StudentId(child_ids[0])
+        )
+        self.assertEqual(str(active.id), new_assignments[0].id)
+
+    async def test_parent_with_no_linked_children_is_a_legal_no_op(self) -> None:
+        service, uow, _ = make_service()
+        uow.routes.add(make_route())
+        parent_id, _children = await self._register_parent_with_children(service, uow, 0)
+
+        assignments = await service.set_family_transportation(
+            SetFamilyTransportationCommand(
+                parent_id=parent_id,
+                route_id=VALID_ROUTE_ULID,
+                pickup_stop_id=VALID_PICKUP_STOP_ULID,
+                dropoff_stop_id=VALID_DROPOFF_STOP_ULID,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(assignments, [])
+
+    async def test_unknown_parent_raises_not_found(self) -> None:
+        service, uow, _ = make_service()
+        uow.routes.add(make_route())
+        with self.assertRaises(NotFoundError):
+            await service.set_family_transportation(
+                SetFamilyTransportationCommand(
+                    parent_id=NON_EXISTENT_PARENT_ID,
+                    route_id=VALID_ROUTE_ULID,
+                    pickup_stop_id=VALID_PICKUP_STOP_ULID,
+                    dropoff_stop_id=VALID_DROPOFF_STOP_ULID,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+    async def test_pickup_stop_not_on_route_raises_not_found(self) -> None:
+        service, uow, _ = make_service()
+        uow.routes.add(make_route())
+        parent_id, _children = await self._register_parent_with_children(service, uow, 1)
+        with self.assertRaises(NotFoundError):
+            await service.set_family_transportation(
+                SetFamilyTransportationCommand(
+                    parent_id=parent_id,
+                    route_id=VALID_ROUTE_ULID,
+                    pickup_stop_id=OTHER_PICKUP_STOP_ULID,
+                    dropoff_stop_id=VALID_DROPOFF_STOP_ULID,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
 
 
 class ParentApplicationServiceStatusTransitionTests(unittest.IsolatedAsyncioTestCase):

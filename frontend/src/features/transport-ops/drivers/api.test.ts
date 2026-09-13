@@ -7,7 +7,6 @@ vi.mock("../../../shared/api/client", () => ({
 import { apiRequest } from "../../../shared/api/client";
 import {
   getDriver,
-  listDriverUsersForPicker,
   listDrivers,
   listOrganizationsForPicker,
   registerDriver,
@@ -32,18 +31,6 @@ const DRIVER_SUMMARY_WIRE = {
 
 const ORG_WIRE = {
   data: [{ id: "01ARZ3NDEKTSV4RRFFQ69G5FBW", name: "Green Valley School" }],
-  page: { total: 1, page: 1, page_size: 100 },
-};
-
-const USER_OPTION_WIRE = {
-  data: [
-    {
-      id: "01ARZ3NDEKTSV4RRFFQ69G5FGA",
-      full_name: "Hassan Warsame",
-      email: "hassan@example.com",
-      phone: null,
-    },
-  ],
   page: { total: 1, page: 1, page_size: 100 },
 };
 
@@ -92,12 +79,14 @@ describe("drivers api", () => {
     });
   });
 
-  it("registerDriver posts the exact RegisterDriverRequest shape", async () => {
-    vi.mocked(apiRequest).mockResolvedValueOnce(DRIVER_WIRE);
+  it("registerDriver posts the exact RegisterDriverRequest shape and returns the temporary password", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({ driver: DRIVER_WIRE, temporary_password: "Temp#1234" });
 
-    await registerDriver({
+    const result = await registerDriver({
       organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-      userId: "01ARZ3NDEKTSV4RRFFQ69G5FGA",
+      fullName: "Hassan Warsame",
+      email: "hassan@example.com",
+      phone: null,
       licenseNo: "DL-00231",
     });
 
@@ -105,9 +94,23 @@ describe("drivers api", () => {
       method: "POST",
       body: {
         organization_id: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-        user_id: "01ARZ3NDEKTSV4RRFFQ69G5FGA",
+        full_name: "Hassan Warsame",
+        email: "hassan@example.com",
+        phone: null,
         license_no: "DL-00231",
       },
+    });
+    expect(result).toEqual({
+      driver: {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FDR",
+        organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
+        userId: "01ARZ3NDEKTSV4RRFFQ69G5FGA",
+        licenseNo: "DL-00231",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-02T00:00:00Z",
+      },
+      temporaryPassword: "Temp#1234",
     });
   });
 
@@ -132,23 +135,5 @@ describe("drivers api", () => {
       "/organizations?page=1&page_size=100&sort=name&filter%5Bstatus%5D=active&q=green",
     );
     expect(result).toEqual([{ id: "01ARZ3NDEKTSV4RRFFQ69G5FBW", name: "Green Valley School" }]);
-  });
-
-  it("listDriverUsersForPicker filters to the given organization, role=driver, and status=active", async () => {
-    vi.mocked(apiRequest).mockResolvedValueOnce(USER_OPTION_WIRE);
-
-    const result = await listDriverUsersForPicker("01ARZ3NDEKTSV4RRFFQ69G5FBW", "");
-
-    expect(apiRequest).toHaveBeenCalledWith(
-      "/users?page=1&page_size=100&sort=full_name&filter%5Borganization_id%5D=01ARZ3NDEKTSV4RRFFQ69G5FBW&filter%5Brole%5D=driver&filter%5Bstatus%5D=active",
-    );
-    expect(result).toEqual([
-      {
-        id: "01ARZ3NDEKTSV4RRFFQ69G5FGA",
-        fullName: "Hassan Warsame",
-        email: "hassan@example.com",
-        phone: null,
-      },
-    ]);
   });
 });

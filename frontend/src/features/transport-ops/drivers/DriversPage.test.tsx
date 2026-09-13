@@ -10,7 +10,6 @@ vi.mock("./api", () => ({
   registerDriver: vi.fn(),
   updateDriverStatus: vi.fn(),
   listOrganizationsForPicker: vi.fn(),
-  listDriverUsersForPicker: vi.fn(),
 }));
 
 import * as api from "./api";
@@ -58,7 +57,6 @@ describe("DriversPage", () => {
     vi.mocked(api.listDrivers).mockReset();
     vi.mocked(api.getDriver).mockReset().mockResolvedValue(DRIVER_DETAIL);
     vi.mocked(api.updateDriverStatus).mockReset();
-    vi.mocked(api.listDriverUsersForPicker).mockReset().mockResolvedValue([]);
     vi.mocked(api.listOrganizationsForPicker)
       .mockReset()
       .mockResolvedValue([{ id: "01ARZ3NDEKTSV4RRFFQ69G5FBW", name: "Green Valley School" }]);

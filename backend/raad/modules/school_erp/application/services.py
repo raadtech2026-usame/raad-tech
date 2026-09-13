@@ -21,6 +21,7 @@ the boundary where they become exact decimals. A `float` never exists anywhere i
 
 from __future__ import annotations
 
+import calendar
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
@@ -31,19 +32,31 @@ from raad.core.errors.exceptions import (
     NotFoundError,
 )
 from raad.core.ids.generator import IdGenerator
+from raad.core.pagination import (
+    MAX_PAGE_SIZE,
+    FilterCondition,
+    OffsetPage,
+    OffsetPageRequest,
+    SortSpec,
+)
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.school_erp.application.commands import (
     ArchiveFeePlanCommand,
     ArchiveFinancialCategoryCommand,
+    CancelParentInvoiceCommand,
     CancelStudentInvoiceCommand,
     CreateFeePlanCommand,
     CreateFinancialCategoryCommand,
+    CreateOrUpdateParentBillingProfileCommand,
+    GenerateParentInvoicesCommand,
     GenerateStudentInvoicesCommand,
     IssueStudentInvoiceCommand,
     RecordExpenseCommand,
     RecordIncomeCommand,
     RecordStudentPaymentCommand,
+    SetParentBillingProfileStatusCommand,
+    SetParentInvoicePaymentStatusCommand,
     UpdateFeePlanCommand,
     UpdateFinancialCategoryCommand,
     VoidExpenseCommand,
@@ -60,6 +73,11 @@ from raad.modules.school_erp.application.queries import (
     FinancialCategoryDTO,
     FinanceSummaryDTO,
     IncomeDTO,
+    ParentBillingProfileDTO,
+    ParentChildFinancialDTO,
+    ParentFinancialSummaryDTO,
+    ParentInvoiceDetailDTO,
+    ParentInvoiceSummaryDTO,
     ProfitAndLossDTO,
     StudentInvoiceDTO,
     StudentPaymentDTO,
@@ -69,15 +87,33 @@ from raad.modules.school_erp.application.queries import (
     finance_totals_to_dto,
     financial_category_to_dto,
     income_to_dto,
+    parent_billing_profile_to_dto,
+    parent_invoice_to_detail_dto,
+    parent_invoice_to_summary_dto,
     student_invoice_to_dto,
     student_payment_to_dto,
     vehicle_finance_to_dto,
 )
+from raad.modules.transport_ops.application.ports import (
+    TransportOpsUnitOfWork,
+)
+from raad.modules.transport_ops.application.queries import (
+    GetParentByIdQuery,
+    ListStudentsForParentQuery,
+    StudentForParentDTO,
+)
+from raad.modules.transport_ops.application.services import (
+    ParentApplicationService,
+    StudentParentApplicationService,
+)
 from raad.modules.school_erp.domain.entities import (
+    BilledChild,
     Expense,
     FeePlan,
     FinancialCategory,
     Income,
+    ParentBillingProfile,
+    ParentInvoice,
     StudentInvoice,
     StudentPayment,
 )
@@ -91,6 +127,10 @@ from raad.modules.school_erp.domain.value_objects import (
     IncomeId,
     Money,
     OrganizationId,
+    ParentBillingProfileId,
+    ParentId,
+    ParentInvoiceId,
+    ParentInvoiceStatus,
     RouteId,
     StudentId,
     StudentInvoiceId,
@@ -132,6 +172,23 @@ def _enforce_own_organization(*, actor: Principal, organization_id: str) -> None
         raise AuthorizationError(
             "org_admin may only manage school finance within their own organization."
         )
+
+
+# ==================================================================================================
+# Parent financial summary (2026-09-10 explicit user directive, "Parent & Student Domain
+# Restructure + Parent Payments") — helpers shared by `ParentFinanceApplicationService` below.
+# ==================================================================================================
+
+#: Falls back to `Money`'s own precedent (`infra/repositories.py`'s `_DEFAULT_CURRENCY`) for the
+#: "no rows to derive a currency from" case (a family with zero invoices). Declared separately
+#: here — the application layer cannot import `infra` (`.claude/rules/backend.md` #2).
+_PARENT_FINANCE_DEFAULT_CURRENCY = "USD"
+
+
+def _money(value: Decimal) -> str:
+    """See `application/queries.py`'s own `_money` — duplicated here rather than imported
+    (a private, single-line helper), matching `_decimal`'s own module-local precedent above."""
+    return f"{value:.2f}"
 
 
 class SchoolErpApplicationService:
@@ -622,8 +679,12 @@ class SchoolErpApplicationService:
     async def get_finance_summary(
         self, *, period: str | None, uow: SchoolErpUnitOfWork
     ) -> FinanceSummaryDTO:
+        """ADR-0042 decision 5: sourced from `ParentInvoice`, the real Parent-facing billing
+        aggregate, not `StudentInvoice` — `billed_amount` is now "Expected Billing",
+        `outstanding_amount` is "Receivables" in every consumer's own display labels (the wire
+        field names are kept stable; only the frontend's rendered text changed)."""
         async with uow:
-            totals = await uow.student_invoices.summarise_totals(
+            totals = await uow.parent_invoices.summarise_totals(
                 period=BillingPeriod(period) if period else None
             )
             return finance_totals_to_dto(totals)
@@ -633,12 +694,13 @@ class SchoolErpApplicationService:
     ) -> list[VehicleFinanceDTO]:
         """Revenue and cost per bus.
 
-        Two grouped queries, not one per vehicle: invoices grouped by `vehicle_id`, and expenses
+        Two grouped queries, not one per vehicle: `ParentInvoiceLine`s grouped by `vehicle_id`
+        (ADR-0042 decision 1's disclosed pro-rata collected-share allocation), and expenses
         grouped by `vehicle_id` over the same window, joined in memory on a handful of rows.
         """
         async with uow:
             billing_period = BillingPeriod(period) if period else None
-            summaries = await uow.student_invoices.summarise_by_vehicle(
+            summaries = await uow.parent_invoices.summarise_by_vehicle(
                 period=billing_period
             )
             start, end = self._period_bounds(billing_period)
@@ -664,8 +726,15 @@ class SchoolErpApplicationService:
     async def get_profit_and_loss(
         self, *, start: date, end: date, uow: SchoolErpUnitOfWork
     ) -> ProfitAndLossDTO:
+        """ADR-0042 decision 5: `student_revenue` (the DTO's wire field name is kept stable;
+        every consumer's own label now reads "Parent Transportation Collections") is sourced from
+        `ParentInvoiceRepository.sum_collected_between` — see that method's own docstring for the
+        disclosed `invoice_date`-based window it uses in place of a payment-transaction date this
+        module no longer records (ADR-0042 decision 4)."""
         async with uow:
-            student_revenue = await uow.student_payments.sum_between(start=start, end=end)
+            student_revenue = await uow.parent_invoices.sum_collected_between(
+                start=start, end=end
+            )
             other_income = await uow.income.sum_between(start=start, end=end)
             total_expenses = await uow.expenses.sum_between(start=start, end=end)
             income_by_category = await uow.income.sum_by_category_between(
@@ -674,7 +743,7 @@ class SchoolErpApplicationService:
             expenses_by_category = await uow.expenses.sum_by_category_between(
                 start=start, end=end
             )
-            totals = await uow.student_invoices.summarise_totals(period=None)
+            totals = await uow.parent_invoices.summarise_totals(period=None)
 
             total_income = student_revenue + other_income
             return ProfitAndLossDTO(
@@ -834,3 +903,602 @@ class SchoolErpApplicationService:
         if invoice is None:
             raise NotFoundError("Student invoice not found")
         return invoice
+
+
+def _due_date_for(period: BillingPeriod, due_day: int) -> date:
+    """The invoice due date for a billing period and a Billing Profile's `due_day` (1-28),
+    clamped to the period's own last real day — never overflows past `due_day <= 28` needs to
+    clamp, this exists purely as a defensive floor/ceiling since `_MAX_DUE_DAY` already keeps
+    `due_day` at or below 28, which every month has."""
+    year, month = (int(part) for part in str(period).split("-"))
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(due_day, last_day))
+
+
+class ParentFinanceApplicationService:
+    """ADR-0042 (2026-09-11, supersedes ADR-0041 §1's `StudentInvoice`-grouping read model).
+    Owns the real Parent-facing billing aggregates — `ParentBillingProfile`, `ParentInvoice` —
+    composing `transport_ops`'s own application services only for what `school_erp` cannot
+    resolve from its own tables: which students are a parent's own active children, their
+    current transport assignment, and a parent's/student's display name. Never a cross-module DB
+    read (`.claude/rules/backend.md` #3).
+
+    Every method takes **both** Units of Work explicitly, mirroring `iam`'s `/me` routes and this
+    class's own pre-ADR-0042 shape — `school_erp_uow` for this module's own aggregates,
+    `transport_ops_uow` for the composed reads.
+    """
+
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        id_generator: IdGenerator,
+        parent_service: ParentApplicationService,
+        student_parent_service: StudentParentApplicationService,
+        transport_context: StudentTransportContextPort | None = None,
+    ) -> None:
+        self._clock = clock
+        self._id_generator = id_generator
+        self._parent_service = parent_service
+        self._student_parent_service = student_parent_service
+        #: Optional for the identical reason `SchoolErpApplicationService`'s own constructor
+        #: already documents — constructible in a test without wiring `transport_ops`'s adapter.
+        self._transport_context = transport_context
+
+    async def _resolve_children(
+        self, parent_id: str, *, transport_ops_uow: TransportOpsUnitOfWork
+    ) -> list[StudentForParentDTO]:
+        """Every one of this parent's children, any status — the all-time family view
+        (`get_parent_financial_summary`) shows a graduated child's history too. `get_parent_by_id`
+        alone (discarded here) is what turns an out-of-scope `parent_id` into a `NotFoundError`
+        before this method ever reaches `student_parents`."""
+        await self._parent_service.get_parent_by_id(
+            GetParentByIdQuery(parent_id=parent_id), uow=transport_ops_uow
+        )
+        return await self._student_parent_service.list_students_for_parent(
+            ListStudentsForParentQuery(parent_id=parent_id), uow=transport_ops_uow
+        )
+
+    async def _resolve_active_children(
+        self, parent_id: str, *, transport_ops_uow: TransportOpsUnitOfWork
+    ) -> list[StudentForParentDTO]:
+        """Only *active* children are billed — a graduated/transferred/disabled child is not a
+        current transportation beneficiary, the identical reasoning `StudentAssignment`'s own
+        active-only CR-1 gate already applies elsewhere in this codebase."""
+        children = await self._resolve_children(parent_id, transport_ops_uow=transport_ops_uow)
+        return [child for child in children if child.status == "active"]
+
+    async def _resolve_transport_contexts(self, student_ids: list[str]) -> dict:
+        from raad.modules.school_erp.application.ports import StudentTransportContext
+
+        if self._transport_context is None or not student_ids:
+            return {}
+        return await self._transport_context.resolve_many(student_ids=student_ids)
+
+    async def _resolve_parent_names(
+        self, parent_ids: list[str], *, transport_ops_uow: TransportOpsUnitOfWork
+    ) -> dict[str, str]:
+        unique_ids = sorted({pid for pid in parent_ids if pid})
+        if not unique_ids:
+            return {}
+        parents = await self._parent_service.list_parents_by_ids(
+            unique_ids, uow=transport_ops_uow
+        )
+        return {parent.id: parent.full_name for parent in parents}
+
+    # ==========================================================================================
+    # ParentBillingProfile
+    # ==========================================================================================
+
+    async def create_or_update_billing_profile(
+        self,
+        command: CreateOrUpdateParentBillingProfileCommand,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> ParentBillingProfileDTO:
+        """Creates the family's Billing Profile if none exists yet, otherwise edits the existing
+        one in place (`ParentBillingProfile.update_fee`) — never a second row per parent
+        (`ux_erp_parent_billing_profiles__org_parent`). Confirms the parent both exists and
+        belongs to the caller's own organization before writing anything — the same tenant-scope
+        check `_resolve_children` already establishes for every other composed read/write here.
+        """
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
+        parent_dto = await self._parent_service.get_parent_by_id(
+            GetParentByIdQuery(parent_id=command.parent_id), uow=transport_ops_uow
+        )
+        if parent_dto.organization_id != command.organization_id:
+            raise DomainError(
+                f"Parent {command.parent_id} does not belong to organization "
+                f"{command.organization_id}."
+            )
+
+        money = Money(
+            amount=_decimal(command.monthly_fee, field="monthly_fee"),
+            currency=command.currency,
+        )
+        billing_start = BillingPeriod(command.billing_start_period)
+
+        async with school_erp_uow:
+            existing = await school_erp_uow.parent_billing_profiles.get_by_parent(
+                ParentId(command.parent_id)
+            )
+            if existing is None:
+                profile = ParentBillingProfile.open(
+                    id=ParentBillingProfileId(self._id_generator.new_id()),
+                    organization_id=OrganizationId(command.organization_id),
+                    parent_id=ParentId(command.parent_id),
+                    monthly_fee=money,
+                    billing_start_period=billing_start,
+                    due_day=command.due_day,
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                )
+                school_erp_uow.parent_billing_profiles.add(profile)
+            else:
+                profile = existing
+                profile.update_fee(
+                    monthly_fee=money,
+                    due_day=command.due_day,
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                )
+            school_erp_uow.record_events(profile.pull_domain_events())
+            await school_erp_uow.commit()
+            return parent_billing_profile_to_dto(profile)
+
+    async def set_billing_profile_status(
+        self,
+        command: SetParentBillingProfileStatusCommand,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+    ) -> ParentBillingProfileDTO:
+        async with school_erp_uow:
+            profile = await school_erp_uow.parent_billing_profiles.get(
+                ParentBillingProfileId(command.billing_profile_id)
+            )
+            if profile is None:
+                raise NotFoundError("Parent billing profile not found")
+            _enforce_own_organization(
+                actor=command.actor, organization_id=str(profile.organization_id)
+            )
+            if command.is_active:
+                profile.activate(clock=self._clock, actor_id=command.actor.user_id)
+            else:
+                profile.deactivate(clock=self._clock, actor_id=command.actor.user_id)
+            school_erp_uow.record_events(profile.pull_domain_events())
+            await school_erp_uow.commit()
+            return parent_billing_profile_to_dto(profile)
+
+    async def get_billing_profile(
+        self,
+        parent_id: str,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> ParentBillingProfileDTO | None:
+        await self._parent_service.get_parent_by_id(
+            GetParentByIdQuery(parent_id=parent_id), uow=transport_ops_uow
+        )
+        async with school_erp_uow:
+            profile = await school_erp_uow.parent_billing_profiles.get_by_parent(
+                ParentId(parent_id)
+            )
+            return parent_billing_profile_to_dto(profile) if profile else None
+
+    # ==========================================================================================
+    # ParentInvoice — monthly generation
+    # ==========================================================================================
+
+    async def generate_parent_invoices(
+        self,
+        command: GenerateParentInvoicesCommand,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> list[ParentInvoiceDetailDTO]:
+        """The monthly billing run (Part 18 of the directive): every `active`
+        `ParentBillingProfile` in this organization whose `billing_start_period` has arrived is
+        picked up automatically — no `student_ids`/`fee_plan_id` to supply, unlike the legacy
+        `generate_student_invoices`, because the profile already names its own parent and fee.
+
+        **Idempotent**, backed twice over exactly like `generate_student_invoices` already is: a
+        parent already invoiced for the period is skipped here *and* by
+        `ux_erp_parent_invoices__org_parent_period`, because a check alone loses a race.
+
+        Every candidate parent's active children and every child's transport context are
+        resolved in one batched pass each, before any invoice is written — the same N+1-avoidance
+        `generate_student_invoices` already establishes for its own cohort.
+        """
+        _enforce_own_organization(
+            actor=command.actor, organization_id=command.organization_id
+        )
+        period = BillingPeriod(command.period)
+
+        async with school_erp_uow:
+            profiles = [
+                profile
+                for profile in await school_erp_uow.parent_billing_profiles.list_active_for_billing(
+                    as_of_period=period
+                )
+                if str(profile.organization_id) == command.organization_id
+            ]
+
+            children_by_parent: dict[str, list[StudentForParentDTO]] = {}
+            all_student_ids: list[str] = []
+            for profile in profiles:
+                if await school_erp_uow.parent_invoices.exists_for_parent_period(
+                    parent_id=profile.parent_id, period=period
+                ):
+                    continue
+                children = await self._resolve_active_children(
+                    str(profile.parent_id), transport_ops_uow=transport_ops_uow
+                )
+                if not children:
+                    continue
+                children_by_parent[str(profile.parent_id)] = children
+                all_student_ids.extend(child.student_id for child in children)
+
+            contexts = await self._resolve_transport_contexts(all_student_ids)
+
+            issued: list[ParentInvoice] = []
+            for profile in profiles:
+                children = children_by_parent.get(str(profile.parent_id))
+                if not children:
+                    continue
+                billed_children: list[BilledChild] = []
+                for child in children:
+                    context = contexts.get(child.student_id)
+                    billed_children.append(
+                        BilledChild(
+                            line_id=self._id_generator.new_id(),
+                            student_id=child.student_id,
+                            vehicle_id=context.vehicle_id if context else None,
+                            route_id=context.route_id if context else None,
+                        )
+                    )
+                invoice = ParentInvoice.generate(
+                    id=ParentInvoiceId(self._id_generator.new_id()),
+                    organization_id=profile.organization_id,
+                    parent_id=profile.parent_id,
+                    period=period,
+                    amount=profile.monthly_fee,
+                    due_date=_due_date_for(period, profile.due_day),
+                    children=billed_children,
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                )
+                school_erp_uow.parent_invoices.add(invoice)
+                school_erp_uow.record_events(invoice.pull_domain_events())
+                issued.append(invoice)
+
+            await school_erp_uow.commit()
+
+        parent_names = await self._resolve_parent_names(
+            [str(invoice.parent_id) for invoice in issued], transport_ops_uow=transport_ops_uow
+        )
+        return [
+            parent_invoice_to_detail_dto(
+                invoice,
+                parent_name=parent_names.get(str(invoice.parent_id), str(invoice.parent_id)),
+                student_names={
+                    child.student_id: child.full_name
+                    for child in children_by_parent.get(str(invoice.parent_id), [])
+                },
+            )
+            for invoice in issued
+        ]
+
+    async def set_parent_invoice_payment_status(
+        self,
+        command: SetParentInvoicePaymentStatusCommand,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> ParentInvoiceSummaryDTO:
+        """The entire user-facing payment workflow (the directive's Part 9) — `status` directly
+        on this one invoice, no allocation, no separate payment-transaction row (ADR-0042
+        decision 4)."""
+        async with school_erp_uow:
+            invoice = await school_erp_uow.parent_invoices.get(
+                ParentInvoiceId(command.invoice_id)
+            )
+            if invoice is None:
+                raise NotFoundError(f"Parent invoice {command.invoice_id!r} not found")
+            _enforce_own_organization(
+                actor=command.actor, organization_id=str(invoice.organization_id)
+            )
+            amount_paid = (
+                _decimal(command.amount_paid, field="amount_paid")
+                if command.amount_paid is not None
+                else None
+            )
+            invoice.set_payment_status(
+                status=ParentInvoiceStatus(command.status),
+                amount_paid=amount_paid,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            school_erp_uow.record_events(invoice.pull_domain_events())
+            await school_erp_uow.commit()
+
+        parent_dto = await self._parent_service.get_parent_by_id(
+            GetParentByIdQuery(parent_id=str(invoice.parent_id)), uow=transport_ops_uow
+        )
+        return parent_invoice_to_summary_dto(invoice, parent_name=parent_dto.full_name)
+
+    async def cancel_parent_invoice(
+        self,
+        command: CancelParentInvoiceCommand,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> ParentInvoiceSummaryDTO:
+        async with school_erp_uow:
+            invoice = await school_erp_uow.parent_invoices.get(
+                ParentInvoiceId(command.invoice_id)
+            )
+            if invoice is None:
+                raise NotFoundError(f"Parent invoice {command.invoice_id!r} not found")
+            _enforce_own_organization(
+                actor=command.actor, organization_id=str(invoice.organization_id)
+            )
+            invoice.cancel(
+                reason=command.reason, clock=self._clock, actor_id=command.actor.user_id
+            )
+            school_erp_uow.record_events(invoice.pull_domain_events())
+            await school_erp_uow.commit()
+
+        parent_dto = await self._parent_service.get_parent_by_id(
+            GetParentByIdQuery(parent_id=str(invoice.parent_id)), uow=transport_ops_uow
+        )
+        return parent_invoice_to_summary_dto(invoice, parent_name=parent_dto.full_name)
+
+    async def list_parent_invoices(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        period: str | None,
+        status: str | None,
+        parent_id: str | None,
+        vehicle_id: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> OffsetPage[ParentInvoiceSummaryDTO]:
+        """The Finance page's primary listing (ADR-0042) — real `ParentInvoice` rows, never a
+        grouped scan over `StudentInvoice`.
+
+        **`vehicle_id` resolves the family's *current* vehicle, not the invoice's own frozen
+        one (2026-09-12 fix).** `ParentInvoiceLine.vehicle_id` is captured once, at issue time
+        (ADR-0040 §3, "a bill is a historical record") — filtering on it directly matched
+        nothing whenever a line predates its family's transportation being assigned (as every
+        line in this environment's own data does), and would keep matching a stale vehicle
+        forever after a family later changes buses. Filtering is discovery, not accounting: it
+        walks Parent -> this invoice's own linked children -> each child's current active
+        `StudentAssignment` (via the same `StudentTransportContextPort` invoice generation
+        itself uses) -> vehicle, applied in Python over an already-fetched page (still no
+        repository-level join, same reason as before) — never mutates `invoice.lines`, which
+        stay exactly the frozen historical record ADR-0040 §3 requires. `date_from`/`date_to`
+        (ISO `YYYY-MM-DD`, inclusive) filter on `invoice_date` in Python for the unrelated
+        reason the repository's own `filterable_fields` has no range operator, only `eq`
+        (Finance UI cleanup, 2026-09-12) — this is the Parent Invoices page's own From/To
+        filter, deliberately independent of `period` (`YYYY-MM`), which callers may still pass
+        on its own. `page_size` above `MAX_PAGE_SIZE` (report builders ask for up to 1000 in one
+        call) is paged internally in `MAX_PAGE_SIZE` chunks — `OffsetPageRequest` rejects a
+        larger size outright in its own constructor, the same reasoning `core/di/
+        report_definitions._collect` documents for the identical constraint.
+        """
+        filters: list[FilterCondition] = []
+        if period:
+            filters.append(FilterCondition(field="period", op="eq", value=period))
+        if parent_id:
+            filters.append(FilterCondition(field="parent_id", op="eq", value=parent_id))
+        if status:
+            filters.append(FilterCondition(field="status", op="eq", value=status))
+        sort = [SortSpec(field="period", descending=True)]
+
+        async with school_erp_uow:
+            if page_size <= MAX_PAGE_SIZE:
+                offset_page = await school_erp_uow.parent_invoices.list_page(
+                    OffsetPageRequest(page=page, page_size=page_size),
+                    filters=filters,
+                    sort=sort,
+                    search=None,
+                )
+                rows, total = list(offset_page.data), offset_page.total
+            else:
+                rows, total = [], 0
+                page_number = 1
+                while len(rows) < page_size:
+                    chunk_size = min(MAX_PAGE_SIZE, page_size - len(rows))
+                    chunk = await school_erp_uow.parent_invoices.list_page(
+                        OffsetPageRequest(page=page_number, page_size=chunk_size),
+                        filters=filters,
+                        sort=sort,
+                        search=None,
+                    )
+                    rows.extend(chunk.data)
+                    total = chunk.total
+                    if len(chunk.data) < chunk_size:
+                        break
+                    page_number += 1
+
+        if date_from:
+            start = date.fromisoformat(date_from)
+            rows = [invoice for invoice in rows if invoice.invoice_date >= start]
+            total = len(rows)
+        if date_to:
+            end = date.fromisoformat(date_to)
+            rows = [invoice for invoice in rows if invoice.invoice_date <= end]
+            total = len(rows)
+        if vehicle_id:
+            # 2026-09-12 fix: this used to check `line.vehicle_id` — frozen on the invoice at
+            # issue time (ADR-0040 §3, "a bill is a historical record"). Every invoice line in
+            # this environment's own real data has `vehicle_id=None`, because every invoice here
+            # was generated before its family's transportation was assigned; the filter matched
+            # nothing, ever, for any vehicle. Even where a line's `vehicle_id` *is* populated,
+            # it is only ever the vehicle at issue time — if a family later moves to a different
+            # bus (`ParentApplicationService.set_family_transportation`), a stale line would keep
+            # the family filed under the old one forever. Vehicle filtering is discovery, not
+            # accounting: it must resolve the family's *current* vehicle — Parent -> this
+            # invoice's own linked children -> each child's current active `StudentAssignment`
+            # -> vehicle (`transport_context`) — never the frozen line. `invoice.lines` is left
+            # completely untouched; only the *filter* changes.
+            current_vehicle_by_parent: dict[str, str | None] = {}
+            matching_rows = []
+            for invoice in rows:
+                parent_id_str = str(invoice.parent_id)
+                if parent_id_str not in current_vehicle_by_parent:
+                    children = await self._resolve_active_children(
+                        parent_id_str, transport_ops_uow=transport_ops_uow
+                    )
+                    contexts = await self._resolve_transport_contexts(
+                        [child.student_id for child in children]
+                    )
+                    # Every child of one family shares the same vehicle by construction
+                    # (`set_family_transportation`/`register_parent_with_children`) — the first
+                    # currently-assigned child's vehicle *is* the family's vehicle.
+                    current_vehicle_by_parent[parent_id_str] = next(
+                        (
+                            context.vehicle_id
+                            for context in contexts.values()
+                            if context.vehicle_id
+                        ),
+                        None,
+                    )
+                if current_vehicle_by_parent[parent_id_str] == vehicle_id:
+                    matching_rows.append(invoice)
+            rows = matching_rows
+            # A Python-side filter narrows what the repository's own `total` already counted —
+            # honest only about what this call actually returns, not a claim about how many
+            # matching rows exist beyond the page it fetched.
+            total = len(rows)
+
+        parent_names = await self._resolve_parent_names(
+            [str(invoice.parent_id) for invoice in rows], transport_ops_uow=transport_ops_uow
+        )
+        summaries = [
+            parent_invoice_to_summary_dto(
+                invoice,
+                parent_name=parent_names.get(str(invoice.parent_id), str(invoice.parent_id)),
+            )
+            for invoice in rows
+        ]
+        return OffsetPage(data=summaries, total=total, page=page, page_size=page_size)
+
+    async def get_parent_invoice_detail(
+        self,
+        invoice_id: str,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> ParentInvoiceDetailDTO:
+        async with school_erp_uow:
+            invoice = await school_erp_uow.parent_invoices.get(ParentInvoiceId(invoice_id))
+            if invoice is None:
+                raise NotFoundError(f"Parent invoice {invoice_id!r} not found")
+
+        parent_dto = await self._parent_service.get_parent_by_id(
+            GetParentByIdQuery(parent_id=str(invoice.parent_id)), uow=transport_ops_uow
+        )
+        children = await self._resolve_children(
+            str(invoice.parent_id), transport_ops_uow=transport_ops_uow
+        )
+        student_names = {child.student_id: child.full_name for child in children}
+        return parent_invoice_to_detail_dto(
+            invoice, parent_name=parent_dto.full_name, student_names=student_names
+        )
+
+    # ==========================================================================================
+    # Family-level all-time summary (2026-09-10 explicit user directive, rewritten for ADR-0042)
+    # ==========================================================================================
+
+    async def get_parent_financial_summary(
+        self,
+        parent_id: str,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> ParentFinancialSummaryDTO:
+        """The Parent detail page's "Financial Summary" — sourced from this parent's own real
+        `ParentInvoice` rows (ADR-0042), not a scan across their children's `StudentInvoice`s.
+
+        Per-child totals (`ParentChildFinancialDTO`) use the identical disclosed pro-rata
+        collected-share allocation `ParentInvoiceRepository.summarise_by_vehicle` already
+        documents: payment is recorded against the whole family invoice, never per child, so a
+        child's own "paid" figure is its line's proportional share of whatever the family has
+        paid toward that invoice.
+        """
+        children = await self._resolve_children(parent_id, transport_ops_uow=transport_ops_uow)
+
+        async with school_erp_uow:
+            invoices = await school_erp_uow.parent_invoices.list_for_parent(ParentId(parent_id))
+        billable = [inv for inv in invoices if inv.status != ParentInvoiceStatus.CANCELLED]
+
+        currency = billable[0].amount.currency if billable else _PARENT_FINANCE_DEFAULT_CURRENCY
+
+        per_child_due: dict[str, Decimal] = {child.student_id: _ZERO for child in children}
+        per_child_paid: dict[str, Decimal] = {child.student_id: _ZERO for child in children}
+        per_child_count: dict[str, int] = {child.student_id: 0 for child in children}
+        total_due = _ZERO
+        total_paid = _ZERO
+        total_outstanding = _ZERO
+        for invoice in billable:
+            total_due += invoice.amount.amount
+            total_paid += invoice.amount_paid
+            total_outstanding += invoice.balance_due
+            share_ratio = (
+                (invoice.amount_paid / invoice.amount.amount)
+                if invoice.amount.amount > _ZERO
+                else _ZERO
+            )
+            for line in invoice.lines:
+                sid = str(line.student_id)
+                if sid not in per_child_due:
+                    continue
+                per_child_due[sid] += line.amount.amount
+                per_child_paid[sid] += (line.amount.amount * share_ratio).quantize(
+                    Decimal("0.01")
+                )
+                per_child_count[sid] += 1
+
+        child_dtos = [
+            ParentChildFinancialDTO(
+                student_id=child.student_id,
+                full_name=child.full_name,
+                status=child.status,
+                total_due=_money(per_child_due[child.student_id]),
+                total_paid=_money(per_child_paid[child.student_id]),
+                outstanding=_money(
+                    max(per_child_due[child.student_id] - per_child_paid[child.student_id], _ZERO)
+                ),
+                invoice_count=per_child_count[child.student_id],
+            )
+            for child in children
+        ]
+
+        if total_due <= _ZERO:
+            summary_status = "no_invoices"
+        elif total_paid <= _ZERO:
+            summary_status = "unpaid"
+        elif total_paid >= total_due:
+            summary_status = "paid"
+        else:
+            summary_status = "partially_paid"
+
+        return ParentFinancialSummaryDTO(
+            parent_id=parent_id,
+            currency=currency,
+            total_due=_money(total_due),
+            total_paid=_money(total_paid),
+            outstanding=_money(total_outstanding),
+            status=summary_status,
+            children=child_dtos,
+        )
+
+

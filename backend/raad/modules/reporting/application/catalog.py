@@ -47,6 +47,18 @@ class ReportRequest:
     end: date | None = None
     period: str | None = None
     vehicle_id: str | None = None
+    #: ADR-0041 §3 — two additive optional filters, both already-filterable repository columns
+    #: (`school_erp`'s `StudentPaymentRepository.filterable_fields["method"]`; `parent_id` has
+    #: no direct column, resolved the same way `ParentFinanceApplicationService.
+    #: list_parent_invoices` already does). No new query capability, only two report builders
+    #: reading fields this codebase already knows how to filter by.
+    parent_id: str | None = None
+    payment_method: str | None = None
+    #: Report Center re-design (2026-09-11) — `ParentInvoiceStatus` (`unpaid`/`partial`/`paid`/
+    #: `cancelled`), already a filterable column on `ParentInvoiceRepository.list_page`
+    #: (ADR-0042). No new query capability, only report builders now plumbing a filter that
+    #: column already supports.
+    status: str | None = None
     scope: TenantRegionScope | None = None
 
 
@@ -79,6 +91,12 @@ class ReportDefinition:
     #: Which optional inputs this report actually uses, so the UI can show only the relevant
     #: filters rather than every filter for every report.
     accepts: tuple[str, ...] = field(default_factory=tuple)
+    #: Report Center re-design (2026-09-11) — "financial" | "transportation" | "management" |
+    #: "platform", the grouping the Report Center's own three (four, including platform)
+    #: sections render under. Backend-owned rather than a frontend-hardcoded mapping, the same
+    #: "a report added server-side needs no frontend change" reasoning this catalogue's own
+    #: module docstring already gives for `title`/`description`/`accepts`.
+    category: str = "financial"
 
 
 class ReportCatalog:

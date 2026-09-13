@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./api", () => ({
   registerDriver: vi.fn(),
   listOrganizationsForPicker: vi.fn(),
-  listDriverUsersForPicker: vi.fn(),
 }));
 
 import * as api from "./api";
@@ -20,21 +19,17 @@ const ORG_OPTION: api.OrganizationOption = {
   name: "Green Valley School",
 };
 
-const USER_OPTION: api.UserOption = {
-  id: "01ARZ3NDEKTSV4RRFFQ69G5FGA",
-  fullName: "Hassan Warsame",
-  email: "hassan@example.com",
-  phone: null,
-};
-
-const DRIVER: api.Driver = {
-  id: "01ARZ3NDEKTSV4RRFFQ69G5FDR",
-  organizationId: ORG_OPTION.id,
-  userId: USER_OPTION.id,
-  licenseNo: "DL-00231",
-  status: "active",
-  createdAt: "2026-01-01T00:00:00Z",
-  updatedAt: "2026-01-01T00:00:00Z",
+const REGISTER_RESULT: api.RegisterDriverResult = {
+  driver: {
+    id: "01ARZ3NDEKTSV4RRFFQ69G5FDR",
+    organizationId: ORG_OPTION.id,
+    userId: "01ARZ3NDEKTSV4RRFFQ69G5FGA",
+    licenseNo: "DL-00231",
+    status: "active",
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  },
+  temporaryPassword: "Temp#1234",
 };
 
 function renderForm(onClose = vi.fn()) {
@@ -50,12 +45,11 @@ function renderForm(onClose = vi.fn()) {
 describe("CreateDriverForm", () => {
   beforeEach(() => {
     vi.mocked(api.listOrganizationsForPicker).mockReset().mockResolvedValue([ORG_OPTION]);
-    vi.mocked(api.listDriverUsersForPicker).mockReset().mockResolvedValue([USER_OPTION]);
     vi.mocked(api.registerDriver).mockReset();
     useToastStore.setState({ toasts: [] });
   });
 
-  describe("as founder (holds iam.users.read)", () => {
+  describe("as founder", () => {
     beforeEach(() => {
       useAuthStore.setState({
         principal: { userId: "u1", role: "founder", organizationId: null, regionIds: [] },
@@ -66,27 +60,37 @@ describe("CreateDriverForm", () => {
       });
     });
 
-    it("shows an organization picker and, once an organization is chosen, a real user picker", async () => {
+    it("shows an organization picker", async () => {
       renderForm();
 
       expect(await screen.findByLabelText("Organization")).toBeInTheDocument();
-      expect(screen.getByLabelText("Linked user")).toBeDisabled();
-
       await screen.findByText(ORG_OPTION.name);
-      await userEvent.selectOptions(screen.getByLabelText("Organization"), ORG_OPTION.id);
-
-      await waitFor(() => expect(api.listDriverUsersForPicker).toHaveBeenCalledWith(ORG_OPTION.id, ""));
-      expect(await screen.findByText("Hassan Warsame — hassan@example.com")).toBeInTheDocument();
     });
 
-    it("submits the exact RegisterDriverRequest shape using the picked user", async () => {
-      vi.mocked(api.registerDriver).mockResolvedValue(DRIVER);
+    it("requires at least one of email or phone", async () => {
+      renderForm();
+      await screen.findByText(ORG_OPTION.name);
+
+      await userEvent.selectOptions(screen.getByLabelText("Organization"), ORG_OPTION.id);
+      await userEvent.type(screen.getByPlaceholderText("e.g. Hassan Warsame"), "Hassan Warsame");
+      await userEvent.type(screen.getByPlaceholderText("e.g. DL-00231"), "DL-00231");
+
+      await userEvent.click(screen.getByRole("button", { name: "Register driver" }));
+
+      expect(
+        await screen.findByText("At least one of email or phone is required, to create the driver's login."),
+      ).toBeInTheDocument();
+      expect(api.registerDriver).not.toHaveBeenCalled();
+    });
+
+    it("submits the exact RegisterDriverRequest shape and shows the one-time password on success", async () => {
+      vi.mocked(api.registerDriver).mockResolvedValue(REGISTER_RESULT);
       const { onClose } = renderForm();
       await screen.findByText(ORG_OPTION.name);
 
       await userEvent.selectOptions(screen.getByLabelText("Organization"), ORG_OPTION.id);
-      await screen.findByText("Hassan Warsame — hassan@example.com");
-      await userEvent.selectOptions(screen.getByLabelText("Linked user"), USER_OPTION.id);
+      await userEvent.type(screen.getByPlaceholderText("e.g. Hassan Warsame"), "Hassan Warsame");
+      await userEvent.type(screen.getByPlaceholderText("e.g. hassan@example.com"), "hassan@example.com");
       await userEvent.type(screen.getByPlaceholderText("e.g. DL-00231"), "DL-00231");
 
       await userEvent.click(screen.getByRole("button", { name: "Register driver" }));
@@ -94,16 +98,23 @@ describe("CreateDriverForm", () => {
       await waitFor(() =>
         expect(api.registerDriver).toHaveBeenCalledWith({
           organizationId: ORG_OPTION.id,
-          userId: USER_OPTION.id,
+          fullName: "Hassan Warsame",
+          email: "hassan@example.com",
+          phone: null,
           licenseNo: "DL-00231",
         }),
       );
-      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-      expect(useToastStore.getState().toasts[0]).toMatchObject({ variant: "success", title: "Driver registered" });
+
+      expect(await screen.findByText("Driver registered")).toBeInTheDocument();
+      expect(screen.getByText("Temp#1234")).toBeInTheDocument();
+      expect(onClose).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole("button", { name: "Done" }));
+      expect(onClose).toHaveBeenCalledTimes(1);
     });
   });
 
-  describe("as org_admin (holds no iam.users.* permission)", () => {
+  describe("as org_admin", () => {
     beforeEach(() => {
       useAuthStore.setState({
         principal: { userId: "u2", role: "org_admin", organizationId: ORG_OPTION.id, regionIds: [] },
@@ -114,59 +125,51 @@ describe("CreateDriverForm", () => {
       });
     });
 
-    it("hides both the organization picker and the user picker, showing a manual user-id field instead", async () => {
+    it("hides the organization picker, using the caller's own organizationId", async () => {
       renderForm();
 
       await waitFor(() => expect(screen.queryByLabelText("Organization")).not.toBeInTheDocument());
-      expect(screen.queryByLabelText("Linked user")).not.toBeInTheDocument();
-      expect(screen.getByLabelText("Linked user ID")).toBeInTheDocument();
-      expect(api.listDriverUsersForPicker).not.toHaveBeenCalled();
+      expect(api.listOrganizationsForPicker).not.toHaveBeenCalled();
     });
 
-    it("rejects a manually-entered user id that isn't a valid ULID", async () => {
+    it("submits with the org's own organizationId and a phone-only login", async () => {
+      vi.mocked(api.registerDriver).mockResolvedValue(REGISTER_RESULT);
       renderForm();
 
-      await userEvent.type(screen.getByLabelText("Linked user ID"), "not-a-ulid");
+      await userEvent.type(screen.getByPlaceholderText("e.g. Hassan Warsame"), "Hassan Warsame");
+      await userEvent.type(screen.getByPlaceholderText("+252612345678"), "+252612345678");
       await userEvent.type(screen.getByPlaceholderText("e.g. DL-00231"), "DL-00231");
-      await userEvent.click(screen.getByRole("button", { name: "Register driver" }));
 
-      expect(await screen.findByText("Must be a valid user ID (26-character ULID)")).toBeInTheDocument();
-      expect(api.registerDriver).not.toHaveBeenCalled();
-    });
-
-    it("submits a valid manually-entered user id with the org's own organizationId", async () => {
-      vi.mocked(api.registerDriver).mockResolvedValue(DRIVER);
-      const { onClose } = renderForm();
-
-      await userEvent.type(screen.getByLabelText("Linked user ID"), USER_OPTION.id);
-      await userEvent.type(screen.getByPlaceholderText("e.g. DL-00231"), "DL-00231");
       await userEvent.click(screen.getByRole("button", { name: "Register driver" }));
 
       await waitFor(() =>
         expect(api.registerDriver).toHaveBeenCalledWith({
           organizationId: ORG_OPTION.id,
-          userId: USER_OPTION.id,
+          fullName: "Hassan Warsame",
+          email: null,
+          phone: "+252612345678",
           licenseNo: "DL-00231",
         }),
       );
-      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     });
 
     it("surfaces a backend error via a toast and keeps the drawer open", async () => {
       vi.mocked(api.registerDriver).mockRejectedValue(
-        new ApiError(404, { code: "NOT_FOUND", message: "User 01XYZ not found.", correlationId: null }),
+        new ApiError(422, { code: "VALIDATION_ERROR", message: "Request validation failed.", correlationId: null }),
       );
       const { onClose } = renderForm();
 
-      await userEvent.type(screen.getByLabelText("Linked user ID"), USER_OPTION.id);
+      await userEvent.type(screen.getByPlaceholderText("e.g. Hassan Warsame"), "Hassan Warsame");
+      await userEvent.type(screen.getByPlaceholderText("+252612345678"), "+252612345678");
       await userEvent.type(screen.getByPlaceholderText("e.g. DL-00231"), "DL-00231");
+
       await userEvent.click(screen.getByRole("button", { name: "Register driver" }));
 
       await waitFor(() =>
         expect(useToastStore.getState().toasts[0]).toMatchObject({
           variant: "error",
           title: "Registration failed",
-          description: "User 01XYZ not found.",
+          description: "Request validation failed.",
         }),
       );
       expect(onClose).not.toHaveBeenCalled();

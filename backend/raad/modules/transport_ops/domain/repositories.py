@@ -137,6 +137,15 @@ class StudentRepository(ABC):
         Tier 2 pagination phase addition, see module docstring."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_by_ids(self, student_ids: list[str]) -> list[Student]:
+        """Report Center re-design (2026-09-11) — the identical bulk-lookup precedent
+        `ParentRepository.list_by_ids` already establishes (ADR-0041 §1) and `VehicleRepository.
+        list_by_ids` before that (ADR-0031), now needed a third time: the Student Transportation
+        report resolves a roster's worth of student names in one call rather than one
+        `get_student_by_id` per row."""
+        raise NotImplementedError
+
 
 class ParentRepository(ABC):
     """`parents` has no module-owned *uniqueness* constraint beyond its primary key (Database
@@ -181,6 +190,16 @@ class ParentRepository(ABC):
         Tier 2 pagination phase addition, see module docstring."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_by_ids(self, parent_ids: list[str]) -> list[Parent]:
+        """ADR-0041 §1 — a single bulk lookup for the Parent Invoice read model (`school_erp`
+        composing this module's application service), mirroring `tracking.FleetOverview`'s own
+        `VehicleRepository.list_by_ids()` precedent (ADR-0031) for the identical reason: one
+        query for N ids beats N single-`get` round trips. Still tenant-scoped via `_apply_scope`
+        (ADR-0021) — an id outside the caller's own scope is silently absent from the result,
+        never a cross-tenant leak."""
+        raise NotImplementedError
+
 
 class StudentParentRepository(ABC):
     """`student_parents` has its own primary key shape (`PK (student_id, parent_id)`, Database
@@ -217,6 +236,13 @@ class StudentParentRepository(ABC):
     @abstractmethod
     async def list_by_parent(self, parent_id: ParentId) -> list[StudentParent]:
         """Backs `ListStudentsForParentQuery`."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_by_students(self, student_ids: list[StudentId]) -> list[StudentParent]:
+        """ADR-0041 §1 — one bulk `student_id IN (...)` query resolving many students to their
+        parent links at once, for the Parent Invoice read model (grouping a whole organization's
+        invoices by parent without one `list_by_student` round trip per distinct student)."""
         raise NotImplementedError
 
 

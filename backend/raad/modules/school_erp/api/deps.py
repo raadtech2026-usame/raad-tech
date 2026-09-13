@@ -11,7 +11,10 @@ from raad.core.di.container import Container
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.interfaces.http.deps import get_container, get_scope
 from raad.modules.school_erp.application.ports import SchoolErpUnitOfWork
-from raad.modules.school_erp.application.services import SchoolErpApplicationService
+from raad.modules.school_erp.application.services import (
+    ParentFinanceApplicationService,
+    SchoolErpApplicationService,
+)
 
 
 def get_school_erp_uow(
@@ -37,3 +40,13 @@ def get_school_erp_service(
     container: Container = Depends(get_container),
 ) -> SchoolErpApplicationService:
     return container.resolve(SchoolErpApplicationService)
+
+
+def get_parent_finance_service(
+    container: Container = Depends(get_container),
+) -> ParentFinanceApplicationService:
+    """2026-09-10 explicit user directive. `ParentFinanceApplicationService` also needs a
+    `TransportOpsUnitOfWork` — its routes (`api/routers.py`) resolve that one directly via
+    `transport_ops.api.deps.get_transport_ops_uow`, mirroring `iam`'s `/me` routes exactly (see
+    that service's own docstring)."""
+    return container.resolve(ParentFinanceApplicationService)

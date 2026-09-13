@@ -27,6 +27,9 @@ const STUDENT: api.Student = {
   status: "active",
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-01T00:00:00Z",
+  dateOfBirth: null,
+  gender: null,
+  notes: null,
 };
 
 function renderForm(onClose = vi.fn(), onCreated?: (student: api.Student) => void) {
@@ -77,6 +80,9 @@ describe("CreateStudentForm", () => {
         organizationId: ORG_OPTION.id,
         fullName: "Amina Hassan",
         externalRef: null,
+        dateOfBirth: null,
+        gender: null,
+        notes: null,
       }),
     );
   });
@@ -109,6 +115,9 @@ describe("CreateStudentForm", () => {
         organizationId: ORG_OPTION.id,
         fullName: "Amina Hassan",
         externalRef: "STU-00231",
+        dateOfBirth: null,
+        gender: null,
+        notes: null,
       }),
     );
 

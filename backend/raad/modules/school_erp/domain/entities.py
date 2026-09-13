@@ -4,7 +4,12 @@ FastAPI, no I/O. Behaviour methods mutate state, enforce invariants, and buffer 
 internally).
 
 Six aggregates, exactly the set ADR-0038 §2 names for the Organization -> Student money flow:
-`FinancialCategory`, `FeePlan`, `StudentInvoice`, `StudentPayment`, `Income`, `Expense`.
+`FinancialCategory`, `FeePlan`, `StudentInvoice`, `StudentPayment`, `Income`, `Expense`. Two more
+were added by ADR-0042 (2026-09-11): `ParentBillingProfile` and `ParentInvoice` (owning
+`ParentInvoiceLine` children) — the real Parent-facing billing/invoice aggregates that supersede
+ADR-0041 §1's `StudentInvoice`-grouping read model. `StudentInvoice`/`StudentPayment`/`FeePlan`
+are unmodified and remain the historical record of the workflow that produced them; see ADR-0042
+decision 2.
 
 **Nothing here imports `raad.modules.billing`.** The two invoice aggregates coexist deliberately
 (ADR-0038 §2) and the separation is a security boundary, not a modelling preference.
@@ -16,6 +21,7 @@ module does not reuse `billing`'s float-backed `Money`.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -35,6 +41,12 @@ from raad.modules.school_erp.domain.value_objects import (
     IncomeId,
     Money,
     OrganizationId,
+    ParentBillingProfileId,
+    ParentBillingProfileStatus,
+    ParentId,
+    ParentInvoiceId,
+    ParentInvoiceLineId,
+    ParentInvoiceStatus,
     RouteId,
     StudentId,
     StudentInvoiceId,
@@ -47,6 +59,8 @@ from raad.modules.school_erp.domain.value_objects import (
 _MAX_NAME = 160
 _MAX_DESCRIPTION = 500
 _ZERO = Decimal("0.00")
+_MIN_DUE_DAY = 1
+_MAX_DUE_DAY = 28  # every month has a 28th — Part 5's "Due Day" needs no month-length handling.
 
 
 class _AggregateRoot:
@@ -77,6 +91,13 @@ def _validate_name(name: str, *, field: str = "name") -> None:
 def _validate_description(description: str | None) -> None:
     if description is not None and len(description) > _MAX_DESCRIPTION:
         raise DomainError(f"description must be at most {_MAX_DESCRIPTION} characters")
+
+
+def _validate_due_day(due_day: int) -> None:
+    if not (_MIN_DUE_DAY <= due_day <= _MAX_DUE_DAY):
+        raise DomainError(
+            f"due_day must be between {_MIN_DUE_DAY} and {_MAX_DUE_DAY}: {due_day}"
+        )
 
 
 # ============================================================================================
@@ -971,6 +992,449 @@ class Expense(_AggregateRoot):
                 expense_id=str(self.id),
                 organization_id=str(self.organization_id),
                 reason=reason,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+
+# ============================================================================================
+# ParentBillingProfile / ParentInvoice (ADR-0042, 2026-09-11 — supersedes ADR-0041 §1)
+# ============================================================================================
+#
+# The real financial aggregates the 2026-09-11 directive requires: "Parent Invoice must be a
+# real financial document/entity... not merely a grouping of Student invoices." `StudentInvoice`/
+# `StudentPayment`/`FeePlan` above are unmodified and remain the historical record of the
+# workflow that produced them (ADR-0042 decision 2) — nothing here reads or writes them.
+
+
+def _split_amount_evenly(total: Decimal, count: int) -> list[Decimal]:
+    """Equal split of `total` across `count` children, in whole cents, any remainder cent
+    assigned to the first lines — so `sum(result) == total` exactly, never drifting from the
+    frozen invoice amount by a rounding cent (ADR-0042 decision 1's disclosed allocation rule:
+    every child in a family nominally shares one transportation charge equally)."""
+    if count < 1:
+        raise DomainError("Cannot split a Parent Invoice amount across zero children")
+    cents_total = int((total * 100).to_integral_value())
+    base, remainder = divmod(cents_total, count)
+    shares: list[Decimal] = []
+    for index in range(count):
+        share_cents = base + (1 if index < remainder else 0)
+        shares.append((Decimal(share_cents) / 100).quantize(Decimal("0.01")))
+    return shares
+
+
+@dataclass(frozen=True)
+class BilledChild:
+    """One child's billing input for `ParentInvoice.generate`. `line_id` is minted by the
+    application layer's `IdGenerator` before this factory is called — the domain layer never
+    generates ids itself, the same convention every other factory in this module follows for
+    its own `id` parameter."""
+
+    line_id: str
+    student_id: str
+    vehicle_id: str | None = None
+    route_id: str | None = None
+
+
+class ParentInvoiceLine:
+    """Child entity of `ParentInvoice` (`erp_parent_invoice_lines`) — one billed child's own
+    share of the family's frozen total, plus the transport context (`vehicle_id`/`route_id`)
+    captured at generation time, the identical "a bill is a historical record" reasoning
+    ADR-0040 §3 already establishes for `StudentInvoice`. Identity + fields only, no
+    `_AggregateRoot` of its own — `ParentInvoice` is the one that records `ParentInvoice*`
+    events, mirroring `Stop`'s identical relationship to `Route`.
+    """
+
+    def __init__(
+        self,
+        *,
+        id: ParentInvoiceLineId,
+        student_id: StudentId,
+        amount: Money,
+        vehicle_id: VehicleId | None = None,
+        route_id: RouteId | None = None,
+    ) -> None:
+        if amount.amount < _ZERO:
+            raise DomainError("Parent invoice line amount must not be negative")
+        self.id = id
+        self.student_id = student_id
+        self.amount = amount
+        self.vehicle_id = vehicle_id
+        self.route_id = route_id
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ParentInvoiceLine) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+
+class ParentInvoice(_AggregateRoot):
+    """`erp_parent_invoices` — the real monthly bill to one Parent (ADR-0042, superseding
+    ADR-0041 §1's read-model grouping of `StudentInvoice`). Owns `ParentInvoiceLine` children,
+    one per billed child, the same parent/child-entity shape `Route`/`Stop` already establish.
+
+    **`amount` is frozen at generation time from the `ParentBillingProfile`'s fee at that
+    moment** — never re-read from the profile afterward. Changing a family's monthly fee
+    (`ParentBillingProfile.update_fee`) therefore changes only future invoices, never rewrites a
+    historical one — the directive's own worked example: "September: $80. October onward: $100.
+    September invoice remains $80."
+
+    **Payment status lives directly here, not on a separate payment aggregate** (ADR-0042
+    decision 4): `unpaid`/`partial`/`paid`, set by `set_payment_status`, plus `cancelled` for a
+    voided invoice. `amount_paid`/`balance_due`/`status` are this module's sole source of truth
+    for what a family owes — there is no `ParentPayment` table to keep in sync.
+    """
+
+    def __init__(
+        self,
+        *,
+        id: ParentInvoiceId,
+        organization_id: OrganizationId,
+        parent_id: ParentId,
+        period: BillingPeriod,
+        amount: Money,
+        amount_paid: Decimal,
+        status: ParentInvoiceStatus,
+        invoice_date: date,
+        due_date: date,
+        notes: str | None,
+        created_at: datetime,
+        updated_at: datetime,
+        lines: list[ParentInvoiceLine] | None = None,
+    ) -> None:
+        super().__init__()
+        _validate_description(notes)
+        if amount.amount <= _ZERO:
+            raise DomainError("Parent invoice amount must be greater than zero")
+        if amount_paid < _ZERO:
+            raise DomainError("amount_paid must not be negative")
+        self.id = id
+        self.organization_id = organization_id
+        self.parent_id = parent_id
+        self.period = period
+        self.amount = amount
+        self.amount_paid = amount_paid.quantize(Decimal("0.01"))
+        self.status = status
+        self.invoice_date = invoice_date
+        self.due_date = due_date
+        self.notes = notes
+        self.created_at = created_at
+        self.updated_at = updated_at
+        self._lines: list[ParentInvoiceLine] = list(lines) if lines else []
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ParentInvoice) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @property
+    def lines(self) -> tuple[ParentInvoiceLine, ...]:
+        return tuple(self._lines)
+
+    @property
+    def balance_due(self) -> Decimal:
+        """Never negative — an overpayment shows as a zero balance, the identical reasoning
+        `StudentInvoice.balance_due` already documents for the same reason (a per-vehicle
+        receivables total must be summable without one overpaid family masking another's real
+        debt)."""
+        balance = self.amount.amount - self.amount_paid
+        return balance if balance > _ZERO else _ZERO
+
+    @property
+    def is_settled(self) -> bool:
+        return self.amount_paid >= self.amount.amount
+
+    @classmethod
+    def generate(
+        cls,
+        *,
+        id: ParentInvoiceId,
+        organization_id: OrganizationId,
+        parent_id: ParentId,
+        period: BillingPeriod,
+        amount: Money,
+        due_date: date,
+        children: list[BilledChild],
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "ParentInvoice":
+        """The monthly billing run's own factory — always issued directly, never drafted first,
+        the same "no `DRAFT` state exists to be invented" reasoning `StudentInvoice.issue`
+        already gives for an identical enum shape question."""
+        if not children:
+            raise DomainError("Cannot generate a Parent Invoice with no billed children")
+        now = clock.now()
+        shares = _split_amount_evenly(amount.amount, len(children))
+        lines = [
+            ParentInvoiceLine(
+                id=ParentInvoiceLineId(child.line_id),
+                student_id=StudentId(child.student_id),
+                amount=Money(amount=share, currency=amount.currency),
+                vehicle_id=VehicleId(child.vehicle_id) if child.vehicle_id else None,
+                route_id=RouteId(child.route_id) if child.route_id else None,
+            )
+            for child, share in zip(children, shares)
+        ]
+        invoice = cls(
+            id=id,
+            organization_id=organization_id,
+            parent_id=parent_id,
+            period=period,
+            amount=amount,
+            amount_paid=_ZERO,
+            status=ParentInvoiceStatus.UNPAID,
+            invoice_date=now.date(),
+            due_date=due_date,
+            notes=None,
+            created_at=now,
+            updated_at=now,
+            lines=lines,
+        )
+        invoice._record(
+            erp_events.parent_invoice_generated(
+                invoice_id=str(id),
+                organization_id=str(organization_id),
+                parent_id=str(parent_id),
+                period=str(period),
+                amount=amount.amount,
+                currency=amount.currency,
+                child_count=len(children),
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+        return invoice
+
+    def set_payment_status(
+        self,
+        *,
+        status: ParentInvoiceStatus,
+        amount_paid: Decimal | None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """The entire user-facing payment workflow (the directive's Part 9): Unpaid/Partial/
+        Paid, set directly on the invoice. `Paid` resolves `amount_paid` to the full amount
+        regardless of what (if anything) was supplied; `Unpaid` forces it to zero; `Partial`
+        requires an amount strictly between zero and the total — a caller supplying the full
+        amount or zero under `Partial` gets a clear `DomainError` naming the status they
+        actually meant, rather than being silently reinterpreted. Idempotent same-state no-op,
+        mirroring every other status-change method in this codebase.
+        """
+        if self.status == ParentInvoiceStatus.CANCELLED:
+            raise RuleViolationError(
+                "Cannot change the payment status of a cancelled Parent Invoice"
+            )
+        if status is ParentInvoiceStatus.CANCELLED:
+            raise DomainError(
+                "Use cancel() to cancel a Parent Invoice, not set_payment_status"
+            )
+
+        if status is ParentInvoiceStatus.PAID:
+            resolved = self.amount.amount
+        elif status is ParentInvoiceStatus.UNPAID:
+            resolved = _ZERO
+        else:
+            if amount_paid is None:
+                raise DomainError("amount_paid is required when status is 'partial'")
+            resolved = amount_paid.quantize(Decimal("0.01"))
+            if resolved <= _ZERO:
+                raise DomainError(
+                    "Partial payment amount must be greater than zero — use 'unpaid' instead"
+                )
+            if resolved >= self.amount.amount:
+                raise DomainError(
+                    "Partial payment amount must be less than the invoice total — "
+                    "use 'paid' instead"
+                )
+
+        if status == self.status and resolved == self.amount_paid:
+            return
+
+        self.amount_paid = resolved
+        self.status = status
+        self.updated_at = clock.now()
+        self._record(
+            erp_events.parent_invoice_payment_status_updated(
+                invoice_id=str(self.id),
+                organization_id=str(self.organization_id),
+                status=status.value,
+                amount_paid=self.amount_paid,
+                balance_due=self.balance_due,
+                currency=self.amount.currency,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+    def cancel(
+        self, *, reason: str | None = None, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """Mirrors `StudentInvoice.cancel` exactly: a paid-against invoice cannot be cancelled
+        outright — its payment status must be reset to `unpaid` first, which is itself only
+        possible while nothing has genuinely been collected against it in this simplified
+        (no-separate-payment-ledger) model, so this guard is what actually prevents an
+        organization from making collected money vanish from Receivables."""
+        if self.status == ParentInvoiceStatus.CANCELLED:
+            return
+        if self.amount_paid > _ZERO:
+            raise RuleViolationError(
+                "Cannot cancel a Parent Invoice that has received payment — set it back to "
+                "unpaid first"
+            )
+        self.status = ParentInvoiceStatus.CANCELLED
+        self.updated_at = clock.now()
+        self._record(
+            erp_events.parent_invoice_cancelled(
+                invoice_id=str(self.id),
+                organization_id=str(self.organization_id),
+                reason=reason,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+
+class ParentBillingProfile(_AggregateRoot):
+    """`erp_parent_billing_profiles` — the actual recurring transportation charge for one
+    Parent (the directive's Part 5), one per `(organization_id, parent_id)`. This is the source
+    `generate_parent_invoices` reads each period; it is never itself an invoice.
+
+    **No `FeePlan` reference.** The directive's Part 22 requires Fee Plans to remain optional and
+    never gate Parent registration — this aggregate has no foreign key to one, by construction,
+    so there is nothing to make mandatory.
+    """
+
+    def __init__(
+        self,
+        *,
+        id: ParentBillingProfileId,
+        organization_id: OrganizationId,
+        parent_id: ParentId,
+        monthly_fee: Money,
+        billing_start_period: BillingPeriod,
+        due_day: int,
+        status: ParentBillingProfileStatus,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        _validate_due_day(due_day)
+        self.id = id
+        self.organization_id = organization_id
+        self.parent_id = parent_id
+        self.monthly_fee = monthly_fee
+        self.billing_start_period = billing_start_period
+        self.due_day = due_day
+        self.status = status
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ParentBillingProfile) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    def open(
+        cls,
+        *,
+        id: ParentBillingProfileId,
+        organization_id: OrganizationId,
+        parent_id: ParentId,
+        monthly_fee: Money,
+        billing_start_period: BillingPeriod,
+        due_day: int,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "ParentBillingProfile":
+        now = clock.now()
+        profile = cls(
+            id=id,
+            organization_id=organization_id,
+            parent_id=parent_id,
+            monthly_fee=monthly_fee,
+            billing_start_period=billing_start_period,
+            due_day=due_day,
+            status=ParentBillingProfileStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
+        )
+        profile._record(
+            erp_events.parent_billing_profile_created(
+                billing_profile_id=str(id),
+                organization_id=str(organization_id),
+                parent_id=str(parent_id),
+                monthly_fee=monthly_fee.amount,
+                currency=monthly_fee.currency,
+                billing_start_period=str(billing_start_period),
+                due_day=due_day,
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+        return profile
+
+    def update_fee(
+        self,
+        *,
+        monthly_fee: Money,
+        due_day: int,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Changes what *future* invoices charge. Never rewrites an already-generated
+        `ParentInvoice`, which froze its own amount at generation time (`ParentInvoice.generate`)
+        — this is the mechanism behind the directive's own worked example in Part 17/40."""
+        _validate_due_day(due_day)
+        if monthly_fee == self.monthly_fee and due_day == self.due_day:
+            return
+        self.monthly_fee = monthly_fee
+        self.due_day = due_day
+        self.updated_at = clock.now()
+        self._record(
+            erp_events.parent_billing_profile_updated(
+                billing_profile_id=str(self.id),
+                organization_id=str(self.organization_id),
+                monthly_fee=monthly_fee.amount,
+                currency=monthly_fee.currency,
+                due_day=due_day,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+    def activate(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if self.status == ParentBillingProfileStatus.ACTIVE:
+            return
+        self.status = ParentBillingProfileStatus.ACTIVE
+        self.updated_at = clock.now()
+        self._record(
+            erp_events.parent_billing_profile_status_changed(
+                billing_profile_id=str(self.id),
+                organization_id=str(self.organization_id),
+                status=self.status.value,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+    def deactivate(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        """Stops future monthly generation from picking this family up, without deleting the
+        profile's own history of what it used to charge — the withdrawn-child/fee-waiver case."""
+        if self.status == ParentBillingProfileStatus.INACTIVE:
+            return
+        self.status = ParentBillingProfileStatus.INACTIVE
+        self.updated_at = clock.now()
+        self._record(
+            erp_events.parent_billing_profile_status_changed(
+                billing_profile_id=str(self.id),
+                organization_id=str(self.organization_id),
+                status=self.status.value,
                 occurred_at=self.updated_at,
                 actor_id=actor_id,
             )

@@ -190,6 +190,7 @@ from raad.modules.transport_ops.domain import events as transport_ops_events
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     DriverStatus,
+    Gender,
     OrganizationId,
     ParentId,
     ParentStatus,
@@ -227,6 +228,46 @@ def _validate_external_ref(external_ref: str | None) -> None:
         raise DomainError(
             f"Student external_ref must be at most {_EXTERNAL_REF_MAX_LENGTH} "
             f"characters: {len(external_ref)}"
+        )
+
+
+# 2026-09-10 explicit user directive (Parent & Student Domain Restructure) — additive profile
+# fields, not in Database Design §6.2/§6.3. See `value_objects.py`'s own module-level comment
+# for why these particular bounds.
+_NOTES_MAX_LENGTH = 500
+_ADDRESS_MAX_LENGTH = 255
+_EMERGENCY_CONTACT_NAME_MAX_LENGTH = 200
+
+
+def _validate_notes(notes: str | None, *, field: str = "notes") -> None:
+    if notes is not None and len(notes) > _NOTES_MAX_LENGTH:
+        raise DomainError(f"{field} must be at most {_NOTES_MAX_LENGTH} characters: {len(notes)}")
+
+
+def _validate_date_of_birth(date_of_birth: date | None, *, today: date) -> None:
+    """A date of birth must be a real past date — never in the future, and not implausibly
+    distant (a school bus rider is a minor; 100 years bounds a fat-fingered year without
+    inventing a narrower, more presumptuous age policy no approved document specifies)."""
+    if date_of_birth is None:
+        return
+    if date_of_birth > today:
+        raise DomainError(f"Student date_of_birth must not be in the future: {date_of_birth}")
+    if (today.year - date_of_birth.year) > 100:
+        raise DomainError(f"Student date_of_birth is implausibly distant: {date_of_birth}")
+
+
+def _validate_address(address: str | None) -> None:
+    if address is not None and len(address) > _ADDRESS_MAX_LENGTH:
+        raise DomainError(
+            f"Parent address must be at most {_ADDRESS_MAX_LENGTH} characters: {len(address)}"
+        )
+
+
+def _validate_emergency_contact_name(name: str | None) -> None:
+    if name is not None and len(name) > _EMERGENCY_CONTACT_NAME_MAX_LENGTH:
+        raise DomainError(
+            "Parent emergency_contact_name must be at most "
+            f"{_EMERGENCY_CONTACT_NAME_MAX_LENGTH} characters: {len(name)}"
         )
 
 
@@ -379,10 +420,14 @@ class Student(_AggregateRoot):
         status: StudentStatus,
         created_at: datetime,
         updated_at: datetime,
+        date_of_birth: date | None = None,
+        gender: Gender | None = None,
+        notes: str | None = None,
     ) -> None:
         super().__init__()
         _validate_full_name(full_name)
         _validate_external_ref(external_ref)
+        _validate_notes(notes)
         self.id = id
         self.organization_id = organization_id
         self.full_name = full_name
@@ -390,6 +435,11 @@ class Student(_AggregateRoot):
         self.status = status
         self.created_at = created_at
         self.updated_at = updated_at
+        # 2026-09-10 explicit user directive: additive transport-facing profile fields, not in
+        # Database Design §6.2 — see `value_objects.py`'s module comment for the "why now" note.
+        self.date_of_birth = date_of_birth
+        self.gender = gender
+        self.notes = notes
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Student) and self.id == other.id
@@ -405,6 +455,9 @@ class Student(_AggregateRoot):
         organization_id: OrganizationId,
         full_name: str,
         external_ref: str | None = None,
+        date_of_birth: date | None = None,
+        gender: Gender | None = None,
+        notes: str | None = None,
         clock: Clock,
         actor_id: str | None = None,
     ) -> "Student":
@@ -413,6 +466,7 @@ class Student(_AggregateRoot):
         an enrolled student starts `active` — the same reasoning `organization.domain.entities.
         Organization.register` gives for its own status enum."""
         now = clock.now()
+        _validate_date_of_birth(date_of_birth, today=now.date())
         student = cls(
             id=id,
             organization_id=organization_id,
@@ -421,6 +475,9 @@ class Student(_AggregateRoot):
             status=StudentStatus.ACTIVE,
             created_at=now,
             updated_at=now,
+            date_of_birth=date_of_birth,
+            gender=gender,
+            notes=notes,
         )
         student._record(
             transport_ops_events.student_enrolled(
@@ -495,18 +552,34 @@ class Student(_AggregateRoot):
         *,
         full_name: str,
         external_ref: str | None,
+        date_of_birth: date | None = None,
+        gender: Gender | None = None,
+        notes: str | None = None,
         clock: Clock,
         actor_id: str | None = None,
     ) -> None:
-        """Phase 10.2 addition — see module docstring's addendum. Idempotent: a call that
-        changes neither field is a no-op, the same "no event for no real change" precedent
-        every status-change method above already follows."""
+        """Phase 10.2 addition, extended 2026-09-10 to also cover the additive profile fields
+        (`date_of_birth`/`gender`/`notes`) in the same single edit surface, rather than a second
+        setter — one "edit this student's profile" use case, matching how the task's own "Edit
+        Student" requirement was framed. Idempotent: a call that changes nothing is a no-op, the
+        same "no event for no real change" precedent every status-change method above follows."""
         _validate_full_name(full_name)
         _validate_external_ref(external_ref)
-        if full_name == self.full_name and external_ref == self.external_ref:
+        _validate_notes(notes)
+        _validate_date_of_birth(date_of_birth, today=clock.now().date())
+        if (
+            full_name == self.full_name
+            and external_ref == self.external_ref
+            and date_of_birth == self.date_of_birth
+            and gender == self.gender
+            and notes == self.notes
+        ):
             return
         self.full_name = full_name
         self.external_ref = external_ref
+        self.date_of_birth = date_of_birth
+        self.gender = gender
+        self.notes = notes
         self.updated_at = clock.now()
         self._record(
             transport_ops_events.student_details_updated(
@@ -544,9 +617,17 @@ class Parent(_AggregateRoot):
         updated_at: datetime,
         has_video_live_access: bool = False,
         has_video_playback_access: bool = False,
+        alternate_phone: PhoneNumber | None = None,
+        address: str | None = None,
+        emergency_contact_name: str | None = None,
+        emergency_contact_phone: PhoneNumber | None = None,
+        notes: str | None = None,
     ) -> None:
         super().__init__()
         _validate_parent_full_name(full_name)
+        _validate_address(address)
+        _validate_emergency_contact_name(emergency_contact_name)
+        _validate_notes(notes)
         self.id = id
         self.organization_id = organization_id
         self.user_id = user_id
@@ -560,6 +641,13 @@ class Parent(_AggregateRoot):
         # access` (org_admin-only, `interfaces/http/policy_guards`) ever flip either to `True`.
         self.has_video_live_access = has_video_live_access
         self.has_video_playback_access = has_video_playback_access
+        # 2026-09-10 explicit user directive: additive family/contact profile fields, not in
+        # Database Design §6.3 — see `value_objects.py`'s module comment for the "why now" note.
+        self.alternate_phone = alternate_phone
+        self.address = address
+        self.emergency_contact_name = emergency_contact_name
+        self.emergency_contact_phone = emergency_contact_phone
+        self.notes = notes
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Parent) and self.id == other.id
@@ -576,6 +664,11 @@ class Parent(_AggregateRoot):
         user_id: UserId,
         full_name: str,
         phone: PhoneNumber | None = None,
+        alternate_phone: PhoneNumber | None = None,
+        address: str | None = None,
+        emergency_contact_name: str | None = None,
+        emergency_contact_phone: PhoneNumber | None = None,
+        notes: str | None = None,
         clock: Clock,
         actor_id: str | None = None,
     ) -> "Parent":
@@ -593,6 +686,11 @@ class Parent(_AggregateRoot):
             status=ParentStatus.ACTIVE,
             created_at=now,
             updated_at=now,
+            alternate_phone=alternate_phone,
+            address=address,
+            emergency_contact_name=emergency_contact_name,
+            emergency_contact_phone=emergency_contact_phone,
+            notes=notes,
         )
         parent._record(
             transport_ops_events.parent_registered(
@@ -612,16 +710,39 @@ class Parent(_AggregateRoot):
         *,
         full_name: str,
         phone: PhoneNumber | None,
+        alternate_phone: PhoneNumber | None = None,
+        address: str | None = None,
+        emergency_contact_name: str | None = None,
+        emergency_contact_phone: PhoneNumber | None = None,
+        notes: str | None = None,
         clock: Clock,
         actor_id: str | None = None,
     ) -> None:
-        """Idempotent: a call that changes neither field is a no-op, the same "no event for no
+        """Extended 2026-09-10 to cover the additive contact/family profile fields in the same
+        single edit surface, mirroring `Student.update_details`'s identical extension and
+        reasoning. Idempotent: a call that changes nothing is a no-op, the same "no event for no
         real change" precedent `Student.update_details` already establishes."""
         _validate_parent_full_name(full_name)
-        if full_name == self.full_name and phone == self.phone:
+        _validate_address(address)
+        _validate_emergency_contact_name(emergency_contact_name)
+        _validate_notes(notes)
+        if (
+            full_name == self.full_name
+            and phone == self.phone
+            and alternate_phone == self.alternate_phone
+            and address == self.address
+            and emergency_contact_name == self.emergency_contact_name
+            and emergency_contact_phone == self.emergency_contact_phone
+            and notes == self.notes
+        ):
             return
         self.full_name = full_name
         self.phone = phone
+        self.alternate_phone = alternate_phone
+        self.address = address
+        self.emergency_contact_name = emergency_contact_name
+        self.emergency_contact_phone = emergency_contact_phone
+        self.notes = notes
         self.updated_at = clock.now()
         self._record(
             transport_ops_events.parent_details_updated(

@@ -121,6 +121,9 @@ _STUDENT_ASSIGNMENT_STATUS_VALUES = (
     "graduated",
     "disabled",
 )
+# 2026-09-10 explicit user directive (Parent & Student Domain Restructure) — additive profile
+# fields, not in Database Design §6.2/§6.3. See `domain/value_objects.py`'s own module comment.
+_GENDER_VALUES = ("male", "female", "other")
 
 
 class StudentModel(AuditedTableMixin, Base):
@@ -136,6 +139,12 @@ class StudentModel(AuditedTableMixin, Base):
         nullable=False,
         index=True,
     )
+    #: 2026-09-10 explicit user directive — additive, nullable, not in Database Design §6.2.
+    date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
+    gender: Mapped[str | None] = mapped_column(
+        SqlEnum(*_GENDER_VALUES, name="student_gender"), nullable=True
+    )
+    notes: Mapped[str | None] = mapped_column(VARCHAR(500), nullable=True)
 
 
 class ParentModel(AuditedTableMixin, Base):
@@ -165,6 +174,12 @@ class ParentModel(AuditedTableMixin, Base):
     has_video_playback_access: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    #: 2026-09-10 explicit user directive — additive, nullable, not in Database Design §6.3.
+    alternate_phone: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True)
+    address: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    emergency_contact_name: Mapped[str | None] = mapped_column(VARCHAR(200), nullable=True)
+    emergency_contact_phone: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True)
+    notes: Mapped[str | None] = mapped_column(VARCHAR(500), nullable=True)
 
 
 class StudentParentModel(Base):

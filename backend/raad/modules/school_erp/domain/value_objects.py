@@ -182,6 +182,55 @@ class ExpenseId:
 
 
 @dataclass(frozen=True)
+class ParentId:
+    """Cross-module reference to a `transport_ops.Parent` — opaque, format-validated only, the
+    identical posture `StudentId` above already establishes (`.claude/rules/backend.md` #3: no
+    cross-module DB read to existence-check it)."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value:
+            raise DomainError("ParentId must not be empty")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class ParentBillingProfileId:
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_ulid(self.value, "ParentBillingProfileId")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class ParentInvoiceId:
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_ulid(self.value, "ParentInvoiceId")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class ParentInvoiceLineId:
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_ulid(self.value, "ParentInvoiceLineId")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
 class BillingPeriod:
     """`YYYY-MM`. One month is the only period the ERP charter names, and a formatted string
     makes "already invoiced for this period" a unique constraint rather than a range query."""
@@ -229,6 +278,28 @@ class StudentInvoiceStatus(str, Enum):
     PARTIALLY_PAID = "partially_paid"
     PAID = "paid"
     OVERDUE = "overdue"
+    CANCELLED = "cancelled"
+
+
+class ParentBillingProfileStatus(str, Enum):
+    """Whether a Parent Billing Profile is currently picked up by monthly generation.
+    `INACTIVE` is how an organization stops billing a family (a withdrawn child, a fee waiver)
+    without deleting the profile's own history of what it used to charge."""
+
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+class ParentInvoiceStatus(str, Enum):
+    """Exactly the three user-facing states Part 9 of the 2026-09-11 directive specifies, plus
+    `CANCELLED` for a voided/erroneously-generated invoice — the same fourth-state precedent
+    `StudentInvoiceStatus.CANCELLED` already establishes for an identical need. There is no
+    `PARTIALLY_PAID`-vs-`PARTIAL` naming mismatch to reconcile with `StudentInvoiceStatus`
+    deliberately: this is a new, independent status set, not a renamed copy of the old one."""
+
+    UNPAID = "unpaid"
+    PARTIAL = "partial"
+    PAID = "paid"
     CANCELLED = "cancelled"
 
 

@@ -60,9 +60,13 @@ class ReportExportService:
     def supported_formats(self) -> tuple[str, ...]:
         return tuple(sorted(self._renderers))
 
-    async def export(
-        self, *, definition_key: str, format: str, request: ReportRequest
-    ) -> RenderedReport:
+    async def build_table(
+        self, *, definition_key: str, request: ReportRequest
+    ) -> ReportTable:
+        """Resolves a report definition, permission-checks it, and builds its `ReportTable` —
+        the one call both `export` and the JSON preview route (`GET /reports/{key}/preview`)
+        make, so a preview can never show different numbers than the file it precedes. Factored
+        out of `export` for exactly that reason, not duplicated between the two."""
         definition = self._catalog.get(definition_key)
         if definition is None:
             raise NotFoundError(f"Report {definition_key!r} not found")
@@ -85,13 +89,18 @@ class ReportExportService:
                 f"{definition_key!r}"
             )
 
+        return await definition.build(request)
+
+    async def export(
+        self, *, definition_key: str, format: str, request: ReportRequest
+    ) -> RenderedReport:
         renderer = self._renderers.get(format)
         if renderer is None:
             # A 404 rather than a 500: an unsupported format is a caller mistake, and the route's
             # own pattern already constrains it — this is the belt to that suspenders.
             raise NotFoundError(f"Unsupported report format {format!r}")
 
-        table = await definition.build(request)
+        table = await self.build_table(definition_key=definition_key, request=request)
         filename = (
             f"{definition_key.replace('.', '-')}-{date.today().isoformat()}."
             f"{renderer.EXTENSION}"

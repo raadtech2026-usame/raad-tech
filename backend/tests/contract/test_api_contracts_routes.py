@@ -161,6 +161,12 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "ADR-0026 SS2 - grant/revoke, its own dedicated permission",
     ),
     (
+        "PUT",
+        "/api/v1/parents/{parent_id}/transportation",
+        "2026-09-12 business-model correction - family-wide Vehicle/Route/Stop assignment, "
+        "reuses transport_ops.student_assignments.create (no new permission)",
+    ),
+    (
         "POST",
         "/api/v1/video/intercom",
         "ADR-0036 - two-way intercom, its own video.intercom.start permission, RAAD-staff-only",
@@ -386,6 +392,61 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("GET", "/api/v1/school-finance/vehicles/{vehicle_id}/invoices", "ADR-0040 SS2 - backs the printable bus report"),
     ("GET", "/api/v1/school-finance/students/{student_id}/invoices", "ADR-0040 SS2 - one student's history"),
     ("GET", "/api/v1/school-finance/profit-and-loss", "ADR-0040 SS2 - from recorded transactions only"),
+    # 2026-09-10 explicit user directive ("Parent & Student Domain Restructure + Parent
+    # Payments") - the family-level all-time summary, unaffected by ADR-0042 (still reads across
+    # a parent's own children, now via real ParentInvoice rows instead of StudentInvoice).
+    (
+        "GET",
+        "/api/v1/school-finance/parents/{parent_id}/summary",
+        "2026-09-10 parent finance - family-level sum across a parent's own children",
+    ),
+    # ADR-0042 (2026-09-11, supersedes ADR-0041 SS1) - ParentBillingProfile + ParentInvoice are
+    # real aggregates now, not a StudentInvoice-grouping read model. New permission namespace
+    # (school_erp.parent_billing_profiles.*/.parent_invoices.*, migration a9c73e5f0b8d). The old
+    # allocate-across-many-invoices payment quick-action
+    # (GET/POST /school-finance/parents/{parent_id}/payments) and the grouped-read routes
+    # (GET /school-finance/parents/{parent_id}/invoices/{period}) are removed outright, not kept
+    # alongside the real thing - see ADR-0042's own "Correction made during implementation" note.
+    (
+        "GET",
+        "/api/v1/school-finance/parents/{parent_id}/billing-profile",
+        "ADR-0042 - a family's actual recurring transportation charge, if any",
+    ),
+    (
+        "PUT",
+        "/api/v1/school-finance/parents/{parent_id}/billing-profile",
+        "ADR-0042 - create or update in place, no Fee Plan required",
+    ),
+    (
+        "PATCH",
+        "/api/v1/school-finance/parent-billing-profiles/{billing_profile_id}/status",
+        "ADR-0042 - activate/deactivate, stops future generation without deleting history",
+    ),
+    (
+        "POST",
+        "/api/v1/school-finance/parent-invoices/generate",
+        "ADR-0042 - the monthly billing run, idempotent per (parent, period)",
+    ),
+    (
+        "GET",
+        "/api/v1/school-finance/parent-invoices",
+        "ADR-0042 - every real Parent Invoice in scope, the primary Finance page listing",
+    ),
+    (
+        "GET",
+        "/api/v1/school-finance/parent-invoices/{invoice_id}",
+        "ADR-0042 - one Parent Invoice's own child line items",
+    ),
+    (
+        "PATCH",
+        "/api/v1/school-finance/parent-invoices/{invoice_id}/payment-status",
+        "ADR-0042 - the entire payment workflow: Unpaid/Partial/Paid, no separate payment ledger",
+    ),
+    (
+        "POST",
+        "/api/v1/school-finance/parent-invoices/{invoice_id}/cancel",
+        "ADR-0042 - cancel an issued-in-error invoice; blocked once it has received payment",
+    ),
     # platform_finance (C12) - Vendor -> RAAD. founder/finance_staff only; no org_admin grant
     # exists in this namespace at all, and these tables carry no organization_id to scope by.
     ("GET", "/api/v1/platform-finance/categories", "ADR-0040 SS1 - platform_finance C12"),
@@ -402,6 +463,11 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     # for long runs once one does.
     ("GET", "/api/v1/reports/catalog", "ADR-0040 SS6 - role-filtered report catalogue"),
     ("GET", "/api/v1/reports/{definition_key}/export", "ADR-0040 SS6 - renders PDF/XLSX inline"),
+    (
+        "GET",
+        "/api/v1/reports/{definition_key}/preview",
+        "ADR-0041 SS3 - JSON preview, same build_table call export uses",
+    ),
 ]
 
 

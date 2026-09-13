@@ -20,6 +20,8 @@ from raad.modules.school_erp.domain.entities import (
     FeePlan,
     FinancialCategory,
     Income,
+    ParentBillingProfile,
+    ParentInvoice,
     StudentInvoice,
     StudentPayment,
 )
@@ -359,3 +361,199 @@ class ProfitAndLossDTO:
     income_by_category: dict[str, str]
     expenses_by_category: dict[str, str]
     currency: str
+
+
+# ==============================================================================================
+# Parent financial summary (2026-09-10 explicit user directive, "Parent & Student Domain
+# Restructure + Parent Payments")
+# ==============================================================================================
+#
+# No new financial domain, no new aggregate: `ParentFinancialSummaryDTO` is a read-side
+# *aggregation* over the same `StudentInvoice`/`StudentPayment` rows every other view in this
+# module already reads, grouped by "this parent's children" instead of "this organization" or
+# "this vehicle" — `ParentFinanceApplicationService` (`application/services.py`) is what resolves
+# that child list (via `transport_ops`'s own application services, never a cross-module DB read)
+# and builds these DTOs from it.
+
+
+@dataclass(frozen=True)
+class ParentChildFinancialDTO:
+    """One child's own contribution to the parent-level total — fee attribution stays
+    per-student even when the parent sees only the family sum (see this module's own
+    docstring in `application/services.py`)."""
+
+    student_id: str
+    full_name: str
+    status: str
+    total_due: str
+    total_paid: str
+    outstanding: str
+    invoice_count: int
+
+
+@dataclass(frozen=True)
+class ParentFinancialSummaryDTO:
+    """The Parent detail page's "Financial Summary" — a family-level sum of every non-cancelled
+    invoice issued to any of this parent's children.
+
+    `status` is one of `paid`/`partially_paid`/`unpaid`/`no_invoices`. The fourth value is
+    deliberate, not an omission of the task's own three-value list: a family with zero invoices
+    (no fee plan billed yet) genuinely owes nothing — reporting that as `unpaid` would read as a
+    debt that does not exist. Every consumer must treat `no_invoices` as a neutral, not alarming,
+    state.
+    """
+
+    parent_id: str
+    currency: str
+    total_due: str
+    total_paid: str
+    outstanding: str
+    status: str
+    children: list[ParentChildFinancialDTO]
+
+
+# ==============================================================================================
+# ParentBillingProfile / ParentInvoice — real aggregates (ADR-0042, 2026-09-11, supersedes
+# ADR-0041 §1's StudentInvoice-grouping read model)
+# ==============================================================================================
+#
+# `ParentInvoice`/`ParentInvoiceLine` are genuine `school_erp` aggregates now — these DTOs project
+# real rows, not a read-side grouping. `invoice_number` remains a synthesized, display-only string
+# (now `{period}-{id[-6:].upper()}`, using the invoice's own real id) — still never persisted as a
+# second sequence, matching ADR-0041 §1's original reasoning for why one was rejected, which
+# ADR-0042 does not revisit.
+
+
+@dataclass(frozen=True)
+class ParentBillingProfileDTO:
+    id: str
+    organization_id: str
+    parent_id: str
+    monthly_fee: str
+    currency: str
+    billing_start_period: str
+    due_day: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+def parent_billing_profile_to_dto(profile: ParentBillingProfile) -> ParentBillingProfileDTO:
+    return ParentBillingProfileDTO(
+        id=str(profile.id),
+        organization_id=str(profile.organization_id),
+        parent_id=str(profile.parent_id),
+        monthly_fee=_money(profile.monthly_fee.amount),
+        currency=profile.monthly_fee.currency,
+        billing_start_period=str(profile.billing_start_period),
+        due_day=profile.due_day,
+        status=profile.status.value,
+        created_at=profile.created_at,
+        updated_at=profile.updated_at,
+    )
+
+
+def _synthesize_invoice_number(invoice_id: str, period: str) -> str:
+    """Display-only — never persisted, never a real sequence. See module docstring above."""
+    return f"{period}-{invoice_id[-6:].upper()}"
+
+
+@dataclass(frozen=True)
+class ParentInvoiceLineDTO:
+    """One billed child's own share of a `ParentInvoice`'s frozen total — the "which children
+    generated the amount" breakdown (the directive's Part 8)."""
+
+    student_id: str
+    full_name: str
+    amount: str
+    vehicle_id: str | None
+    route_id: str | None
+
+
+@dataclass(frozen=True)
+class ParentInvoiceSummaryDTO:
+    """One row of the real Parent Invoice list."""
+
+    id: str
+    parent_id: str
+    parent_name: str
+    period: str
+    invoice_number: str
+    children_count: int
+    amount: str
+    amount_paid: str
+    balance_due: str
+    status: str
+    invoice_date: str
+    due_date: str
+    currency: str
+
+
+def parent_invoice_to_summary_dto(
+    invoice: ParentInvoice, *, parent_name: str
+) -> ParentInvoiceSummaryDTO:
+    return ParentInvoiceSummaryDTO(
+        id=str(invoice.id),
+        parent_id=str(invoice.parent_id),
+        parent_name=parent_name,
+        period=str(invoice.period),
+        invoice_number=_synthesize_invoice_number(str(invoice.id), str(invoice.period)),
+        children_count=len(invoice.lines),
+        amount=_money(invoice.amount.amount),
+        amount_paid=_money(invoice.amount_paid),
+        balance_due=_money(invoice.balance_due),
+        status=invoice.status.value,
+        invoice_date=invoice.invoice_date.isoformat(),
+        due_date=invoice.due_date.isoformat(),
+        currency=invoice.amount.currency,
+    )
+
+
+@dataclass(frozen=True)
+class ParentInvoiceDetailDTO:
+    """The Parent Invoice detail view — the summary fields plus its own child line items."""
+
+    id: str
+    parent_id: str
+    parent_name: str
+    period: str
+    invoice_number: str
+    amount: str
+    amount_paid: str
+    balance_due: str
+    status: str
+    currency: str
+    invoice_date: str
+    due_date: str
+    notes: str | None
+    lines: list[ParentInvoiceLineDTO]
+
+
+def parent_invoice_to_detail_dto(
+    invoice: ParentInvoice, *, parent_name: str, student_names: dict[str, str]
+) -> ParentInvoiceDetailDTO:
+    return ParentInvoiceDetailDTO(
+        id=str(invoice.id),
+        parent_id=str(invoice.parent_id),
+        parent_name=parent_name,
+        period=str(invoice.period),
+        invoice_number=_synthesize_invoice_number(str(invoice.id), str(invoice.period)),
+        amount=_money(invoice.amount.amount),
+        amount_paid=_money(invoice.amount_paid),
+        balance_due=_money(invoice.balance_due),
+        status=invoice.status.value,
+        currency=invoice.amount.currency,
+        invoice_date=invoice.invoice_date.isoformat(),
+        due_date=invoice.due_date.isoformat(),
+        notes=invoice.notes,
+        lines=[
+            ParentInvoiceLineDTO(
+                student_id=str(line.student_id),
+                full_name=student_names.get(str(line.student_id), str(line.student_id)),
+                amount=_money(line.amount.amount),
+                vehicle_id=str(line.vehicle_id) if line.vehicle_id else None,
+                route_id=str(line.route_id) if line.route_id else None,
+            )
+            for line in invoice.lines
+        ],
+    )

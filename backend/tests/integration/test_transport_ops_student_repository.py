@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from datetime import date
 
 from sqlalchemy import text
 
@@ -44,6 +45,7 @@ from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
 from raad.modules.transport_ops.domain.entities import Student
 from raad.modules.transport_ops.domain.value_objects import (
+    Gender,
     OrganizationId,
     StudentId,
     StudentStatus,
@@ -114,6 +116,35 @@ class StudentRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched.full_name, f"Amina {self.tag}")
         self.assertEqual(fetched.external_ref, f"SCH-{self.tag}")
         self.assertEqual(fetched.status, StudentStatus.ACTIVE)
+
+    async def test_round_trips_the_additive_profile_fields(self) -> None:
+        """2026-09-10 explicit user directive (Parent & Student Domain Restructure) —
+        `date_of_birth`/`gender`/`notes` must survive a real Postgres round trip, including the
+        new `student_gender` native ENUM column."""
+        org_id = self.id_generator.new_id()
+        async with self._new_uow() as uow:
+            student = Student.enroll(
+                id=StudentId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                full_name=f"Amina {self.tag}",
+                date_of_birth=date(2015, 3, 4),
+                gender=Gender.FEMALE,
+                notes="Allergic to peanuts.",
+                clock=self.clock,
+            )
+            uow.students.add(student)
+            uow.record_events(student.pull_domain_events())
+            await uow.commit()
+            student_id = student.id
+            self._created_ids.append(str(student_id))
+
+        async with self._new_uow() as uow:
+            fetched = await uow.students.get(student_id)
+
+        self.assertIsNotNone(fetched)
+        self.assertEqual(fetched.date_of_birth, date(2015, 3, 4))
+        self.assertEqual(fetched.gender, Gender.FEMALE)
+        self.assertEqual(fetched.notes, "Allergic to peanuts.")
 
     async def test_mutation_after_get_persists_without_a_second_add(self) -> None:
         """Proves the identity-map/`flush_tracked_changes` bridge described in

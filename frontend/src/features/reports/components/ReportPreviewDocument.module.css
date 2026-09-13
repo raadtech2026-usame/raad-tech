@@ -1,0 +1,100 @@
+/* An A4-proportioned document card: white surface, generous margins, centered — read as a report
+   a bursar would print, not another dashboard tile. */
+.sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-7);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: center;
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.title {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-2xl);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.subtitle {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.period {
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  margin: var(--space-1) 0 0;
+}
+
+/* The applied-filters recap — "Parent: All Parents", "Vehicle: All Vehicles" — sits on the inset
+   ground so it reads as context about the report rather than more of its own content. */
+.filterRecap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-6);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-inset);
+  border-radius: var(--radius-md);
+}
+
+.filterRecapItem {
+  display: flex;
+  gap: 6px;
+  font-size: var(--text-sm);
+}
+
+.filterRecapItem dt {
+  color: var(--color-text-muted);
+}
+
+.filterRecapItem dt::after {
+  content: ":";
+}
+
+.filterRecapItem dd {
+  margin: 0;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.tableWrap {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+@media (max-width: 700px) {
+  .sheet {
+    padding: var(--space-6) var(--space-4);
+  }
+}
+
+/* The A4 sheet is what a viewer would print — drop the card chrome (border/shadow/background)
+   that only makes sense on screen, so a browser print of this panel looks like a plain document. */
+@media print {
+  .sheet {
+    box-shadow: none;
+    border: none;
+    padding: 0;
+    max-width: none;
+  }
+}

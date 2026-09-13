@@ -4,6 +4,81 @@
   gap: var(--space-7);
 }
 
+/* ---- Organization dashboard: the Report Center (2026-09-11, refined 2026-09-13) ------------ */
+
+/* Vertical flow, not a sidebar+detail grid: navigator -> available reports -> selected report's
+   filters -> preview, each its own full-width section. Replaces the previous two-column layout,
+   which forced a tall narrow list next to a panel that was empty until a report was picked. */
+.center {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* A compact one-line pointer shown only until a report is picked — deliberately not an
+   `EmptyState` (that component's own generous padding is meant for a page's dominant content,
+   not a placeholder beneath an already-populated navigator and tile grid). */
+.pickHint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px dashed var(--color-border-input);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.detailBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.detailTitle {
+  font-family: var(--font-display);
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-lg);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text-primary);
+  margin: 0 0 3px;
+}
+
+.detailDescription {
+  font-size: var(--text-sm);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+/* The selected report's own compact filter toolbar — same inset figure/ground treatment as
+   `.filters` below, just the name a full-width section reaches for. */
+.filterBar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-bg-inset);
+  border-radius: var(--radius-lg);
+}
+
+.previewSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sectionLabel {
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+
+/* ---- Platform dashboard: the pre-redesign card grid ---------------------------------------- */
+
 /* `auto-fit` with a generous floor: a report card holds a title, a description and up to four
    filter fields, so it needs real width before it is worth showing two per row. */
 .grid {
@@ -61,7 +136,9 @@
   margin: 0;
 }
 
-/* Filters sit on the inset ground so they read as inputs *to* the card rather than more of its
+/* ---- Shared: filters, actions, preview ------------------------------------------------------ */
+
+/* Filters sit on the inset ground so they read as inputs *to* the panel rather than more of its
    content — the same figure/ground device the KPI cards use for their figures. */
 .filters {
   display: grid;
@@ -81,6 +158,43 @@
   padding-top: var(--space-1);
 }
 
+.previewPanel {
+  border: 1px solid var(--color-border-card);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.previewHead {
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-inset);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+}
+
+.previewToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: none;
+  background: var(--color-bg-inset);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+}
+
+.previewBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
 @media (max-width: 900px) {
   .page {
     gap: var(--space-6);
@@ -96,7 +210,8 @@
     grid-template-columns: 1fr;
   }
 
-  .filters {
+  .filters,
+  .filterBar {
     grid-template-columns: 1fr;
   }
 

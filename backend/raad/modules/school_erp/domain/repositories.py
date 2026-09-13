@@ -40,6 +40,8 @@ from raad.modules.school_erp.domain.entities import (
     FeePlan,
     FinancialCategory,
     Income,
+    ParentBillingProfile,
+    ParentInvoice,
     StudentInvoice,
     StudentPayment,
 )
@@ -49,6 +51,9 @@ from raad.modules.school_erp.domain.value_objects import (
     FeePlanId,
     FinancialCategoryId,
     IncomeId,
+    ParentBillingProfileId,
+    ParentId,
+    ParentInvoiceId,
     StudentId,
     StudentInvoiceId,
     StudentPaymentId,
@@ -291,4 +296,118 @@ class ExpenseRepository(ABC):
     async def sum_by_vehicle_between(self, *, start: date, end: date) -> dict[str, Decimal]:
         """Per-bus operating cost, so the Vehicle Financial Overview can show cost against the
         revenue `StudentInvoiceRepository.summarise_by_vehicle` returns."""
+        raise NotImplementedError
+
+
+# ==================================================================================================
+# ParentBillingProfile / ParentInvoice (ADR-0042, 2026-09-11 — supersedes ADR-0041 §1)
+# ==================================================================================================
+
+
+class ParentBillingProfileRepository(ABC):
+    @abstractmethod
+    async def get(self, profile_id: ParentBillingProfileId) -> ParentBillingProfile | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_parent(self, parent_id: ParentId) -> ParentBillingProfile | None:
+        """One profile per parent (`ux_erp_parent_billing_profiles__org_parent`) — the source of
+        truth `create`/`update` both read before deciding whether to insert or edit in place."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, profile: ParentBillingProfile) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        request: OffsetPageRequest,
+        *,
+        filters: list[FilterCondition] | None = None,
+        sort: list[SortSpec] | None = None,
+        search: str | None = None,
+    ) -> OffsetPage[ParentBillingProfile]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_active_for_billing(
+        self, *, as_of_period: BillingPeriod
+    ) -> list[ParentBillingProfile]:
+        """`active` profiles whose `billing_start_period <= as_of_period` — exactly the cohort
+        one monthly `generate_parent_invoices` run picks up."""
+        raise NotImplementedError
+
+
+class ParentInvoiceRepository(ABC):
+    @abstractmethod
+    async def get(self, invoice_id: ParentInvoiceId) -> ParentInvoice | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_parent_period(
+        self, *, parent_id: ParentId, period: BillingPeriod
+    ) -> ParentInvoice | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def exists_for_parent_period(
+        self, *, parent_id: ParentId, period: BillingPeriod
+    ) -> bool:
+        """"One invoice per parent per period" — the invariant that makes re-running monthly
+        generation a no-op rather than a double charge, backed by a real unique index too
+        (`ux_erp_parent_invoices__org_parent_period`), the identical two-layer pattern
+        `StudentInvoiceRepository.exists_for_student_period` already establishes."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, invoice: ParentInvoice) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        request: OffsetPageRequest,
+        *,
+        filters: list[FilterCondition] | None = None,
+        sort: list[SortSpec] | None = None,
+        search: str | None = None,
+    ) -> OffsetPage[ParentInvoice]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_parent(self, parent_id: ParentId) -> list[ParentInvoice]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def summarise_totals(self, *, period: BillingPeriod | None = None) -> FinanceTotals:
+        """Reuses `FinanceTotals` (above) unchanged — same shape `StudentInvoiceRepository`
+        already returns, so `application/queries.finance_totals_to_dto` needs no change to read
+        a `ParentInvoice`-sourced total instead of a `StudentInvoice`-sourced one. `overdue_
+        invoice_count` is always `0`: `ParentInvoiceStatus` has no `overdue` state (the
+        directive's own three-status list), so nothing here can ever populate it."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def summarise_by_vehicle(
+        self, *, period: BillingPeriod | None = None
+    ) -> list[VehicleFinancialSummary]:
+        """The Vehicle Financial Overview, grouped over `erp_parent_invoice_lines.vehicle_id` —
+        the disclosed pro-rata allocation ADR-0042 decision 1 documents: a line's own collected
+        share is `line.amount * invoice.amount_paid / invoice.amount`, since payment is recorded
+        against the whole family invoice, never per child."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def sum_collected_between(self, *, start: date, end: date) -> Decimal:
+        """Parent transportation revenue for Profit & Loss, filtered by each invoice's own
+        `invoice_date` (when it was generated) — a disclosed, deliberate choice, not an
+        approximation of something more precise. This module keeps no per-transaction payment
+        history (ADR-0042 decision 4: the directive explicitly forbids building one), so there is
+        no payment-*date* to filter by; `invoice_date` is the one real, stored date this
+        aggregate has. `amount_paid` is each invoice's *current* collected total, so a payment
+        recorded weeks after the invoice was issued still counts, attributed to the invoice's own
+        billing period rather than to whatever day the payment happened to be recorded — the same
+        "attribute to the bill, not the receipt" basis `Income`/`Expense` already use via their
+        own `occurred_on` filtering, for consistency across every P&L line."""
         raise NotImplementedError

@@ -5,7 +5,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
   Banknote,
-  Bus,
   CreditCard,
   FileSpreadsheet,
   Info,
@@ -23,61 +22,64 @@ import { ConfirmDialog } from "../../shared/components/ConfirmDialog/ConfirmDial
 import { PageSection } from "../../shared/components/PageSection/PageSection";
 import { StatCard } from "../../shared/components/StatCard/StatCard";
 import { Badge } from "../../shared/components/Badge/Badge";
+import { DetailDrawer } from "../../shared/components/Drawer/DetailDrawer";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
+import { FormField } from "../../shared/components/FormField/FormField";
+import { Input } from "../../shared/components/Input/Input";
+import { Select } from "../../shared/components/Select/Select";
 import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
 import { Tabs } from "../../shared/components/Tabs/Tabs";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
 import {
-  archiveFeePlan,
-  cancelStudentInvoice,
   currentPeriod,
   formatAmount,
   getFinanceSummary,
   getProfitAndLoss,
   listCategories,
   listExpenses,
-  listFeePlans,
   listIncome,
-  listStudentInvoices,
-  listStudentPayments,
-  listStudentsForPicker,
-  listVehicleFinance,
   listVehiclesForPicker,
   toLabelMap,
   voidExpense,
   voidIncome,
-  voidStudentPayment,
-  type FeePlan,
   type FinancialCategory,
   type LedgerEntry,
-  type StudentInvoice,
-  type StudentInvoiceStatus,
-  type StudentPayment,
 } from "./api";
 import { CategoryForm } from "./CategoryForm";
-import { FeePlanForm } from "./FeePlanForm";
-import { GenerateInvoicesForm } from "./GenerateInvoicesForm";
 import { LedgerEntryForm } from "./LedgerEntryForm";
-import { RecordPaymentForm } from "./RecordPaymentForm";
+// Parent Invoice (ADR-0042) — a real aggregate owned by `transport_ops/parents` (the same
+// cross-bounded-context reuse `ParentFinancialSummary` already established, not a new pattern).
+import { SetInvoicePaymentStatusForm } from "../transport-ops/parents/SetInvoicePaymentStatusForm";
+import { ParentSearchSelect, type SelectedParent } from "../transport-ops/parents/ParentSearchSelect";
+import { invoiceStatusLabel, invoiceStatusTone } from "../transport-ops/parents/labels";
+import {
+  formatParentAmount,
+  generateParentInvoices,
+  getParentInvoiceDetail,
+  listParentInvoices,
+  type ParentInvoiceStatus,
+  type ParentInvoiceSummary,
+} from "../transport-ops/parents/api";
 import styles from "./OrgFinancePage.module.css";
 
 /**
  * Organization — School Finance (ADR-0038, ADR-0040 §2).
  *
  * **Every figure on this page is a real read.** `GET /school-finance/summary`,
- * `/vehicles`, `/student-invoices`, `/student-payments`, `/income`, `/expenses`, `/fee-plans`,
- * `/categories` and `/profit-and-loss` — all tenant-scoped server-side by ADR-0021, so an Org
- * Admin sees their own school's money and nothing else. Nothing here is estimated, projected or
- * placeholder.
+ * `/parent-invoices`, `/income`, `/expenses`, `/categories` and `/profit-and-loss` — all
+ * tenant-scoped server-side by ADR-0021, so an Org Admin sees their own school's money and
+ * nothing else. Nothing here is estimated, projected or placeholder.
  *
- * **The whole workflow lives on this page, in the order a bursar performs it:** create a fee
- * plan → run the month's billing → record each family's payment. Everything after that step is
- * derived, never entered: the Collected KPI, per-bus revenue, Profit & Loss's student-revenue
- * line and every report are all computed from `erp_student_payments`. There is deliberately no
- * "add student fee income" action anywhere, because that money is already counted — see the
- * Income tab's own notice and `LedgerEntryForm`.
+ * **The whole workflow lives on this page, in the order a bursar performs it:** set up a Parent's
+ * monthly billing profile → run the month's billing → confirm each family's payment status.
+ * Everything after that step is derived, never entered: the Collected KPI, Profit & Loss's Parent-
+ * revenue line and every report are all computed from real `ParentInvoice` payment state. There is
+ * deliberately no "add Parent fee income" action anywhere, because that money is already counted —
+ * see the Income tab's own notice and `LedgerEntryForm`. Per-vehicle revenue/cost breakdowns live
+ * in Reports, not here (Finance UI cleanup, 2026-09-12) — this page's own KPIs and Parent Invoice
+ * list stay organization-wide.
  *
  * **This page is not the organization's RAAD subscription.** ADR-0038 §2 keeps
  * Organization→Student finance and RAAD→Organization billing in separate bounded contexts with
@@ -88,44 +90,31 @@ import styles from "./OrgFinancePage.module.css";
  * (see `api.ts`'s own note on why).
  */
 
-const STATUS_TONE: Record<StudentInvoiceStatus, "success" | "warning" | "danger" | "neutral" | "info"> = {
-  draft: "neutral",
-  issued: "warning",
-  partially_paid: "info",
-  paid: "success",
-  overdue: "danger",
-  cancelled: "neutral",
-};
-
-const STATUS_LABEL: Record<StudentInvoiceStatus, string> = {
-  draft: "Draft",
-  issued: "Issued",
-  partially_paid: "Partially paid",
-  paid: "Paid",
-  overdue: "Overdue",
-  cancelled: "Cancelled",
-};
-
-type LedgerTab = "invoices" | "payments" | "income" | "expenses" | "feePlans" | "categories";
+type LedgerTab = "invoices" | "income" | "expenses" | "categories";
 
 const LEDGER_TABS: { id: LedgerTab; label: string }[] = [
-  { id: "invoices", label: "Student invoices" },
-  { id: "payments", label: "Payments" },
+  { id: "invoices", label: "Parent invoices" },
   { id: "income", label: "Income" },
   { id: "expenses", label: "Expenses" },
-  { id: "feePlans", label: "Fee plans" },
   { id: "categories", label: "Categories" },
 ];
 
 const LIST_PARAMS = { page: 1, pageSize: 25, sort: null, filters: {}, search: "" };
 const PICKER_PARAMS = { page: 1, pageSize: 100, sort: null, filters: {}, search: "" };
 
-/** An invoice can still take money unless it is fully settled or cancelled. */
-function isPayable(invoice: StudentInvoice): boolean {
-  return invoice.status !== "paid" && invoice.status !== "cancelled";
-}
+const PARENT_INVOICE_STATUS_FILTERS: { id: ParentInvoiceStatus | "all"; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "unpaid", label: "Unpaid" },
+  { id: "partial", label: "Partial" },
+  { id: "paid", label: "Paid" },
+  { id: "cancelled", label: "Cancelled" },
+];
 
-/** Trailing 12 months — the window the Profit & Loss endpoint defaults to server-side too. */
+/** Trailing 12 months — the window the standalone "Profit & loss" section further down the page
+ * uses, unchanged (that section's own header names this explicitly). Kept separate from
+ * `currentPeriodWindow` below so this pre-existing 12-month calculation is never destroyed —
+ * only the top-of-page Overview snapshot was ambiguous about mixing the two (Finance UI cleanup,
+ * 2026-09-12). */
 function defaultWindow(): { start: string; end: string } {
   const end = new Date();
   const start = new Date(end);
@@ -133,8 +122,18 @@ function defaultWindow(): { start: string; end: string } {
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
 }
 
+/** The first/last calendar day of a `YYYY-MM` period — so the "Financial overview" KPI row's own
+ * Net Result card can be computed over the *same* single period as its Expected Billing/Collected/
+ * Receivables siblings, instead of silently mixing in the trailing-12-month window (Finance UI
+ * cleanup, 2026-09-12: "Period 2026-09" next to a Net Result labeled "12 months" was ambiguous). */
+function currentPeriodWindow(period: string): { start: string; end: string } {
+  const [year, month] = period.split("-").map(Number);
+  const lastDay = new Date(year, month, 0).getDate();
+  return { start: `${period}-01`, end: `${period}-${String(lastDay).padStart(2, "0")}` };
+}
+
 export function OrgFinancePage() {
-  usePageHeader("Finance", "School income, expenses and student billing");
+  usePageHeader("Finance", "School income, parent billing and expenses");
 
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -142,30 +141,38 @@ export function OrgFinancePage() {
   const [period] = useState(currentPeriod());
   const [tab, setTab] = useState<LedgerTab>("invoices");
   const window = defaultWindow();
+  const periodWindow = currentPeriodWindow(period);
 
-  const [payingInvoice, setPayingInvoice] = useState<StudentInvoice | null>(null);
-  const [generateOpen, setGenerateOpen] = useState(false);
-  const [feePlanOpen, setFeePlanOpen] = useState(false);
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [ledgerFormMode, setLedgerFormMode] = useState<"income" | "expense" | null>(null);
-  const [voidingPayment, setVoidingPayment] = useState<StudentPayment | null>(null);
-  const [archivingPlanId, setArchivingPlanId] = useState<string | null>(null);
-  const [cancellingInvoice, setCancellingInvoice] = useState<StudentInvoice | null>(null);
   const [voidingLedgerEntry, setVoidingLedgerEntry] = useState<{
     entry: LedgerEntry;
     kind: "income" | "expense";
   } | null>(null);
-  const [editingFeePlan, setEditingFeePlan] = useState<FeePlan | null>(null);
   const [editingCategory, setEditingCategory] = useState<FinancialCategory | null>(null);
+
+  // Parent Invoice tab state (ADR-0042, refined for the Finance UI cleanup) — Parent/status/
+  // vehicle/date-range filters, the row-level "view" detail drawer, and the row-level "Update
+  // Payment Status" quick action — one real invoice, no allocation to compute.
+  const [invoiceParentFilter, setInvoiceParentFilter] = useState<SelectedParent | null>(null);
+  const [invoiceVehicleFilter, setInvoiceVehicleFilter] = useState("");
+  const [invoiceDateFrom, setInvoiceDateFrom] = useState("");
+  const [invoiceDateTo, setInvoiceDateTo] = useState("");
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<ParentInvoiceStatus | "all">("all");
+  const [invoicePage, setInvoicePage] = useState(1);
+  const [viewingInvoice, setViewingInvoice] = useState<ParentInvoiceSummary | null>(null);
+  const [payingParentInvoice, setPayingParentInvoice] = useState<ParentInvoiceSummary | null>(null);
 
   const summary = useQuery({
     queryKey: ["school-finance", "summary", period],
     queryFn: () => getFinanceSummary(period),
     staleTime: 60_000,
   });
-  const vehicles = useQuery({
-    queryKey: ["school-finance", "vehicles", period],
-    queryFn: () => listVehicleFinance(period),
+  // Net Result, scoped to the *same* period as `summary` above — the "Financial overview" row's
+  // own figure, kept deliberately separate from `pnl` (trailing 12 months) below.
+  const periodPnl = useQuery({
+    queryKey: ["school-finance", "pnl", periodWindow.start, periodWindow.end],
+    queryFn: () => getProfitAndLoss(periodWindow.start, periodWindow.end),
     staleTime: 60_000,
   });
   const pnl = useQuery({
@@ -173,17 +180,34 @@ export function OrgFinancePage() {
     queryFn: () => getProfitAndLoss(window.start, window.end),
     staleTime: 60_000,
   });
-  const invoices = useQuery({
-    queryKey: ["school-finance", "invoices"],
-    queryFn: () => listStudentInvoices(LIST_PARAMS),
+  const parentInvoices = useQuery({
+    queryKey: [
+      "school-finance",
+      "parent-invoices",
+      invoicePage,
+      invoiceParentFilter?.id ?? null,
+      invoiceStatusFilter,
+      invoiceVehicleFilter,
+      invoiceDateFrom,
+      invoiceDateTo,
+    ],
+    queryFn: () =>
+      listParentInvoices({
+        page: invoicePage,
+        pageSize: 25,
+        parentId: invoiceParentFilter?.id ?? null,
+        status: invoiceStatusFilter === "all" ? null : invoiceStatusFilter,
+        vehicleId: invoiceVehicleFilter || null,
+        dateFrom: invoiceDateFrom || null,
+        dateTo: invoiceDateTo || null,
+      }),
     staleTime: 30_000,
     enabled: tab === "invoices",
   });
-  const payments = useQuery({
-    queryKey: ["school-finance", "payments"],
-    queryFn: () => listStudentPayments(LIST_PARAMS),
-    staleTime: 30_000,
-    enabled: tab === "payments",
+  const invoiceDetailQuery = useQuery({
+    queryKey: ["school-finance", "parent-invoice-detail", viewingInvoice?.id],
+    queryFn: () => getParentInvoiceDetail(viewingInvoice!.id),
+    enabled: viewingInvoice !== null,
   });
   const income = useQuery({
     queryKey: ["school-finance", "income"],
@@ -197,95 +221,43 @@ export function OrgFinancePage() {
     staleTime: 30_000,
     enabled: tab === "expenses",
   });
-  const feePlans = useQuery({
-    queryKey: ["school-finance", "fee-plans"],
-    queryFn: () => listFeePlans(PICKER_PARAMS),
-    staleTime: 60_000,
-    enabled: tab === "feePlans",
-  });
   const categories = useQuery({
     queryKey: ["school-finance", "categories", "picker"],
     queryFn: () => listCategories(PICKER_PARAMS),
     staleTime: 60_000,
   });
 
-  // Name lookups. An invoice carries `student_id`/`vehicle_id` only — ADR-0040 §3 stores the ids
-  // so the bill stays historically true, and `.claude/rules/backend.md` #3 forbids the join that
-  // would carry a name alongside. Two cached list reads resolve every row on the page; the raw
-  // id remains the fallback rather than a blank, so a student removed since being billed still
+  // Name lookup. An invoice carries `vehicle_id` only — ADR-0040 §3 stores the id so the bill
+  // stays historically true, and `.claude/rules/backend.md` #3 forbids the join that would carry
+  // a name alongside. Doubles as the new Vehicle filter's own human-readable options below — the
+  // raw id remains the fallback rather than a blank, so a vehicle removed since being billed still
   // shows *something* traceable.
-  const studentLookup = useQuery({
-    queryKey: ["school-finance", "students", "picker"],
-    queryFn: () => listStudentsForPicker(),
-    staleTime: 5 * 60_000,
-  });
   const vehicleLookup = useQuery({
     queryKey: ["school-finance", "vehicles", "picker"],
     queryFn: () => listVehiclesForPicker(),
     staleTime: 5 * 60_000,
   });
 
-  const studentNames = useMemo(() => toLabelMap(studentLookup.data), [studentLookup.data]);
   const vehicleNames = useMemo(() => toLabelMap(vehicleLookup.data), [vehicleLookup.data]);
   const categoryNames = useMemo(
     () => new Map((categories.data?.data ?? []).map((c) => [c.id, c.name])),
     [categories.data],
   );
 
-  const studentName = (id: string) => studentNames.get(id) ?? id;
   const vehicleName = (id: string | null | undefined) =>
     id ? vehicleNames.get(id) ?? id : null;
 
   const currency = summary.data?.currency ?? "USD";
 
-  const voidMutation = useMutation({
-    mutationFn: (payment: StudentPayment) => voidStudentPayment(payment.id, "Voided by school"),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["school-finance"] });
-      toast.success(
-        "Payment voided",
-        "The invoice balance has been restored and revenue totals adjusted.",
-      );
-      setVoidingPayment(null);
-    },
-    onError: (error) => {
-      toast.error(
-        "Could not void the payment",
-        error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
-      );
-    },
-  });
-
-  const archiveMutation = useMutation({
-    mutationFn: (planId: string) => archiveFeePlan(planId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["school-finance"] });
-      toast.success("Fee plan archived", "Invoices already issued from it are unchanged.");
-      setArchivingPlanId(null);
-    },
-    onError: (error) => {
-      toast.error(
-        "Could not archive the fee plan",
-        error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
-      );
-    },
-  });
-
-  const cancelInvoiceMutation = useMutation({
-    mutationFn: (invoice: StudentInvoice) =>
-      cancelStudentInvoice(invoice.id, "Cancelled by school"),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["school-finance"] });
-      toast.success("Invoice cancelled", "It no longer counts toward billed or outstanding totals.");
-      setCancellingInvoice(null);
-    },
-    onError: (error) => {
-      toast.error(
-        "Could not cancel the invoice",
-        error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
-      );
-    },
-  });
+  // Whether the empty state should read as "nothing matches these filters" rather than "nothing
+  // has ever been billed" — a Vehicle (or any other) filter narrowing a real, non-empty list down
+  // to zero rows is a materially different situation from a school that hasn't billed anyone yet.
+  const invoiceFiltersActive =
+    invoiceParentFilter !== null ||
+    invoiceStatusFilter !== "all" ||
+    invoiceVehicleFilter !== "" ||
+    invoiceDateFrom !== "" ||
+    invoiceDateTo !== "";
 
   const voidLedgerMutation = useMutation({
     mutationFn: (target: { entry: LedgerEntry; kind: "income" | "expense" }) =>
@@ -305,12 +277,39 @@ export function OrgFinancePage() {
     },
   });
 
+  /** The monthly billing run (Part 18): every active Billing Profile whose billing has started
+   * is picked up automatically for the current period — idempotent, so re-running it never
+   * double-charges a family already invoiced this month. */
+  const generateInvoicesMutation = useMutation({
+    mutationFn: () => generateParentInvoices(period),
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ["school-finance"] });
+      toast.success(
+        created.length > 0 ? "Invoices generated" : "Already up to date",
+        created.length > 0
+          ? `${created.length} Parent Invoice${created.length === 1 ? "" : "s"} issued for ${period}.`
+          : `Every billed family already has an invoice for ${period}.`,
+      );
+    },
+    onError: (error) => {
+      toast.error(
+        "Could not generate invoices",
+        error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
+      );
+    },
+  });
+
   const ledgerAction = (() => {
     switch (tab) {
       case "invoices":
         return (
-          <Button size="sm" leadingIcon={<Plus size={14} />} onClick={() => setGenerateOpen(true)}>
-            Generate invoices
+          <Button
+            size="sm"
+            leadingIcon={<Plus size={14} />}
+            loading={generateInvoicesMutation.isPending}
+            onClick={() => generateInvoicesMutation.mutate()}
+          >
+            Generate monthly invoices
           </Button>
         );
       case "income":
@@ -323,12 +322,6 @@ export function OrgFinancePage() {
         return (
           <Button size="sm" leadingIcon={<Plus size={14} />} onClick={() => setLedgerFormMode("expense")}>
             Record expense
-          </Button>
-        );
-      case "feePlans":
-        return (
-          <Button size="sm" leadingIcon={<Plus size={14} />} onClick={() => setFeePlanOpen(true)}>
-            New fee plan
           </Button>
         );
       case "categories":
@@ -350,12 +343,12 @@ export function OrgFinancePage() {
           <StatCard
             icon={<ReceiptText size={18} />}
             tone="brand"
-            label="Billed"
+            label="Expected Billing"
             isLoading={summary.isLoading}
             value={summary.data ? formatAmount(summary.data.billedAmount, currency) : "—"}
             meta={summary.data ? `${summary.data.invoiceCount} invoices` : undefined}
             metaTone="neutral"
-            footnote="Net of discounts, cancelled invoices excluded"
+            footnote="Amount expected from Parent monthly billing"
           />
           <StatCard
             icon={<Banknote size={18} />}
@@ -363,127 +356,28 @@ export function OrgFinancePage() {
             label="Collected"
             isLoading={summary.isLoading}
             value={summary.data ? formatAmount(summary.data.collectedAmount, currency) : "—"}
-            meta={summary.data ? `${summary.data.paidInvoiceCount} settled` : undefined}
+            meta={summary.data ? `${summary.data.paidInvoiceCount} paid` : undefined}
             metaTone="success"
-            footnote="Payments received against student invoices"
+            footnote="Payments received against Parent Invoices"
           />
           <StatCard
             icon={<Landmark size={18} />}
             tone="warning"
-            label="Outstanding"
+            label="Receivables"
             isLoading={summary.isLoading}
             value={summary.data ? formatAmount(summary.data.outstandingAmount, currency) : "—"}
-            meta={summary.data ? `${summary.data.overdueInvoiceCount} overdue` : undefined}
-            metaTone={
-              summary.data && summary.data.overdueInvoiceCount > 0 ? "danger" : "neutral"
-            }
+            metaTone="neutral"
             footnote="What families still owe"
           />
           <StatCard
             icon={<TrendingUp size={18} />}
             tone="purple"
-            label="Net profit"
-            isLoading={pnl.isLoading}
-            value={pnl.data ? formatAmount(pnl.data.netProfit, pnl.data.currency) : "—"}
-            meta="12 months"
-            metaTone="purple"
-            footnote="Income less expenses, from recorded transactions"
+            label="Net Result"
+            isLoading={periodPnl.isLoading}
+            value={periodPnl.data ? formatAmount(periodPnl.data.netProfit, periodPnl.data.currency) : "—"}
+            footnote="This period's collected Parent revenue + other income − expenses"
           />
         </div>
-      </PageSection>
-
-      {/* ---- Vehicle financial overview ---- */}
-      <PageSection
-        title="Vehicle financial overview"
-        description="Students, revenue, outstanding balance and attributed cost, per bus"
-      >
-        <Card>
-          <CardHeader
-            icon={<Bus size={18} />}
-            title="Revenue per bus"
-            subtitle={
-              vehicles.data
-                ? `${vehicles.data.length} vehicle${vehicles.data.length === 1 ? "" : "s"} with billing activity`
-                : "Loading…"
-            }
-          />
-          {vehicles.isError ? (
-            <EmptyState
-              icon={<Bus size={20} />}
-              title="Could not load vehicle finance"
-              description={
-                vehicles.error instanceof ApiError
-                  ? vehicles.error.message
-                  : "Something went wrong. Please try again."
-              }
-            />
-          ) : vehicles.isLoading ? (
-            <CardBody>
-              <Skeleton height={18} />
-              <Skeleton height={18} />
-              <Skeleton height={18} />
-            </CardBody>
-          ) : (vehicles.data?.length ?? 0) === 0 ? (
-            <EmptyState
-              icon={<Bus size={20} />}
-              title="No billing activity yet"
-              description="Once student invoices are issued, each bus appears here with its own revenue and outstanding balance."
-            />
-          ) : (
-            <div className={styles.tableScroll}>
-              <table className={styles.table}>
-                <thead>
-                  <tr>
-                    <th>Vehicle</th>
-                    <th className={styles.alignRight}>Students</th>
-                    <th className={styles.alignRight}>Paid</th>
-                    <th className={styles.alignRight}>Unpaid</th>
-                    <th className={styles.alignRight}>Billed</th>
-                    <th className={styles.alignRight}>Collected</th>
-                    <th className={styles.alignRight}>Outstanding</th>
-                    <th className={styles.alignRight}>Cost</th>
-                    <th className={styles.alignRight}>Net</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {vehicles.data?.map((v) => (
-                    <tr key={v.vehicleId ?? "unassigned"}>
-                      <td className={styles.strong}>
-                        {vehicleName(v.vehicleId) ?? (
-                          <span className={styles.muted}>Unassigned</span>
-                        )}
-                      </td>
-                      <td className={styles.alignRight}>{v.studentCount}</td>
-                      <td className={styles.alignRight}>{v.paidStudentCount}</td>
-                      <td className={styles.alignRight}>
-                        {v.unpaidStudentCount > 0 ? (
-                          <Badge variant="warning">{v.unpaidStudentCount}</Badge>
-                        ) : (
-                          v.unpaidStudentCount
-                        )}
-                      </td>
-                      <td className={styles.alignRight}>
-                        {formatAmount(v.billedAmount, v.currency)}
-                      </td>
-                      <td className={styles.alignRight}>
-                        {formatAmount(v.collectedAmount, v.currency)}
-                      </td>
-                      <td className={styles.alignRight}>
-                        {formatAmount(v.outstandingAmount, v.currency)}
-                      </td>
-                      <td className={styles.alignRight}>
-                        {formatAmount(v.expenseAmount, v.currency)}
-                      </td>
-                      <td className={clsx(styles.alignRight, styles.strong)}>
-                        {formatAmount(v.netAmount, v.currency)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
       </PageSection>
 
       {/* ---- Ledger ---- */}
@@ -505,152 +399,152 @@ export function OrgFinancePage() {
             <>
               <CardHeader
                 icon={<ReceiptText size={18} />}
-                title="Student invoices"
+                title="Parent invoices"
                 subtitle={
-                  invoices.data ? `${invoices.data.page.total} total` : "Loading…"
+                  parentInvoices.data ? `${parentInvoices.data.page.total} total` : "Loading…"
                 }
               />
-              {invoices.isLoading ? (
+              <CardBody className={styles.filterRow}>
+                <FormField label="Parent">
+                  <ParentSearchSelect
+                    value={invoiceParentFilter}
+                    onChange={(parent) => {
+                      setInvoiceParentFilter(parent);
+                      setInvoicePage(1);
+                    }}
+                    aria-label="Filter parent invoices by parent"
+                  />
+                </FormField>
+                <FormField label="Payment Status">
+                  <Select
+                    value={invoiceStatusFilter}
+                    onChange={(e) => {
+                      setInvoiceStatusFilter(e.target.value as ParentInvoiceStatus | "all");
+                      setInvoicePage(1);
+                    }}
+                    aria-label="Filter parent invoices by payment status"
+                  >
+                    {PARENT_INVOICE_STATUS_FILTERS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </Select>
+                </FormField>
+                <FormField label="Vehicle">
+                  <Select
+                    value={invoiceVehicleFilter}
+                    onChange={(e) => {
+                      setInvoiceVehicleFilter(e.target.value);
+                      setInvoicePage(1);
+                    }}
+                    aria-label="Filter parent invoices by vehicle"
+                  >
+                    <option value="">All Vehicles</option>
+                    {(vehicleLookup.data ?? []).map((vehicle) => (
+                      <option key={vehicle.id} value={vehicle.id}>
+                        {vehicle.label}
+                      </option>
+                    ))}
+                  </Select>
+                </FormField>
+                <FormField label="From">
+                  <Input
+                    type="date"
+                    value={invoiceDateFrom}
+                    max={invoiceDateTo || undefined}
+                    onChange={(e) => {
+                      setInvoiceDateFrom(e.target.value);
+                      setInvoicePage(1);
+                    }}
+                    aria-label="Filter parent invoices from this date"
+                  />
+                </FormField>
+                <FormField label="To">
+                  <Input
+                    type="date"
+                    value={invoiceDateTo}
+                    min={invoiceDateFrom || undefined}
+                    onChange={(e) => {
+                      setInvoiceDateTo(e.target.value);
+                      setInvoicePage(1);
+                    }}
+                    aria-label="Filter parent invoices to this date"
+                  />
+                </FormField>
+              </CardBody>
+              {parentInvoices.isLoading ? (
                 <CardBody>
                   <Skeleton height={18} />
                   <Skeleton height={18} />
                 </CardBody>
-              ) : (invoices.data?.data.length ?? 0) === 0 ? (
-                <EmptyState
-                  icon={<ReceiptText size={20} />}
-                  title="No student invoices yet"
-                  description="Run a monthly billing batch against a fee plan to issue this period's invoices."
-                />
+              ) : (parentInvoices.data?.data.length ?? 0) === 0 ? (
+                invoiceFiltersActive ? (
+                  <EmptyState
+                    icon={<ReceiptText size={20} />}
+                    title="No parent invoices found"
+                    description="No parents match the selected filters. Try All Vehicles, All statuses, or a wider date range."
+                  />
+                ) : (
+                  <EmptyState
+                    icon={<ReceiptText size={20} />}
+                    title="No parent invoices yet"
+                    description="Run a monthly billing batch against a fee plan to issue this period's invoices."
+                  />
+                )
               ) : (
                 <div className={styles.tableScroll}>
                   <table className={styles.table}>
                     <thead>
                       <tr>
+                        <th>Invoice</th>
+                        <th>Parent</th>
+                        <th className={styles.alignRight}>Children</th>
                         <th>Period</th>
-                        <th>Student</th>
-                        <th>Vehicle</th>
-                        <th className={styles.alignRight}>Net</th>
+                        <th className={styles.alignRight}>Amount</th>
                         <th className={styles.alignRight}>Paid</th>
-                        <th className={styles.alignRight}>Balance</th>
-                        <th>Due</th>
+                        <th className={styles.alignRight}>Receivable</th>
                         <th>Status</th>
                         <th aria-label="Actions" />
                       </tr>
                     </thead>
                     <tbody>
-                      {invoices.data?.data.map((inv) => (
-                        <tr key={inv.id}>
-                          <td>{inv.period}</td>
-                          <td className={styles.strong}>{studentName(inv.studentId)}</td>
-                          <td>
-                            {vehicleName(inv.vehicleId) ?? (
-                              <span className={styles.muted}>—</span>
-                            )}
+                      {parentInvoices.data?.data.map((row) => (
+                        <tr key={row.id}>
+                          <td className={styles.mono}>{row.invoiceNumber}</td>
+                          <td className={styles.strong}>{row.parentName}</td>
+                          <td className={styles.alignRight}>{row.childrenCount}</td>
+                          <td>{row.period}</td>
+                          <td className={styles.alignRight}>
+                            {formatParentAmount(row.amount, row.currency)}
                           </td>
                           <td className={styles.alignRight}>
-                            {formatAmount(inv.netAmount, inv.currency)}
-                          </td>
-                          <td className={styles.alignRight}>
-                            {formatAmount(inv.amountPaid, inv.currency)}
+                            {formatParentAmount(row.amountPaid, row.currency)}
                           </td>
                           <td className={clsx(styles.alignRight, styles.strong)}>
-                            {formatAmount(inv.balanceDue, inv.currency)}
+                            {formatParentAmount(row.balanceDue, row.currency)}
                           </td>
-                          <td>{inv.dueDate}</td>
                           <td>
-                            <Badge variant={STATUS_TONE[inv.status]} dot>
-                              {STATUS_LABEL[inv.status]}
+                            <Badge variant={invoiceStatusTone(row.status)} dot>
+                              {invoiceStatusLabel(row.status)}
                             </Badge>
                           </td>
                           <td className={styles.rowAction}>
-                            {isPayable(inv) && (
-                              <div className={styles.rowActions}>
+                            <div className={styles.rowActions}>
+                              <Button size="sm" variant="ghost" onClick={() => setViewingInvoice(row)}>
+                                View
+                              </Button>
+                              {row.status !== "cancelled" && (
                                 <Button
                                   size="sm"
                                   variant="secondary"
                                   leadingIcon={<Wallet size={13} />}
-                                  onClick={() => setPayingInvoice(inv)}
+                                  onClick={() => setPayingParentInvoice(row)}
                                 >
-                                  Record payment
+                                  Payment status
                                 </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => setCancellingInvoice(inv)}
-                                >
-                                  Cancel
-                                </Button>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </>
-          )}
-
-          {tab === "payments" && (
-            <>
-              <CardHeader
-                icon={<Wallet size={18} />}
-                title="Payments received"
-                subtitle={payments.data ? `${payments.data.page.total} total` : "Loading…"}
-              />
-              {payments.isLoading ? (
-                <CardBody>
-                  <Skeleton height={18} />
-                  <Skeleton height={18} />
-                </CardBody>
-              ) : (payments.data?.data.length ?? 0) === 0 ? (
-                <EmptyState
-                  icon={<Wallet size={20} />}
-                  title="No payments recorded"
-                  description="Payments appear here once a family pays against a student invoice."
-                />
-              ) : (
-                <div className={styles.tableScroll}>
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>Received</th>
-                        <th>Student</th>
-                        <th className={styles.alignRight}>Amount</th>
-                        <th>Method</th>
-                        <th>Reference</th>
-                        <th>State</th>
-                        <th aria-label="Actions" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {payments.data?.data.map((p) => (
-                        <tr key={p.id}>
-                          <td>{p.receivedOn}</td>
-                          <td className={styles.strong}>{studentName(p.studentId)}</td>
-                          <td className={styles.alignRight}>
-                            {formatAmount(p.amount, p.currency)}
-                          </td>
-                          <td className={styles.capitalize}>
-                            {p.method.replace(/_/g, " ")}
-                          </td>
-                          <td>{p.reference ?? <span className={styles.muted}>—</span>}</td>
-                          <td>
-                            <Badge variant={p.isVoided ? "danger" : "success"} dot>
-                              {p.isVoided ? "Voided" : "Recorded"}
-                            </Badge>
-                          </td>
-                          <td className={styles.rowAction}>
-                            {!p.isVoided && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => setVoidingPayment(p)}
-                              >
-                                Void
-                              </Button>
-                            )}
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -790,78 +684,6 @@ export function OrgFinancePage() {
             </>
           )}
 
-          {tab === "feePlans" && (
-            <>
-              <CardHeader
-                icon={<FileSpreadsheet size={18} />}
-                title="Fee plans"
-                subtitle="The recurring charges a monthly billing run bills against"
-              />
-              {feePlans.isLoading ? (
-                <CardBody>
-                  <Skeleton height={18} />
-                  <Skeleton height={18} />
-                </CardBody>
-              ) : (feePlans.data?.data.length ?? 0) === 0 ? (
-                <EmptyState
-                  icon={<FileSpreadsheet size={20} />}
-                  title="No fee plans yet"
-                  description="A fee plan sets the amount each student is billed per period. Create one to start the monthly billing run."
-                />
-              ) : (
-                <div className={styles.tableScroll}>
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th className={styles.alignRight}>Amount</th>
-                        <th className={styles.alignRight}>Standard discount</th>
-                        <th>Description</th>
-                        <th>Status</th>
-                        <th aria-label="Actions" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {feePlans.data?.data.map((plan) => (
-                        <tr key={plan.id}>
-                          <td className={styles.strong}>{plan.name}</td>
-                          <td className={styles.alignRight}>
-                            {formatAmount(plan.amount, plan.currency)}
-                          </td>
-                          <td className={styles.alignRight}>
-                            {formatAmount(plan.defaultDiscountAmount, plan.currency)}
-                          </td>
-                          <td>{plan.description ?? <span className={styles.muted}>—</span>}</td>
-                          <td>
-                            <Badge variant={plan.status === "active" ? "success" : "neutral"} dot>
-                              {plan.status === "active" ? "Active" : "Archived"}
-                            </Badge>
-                          </td>
-                          <td className={styles.rowAction}>
-                            {plan.status === "active" && (
-                              <div className={styles.rowActions}>
-                                <Button size="sm" variant="ghost" onClick={() => setEditingFeePlan(plan)}>
-                                  Edit
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => setArchivingPlanId(plan.id)}
-                                >
-                                  Archive
-                                </Button>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </>
-          )}
-
           {tab === "categories" && (
             <>
               <CardHeader
@@ -961,7 +783,7 @@ export function OrgFinancePage() {
               <dl className={styles.pnl}>
                 <div className={styles.pnlRow}>
                   <dt>
-                    Student fee revenue (collected)
+                    Parent transportation collections
                     <span className={styles.pnlHint}>
                       Derived from recorded payments — never entered by hand
                     </span>
@@ -986,7 +808,7 @@ export function OrgFinancePage() {
                   <dd>{formatAmount(pnl.data.totalExpenses, pnl.data.currency)}</dd>
                 </div>
                 <div className={clsx(styles.pnlRow, styles.pnlTotal)}>
-                  <dt>Net profit</dt>
+                  <dt>Net Result</dt>
                   <dd>{formatAmount(pnl.data.netProfit, pnl.data.currency)}</dd>
                 </div>
               </dl>
@@ -1024,7 +846,7 @@ export function OrgFinancePage() {
             <CardHeader
               icon={<FileSpreadsheet size={18} />}
               title="Reports"
-              subtitle="Student billing, vehicle revenue and outstanding balances"
+              subtitle="Parent billing, vehicle revenue and receivables"
             />
             <CardBody>
               <p className={styles.note}>
@@ -1042,25 +864,65 @@ export function OrgFinancePage() {
       </PageSection>
 
       {/* ---- Actions ---- */}
-      <RecordPaymentForm
-        open={payingInvoice !== null}
-        onClose={() => setPayingInvoice(null)}
-        invoice={payingInvoice}
-        studentLabel={payingInvoice ? studentName(payingInvoice.studentId) : ""}
+      <DetailDrawer
+        open={viewingInvoice !== null}
+        onClose={() => setViewingInvoice(null)}
+        icon={<ReceiptText size={20} />}
+        iconTint="var(--color-brand-primary-tint)"
+        iconColor="var(--color-brand-primary)"
+        title={viewingInvoice?.invoiceNumber}
+        subtitle={viewingInvoice?.parentName}
+        status={
+          invoiceDetailQuery.data && (
+            <Badge variant={invoiceStatusTone(invoiceDetailQuery.data.status)} dot>
+              {invoiceStatusLabel(invoiceDetailQuery.data.status)}
+            </Badge>
+          )
+        }
+        stats={
+          invoiceDetailQuery.data
+            ? [
+                { key: "Amount", value: formatParentAmount(invoiceDetailQuery.data.amount, invoiceDetailQuery.data.currency) },
+                { key: "Paid", value: formatParentAmount(invoiceDetailQuery.data.amountPaid, invoiceDetailQuery.data.currency) },
+                {
+                  key: "Receivable",
+                  value: formatParentAmount(invoiceDetailQuery.data.balanceDue, invoiceDetailQuery.data.currency),
+                  color: invoiceDetailQuery.data.balanceDue !== "0.00" ? "var(--color-danger)" : undefined,
+                },
+              ]
+            : undefined
+        }
+        mapSlot={
+          <div className={styles.childLineItems}>
+            <span className={styles.childLineItemsTitle}>Children on this invoice</span>
+            {invoiceDetailQuery.isLoading && <Skeleton height={36} />}
+            {invoiceDetailQuery.data?.lines.map((line) => (
+              <div key={line.studentId} className={styles.childLineItemRow}>
+                <div>
+                  <div className={styles.strong}>{line.fullName}</div>
+                  <div className={styles.muted}>{vehicleName(line.vehicleId) ?? "No vehicle assigned"}</div>
+                </div>
+                <span className={styles.muted}>
+                  {formatParentAmount(line.amount, invoiceDetailQuery.data!.currency)}
+                </span>
+              </div>
+            ))}
+          </div>
+        }
+        footer={
+          viewingInvoice &&
+          invoiceDetailQuery.data &&
+          invoiceDetailQuery.data.status !== "cancelled" && (
+            <Button leadingIcon={<Wallet size={14} />} onClick={() => setPayingParentInvoice(viewingInvoice)}>
+              Payment status
+            </Button>
+          )
+        }
       />
-      <GenerateInvoicesForm
-        open={generateOpen}
-        onClose={() => setGenerateOpen(false)}
-        period={period}
-      />
-      <FeePlanForm
-        open={feePlanOpen || editingFeePlan !== null}
-        onClose={() => {
-          setFeePlanOpen(false);
-          setEditingFeePlan(null);
-        }}
-        currency={currency}
-        editing={editingFeePlan}
+      <SetInvoicePaymentStatusForm
+        open={payingParentInvoice !== null}
+        onClose={() => setPayingParentInvoice(null)}
+        invoice={payingParentInvoice}
       />
       <CategoryForm
         open={categoryOpen || editingCategory !== null}
@@ -1077,47 +939,6 @@ export function OrgFinancePage() {
         onClose={() => setLedgerFormMode(null)}
         mode={ledgerFormMode ?? "expense"}
         currency={currency}
-      />
-
-      <ConfirmDialog
-        open={voidingPayment !== null}
-        title="Void this payment?"
-        description={
-          voidingPayment
-            ? `${formatAmount(voidingPayment.amount, voidingPayment.currency)} from ${studentName(voidingPayment.studentId)} will be reversed. The payment stays on record as voided, the invoice balance is restored, and revenue totals adjust accordingly.`
-            : undefined
-        }
-        confirmLabel="Void payment"
-        tone="danger"
-        loading={voidMutation.isPending}
-        onConfirm={() => voidingPayment && voidMutation.mutate(voidingPayment)}
-        onCancel={() => setVoidingPayment(null)}
-      />
-
-      <ConfirmDialog
-        open={archivingPlanId !== null}
-        title="Archive this fee plan?"
-        description="It can no longer be used for new billing runs. Invoices already issued from it keep their own amounts and are unaffected."
-        confirmLabel="Archive"
-        tone="danger"
-        loading={archiveMutation.isPending}
-        onConfirm={() => archivingPlanId && archiveMutation.mutate(archivingPlanId)}
-        onCancel={() => setArchivingPlanId(null)}
-      />
-
-      <ConfirmDialog
-        open={cancellingInvoice !== null}
-        title="Cancel this invoice?"
-        description={
-          cancellingInvoice
-            ? `${formatAmount(cancellingInvoice.netAmount, cancellingInvoice.currency)} owed by ${studentName(cancellingInvoice.studentId)} will no longer count toward billed or outstanding totals. Any payment already recorded against it is unaffected and must be voided separately if it also needs reversing.`
-            : undefined
-        }
-        confirmLabel="Cancel invoice"
-        tone="danger"
-        loading={cancelInvoiceMutation.isPending}
-        onConfirm={() => cancellingInvoice && cancelInvoiceMutation.mutate(cancellingInvoice)}
-        onCancel={() => setCancellingInvoice(null)}
       />
 
       <ConfirmDialog

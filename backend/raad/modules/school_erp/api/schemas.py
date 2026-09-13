@@ -340,3 +340,135 @@ class ProfitAndLossResponse(BaseModel):
     income_by_category: dict[str, str]
     expenses_by_category: dict[str, str]
     currency: str
+
+
+# ---- Parent financial summary (2026-09-10 explicit user directive) --------------------------
+
+
+class ParentChildFinancialResponse(BaseModel):
+    student_id: str
+    full_name: str
+    status: str
+    total_due: str
+    total_paid: str
+    outstanding: str
+    invoice_count: int
+
+
+class ParentFinancialSummaryResponse(BaseModel):
+    parent_id: str
+    currency: str
+    total_due: str
+    total_paid: str
+    outstanding: str
+    #: One of `paid`/`partially_paid`/`unpaid`/`no_invoices` — see `ParentFinancialSummaryDTO`'s
+    #: own docstring for why the fourth value exists.
+    status: str
+    children: list[ParentChildFinancialResponse]
+
+
+# ---- ParentBillingProfile / ParentInvoice — real aggregates (ADR-0042, 2026-09-11) -----------
+#
+# Supersedes ADR-0041 §1's grouped-read-model schemas below. `RecordParentPaymentRequest`/
+# `ParentPaymentAllocationRequest` (the allocate-across-many-outstanding-invoices quick-pay
+# action) are removed — see ADR-0042's own "Correction made during implementation" note: Part 9
+# of the directive sets payment status directly on one Parent Invoice
+# (`SetParentInvoicePaymentStatusRequest`, below), with no allocation and no payment history.
+
+
+class CreateOrUpdateParentBillingProfileRequest(_MoneyValidatingModel):
+    """One family's actual recurring transportation charge (the directive's Part 5) — entered
+    directly, no Fee Plan required. Creates the profile if the parent has none yet, otherwise
+    edits the existing one in place; editing never rewrites an already-generated invoice."""
+
+    MONEY_FIELDS: ClassVar[tuple[str, ...]] = ("monthly_fee",)
+
+    organization_id: str | None = None
+    monthly_fee: MoneyStr
+    currency: CurrencyStr
+    billing_start_period: PeriodStr
+    due_day: int = Field(ge=1, le=28, description="Day of the month the invoice is due.")
+
+
+class SetParentBillingProfileStatusRequest(BaseModel):
+    is_active: bool
+
+
+class ParentBillingProfileResponse(BaseModel):
+    id: str
+    organization_id: str
+    parent_id: str
+    monthly_fee: str
+    currency: str
+    billing_start_period: str
+    due_day: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class GenerateParentInvoicesRequest(BaseModel):
+    """The monthly billing run (the directive's Part 18). No `student_ids`/`fee_plan_id` —
+    every `active` Parent Billing Profile whose billing has started is picked up automatically;
+    re-running is safe, since a parent already invoiced for the period is skipped."""
+
+    organization_id: str | None = None
+    period: PeriodStr
+
+
+class SetParentInvoicePaymentStatusRequest(_MoneyValidatingModel):
+    """The entire user-facing payment workflow (the directive's Part 9). `status=paid` resolves
+    `amount_paid` to the full invoice total regardless of what (if anything) is supplied;
+    `status=unpaid` forces it to zero; `status=partial` requires `amount_paid` strictly between
+    zero and the total."""
+
+    MONEY_FIELDS: ClassVar[tuple[str, ...]] = ("amount_paid",)
+
+    status: str = Field(pattern="^(unpaid|partial|paid)$")
+    amount_paid: MoneyStr | None = None
+
+
+class CancelParentInvoiceRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=255)
+
+
+class ParentInvoiceLineResponse(BaseModel):
+    student_id: str
+    full_name: str
+    amount: str
+    vehicle_id: str | None
+    route_id: str | None
+
+
+class ParentInvoiceSummaryResponse(BaseModel):
+    id: str
+    parent_id: str
+    parent_name: str
+    period: str
+    invoice_number: str
+    children_count: int
+    amount: str
+    amount_paid: str
+    balance_due: str
+    #: One of `unpaid`/`partial`/`paid`/`cancelled` (`ParentInvoiceStatus`).
+    status: str
+    invoice_date: str
+    due_date: str
+    currency: str
+
+
+class ParentInvoiceDetailResponse(BaseModel):
+    id: str
+    parent_id: str
+    parent_name: str
+    period: str
+    invoice_number: str
+    amount: str
+    amount_paid: str
+    balance_due: str
+    status: str
+    currency: str
+    invoice_date: str
+    due_date: str
+    notes: str | None
+    lines: list[ParentInvoiceLineResponse]

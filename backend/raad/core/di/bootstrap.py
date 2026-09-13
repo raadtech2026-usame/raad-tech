@@ -121,7 +121,10 @@ from raad.modules.school_erp.application.ports import (
     SchoolErpUnitOfWork,
     StudentTransportContextPort,
 )
-from raad.modules.school_erp.application.services import SchoolErpApplicationService
+from raad.modules.school_erp.application.services import (
+    ParentFinanceApplicationService,
+    SchoolErpApplicationService,
+)
 from raad.modules.school_erp.infra.repositories import SqlAlchemySchoolErpUnitOfWork
 from raad.modules.platform_finance.application.ports import (
     PlatformFinanceUnitOfWork,
@@ -887,6 +890,25 @@ def build_container(settings: Settings) -> Container:
                 parent_service=container.resolve(ParentApplicationService),
                 driver_service=container.resolve(DriverApplicationService),
                 student_parent_service=container.resolve(StudentParentApplicationService),
+            ),
+        )
+
+    # ParentFinanceApplicationService (2026-09-10 explicit user directive) — bound last, same
+    # reasoning as MeApplicationService immediately above: depends on
+    # ParentApplicationService/StudentParentApplicationService, both bound only inside the
+    # `if settings.db.url:` block above.
+    if settings.db.url:
+        container.bind_singleton(
+            ParentFinanceApplicationService,
+            ParentFinanceApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
+                parent_service=container.resolve(ParentApplicationService),
+                student_parent_service=container.resolve(StudentParentApplicationService),
+                # ADR-0042: `generate_parent_invoices` needs the same transport-context
+                # resolution `SchoolErpApplicationService` already uses, for the identical
+                # "capture vehicle/route on the invoice at issue time" reasoning (ADR-0040 §3).
+                transport_context=container.try_resolve(StudentTransportContextPort),
             ),
         )
 

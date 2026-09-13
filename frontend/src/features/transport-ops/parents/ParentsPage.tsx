@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Contact, Plus, Search, UserMinus } from "lucide-react";
+import { Contact, Navigation, Pencil, Plus, Receipt, Search, UserMinus, UserPlus, Wallet } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
@@ -11,31 +11,62 @@ import { DataTable, type DataTableColumnMeta } from "../../../shared/components/
 import { FilterChips, type FilterChipOption } from "../../../shared/components/Table/FilterChips";
 import { Pagination } from "../../../shared/components/Table/Pagination";
 import { MonoText } from "../../../shared/components/Table/cells";
-import { DetailDrawer } from "../../../shared/components/Drawer/DetailDrawer";
+import { DetailDrawer, type DrawerStat } from "../../../shared/components/Drawer/DetailDrawer";
 import { EmptyState } from "../../../shared/components/EmptyState/EmptyState";
 import { Badge } from "../../../shared/components/Badge/Badge";
 import { Button } from "../../../shared/components/Button/Button";
 import { IconButton } from "../../../shared/components/IconButton/IconButton";
 import { Input } from "../../../shared/components/Input/Input";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
+import { BillingProfileForm } from "./BillingProfileForm";
 import { CreateParentForm } from "./CreateParentForm";
+import { EditParentForm } from "./EditParentForm";
+import { FamilyTransportationForm } from "./FamilyTransportationForm";
+import { SetInvoicePaymentStatusForm } from "./SetInvoicePaymentStatusForm";
 import {
+  formatParentAmount,
   getParent,
+  getParentBillingProfile,
+  getParentFinancialSummary,
+  linkStudentToParent,
   listOrganizationsForPicker,
+  listParentInvoices,
   listParents,
   listStudentsForParent,
   unlinkStudentFromParent,
   updateParentStatus,
+  type LinkedStudent,
+  type ParentFinancialSummary,
+  type ParentInvoiceSummary,
+  type ParentPaymentStatus,
   type ParentStatus,
   type ParentSummary,
 } from "./api";
-import { statusLabel, statusTone } from "./labels";
+import { invoiceStatusLabel, invoiceStatusTone } from "./labels";
+import { paymentStatusLabel, paymentStatusTone, statusLabel, statusTone } from "./labels";
+// `students/labels.ts`'s own `statusLabel`/`statusTone` describe `StudentStatus` — aliased to
+// avoid colliding with this file's own `ParentStatus`-shaped pair above. A tiny, already-tested
+// labels module import, the same narrow "component/label import, not a duplicated data read"
+// exception `LinkGuardianForm.tsx`'s own `ParentSearchSelect` import already establishes.
+import { statusLabel as studentStatusLabel, statusTone as studentStatusTone } from "../students/labels";
+import { CreateStudentForm } from "../students/CreateStudentForm";
+import { EditStudentForm } from "../students/EditStudentForm";
+import { getStudent, type Student, type StudentStatus } from "../students/api";
+import { StudentAssignmentSection } from "../student-assignments/StudentAssignmentSection";
 import styles from "./ParentsPage.module.css";
 
 const STATUS_FILTERS: FilterChipOption[] = [
   { id: "all", label: "All statuses", tone: "neutral" },
   { id: "active", label: "Active", tone: "success" },
   { id: "inactive", label: "Inactive", tone: "neutral" },
+];
+
+const PAYMENT_FILTERS: { id: ParentPaymentStatus | "all"; label: string }[] = [
+  { id: "all", label: "Any payment status" },
+  { id: "unpaid", label: "Unpaid" },
+  { id: "partially_paid", label: "Partially paid" },
+  { id: "paid", label: "Paid" },
+  { id: "no_invoices", label: "No fees due" },
 ];
 
 const ALL_STATUSES: ParentStatus[] = ["active", "inactive"];
@@ -46,20 +77,120 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
-/** The "Linked students" section of the parent detail drawer — the mirror image of
- * `features/transport-ops/students/StudentsPage.tsx`'s `GuardiansSection`. Lists a parent's
- * linked students via `GET /parents/{id}/students` and, for `canManage` roles, a per-row unlink
- * action. **Read-only otherwise** — there is deliberately no "add student" action here; link
- * *creation* is initiated from the Student side only (`LinkGuardianForm.tsx`), so this section
- * satisfies the roadmap's "bidirectionally visible" requirement without building two divergent
- * forms for the identical `POST /students/{student_id}/parents` operation. */
-function LinkedStudentsSection({ parentId, canManage }: { parentId: string; canManage: boolean }) {
+function formatDateOfBirth(iso: string | null): string {
+  if (!iso) return "DOB not set";
+  return `DOB ${new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`;
+}
+
+/** One child row — collapsed by default (name, DOB, status, relationship, Edit/Unlink), and
+ * expandable into its own `StudentAssignmentSection`. **Read-only for vehicle/route** here
+ * (`hideAssignAction`, 2026-09-12 business-model correction) — a family's transportation is set
+ * once, for every child at once, from `LinkedStudentsSection`'s own header action
+ * (`FamilyTransportationForm`), never per child; this section still shows each child's own
+ * current assignment (identical across siblings by construction) and still allows ending one
+ * child's own assignment individually (a real per-student lifecycle event, e.g. leaving the
+ * school). Lazy: the assignment/route/vehicle queries only fire once a row is actually
+ * expanded, not for every child the moment the drawer opens. */
+function ChildRow({
+  child,
+  organizationId,
+  canManage,
+  expanded,
+  onToggleExpanded,
+  onEdit,
+  onUnlink,
+  unlinkPending,
+}: {
+  child: LinkedStudent;
+  organizationId: string;
+  canManage: boolean;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+  onEdit: () => void;
+  onUnlink: () => void;
+  unlinkPending: boolean;
+}) {
+  return (
+    <div className={styles.childCard}>
+      <button type="button" className={styles.childCardHeader} onClick={onToggleExpanded}>
+        <div className={styles.childCardIdentity}>
+          <div className={styles.linkedStudentName}>
+            {child.fullName}
+            {child.isPrimary ? " · Primary guardian" : ""}
+          </div>
+          <div className={styles.linkedStudentMeta}>
+            {formatDateOfBirth(child.dateOfBirth)} · {child.relationship ?? "Guardian"}
+          </div>
+        </div>
+        <Badge variant={studentStatusTone(child.status as StudentStatus)} dot>
+          {studentStatusLabel(child.status as StudentStatus)}
+        </Badge>
+      </button>
+
+      {canManage && (
+        <div className={styles.childCardActions}>
+          <Button variant="ghost" size="sm" leadingIcon={<Pencil size={12} />} onClick={onEdit}>
+            Edit
+          </Button>
+          <IconButton
+            icon={<UserMinus size={14} />}
+            size="sm"
+            aria-label={`Unlink ${child.fullName}`}
+            disabled={unlinkPending}
+            onClick={onUnlink}
+          />
+        </div>
+      )}
+
+      {expanded && (
+        <StudentAssignmentSection
+          studentId={child.studentId}
+          organizationId={organizationId}
+          canManage={canManage}
+          onAssign={() => {}}
+          hideAssignAction
+        />
+      )}
+    </div>
+  );
+}
+
+/** The "Children" section of the parent detail drawer — the mirror image of
+ * `features/transport-ops/students/StudentsPage.tsx`'s `GuardiansSection`, extended (ADR-0041
+ * §2, 2026-09-10) with an `[Add student]` header action: a parent registering a second/third
+ * child later attaches to this *same* parent (`linkStudentToParent`), never creating a
+ * duplicate. Each child row shows DOB/status/relationship and expands into its own read-only
+ * `StudentAssignmentSection`. **Vehicle/route/stop assignment is a header-level "Family
+ * transportation" action (2026-09-12 business-model correction), not a per-child one** —
+ * `FamilyTransportationForm` applies the chosen route/stops/vehicle to every child here at
+ * once, the structural fix for RAAD's "one Parent/family = one bus" rule. */
+function LinkedStudentsSection({
+  parentId,
+  parentName,
+  organizationId,
+  canManage,
+}: {
+  parentId: string;
+  parentName: string;
+  organizationId: string;
+  canManage: boolean;
+}) {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const [expandedChildId, setExpandedChildId] = useState<string | null>(null);
+  const [addStudentOpen, setAddStudentOpen] = useState(false);
+  const [editingChildId, setEditingChildId] = useState<string | null>(null);
+  const [transportationOpen, setTransportationOpen] = useState(false);
 
   const linkedStudentsQuery = useQuery({
     queryKey: ["parents", "linked-students", parentId],
     queryFn: () => listStudentsForParent(parentId),
+  });
+
+  const editingStudentQuery = useQuery({
+    queryKey: ["students", "detail", editingChildId],
+    queryFn: () => getStudent(editingChildId!),
+    enabled: editingChildId !== null,
   });
 
   const unlinkMutation = useMutation({
@@ -74,64 +205,226 @@ function LinkedStudentsSection({ parentId, canManage }: { parentId: string; canM
     },
   });
 
+  const linkNewChildMutation = useMutation({
+    mutationFn: (student: Student) => linkStudentToParent(student.id, parentId, { isPrimary: false }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["parents", "linked-students", parentId] });
+      toast.success("Student added", "The new student has been linked to this parent.");
+    },
+    onError: (error) => {
+      const message = error instanceof ApiError ? error.message : "Student created, but linking to this parent failed.";
+      toast.error("Link failed", message);
+    },
+  });
+
+  const students = linkedStudentsQuery.data ?? [];
+
   return (
     <div className={styles.linkedStudents}>
-      <div>
-        <span className={styles.linkedStudentsTitle}>Linked students</span>
+      <div className={styles.linkedStudentsHeader}>
+        <span className={styles.linkedStudentsTitle}>
+          Children {students.length > 0 ? `(${students.length})` : ""}
+        </span>
+        {canManage && (
+          <div className={styles.childCardActions}>
+            <Button
+              variant="secondary"
+              size="sm"
+              leadingIcon={<Navigation size={13} />}
+              onClick={() => setTransportationOpen(true)}
+            >
+              Family transportation
+            </Button>
+            <Button variant="secondary" size="sm" leadingIcon={<UserPlus size={13} />} onClick={() => setAddStudentOpen(true)}>
+              Add student
+            </Button>
+          </div>
+        )}
       </div>
 
       {linkedStudentsQuery.isLoading && <Skeleton height={36} />}
       {linkedStudentsQuery.isError && (
         <span className={styles.linkedStudentsEmpty}>Could not load linked students.</span>
       )}
-      {linkedStudentsQuery.data && linkedStudentsQuery.data.length === 0 && (
+      {linkedStudentsQuery.isSuccess && students.length === 0 && (
         <span className={styles.linkedStudentsEmpty}>No students linked yet.</span>
       )}
-      {linkedStudentsQuery.data?.map((student) => (
-        <div key={student.studentId} className={styles.linkedStudentRow}>
+      {students.map((child) => (
+        <ChildRow
+          key={child.studentId}
+          child={child}
+          organizationId={organizationId}
+          canManage={canManage}
+          expanded={expandedChildId === child.studentId}
+          onToggleExpanded={() =>
+            setExpandedChildId((current) => (current === child.studentId ? null : child.studentId))
+          }
+          onEdit={() => setEditingChildId(child.studentId)}
+          onUnlink={() => unlinkMutation.mutate(child.studentId)}
+          unlinkPending={unlinkMutation.isPending}
+        />
+      ))}
+
+      <FamilyTransportationForm
+        open={transportationOpen}
+        onClose={() => setTransportationOpen(false)}
+        parentId={parentId}
+        parentName={parentName}
+        organizationId={organizationId}
+      />
+      <EditStudentForm
+        open={editingChildId !== null}
+        onClose={() => setEditingChildId(null)}
+        student={editingStudentQuery.data ?? null}
+      />
+      <CreateStudentForm
+        open={addStudentOpen}
+        onClose={() => setAddStudentOpen(false)}
+        onCreated={(student) => linkNewChildMutation.mutate(student)}
+      />
+    </div>
+  );
+}
+
+/** "Billing" section (Part 16 of the directive) — the family's own `ParentBillingProfile`:
+ * monthly fee, billing start, due day, status. `onEdit` opens `BillingProfileForm`, the same
+ * create-or-update surface `CreateParentForm`'s own Billing step uses at registration time. */
+function BillingProfileSection({
+  parentId,
+  canManage,
+  onEdit,
+}: {
+  parentId: string;
+  canManage: boolean;
+  onEdit: () => void;
+}) {
+  const profileQuery = useQuery({
+    queryKey: ["parents", "billing-profile", parentId],
+    queryFn: () => getParentBillingProfile(parentId),
+  });
+
+  const profile = profileQuery.data ?? null;
+
+  return (
+    <div className={styles.linkedStudents}>
+      <div>
+        <span className={styles.linkedStudentsTitle}>Billing</span>
+      </div>
+      {profileQuery.isLoading && <Skeleton height={36} />}
+      {profileQuery.isSuccess && !profile && (
+        <span className={styles.linkedStudentsEmpty}>
+          No monthly fee configured yet.{" "}
+          {canManage && (
+            <Button variant="ghost" onClick={onEdit}>
+              Set up billing
+            </Button>
+          )}
+        </span>
+      )}
+      {profile && (
+        <div className={styles.linkedStudentRow}>
           <div>
             <div className={styles.linkedStudentName}>
-              {student.fullName}
-              {student.isPrimary ? " · Primary guardian" : ""}
+              {formatParentAmount(profile.monthlyFee, profile.currency)} / month
             </div>
-            <div className={styles.linkedStudentMeta}>{student.relationship ?? "Guardian"}</div>
+            <div className={styles.linkedStudentMeta}>
+              Billing start {profile.billingStartPeriod} · Due day {profile.dueDay} ·{" "}
+              {profile.status === "active" ? "Active" : "Inactive"}
+            </div>
           </div>
           {canManage && (
-            <IconButton
-              icon={<UserMinus size={14} />}
-              size="sm"
-              aria-label={`Unlink ${student.fullName}`}
-              disabled={unlinkMutation.isPending}
-              onClick={() => unlinkMutation.mutate(student.studentId)}
-            />
+            <Button variant="ghost" leadingIcon={<Receipt size={13} />} onClick={onEdit}>
+              Edit
+            </Button>
           )}
         </div>
-      ))}
+      )}
+    </div>
+  );
+}
+
+/** "Current invoice" section (Part 16 of the directive) — this family's most recent Parent
+ * Invoice, with the "[Update Payment Status]" action right beside it, exactly where the
+ * directive's own mockup places it (not a generic drawer-footer button, since the action applies
+ * to one specific invoice). */
+function CurrentInvoiceSection({
+  parentId,
+  canManage,
+  onUpdateStatus,
+}: {
+  parentId: string;
+  canManage: boolean;
+  onUpdateStatus: (invoice: ParentInvoiceSummary) => void;
+}) {
+  const invoiceQuery = useQuery({
+    queryKey: ["parents", "current-invoice", parentId],
+    queryFn: async () => {
+      const page = await listParentInvoices({ page: 1, pageSize: 1, parentId });
+      return page.data[0] ?? null;
+    },
+  });
+
+  const invoice = invoiceQuery.data ?? null;
+
+  return (
+    <div className={styles.linkedStudents}>
+      <div>
+        <span className={styles.linkedStudentsTitle}>Current invoice</span>
+      </div>
+      {invoiceQuery.isLoading && <Skeleton height={36} />}
+      {invoiceQuery.isSuccess && !invoice && (
+        <span className={styles.linkedStudentsEmpty}>No Parent Invoice generated yet.</span>
+      )}
+      {invoice && (
+        <div className={styles.linkedStudentRow}>
+          <div>
+            <div className={styles.linkedStudentName}>
+              {invoice.period} — {formatParentAmount(invoice.amount, invoice.currency)}
+            </div>
+            <div className={styles.linkedStudentMeta}>
+              Paid {formatParentAmount(invoice.amountPaid, invoice.currency)} · Receivable{" "}
+              {formatParentAmount(invoice.balanceDue, invoice.currency)}
+            </div>
+          </div>
+          <Badge variant={invoiceStatusTone(invoice.status)} dot>
+            {invoiceStatusLabel(invoice.status)}
+          </Badge>
+          {canManage && invoice.status !== "cancelled" && (
+            <Button variant="ghost" leadingIcon={<Wallet size={13} />} onClick={() => onUpdateStatus(invoice)}>
+              Update Payment Status
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 /**
- * `/org/parents` only (`app/router.tsx`'s `ORGANIZATION_BUILT_ROUTES`) — as of platform
- * verification (2026-07-29), RAAD Platform staff no longer reach this page at all: migration
- * `c4d9a2e6f813` revoked founder/regional_manager/support_staff's `transport_ops.parents.*`
- * grants entirely, per CLAUDE.md's own Business Model ("RAAD does not manage students or
- * parents directly"). Only `org_admin` holds any `transport_ops.parents.*`/`.student_parents.*`
- * permission now (full CRUD, seeded matrix `5437a5d1651b`, unaffected by that migration) —
- * `finance_staff`/`driver`/`parent` still hold none. `canManage` below is a presentation-layer
- * hint only (`.claude/rules/frontend.md` #2). The component itself is unchanged from when it
- * was also mounted at `/platform/parents` — only the route/nav wiring moved.
+ * `/org/parents` only (`app/router.tsx`'s `ORGANIZATION_BUILT_ROUTES`) — RAAD Platform staff no
+ * longer reach this page at all: migration `c4d9a2e6f813` revoked founder/regional_manager/
+ * support_staff's `transport_ops.parents.*` grants entirely, per CLAUDE.md's own Business Model
+ * ("RAAD does not manage students or parents directly"). Only `org_admin` holds any
+ * `transport_ops.parents.*`/`.student_parents.*` permission now (full CRUD, seeded matrix
+ * `5437a5d1651b`). `canManage` below is a presentation-layer hint only
+ * (`.claude/rules/frontend.md` #2).
  *
  * **The list table shows only Name + Status** — `GET /parents` returns `ParentSummaryResponse`
  * (`id`/`full_name`/`status` only), not the full `Parent` shape. Opening the detail drawer issues
- * a second `GET /parents/{id}` for organization/user/phone/timestamp fields — see
- * `StudentsPage.tsx`'s identical docstring note for the full reasoning (this is a `transport_ops`
- * -wide list-route shape, not specific to either aggregate).
+ * a second `GET /parents/{id}` for the richer fields.
  *
- * Not yet scope-filtered server-side (CLAUDE.md's own flagged, system-wide gap) — the same real,
- * live tenant-isolation leak `StudentsPage.tsx`'s own docstring flags applies here identically:
- * since only `org_admin` can reach this route now, an Org Admin currently sees every
- * organization's parents here, not just their own. Pre-existing, not introduced by this phase.
+ * **Financial columns (2026-09-10, Parent & Student Domain Restructure) are fetched per visible
+ * row, not embedded in `ParentSummaryResponse`.** `GET /parents` deliberately stays thin (see
+ * above); `useQueries` fires one `GET /school-finance/parents/{id}/summary` per row on the
+ * *current page only* (bounded by the page size, never the whole table) — the same "N independent
+ * instances of a single-item primitive" shape ADR-0031's own Fleet Overview and
+ * `MultiCameraVideoPanel` already establish as an acceptable bounded burst in this codebase. The
+ * "Payment status" filter below is consequently **page-local**, not a server-side query — labeled
+ * as such rather than presented as more than it is.
+ *
+ * **Tenant-scoped server-side** (ADR-0021's `_apply_scope`, verified against the running
+ * repository code) — an Org Admin only ever sees their own organization's parents and financial
+ * data here, never another school's.
  */
 export function ParentsPage() {
   usePageHeader("Parents", "Parents and guardians linked to students in your organization");
@@ -142,7 +435,11 @@ export function ParentsPage() {
 
   const [selectedParent, setSelectedParent] = useState<ParentSummary | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [billingOpen, setBillingOpen] = useState(false);
+  const [invoiceForPaymentStatus, setInvoiceForPaymentStatus] = useState<ParentInvoiceSummary | null>(null);
   const [searchInput, setSearchInput] = useState("");
+  const [paymentFilter, setPaymentFilter] = useState<ParentPaymentStatus | "all">("all");
 
   const {
     rows,
@@ -176,6 +473,18 @@ export function ParentsPage() {
     enabled: selectedParent !== null,
   });
 
+  const financialSummaryQuery = useQuery({
+    queryKey: ["parents", "financial-summary", selectedParent?.id],
+    queryFn: () => getParentFinancialSummary(selectedParent!.id),
+    enabled: selectedParent !== null,
+  });
+
+  const billingProfileQuery = useQuery({
+    queryKey: ["parents", "billing-profile", selectedParent?.id],
+    queryFn: () => getParentBillingProfile(selectedParent!.id),
+    enabled: selectedParent !== null,
+  });
+
   const organizationsLookup = useQuery({
     queryKey: ["organizations", "picker-lookup"],
     queryFn: () => listOrganizationsForPicker(""),
@@ -189,6 +498,33 @@ export function ParentsPage() {
     }
     return map;
   }, [organizationsLookup.data]);
+
+  // Bounded to the current page's rows only — see this component's own docstring.
+  const financialQueries = useQueries({
+    queries: rows.map((row) => ({
+      queryKey: ["parents", "financial-summary", row.id],
+      queryFn: () => getParentFinancialSummary(row.id),
+      staleTime: 15_000,
+    })),
+  });
+
+  const financialByParentId = useMemo(() => {
+    const map = new Map<string, ParentFinancialSummary>();
+    rows.forEach((row, index) => {
+      const data = financialQueries[index]?.data;
+      if (data) {
+        map.set(row.id, data);
+      }
+    });
+    return map;
+  }, [rows, financialQueries]);
+
+  const visibleRows = useMemo(() => {
+    if (paymentFilter === "all") {
+      return rows;
+    }
+    return rows.filter((row) => financialByParentId.get(row.id)?.status === paymentFilter);
+  }, [rows, paymentFilter, financialByParentId]);
 
   const statusMutation = useMutation({
     mutationFn: (input: { id: string; status: ParentStatus }) => updateParentStatus(input.id, input.status),
@@ -230,8 +566,42 @@ export function ParentsPage() {
           </Badge>
         ),
       },
+      {
+        id: "children",
+        header: "Children",
+        cell: ({ row }) => {
+          const summary = financialByParentId.get(row.original.id);
+          return summary ? <span>{summary.children.length}</span> : <Skeleton width={20} height={14} />;
+        },
+      },
+      {
+        id: "outstanding",
+        header: "Outstanding",
+        cell: ({ row }) => {
+          const summary = financialByParentId.get(row.original.id);
+          return summary ? (
+            <span>{formatParentAmount(summary.outstanding, summary.currency)}</span>
+          ) : (
+            <Skeleton width={60} height={14} />
+          );
+        },
+      },
+      {
+        id: "paymentStatus",
+        header: "Payment status",
+        cell: ({ row }) => {
+          const summary = financialByParentId.get(row.original.id);
+          return summary ? (
+            <Badge variant={paymentStatusTone(summary.status)} dot>
+              {paymentStatusLabel(summary.status)}
+            </Badge>
+          ) : (
+            <Skeleton width={70} height={14} />
+          );
+        },
+      },
     ],
-    [],
+    [financialByParentId],
   );
 
   const activeStatusFilter = filters.status ?? "all";
@@ -241,6 +611,20 @@ export function ParentsPage() {
   const canManage = principal?.role === "founder" || principal?.role === "org_admin";
 
   const detail = detailQuery.data;
+  const financialSummary = financialSummaryQuery.data ?? null;
+
+  const drawerStats: DrawerStat[] | undefined = financialSummary
+    ? [
+        { key: "Total due", value: formatParentAmount(financialSummary.totalDue, financialSummary.currency) },
+        { key: "Total paid", value: formatParentAmount(financialSummary.totalPaid, financialSummary.currency) },
+        {
+          key: "Outstanding",
+          value: formatParentAmount(financialSummary.outstanding, financialSummary.currency),
+          color: financialSummary.outstanding !== "0.00" ? "var(--color-danger)" : undefined,
+        },
+        { key: "Payment status", value: paymentStatusLabel(financialSummary.status) },
+      ]
+    : undefined;
 
   return (
     <div className={styles.page}>
@@ -253,7 +637,7 @@ export function ParentsPage() {
         <div className={styles.toolbarActions}>
           <Input
             icon={<Search size={14} />}
-            placeholder="Search parents…"
+            placeholder="Search by name or phone…"
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
             aria-label="Search parents"
@@ -266,6 +650,23 @@ export function ParentsPage() {
         </div>
       </div>
 
+      <div className={styles.toolbar}>
+        <label className={styles.paymentFilterLabel}>
+          Payment status (this page)
+          <select
+            className={styles.paymentFilterSelect}
+            value={paymentFilter}
+            onChange={(event) => setPaymentFilter(event.target.value as ParentPaymentStatus | "all")}
+          >
+            {PAYMENT_FILTERS.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
       {isError ? (
         <EmptyState
           icon={<Contact size={22} />}
@@ -276,7 +677,7 @@ export function ParentsPage() {
         <>
           <DataTable
             columns={columns}
-            data={rows}
+            data={visibleRows}
             getRowId={(row) => row.id}
             isLoading={isLoading}
             sort={sort}
@@ -315,7 +716,33 @@ export function ParentsPage() {
             </Badge>
           )
         }
-        mapSlot={selectedParent && <LinkedStudentsSection parentId={selectedParent.id} canManage={canManage} />}
+        stats={drawerStats}
+        mapSlot={
+          selectedParent && (
+            <>
+              {detail ? (
+                <LinkedStudentsSection
+                  parentId={selectedParent.id}
+                  parentName={selectedParent.fullName}
+                  organizationId={detail.organizationId}
+                  canManage={canManage}
+                />
+              ) : (
+                <Skeleton height={72} />
+              )}
+              <BillingProfileSection
+                parentId={selectedParent.id}
+                canManage={canManage}
+                onEdit={() => setBillingOpen(true)}
+              />
+              <CurrentInvoiceSection
+                parentId={selectedParent.id}
+                canManage={canManage}
+                onUpdateStatus={setInvoiceForPaymentStatus}
+              />
+            </>
+          )
+        }
         rows={
           selectedParent
             ? detailQuery.isLoading
@@ -328,6 +755,11 @@ export function ParentsPage() {
                       value: organizationNameById.get(detail.organizationId) ?? detail.organizationId,
                     },
                     { key: "Phone", value: detail.phone ?? "Not set" },
+                    { key: "Alternative phone", value: detail.alternatePhone ?? "Not set" },
+                    { key: "Address", value: detail.address ?? "Not set" },
+                    { key: "Emergency contact", value: detail.emergencyContactName ?? "Not set" },
+                    { key: "Emergency contact phone", value: detail.emergencyContactPhone ?? "Not set" },
+                    { key: "Notes", value: detail.notes ?? "Not set" },
                     { key: "Linked user ID", value: <MonoText>{detail.userId}</MonoText> },
                     { key: "Parent ID", value: <MonoText>{detail.id}</MonoText> },
                     { key: "Created", value: formatDate(detail.createdAt) },
@@ -339,6 +771,9 @@ export function ParentsPage() {
           selectedParent &&
           canManage && (
             <div className={styles.drawerActions}>
+              <Button variant="secondary" leadingIcon={<Pencil size={13} />} onClick={() => setEditOpen(true)}>
+                Edit
+              </Button>
               {ALL_STATUSES.filter((status) => status !== selectedParent.status).map((status) => (
                 <Button
                   key={status}
@@ -355,7 +790,24 @@ export function ParentsPage() {
         }
       />
 
-      <CreateParentForm open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CreateParentForm
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onOpenExisting={(parent) => setSelectedParent(parent)}
+      />
+      <EditParentForm open={editOpen} onClose={() => setEditOpen(false)} parent={detail ?? null} />
+      <BillingProfileForm
+        open={billingOpen}
+        onClose={() => setBillingOpen(false)}
+        parentId={selectedParent?.id ?? null}
+        parentName={selectedParent?.fullName}
+        existing={billingProfileQuery.data ?? null}
+      />
+      <SetInvoicePaymentStatusForm
+        open={invoiceForPaymentStatus !== null}
+        onClose={() => setInvoiceForPaymentStatus(null)}
+        invoice={invoiceForPaymentStatus}
+      />
     </div>
   );
 }

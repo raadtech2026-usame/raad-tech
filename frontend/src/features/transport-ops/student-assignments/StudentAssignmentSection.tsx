@@ -33,6 +33,12 @@ export interface StudentAssignmentSectionProps {
   organizationId: string;
   canManage: boolean;
   onAssign: () => void;
+  /** 2026-09-12 business-model correction: RAAD's "one Parent/family = one bus" rule moved
+   * Vehicle/Route/Stop assignment to the Parent-level `FamilyTransportationForm` — a per-child
+   * "Assign to route" action no longer belongs on `ParentsPage`'s own child rows, since it could
+   * only ever assign one child at a time and risk splitting a family across two buses.
+   * `StudentsPage.tsx`'s own standalone usage is unaffected (defaults to showing the action). */
+  hideAssignAction?: boolean;
 }
 
 /**
@@ -66,6 +72,7 @@ export function StudentAssignmentSection({
   organizationId,
   canManage,
   onAssign,
+  hideAssignAction = false,
 }: StudentAssignmentSectionProps) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -127,7 +134,7 @@ export function StudentAssignmentSection({
     <div className={styles.assignment}>
       <div className={styles.assignmentHeader}>
         <span className={styles.assignmentTitle}>Route Assignment</span>
-        {canManage && assignment === null && !assignmentQuery.isLoading && (
+        {canManage && !hideAssignAction && assignment === null && !assignmentQuery.isLoading && (
           <Button size="sm" variant="secondary" leadingIcon={<Navigation size={13} />} onClick={onAssign}>
             Assign to route
           </Button>
@@ -139,7 +146,11 @@ export function StudentAssignmentSection({
         <span className={styles.assignmentEmpty}>Could not load this student's route assignment.</span>
       )}
       {assignmentQuery.isSuccess && assignment === null && (
-        <span className={styles.assignmentEmpty}>No active route assignment.</span>
+        <span className={styles.assignmentEmpty}>
+          {hideAssignAction
+            ? "No active route assignment — set this family's transportation above."
+            : "No active route assignment."}
+        </span>
       )}
 
       {assignment && (

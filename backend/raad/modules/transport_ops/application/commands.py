@@ -76,7 +76,7 @@ transferred/… → CR-1 revocation event"), fanning out by `status` exactly lik
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from raad.core.tenancy.principal import Principal
@@ -88,6 +88,12 @@ class EnrollStudentCommand:
     full_name: str
     external_ref: str | None
     actor: Principal
+    #: 2026-09-10 explicit user directive — additive, optional profile fields, not in Database
+    #: Design §6.2. `date_of_birth` is a `date` (already parsed at the API boundary, matching
+    #: `school_erp`'s own "parse once, at the boundary" convention for structured fields).
+    date_of_birth: date | None = None
+    gender: str | None = None
+    notes: str | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +102,9 @@ class UpdateStudentCommand:
     full_name: str
     external_ref: str | None
     actor: Principal
+    date_of_birth: date | None = None
+    gender: str | None = None
+    notes: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +144,13 @@ class RegisterParentCommand:
     email: str | None
     phone: str | None
     actor: Principal
+    #: 2026-09-10 explicit user directive — additive, optional family/contact profile fields,
+    #: not in Database Design §6.3.
+    alternate_phone: str | None = None
+    address: str | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    notes: str | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +159,62 @@ class UpdateParentCommand:
     full_name: str
     phone: str | None
     actor: Principal
+    alternate_phone: str | None = None
+    address: str | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
+class ChildEnrollmentSpec:
+    """2026-09-10 explicit user directive (ADR-0041 §2) — one child inside a
+    `RegisterParentWithChildrenCommand`. Field-for-field the same shape `EnrollStudentCommand`
+    already carries, plus the `student_parents` link fields `StudentParent.link` needs, since
+    this spec produces both a `Student` and its link to the new `Parent` in one step."""
+
+    full_name: str
+    external_ref: str | None = None
+    date_of_birth: date | None = None
+    gender: str | None = None
+    notes: str | None = None
+    relationship: str | None = None
+    is_primary: bool = False
+
+
+@dataclass(frozen=True)
+class RegisterParentWithChildrenCommand:
+    """ADR-0041 §2: creates a `Parent` and zero or more `Student`s, linking every child to the
+    new parent, in one `TransportOpsUnitOfWork` transaction — the "Add Parent -> add children ->
+    Save" primary registration flow. Field-for-field identical to `RegisterParentCommand` plus
+    `children`; a request with an empty `children` list behaves exactly like
+    `RegisterParentCommand` (a Parent with no children yet, addable later).
+
+    **Family transportation (2026-09-12 business-model correction).** `route_id`/
+    `pickup_stop_id`/`dropoff_stop_id`/`vehicle_id` are the family's *one* Vehicle/Route/Stop
+    pair, set once here rather than per child — RAAD's "one Parent/family = one bus" rule
+    (`services.py`'s `ParentApplicationService` docstring). When `route_id` is given, every
+    child in `children` is assigned to that exact same route/stops/vehicle in this same
+    transaction; omit all four to register a parent (and children) with no transportation yet,
+    assignable later via `SetFamilyTransportationCommand`. `pickup_stop_id`/`dropoff_stop_id`
+    are required together with `route_id`; `vehicle_id` alone stays optional, mirroring
+    `StudentAssignment.assign`'s own nullable `vehicle_id`."""
+
+    organization_id: str
+    full_name: str
+    email: str | None
+    phone: str | None
+    actor: Principal
+    alternate_phone: str | None = None
+    address: str | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    notes: str | None = None
+    children: list[ChildEnrollmentSpec] = field(default_factory=list)
+    route_id: str | None = None
+    pickup_stop_id: str | None = None
+    dropoff_stop_id: str | None = None
+    vehicle_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -378,3 +450,21 @@ class GraduateStudentAssignmentCommand:
 class DisableStudentAssignmentCommand:
     student_assignment_id: str
     actor: Principal
+
+
+@dataclass(frozen=True)
+class SetFamilyTransportationCommand:
+    """2026-09-12 business-model correction: RAAD's "one Parent/family = one bus" rule made
+    structural, not merely validated — see `ParentApplicationService.set_family_transportation`'s
+    own docstring (`services.py`). Ends every one of this Parent's linked children's current
+    active `StudentAssignment` (if any) and creates a fresh one for each, all sharing this exact
+    route/stops/vehicle, in one transaction. Used both to assign a family's transportation for
+    the first time (an existing parent registered before this correction, or one who skipped it
+    at registration) and to change it later — the same one operation either way."""
+
+    parent_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    actor: Principal
+    vehicle_id: str | None = None

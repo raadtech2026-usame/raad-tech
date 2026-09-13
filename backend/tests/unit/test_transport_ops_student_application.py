@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from raad.core.errors.exceptions import AuthorizationError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
@@ -144,6 +144,10 @@ class InMemoryStudentRepository(StudentRepository):
 
     async def list_all(self) -> list[Student]:
         return list(self.by_id.values())
+
+    async def list_by_ids(self, student_ids: list[str]) -> list[Student]:
+        wanted = set(student_ids)
+        return [s for s in self.by_id.values() if str(s.id) in wanted]
 
     async def list_page(
         self,
@@ -308,6 +312,24 @@ class StudentApplicationServiceEnrollTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(uow.recorded_events), 1)
         self.assertEqual(uow.recorded_events[0].event_type, "StudentEnrolled")
+
+    async def test_enroll_student_passes_through_the_additive_profile_fields(self) -> None:
+        """2026-09-10 explicit user directive (Parent & Student Domain Restructure)."""
+        service, uow = make_service()
+        command = EnrollStudentCommand(
+            organization_id=VALID_ORG_ULID,
+            full_name="Amina Ali",
+            external_ref=None,
+            actor=make_actor(),
+            date_of_birth=date(2015, 3, 4),
+            gender="female",
+            notes="Allergic to peanuts.",
+        )
+        dto = await service.enroll_student(command, uow=uow)
+
+        self.assertEqual(dto.date_of_birth, date(2015, 3, 4))
+        self.assertEqual(dto.gender, "female")
+        self.assertEqual(dto.notes, "Allergic to peanuts.")
 
     async def test_enroll_student_generates_a_fresh_id_per_call(self) -> None:
         service, uow = make_service()

@@ -494,3 +494,164 @@ def expense_voided(
         occurred_at=occurred_at,
         payload={"expense_id": expense_id, "reason": reason, "actor_id": actor_id},
     )
+
+
+# --------------------------------------------------------------------------------------------
+# ParentBillingProfile / ParentInvoice (ADR-0042, 2026-09-11 — supersedes ADR-0041 §1)
+# --------------------------------------------------------------------------------------------
+
+
+def parent_billing_profile_created(
+    *,
+    billing_profile_id: str,
+    organization_id: str,
+    parent_id: str,
+    monthly_fee: Decimal,
+    currency: str,
+    billing_start_period: str,
+    due_day: int,
+    occurred_at: datetime,
+    actor_id: str | None = None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="school_erp.ParentBillingProfileCreated",
+        aggregate_type="ParentBillingProfile",
+        aggregate_id=billing_profile_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "billing_profile_id": billing_profile_id,
+            "organization_id": organization_id,
+            "parent_id": parent_id,
+            "monthly_fee": _money(monthly_fee),
+            "currency": currency,
+            "billing_start_period": billing_start_period,
+            "due_day": due_day,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def parent_billing_profile_updated(
+    *,
+    billing_profile_id: str,
+    organization_id: str,
+    monthly_fee: Decimal,
+    currency: str,
+    due_day: int,
+    occurred_at: datetime,
+    actor_id: str | None = None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="school_erp.ParentBillingProfileUpdated",
+        aggregate_type="ParentBillingProfile",
+        aggregate_id=billing_profile_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "billing_profile_id": billing_profile_id,
+            "monthly_fee": _money(monthly_fee),
+            "currency": currency,
+            "due_day": due_day,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def parent_billing_profile_status_changed(
+    *,
+    billing_profile_id: str,
+    organization_id: str,
+    status: str,
+    occurred_at: datetime,
+    actor_id: str | None = None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="school_erp.ParentBillingProfileStatusChanged",
+        aggregate_type="ParentBillingProfile",
+        aggregate_id=billing_profile_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "billing_profile_id": billing_profile_id,
+            "status": status,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def parent_invoice_generated(
+    *,
+    invoice_id: str,
+    organization_id: str,
+    parent_id: str,
+    period: str,
+    amount: Decimal,
+    currency: str,
+    child_count: int,
+    occurred_at: datetime,
+    actor_id: str | None = None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="school_erp.ParentInvoiceGenerated",
+        aggregate_type="ParentInvoice",
+        aggregate_id=invoice_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "invoice_id": invoice_id,
+            "organization_id": organization_id,
+            "parent_id": parent_id,
+            "period": period,
+            "amount": _money(amount),
+            "currency": currency,
+            "child_count": child_count,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def parent_invoice_payment_status_updated(
+    *,
+    invoice_id: str,
+    organization_id: str,
+    status: str,
+    amount_paid: Decimal,
+    balance_due: Decimal,
+    currency: str,
+    occurred_at: datetime,
+    actor_id: str | None = None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="school_erp.ParentInvoicePaymentStatusUpdated",
+        aggregate_type="ParentInvoice",
+        aggregate_id=invoice_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "invoice_id": invoice_id,
+            "status": status,
+            "amount_paid": _money(amount_paid),
+            "balance_due": _money(balance_due),
+            "currency": currency,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def parent_invoice_cancelled(
+    *,
+    invoice_id: str,
+    organization_id: str,
+    reason: str | None,
+    occurred_at: datetime,
+    actor_id: str | None = None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="school_erp.ParentInvoiceCancelled",
+        aggregate_type="ParentInvoice",
+        aggregate_id=invoice_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"invoice_id": invoice_id, "reason": reason, "actor_id": actor_id},
+    )

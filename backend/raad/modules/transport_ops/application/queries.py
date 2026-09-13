@@ -101,6 +101,9 @@ class StudentDTO:
     status: str
     created_at: datetime
     updated_at: datetime
+    date_of_birth: date | None = None
+    gender: str | None = None
+    notes: str | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,9 @@ def student_to_dto(student: Student) -> StudentDTO:
         status=student.status.value,
         created_at=student.created_at,
         updated_at=student.updated_at,
+        date_of_birth=student.date_of_birth,
+        gender=student.gender.value if student.gender is not None else None,
+        notes=student.notes,
     )
 
 
@@ -158,6 +164,11 @@ class ParentDTO:
     has_video_playback_access: bool
     created_at: datetime
     updated_at: datetime
+    alternate_phone: str | None = None
+    address: str | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    notes: str | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +192,15 @@ def parent_to_dto(parent: Parent) -> ParentDTO:
         has_video_playback_access=parent.has_video_playback_access,
         created_at=parent.created_at,
         updated_at=parent.updated_at,
+        alternate_phone=str(parent.alternate_phone) if parent.alternate_phone is not None else None,
+        address=parent.address,
+        emergency_contact_name=parent.emergency_contact_name,
+        emergency_contact_phone=(
+            str(parent.emergency_contact_phone)
+            if parent.emergency_contact_phone is not None
+            else None
+        ),
+        notes=parent.notes,
     )
 
 
@@ -233,13 +253,16 @@ class ParentForStudentDTO:
 @dataclass(frozen=True)
 class StudentForParentDTO:
     """`Student`'s own fields plus this link's `relationship`/`is_primary` — the read shape for
-    `ListStudentsForParentQuery` (Phase 10.7)."""
+    `ListStudentsForParentQuery` (Phase 10.7). `date_of_birth` (ADR-0041 §2, 2026-09-10) lets
+    the Parent detail page's own children list show it without a second `GET /students/{id}`
+    per child."""
 
     student_id: str
     full_name: str
     status: str
     relationship: str | None
     is_primary: bool
+    date_of_birth: date | None = None
 
 
 def student_parent_to_dto(link: StudentParent) -> StudentParentDTO:
@@ -275,6 +298,7 @@ def student_for_parent_to_dto(
         status=student.status.value,
         relationship=link.relationship,
         is_primary=link.is_primary,
+        date_of_birth=student.date_of_birth,
     )
 
 
@@ -536,12 +560,20 @@ class StudentAssignmentDTO:
 
 @dataclass(frozen=True)
 class StudentAssignmentSummaryDTO:
-    """Lighter listing projection, mirroring `TripSummaryDTO`'s shape."""
+    """Lighter listing projection, mirroring `TripSummaryDTO`'s shape.
+
+    `vehicle_id` (Report Center re-design, 2026-09-11) is additive — the Student Transportation
+    report needs it to answer "which bus" without an N+1 `get_student_assignment_by_id` per row;
+    `GET /student-assignments`'s own wire response (`StudentAssignmentSummaryResponse`) is
+    deliberately left unchanged, since no caller of the public route has asked for this field —
+    only `reporting`'s own composition of this application service needs it.
+    """
 
     id: str
     student_id: str
     route_id: str
     status: str
+    vehicle_id: str | None = None
 
 
 def student_assignment_to_dto(assignment: StudentAssignment) -> StudentAssignmentDTO:
@@ -576,4 +608,7 @@ def student_assignment_to_summary_dto(
         student_id=str(assignment.student_id),
         route_id=str(assignment.route_id),
         status=assignment.status.value,
+        vehicle_id=(
+            str(assignment.vehicle_id) if assignment.vehicle_id is not None else None
+        ),
     )

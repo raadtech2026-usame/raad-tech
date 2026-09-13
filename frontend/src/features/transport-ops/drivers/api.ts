@@ -91,29 +91,40 @@ export async function getDriver(id: string): Promise<Driver> {
 
 export interface RegisterDriverInput {
   organizationId: string;
-  userId: string;
+  fullName: string;
+  email?: string | null;
+  phone?: string | null;
   licenseNo: string;
 }
 
-/** `POST /drivers` (`RegisterDriverRequest`) exactly: `organization_id`, `user_id`, `license_no`.
- * `user_id` links this transport-facing profile to an *existing* `iam.User` login (mirroring
- * `Parent.user_id`'s identical precedent) — this form does not create a `User`, only references
- * one that must already exist (typically invited with `role: "driver"` via Users & Roles first).
+export interface RegisterDriverResult {
+  driver: Driver;
+  /** The generated one-time login password for the linked `iam.User` (role=driver) — surfaced
+   * exactly once, here, for hand-off. Never re-derivable via `GET /drivers/{id}`. */
+  temporaryPassword: string;
+}
+
+/** `POST /drivers` (`RegisterDriverRequest`, `transport_ops.api.schemas`) — ADR-0003: the caller
+ * no longer supplies a `user_id`. The backend provisions the linked `iam.User` (role=driver)
+ * itself from `full_name`/`email`/`phone` (at least one of `email`/`phone` is required —
+ * `iam.User`'s own invariant) and returns `{driver, temporary_password}`
+ * (`DriverCreatedResponse`), not a bare `Driver` — mirroring `registerParent`'s identical shape.
  * Per the seeded RBAC matrix (`migrations/versions/
  * 20260721_0900_5437a5d1651b_iam_create_role_permissions_table.py`), only `founder`/`org_admin`
  * hold `transport_ops.drivers.create` — `DriversPage`/`CreateDriverForm`'s own `canManage` flag
- * mirrors this. See `CreateDriverForm.tsx`'s own docstring for the identical `iam.users.read` gap
- * `CreateParentForm.tsx` already surfaced: `org_admin` cannot browse `GET /users`. */
-export async function registerDriver(input: RegisterDriverInput): Promise<Driver> {
-  const wire = await apiRequest<DriverWire>("/drivers", {
+ * mirrors this. */
+export async function registerDriver(input: RegisterDriverInput): Promise<RegisterDriverResult> {
+  const wire = await apiRequest<{ driver: DriverWire; temporary_password: string }>("/drivers", {
     method: "POST",
     body: {
       organization_id: input.organizationId,
-      user_id: input.userId,
+      full_name: input.fullName,
+      email: input.email ?? null,
+      phone: input.phone ?? null,
       license_no: input.licenseNo,
     },
   });
-  return toDriver(wire);
+  return { driver: toDriver(wire.driver), temporaryPassword: wire.temporary_password };
 }
 
 /** `PATCH /drivers/{id}` sending only `status` — dispatches to `activate_driver`/
@@ -154,38 +165,3 @@ export async function listOrganizationsForPicker(search: string): Promise<Organi
   return wire.data.map((org) => ({ id: org.id, name: org.name }));
 }
 
-export interface UserOption {
-  id: string;
-  fullName: string;
-  email: string | null;
-  phone: string | null;
-}
-
-interface UserOptionWire {
-  id: string;
-  full_name: string;
-  email: string | null;
-  phone: string | null;
-}
-
-/** Minimal, read-only `GET /users` lookup backing `CreateDriverForm`'s "linked user" picker —
- * filtered to the target organization and `role=driver`/`status=active`. Identical precedent to
- * `admin/users/api.ts`/`transport-ops/parents/api.ts`'s own pickers for an unavoidable
- * cross-bounded-context "pick an existing X" read.
- *
- * **Only reachable for a principal holding `iam.users.read`** — per the seeded RBAC matrix, that
- * is `founder` only among the roles that also hold `transport_ops.drivers.create` (`org_admin`
- * holds no `iam.users.*` permission at all). `CreateDriverForm.tsx` therefore only calls this for
- * `founder`; see that component's own docstring for how `org_admin` supplies a `user_id`
- * instead. */
-export async function listDriverUsersForPicker(organizationId: string, search: string): Promise<UserOption[]> {
-  const query = buildOffsetListQuery({
-    page: 1,
-    pageSize: 100,
-    sort: { field: "full_name", direction: "asc" },
-    filters: { organization_id: organizationId, role: "driver", status: "active" },
-    search,
-  });
-  const wire = await apiRequest<OffsetPageWire<UserOptionWire>>(`/users?${query}`);
-  return wire.data.map((user) => ({ id: user.id, fullName: user.full_name, email: user.email, phone: user.phone }));
-}

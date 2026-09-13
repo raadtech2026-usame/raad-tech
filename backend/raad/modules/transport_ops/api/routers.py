@@ -237,6 +237,8 @@ from raad.modules.transport_ops.api.schemas import (
     RouteResponse,
     RouteSummaryResponse,
     ScheduleTripRequest,
+    SetFamilyTransportationRequest,
+    SetFamilyTransportationResponse,
     StopResponse,
     StudentAssignmentResponse,
     StudentAssignmentSummaryResponse,
@@ -262,6 +264,7 @@ from raad.modules.transport_ops.application.commands import (
     AddStopToRouteCommand,
     AssignStudentToRouteCommand,
     ChangeTripDriverCommand,
+    ChildEnrollmentSpec,
     CreateRouteCommand,
     DisableDriverCommand,
     DisableParentCommand,
@@ -277,10 +280,12 @@ from raad.modules.transport_ops.application.commands import (
     LinkParentToStudentCommand,
     RegisterDriverCommand,
     RegisterParentCommand,
+    RegisterParentWithChildrenCommand,
     RemoveStudentAssignmentCommand,
     RevokeParentVideoLiveAccessCommand,
     RevokeParentVideoPlaybackAccessCommand,
     ScheduleTripCommand,
+    SetFamilyTransportationCommand,
     StartTripCommand,
     TransferStudentAssignmentCommand,
     TransferStudentCommand,
@@ -351,6 +356,9 @@ def _student_dto_to_response(student: StudentDTO) -> StudentResponse:
         status=student.status,
         created_at=student.created_at,
         updated_at=student.updated_at,
+        date_of_birth=student.date_of_birth,
+        gender=student.gender,
+        notes=student.notes,
     )
 
 
@@ -374,6 +382,11 @@ def _parent_dto_to_response(parent: ParentDTO) -> ParentResponse:
         has_video_playback_access=parent.has_video_playback_access,
         created_at=parent.created_at,
         updated_at=parent.updated_at,
+        alternate_phone=parent.alternate_phone,
+        address=parent.address,
+        emergency_contact_name=parent.emergency_contact_name,
+        emergency_contact_phone=parent.emergency_contact_phone,
+        notes=parent.notes,
     )
 
 
@@ -418,6 +431,7 @@ def _student_for_parent_dto_to_response(
         status=dto.status,
         relationship=dto.relationship,
         is_primary=dto.is_primary,
+        date_of_birth=dto.date_of_birth,
     )
 
 
@@ -551,6 +565,9 @@ async def enroll_student(
         full_name=body.full_name,
         external_ref=body.external_ref,
         actor=principal,
+        date_of_birth=body.date_of_birth,
+        gender=body.gender,
+        notes=body.notes,
     )
     student = await student_service.enroll_student(command, uow=uow)
     return _student_dto_to_response(student)
@@ -676,10 +693,19 @@ async def update_student(
     student_service: StudentApplicationService = Depends(get_student_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> StudentResponse:
-    if body.full_name is None and body.external_ref is None:
+    if (
+        body.full_name is None
+        and body.external_ref is None
+        and body.date_of_birth is None
+        and body.gender is None
+        and body.notes is None
+    ):
         raise ValidationError(
-            "At least one of 'full_name' or 'external_ref' must be provided.",
-            details={"fields": ["full_name", "external_ref"]},
+            "At least one of 'full_name', 'external_ref', 'date_of_birth', 'gender' or "
+            "'notes' must be provided.",
+            details={
+                "fields": ["full_name", "external_ref", "date_of_birth", "gender", "notes"]
+            },
         )
 
     current = await student_service.get_student_by_id(
@@ -691,6 +717,11 @@ async def update_student(
         external_ref=(
             body.external_ref if body.external_ref is not None else current.external_ref
         ),
+        date_of_birth=(
+            body.date_of_birth if body.date_of_birth is not None else current.date_of_birth
+        ),
+        gender=body.gender if body.gender is not None else current.gender,
+        notes=body.notes if body.notes is not None else current.notes,
         actor=principal,
     )
     student = await student_service.update_student(command, uow=uow)
@@ -764,12 +795,56 @@ async def register_parent(
     parent_service: ParentApplicationService = Depends(get_parent_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> ParentCreatedResponse:
+    if body.children is not None:
+        # ADR-0041 §2: the Parent + every listed child, created and linked in one transaction.
+        with_children_command = RegisterParentWithChildrenCommand(
+            organization_id=body.organization_id,
+            full_name=body.full_name,
+            email=body.email,
+            phone=body.phone,
+            actor=principal,
+            alternate_phone=body.alternate_phone,
+            address=body.address,
+            emergency_contact_name=body.emergency_contact_name,
+            emergency_contact_phone=body.emergency_contact_phone,
+            notes=body.notes,
+            children=[
+                ChildEnrollmentSpec(
+                    full_name=child.full_name,
+                    external_ref=child.external_ref,
+                    date_of_birth=child.date_of_birth,
+                    gender=child.gender,
+                    notes=child.notes,
+                    relationship=child.relationship,
+                    is_primary=child.is_primary,
+                )
+                for child in body.children
+            ],
+            route_id=body.route_id,
+            pickup_stop_id=body.pickup_stop_id,
+            dropoff_stop_id=body.dropoff_stop_id,
+            vehicle_id=body.vehicle_id,
+        )
+        parent, children, temporary_password = await parent_service.register_parent_with_children(
+            with_children_command, uow=uow
+        )
+        return ParentCreatedResponse(
+            parent=_parent_dto_to_response(parent),
+            temporary_password=temporary_password,
+            children=[_student_dto_to_response(child) for child in children],
+        )
+
     command = RegisterParentCommand(
         organization_id=body.organization_id,
         full_name=body.full_name,
         email=body.email,
         phone=body.phone,
         actor=principal,
+        alternate_phone=body.alternate_phone,
+        address=body.address,
+        emergency_contact_name=body.emergency_contact_name,
+        emergency_contact_phone=body.emergency_contact_phone,
+        notes=body.notes,
     )
     parent, temporary_password = await parent_service.register_parent(command, uow=uow)
     return ParentCreatedResponse(
@@ -898,15 +973,37 @@ async def update_parent(
     parent_service: ParentApplicationService = Depends(get_parent_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> ParentResponse:
-    if body.full_name is None and body.phone is None and body.status is None:
+    _profile_fields = (
+        body.full_name,
+        body.phone,
+        body.alternate_phone,
+        body.address,
+        body.emergency_contact_name,
+        body.emergency_contact_phone,
+        body.notes,
+    )
+    if all(field is None for field in _profile_fields) and body.status is None:
         raise ValidationError(
-            "At least one of 'full_name', 'phone', or 'status' must be provided.",
-            details={"fields": ["full_name", "phone", "status"]},
+            "At least one of 'full_name', 'phone', 'alternate_phone', 'address', "
+            "'emergency_contact_name', 'emergency_contact_phone', 'notes', or 'status' must "
+            "be provided.",
+            details={
+                "fields": [
+                    "full_name",
+                    "phone",
+                    "alternate_phone",
+                    "address",
+                    "emergency_contact_name",
+                    "emergency_contact_phone",
+                    "notes",
+                    "status",
+                ]
+            },
         )
 
     parent: ParentDTO | None = None
 
-    if body.full_name is not None or body.phone is not None:
+    if any(field is not None for field in _profile_fields):
         current = await parent_service.get_parent_by_id(
             GetParentByIdQuery(parent_id=parent_id), uow=uow
         )
@@ -917,6 +1014,23 @@ async def update_parent(
             ),
             phone=body.phone if body.phone is not None else current.phone,
             actor=principal,
+            alternate_phone=(
+                body.alternate_phone
+                if body.alternate_phone is not None
+                else current.alternate_phone
+            ),
+            address=body.address if body.address is not None else current.address,
+            emergency_contact_name=(
+                body.emergency_contact_name
+                if body.emergency_contact_name is not None
+                else current.emergency_contact_name
+            ),
+            emergency_contact_phone=(
+                body.emergency_contact_phone
+                if body.emergency_contact_phone is not None
+                else current.emergency_contact_phone
+            ),
+            notes=body.notes if body.notes is not None else current.notes,
         )
         parent = await parent_service.update_parent(command, uow=uow)
 
@@ -1000,6 +1114,48 @@ async def update_parent_video_access(
             "update_parent_video_access: no field was processed despite the guard above."
         )
     return _parent_dto_to_response(parent)
+
+
+@parents_router.put(
+    "/{parent_id}/transportation",
+    response_model=SetFamilyTransportationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Set or change a family's transportation assignment",
+    description=(
+        "Org Admin. 2026-09-12 business-model correction: RAAD's 'one Parent/family = one bus' "
+        "rule, made structural — the family's route/pickup stop/dropoff stop/vehicle is set "
+        "once here and applied identically to every one of this Parent's currently-linked "
+        "children, replacing each child's own current active assignment (if any) with a fresh "
+        "one against the new values, all in one transaction. Reuses "
+        "`transport_ops.student_assignments.create` (no new permission/migration) — the "
+        "underlying effect is still 'create a StudentAssignment', just for every linked child "
+        "at once rather than one student at a time. A Parent with no linked children yet "
+        "returns an empty `assignments` list, not an error."
+    ),
+)
+async def set_family_transportation(
+    parent_id: str,
+    body: SetFamilyTransportationRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_assignments.create"))
+    ),
+    parent_service: ParentApplicationService = Depends(get_parent_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> SetFamilyTransportationResponse:
+    command = SetFamilyTransportationCommand(
+        parent_id=parent_id,
+        route_id=body.route_id,
+        pickup_stop_id=body.pickup_stop_id,
+        dropoff_stop_id=body.dropoff_stop_id,
+        vehicle_id=body.vehicle_id,
+        actor=principal,
+    )
+    assignments = await parent_service.set_family_transportation(command, uow=uow)
+    return SetFamilyTransportationResponse(
+        assignments=[
+            _student_assignment_dto_to_response(assignment) for assignment in assignments
+        ]
+    )
 
 
 @students_router.post(

@@ -73,6 +73,11 @@ class StudentResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+    #: 2026-09-10 explicit user directive — additive, optional profile fields, not in Database
+    #: Design §6.2.
+    date_of_birth: date | None = None
+    gender: str | None = None
+    notes: str | None = None
 
 
 class StudentSummaryResponse(BaseModel):
@@ -98,6 +103,9 @@ class EnrollStudentRequest(BaseModel):
     organization_id: str
     full_name: str
     external_ref: str | None = None
+    date_of_birth: date | None = None
+    gender: str | None = None
+    notes: str | None = None
 
 
 class UpdateStudentRequest(BaseModel):
@@ -111,10 +119,17 @@ class UpdateStudentRequest(BaseModel):
     bundled-fields shape, since Student's status route is independently documented with its
     own role/notes row, unlike `iam`'s status field.
 
+    2026-09-10: extended with the additive `date_of_birth`/`gender`/`notes` profile fields, in
+    the same uniform `PATCH` rather than a second route — one "edit this student's profile"
+    surface, matching `Student.update_details`'s own extension.
+
     At least one field must be given."""
 
     full_name: str | None = None
     external_ref: str | None = None
+    date_of_birth: date | None = None
+    gender: str | None = None
+    notes: str | None = None
 
 
 class UpdateStudentStatusRequest(BaseModel):
@@ -143,6 +158,13 @@ class ParentResponse(BaseModel):
     has_video_playback_access: bool
     created_at: datetime
     updated_at: datetime
+    #: 2026-09-10 explicit user directive — additive, optional family/contact profile fields,
+    #: not in Database Design §6.3.
+    alternate_phone: str | None = None
+    address: str | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    notes: str | None = None
 
 
 class ParentSummaryResponse(BaseModel):
@@ -151,24 +173,66 @@ class ParentSummaryResponse(BaseModel):
     status: str
 
 
+class ChildEnrollmentRequest(BaseModel):
+    """One child inside `RegisterParentRequest.children` (ADR-0041 §2) — the same fields
+    `EnrollStudentRequest` takes, minus `organization_id` (the parent's own), plus the
+    `student_parents` link fields `POST /students/{id}/parents` normally takes separately."""
+
+    full_name: str
+    external_ref: str | None = None
+    date_of_birth: date | None = None
+    gender: str | None = None
+    notes: str | None = None
+    relationship: str | None = None
+    is_primary: bool = False
+
+
 class RegisterParentRequest(BaseModel):
     """ADR-0003 (accepted): `user_id` is no longer supplied by the caller — the login-capable
     `iam.User` (role=parent) is provisioned by this service itself from `full_name`/`email`/
-    `phone` below (at least one of `email`/`phone` required, `iam.User`'s own invariant)."""
+    `phone` below (at least one of `email`/`phone` required, `iam.User`'s own invariant).
+
+    **`children` (ADR-0041 §2, 2026-09-10):** when given (even as an empty list), the Parent and
+    every listed child are created and linked together in one transaction
+    (`ParentApplicationService.register_parent_with_children`). When omitted (`None`, the
+    default), behaviour is byte-for-byte the original `register_parent` path — this is one
+    endpoint with an additive optional field, not a second competing one.
+
+    **`route_id`/`pickup_stop_id`/`dropoff_stop_id`/`vehicle_id` (2026-09-12 business-model
+    correction):** the family's *one* transportation assignment, applied identically to every
+    listed child in the same transaction — RAAD's "one Parent/family = one bus" rule. Only
+    consumed when `children` is also given; `pickup_stop_id`/`dropoff_stop_id` are required
+    together with `route_id` (`vehicle_id` alone stays optional). Omit all four to register a
+    parent (and children) with no transportation yet — assignable later via
+    `PUT /parents/{id}/transportation`."""
 
     organization_id: str
     full_name: str
     email: str | None = None
     phone: str | None = None
+    alternate_phone: str | None = None
+    address: str | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    notes: str | None = None
+    children: list[ChildEnrollmentRequest] | None = None
+    route_id: str | None = None
+    pickup_stop_id: str | None = None
+    dropoff_stop_id: str | None = None
+    vehicle_id: str | None = None
 
 
 class ParentCreatedResponse(BaseModel):
     """`POST /parents`'s actual response shape (ADR-0003/ADR-0017) — wraps the usual
     `ParentResponse` with the generated one-time temporary password for the new linked login,
-    surfaced exactly once, here, for hand-off. Never re-derivable via `GET /parents/{id}`."""
+    surfaced exactly once, here, for hand-off. Never re-derivable via `GET /parents/{id}`.
+
+    `children` (ADR-0041 §2) is populated exactly when the request's own `children` was given —
+    every child `Student` created and linked in the same transaction as `parent`."""
 
     parent: ParentResponse
     temporary_password: str
+    children: list[StudentResponse] = []
 
 
 class UpdateParentRequest(BaseModel):
@@ -178,10 +242,19 @@ class UpdateParentRequest(BaseModel):
     dedicated behavioral status sub-route is documented for `/parents` (see `routers.py`'s
     module docstring). `status` accepts `ParentStatus`'s two values (`active`/`inactive`).
 
+    2026-09-10: extended with the additive `alternate_phone`/`address`/`emergency_contact_name`/
+    `emergency_contact_phone`/`notes` profile fields, in the same composed `PATCH`, matching
+    `Parent.update_details`'s own extension.
+
     At least one field must be given."""
 
     full_name: str | None = None
     phone: str | None = None
+    alternate_phone: str | None = None
+    address: str | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    notes: str | None = None
     status: str | None = None
 
 
@@ -237,6 +310,7 @@ class StudentForParentResponse(BaseModel):
     status: str
     relationship: str | None
     is_primary: bool
+    date_of_birth: date | None = None
 
 
 class DriverResponse(BaseModel):
@@ -418,3 +492,22 @@ class UpdateStudentAssignmentStatusRequest(BaseModel):
     `{status}` -> removed/transferred/graduated/disabled -> CR-1 revocation event')."""
 
     status: str
+
+
+class SetFamilyTransportationRequest(BaseModel):
+    """`PUT /parents/{parent_id}/transportation` (2026-09-12 business-model correction): the
+    family's one Vehicle/Route/Stop pair, applied identically to every one of this Parent's
+    linked children. Unlike `AssignStudentToRouteRequest`, this has no `organization_id` field —
+    the Parent's own is used, and no `student_id` — every currently-linked child is affected."""
+
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    vehicle_id: str | None = None
+
+
+class SetFamilyTransportationResponse(BaseModel):
+    """One row per child actually (re)assigned — empty when the Parent has no linked children
+    yet (a legal no-op, not an error)."""
+
+    assignments: list[StudentAssignmentResponse]

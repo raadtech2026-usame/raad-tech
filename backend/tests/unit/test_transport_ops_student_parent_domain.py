@@ -279,6 +279,12 @@ class StudentParentRepositoryInterfaceTests(unittest.TestCase):
                     if str(link.parent_id) == str(parent_id)
                 ]
 
+            async def list_by_students(self, student_ids):
+                wanted = {str(sid) for sid in student_ids}
+                return [
+                    link for link in self._links.values() if str(link.student_id) in wanted
+                ]
+
         repo = InMemoryStudentParentRepository()
         link = make_link()
         repo.add(link)

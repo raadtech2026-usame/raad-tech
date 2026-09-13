@@ -24,7 +24,7 @@ export function configureUnauthorizedHandler(handler: UnauthorizedHandler): void
 }
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   /** Skip attaching `Authorization` (login/refresh themselves must not send a stale/absent
    * token) and skip the 401-triggers-refresh retry (refreshing itself can 401). */
