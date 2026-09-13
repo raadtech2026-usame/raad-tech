@@ -1,0 +1,505 @@
+# ==============================================================================================
+# GENERATED FILE — DO NOT HAND-EDIT. Regenerate instead (see command below).
+#
+# This is the single-file, fully-merged production Compose stack for a Coolify "Docker Compose"
+# resource, produced because Coolify v4.3.19's Compose resource type offers only "Managed by
+# Coolify" or "Raw (deploy file as-is)" — there is no UI to supply a second `-f` override file.
+# The project's real source of truth stays split, exactly as designed
+# (docs/runbooks/coolify-deployment.md, docker/README.md):
+#
+#   docker/docker-compose.yml           — the base stack (dev-safe on its own)
+#   docker/docker-compose.coolify.yml   — the Coolify overlay (ADR-0022)
+#
+# This file is the mechanical, byte-faithful result of merging exactly those two — nothing added,
+# removed, or hand-adjusted beyond what `docker compose config` itself produces. If either source
+# file changes, regenerate this file the same way; never patch it directly, or it will silently
+# drift from the two files it's supposed to mirror.
+#
+# Regenerate with (from the repository root; `--no-interpolate` is required — without it, this
+# command bakes whatever is in your *local* docker/.env, including local secrets, into the
+# committed file, and defeats Coolify's own environment-variable substitution at deploy time;
+# `--no-path-resolution` is required — without it, build contexts/bind mounts are rewritten to
+# this machine's own absolute filesystem path, which is meaningless on Coolify's VPS):
+#
+#   COMPOSE_PROFILES= docker compose --env-file /dev/null \
+#     -f docker/docker-compose.yml -f docker/docker-compose.coolify.yml \
+#     config --no-interpolate --no-path-resolution > docker/docker-compose.coolify.full.yml
+#
+# In Coolify: New Resource -> Docker Compose -> Raw, pointing at this exact file. Then follow
+# docs/runbooks/coolify-deployment.md Steps 3-7 verbatim (env vars via Coolify's own UI, domain
+# assignment, the device-plane firewall/DNS step) — none of that is expressible inside a Compose
+# file and none of it changed by generating this one.
+#
+# Two things this merge faithfully carries over, disclosed rather than silently fixed, since
+# fixing either would be a service-definition change beyond what the merge itself produces:
+#   1. `COMPOSE_PROFILES` must be left unset/empty in Coolify's own environment-variable store.
+#      `nginx` is still present below (gated behind `profiles: [gateway]`, from the base file,
+#      untouched by the Coolify overlay) — it only starts if that profile is activated. `certbot`
+#      does not appear at all: it is defined only in docker-compose.prod.yml, which is not part of
+#      this merge.
+#   2. `frontend`'s healthcheck still probes `http://127.0.0.1:5173/` (the Vite dev server port)
+#      even though this overlay builds `frontend` with `target: prod`, which serves on 80 via its
+#      own nginx instead. This mismatch is inherited unchanged from the source files (the same gap
+#      exists in a docker-compose.prod.yml merge) — not introduced or corrected here.
+# ==============================================================================================
+name: docker
+networks:
+  default:
+    name: docker_default
+services:
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../docker/backend.Dockerfile
+    command:
+      - uvicorn
+      - raad.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    container_name: raad-backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+        required: true
+      postgres:
+        condition: service_healthy
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    environment:
+      RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
+      RAAD_BROKER__STREAM_MAX_LENGTH: ${RAAD_BROKER__STREAM_MAX_LENGTH:-0}
+      RAAD_BROKER__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      RAAD_CORS__ALLOWED_ORIGINS: ${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}
+      RAAD_DB__URL: postgresql+asyncpg://${POSTGRES_USER:-raad}:${POSTGRES_PASSWORD:-raad}@postgres:5432/${POSTGRES_DB:-raad}
+      RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL: ${JT1078_SIGNALING_URL:-ws://localhost:7911}
+      RAAD_ENVIRONMENT: ${RAAD_ENVIRONMENT:-dev}
+      RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
+      RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
+      RAAD_PAYMENT__PROVIDER_CREDENTIALS: ${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}
+      RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+    healthcheck:
+      interval: 10s
+      retries: 5
+      start_period: 10s
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready',
+          timeout=3)
+      timeout: 5s
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    restart: unless-stopped
+  backup:
+    build:
+      context: ..
+      dockerfile: docker/backup.Dockerfile
+    command:
+      - /app/backup-loop.sh
+    container_name: raad-backup
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+    entrypoint: []
+    environment:
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE:-}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_RETRY_MINUTES: ${BACKUP_RETRY_MINUTES:-15}
+      BACKUP_WAIT_FOR_DB_SECONDS: ${BACKUP_WAIT_FOR_DB_SECONDS:-120}
+      PGDATABASE: ${POSTGRES_DB:-raad}
+      PGHOST: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:-raad}
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-raad}
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - source: raad_backups_data
+        target: /backups
+        type: volume
+        volume: {}
+  device-gateway:
+    build:
+      context: ../services/device-gateway
+      dockerfile: ../../docker/device-gateway.Dockerfile
+    container_name: raad-device-gateway
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: true
+    environment:
+      DEVICE_GATEWAY_BROKER_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      DEVICE_GATEWAY_REDIS_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+      DEVICE_GATEWAY_STREAM_MAX_LENGTH: ${DEVICE_GATEWAY_STREAM_MAX_LENGTH:-0}
+    healthcheck:
+      interval: 10s
+      retries: 5
+      start_period: 5s
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; socket.create_connection(('localhost', 7809), 2)
+      timeout: 3s
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    ports:
+      - ${DEVICE_GATEWAY_JT808_PORT:-7808}:7808
+      - ${DEVICE_GATEWAY_MDVR_PORT:-7809}:7809
+    restart: unless-stopped
+  frontend:
+    build:
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+        VITE_MAPBOX_ACCESS_TOKEN: ${VITE_MAPBOX_ACCESS_TOKEN:-}
+        VITE_STRIPE_PUBLISHABLE_KEY: ${VITE_STRIPE_PUBLISHABLE_KEY:-}
+        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL}
+      context: ../frontend
+      dockerfile: ../docker/frontend.Dockerfile
+      target: prod
+    container_name: raad-frontend
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost/api/v1}
+      VITE_MAPBOX_ACCESS_TOKEN: ${VITE_MAPBOX_ACCESS_TOKEN:-}
+      VITE_STRIPE_PUBLISHABLE_KEY: ${VITE_STRIPE_PUBLISHABLE_KEY:-}
+      VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost}
+    healthcheck:
+      interval: 10s
+      retries: 5
+      start_period: 10s
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1:5173/
+      timeout: 5s
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - bind:
+          create_host_path: true
+        read_only: true
+        source: ../infrastructure/nginx/conf.d/frontend.conf
+        target: /etc/nginx/conf.d/default.conf
+        type: bind
+  jt1078-relay:
+    build:
+      context: ../services/jt1078
+      dockerfile: ../../docker/jt1078-relay.Dockerfile
+    container_name: raad-jt1078-relay
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: true
+    environment:
+      JT1078_RELAY_ABSOLUTE_IDLE_SECONDS: ${JT1078_RELAY_ABSOLUTE_IDLE_SECONDS:-60}
+      JT1078_RELAY_BROKER_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      JT1078_RELAY_ENVIRONMENT: ${JT1078_RELAY_ENVIRONMENT:-dev}
+      JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS: ${JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS:-5}
+      JT1078_RELAY_INGEST_TIMEOUT_SECONDS: ${JT1078_RELAY_INGEST_TIMEOUT_SECONDS:-30}
+      JT1078_RELAY_MAX_GLOBAL_SESSIONS: ${JT1078_RELAY_MAX_GLOBAL_SESSIONS:-50}
+      JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION: ${JT1078_RELAY_MAX_SESSIONS_PER_ORGANIZATION:-8}
+      JT1078_RELAY_PUBLIC_INGEST_HOST: ${JT1078_RELAY_PUBLIC_INGEST_HOST:-}
+      JT1078_RELAY_STREAM_MAX_LENGTH: ${JT1078_RELAY_STREAM_MAX_LENGTH:-0}
+      JT1078_RELAY_VIEWER_GRACE_SECONDS: ${JT1078_RELAY_VIEWER_GRACE_SECONDS:-15}
+      JT1078_RELAY_VIEWER_TOKEN_SECRET: ${JT1078_RELAY_VIEWER_TOKEN_SECRET:-dev-only-change-me}
+    healthcheck:
+      interval: 10s
+      retries: 5
+      start_period: 5s
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; socket.create_connection(('localhost', 7911), 2)
+      timeout: 3s
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    ports:
+      - ${JT1078_RELAY_INGEST_PORT:-7910}:7910
+      - ${JT1078_RELAY_VIEWER_PORT:-7911}:7911
+    restart: unless-stopped
+  migrate:
+    build:
+      context: ../backend
+      dockerfile: ../docker/backend.Dockerfile
+    command:
+      - alembic
+      - upgrade
+      - head
+    container_name: raad-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
+      RAAD_BROKER__STREAM_MAX_LENGTH: ${RAAD_BROKER__STREAM_MAX_LENGTH:-0}
+      RAAD_BROKER__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      RAAD_CORS__ALLOWED_ORIGINS: ${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}
+      RAAD_DB__URL: postgresql+asyncpg://${POSTGRES_USER:-raad}:${POSTGRES_PASSWORD:-raad}@postgres:5432/${POSTGRES_DB:-raad}
+      RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL: ${JT1078_SIGNALING_URL:-ws://localhost:7911}
+      RAAD_ENVIRONMENT: ${RAAD_ENVIRONMENT:-dev}
+      RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
+      RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
+      RAAD_PAYMENT__PROVIDER_CREDENTIALS: ${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}
+      RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    restart: 'no'
+  nginx:
+    container_name: raad-nginx
+    depends_on:
+      backend:
+        condition: service_healthy
+        required: true
+      frontend:
+        condition: service_started
+        required: true
+    healthcheck:
+      interval: 10s
+      retries: 5
+      start_period: 10s
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1/health
+      timeout: 5s
+    image: nginx:1.27-alpine
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    ports:
+      - ${NGINX_PORT:-80}:80
+    profiles:
+      - gateway
+    restart: unless-stopped
+    volumes:
+      - bind:
+          create_host_path: true
+        read_only: true
+        source: ../infrastructure/nginx/conf.d/dev.conf
+        target: /etc/nginx/conf.d/default.conf
+        type: bind
+  postgres:
+    container_name: raad-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-raad}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-raad}
+      POSTGRES_USER: ${POSTGRES_USER:-raad}
+    healthcheck:
+      interval: 5s
+      retries: 10
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-raad} -d ${POSTGRES_DB:-raad}
+      timeout: 3s
+    image: postgres:16-alpine
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - source: raad_postgres_data
+        target: /var/lib/postgresql/data
+        type: volume
+        volume: {}
+  prometheus:
+    container_name: raad-prometheus
+    depends_on:
+      backend:
+        condition: service_started
+        required: true
+    image: prom/prometheus:v2.53.0
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - bind:
+          create_host_path: true
+        read_only: true
+        source: ../infrastructure/monitoring/prometheus/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        type: bind
+      - bind:
+          create_host_path: true
+        read_only: true
+        source: ../infrastructure/monitoring/prometheus/alerts.yml
+        target: /etc/prometheus/alerts.yml
+        type: bind
+      - source: raad_prometheus_data
+        target: /prometheus
+        type: volume
+        volume: {}
+  redis:
+    command:
+      - redis-server
+      - --appendonly
+      - 'yes'
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - noeviction
+      - --requirepass
+      - ${REDIS_PASSWORD:-dev-only-change-me}
+    container_name: raad-redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev-only-change-me}
+    healthcheck:
+      interval: 5s
+      retries: 5
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping
+      timeout: 3s
+    image: redis:7-alpine
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    restart: unless-stopped
+    volumes:
+      - source: raad_redis_data
+        target: /data
+        type: volume
+        volume: {}
+  worker:
+    build:
+      context: ../backend
+      dockerfile: ../docker/backend.Dockerfile
+    command:
+      - python
+      - -m
+      - raad.interfaces.workers.bootstrap
+    container_name: raad-worker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+        required: true
+      postgres:
+        condition: service_healthy
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    environment:
+      RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
+      RAAD_BROKER__STREAM_MAX_LENGTH: ${RAAD_BROKER__STREAM_MAX_LENGTH:-0}
+      RAAD_BROKER__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      RAAD_CORS__ALLOWED_ORIGINS: ${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}
+      RAAD_DB__URL: postgresql+asyncpg://${POSTGRES_USER:-raad}:${POSTGRES_PASSWORD:-raad}@postgres:5432/${POSTGRES_DB:-raad}
+      RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL: ${JT1078_SIGNALING_URL:-ws://localhost:7911}
+      RAAD_ENVIRONMENT: ${RAAD_ENVIRONMENT:-dev}
+      RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
+      RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
+      RAAD_PAYMENT__PROVIDER_CREDENTIALS: ${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}
+      RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+    healthcheck:
+      interval: 30s
+      retries: 3
+      start_period: 20s
+      test:
+        - CMD
+        - python
+        - -c
+        - import os,sys; sys.exit(0 if any('raad.interfaces.workers.bootstrap' in
+          open('/proc/'+p+'/cmdline','rb').read().decode('utf-8','ignore') for p in
+          os.listdir('/proc') if p.isdigit()) else 1)
+      timeout: 5s
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+    networks:
+      default: null
+    restart: unless-stopped
+volumes:
+  raad_backups_data:
+    name: docker_raad_backups_data
+  raad_postgres_data:
+    name: docker_raad_postgres_data
+  raad_prometheus_data:
+    name: docker_raad_prometheus_data
+  raad_redis_data:
+    name: docker_raad_redis_data
+x-backend-build:
+  context: ../backend
+  dockerfile: ../docker/backend.Dockerfile
+x-backend-env:
+  RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
+  RAAD_BROKER__STREAM_MAX_LENGTH: ${RAAD_BROKER__STREAM_MAX_LENGTH:-0}
+  RAAD_BROKER__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+  RAAD_CORS__ALLOWED_ORIGINS: ${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}
+  RAAD_DB__URL: postgresql+asyncpg://${POSTGRES_USER:-raad}:${POSTGRES_PASSWORD:-raad}@postgres:5432/${POSTGRES_DB:-raad}
+  RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL: ${JT1078_SIGNALING_URL:-ws://localhost:7911}
+  RAAD_ENVIRONMENT: ${RAAD_ENVIRONMENT:-dev}
+  RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
+  RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
+  RAAD_PAYMENT__PROVIDER_CREDENTIALS: ${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}
+  RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+x-logging:
+  driver: json-file
+  options:
+    max-file: "3"
+    max-size: 10m
