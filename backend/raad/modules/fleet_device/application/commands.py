@@ -92,6 +92,25 @@ class RetireDeviceCommand:
 
 
 @dataclass(frozen=True)
+class UpdateDeviceDetailsCommand:
+    """`PATCH /devices/{device_id}` (metadata branch, distinct from the existing
+    `lifecycle_state` branch). `None` for any field means "leave unchanged" — see
+    `Device.update_terminal_id`/`Device.update_details`'s own docstrings. `terminal_id` is kept
+    on its own dedicated command path in the application service (a distinct uniqueness check
+    and a distinct, device-gateway-relevant event) even though it travels in the same PATCH
+    request as the others, for the exact reason those two methods are split on the aggregate."""
+
+    device_id: str
+    terminal_id: str | None
+    model: str | None
+    vendor: str | None
+    sim_msisdn: str | None
+    imei: str | None
+    iccid: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class RegisterCameraCommand:
     device_id: str
     channel_no: int

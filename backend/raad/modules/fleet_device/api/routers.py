@@ -109,6 +109,7 @@ from raad.modules.fleet_device.application.commands import (
     RetireDeviceCommand,
     SuspendDeviceCommand,
     UnassignDeviceCommand,
+    UpdateDeviceDetailsCommand,
 )
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import (
@@ -491,30 +492,62 @@ async def update_device(
     device_service: DeviceApplicationService = Depends(get_device_service),
     uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
 ) -> DeviceResponse:
-    if body.lifecycle_state is None:
+    metadata_fields = (
+        body.terminal_id,
+        body.model,
+        body.vendor,
+        body.sim_msisdn,
+        body.imei,
+        body.iccid,
+    )
+
+    if body.lifecycle_state is not None and any(f is not None for f in metadata_fields):
         raise ValidationError(
-            "'lifecycle_state' must be provided.",
-            details={"fields": ["lifecycle_state"]},
+            "'lifecycle_state' and the metadata fields (terminal_id/model/vendor/"
+            "sim_msisdn/imei/iccid) cannot be set in the same request — send two separate "
+            "PATCH calls.",
+            details={"field": "lifecycle_state"},
         )
 
-    if body.lifecycle_state == "suspended":
-        device = await device_service.suspend_device(
-            SuspendDeviceCommand(device_id=device_id, actor=principal), uow=uow
-        )
-    elif body.lifecycle_state == "activated":
-        device = await device_service.reactivate_device(
-            ReactivateDeviceCommand(device_id=device_id, actor=principal), uow=uow
-        )
-    elif body.lifecycle_state == "retired":
-        device = await device_service.retire_device(
-            RetireDeviceCommand(device_id=device_id, actor=principal), uow=uow
+    if body.lifecycle_state is not None:
+        if body.lifecycle_state == "suspended":
+            device = await device_service.suspend_device(
+                SuspendDeviceCommand(device_id=device_id, actor=principal), uow=uow
+            )
+        elif body.lifecycle_state == "activated":
+            device = await device_service.reactivate_device(
+                ReactivateDeviceCommand(device_id=device_id, actor=principal), uow=uow
+            )
+        elif body.lifecycle_state == "retired":
+            device = await device_service.retire_device(
+                RetireDeviceCommand(device_id=device_id, actor=principal), uow=uow
+            )
+        else:
+            raise ValidationError(
+                f"Unsupported lifecycle_state: {body.lifecycle_state!r} — 'assigned' is set "
+                "only via the assignment routes; initial activation is POST "
+                "/devices/{id}/activate.",
+                details={"field": "lifecycle_state"},
+            )
+    elif any(f is not None for f in metadata_fields):
+        device = await device_service.update_device_details(
+            UpdateDeviceDetailsCommand(
+                device_id=device_id,
+                terminal_id=body.terminal_id,
+                model=body.model,
+                vendor=body.vendor,
+                sim_msisdn=body.sim_msisdn,
+                imei=body.imei,
+                iccid=body.iccid,
+                actor=principal,
+            ),
+            uow=uow,
         )
     else:
         raise ValidationError(
-            f"Unsupported lifecycle_state: {body.lifecycle_state!r} — 'assigned' is set "
-            "only via the assignment routes; initial activation is POST "
-            "/devices/{id}/activate.",
-            details={"field": "lifecycle_state"},
+            "At least one of 'lifecycle_state', 'terminal_id', 'model', 'vendor', "
+            "'sim_msisdn', 'imei', or 'iccid' must be provided.",
+            details={"fields": ["lifecycle_state"]},
         )
 
     return _device_dto_to_response(device)

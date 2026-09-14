@@ -311,6 +311,70 @@ class DeviceLifecycleTests(unittest.TestCase):
         device.retire(clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)))
         self.assertEqual(device.pull_domain_events(), [])
 
+    # --- update_terminal_id (device management fix) -------------------------------------
+
+    def test_update_terminal_id_records_event_with_old_and_new_value(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.update_terminal_id(
+            new_terminal_id=TerminalId("00000000014482607571"),
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+            actor_id="user-1",
+        )
+        self.assertEqual(str(device.terminal_id), "00000000014482607571")
+        events = device.pull_domain_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "DeviceTerminalIdChanged")
+        self.assertEqual(events[0].payload["old_terminal_id"], "TERM-001")
+        self.assertEqual(events[0].payload["new_terminal_id"], "00000000014482607571")
+        self.assertEqual(events[0].payload["actor_id"], "user-1")
+
+    def test_update_terminal_id_callable_while_assigned(self) -> None:
+        """Regression: this is precisely the state a mis-entered terminal ID needs fixing in —
+        gating the correction behind unassigning first would make the one broken state
+        unfixable without first breaking the assignment too."""
+        device = self.make_device(DeviceLifecycleState.ASSIGNED)
+        device.update_terminal_id(
+            new_terminal_id=TerminalId("00000000014482607571"),
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(str(device.terminal_id), "00000000014482607571")
+        self.assertEqual(device.lifecycle_state, DeviceLifecycleState.ASSIGNED)
+
+    def test_update_terminal_id_same_value_is_idempotent_no_op(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.update_terminal_id(
+            new_terminal_id=TerminalId("TERM-001"),
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(device.pull_domain_events(), [])
+
+    # --- update_details (device management fix) ------------------------------------------
+
+    def test_update_details_changes_model_and_records_event(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.update_details(
+            model="LSZ-C5804DG-Q-F",
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+            actor_id="user-1",
+        )
+        self.assertEqual(device.model, "LSZ-C5804DG-Q-F")
+        events = device.pull_domain_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "DeviceDetailsUpdated")
+        self.assertEqual(events[0].payload["model"], "LSZ-C5804DG-Q-F")
+
+    def test_update_details_no_fields_changed_is_no_op(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.update_details(clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)))
+        self.assertEqual(device.pull_domain_events(), [])
+
+    def test_update_details_never_touches_terminal_id(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.update_details(
+            vendor="Acme", clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc))
+        )
+        self.assertEqual(str(device.terminal_id), "TERM-001")
+
     def test_mark_assigned_requires_activated_state(self) -> None:
         device = self.make_device(DeviceLifecycleState.REGISTERED)
         with self.assertRaises(RuleViolationError):

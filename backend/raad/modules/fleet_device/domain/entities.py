@@ -446,6 +446,98 @@ class Device(_AggregateRoot):
             )
         )
 
+    def update_terminal_id(
+        self, *, new_terminal_id: TerminalId, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """Corrects this device's JT/T 808 wire identity after registration. Callable
+        regardless of `lifecycle_state` (including `assigned`) — this is precisely the
+        operation an already-assigned device with a mis-entered terminal ID needs; gating it
+        behind a lifecycle check would make the one broken state unfixable without first
+        unassigning it, which is worse. No-op (records nothing) if the value is unchanged, the
+        same "idempotent on the already-there state" convention `activate`/`suspend`/
+        `reactivate` already use above. Uniqueness against every *other* device's terminal ID
+        is the application layer's job (`ensure_terminal_id_available`, mirroring
+        `register_device`'s own precedent) — this aggregate has no visibility into other
+        aggregates' state to check that itself.
+
+        Always records `DeviceTerminalIdChanged`, carrying both the old and new value — this is
+        the one field change in this whole aggregate that a device-plane consumer
+        (`DeviceRegistryProjection`) must react to, so unlike `update_details` below, this is
+        never silently folded into a generic "details updated" event."""
+        old_terminal_id = str(self.terminal_id)
+        if old_terminal_id == str(new_terminal_id):
+            return
+        self.terminal_id = new_terminal_id
+        self.updated_at = clock.now()
+        self._record(
+            fleet_events.device_terminal_id_changed(
+                device_id=str(self.id),
+                organization_id=str(self.organization_id),
+                old_terminal_id=old_terminal_id,
+                new_terminal_id=str(new_terminal_id),
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
+    def update_details(
+        self,
+        *,
+        model: str | None = None,
+        vendor: str | None = None,
+        sim_msisdn: Msisdn | None = None,
+        imei: Imei | None = None,
+        iccid: Iccid | None = None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Edits non-identity metadata. `None` for any parameter means "leave unchanged" — the
+        same `update_camera` convention above (to clear `model`/`vendor`, pass `""`, not
+        `None`; `sim_msisdn`/`imei`/`iccid` are already-typed value objects or `None`, so
+        clearing one of those means passing a fresh value object wrapping `""` is not
+        applicable — those three simply aren't clearable once set, matching this aggregate's
+        existing invariant that `Imei`/`Iccid` reject an empty string outright).
+        Callable regardless of `lifecycle_state`, same reasoning as `update_terminal_id`.
+        Records `DeviceDetailsUpdated` only if at least one field actually changed — calling
+        this with nothing new to say records nothing, mirroring every other mutator's
+        no-op-on-unchanged-state convention in this class."""
+        changed = False
+        if model is not None and model != self.model:
+            self.model = model
+            changed = True
+        if vendor is not None and vendor != self.vendor:
+            self.vendor = vendor
+            changed = True
+        if sim_msisdn is not None and (
+            self.sim_msisdn is None or str(sim_msisdn) != str(self.sim_msisdn)
+        ):
+            self.sim_msisdn = sim_msisdn
+            changed = True
+        if imei is not None and (self.imei is None or str(imei) != str(self.imei)):
+            self.imei = imei
+            changed = True
+        if iccid is not None and (self.iccid is None or str(iccid) != str(self.iccid)):
+            self.iccid = iccid
+            changed = True
+
+        if not changed:
+            return
+
+        self.updated_at = clock.now()
+        self._record(
+            fleet_events.device_details_updated(
+                device_id=str(self.id),
+                organization_id=str(self.organization_id),
+                model=self.model,
+                vendor=self.vendor,
+                sim_msisdn=str(self.sim_msisdn) if self.sim_msisdn is not None else None,
+                imei=str(self.imei) if self.imei is not None else None,
+                iccid=str(self.iccid) if self.iccid is not None else None,
+                occurred_at=clock.now(),
+                actor_id=actor_id,
+            )
+        )
+
     def mark_assigned(self, *, clock: Clock) -> None:
         """Activated → Assigned. State-sync only, invoked by the application layer's
         assign/reassign use-case alongside `DeviceAssignment.open(...)` — the event for this

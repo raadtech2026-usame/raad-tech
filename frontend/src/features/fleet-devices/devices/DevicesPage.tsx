@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Cpu, Link2, Plus, Search } from "lucide-react";
+import { Cpu, Link2, Pencil, Plus, Search } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
@@ -15,9 +15,11 @@ import { DetailDrawer } from "../../../shared/components/Drawer/DetailDrawer";
 import { EmptyState } from "../../../shared/components/EmptyState/EmptyState";
 import { Badge } from "../../../shared/components/Badge/Badge";
 import { Button } from "../../../shared/components/Button/Button";
+import { ConfirmDialog } from "../../../shared/components/ConfirmDialog/ConfirmDialog";
 import { Input } from "../../../shared/components/Input/Input";
 import { RegisterDeviceWizard } from "./RegisterDeviceWizard";
 import { AssignDeviceForm, type AssignDeviceMode } from "./AssignDeviceForm";
+import { EditDeviceForm } from "./EditDeviceForm";
 import {
   activateDevice,
   listDevices,
@@ -104,6 +106,8 @@ export function DevicesPage() {
 
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [retireConfirmOpen, setRetireConfirmOpen] = useState(false);
   const [assignMode, setAssignMode] = useState<AssignDeviceMode | null>(null);
   const [searchInput, setSearchInput] = useState("");
   // See this component's own docstring — session-only, not a persistent read model.
@@ -154,8 +158,21 @@ export function DevicesPage() {
       if (input.action === "activate") {
         return activateDevice(input.id);
       }
-      const lifecycleState = input.action === "reactivate" ? "activated" : input.action;
-      return updateDeviceLifecycle(input.id, lifecycleState as "activated" | "suspended" | "retired");
+      // Real, pre-existing bug found while adding test coverage for this feature: `action`
+      // ("suspend"/"retire") was being cast — not mapped — straight into `lifecycleState`,
+      // so the backend received the literal strings "suspend"/"retire" instead of
+      // "suspended"/"retired". `update_device` (routers.py) rejects anything outside its
+      // exact three lifecycle_state values with a ValidationError, so every Suspend/Retire
+      // click has always failed at the API — "reactivate" alone happened to work, since it's
+      // the one action whose target lifecycle_state ("activated") differs from the action
+      // name itself and was mapped explicitly.
+      const lifecycleState: "activated" | "suspended" | "retired" =
+        input.action === "reactivate"
+          ? "activated"
+          : input.action === "suspend"
+            ? "suspended"
+            : "retired";
+      return updateDeviceLifecycle(input.id, lifecycleState);
     },
     onSuccess: (device) => {
       queryClient.invalidateQueries({ queryKey: ["devices", "list"] });
@@ -373,6 +390,11 @@ export function DevicesPage() {
           selectedDevice &&
           (canManageLifecycle || canAssign) && (
             <div className={styles.drawerActions}>
+              {canManageLifecycle && (
+                <Button variant="secondary" leadingIcon={<Pencil size={15} />} onClick={() => setEditOpen(true)}>
+                  Edit
+                </Button>
+              )}
               {selectedDevice.lifecycleState === "registered" && canManageLifecycle && (
                 <Button
                   variant="secondary"
@@ -429,7 +451,7 @@ export function DevicesPage() {
                     variant="danger"
                     loading={isLifecyclePendingFor("retire")}
                     disabled={lifecycleMutation.isPending}
-                    onClick={() => lifecycleMutation.mutate({ id: selectedDevice.id, action: "retire" })}
+                    onClick={() => setRetireConfirmOpen(true)}
                   >
                     Retire
                   </Button>
@@ -440,6 +462,34 @@ export function DevicesPage() {
       />
 
       <RegisterDeviceWizard open={createOpen} onClose={() => setCreateOpen(false)} />
+
+      <EditDeviceForm open={editOpen} onClose={() => setEditOpen(false)} device={selectedDevice} />
+
+      <ConfirmDialog
+        open={retireConfirmOpen}
+        title="Retire this device?"
+        description={
+          selectedDevice && (
+            <>
+              Retiring <strong>{selectedDevice.terminalId}</strong> is terminal — it cannot be
+              reactivated afterward.
+              {selectedDevice.lifecycleState === "assigned"
+                ? " Its active vehicle assignment will be closed in the same operation."
+                : ""}
+            </>
+          )
+        }
+        tone="danger"
+        confirmLabel="Retire device"
+        loading={isLifecyclePendingFor("retire")}
+        onConfirm={() => {
+          if (selectedDevice) {
+            lifecycleMutation.mutate({ id: selectedDevice.id, action: "retire" });
+          }
+          setRetireConfirmOpen(false);
+        }}
+        onCancel={() => setRetireConfirmOpen(false)}
+      />
 
       <AssignDeviceForm
         open={assignMode !== null}

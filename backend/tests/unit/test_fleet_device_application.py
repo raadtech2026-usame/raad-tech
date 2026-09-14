@@ -41,6 +41,7 @@ from raad.modules.fleet_device.application.commands import (
     SuspendDeviceCommand,
     UnassignDeviceCommand,
     UpdateCameraCommand,
+    UpdateDeviceDetailsCommand,
 )
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import (
@@ -924,6 +925,108 @@ class DeviceAssignmentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(uow.devices.by_id[device_id].lifecycle_state.value, "retired")
         active = await uow.device_assignments.active_for_device(DeviceId(device_id))
         self.assertIsNone(active)
+
+    # --- update_device_details (device management fix) -----------------------------------
+
+    async def test_update_device_details_corrects_terminal_id_and_emits_event(self) -> None:
+        """The end-to-end regression test for the actual production issue this feature
+        exists to fix: a device registered with a mis-padded terminal ID can now be corrected
+        through the application layer, and the correction produces a real
+        `DeviceTerminalIdChanged` event for `device-gateway`'s registry to consume — not just a
+        changed database column."""
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(
+            device_service, uow, terminal_id="000000000014482607571"
+        )
+
+        updated = await device_service.update_device_details(
+            UpdateDeviceDetailsCommand(
+                device_id=device_id,
+                terminal_id="00000000014482607571",
+                model=None,
+                vendor=None,
+                sim_msisdn=None,
+                imei=None,
+                iccid=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(updated.terminal_id, "00000000014482607571")
+        event_types = [event.event_type for event in uow.recorded_events]
+        self.assertIn("DeviceTerminalIdChanged", event_types)
+        changed_event = next(
+            e for e in uow.recorded_events if e.event_type == "DeviceTerminalIdChanged"
+        )
+        self.assertEqual(changed_event.payload["old_terminal_id"], "000000000014482607571")
+        self.assertEqual(changed_event.payload["new_terminal_id"], "00000000014482607571")
+
+    async def test_update_device_details_rejects_terminal_id_already_used(self) -> None:
+        """Duplicate-terminal-id protection (Part 2D) — reusing the exact same validator
+        `register_device` already enforces at creation time."""
+        _vehicle_service, device_service, uow = make_services()
+        await _register_activated_device(device_service, uow, terminal_id="TERM-TAKEN")
+        device_id = await _register_activated_device(device_service, uow, terminal_id="TERM-2")
+
+        with self.assertRaises(ConflictError):
+            await device_service.update_device_details(
+                UpdateDeviceDetailsCommand(
+                    device_id=device_id,
+                    terminal_id="TERM-TAKEN",
+                    model=None,
+                    vendor=None,
+                    sim_msisdn=None,
+                    imei=None,
+                    iccid=None,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+    async def test_update_device_details_updates_model_and_vendor(self) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+
+        updated = await device_service.update_device_details(
+            UpdateDeviceDetailsCommand(
+                device_id=device_id,
+                terminal_id=None,
+                model="LSZ-C5804DG-Q-F",
+                vendor="LSZ",
+                sim_msisdn=None,
+                imei=None,
+                iccid=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(updated.model, "LSZ-C5804DG-Q-F")
+        self.assertEqual(updated.vendor, "LSZ")
+        event_types = [event.event_type for event in uow.recorded_events]
+        self.assertIn("DeviceDetailsUpdated", event_types)
+        self.assertNotIn("DeviceTerminalIdChanged", event_types)
+
+    async def test_update_device_details_with_unchanged_terminal_id_emits_no_terminal_event(
+        self,
+    ) -> None:
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow, terminal_id="TERM-1")
+
+        await device_service.update_device_details(
+            UpdateDeviceDetailsCommand(
+                device_id=device_id,
+                terminal_id="TERM-1",
+                model="Same model",
+                vendor=None,
+                sim_msisdn=None,
+                imei=None,
+                iccid=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        event_types = [event.event_type for event in uow.recorded_events]
+        self.assertNotIn("DeviceTerminalIdChanged", event_types)
 
     async def test_get_device_by_id_includes_camera_list(self) -> None:
         _vehicle_service, device_service, uow = make_services()

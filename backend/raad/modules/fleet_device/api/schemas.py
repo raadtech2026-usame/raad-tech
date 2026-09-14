@@ -107,13 +107,30 @@ class RegisterDeviceRequest(BaseModel):
 
 
 class UpdateDeviceRequest(BaseModel):
-    """Partial update, limited to the lifecycle transitions the Application layer exposes
-    via PATCH — `lifecycle_state` ∈ `"activated"` (Suspended→Activated, i.e. reactivate),
-    `"suspended"`, `"retired"`. `Registered→Activated` has its own approved behavioral route
-    (`POST /devices/{id}/activate`, API Contracts §4.2), and `"assigned"` is never set
-    directly — only via the assignment routes. At least one field must be given."""
+    """Partial update, two independent branches — a request uses exactly one, never both.
+
+    **Lifecycle branch:** `lifecycle_state` ∈ `"activated"` (Suspended→Activated, i.e.
+    reactivate), `"suspended"`, `"retired"` — the safe, event-driven "delete" for a device
+    (Phase 2 §19.2 has no hard-delete edge; `retired` is terminal). `Registered→Activated` has
+    its own approved behavioral route (`POST /devices/{id}/activate`, API Contracts §4.2), and
+    `"assigned"` is never set directly — only via the assignment routes.
+
+    **Metadata branch:** `terminal_id`/`model`/`vendor`/`sim_msisdn`/`imei`/`iccid` — a device
+    correction, most importantly `terminal_id` (a mis-entered/incorrectly-padded JT/T 808
+    identity), which is why this must go through the application service rather than a direct
+    field write: see `UpdateDeviceDetailsCommand`'s own docstring for exactly why. `None` for
+    any of these means "leave unchanged," the same convention `UpdateCameraRequest` already
+    uses — to clear `model`/`vendor`, pass `""`.
+
+    At least one field, from either branch, must be given."""
 
     lifecycle_state: str | None = None
+    terminal_id: str | None = None
+    model: str | None = None
+    vendor: str | None = None
+    sim_msisdn: str | None = None
+    imei: str | None = None
+    iccid: str | None = None
 
 
 # --- Device ↔ Vehicle assignment ----------------------------------------------------------

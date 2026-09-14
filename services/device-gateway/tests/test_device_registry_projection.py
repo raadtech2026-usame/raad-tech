@@ -128,6 +128,46 @@ class DeviceRegistryProjectionTests(unittest.TestCase):
             projection.lookup_by_serial_number("00007").vehicle_id, "vehicle-2"
         )
 
+    def test_terminal_id_changed_reindexes_lookup_and_removes_stale_key(self) -> None:
+        """The regression test for the actual production bug this feature fixes: before
+        `DeviceTerminalIdChanged` existed, nothing ever re-indexed
+        `_device_id_by_terminal_id` for an already-registered device, so a corrected terminal
+        ID (however it was corrected) was permanently unresolvable by real JT/T 808 traffic."""
+        projection = DeviceRegistryProjection()
+        projection.apply_event(
+            event_type="DeviceRegistered",
+            aggregate_id=DEVICE,
+            org_id=ORG,
+            payload={"terminal_id": "000000000014482607571"},
+        )
+        projection.apply_event(
+            event_type="DeviceTerminalIdChanged",
+            aggregate_id=DEVICE,
+            org_id=ORG,
+            payload={
+                "old_terminal_id": "000000000014482607571",
+                "new_terminal_id": "00000000014482607571",
+            },
+        )
+        # The corrected value now resolves...
+        record = projection.lookup_by_terminal_id("00000000014482607571")
+        self.assertIsNotNone(record)
+        self.assertEqual(record.device_id, DEVICE)
+        # ...and the stale value no longer does, so the device is never resolvable under two
+        # terminal IDs at once.
+        self.assertIsNone(projection.lookup_by_terminal_id("000000000014482607571"))
+        self.assertEqual(record.terminal_id, "00000000014482607571")
+
+    def test_terminal_id_changed_for_unknown_device_is_safely_ignored(self) -> None:
+        projection = DeviceRegistryProjection()
+        projection.apply_event(
+            event_type="DeviceTerminalIdChanged",
+            aggregate_id="never-registered",
+            org_id=ORG,
+            payload={"old_terminal_id": "A", "new_terminal_id": "B"},
+        )  # must not raise
+        self.assertEqual(len(projection), 0)
+
     def test_event_for_unknown_device_is_safely_ignored(self) -> None:
         projection = DeviceRegistryProjection()
         projection.apply_event(

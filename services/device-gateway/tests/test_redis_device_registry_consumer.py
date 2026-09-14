@@ -157,6 +157,36 @@ class RedisDeviceRegistryConsumerTests(unittest.IsolatedAsyncioTestCase):
             "pbkdf2_sha256$10000$salt$hash",
         )
 
+    async def test_terminal_id_changed_event_is_relevant_and_reindexes_projection(self) -> None:
+        """Regression: `DeviceTerminalIdChanged` must be in `_RELEVANT_EVENT_TYPES`, or a real,
+        committed, durable correction event would reach this consumer and be silently dropped
+        by `_process_one`'s own filter — exactly the class of gap `DeviceAuthCodeIssued` above
+        was already found and fixed for once."""
+        redis = FakeRedisConsumerGroupStream()
+        redis.add_event(
+            event_type="DeviceRegistered",
+            aggregate_id="device-1",
+            org_id="org-1",
+            payload={"terminal_id": "000000000014482607571"},
+        )
+        redis.add_event(
+            event_type="DeviceTerminalIdChanged",
+            aggregate_id="device-1",
+            org_id="org-1",
+            payload={
+                "old_terminal_id": "000000000014482607571",
+                "new_terminal_id": "00000000014482607571",
+            },
+        )
+        projection = DeviceRegistryProjection()
+        consumer = RedisDeviceRegistryConsumer(redis, projection=projection)
+
+        applied = await consumer.poll_once()
+
+        self.assertEqual(applied, 2)
+        self.assertIsNotNone(projection.lookup_by_terminal_id("00000000014482607571"))
+        self.assertIsNone(projection.lookup_by_terminal_id("000000000014482607571"))
+
     async def test_group_already_exists_does_not_raise(self) -> None:
         redis = FakeRedisConsumerGroupStream()
         projection = DeviceRegistryProjection()

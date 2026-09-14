@@ -11,6 +11,7 @@ vi.mock("./api", () => ({
   listVehiclesForPicker: vi.fn(),
   activateDevice: vi.fn(),
   updateDeviceLifecycle: vi.fn(),
+  updateDeviceDetails: vi.fn(),
   unassignDevice: vi.fn(),
   assignDeviceToVehicle: vi.fn(),
   reassignDevice: vi.fn(),
@@ -89,6 +90,7 @@ describe("DevicesPage", () => {
     vi.mocked(api.listVehiclesForPicker).mockReset().mockResolvedValue([VEHICLE_OPTION]);
     vi.mocked(api.activateDevice).mockReset();
     vi.mocked(api.updateDeviceLifecycle).mockReset();
+    vi.mocked(api.updateDeviceDetails).mockReset();
     vi.mocked(api.unassignDevice).mockReset();
     vi.mocked(api.assignDeviceToVehicle).mockReset();
     vi.mocked(api.reassignDevice).mockReset();
@@ -156,6 +158,80 @@ describe("DevicesPage", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Activate" }));
 
     await waitFor(() => expect(api.activateDevice).toHaveBeenCalledWith(REGISTERED_DEVICE.id));
+  });
+
+  it("lets a founder edit a device's terminal ID from the detail drawer", async () => {
+    vi.mocked(api.listDevices).mockResolvedValue(pageOf([ASSIGNED_DEVICE], 1));
+    vi.mocked(api.updateDeviceDetails).mockResolvedValue({
+      ...ASSIGNED_DEVICE,
+      terminalId: "00000000014482607571",
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("013800000001")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("013800000001"));
+
+    const detailDialog = await screen.findByRole("dialog");
+    await userEvent.click(within(detailDialog).getByRole("button", { name: "Edit" }));
+
+    await screen.findByText("Edit device");
+    const terminalIdInput = screen.getByDisplayValue(ASSIGNED_DEVICE.terminalId);
+    await userEvent.clear(terminalIdInput);
+    await userEvent.type(terminalIdInput, "00000000014482607571");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Terminal ID changed -> must require explicit confirmation, not submit immediately.
+    expect(api.updateDeviceDetails).not.toHaveBeenCalled();
+    await screen.findByText("Change this device's terminal ID?");
+    await userEvent.click(screen.getByRole("button", { name: "Change terminal ID" }));
+
+    await waitFor(() =>
+      expect(api.updateDeviceDetails).toHaveBeenCalledWith(
+        ASSIGNED_DEVICE.id,
+        expect.objectContaining({ terminalId: "00000000014482607571" }),
+      ),
+    );
+  });
+
+  it("requires confirmation before retiring a device, and does not call the API until confirmed", async () => {
+    vi.mocked(api.listDevices).mockResolvedValue(pageOf([ASSIGNED_DEVICE], 1));
+    vi.mocked(api.updateDeviceLifecycle).mockResolvedValue({
+      ...ASSIGNED_DEVICE,
+      lifecycleState: "retired",
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("013800000001")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("013800000001"));
+
+    const detailDialog = await screen.findByRole("dialog");
+    await userEvent.click(within(detailDialog).getByRole("button", { name: "Retire" }));
+
+    expect(api.updateDeviceLifecycle).not.toHaveBeenCalled();
+    await screen.findByText("Retire this device?");
+
+    await userEvent.click(screen.getByRole("button", { name: "Retire device" }));
+
+    await waitFor(() =>
+      expect(api.updateDeviceLifecycle).toHaveBeenCalledWith(ASSIGNED_DEVICE.id, "retired"),
+    );
+  });
+
+  it("cancelling the retire confirmation does not call the API", async () => {
+    vi.mocked(api.listDevices).mockResolvedValue(pageOf([ASSIGNED_DEVICE], 1));
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("013800000001")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("013800000001"));
+
+    const detailDialog = await screen.findByRole("dialog");
+    await userEvent.click(within(detailDialog).getByRole("button", { name: "Retire" }));
+    await screen.findByText("Retire this device?");
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByText("Retire this device?")).not.toBeInTheDocument();
+    expect(api.updateDeviceLifecycle).not.toHaveBeenCalled();
   });
 
   it("hides the New Device action and drawer actions for a read-only role", async () => {

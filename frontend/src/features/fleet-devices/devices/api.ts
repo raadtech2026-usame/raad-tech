@@ -169,6 +169,46 @@ export async function updateDeviceLifecycle(
   return toDevice(wire);
 }
 
+export interface UpdateDeviceDetailsInput {
+  terminalId: string;
+  /** `""` clears the field — matches `Device.update_details`'s own convention exactly (mirrors
+   * `UpdateCameraCommand`'s pre-existing "empty string clears a label" precedent). `undefined`/
+   * omitted here always means "leave unchanged" (sent as JSON `null`). */
+  model?: string;
+  vendor?: string;
+  /** Unlike `model`/`vendor`, these three cannot be cleared once set — `Imei`/`Iccid` reject an
+   * empty string as invalid, not as "no value" (`fleet_device.domain.value_objects`). Leave
+   * `undefined`/omit to not touch the field at all. */
+  simMsisdn?: string;
+  imei?: string;
+  iccid?: string;
+}
+
+/** `PATCH /devices/{id}` (metadata branch, `UpdateDeviceDetailsCommand`) — distinct from
+ * `updateDeviceLifecycle`'s `lifecycle_state` branch; the backend rejects a request mixing both
+ * (`routers.py`'s `update_device`). **`terminalId` is the one field this form exists to make
+ * safely editable at all**: before this, no application path could correct a mis-entered/
+ * incorrectly-padded JT/T 808 terminal ID after registration — see `Device.update_terminal_id`'s
+ * own docstring for why a direct database edit (the only prior "workaround") permanently
+ * strands the device-gateway's live registry on the original value. A `terminal_id` already in
+ * use by another device surfaces as the backend's real `ConflictError` (HTTP 409) — shown
+ * verbatim by this function's caller, the same "never swallow a real conflict" discipline
+ * `assignDeviceToVehicle`'s docstring already establishes. */
+export async function updateDeviceDetails(id: string, input: UpdateDeviceDetailsInput): Promise<Device> {
+  const wire = await apiRequest<DeviceWire>(`/devices/${id}`, {
+    method: "PATCH",
+    body: {
+      terminal_id: input.terminalId,
+      model: input.model ?? null,
+      vendor: input.vendor ?? null,
+      sim_msisdn: input.simMsisdn ?? null,
+      imei: input.imei ?? null,
+      iccid: input.iccid ?? null,
+    },
+  });
+  return toDevice(wire);
+}
+
 export interface DeviceAssignment {
   id: string;
   organizationId: string;

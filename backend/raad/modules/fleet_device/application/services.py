@@ -50,6 +50,7 @@ from raad.modules.fleet_device.application.commands import (
     SuspendDeviceCommand,
     UnassignDeviceCommand,
     UpdateCameraCommand,
+    UpdateDeviceDetailsCommand,
 )
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import (
@@ -374,6 +375,60 @@ class DeviceApplicationService:
                 uow.record_events(active.pull_domain_events())
 
             device.retire(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(device.pull_domain_events())
+            await uow.commit()
+            return device_to_dto(device)
+
+    async def update_device_details(
+        self, command: UpdateDeviceDetailsCommand, *, uow: FleetDeviceUnitOfWork
+    ) -> DeviceDTO:
+        """`PATCH /devices/{id}` metadata branch. `terminal_id` gets its own uniqueness check
+        and its own dedicated domain event (`Device.update_terminal_id` ->
+        `DeviceTerminalIdChanged`) — the one field change here the device-gateway's registry
+        projection must react to; everything else (`model`/`vendor`/`sim_msisdn`/`imei`/
+        `iccid`) goes through `Device.update_details` -> `DeviceDetailsUpdated`, an audit-trail
+        fact no device-plane consumer needs. Both calls are no-ops (record nothing) when their
+        respective inputs are unchanged, so a request that only touches one side of this split
+        never produces a spurious event for the other."""
+        async with uow:
+            device = await self._get_device_or_raise(uow, command.device_id)
+
+            if command.terminal_id is not None:
+                new_terminal_id = TerminalId(command.terminal_id)
+                if str(new_terminal_id) != str(device.terminal_id):
+                    await ensure_terminal_id_available(uow, new_terminal_id)
+                    device.update_terminal_id(
+                        new_terminal_id=new_terminal_id,
+                        clock=self._clock,
+                        actor_id=command.actor.user_id,
+                    )
+
+            new_imei = Imei(command.imei) if command.imei is not None else None
+            if new_imei is not None and (
+                device.imei is None or str(new_imei) != str(device.imei)
+            ):
+                await ensure_imei_available(uow, new_imei)
+
+            new_iccid = Iccid(command.iccid) if command.iccid is not None else None
+            if new_iccid is not None and (
+                device.iccid is None or str(new_iccid) != str(device.iccid)
+            ):
+                await ensure_iccid_available(uow, new_iccid)
+
+            new_sim_msisdn = (
+                Msisdn(command.sim_msisdn) if command.sim_msisdn is not None else None
+            )
+
+            device.update_details(
+                model=command.model,
+                vendor=command.vendor,
+                sim_msisdn=new_sim_msisdn,
+                imei=new_imei,
+                iccid=new_iccid,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+
             uow.record_events(device.pull_domain_events())
             await uow.commit()
             return device_to_dto(device)

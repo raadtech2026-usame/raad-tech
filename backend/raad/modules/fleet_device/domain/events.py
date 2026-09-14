@@ -217,6 +217,73 @@ def device_retired(
     )
 
 
+def device_terminal_id_changed(
+    *,
+    device_id: str,
+    organization_id: str,
+    old_terminal_id: str,
+    new_terminal_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """A Founder/RAAD-staff correction of a device's JT/T 808 wire identity after registration
+    (e.g. a mis-entered/incorrectly-padded terminal ID). This is the event that lets
+    `services/device-gateway/src/registry/device_registry_projection.DeviceRegistryProjection`
+    re-index `_device_id_by_terminal_id` under the corrected value — without it, the live (and
+    any freshly-replayed) registry keeps resolving JT/T 808 traffic under whichever terminal ID
+    was in the original `DeviceRegistered` event forever, regardless of what the database or
+    dashboard show. `old_terminal_id` is carried so the projection can remove the stale index
+    entry, not just add the new one."""
+    return _new_event(
+        event_type="DeviceTerminalIdChanged",
+        aggregate_type="Device",
+        aggregate_id=device_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "old_terminal_id": old_terminal_id,
+            "new_terminal_id": new_terminal_id,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def device_details_updated(
+    *,
+    device_id: str,
+    organization_id: str,
+    model: str | None,
+    vendor: str | None,
+    sim_msisdn: str | None,
+    imei: str | None,
+    iccid: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """A Founder/RAAD-staff edit to non-identity device metadata. Deliberately excludes
+    `terminal_id` — that field's own change is `DeviceTerminalIdChanged`, since it is the one
+    field the device-gateway's registry projection must react to; nothing in the device plane
+    reads model/vendor/sim_msisdn/imei/iccid, so this event exists for the same audit-trail
+    reason `CameraUpdated` does (the shared `audit_entries` pipeline, ADR-0007), not for any
+    consumer to act on. Carries the post-update values, not a diff — mirrors `camera_updated`'s
+    own shape."""
+    return _new_event(
+        event_type="DeviceDetailsUpdated",
+        aggregate_type="Device",
+        aggregate_id=device_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "model": model,
+            "vendor": vendor,
+            "sim_msisdn": sim_msisdn,
+            "imei": imei,
+            "iccid": iccid,
+            "actor_id": actor_id,
+        },
+    )
+
+
 def camera_registered(
     *,
     camera_id: str,

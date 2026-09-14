@@ -1,8 +1,8 @@
 """`DeviceRegistryProjection` — an in-memory read-model of `fleet_device` devices, updated by
 consuming that module's own domain events (`DeviceRegistered`/`DeviceActivated`/`DeviceSuspended`/
 `DeviceReactivated`/`DeviceRetired`/`DeviceAssignedToVehicle`/`DeviceUnassignedFromVehicle`/
-`DeviceReassigned`) — never by a synchronous cross-service DB read (`.claude/rules/
-architecture.md` #3). Vendor-agnostic: keyed by both `terminal_id` (JT/T 808 identity) and
+`DeviceReassigned`/`DeviceTerminalIdChanged`) — never by a synchronous cross-service DB read
+(`.claude/rules/architecture.md` #3). Vendor-agnostic: keyed by both `terminal_id` (JT/T 808 identity) and
 `serial_number` (this platform's LSZ MDVR identity, per ADR-0009's Consequences section noting
 `device_registered`'s payload needed an additive `serial_number` field for exactly this purpose),
 so any current or future vendor adapter can resolve its own identity string back to
@@ -29,6 +29,17 @@ every position-reporting handler in this deployable (`vendors.jt808.handlers.loc
 LocationHandler`, `vendors.lsz.handlers.position_handler.MdvrPositionHandler`) already requires a
 resolved `vehicle_id` before it will publish anything; a device authorized without one would
 create sessions no handler could ever use.
+
+**`DeviceTerminalIdChanged` — a Founder/RAAD-staff correction of a mis-entered terminal ID after
+registration (`backend/raad/modules/fleet_device/domain/entities.Device.update_terminal_id`).**
+Before this event existed, nothing in this projection ever re-indexed `_device_id_by_terminal_id`
+for an already-registered device — `terminal_id` was set exactly once, from `DeviceRegistered`'s
+own payload, and never touched again by any other branch. A terminal ID corrected any other way
+(most dangerously, a direct database edit bypassing this event entirely) leaves this projection
+permanently unable to resolve the device under its corrected value, indefinitely, regardless of
+`replay_from_start` — replay only ever reproduces the *original* `DeviceRegistered` event's
+payload. `_apply_terminal_id_changed` below removes the stale index entry (not just adds the new
+one) so a device is never resolvable under two terminal IDs at once.
 """
 
 from __future__ import annotations
@@ -94,6 +105,8 @@ class DeviceRegistryProjection:
             record = self._by_device_id.get(aggregate_id)
             if record is not None:
                 record.vehicle_id = payload.get("new_vehicle_id")
+        elif event_type == "DeviceTerminalIdChanged":
+            self._apply_terminal_id_changed(aggregate_id=aggregate_id, payload=payload)
         elif event_type == "DeviceAuthCodeIssued":
             # P0 #2 fix: mirrors DeviceReassigned's shape immediately above -- aggregate_id is
             # the device_id for this event too (redis_event_publisher.py's own
@@ -120,6 +133,25 @@ class DeviceRegistryProjection:
             self._device_id_by_terminal_id[terminal_id] = aggregate_id
         if serial_number:
             self._device_id_by_serial_number[serial_number] = aggregate_id
+
+    def _apply_terminal_id_changed(self, *, aggregate_id: str, payload: dict) -> None:
+        """Removes the stale `_device_id_by_terminal_id` entry (keyed on whatever
+        `DeviceRegistered` originally carried, or a prior correction) and adds the corrected
+        one — see this class's own module docstring for why simply adding the new key without
+        removing the old one would leave a device resolvable under two terminal IDs at once.
+        A record this projection has never seen `DeviceRegistered` for is silently ignored, the
+        same convention every other branch in `apply_event` already follows (expected during a
+        consumer's initial catch-up window, not an error)."""
+        record = self._by_device_id.get(aggregate_id)
+        if record is None:
+            return
+        old_terminal_id = payload.get("old_terminal_id")
+        new_terminal_id = payload.get("new_terminal_id")
+        if old_terminal_id and self._device_id_by_terminal_id.get(old_terminal_id) == aggregate_id:
+            del self._device_id_by_terminal_id[old_terminal_id]
+        record.terminal_id = new_terminal_id
+        if new_terminal_id:
+            self._device_id_by_terminal_id[new_terminal_id] = aggregate_id
 
     def _set_active(self, device_id: str, active: bool) -> None:
         record = self._by_device_id.get(device_id)

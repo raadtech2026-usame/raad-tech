@@ -14,8 +14,18 @@ consumer group must keep pace with every event `raad:events` ever carries (posit
 notifications, billing, everything), or its own unacknowledged/pending-entries list would grow
 without bound; only `DeviceRegistered`/`DeviceActivated`/`DeviceSuspended`/`DeviceReactivated`/
 `DeviceRetired`/`DeviceAssignedToVehicle`/`DeviceUnassignedFromVehicle`/`DeviceReassigned`/
-`DeviceAuthCodeIssued` are actually applied to the projection, everything else is acknowledged and
-discarded.
+`DeviceTerminalIdChanged`/`DeviceAuthCodeIssued` are actually applied to the projection, everything
+else is acknowledged and discarded.
+
+**A new event type is invisible here until it is added to `_RELEVANT_EVENT_TYPES` below —
+confirmed twice already in this codebase's own history** (`DeviceAuthCodeIssued`, before the P0
+#2 fix noted below, and separately `DeviceAvAttributesReported` on the device-plane's own
+outbound side, CLAUDE.md's Permanent Engineering Lessons): a real domain event can be published,
+committed, and durable in `raad:events` forever, and still be silently dropped by `_process_one`'s
+own filter, with no error, no log line, nothing — because filtering happens before
+`DeviceRegistryProjection.apply_event` is ever called. `DeviceTerminalIdChanged` was added to
+both this set and the projection's own dispatch table in the same change specifically to avoid
+reproducing that exact gap a third time.
 
 **No retry/dead-letter handling** (unlike the Business API's own `RedisStreamsBrokerConsumer`) —
 a missed or misapplied registry update is self-healing: the next relevant event for the same
@@ -55,6 +65,7 @@ _RELEVANT_EVENT_TYPES = {
     "DeviceAssignedToVehicle",
     "DeviceUnassignedFromVehicle",
     "DeviceReassigned",
+    "DeviceTerminalIdChanged",
     # P0 #2 fix: previously excluded, which meant `replay_from_start` could never recover a
     # previously-minted `auth_key_hash` after a device-gateway restart -- see
     # `DeviceRegistryProjection.apply_event`'s own `DeviceAuthCodeIssued` branch.
