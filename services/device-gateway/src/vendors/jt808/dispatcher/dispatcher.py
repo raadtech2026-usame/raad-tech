@@ -38,6 +38,7 @@ authentication is "reject + audit + close," response first, then close).
 
 from __future__ import annotations
 
+import asyncio
 from typing import Awaitable, Callable
 
 from src.vendors.jt808.dispatcher.handler import HandlerContext, MessageHandler
@@ -141,6 +142,24 @@ class MessageDispatcher:
         )
         try:
             result = await handler.handle(message, context)
+        except asyncio.CancelledError:
+            # Observability only (JT808 post-0x0102 investigation, 2026-09-15): a connection
+            # torn down while a handler is still awaiting (e.g. mid-way through
+            # `verify_auth_code`) raises CancelledError, which `except Exception` below never
+            # catches (BaseException, not Exception, since Python 3.8) — previously this
+            # escaped silently, with no `authentication_succeeded`/`authentication_failed`/
+            # `handler_error` ever logged for the message that triggered it. Logged, then
+            # re-raised unchanged — cancellation must still propagate for correct task
+            # cleanup; this only makes the fact that it happened observable.
+            log_with_fields(
+                logger,
+                30,
+                "handler_cancelled",
+                connection_id=connection_id,
+                terminal_id=message.terminal_id,
+                message_id=f"0x{message.message_id:04x}",
+            )
+            raise
         except (
             Exception
         ) as exc:  # noqa: BLE001 - a handler bug must not crash the connection
@@ -159,7 +178,34 @@ class MessageDispatcher:
                 serial_no=self._serial_counter.next(),
                 body=result.response_body,
             )
-            await self._send(connection_id, frame)
+            try:
+                await self._send(connection_id, frame)
+            except Exception as exc:  # noqa: BLE001 - observability only, see below
+                # Observability only: previously an outbound response frame (e.g. 0x8100/
+                # 0x8001) had no logging at all, success or failure, on the send path — no way
+                # to confirm the device ever actually received it. Logged, then re-raised
+                # unchanged: this preserves the exact prior control flow (the exception already
+                # propagated out of `dispatch()` uncaught before this change; it still does).
+                log_with_fields(
+                    logger,
+                    40,
+                    "response_frame_send_failed",
+                    connection_id=connection_id,
+                    terminal_id=message.terminal_id,
+                    message_id=f"0x{message.message_id:04x}",
+                    response_message_id=f"0x{result.response_message_id:04x}",
+                    error=str(exc),
+                )
+                raise
+            log_with_fields(
+                logger,
+                10,
+                "response_frame_sent",
+                connection_id=connection_id,
+                terminal_id=message.terminal_id,
+                message_id=f"0x{message.message_id:04x}",
+                response_message_id=f"0x{result.response_message_id:04x}",
+            )
 
         if result.close_connection_after:
             await self._close_connection(

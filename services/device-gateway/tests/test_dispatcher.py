@@ -82,6 +82,21 @@ class _RaisingHandler(MessageHandler):
         raise RuntimeError("handler bug")
 
 
+class _CancellingHandler(MessageHandler):
+    async def handle(self, message, context) -> HandlerResult:
+        raise asyncio.CancelledError()
+
+
+class _RaisingSender:
+    """A `send` callable that always fails — for asserting the observability-only send-path
+    logging (JT808 post-0x0102 investigation, 2026-09-15) preserves the exact prior control
+    flow (the exception still propagates out of `dispatch()` uncaught) rather than swallowing
+    it, unlike an ordinary handler exception."""
+
+    async def __call__(self, connection_id: str, data: bytes) -> None:
+        raise ConnectionResetError("send failed")
+
+
 class KnownMessageDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_dispatches_to_registered_handler(self) -> None:
         handler = _RecordingHandler()
@@ -209,6 +224,104 @@ class HandlerExceptionTests(unittest.IsolatedAsyncioTestCase):
 
         for _ in range(5):
             await dispatcher.dispatch("conn-1", make_message(0x0002))  # must not raise
+
+
+class HandlerCancellationTests(unittest.IsolatedAsyncioTestCase):
+    """Regression coverage for the JT808 post-0x0102 investigation (2026-09-15): unlike an
+    ordinary handler exception (`HandlerExceptionTests`, above), a cancellation must never be
+    swallowed — `except Exception` never catches `asyncio.CancelledError` (a `BaseException`
+    since Python 3.8), and this dispatcher must not accidentally start doing so either."""
+
+    async def test_cancelled_error_is_re_raised_not_swallowed(self) -> None:
+        registry = HandlerRegistry()
+        registry.register(0x0002, _CancellingHandler())
+        dispatcher, _, _ = make_dispatcher(registry=registry)
+
+        with self.assertRaises(asyncio.CancelledError):
+            await dispatcher.dispatch("conn-1", make_message(0x0002))
+
+    async def test_cancelled_error_logs_handler_cancelled_with_identifying_fields(self) -> None:
+        registry = HandlerRegistry()
+        registry.register(0x0002, _CancellingHandler())
+        dispatcher, _, _ = make_dispatcher(registry=registry)
+
+        with self.assertLogs("jt808.dispatcher", level="WARNING") as captured:
+            with self.assertRaises(asyncio.CancelledError):
+                await dispatcher.dispatch(
+                    "conn-1", make_message(0x0002, terminal_id="00000000014482607571")
+                )
+
+        # `log_with_fields` puts structured data in `record.extra_fields` (see
+        # `logging_setup.log_with_fields`) — `assertLogs`'s own `.output` only ever renders
+        # `record.getMessage()`, so the field values must be asserted on `.records` directly.
+        record = next(r for r in captured.records if r.getMessage() == "handler_cancelled")
+        self.assertEqual(record.extra_fields["connection_id"], "conn-1")
+        self.assertEqual(record.extra_fields["terminal_id"], "00000000014482607571")
+        self.assertEqual(record.extra_fields["message_id"], "0x0002")
+
+    async def test_cancelled_error_sends_no_response(self) -> None:
+        registry = HandlerRegistry()
+        registry.register(0x0002, _CancellingHandler())
+        dispatcher, _, sender = make_dispatcher(registry=registry)
+
+        with self.assertRaises(asyncio.CancelledError):
+            await dispatcher.dispatch("conn-1", make_message(0x0002))
+
+        self.assertEqual(sender.sent, [])
+
+
+class ResponseSendObservabilityTests(unittest.IsolatedAsyncioTestCase):
+    """Regression coverage for the JT808 post-0x0102 investigation (2026-09-15): before this,
+    an outbound response frame (e.g. 0x8100/0x8001) had no logging at all around the send, so
+    a silent delivery failure was indistinguishable from a successful one in the logs."""
+
+    async def test_successful_send_logs_response_frame_sent(self) -> None:
+        handler = _RecordingHandler(
+            result=HandlerResult(
+                response_message_id=0x8001, response_body=b"\x00\x01\x00\x02\x00"
+            )
+        )
+        registry = HandlerRegistry()
+        registry.register(0x0002, handler)
+        dispatcher, _, _ = make_dispatcher(registry=registry)
+
+        with self.assertLogs("jt808.dispatcher", level="DEBUG") as captured:
+            await dispatcher.dispatch(
+                "conn-1", make_message(0x0002, terminal_id="00000000014482607571")
+            )
+
+        record = next(
+            r for r in captured.records if r.getMessage() == "response_frame_sent"
+        )
+        self.assertEqual(record.extra_fields["connection_id"], "conn-1")
+        self.assertEqual(record.extra_fields["terminal_id"], "00000000014482607571")
+        self.assertEqual(record.extra_fields["message_id"], "0x0002")
+        self.assertEqual(record.extra_fields["response_message_id"], "0x8001")
+
+    async def test_failed_send_logs_response_frame_send_failed_and_still_raises(self) -> None:
+        handler = _RecordingHandler(
+            result=HandlerResult(
+                response_message_id=0x8100, response_body=b"\x00\x01\x00\x02\x00"
+            )
+        )
+        registry = HandlerRegistry()
+        registry.register(0x0100, handler)
+        dispatcher, _, _ = make_dispatcher(registry=registry, sender=_RaisingSender())
+
+        with self.assertLogs("jt808.dispatcher", level="ERROR") as captured:
+            with self.assertRaises(ConnectionResetError):
+                await dispatcher.dispatch(
+                    "conn-1", make_message(0x0100, terminal_id="00000000014482607571")
+                )
+
+        record = next(
+            r for r in captured.records if r.getMessage() == "response_frame_send_failed"
+        )
+        self.assertEqual(record.extra_fields["connection_id"], "conn-1")
+        self.assertEqual(record.extra_fields["terminal_id"], "00000000014482607571")
+        self.assertEqual(record.extra_fields["message_id"], "0x0100")
+        self.assertEqual(record.extra_fields["response_message_id"], "0x8100")
+        self.assertIn("send failed", record.extra_fields["error"])
 
 
 class ResponsePropagationTests(unittest.IsolatedAsyncioTestCase):
