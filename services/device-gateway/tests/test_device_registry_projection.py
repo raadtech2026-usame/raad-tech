@@ -183,11 +183,11 @@ class DeviceRegistryProjectionTests(unittest.TestCase):
         self.assertIsNone(projection.lookup_by_terminal_id("nope"))
         self.assertIsNone(projection.lookup_by_serial_number("nope"))
 
-    def test_auth_code_issued_event_sets_auth_key_hash_on_existing_record(self) -> None:
+    def test_auth_code_issued_event_appends_auth_key_hash_on_existing_record(self) -> None:
         """P0 #2 fix: `DeviceAuthCodeIssued` (published by `TerminalRegistrationHandler` on every
         successful `0x0100`, `aggregate_id=device_id`) must now be applied by this projection, the
         same as every other device-lifecycle event — this is what lets `replay_from_start` recover
-        a previously-minted `auth_key_hash` after a device-gateway restart."""
+        previously-minted `auth_key_hashes` after a device-gateway restart."""
         projection = DeviceRegistryProjection()
         projection.apply_event(
             event_type="DeviceRegistered",
@@ -202,7 +202,7 @@ class DeviceRegistryProjectionTests(unittest.TestCase):
             payload={"auth_key_hash": "pbkdf2_sha256$10000$salt$hash"},
         )
         record = projection.lookup_by_terminal_id("TERM-1")
-        self.assertEqual(record.auth_key_hash, "pbkdf2_sha256$10000$salt$hash")
+        self.assertEqual(record.auth_key_hashes, ["pbkdf2_sha256$10000$salt$hash"])
 
     def test_auth_code_issued_event_for_unknown_device_is_safely_ignored(self) -> None:
         projection = DeviceRegistryProjection()
@@ -213,6 +213,33 @@ class DeviceRegistryProjectionTests(unittest.TestCase):
             payload={"auth_key_hash": "pbkdf2_sha256$10000$salt$hash"},
         )  # must not raise
         self.assertEqual(len(projection), 0)
+
+    def test_auth_code_issued_event_keeps_multiple_pending_hashes_bounded(self) -> None:
+        """Production fix, 2026-09-15: a terminal that re-registers several times before ever
+        completing `0x0102` must keep more than just the single most-recent hash pending — see
+        `DeviceRecord.auth_key_hashes`'s own docstring for the live incident this closes — but
+        the list is still bounded, oldest evicted first, not unbounded growth."""
+        projection = DeviceRegistryProjection()
+        projection.apply_event(
+            event_type="DeviceRegistered",
+            aggregate_id=DEVICE,
+            org_id=ORG,
+            payload={"terminal_id": "TERM-1", "serial_number": "00007"},
+        )
+        for n in range(10):
+            projection.apply_event(
+                event_type="DeviceAuthCodeIssued",
+                aggregate_id=DEVICE,
+                org_id=ORG,
+                payload={"auth_key_hash": f"hash-{n}"},
+            )
+        record = projection.lookup_by_terminal_id("TERM-1")
+        self.assertEqual(len(record.auth_key_hashes), 8)
+        # Oldest two (hash-0, hash-1) evicted; the most recent eight remain, in order.
+        self.assertEqual(
+            record.auth_key_hashes,
+            ["hash-2", "hash-3", "hash-4", "hash-5", "hash-6", "hash-7", "hash-8", "hash-9"],
+        )
 
     def test_reactivate_after_suspend_restores_provisionability(self) -> None:
         projection = DeviceRegistryProjection()

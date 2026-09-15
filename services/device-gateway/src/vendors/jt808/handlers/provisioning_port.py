@@ -143,26 +143,36 @@ class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
     corroborated directly by the new supplier specification's own §5.1.6/§5.1.7/§7.1.1/§7.1.2):
     `authorize_registration` mints a fresh, cryptographically random code
     (`auth_code_hashing.generate_code`) on every `SUCCESS` result, hashes it
-    (`auth_code_hashing.hash_code`, PBKDF2-HMAC-SHA256) into the projection record's own
-    `auth_key_hash` field — the *local*, in-process copy this port's `verify_auth_code` checks
-    against, matching `Device.auth_key_hash`'s own docstring ("device authentication happens in
-    the JT808 service against the device-registry projection," not against Postgres directly).
-    The plaintext code is returned once, embedded in `0x8100`'s wire response
-    (`RegistrationAuthorization.auth_code`); the hash is returned too
+    (`auth_code_hashing.hash_code`, PBKDF2-HMAC-SHA256) and appends it to the projection record's
+    own `auth_key_hashes` list (bounded, oldest evicted — see that field's own docstring for why
+    this is a small list, not a single scalar) — the *local*, in-process copy this port's
+    `verify_auth_code` checks against, matching `Device.auth_key_hash`'s own docstring ("device
+    authentication happens in the JT808 service against the device-registry projection," not
+    against Postgres directly). The plaintext code is returned once, embedded in `0x8100`'s wire
+    response (`RegistrationAuthorization.auth_code`); the hash is returned too
     (`RegistrationAuthorization.auth_key_hash`) so the calling handler can publish a
     `DeviceAuthCodeIssued` event, letting `fleet_device`'s own `Device.auth_key_hash` column stay
-    a durable mirror of this record (`events/subscribers.py`-side, backend). **Every successful
-    `0x0100` mints a brand-new code, unconditionally** — this is the literal reading of ADR-0025
-    §3's "rotates only on a fresh, successful `0x0100` registration": a normal reconnect never
-    resends `0x0100` at all under the 2019 spec's own §3.5.3 semantics (echoes the previously
-    issued code straight to `0x0102`), so any `0x0100` this port sees again *is* by definition a
-    fresh registration (e.g. a factory reset) — no extra "is this the first time" state is
+    a durable mirror of the most recently minted hash (`events/subscribers.py`-side, backend —
+    that column remains a single scalar audit/durability copy, never itself consulted for
+    `0x0102` verification). **Every successful `0x0100` mints a brand-new code, unconditionally**
+    — this is the literal reading of ADR-0025 §3's "rotates only on a fresh, successful `0x0100`
+    registration": a normal reconnect never resends `0x0100` at all under the 2019 spec's own
+    §3.5.3 semantics (echoes the previously issued code straight to `0x0102`), so any `0x0100`
+    this port sees again *is* by definition a fresh registration (e.g. a factory reset) — no
+    extra "is this the first time" state is
     tracked, since ADR-0025 §3 defines none.
 
     `verify_auth_code` hashes the presented code with the same algorithm and compares it
-    (`hmac.compare_digest`, inside `auth_code_hashing.verify_code`) against the projection
-    record's stored `auth_key_hash` — a terminal with no record, an unprovisionable record, or no
-    `auth_key_hash` yet minted (never registered through this port) all fail closed.
+    (`hmac.compare_digest`, inside `auth_code_hashing.verify_code`) against each of the
+    projection record's still-pending `auth_key_hashes` — a terminal with no record, an
+    unprovisionable record, or no hash yet minted (never registered through this port) all fail
+    closed. **Production fix, 2026-09-15:** a real MDVR was observed opening several overlapping
+    connections for the same terminal and re-registering on each before completing `0x0102` on
+    any of them; checking only the single most-recently-minted hash meant an earlier connection's
+    own, still-unused code was silently invalidated by a sibling connection's later registration
+    before the device ever got to use it. Any of the terminal's own recently-issued, not-yet-
+    consumed codes now verifies successfully — see `DeviceRecord.auth_key_hashes`'s own docstring
+    for the full incident. A matched hash is removed on success so a spent code can't be replayed.
     """
 
     def __init__(self, projection: DeviceRegistryProjection) -> None:
@@ -177,7 +187,7 @@ class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
 
         auth_code = generate_code()
         auth_key_hash = hash_code(auth_code)
-        record.auth_key_hash = auth_key_hash
+        record.add_auth_key_hash(auth_key_hash)
 
         return RegistrationAuthorization(
             result=RegistrationResult.SUCCESS,
@@ -192,12 +202,21 @@ class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
         self, *, terminal_phone: str, auth_code: str
     ) -> AuthenticationResult:
         record = self._projection.lookup_by_terminal_id(terminal_phone)
-        if record is None or not record.is_provisionable or record.auth_key_hash is None:
+        if record is None or not record.is_provisionable or not record.auth_key_hashes:
             return AuthenticationResult(is_valid=False)
 
-        if not verify_code(auth_code, record.auth_key_hash):
+        matched_hash = next(
+            (
+                candidate
+                for candidate in record.auth_key_hashes
+                if verify_code(auth_code, candidate)
+            ),
+            None,
+        )
+        if matched_hash is None:
             return AuthenticationResult(is_valid=False)
 
+        record.auth_key_hashes.remove(matched_hash)
         return AuthenticationResult(
             is_valid=True,
             device_id=record.device_id,

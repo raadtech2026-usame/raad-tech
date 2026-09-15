@@ -153,8 +153,8 @@ class RedisDeviceRegistryConsumerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(applied, 2)
         self.assertEqual(
-            projection.lookup_by_terminal_id("TERM-1").auth_key_hash,
-            "pbkdf2_sha256$10000$salt$hash",
+            projection.lookup_by_terminal_id("TERM-1").auth_key_hashes,
+            ["pbkdf2_sha256$10000$salt$hash"],
         )
 
     async def test_terminal_id_changed_event_is_relevant_and_reindexes_projection(self) -> None:

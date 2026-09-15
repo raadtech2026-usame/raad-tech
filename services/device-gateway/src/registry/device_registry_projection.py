@@ -40,11 +40,31 @@ permanently unable to resolve the device under its corrected value, indefinitely
 `replay_from_start` — replay only ever reproduces the *original* `DeviceRegistered` event's
 payload. `_apply_terminal_id_changed` below removes the stale index entry (not just adds the new
 one) so a device is never resolvable under two terminal IDs at once.
+
+**`auth_key_hashes` is a bounded list, not a single scalar (production fix, 2026-09-15).**
+A real MDVR was observed, over a real production window, opening several overlapping TCP
+connections for the *same* terminal within seconds of each other and re-sending `0x0100` on
+each one before ever completing `0x0102` on the first — each fresh registration used to
+overwrite this record's one `auth_key_hash` field unconditionally, so by the time the device
+finally echoed back the code from its *own* connection's `0x8100`, that code had already been
+silently invalidated by a sibling connection's later registration. `0x0102` then failed closed
+every time, indefinitely, with no code-level error anywhere (`verify_auth_code` correctly
+reports "wrong code," not a bug) — confirmed live: 19 registrations for one terminal in a 2-hour
+production window, only 1 ever reached `0x0102`, and that one failed for exactly this reason.
+Keeping the last `_MAX_PENDING_AUTH_KEY_HASHES` still-unconsumed hashes (oldest evicted first)
+lets any of a terminal's own recently-issued codes still authenticate, regardless of how many
+sibling registrations arrived in between — `verify_auth_code` removes a hash the instant it's
+successfully used, so a spent code still can't be replayed.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+#: Generous headroom over the worst observed real burst (5 overlapping connections/registrations
+#: for one terminal inside ~2.5 minutes) — small and bounded either way, since this only ever
+#: holds short PBKDF2 hash strings for one device at a time.
+_MAX_PENDING_AUTH_KEY_HASHES = 8
 
 
 @dataclass
@@ -55,21 +75,26 @@ class DeviceRecord:
     serial_number: str | None
     is_active: bool
     vehicle_id: str | None
-    #: ADR-0025 §3: the JT/T 808 `0x0102` credential's hash, minted locally by
-    #: `ProjectionBackedJt808ProvisioningPort.authorize_registration` on a successful `0x0100`
-    #: (`fleet_device` never originates this value; the device-gateway process is the one that
-    #: mints it) and set here immediately. `None` until a first successful registration mints
-    #: one. **P0 #2 fix:** also fed by a replayed `DeviceAuthCodeIssued` broker event, the same
-    #: as every other field on this record — `apply_event`'s own `DeviceAuthCodeIssued` branch —
-    #: so `RedisDeviceRegistryConsumer.replay_from_start` recovers a previously-minted hash on a
+    #: ADR-0025 §3: hashes of the JT/T 808 `0x0102` credential(s), minted locally by
+    #: `ProjectionBackedJt808ProvisioningPort.authorize_registration` on every successful
+    #: `0x0100` (`fleet_device` never originates this value; the device-gateway process is the
+    #: one that mints it) and appended here immediately, oldest evicted past
+    #: `_MAX_PENDING_AUTH_KEY_HASHES`. Empty until a first successful registration mints one.
+    #: Also fed by a replayed `DeviceAuthCodeIssued` broker event, the same as every other field
+    #: on this record — `apply_event`'s own `DeviceAuthCodeIssued` branch — so
+    #: `RedisDeviceRegistryConsumer.replay_from_start` recovers previously-minted hashes on a
     #: device-gateway restart instead of leaving every already-registered device permanently
     #: unable to complete `0x0102` (an *ordinary* reconnect, which does not resend `0x0100` —
     #: see `ProjectionBackedJt808ProvisioningPort`'s own docstring) short of a factory reset.
-    auth_key_hash: str | None = None
+    auth_key_hashes: list[str] = field(default_factory=list)
 
     @property
     def is_provisionable(self) -> bool:
         return self.is_active and self.vehicle_id is not None
+
+    def add_auth_key_hash(self, auth_key_hash: str) -> None:
+        self.auth_key_hashes.append(auth_key_hash)
+        del self.auth_key_hashes[:-_MAX_PENDING_AUTH_KEY_HASHES]
 
 
 _ACTIVATING_EVENTS = {"DeviceActivated", "DeviceReactivated"}
@@ -115,7 +140,9 @@ class DeviceRegistryProjection:
             # other branch here (expected during a consumer's initial catch-up window).
             record = self._by_device_id.get(aggregate_id)
             if record is not None:
-                record.auth_key_hash = payload.get("auth_key_hash")
+                auth_key_hash = payload.get("auth_key_hash")
+                if auth_key_hash:
+                    record.add_auth_key_hash(auth_key_hash)
 
     def _apply_registered(self, *, aggregate_id: str, org_id: str | None, payload: dict) -> None:
         terminal_id = payload.get("terminal_id")

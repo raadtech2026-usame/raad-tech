@@ -23,7 +23,7 @@ is injected directly, the seam tests use), this gateway constructs one shared `R
 `terminal_id` and `serial_number`), so the same projection instance backs **both** the LSZ
 adapter's real `ProjectionBackedMdvrProvisioningPort` **and** the JT808 adapter's real
 `ProjectionBackedJt808ProvisioningPort`. `0x0102` authentication verification is real and tested
-(ADR-0025 §3, hash-comparison against `DeviceRecord.auth_key_hash` — see that port's own
+(ADR-0025 §3, hash-comparison against `DeviceRecord.auth_key_hashes` — see that port's own
 docstring), and — since the P0 #2 fix (device-gateway session-durability audit, 2026-08-25) —
 that same broker-configured condition also injects a `RedisDeviceSessionRegistry` into the JT808
 adapter alone (`_build_jt808_session_registry`, below); LSZ keeps its in-memory default, dormant

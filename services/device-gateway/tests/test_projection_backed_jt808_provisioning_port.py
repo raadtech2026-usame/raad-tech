@@ -250,6 +250,73 @@ class ProjectionBackedJt808ProvisioningPortTests(unittest.IsolatedAsyncioTestCas
         self.assertTrue(result.is_valid)
         self.assertEqual(result.device_id, "device-1")
 
+    async def test_earlier_code_still_verifies_after_overlapping_reregistration(self) -> None:
+        """Production regression, 2026-09-15: a real MDVR was observed opening several
+        overlapping TCP connections for the same terminal and re-sending `0x0100` on each one
+        before ever completing `0x0102` on the first -- confirmed live via production audit
+        logs (19 registrations for one terminal in a 2-hour window, only 1 ever reached
+        `0x0102`, and that one failed authentication for exactly this reason). Before this fix,
+        each fresh registration overwrote the single `auth_key_hash` field, so the first
+        connection's own, still-unused code was silently invalidated by a sibling connection's
+        later registration -- this reproduces that exact sequence and proves the first
+        connection's code still authenticates."""
+        projection = _provisionable_projection()
+        port = ProjectionBackedJt808ProvisioningPort(projection)
+
+        first_registration = await port.authorize_registration(
+            terminal_phone="013800138000", request=None
+        )
+        # Three sibling connections for the same terminal re-register before the first
+        # connection ever gets around to sending 0x0102 -- exactly the observed device
+        # behavior (a burst of overlapping reconnects).
+        for _ in range(3):
+            await port.authorize_registration(terminal_phone="013800138000", request=None)
+
+        result = await port.verify_auth_code(
+            terminal_phone="013800138000", auth_code=first_registration.auth_code
+        )
+
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.device_id, "device-1")
+
+    async def test_a_verified_code_cannot_be_replayed(self) -> None:
+        """The fix for the overlapping-registration bug must not reopen a replay hole: once a
+        pending code has been successfully used, it is removed and a second presentation of the
+        same code fails closed, even though sibling still-pending codes remain valid."""
+        projection = _provisionable_projection()
+        port = ProjectionBackedJt808ProvisioningPort(projection)
+
+        registration = await port.authorize_registration(
+            terminal_phone="013800138000", request=None
+        )
+        first_result = await port.verify_auth_code(
+            terminal_phone="013800138000", auth_code=registration.auth_code
+        )
+        self.assertTrue(first_result.is_valid)
+
+        replay_result = await port.verify_auth_code(
+            terminal_phone="013800138000", auth_code=registration.auth_code
+        )
+        self.assertFalse(replay_result.is_valid)
+
+    async def test_pending_codes_beyond_the_bound_are_evicted_oldest_first(self) -> None:
+        """`DeviceRecord.auth_key_hashes` is bounded (`_MAX_PENDING_AUTH_KEY_HASHES`), not
+        unbounded growth -- a terminal that re-registers far more than any realistic overlap
+        window eventually evicts its oldest, presumably-abandoned codes."""
+        projection = _provisionable_projection()
+        port = ProjectionBackedJt808ProvisioningPort(projection)
+
+        first_registration = await port.authorize_registration(
+            terminal_phone="013800138000", request=None
+        )
+        for _ in range(10):
+            await port.authorize_registration(terminal_phone="013800138000", request=None)
+
+        result = await port.verify_auth_code(
+            terminal_phone="013800138000", auth_code=first_registration.auth_code
+        )
+        self.assertFalse(result.is_valid)
+
 
 if __name__ == "__main__":
     unittest.main()
