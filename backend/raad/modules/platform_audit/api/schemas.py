@@ -66,6 +66,7 @@ class BillingStatsResponse(BaseModel):
     subscription_by_status: dict[str, int]
     expiring_soon: int
     revenue: float
+    active_by_billing_cycle: dict[str, int]
 
 
 class SystemHealthResponse(BaseModel):
@@ -83,4 +84,5 @@ class PlatformStatsResponse(BaseModel):
     devices: DeviceStatsResponse
     users: UserStatsResponse
     billing: BillingStatsResponse
+    payment_due_organizations: int
     system_health: SystemHealthResponse

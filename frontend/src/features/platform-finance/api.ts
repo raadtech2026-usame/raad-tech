@@ -84,6 +84,13 @@ export interface PlatformPnl {
   start: string;
   end: string;
   subscriptionRevenue: string;
+  /** Organization Management phase. What `billing` invoiced organizations in this window
+   * (`subscription_invoiced`) — distinct from `subscriptionRevenue`, which is only what was
+   * actually *collected*. Never merged with it: the gap between the two is receivables. */
+  subscriptionInvoiced: string;
+  /** As-of-`end` outstanding balance across every organization's subscription invoices
+   * (`subscription_receivables`) — a point-in-time snapshot, not itself windowed by `start`. */
+  subscriptionReceivables: string;
   otherIncome: string;
   totalRevenue: string;
   totalExpenses: string;
@@ -235,6 +242,8 @@ export async function getPlatformPnl(start: string, end: string): Promise<Platfo
     start: string;
     end: string;
     subscription_revenue: string;
+    subscription_invoiced: string;
+    subscription_receivables: string;
     other_income: string;
     total_revenue: string;
     total_expenses: string;
@@ -247,6 +256,8 @@ export async function getPlatformPnl(start: string, end: string): Promise<Platfo
     start: wire.start,
     end: wire.end,
     subscriptionRevenue: wire.subscription_revenue,
+    subscriptionInvoiced: wire.subscription_invoiced,
+    subscriptionReceivables: wire.subscription_receivables,
     otherIncome: wire.other_income,
     totalRevenue: wire.total_revenue,
     totalExpenses: wire.total_expenses,

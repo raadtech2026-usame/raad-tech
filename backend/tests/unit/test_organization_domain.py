@@ -18,6 +18,7 @@ from raad.modules.organization.domain.value_objects import (
     OrganizationStatus,
     RegionId,
     RegionStatus,
+    TrialState,
 )
 
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MC"
@@ -173,6 +174,144 @@ class OrganizationStatusTransitionTests(unittest.TestCase):
         org.suspend(clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)))
         org.reactivate(clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)))
         self.assertEqual(org.status, OrganizationStatus.ACTIVE)
+
+
+class OrganizationTrialTests(unittest.TestCase):
+    """Organization-level trial — deliberately independent of `billing.SubscriptionStatus.TRIAL`
+    (see `value_objects.TrialState`'s own docstring). Covers: not-started default, starting a
+    trial, the one-time refusal to re-start, duration bounds, and the derived
+    trialing/expired state transition as time passes."""
+
+    def make_org(self) -> Organization:
+        return Organization(
+            id=OrganizationId(VALID_ORG_ULID),
+            name="Sunrise School",
+            org_type=OrgType.SCHOOL,
+            parent_org_id=None,
+            region_id=RegionId(VALID_REGION_ULID),
+            status=OrganizationStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+    def test_trial_state_not_started_by_default(self) -> None:
+        org = self.make_org()
+        self.assertIsNone(org.trial_started_at)
+        self.assertIsNone(org.trial_ends_at)
+        self.assertEqual(
+            org.trial_state(clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc))),
+            TrialState.NOT_STARTED,
+        )
+
+    def test_start_trial_sets_started_and_ends_at(self) -> None:
+        org = self.make_org()
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        org.start_trial(duration_days=3, clock=FixedClock(now))
+        self.assertEqual(org.trial_started_at, now)
+        self.assertEqual(org.trial_ends_at, datetime(2026, 1, 4, tzinfo=timezone.utc))
+        self.assertEqual(
+            org.pull_domain_events()[0].event_type, "OrganizationTrialStarted"
+        )
+
+    def test_start_trial_twice_raises(self) -> None:
+        org = self.make_org()
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        org.start_trial(duration_days=7, clock=FixedClock(now))
+        with self.assertRaises(DomainError):
+            org.start_trial(duration_days=7, clock=FixedClock(now))
+
+    def test_start_trial_rejects_non_positive_duration(self) -> None:
+        org = self.make_org()
+        with self.assertRaises(DomainError):
+            org.start_trial(
+                duration_days=0,
+                clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            )
+
+    def test_start_trial_rejects_duration_beyond_max(self) -> None:
+        org = self.make_org()
+        with self.assertRaises(DomainError):
+            org.start_trial(
+                duration_days=366,
+                clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            )
+
+    def test_trial_state_trialing_before_expiry(self) -> None:
+        org = self.make_org()
+        org.start_trial(
+            duration_days=3,
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        state = org.trial_state(
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc))
+        )
+        self.assertEqual(state, TrialState.TRIALING)
+
+    def test_trial_state_expired_after_end(self) -> None:
+        org = self.make_org()
+        org.start_trial(
+            duration_days=3,
+            clock=FixedClock(datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        )
+        state = org.trial_state(
+            clock=FixedClock(datetime(2026, 1, 5, tzinfo=timezone.utc))
+        )
+        self.assertEqual(state, TrialState.EXPIRED)
+
+    def test_trial_state_handles_naive_stored_timestamp(self) -> None:
+        """`trial_ends_at` round-trips naive from Postgres (ADR-0002); `clock.now()` may be
+        tz-aware (`SystemClock`) — the same naive-vs-aware comparison CLAUDE.md's own permanent
+        lesson requires normalising, mirrored here for this new field."""
+        org = self.make_org()
+        org.trial_started_at = datetime(2026, 1, 1)  # naive, as if loaded from the DB
+        org.trial_ends_at = datetime(2026, 1, 4)  # naive
+        state = org.trial_state(
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc))
+        )
+        self.assertEqual(state, TrialState.TRIALING)
+
+
+class OrganizationRenameTests(unittest.TestCase):
+    """Organization Management phase — the one identity field with real backend support."""
+
+    def make_org(self) -> Organization:
+        return Organization(
+            id=OrganizationId(VALID_ORG_ULID),
+            name="Sunrise School",
+            org_type=OrgType.SCHOOL,
+            parent_org_id=None,
+            region_id=RegionId(VALID_REGION_ULID),
+            status=OrganizationStatus.ACTIVE,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+    def test_rename_sets_new_name_and_records_event(self) -> None:
+        org = self.make_org()
+        org.rename(
+            name="Sunrise Academy",
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(org.name, "Sunrise Academy")
+        event = org.pull_domain_events()[0]
+        self.assertEqual(event.event_type, "OrganizationRenamed")
+        self.assertEqual(event.payload["name"], "Sunrise Academy")
+
+    def test_rename_rejects_empty_name(self) -> None:
+        org = self.make_org()
+        with self.assertRaises(DomainError):
+            org.rename(
+                name="", clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc))
+            )
+
+    def test_rename_to_the_same_name_still_records_an_event(self) -> None:
+        """Deliberately not idempotent — see `Organization.rename`'s own docstring."""
+        org = self.make_org()
+        org.rename(
+            name="Sunrise School",
+            clock=FixedClock(datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        )
+        self.assertEqual(len(org.pull_domain_events()), 1)
 
 
 class OrganizationGeofenceTests(unittest.TestCase):

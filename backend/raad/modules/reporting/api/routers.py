@@ -217,6 +217,14 @@ async def export_report(
     status_filter: str | None = Query(
         default=None, alias="status", pattern="^(unpaid|partial|paid|cancelled)$"
     ),
+    organization_id: str | None = Query(
+        default=None,
+        description="Platform Report Center only — narrows a platform-scope report to one "
+        "organization. Never used to resolve an organization-scope report's own tenant, which "
+        "always comes from the caller's own principal.",
+    ),
+    subscription_status: str | None = Query(default=None),
+    billing_cycle: str | None = Query(default=None, pattern="^(monthly|quarterly|annual)$"),
     principal: Principal = Depends(require_permission(Permission("reporting.reports.request"))),
     scope: TenantRegionScope = Depends(get_scope),
     container: Container = Depends(get_container),
@@ -235,6 +243,9 @@ async def export_report(
             parent_id=parent_id,
             payment_method=payment_method,
             status=status_filter,
+            organization_filter_id=organization_id,
+            subscription_status=subscription_status,
+            billing_cycle=billing_cycle,
             scope=scope,
         ),
     )
@@ -270,6 +281,14 @@ async def preview_report(
     status_filter: str | None = Query(
         default=None, alias="status", pattern="^(unpaid|partial|paid|cancelled)$"
     ),
+    organization_id: str | None = Query(
+        default=None,
+        description="Platform Report Center only — narrows a platform-scope report to one "
+        "organization. Never used to resolve an organization-scope report's own tenant, which "
+        "always comes from the caller's own principal.",
+    ),
+    subscription_status: str | None = Query(default=None),
+    billing_cycle: str | None = Query(default=None, pattern="^(monthly|quarterly|annual)$"),
     principal: Principal = Depends(require_permission(Permission("reporting.reports.request"))),
     scope: TenantRegionScope = Depends(get_scope),
     container: Container = Depends(get_container),
@@ -287,6 +306,9 @@ async def preview_report(
             parent_id=parent_id,
             payment_method=payment_method,
             status=status_filter,
+            organization_filter_id=organization_id,
+            subscription_status=subscription_status,
+            billing_cycle=billing_cycle,
             scope=scope,
         ),
     )

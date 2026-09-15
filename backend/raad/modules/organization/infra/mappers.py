@@ -54,6 +54,8 @@ def organization_to_model(
     model.longitude = organization.longitude
     model.geofence_radius_m = organization.geofence_radius_m
     model.approaching_distance_m = organization.approaching_distance_m
+    model.trial_started_at = _naive(organization.trial_started_at)
+    model.trial_ends_at = _naive(organization.trial_ends_at)
     return model
 
 
@@ -73,6 +75,8 @@ def model_to_organization(model: OrganizationModel) -> Organization:
         longitude=model.longitude,
         geofence_radius_m=model.geofence_radius_m,
         approaching_distance_m=model.approaching_distance_m,
+        trial_started_at=model.trial_started_at,
+        trial_ends_at=model.trial_ends_at,
     )
 
 

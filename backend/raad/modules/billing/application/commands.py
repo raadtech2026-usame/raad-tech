@@ -85,6 +85,15 @@ class DisablePlanCommand:
 
 
 @dataclass(frozen=True)
+class DeletePlanCommand:
+    """Organization Management phase — the first and only aggregate-root hard delete in this
+    codebase. See `PlanRepository.delete`'s own docstring for the full safety reasoning."""
+
+    plan_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class OpenOrganizationSubscriptionCommand:
     """ADR-0016 — see module docstring for why this replaces `RenewParentSubscriptionCommand`.
     No approved HTTP route exists for this command this phase."""
@@ -131,6 +140,16 @@ class ReactivateSubscriptionCommand:
     """ADR-0039 §5 — platform-admin reactivation (requirement 39G)."""
 
     subscription_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class ChangeSubscriptionPlanCommand:
+    """Organization Management phase — see `Subscription.change_plan`'s own docstring for why
+    this never touches the current billing period or any already-issued invoice."""
+
+    subscription_id: str
+    new_plan_id: str
     actor: Principal
 
 
@@ -185,6 +204,36 @@ class PaymentCallbackCommand:
     provider_ref: str | None
     actor: Principal
     failure_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class RecordManualSubscriptionPaymentCommand:
+    """Founder/Finance-recorded payment (e.g. bank transfer, mobile money received outside any
+    integrated `PaymentProviderPort`) — distinct from `InitiatePaymentCommand`'s self-service,
+    provider-charged flow. Deliberately carries no `amount`/`currency`: the payment is recorded
+    for exactly the invoice's own amount, so there is nothing for a caller to get wrong or
+    under/over-report — see `BillingApplicationService.record_manual_payment`'s own docstring for
+    why this does **not** also renew the subscription (that is `ActivateSubscriptionCommand`'s
+    own, deliberately separate, step)."""
+
+    invoice_id: str
+    actor: Principal
+    reference: str | None = None
+
+
+@dataclass(frozen=True)
+class ActivateSubscriptionCommand:
+    """Founder/Finance action that moves a subscription to `ACTIVE` with a real billing period,
+    after (and only after) its outstanding invoice has actually been paid — the deliberate second
+    step the manual-payment workflow keeps separate from `RecordManualSubscriptionPaymentCommand`.
+    Distinct from `ReactivateSubscriptionCommand` (ADR-0039 §5, restores a suspended/past-due
+    subscription without moving the billing period): this one is for a subscription that has
+    never had a real period at all (still `TRIAL`), or whose Founder-recorded payment should now
+    be turned into a live entitlement — either way, a fresh period is exactly what a first (or
+    reset) activation needs."""
+
+    subscription_id: str
+    actor: Principal
 
 
 @dataclass(frozen=True)

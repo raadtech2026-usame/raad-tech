@@ -22,6 +22,7 @@ import { Input } from "../../shared/components/Input/Input";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { Tabs } from "../../shared/components/Tabs/Tabs";
 import {
+  deletePlan,
   listInvoices,
   listOrganizationsForPicker,
   listPlans,
@@ -116,6 +117,7 @@ export function BillingPage() {
   const [planFormOpen, setPlanFormOpen] = useState(false);
   const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
   const [togglingPlan, setTogglingPlan] = useState<Plan | null>(null);
+  const [deletingPlan, setDeletingPlan] = useState<Plan | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
 
   const queryClient = useQueryClient();
@@ -136,6 +138,25 @@ export function BillingPage() {
     onError: (error) => {
       toast.error(
         "Could not change the plan status",
+        error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
+      );
+    },
+  });
+
+  const deletePlanMutation = useMutation({
+    mutationFn: (plan: Plan) => deletePlan(plan.id),
+    onSuccess: (_result, plan) => {
+      queryClient.invalidateQueries({ queryKey: ["billing", "plans"] });
+      toast.success("Plan deleted", `${plan.name} has been permanently removed from the catalogue.`);
+      setDeletingPlan(null);
+    },
+    onError: (error) => {
+      // The backend's own `ConflictError` message names exactly why the deletion was refused
+      // (a subscription references it) — surfaced verbatim rather than replaced with a generic
+      // string, matching this file's own `planStatusMutation` precedent. Left open (not closed)
+      // on error, the same as `planStatusMutation`, so the message stays visible beside the plan.
+      toast.error(
+        "Could not delete the plan",
         error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
       );
     },
@@ -284,6 +305,9 @@ export function BillingPage() {
                   </Button>
                   <Button size="sm" variant="ghost" onClick={() => setTogglingPlan(row.original)}>
                     {row.original.status === "active" ? "Disable" : "Activate"}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setDeletingPlan(row.original)}>
+                    Delete
                   </Button>
                 </div>
               ),
@@ -632,6 +656,17 @@ export function BillingPage() {
         loading={planStatusMutation.isPending}
         onConfirm={() => togglingPlan && planStatusMutation.mutate(togglingPlan)}
         onCancel={() => setTogglingPlan(null)}
+      />
+
+      <ConfirmDialog
+        open={deletingPlan !== null}
+        tone="danger"
+        title={deletingPlan ? `Delete ${deletingPlan.name}?` : ""}
+        description="Permanently removes this plan from the catalogue. This only succeeds if no subscription — past or present — has ever referenced it; otherwise disable it instead to stop offering it while keeping the historical reference intact."
+        confirmLabel="Delete plan"
+        loading={deletePlanMutation.isPending}
+        onConfirm={() => deletingPlan && deletePlanMutation.mutate(deletingPlan)}
+        onCancel={() => setDeletingPlan(null)}
       />
     </div>
   );

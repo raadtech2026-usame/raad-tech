@@ -28,6 +28,7 @@ from raad.modules.organization.application.commands import (
     OnboardOrganizationCommand,
     ReactivateOrganizationCommand,
     RegisterOrganizationCommand,
+    RenameOrganizationCommand,
     SuspendOrganizationCommand,
     UpdateOrganizationApproachingDistanceCommand,
     UpdateOrganizationGeofenceCommand,
@@ -186,6 +187,13 @@ class InMemoryOrganizationRepository(OrganizationRepository):
 
     async def count_created_since(self, since) -> int:
         return sum(1 for org in self.by_id.values() if org.created_at >= since)
+
+    async def list_ids_with_expired_trial(self, *, now) -> list[str]:
+        return [
+            org_id
+            for org_id, org in self.by_id.items()
+            if org.trial_started_at is not None and org.trial_ends_at < now
+        ]
 
 
 class InMemoryScopeAssignmentRepository(ScopeAssignmentRepository):
@@ -765,6 +773,33 @@ class OrganizationStatusTransitionApplicationTests(unittest.IsolatedAsyncioTestC
             GetOrganizationByIdQuery(organization_id=org_id), uow=uow
         )
         self.assertEqual(dto.id, org_id)
+
+    async def test_rename_organization(self) -> None:
+        org_service, region_service, uow, _iam_provisioning = make_services()
+        org_id = await self._registered_org_id(org_service, region_service, uow)
+        dto = await org_service.rename_organization(
+            RenameOrganizationCommand(
+                organization_id=org_id, name="Sunrise Academy", actor=make_actor()
+            ),
+            uow=uow,
+        )
+        self.assertEqual(dto.name, "Sunrise Academy")
+        reloaded = await org_service.get_organization_by_id(
+            GetOrganizationByIdQuery(organization_id=org_id), uow=uow
+        )
+        self.assertEqual(reloaded.name, "Sunrise Academy")
+
+    async def test_rename_missing_organization_raises_not_found(self) -> None:
+        org_service, _region_service, uow, _iam_provisioning = make_services()
+        with self.assertRaises(NotFoundError):
+            await org_service.rename_organization(
+                RenameOrganizationCommand(
+                    organization_id=NON_EXISTENT_ULID,
+                    name="Doesn't matter",
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
 
 
 class UpdateOrganizationGeofenceApplicationTests(unittest.IsolatedAsyncioTestCase):

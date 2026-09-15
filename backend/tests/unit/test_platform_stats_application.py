@@ -32,12 +32,18 @@ class FixedClock(Clock):
 
 
 class _FakeOrganizationService:
-    def __init__(self) -> None:
+    def __init__(self, *, expired_trial_ids: list[str] | None = None) -> None:
         self.calls: list[dict] = []
+        self.expired_trial_calls: list[dict] = []
+        self._expired_trial_ids = expired_trial_ids or []
 
     async def get_organization_stats(self, *, since_today, uow) -> OrganizationStatsDTO:
         self.calls.append({"since_today": since_today, "uow": uow})
         return OrganizationStatsDTO(total=10, by_status={"active": 9, "suspended": 1}, created_today=2)
+
+    async def get_expired_trial_organization_ids(self, *, now, uow) -> list[str]:
+        self.expired_trial_calls.append({"now": now, "uow": uow})
+        return self._expired_trial_ids
 
 
 class _FakeUserService:
@@ -68,8 +74,12 @@ class _FakeDeviceService:
 
 
 class _FakeBillingService:
-    def __init__(self) -> None:
+    def __init__(self, *, subscribed_organization_ids: frozenset[str] = frozenset()) -> None:
         self.calls: list[dict] = []
+        self.subscription_lookup_calls: list[dict] = []
+        # ids for which `get_current_subscription_for_organization` returns non-`None` — every
+        # other id (the common case for these tests) returns `None`, i.e. "no subscription".
+        self._subscribed_organization_ids = subscribed_organization_ids
 
     async def get_billing_stats(
         self,
@@ -90,8 +100,15 @@ class _FakeBillingService:
             }
         )
         return BillingStatsDTO(
-            subscription_by_status={"active": 8, "trial": 2}, expiring_soon=1, revenue=1234.5
+            subscription_by_status={"active": 8, "trial": 2},
+            expiring_soon=1,
+            revenue=1234.5,
+            active_by_billing_cycle={"monthly": 7, "annual": 3},
         )
+
+    async def get_current_subscription_for_organization(self, organization_id, *, uow):
+        self.subscription_lookup_calls.append({"organization_id": organization_id, "uow": uow})
+        return "a-subscription" if organization_id in self._subscribed_organization_ids else None
 
 
 class _FakeHealthCheckService:
@@ -107,7 +124,10 @@ class _FakeHealthCheckService:
 
 
 def make_service(
-    *, now: datetime
+    *,
+    now: datetime,
+    expired_trial_ids: list[str] | None = None,
+    subscribed_organization_ids: frozenset[str] = frozenset(),
 ) -> tuple[
     PlatformStatsApplicationService,
     _FakeOrganizationService,
@@ -117,11 +137,11 @@ def make_service(
     _FakeBillingService,
     _FakeHealthCheckService,
 ]:
-    org = _FakeOrganizationService()
+    org = _FakeOrganizationService(expired_trial_ids=expired_trial_ids)
     user = _FakeUserService()
     vehicle = _FakeVehicleService()
     device = _FakeDeviceService()
-    billing = _FakeBillingService()
+    billing = _FakeBillingService(subscribed_organization_ids=subscribed_organization_ids)
     health = _FakeHealthCheckService()
     service = PlatformStatsApplicationService(
         clock=FixedClock(now),
@@ -148,8 +168,36 @@ class PlatformStatsCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats.vehicles.total, 25)
         self.assertEqual(stats.devices.online, 20)
         self.assertEqual(stats.billing.revenue, 1234.5)
+        self.assertEqual(stats.billing.active_by_billing_cycle, {"monthly": 7, "annual": 3})
+        self.assertEqual(stats.payment_due_organizations, 0)  # no expired-trial orgs seeded
         self.assertEqual(stats.system_health.database, "ok")
         self.assertEqual(stats.system_health.broker, "down")
+
+    async def test_payment_due_counts_expired_trial_organizations_with_no_subscription(
+        self,
+    ) -> None:
+        """Organization Management phase — "Payment Due" = trial expired AND no `Subscription`
+        row at all. An expired-trial org that *does* have a subscription (of any status) is not
+        counted here — its own subscription status already speaks for it."""
+        service, org, *_rest, billing, _health = make_service(
+            now=datetime(2026, 1, 15, tzinfo=timezone.utc),
+            expired_trial_ids=["org-a", "org-b", "org-c"],
+            subscribed_organization_ids=frozenset({"org-b"}),
+        )
+
+        stats = await service.get_platform_stats(
+            org_uow="org-uow", iam_uow="iam-uow", fleet_device_uow="fleet-uow", billing_uow="billing-uow"
+        )
+
+        self.assertEqual(stats.payment_due_organizations, 2)  # org-a and org-c, not org-b
+        self.assertEqual(org.expired_trial_calls[0]["uow"], "org-uow")
+        self.assertEqual(
+            {call["organization_id"] for call in billing.subscription_lookup_calls},
+            {"org-a", "org-b", "org-c"},
+        )
+        self.assertTrue(
+            all(call["uow"] == "billing-uow" for call in billing.subscription_lookup_calls)
+        )
 
     async def test_passes_each_modules_own_uow_through_unchanged(self) -> None:
         """Each dependency's UoW is resolved by the caller (the router) and threaded through

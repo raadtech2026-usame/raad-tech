@@ -143,6 +143,10 @@ class PlatformPnlResponse(BaseModel):
     start: date
     end: date
     subscription_revenue: str
+    #: Amount billed to organizations in this window, regardless of whether paid yet.
+    subscription_invoiced: str
+    #: Amount still owed as of `end` — a point-in-time balance, not a period sum.
+    subscription_receivables: str
     other_income: str
     total_revenue: str
     total_expenses: str

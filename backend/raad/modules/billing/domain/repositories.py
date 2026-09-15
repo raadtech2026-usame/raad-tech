@@ -72,6 +72,22 @@ class PlanRepository(ABC):
         reasoning."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def delete(self, plan: Plan) -> None:
+        """Organization Management phase — the **first and only** aggregate-root hard delete in
+        this codebase (every other lifecycle terminus anywhere here is a status-flag transition:
+        `Plan.disable()`, `Region.deactivate()`, `Organization.deactivate()`,
+        `PlatformFinancialCategory.archive()` — none of them write `deleted_at` or issue a real
+        `DELETE`). Deliberately narrow: the application layer
+        (`BillingApplicationService.delete_plan`) only ever calls this after confirming, via
+        `SubscriptionRepository.exists_for_plan`, that no subscription — in any status, ever —
+        has referenced this plan. `subscriptions.plan_id` also carries a real DB `FOREIGN KEY`
+        with no `ON DELETE` clause (Postgres default `RESTRICT`), so a referenced plan could
+        never be deleted even if this application-layer guard were bypassed — the guard exists to
+        turn that DB-level rejection into a clear, explained refusal instead of a raw
+        `IntegrityError`."""
+        raise NotImplementedError
+
 
 class SubscriptionRepository(ABC):
     @abstractmethod
@@ -165,6 +181,28 @@ class SubscriptionRepository(ABC):
         adds."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def exists_for_plan(self, plan_id: PlanId) -> bool:
+        """Organization Management phase — does *any* subscription, in *any* status (including
+        terminal ones), reference this plan? Backs `BillingApplicationService.delete_plan`'s
+        safety guard — see `PlanRepository.delete`'s own docstring for the full reasoning.
+        Deliberately not status-filtered, unlike `has_unpaid_for_subscription`: even a long-
+        cancelled subscription that once used this plan is a historical record this plan's own
+        row is still needed to make sense of (`SubscriptionResponse.planId` is rendered
+        directly), so "referenced" means referenced at all, ever."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_active_by_billing_cycle(self) -> dict[str, int]:
+        """Platform Finance "Monthly vs Annual Subscribers" KPI — a `Subscription` JOIN `Plan`
+        grouped by `Plan.billing_cycle` (`monthly`/`quarterly`/`annual`), restricted to
+        non-terminal subscriptions (`trial`/`active`/`past_due`/`grace_period`, the same set
+        `list_lifecycle_candidates` already treats as "still a real subscriber" — a suspended/
+        expired/cancelled subscriber is not meaningfully "a monthly subscriber" for this KPI).
+        `Subscription` itself carries no `billing_cycle` — only `Plan` does — so this is
+        genuinely a new query, not a re-derivation of `count_by_status`."""
+        raise NotImplementedError
+
 
 class InvoiceRepository(ABC):
     @abstractmethod
@@ -234,6 +272,25 @@ class InvoiceRepository(ABC):
         whatever `currency` values exist) — no document names a multi-currency aggregation
         rule, and this platform's actual currency situation is out of this ADR's scope to
         invent one for."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def sum_issued_amount_between(self, *, start: datetime, end: datetime) -> float:
+        """Platform Finance "Invoiced" KPI — sums `invoices.amount` for every non-`void` invoice
+        whose `issued_at` falls in `[start, end)`, regardless of whether it has since been paid.
+        Distinct from `sum_paid_amount_between` (that answers "Collected"): an invoice issued and
+        still unpaid counts here but not there, which is the whole point of keeping Invoiced and
+        Collected as two separate numbers rather than one. Same currency-naive scope as
+        `sum_paid_amount_between`."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def sum_outstanding_amount(self, *, as_of: datetime) -> float:
+        """Platform Finance "Receivables" KPI — sums `invoices.amount` for every invoice still
+        `issued` (unpaid, not void) as of `as_of`. Deliberately **not** a period sum like the two
+        methods above: receivables is a point-in-time balance — an invoice issued long before
+        the reporting window and still unpaid is still owed today, so it must count regardless of
+        when it was issued, unlike Invoiced/Collected which are genuinely period-scoped flows."""
         raise NotImplementedError
 
 

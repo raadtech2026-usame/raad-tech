@@ -554,6 +554,47 @@ class Subscription(_AggregateRoot):
             )
         )
 
+    def change_plan(
+        self, *, new_plan_id: PlanId, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """Organization Management phase — moves this subscription onto a different `Plan`
+        (which, per ADR-0040 §4's own design, is also how a billing-cycle change happens: cycle
+        is immutable per-`Plan` row, so "change cycle" and "change plan" are the same operation).
+
+        **Deliberately does not touch `current_period_start`/`current_period_end`.** The
+        already-open period, and every already-issued `Invoice` under it, are historical facts
+        that must not retroactively change (Part 26's own "current subscription ≠ historical
+        invoice" rule) — this method only repoints which `Plan` governs the *next* invoice.
+        `open_organization_subscription`/`advance_subscription_lifecycle` already re-read
+        `uow.plans.get(subscription.plan_id)` fresh every time they issue an invoice, so the new
+        plan's price/cycle takes effect automatically at the next natural billing point with no
+        separate scheduling mechanism needed here.
+
+        Refuses on terminal states, mirroring `reactivate()`'s identical guard: a cancelled/
+        expired subscription should come back through a real new subscription, never a plan
+        edit on a closed one."""
+        if self.status in (
+            SubscriptionStatus.CANCELLED,
+            SubscriptionStatus.EXPIRED,
+        ):
+            raise DomainError(
+                f"Cannot change the plan of a {self.status.value} subscription - open a new "
+                "subscription instead"
+            )
+        old_plan_id = self.plan_id
+        self.plan_id = new_plan_id
+        self.updated_at = clock.now()
+        self._record(
+            billing_events.subscription_plan_changed(
+                subscription_id=str(self.id),
+                organization_id=str(self.organization_id),
+                old_plan_id=str(old_plan_id),
+                new_plan_id=str(new_plan_id),
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
     def cancel(self, *, clock: Clock, actor_id: str | None = None) -> None:
         """Same posture as `suspend` — a documented status value with no documented trigger."""
         if self.status == SubscriptionStatus.CANCELLED:

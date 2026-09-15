@@ -42,6 +42,9 @@ const ORG: api.Organization = {
   status: "active",
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-02T00:00:00Z",
+  trialStartedAt: null,
+  trialEndsAt: null,
+  trialState: "not_started",
 };
 
 function pageOf<T>(data: T[], total: number): OffsetPage<T> {

@@ -119,19 +119,26 @@ from raad.modules.billing.api.deps import (
     get_billing_uow_unscoped,
 )
 from raad.modules.billing.api.schemas import (
+    ChangeSubscriptionPlanRequest,
     CreatePlanRequest,
     UpdatePlanRequest,
     InitiatePaymentRequest,
     InvoiceResponse,
+    OpenSubscriptionRequest,
     PaymentListItemResponse,
     PaymentResponse,
     PlanResponse,
     ExtendGracePeriodRequest,
+    RecordManualPaymentRequest,
     SubscriptionResponse,
 )
 from raad.modules.billing.application.commands import (
     ActivatePlanCommand,
+    ActivateSubscriptionCommand,
+    CancelSubscriptionCommand,
+    ChangeSubscriptionPlanCommand,
     CreatePlanCommand,
+    DeletePlanCommand,
     DisablePlanCommand,
     # ADR-0039's three platform-admin lifecycle actions. Absent from this import list until
     # 2026-09-09, so `POST /billing/subscriptions/{id}/suspend`, `/reactivate` and
@@ -141,7 +148,9 @@ from raad.modules.billing.application.commands import (
     # unit tests call `BillingApplicationService` directly, so no test ever executed this module.
     ExtendGracePeriodCommand,
     InitiatePaymentCommand,
+    OpenOrganizationSubscriptionCommand,
     ReactivateSubscriptionCommand,
+    RecordManualSubscriptionPaymentCommand,
     SuspendSubscriptionCommand,
     UpdatePlanCommand,
 )
@@ -321,6 +330,41 @@ async def list_subscriptions(
 # identical reason — it must come after `current`, not before it.
 
 
+@billing_router.post(
+    "/subscriptions",
+    response_model=InvoiceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Open a subscription for an organization (platform admin)",
+    description=(
+        "Founder/Finance only (`billing.subscriptions.manage` — the same platform-admin-only "
+        "gate as suspend/reactivate/extend-grace, deliberately not `org_admin`). Wraps the "
+        "existing `open_organization_subscription` orchestration unchanged — finds-or-opens a "
+        "non-terminal subscription for the organization and issues its first/next invoice, "
+        "exactly as `POST /organizations`'s own optional `plan_id` already does at onboarding "
+        "time. This is the route a Founder uses to assign a plan to an organization that does "
+        "not already have one — most commonly, an organization created with no trial and no "
+        "plan, or one whose trial has ended (Organization Lifecycle / Trial workflow)."
+    ),
+)
+async def open_subscription(
+    body: OpenSubscriptionRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("billing.subscriptions.manage"))
+    ),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow_unscoped),
+) -> InvoiceResponse:
+    invoice = await billing_service.open_organization_subscription(
+        OpenOrganizationSubscriptionCommand(
+            organization_id=body.organization_id,
+            plan_id=body.plan_id,
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return _invoice_dto_to_response(invoice)
+
+
 @billing_router.get(
     "/subscriptions/current",
     response_model=SubscriptionResponse | None,
@@ -445,6 +489,97 @@ async def extend_grace_period(
     return _subscription_dto_to_response(dto)
 
 
+@billing_router.post(
+    "/subscriptions/{subscription_id}/activate",
+    response_model=SubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Activate a subscription after its outstanding invoice is paid (platform admin)",
+    description=(
+        "The deliberate second step of the manual-payment workflow — see "
+        "`POST /billing/payments/manual`'s own description for why recording a payment does "
+        "not, by itself, activate the subscription. Refuses (`DomainError`, surfaced as a "
+        "standard error envelope) while any invoice for this subscription is still unpaid. Same "
+        "`billing.subscriptions.manage` gate as suspend/reactivate/extend-grace."
+    ),
+)
+async def activate_subscription(
+    subscription_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("billing.subscriptions.manage"))
+    ),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow_unscoped),
+) -> SubscriptionResponse:
+    dto = await billing_service.activate_subscription(
+        ActivateSubscriptionCommand(subscription_id=subscription_id, actor=principal),
+        uow=uow,
+    )
+    return _subscription_dto_to_response(dto)
+
+
+@billing_router.post(
+    "/subscriptions/{subscription_id}/change-plan",
+    response_model=SubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Change an existing subscription's plan (platform admin)",
+    description=(
+        "Organization Management phase. See `Subscription.change_plan`'s own docstring: the "
+        "current billing period and every already-issued invoice are completely unaffected — "
+        "the new plan's price/cycle applies starting with the next invoice this subscription "
+        "issues (Create Invoice, or the next scheduled renewal). Since a `Plan`'s "
+        "`billing_cycle` is immutable per row (ADR-0040 §4), this is also how a subscription's "
+        "billing cycle changes — there is no separate 'change cycle' action. Same "
+        "`billing.subscriptions.manage` gate as suspend/reactivate/extend-grace/activate."
+    ),
+)
+async def change_subscription_plan(
+    subscription_id: str,
+    body: ChangeSubscriptionPlanRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("billing.subscriptions.manage"))
+    ),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow_unscoped),
+) -> SubscriptionResponse:
+    dto = await billing_service.change_subscription_plan(
+        ChangeSubscriptionPlanCommand(
+            subscription_id=subscription_id,
+            new_plan_id=body.new_plan_id,
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return _subscription_dto_to_response(dto)
+
+
+@billing_router.post(
+    "/subscriptions/{subscription_id}/cancel",
+    response_model=SubscriptionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Cancel a subscription (platform admin)",
+    description=(
+        "Exposes `BillingApplicationService.cancel_subscription` — already built and unit-"
+        "tested since Phase 15, with no HTTP route wired to it until now (the same "
+        "\"use-case-exists-no-approved-endpoint-yet\" gap `GET /subscriptions/{id}` below "
+        "closed for a different method). Same `billing.subscriptions.manage` gate as every "
+        "other subscription-lifecycle action."
+    ),
+)
+async def cancel_subscription(
+    subscription_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("billing.subscriptions.manage"))
+    ),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow_unscoped),
+) -> SubscriptionResponse:
+    dto = await billing_service.cancel_subscription(
+        CancelSubscriptionCommand(subscription_id=subscription_id, actor=principal),
+        uow=uow,
+    )
+    return _subscription_dto_to_response(dto)
+
+
 @billing_router.get(
     "/subscriptions/{subscription_id}",
     response_model=SubscriptionResponse,
@@ -544,6 +679,37 @@ async def initiate_payment(
         payment_method_token=body.payment_method_token,
     )
     payment = await billing_service.initiate_payment(command, uow=uow)
+    return _payment_dto_to_response(payment)
+
+
+@billing_router.post(
+    "/payments/manual",
+    response_model=PaymentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record a payment received outside any integrated payment provider (platform admin)",
+    description=(
+        "Founder/Finance only (`billing.subscriptions.manage`, deliberately not "
+        "`billing.payments.create` — that permission is for an organization's own self-service "
+        "charge, and this is a platform-admin action attesting money was received by some other "
+        "means, e.g. a bank transfer). Marks the invoice `Paid` immediately, using the same "
+        "domain methods the Stripe path uses. **Does not activate the subscription** — see "
+        "`POST /billing/subscriptions/{id}/activate`, the deliberate separate next step."
+    ),
+)
+async def record_manual_payment(
+    body: RecordManualPaymentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("billing.subscriptions.manage"))
+    ),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow_unscoped),
+) -> PaymentResponse:
+    payment = await billing_service.record_manual_payment(
+        RecordManualSubscriptionPaymentCommand(
+            invoice_id=body.invoice_id, actor=principal, reference=body.reference
+        ),
+        uow=uow,
+    )
     return _payment_dto_to_response(payment)
 
 
@@ -750,3 +916,26 @@ async def disable_plan(
         DisablePlanCommand(plan_id=plan_id, actor=principal), uow=uow
     )
     return _plan_dto_to_response(plan)
+
+
+@billing_router.delete(
+    "/plans/{plan_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a plan that has never been subscribed to (platform admin)",
+    description=(
+        "Organization Management phase — the first and only aggregate-root hard delete in this "
+        "codebase, deliberately narrow. Refuses with a `ConflictError` (409) if any "
+        "subscription, in any status, ever referenced this plan — disable it instead to stop "
+        "offering it while preserving that historical reference. See `PlanRepository.delete`'s "
+        "own docstring for the full safety reasoning."
+    ),
+)
+async def delete_plan(
+    plan_id: str,
+    principal: Principal = Depends(require_permission(Permission("billing.plans.manage"))),
+    billing_service: BillingApplicationService = Depends(get_billing_service),
+    uow: BillingUnitOfWork = Depends(get_billing_uow),
+) -> None:
+    await billing_service.delete_plan(
+        DeletePlanCommand(plan_id=plan_id, actor=principal), uow=uow
+    )

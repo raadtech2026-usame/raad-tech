@@ -14,6 +14,7 @@ from raad.core.pagination import (
     OffsetPageRequest,
     SortSpec,
 )
+from raad.core.time.clock import Clock
 from raad.modules.organization.domain.entities import Organization, Region
 
 
@@ -68,6 +69,12 @@ class OrganizationDTO:
     longitude: float | None
     geofence_radius_m: int | None
     approaching_distance_m: int
+    trial_started_at: datetime | None
+    trial_ends_at: datetime | None
+    #: Derived (`Organization.trial_state()`), never a stored column — see that method's own
+    #: docstring and `domain.value_objects.TrialState` for why this is deliberately independent
+    #: of `billing.SubscriptionStatus`.
+    trial_state: str
 
 
 @dataclass(frozen=True)
@@ -80,8 +87,13 @@ class RegionDTO:
     updated_at: datetime
 
 
-def organization_to_dto(organization: Organization) -> OrganizationDTO:
-    """Shared mapper — the only place an `Organization` aggregate is projected into its DTO."""
+def organization_to_dto(organization: Organization, *, clock: Clock) -> OrganizationDTO:
+    """Shared mapper — the only place an `Organization` aggregate is projected into its DTO.
+
+    `clock` is required (not defaulted/optional) so every call site is forced to supply the
+    same clock the rest of that use-case already uses — `Organization.trial_state()` is a pure
+    function of `(trial_ends_at, now)`, and every application-service method already holds
+    `self._clock` for exactly this reason."""
     return OrganizationDTO(
         id=str(organization.id),
         name=organization.name,
@@ -99,6 +111,9 @@ def organization_to_dto(organization: Organization) -> OrganizationDTO:
         longitude=organization.longitude,
         geofence_radius_m=organization.geofence_radius_m,
         approaching_distance_m=organization.approaching_distance_m,
+        trial_started_at=organization.trial_started_at,
+        trial_ends_at=organization.trial_ends_at,
+        trial_state=organization.trial_state(clock=clock).value,
     )
 
 

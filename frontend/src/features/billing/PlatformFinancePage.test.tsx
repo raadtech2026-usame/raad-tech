@@ -45,7 +45,13 @@ const STATS: PlatformStats = {
   vehicles: { total: 8 },
   devices: { total: 5, online: 4, offline: 1 },
   users: { total: 20, byStatus: { active: 18 }, monthlyActive: 12, createdToday: 2 },
-  billing: { subscriptionByStatus: { active: 6, trial: 1 }, expiringSoon: 2, revenue: 4500 },
+  billing: {
+    subscriptionByStatus: { active: 6, trial: 1, past_due: 1 },
+    expiringSoon: 2,
+    revenue: 4500,
+    activeByBillingCycle: { monthly: 5, annual: 2 },
+  },
+  paymentDueOrganizations: 3,
   systemHealth: { database: "ok", broker: "ok" },
 };
 
@@ -119,13 +125,15 @@ describe("PlatformFinancePage", () => {
       return pageOf<Invoice>([]);
     });
     vi.mocked(getPlatformPnl).mockResolvedValue({
-      start: "2025-09-08",
+      start: "2026-09-01",
       end: "2026-09-08",
       subscriptionRevenue: "4500.00",
+      subscriptionInvoiced: "5000.00",
+      subscriptionReceivables: "500.00",
       otherIncome: "0.00",
       totalRevenue: "4500.00",
-      totalExpenses: "0.00",
-      netProfit: "4500.00",
+      totalExpenses: "1200.00",
+      netProfit: "3300.00",
       expensesByKind: {},
       incomeByKind: {},
       currency: "USD",
@@ -137,22 +145,58 @@ describe("PlatformFinancePage", () => {
     vi.mocked(listPlatformCategories).mockResolvedValue([]);
   });
 
-  it("shows month-to-date revenue from platform stats, not a computed guess", async () => {
+  it("shows Invoiced/Collected/Receivables/Revenue/Expenses/Net profit as real financial amounts", async () => {
     renderPage();
-    expect(await screen.findByText("$4,500")).toBeInTheDocument();
-    expect(screen.getByText("Month to date")).toBeInTheDocument();
+    expect(await screen.findByText("Invoiced")).toBeInTheDocument();
+    expect(await screen.findByText("$5,000.00")).toBeInTheDocument(); // subscriptionInvoiced — unique to this card
+    expect(screen.getByText("Collected")).toBeInTheDocument();
+    // "Receivables" also titles the invoice-list PageSection further down the page.
+    expect(screen.getAllByText("Receivables").length).toBeGreaterThan(0);
+    expect(screen.getByText("$500.00")).toBeInTheDocument(); // subscriptionReceivables — unique to this card
+    expect(screen.getByText("Expenses")).toBeInTheDocument();
+    // "Net profit" and the three amounts below also appear in the lower Platform P&L detail
+    // card, so these assert presence rather than a single unique match.
+    expect(screen.getAllByText("Net profit").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("$4,500.00").length).toBeGreaterThan(0); // subscriptionRevenue / totalRevenue
+    expect(screen.getAllByText("$1,200.00").length).toBeGreaterThan(0); // totalExpenses
+    expect(screen.getAllByText("$3,300.00").length).toBeGreaterThan(0); // netProfit
   });
 
-  it("totals outstanding invoices from the rows actually returned", async () => {
+  it("lets the Founder change the financial overview's period", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("$5,000.00");
+    // This mock is shared (and not cleared) across every test in this file, so the call count
+    // going in is not necessarily zero — assert the increment the interaction causes, not an
+    // absolute total.
+    const callsBefore = vi.mocked(getPlatformPnl).mock.calls.length;
+
+    await user.selectOptions(screen.getByLabelText("Date range"), "this_year");
+
+    await waitFor(() =>
+      expect(vi.mocked(getPlatformPnl).mock.calls.length).toBe(callsBefore + 1),
+    );
+  });
+
+  it("renders platform-wide subscription metrics from real backend counts", async () => {
+    renderPage();
+    await screen.findByText("Subscription metrics");
+    expect(screen.getByText("Payment due")).toBeInTheDocument();
+    // "Past due" also labels an item in the Subscription mix bar further down the page.
+    expect(screen.getAllByText("Past due").length).toBeGreaterThan(0);
+    expect(screen.getByText("Monthly")).toBeInTheDocument();
+    expect(screen.getByText("Annual")).toBeInTheDocument();
+  });
+
+  it("totals invoices from the rows actually returned in the Receivables list", async () => {
     renderPage();
     // 100 + 150 from the two issued invoices above.
-    expect(await screen.findByText("$250.00")).toBeInTheDocument();
-    expect(screen.getByText("2 unpaid")).toBeInTheDocument();
+    expect(await screen.findByText(/\$250\.00/)).toBeInTheDocument();
   });
 
   it("says a total is complete when every matching row was fetched", async () => {
     renderPage();
-    expect(await screen.findByText("Across all 2 issued invoices")).toBeInTheDocument();
+    expect(await screen.findByText(/Across all 2 invoices/)).toBeInTheDocument();
   });
 
   it("discloses when a total covers only a sample of the matching rows", async () => {
@@ -167,7 +211,7 @@ describe("PlatformFinancePage", () => {
 
     renderPage();
     expect(
-      await screen.findByText("Across the 2 most recent of 40 issued invoices"),
+      await screen.findByText(/Across the 2 most recent of 40 invoices/),
     ).toBeInTheDocument();
   });
 
@@ -181,8 +225,10 @@ describe("PlatformFinancePage", () => {
   it("renders the subscription mix from the real status breakdown", async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText("Subscription mix")).toBeInTheDocument());
-    expect(await screen.findByText("Active")).toBeInTheDocument();
-    expect(screen.getByText("Trial")).toBeInTheDocument();
+    // "Active"/"Trial" also label cards in the Subscription Metrics section above, so these
+    // assert at least one match (the mix bar's own) rather than a single unique one.
+    expect((await screen.findAllByText("Active")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Trial").length).toBeGreaterThan(0);
   });
 
   it("surfaces a load failure instead of rendering a zero", async () => {

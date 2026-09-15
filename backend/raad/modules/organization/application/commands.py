@@ -37,7 +37,16 @@ class OnboardOrganizationCommand:
     docstring previously described. `plan_id` is optional: supplying it opens the organization's
     subscription and issues its first invoice through `BillingProvisioningPort` (period dates
     computed by `billing` from the plan's own cycle, never recomputed here); omitting it keeps
-    the pre-ADR-0040 behaviour exactly, so the existing onboarding contract is unbroken."""
+    the pre-ADR-0040 behaviour exactly, so the existing onboarding contract is unbroken.
+
+    **Trial support.** `trial_enabled`/`trial_duration_days` let the Founder start the
+    organization on a time-boxed trial instead of (never alongside) selecting a plan —
+    `OrganizationApplicationService.onboard_organization` rejects a command that sets both. A
+    trial defers subscription/plan selection entirely: no `billing.Subscription` is opened at
+    all until the trial ends and a plan is chosen later (see `organization.domain.entities.
+    Organization.start_trial`/`trial_state` for the actual mechanism — deliberately a property
+    of the `Organization` aggregate, never of `billing.Subscription`, since a trial can exist
+    before any plan is ever picked)."""
 
     name: str
     org_type: OrgType
@@ -48,6 +57,15 @@ class OnboardOrganizationCommand:
     admin_phone: str | None
     actor: Principal
     plan_id: str | None = None
+    trial_enabled: bool = False
+    trial_duration_days: int | None = None
+
+
+@dataclass(frozen=True)
+class RenameOrganizationCommand:
+    organization_id: str
+    name: str
+    actor: Principal
 
 
 @dataclass(frozen=True)

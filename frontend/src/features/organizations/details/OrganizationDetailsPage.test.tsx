@@ -18,6 +18,8 @@ vi.mock("./api", () => ({
   orgDrivers: vi.fn(),
   orgRoutes: vi.fn(),
   orgSubscriptions: vi.fn(),
+  orgSubscriptionInvoices: vi.fn(),
+  orgPlanCatalog: vi.fn(),
   orgInvoices: vi.fn(),
   orgPayments: vi.fn(),
   orgAudit: vi.fn(),
@@ -44,6 +46,9 @@ const ORGANIZATION: Organization = {
   status: "active",
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-02-01T00:00:00Z",
+  trialStartedAt: null,
+  trialEndsAt: null,
+  trialState: "not_started",
 };
 
 function emptyPage() {
@@ -95,7 +100,7 @@ describe("OrganizationDetailsPage", () => {
       } as never);
     for (const key of [
       "orgUsers", "orgVehicles", "orgDevices", "orgDrivers", "orgRoutes",
-      "orgSubscriptions", "orgInvoices", "orgPayments", "orgAudit",
+      "orgSubscriptions", "orgSubscriptionInvoices", "orgPlanCatalog", "orgInvoices", "orgPayments", "orgAudit",
       "orgStudentInvoices", "orgStudentPayments", "orgIncome", "orgExpenses",
     ] as const) {
       vi.mocked(detailApi[key]).mockReset().mockResolvedValue(emptyPage() as never);
@@ -115,15 +120,18 @@ describe("OrganizationDetailsPage", () => {
 
   it("loads a tab's data only once that tab is opened", async () => {
     // Fifteen tabs firing on mount would be fifteen requests for a page where a Founder
-    // usually wants one.
+    // usually wants one. `orgVehicles`/`orgUsers`/etc. are excluded from this check — Overview
+    // (the initially active tab) now has its own Usage summary block that legitimately reads
+    // them as part of *its own* content, not a different, not-yet-opened tab. `orgDevices` is
+    // untouched by that summary, so it still proves the lazy-load behavior for every other tab.
     const user = userEvent.setup();
     renderPage();
     await screen.findByText("Green Valley School");
 
-    expect(detailApi.orgVehicles).not.toHaveBeenCalled();
+    expect(detailApi.orgDevices).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("tab", { name: "Vehicles" }));
-    await waitFor(() => expect(detailApi.orgVehicles).toHaveBeenCalledWith(ORG_ID));
+    await user.click(screen.getByRole("tab", { name: "Devices" }));
+    await waitFor(() => expect(detailApi.orgDevices).toHaveBeenCalledWith(ORG_ID));
   });
 
   it("scopes every tab's read to this organization", async () => {

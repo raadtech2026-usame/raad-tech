@@ -1154,8 +1154,32 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
     async def subscriptions_report(request: ReportRequest) -> ReportTable:
         uow: BillingUnitOfWork = container.resolve(BillingUnitOfWork)
         uow.scope = TenantRegionScope(organization_ids=None)
+        filters = []
+        if request.organization_filter_id:
+            filters.append(
+                FilterCondition(field="organization_id", op="eq", value=request.organization_filter_id)
+            )
+        if request.subscription_status:
+            filters.append(
+                FilterCondition(field="status", op="eq", value=request.subscription_status)
+            )
         async with uow:
-            page = await _collect(uow.subscriptions)
+            page = await _collect(uow.subscriptions, filters=filters)
+            # `billing_cycle` lives on `Plan`, not `Subscription` — no column to filter through
+            # `_collect`'s server-side `filters`, so this joins and filters client-side, the same
+            # technique `revenue_by_plan_report` already uses for its own cross-collection join.
+            plan_by_id = {}
+            if request.billing_cycle:
+                plans = await _collect(uow.plans)
+                plan_by_id = {str(p.id): p for p in plans.data}
+        rows_data = page.data
+        if request.billing_cycle:
+            rows_data = [
+                s
+                for s in rows_data
+                if (plan := plan_by_id.get(str(s.plan_id))) is not None
+                and plan.billing_cycle.value == request.billing_cycle
+            ]
         rows = [
             [
                 str(s.organization_id),
@@ -1165,21 +1189,29 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
                 s.current_period_end.date().isoformat() if s.current_period_end else "—",
                 "Yes" if s.auto_renew else "No",
             ]
-            for s in page.data
+            for s in rows_data
         ]
         return ReportTable(
             title="Subscriptions",
             subtitle="Every organization subscription and its lifecycle state",
             headers=["Organization", "Plan", "Status", "Period start", "Period end", "Auto-renew"],
             rows=rows,
-            metadata=_metadata(page, "Subscriptions"),
+            metadata=_metadata(page, "Subscriptions") if not request.billing_cycle else {
+                **_metadata(page, "Subscriptions"),
+                "Billing cycle": request.billing_cycle.title(),
+            },
         )
 
     async def invoices_report(request: ReportRequest) -> ReportTable:
         uow: BillingUnitOfWork = container.resolve(BillingUnitOfWork)
         uow.scope = TenantRegionScope(organization_ids=None)
+        filters = []
+        if request.organization_filter_id:
+            filters.append(
+                FilterCondition(field="organization_id", op="eq", value=request.organization_filter_id)
+            )
         async with uow:
-            page = await _collect(uow.invoices)
+            page = await _collect(uow.invoices, filters=filters)
         rows = [
             [
                 i.number,
@@ -1206,8 +1238,13 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
     async def payments_report(request: ReportRequest) -> ReportTable:
         uow: BillingUnitOfWork = container.resolve(BillingUnitOfWork)
         uow.scope = TenantRegionScope(organization_ids=None)
+        filters = []
+        if request.organization_filter_id:
+            filters.append(
+                FilterCondition(field="organization_id", op="eq", value=request.organization_filter_id)
+            )
         async with uow:
-            page = await _collect(uow.payments)
+            page = await _collect(uow.payments, filters=filters)
         rows = [
             [
                 p.created_at.date().isoformat(),
@@ -1257,6 +1294,34 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             metadata={"From": start.isoformat(), "To": end.isoformat()},
             numeric_columns=[1],
             total_row=["NET PROFIT", pnl.net_profit],
+        )
+
+    async def platform_receivables(request: ReportRequest) -> ReportTable:
+        """Organization Management phase — Invoiced/Collected/Receivables as their own report,
+        distinct from the P&L's own line items above. Reuses `get_platform_pnl` verbatim (zero
+        new application-layer code, the same "never record a fact `billing` already owns" rule
+        `platform_pnl`'s own docstring states) — `subscription_receivables` is a point-in-time
+        balance as of `end`, not a sum over the window, so it is called out as such rather than
+        implying it is itself windowed like the other two rows."""
+        service: PlatformFinanceApplicationService = container.resolve(
+            PlatformFinanceApplicationService
+        )
+        uow: PlatformFinanceUnitOfWork = container.resolve(PlatformFinanceUnitOfWork)
+        start, end = _window(request)
+        pnl = await service.get_platform_pnl(start=start, end=end, uow=uow)
+        rows = [
+            ["Invoiced", pnl.subscription_invoiced],
+            ["Collected", pnl.subscription_revenue],
+            [f"Receivables (as of {end.isoformat()})", pnl.subscription_receivables],
+        ]
+        return ReportTable(
+            title="Receivables",
+            subtitle="What RAAD billed organizations, collected, and is still owed",
+            headers=["Line", f"Amount ({pnl.currency})"],
+            rows=rows,
+            metadata={"From": start.isoformat(), "To": end.isoformat()},
+            numeric_columns=[1],
+            total_row=None,
         )
 
     async def platform_expenses(request: ReportRequest) -> ReportTable:
@@ -1467,8 +1532,13 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
         each), but none re-derives the join logic itself."""
         uow: BillingUnitOfWork = container.resolve(BillingUnitOfWork)
         uow.scope = TenantRegionScope(organization_ids=None)
+        payment_filters = []
+        if request.organization_filter_id:
+            payment_filters.append(
+                FilterCondition(field="organization_id", op="eq", value=request.organization_filter_id)
+            )
         async with uow:
-            payments_page = await _collect(uow.payments)
+            payments_page = await _collect(uow.payments, filters=payment_filters)
             invoices_page = await _collect(uow.invoices)
             subscriptions_page = await _collect(uow.subscriptions)
             plans_page = await _collect(uow.plans)
@@ -1668,7 +1738,15 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             accepts=("vehicle_id", "period", "status"),
             category="transportation",
         ),
-        # -- Platform --------------------------------------------------------------------------
+        # -- Platform ----------------------------------------------------------------------------
+        # Organization Management phase: every platform-scope definition below now sets an
+        # explicit `category` (previously all silently defaulted to "financial") so the redesigned
+        # Platform Report Center can group them the same way the Organization Report Center groups
+        # its own two categories — "subscriptions" is a genuinely new category value, and
+        # "platform" (already a legal `ReportCategory` value on the frontend, previously unused by
+        # any definition) is repurposed as the directory/operational catch-all for the seven
+        # reports that are neither financial nor subscription-lifecycle facts, so none of them
+        # loses its existing reachability.
         ReportDefinition(
             key="platform.subscriptions",
             title="Subscriptions",
@@ -1676,6 +1754,8 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=subscriptions_report,
             roles=_PLATFORM_ROLES,
+            accepts=("organization_id", "subscription_status", "billing_cycle"),
+            category="subscriptions",
         ),
         ReportDefinition(
             key="platform.invoices",
@@ -1684,6 +1764,8 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=invoices_report,
             roles=_PLATFORM_ROLES,
+            accepts=("organization_id",),
+            category="financial",
         ),
         ReportDefinition(
             key="platform.payments",
@@ -1692,6 +1774,8 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=payments_report,
             roles=_PLATFORM_ROLES,
+            accepts=("organization_id",),
+            category="financial",
         ),
         ReportDefinition(
             key="platform.profit_and_loss",
@@ -1701,6 +1785,17 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             build=platform_pnl,
             roles=_FINANCE_ROLES,
             accepts=("start", "end"),
+            category="financial",
+        ),
+        ReportDefinition(
+            key="platform.receivables",
+            title="Receivables",
+            description="What RAAD billed organizations, collected, and is still owed.",
+            scope="platform",
+            build=platform_receivables,
+            roles=_FINANCE_ROLES,
+            accepts=("start", "end"),
+            category="financial",
         ),
         ReportDefinition(
             key="platform.expenses",
@@ -1709,6 +1804,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=platform_expenses,
             roles=_FINANCE_ROLES,
+            category="financial",
         ),
         # -- Platform catalog expansion (2026-09-09) --------------------------------------------
         ReportDefinition(
@@ -1718,6 +1814,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=organizations_report,
             roles=_PLATFORM_ROLES,
+            category="platform",
         ),
         ReportDefinition(
             key="platform.regions",
@@ -1726,6 +1823,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=regions_report,
             roles=_PLATFORM_ROLES,
+            category="platform",
         ),
         ReportDefinition(
             key="platform.plans",
@@ -1734,6 +1832,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=plans_report,
             roles=_PLATFORM_ROLES,
+            category="platform",
         ),
         ReportDefinition(
             key="platform.vehicles",
@@ -1742,6 +1841,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=vehicles_report,
             roles=_PLATFORM_ROLES,
+            category="platform",
         ),
         ReportDefinition(
             key="platform.drivers",
@@ -1750,6 +1850,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=drivers_report,
             roles=_PLATFORM_ROLES,
+            category="platform",
         ),
         ReportDefinition(
             key="platform.devices",
@@ -1758,6 +1859,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=devices_report,
             roles=_PLATFORM_ROLES,
+            category="platform",
         ),
         ReportDefinition(
             key="platform.audit_logs",
@@ -1767,6 +1869,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             build=audit_logs_report,
             roles=_AUDIT_ROLES,
             accepts=("start", "end"),
+            category="platform",
         ),
         ReportDefinition(
             key="platform.revenue",
@@ -1775,7 +1878,8 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             scope="platform",
             build=revenue_report,
             roles=_FINANCE_ROLES,
-            accepts=("start", "end"),
+            accepts=("start", "end", "organization_id"),
+            category="financial",
         ),
         ReportDefinition(
             key="platform.revenue_by_plan",
@@ -1785,6 +1889,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             build=revenue_by_plan_report,
             roles=_FINANCE_ROLES,
             accepts=("start", "end"),
+            category="financial",
         ),
         ReportDefinition(
             key="platform.revenue_by_region",
@@ -1794,6 +1899,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             build=revenue_by_region_report,
             roles=_FINANCE_ROLES,
             accepts=("start", "end"),
+            category="financial",
         ),
     ]
 

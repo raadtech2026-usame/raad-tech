@@ -7,7 +7,7 @@ import { listDrivers } from "../../transport-ops/drivers/api";
 import { listRoutes } from "../../transport-ops/routes/api";
 import { countStudents } from "../../transport-ops/students/api";
 import { countParents } from "../../transport-ops/parents/api";
-import { listInvoices, listPayments, listSubscriptions } from "../../billing/api";
+import { listInvoices, listPayments, listPlans, listSubscriptions } from "../../billing/api";
 import {
   listExpenses,
   listIncome,
@@ -68,7 +68,34 @@ export const orgRoutes = (organizationId: string, params?: Partial<OffsetListPar
   listRoutes(orgScopedParams(organizationId, params));
 
 export const orgSubscriptions = (organizationId: string) =>
-  listSubscriptions(orgScopedParams(organizationId));
+  listSubscriptions(orgScopedParams(organizationId, { sort: { field: "created_at", direction: "desc" } }));
+
+/** Every invoice belonging to one subscription — `subscription_id` is a real filterable field on
+ * `GET /billing/invoices` (`../../billing/api.ts`'s own docstring). Sorted newest-first so the
+ * most recent invoice — "the current invoice" — is always `data[0]`. Mirrors
+ * `billing/subscription-details/api.ts`'s own identical `subscriptionInvoices` — a small,
+ * accepted duplication of query construction (not business logic) between two aggregation pages,
+ * per this file's own docstring on why an aggregation page owns its own composition. */
+export const orgSubscriptionInvoices = (subscriptionId: string) =>
+  listInvoices({
+    page: 1,
+    pageSize: 25,
+    sort: { field: "created_at", direction: "desc" },
+    filters: { subscription_id: subscriptionId },
+    search: "",
+  });
+
+/** The plan catalogue, every status — not `listActivePlansForPicker`, which filters to active
+ * plans only and would fail to resolve the name of a subscription's plan that has since been
+ * disabled. Small and cached, mirrors `billing/subscription-details/api.ts`'s own `planCatalog`. */
+export const orgPlanCatalog = () =>
+  listPlans({
+    page: 1,
+    pageSize: 100,
+    sort: { field: "name", direction: "asc" },
+    filters: {},
+    search: "",
+  });
 
 export const orgInvoices = (organizationId: string, params?: Partial<OffsetListParams>) =>
   listInvoices(orgScopedParams(organizationId, params));

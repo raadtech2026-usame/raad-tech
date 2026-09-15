@@ -35,7 +35,12 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
-from raad.core.errors.exceptions import AuthorizationError, DomainError, NotFoundError
+from raad.core.errors.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    DomainError,
+    NotFoundError,
+)
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
 from raad.core.logging.setup import get_logger
@@ -43,9 +48,12 @@ from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.billing.application.commands import (
     ActivatePlanCommand,
+    ActivateSubscriptionCommand,
+    ChangeSubscriptionPlanCommand,
     UpdatePlanCommand,
     CancelSubscriptionCommand,
     CreatePlanCommand,
+    DeletePlanCommand,
     DisablePlanCommand,
     ExpireSubscriptionCommand,
     InitiatePaymentCommand,
@@ -55,6 +63,7 @@ from raad.modules.billing.application.commands import (
     PaymentCallbackCommand,
     ExtendGracePeriodCommand,
     ReactivateSubscriptionCommand,
+    RecordManualSubscriptionPaymentCommand,
     SuspendSubscriptionCommand,
     VoidInvoiceCommand,
 )
@@ -62,6 +71,7 @@ from raad.modules.billing.application.ports import (
     BillingUnitOfWork,
     PaymentChargeRequest,
     PaymentProviderPort,
+    PlanHistoryPort,
     WebhookEvent,
 )
 from raad.modules.billing.application.queries import (
@@ -88,6 +98,7 @@ from raad.modules.billing.application.validators import (
     ensure_plan_exists,
     ensure_subscription_exists,
 )
+from raad.modules.billing.domain import events as billing_events
 from raad.modules.billing.domain.entities import (
     Invoice,
     Payment,
@@ -103,6 +114,7 @@ from raad.modules.billing.domain.value_objects import (
     PaymentId,
     PaymentStatus,
     PlanId,
+    PlanStatus,
     SubscriptionId,
     SubscriptionStatus,
 )
@@ -172,10 +184,17 @@ class BillingApplicationService:
         clock: Clock,
         id_generator: IdGenerator,
         payment_provider: PaymentProviderPort | None = None,
+        plan_history: PlanHistoryPort | None = None,
     ) -> None:
         self._clock = clock
         self._id_generator = id_generator
         self._payment_provider = payment_provider
+        # Optional for the identical reason `payment_provider` is (see that field's own
+        # precedent): existing fake-backed unit tests construct this service directly without
+        # wiring every port. The real, running application always binds one
+        # (`core/di/bootstrap.py`) — see `PlanHistoryPort`'s own docstring for why `delete_plan`
+        # needs it at all.
+        self._plan_history = plan_history
 
     # --- Plan --------------------------------------------------------------------------
 
@@ -237,6 +256,44 @@ class BillingApplicationService:
             uow.record_events(plan.pull_domain_events())
             await uow.commit()
             return plan_to_dto(plan)
+
+    async def delete_plan(self, command: DeletePlanCommand, *, uow: BillingUnitOfWork) -> None:
+        """Organization Management phase — see `PlanRepository.delete`'s own docstring for why
+        this is the codebase's first and only aggregate-root hard delete, and why it is guarded
+        by `exists_for_plan` rather than relying on the DB's own `FOREIGN KEY` rejection alone
+        (that would surface as an opaque `IntegrityError`, not the clear, explained refusal this
+        method raises instead).
+
+        **Two independent checks, not one.** `exists_for_plan` only sees a subscription's
+        *current* `plan_id` — since `Subscription.change_plan` can move a subscription onto a
+        different plan, a plan that subscription was once billed under would otherwise become
+        invisible to that check the moment it changes plan (found live, via this phase's own
+        dev-data verification: rename → change-plan → the *old* plan's own delete succeeded
+        despite a real, already-paid invoice having been issued at its price). `PlanHistoryPort`
+        closes that gap by consulting the permanent `audit_entries` ledger instead — see that
+        port's own docstring for the full reasoning."""
+        async with uow:
+            plan = await self._get_plan_or_raise(uow, command.plan_id)
+            referenced = await uow.subscriptions.exists_for_plan(plan.id)
+            if not referenced and self._plan_history is not None:
+                referenced = await self._plan_history.plan_ever_referenced(str(plan.id))
+            if referenced:
+                raise ConflictError(
+                    f"Plan {plan.name!r} cannot be deleted: at least one subscription "
+                    "references it (past or present). Disable it instead to stop offering it."
+                )
+            await uow.plans.delete(plan)
+            uow.record_events(
+                [
+                    billing_events.plan_deleted(
+                        plan_id=str(plan.id),
+                        name=plan.name,
+                        occurred_at=self._clock.now(),
+                        actor_id=command.actor.user_id,
+                    )
+                ]
+            )
+            await uow.commit()
 
     async def get_plan_by_id(
         self, query: GetPlanByIdQuery, *, uow: BillingUnitOfWork
@@ -391,6 +448,67 @@ class BillingApplicationService:
             )
             subscription.reactivate(
                 clock=self._clock, actor_id=command.actor.user_id
+            )
+            uow.record_events(subscription.pull_domain_events())
+            await uow.commit()
+            return subscription_to_dto(subscription)
+
+    async def activate_subscription(
+        self, command: ActivateSubscriptionCommand, *, uow: BillingUnitOfWork
+    ) -> SubscriptionDTO:
+        """Founder/Finance-only activation, the deliberate second step of the manual-payment
+        workflow (see `RecordManualSubscriptionPaymentCommand`'s own docstring for why recording
+        a payment does not, by itself, activate the subscription). Refuses to activate while any
+        invoice for this subscription is still unpaid — the same `has_unpaid_for_subscription`
+        check `advance_subscription_lifecycle` already uses to decide `PAST_DUE`, reused here so
+        "eligible to activate" means exactly "has no outstanding invoice," never a separately
+        drifting definition. Reuses `Subscription.renew()` unchanged (the same domain method the
+        Stripe self-service path calls automatically on a successful charge) — this command is a
+        different, deliberately human-gated *trigger* for that transition, not new domain logic.
+        """
+        async with uow:
+            subscription = await ensure_subscription_exists(
+                uow, SubscriptionId(command.subscription_id)
+            )
+            has_unpaid = await uow.invoices.has_unpaid_for_subscription(subscription.id)
+            if has_unpaid:
+                raise DomainError(
+                    "Cannot activate a subscription with an outstanding unpaid invoice — "
+                    "record the payment first."
+                )
+            plan = await ensure_plan_exists(uow, subscription.plan_id)
+            period_start = subscription.current_period_end or self._clock.now()
+            period_end = _advance_period(period_start, plan.billing_cycle)
+            subscription.renew(
+                period_start=period_start,
+                period_end=period_end,
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.record_events(subscription.pull_domain_events())
+            await uow.commit()
+            return subscription_to_dto(subscription)
+
+    async def change_subscription_plan(
+        self, command: ChangeSubscriptionPlanCommand, *, uow: BillingUnitOfWork
+    ) -> SubscriptionDTO:
+        """Organization Management phase — see `Subscription.change_plan`'s own docstring for
+        the full "current period/invoice unaffected, new plan applies at next issuance" design.
+        Validates the new plan exists and is currently offerable, the same
+        `ensure_plan_is_offerable`-style check onboarding's `open_organization_subscription`
+        already applies before committing anything."""
+        async with uow:
+            subscription = await ensure_subscription_exists(
+                uow, SubscriptionId(command.subscription_id)
+            )
+            new_plan = await ensure_plan_exists(uow, PlanId(command.new_plan_id))
+            if new_plan.status is not PlanStatus.ACTIVE:
+                raise DomainError(
+                    f"Plan {new_plan.name!r} is not active and cannot be assigned to an "
+                    "existing subscription."
+                )
+            subscription.change_plan(
+                new_plan_id=new_plan.id, clock=self._clock, actor_id=command.actor.user_id
             )
             uow.record_events(subscription.pull_domain_events())
             await uow.commit()
@@ -628,10 +746,12 @@ class BillingApplicationService:
             revenue = await uow.invoices.sum_paid_amount_between(
                 start=revenue_window_start, end=revenue_window_end
             )
+            active_by_billing_cycle = await uow.subscriptions.count_active_by_billing_cycle()
             return BillingStatsDTO(
                 subscription_by_status=subscription_by_status,
                 expiring_soon=expiring_soon,
                 revenue=revenue,
+                active_by_billing_cycle=active_by_billing_cycle,
             )
 
     async def get_active_subscription_for_organization(
@@ -799,6 +919,53 @@ class BillingApplicationService:
                 payment.mark_processing(clock=self._clock, actor_id=command.actor.user_id)
                 payment.provider_ref = result.provider_ref
                 uow.record_events(payment.pull_domain_events())
+            await uow.commit()
+            return payment_to_dto(payment)
+
+    async def record_manual_payment(
+        self, command: RecordManualSubscriptionPaymentCommand, *, uow: BillingUnitOfWork
+    ) -> PaymentDTO:
+        """Founder/Finance-recorded payment (bank transfer, mobile money received outside any
+        integrated `PaymentProviderPort`) — a real, auditable `Payment` row, not a bypass of the
+        ledger (Part 10's "reuse the existing invoice/payment architecture, never a second
+        ledger"). Marks the `Payment` and its `Invoice` paid using the exact same domain methods
+        `_apply_paid_side_effects` uses for the Stripe path.
+
+        **Deliberately does not call `Subscription.renew()`.** The Stripe self-service path
+        renews immediately because a card charge is a provider-confirmed fact the instant it
+        succeeds; a Founder manually recording "we received this" is a lower-trust signal by its
+        own nature (no provider confirms it), so activation stays a separate, deliberate
+        `ActivateSubscriptionCommand` step — this is what lets the invoice show `Paid` while the
+        subscription still shows not-yet-`Active`, exactly the distinction the workflow this
+        implements calls for. The existing Stripe/webhook auto-activate-on-payment behavior is
+        completely unchanged by this method's existence — it is a new, additive path, not a
+        replacement.
+        """
+        async with uow:
+            invoice = await ensure_invoice_exists(uow, InvoiceId(command.invoice_id))
+            payment = Payment.initiate(
+                id=PaymentId(self._id_generator.new_id()),
+                organization_id=invoice.organization_id,
+                invoice_id=invoice.id,
+                provider="manual",
+                msisdn_masked=None,
+                amount=invoice.amount,
+                # A manually-recorded payment has no client-retried request to deduplicate
+                # against (unlike `POST /billing/payments`'s `Idempotency-Key` header) — a fresh
+                # id per call is correct: each Founder action is its own distinct event.
+                idempotency_key=self._id_generator.new_id(),
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.payments.add(payment)
+            payment.mark_paid(
+                provider_ref=command.reference or f"manual-{payment.id}",
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            invoice.mark_paid(clock=self._clock, actor_id=command.actor.user_id)
+            uow.record_events(payment.pull_domain_events())
+            uow.record_events(invoice.pull_domain_events())
             await uow.commit()
             return payment_to_dto(payment)
 

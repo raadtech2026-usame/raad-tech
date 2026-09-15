@@ -454,6 +454,9 @@ def _make_organization(
         longitude=longitude,
         geofence_radius_m=geofence_radius_m,
         approaching_distance_m=approaching_distance_m,
+        trial_started_at=None,
+        trial_ends_at=None,
+        trial_state="not_started",
     )
 
 

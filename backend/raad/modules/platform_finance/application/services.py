@@ -98,13 +98,21 @@ class PlatformIncomeDTO:
 class PlatformPnlDTO:
     """RAAD's own profit and loss for a window.
 
-    `subscription_revenue` comes from `billing` through `SubscriptionRevenuePort`;
-    `other_income` from this module's own table. Two lines, never merged — see module docstring.
+    `subscription_revenue` (what was actually *collected*) comes from `billing` through
+    `SubscriptionRevenuePort`; `other_income` from this module's own table. Two lines, never
+    merged — see module docstring. `subscription_invoiced`/`subscription_receivables` are the
+    two further, distinct accounting facts Platform Finance requires alongside collected revenue
+    (Invoiced ≠ Collected ≠ Receivables) — also read from `billing`, never recorded here, for the
+    identical double-counting reason.
     """
 
     start: date
     end: date
     subscription_revenue: str
+    #: Amount billed to organizations in this window, regardless of whether paid yet.
+    subscription_invoiced: str
+    #: Amount still owed as of `end` — a point-in-time balance, not a period sum.
+    subscription_receivables: str
     other_income: str
     total_revenue: str
     total_expenses: str
@@ -327,9 +335,17 @@ class PlatformFinanceApplicationService:
             income_by_kind = await uow.income.sum_by_kind_between(start=start, end=end)
 
         subscription_revenue = _ZERO
+        subscription_invoiced = _ZERO
+        subscription_receivables = _ZERO
         if self._subscription_revenue is not None:
             subscription_revenue = await self._subscription_revenue.collected_between(
                 start=start, end=end
+            )
+            subscription_invoiced = await self._subscription_revenue.invoiced_between(
+                start=start, end=end
+            )
+            subscription_receivables = await self._subscription_revenue.receivables_asof(
+                as_of=end
             )
 
         total_revenue = subscription_revenue + other_income
@@ -337,6 +353,8 @@ class PlatformFinanceApplicationService:
             start=start,
             end=end,
             subscription_revenue=_money(subscription_revenue),
+            subscription_invoiced=_money(subscription_invoiced),
+            subscription_receivables=_money(subscription_receivables),
             other_income=_money(other_income),
             total_revenue=_money(total_revenue),
             total_expenses=_money(total_expenses),

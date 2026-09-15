@@ -65,6 +65,19 @@ def organization_registered(
     )
 
 
+def organization_renamed(
+    *, organization_id: str, name: str, occurred_at: datetime, actor_id: str | None
+) -> DomainEvent:
+    return _new_event(
+        event_type="OrganizationRenamed",
+        aggregate_type="Organization",
+        aggregate_id=organization_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"name": name, "actor_id": actor_id},
+    )
+
+
 def organization_suspended(
     *, organization_id: str, occurred_at: datetime, actor_id: str | None
 ) -> DomainEvent:
@@ -149,6 +162,31 @@ def organization_approaching_distance_updated(
         occurred_at=occurred_at,
         payload={
             "approaching_distance_m": approaching_distance_m,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def organization_trial_started(
+    *,
+    organization_id: str,
+    trial_ends_at: str,
+    duration_days: int,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """No approved document names this event — the same "config change gets an event" pattern
+    every other `Organization` mutator here already follows. Distinct from any `billing`
+    subscription event: this is organization-level trial policy, not a billing state change."""
+    return _new_event(
+        event_type="OrganizationTrialStarted",
+        aggregate_type="Organization",
+        aggregate_id=organization_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "trial_ends_at": trial_ends_at,
+            "duration_days": duration_days,
             "actor_id": actor_id,
         },
     )

@@ -152,6 +152,26 @@ def plan_disabled(
     )
 
 
+def plan_deleted(
+    *, plan_id: str, name: str, occurred_at: datetime, actor_id: str | None
+) -> DomainEvent:
+    """Organization Management phase. Constructed directly by
+    `BillingApplicationService.delete_plan` rather than through a `Plan.delete()` mutator — the
+    row is gone immediately after, so there is no aggregate left to keep mutating/re-querying,
+    unlike every other event here. `.claude/rules/security.md` #8 still requires this action be
+    audit-logged, so the event is built and recorded explicitly instead of silently skipped
+    (mirrors `ScopeAssignmentApplicationService`'s own precedent for a grant/revoke aggregate
+    with no rich lifecycle of its own — see that service's events for the identical shape)."""
+    return _new_event(
+        event_type="PlanDeleted",
+        aggregate_type="Plan",
+        aggregate_id=plan_id,
+        org_id=None,
+        occurred_at=occurred_at,
+        payload={"name": name, "actor_id": actor_id},
+    )
+
+
 # --- Subscription --------------------------------------------------------------------------
 
 
@@ -232,6 +252,32 @@ def subscription_suspended(
         org_id=organization_id,
         occurred_at=occurred_at,
         payload={"actor_id": actor_id},
+    )
+
+
+def subscription_plan_changed(
+    *,
+    subscription_id: str,
+    organization_id: str,
+    old_plan_id: str,
+    new_plan_id: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """Organization Management phase. No approved document names this event — flagged, matching
+    the established "flagged, not silently assumed" naming posture every prior phase's own
+    unnamed events already carry."""
+    return _new_event(
+        event_type="SubscriptionPlanChanged",
+        aggregate_type="Subscription",
+        aggregate_id=subscription_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "old_plan_id": old_plan_id,
+            "new_plan_id": new_plan_id,
+            "actor_id": actor_id,
+        },
     )
 
 

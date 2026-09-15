@@ -13,7 +13,9 @@ import { usePageHeader } from "../../../app/layout/PageHeaderContext";
 import { getOrganization, listRegions } from "../api";
 import { orgTypeLabel, statusLabel, statusTone } from "../labels";
 import {
+  ORGANIZATION_DETAIL_TAB_GROUP_LABELS,
   ORGANIZATION_DETAIL_TABS,
+  type OrganizationDetailTabGroup,
   type OrganizationDetailTabId,
 } from "./tabs";
 import { OrganizationTabPanel } from "./OrganizationTabPanel";
@@ -112,12 +114,22 @@ export function OrganizationDetailsPage() {
         </Badge>
       </div>
 
-      <div className={styles.tabBar}>
-        <Tabs
-          options={ORGANIZATION_DETAIL_TABS.map((t) => ({ id: t.id, label: t.label }))}
-          activeId={tab}
-          onSelect={(id) => setTab(id as OrganizationDetailTabId)}
-        />
+      <div className={styles.tabGroups}>
+        {(["organization", "operations", "finance", "platform"] as OrganizationDetailTabGroup[]).map(
+          (group) => (
+            <div key={group} className={styles.tabGroup}>
+              <span className={styles.tabGroupLabel}>{ORGANIZATION_DETAIL_TAB_GROUP_LABELS[group]}</span>
+              <Tabs
+                options={ORGANIZATION_DETAIL_TABS.filter((t) => t.group === group).map((t) => ({
+                  id: t.id,
+                  label: t.label,
+                }))}
+                activeId={tab}
+                onSelect={(id) => setTab(id as OrganizationDetailTabId)}
+              />
+            </div>
+          ),
+        )}
       </div>
 
       <Card>
@@ -132,6 +144,7 @@ export function OrganizationDetailsPage() {
             organizationId={organizationId}
             organization={organization.data}
             regionName={regionName}
+            onSelectTab={setTab}
           />
         </CardBody>
       </Card>

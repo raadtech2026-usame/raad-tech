@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from raad.core.health.service import HealthCheckService
 from raad.core.pagination import OffsetPage, SortSpec
@@ -201,6 +201,9 @@ class PlatformStatsApplicationService:
             revenue_window_end=now,
             uow=billing_uow,
         )
+        payment_due_organizations = await self._count_payment_due_organizations(
+            now=now, org_uow=org_uow, billing_uow=billing_uow
+        )
         database_status = await self._health_check_service.check_database()
         broker_status = await self._health_check_service.check_broker()
 
@@ -210,7 +213,39 @@ class PlatformStatsApplicationService:
             devices=devices,
             users=users,
             billing=billing,
+            payment_due_organizations=payment_due_organizations,
             system_health=SystemHealthDTO(
                 database=database_status.label, broker=broker_status.label
             ),
         )
+
+    async def _count_payment_due_organizations(
+        self,
+        *,
+        now: datetime,
+        org_uow: OrganizationUnitOfWork,
+        billing_uow: BillingUnitOfWork,
+    ) -> int:
+        """Platform Finance "Payment Due" KPI — an organization whose trial has ended
+        (`organization.domain.value_objects.TrialState.EXPIRED`) and which has never had a
+        `billing.Subscription` opened for it at all. Composes `organization`'s own
+        `get_expired_trial_organization_ids` (an `organization`-owned repository query) with
+        `billing`'s own `get_current_subscription_for_organization` (already exists, ADR-0039) —
+        never a direct cross-module read of either module's tables
+        (`.claude/rules/backend.md` #3).
+
+        A per-id loop, not a single aggregate query: expired-trial organizations are expected to
+        be a small minority of the platform (trials are the exception, not the bulk of a mature
+        tenant base), the same "small, bounded set" reasoning `TransportOpsStudentContextAdapter`
+        already relies on for its own per-item cross-module resolution loop."""
+        expired_trial_ids = await self._organization_service.get_expired_trial_organization_ids(
+            now=now, uow=org_uow
+        )
+        payment_due_count = 0
+        for organization_id in expired_trial_ids:
+            subscription = await self._billing_service.get_current_subscription_for_organization(
+                organization_id, uow=billing_uow
+            )
+            if subscription is None:
+                payment_due_count += 1
+        return payment_due_count

@@ -51,7 +51,7 @@ change needed to this method's own shape, only to the resolution point in
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from raad.core.errors.exceptions import DomainError
 from raad.core.events.base import DomainEvent
@@ -63,6 +63,7 @@ from raad.modules.organization.domain.value_objects import (
     OrganizationStatus,
     RegionId,
     RegionStatus,
+    TrialState,
 )
 
 _MIN_LATITUDE = -90.0
@@ -74,6 +75,33 @@ _MAX_LONGITUDE = 180.0
 # previously-hardcoded _APPROACH_RADIUS_MULTIPLIER (tracking/events/subscribers.py) - the user's
 # own chosen default, not invented here.
 _DEFAULT_APPROACHING_DISTANCE_M = 300
+
+#: Organization trial duration bounds. A trial with no lower bound could be created with a
+#: 0-or-negative-day "grace period" that expires before anyone can act on it; the upper bound
+#: keeps a fat-fingered entry (e.g. a duration meant in hours) from silently granting a
+#: year-long free trial. Neither bound is a documented business rule — both are a sanity check
+#: on operator input, not a pricing/business decision.
+_MIN_TRIAL_DURATION_DAYS = 1
+_MAX_TRIAL_DURATION_DAYS = 365
+
+
+def _validate_trial_duration(duration_days: int) -> None:
+    if not (_MIN_TRIAL_DURATION_DAYS <= duration_days <= _MAX_TRIAL_DURATION_DAYS):
+        raise DomainError(
+            "Organization trial duration_days must be between "
+            f"{_MIN_TRIAL_DURATION_DAYS} and {_MAX_TRIAL_DURATION_DAYS}: {duration_days}"
+        )
+
+
+def _validate_trial_timestamps(
+    *, trial_started_at: datetime | None, trial_ends_at: datetime | None
+) -> None:
+    """Set together or not at all — the same "no partial configuration" discipline
+    `_validate_geofence` already establishes for this aggregate's other optional-trio fields."""
+    if (trial_started_at is None) != (trial_ends_at is None):
+        raise DomainError(
+            "Organization trial_started_at/trial_ends_at must be set together, or not at all."
+        )
 
 
 def _validate_approaching_distance(value: int) -> None:
@@ -159,6 +187,8 @@ class Organization(_AggregateRoot):
         longitude: float | None = None,
         geofence_radius_m: int | None = None,
         approaching_distance_m: int = _DEFAULT_APPROACHING_DISTANCE_M,
+        trial_started_at: datetime | None = None,
+        trial_ends_at: datetime | None = None,
     ) -> None:
         super().__init__()
         if not name:
@@ -167,6 +197,9 @@ class Organization(_AggregateRoot):
             latitude=latitude, longitude=longitude, radius_m=geofence_radius_m
         )
         _validate_approaching_distance(approaching_distance_m)
+        _validate_trial_timestamps(
+            trial_started_at=trial_started_at, trial_ends_at=trial_ends_at
+        )
         self.id = id
         self.name = name
         self.org_type = org_type
@@ -179,6 +212,13 @@ class Organization(_AggregateRoot):
         self.longitude = longitude
         self.geofence_radius_m = geofence_radius_m
         self.approaching_distance_m = approaching_distance_m
+        #: See module-level `TrialState` docstring (`value_objects.py`) for why this is a
+        #: separate concept from `billing.SubscriptionStatus.TRIAL`. Both `None` until
+        #: `start_trial()` is called; never re-set afterward (a trial is a one-time offer at
+        #: organization-creation time, mirroring `billing.Subscription.open()`'s own "starts
+        #: TRIAL, never re-entered" posture for the analogous reason).
+        self.trial_started_at = trial_started_at
+        self.trial_ends_at = trial_ends_at
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Organization) and self.id == other.id
@@ -265,6 +305,29 @@ class Organization(_AggregateRoot):
             )
         )
 
+    def rename(self, *, name: str, clock: Clock, actor_id: str | None = None) -> None:
+        """The one editable identity field this pass adds real backend support for (Organization
+        Management phase) — deliberately narrow: `region_id`/`parent_org_id`/`org_type` stay
+        constructor-set only, per this class's own pre-existing documented decision above ("no
+        `change_region`/`reparent` behavior... no approved document gives a rule for changing
+        these post-creation"). A rename carries no such conflict — there is no invariant anywhere
+        in this codebase tying `Organization.name` to anything else once created. Same-value
+        rename is *not* treated as a no-op (unlike the idempotent status transitions below):
+        renaming to the identical name is a legitimate, if unusual, explicit action a caller
+        chose to take, and still deserves its own audited event."""
+        if not name:
+            raise DomainError("Organization name must not be empty")
+        self.name = name
+        self.updated_at = clock.now()
+        self._record(
+            org_events.organization_renamed(
+                organization_id=str(self.id),
+                name=name,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
     def set_geofence(
         self,
         *,
@@ -312,6 +375,54 @@ class Organization(_AggregateRoot):
                 actor_id=actor_id,
             )
         )
+
+    def start_trial(
+        self, *, duration_days: int, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """Grants this organization a time-boxed trial period, independent of any
+        `billing.Subscription`/`Plan` — a trial can be offered before the organization ever
+        chooses one (Founder-driven organization creation). One-time: refuses to run again once
+        a trial has already been started, mirroring `billing.Subscription.open()`'s own
+        "starts TRIAL, never re-entered" posture for the identical reason (a trial is a single
+        offer, not a renewable resource an operator could otherwise re-grant indefinitely by
+        repeated calls)."""
+        if self.trial_started_at is not None:
+            raise DomainError(
+                f"Organization {self.id} already has a trial "
+                f"(started {self.trial_started_at.isoformat()})."
+            )
+        _validate_trial_duration(duration_days)
+        now = clock.now()
+        self.trial_started_at = now
+        self.trial_ends_at = now + timedelta(days=duration_days)
+        self.updated_at = now
+        self._record(
+            org_events.organization_trial_started(
+                organization_id=str(self.id),
+                trial_ends_at=self.trial_ends_at.isoformat(),
+                duration_days=duration_days,
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+
+    def trial_state(self, *, clock: Clock) -> TrialState:
+        """Pure, derived read — never persisted. `clock` is required, not read from a module
+        global, matching every other time-sensitive method on this aggregate (and this
+        codebase's own `Clock` discipline generally): a fake clock makes this trivially
+        unit-testable without waiting on a wall-clock boundary.
+
+        Naive/aware comparison: `trial_ends_at` round-trips through Postgres as a naive
+        `DateTime(timezone=False)` value (ADR-0002's convention), while `clock.now()` may be
+        tz-aware (`SystemClock`) — stripping `now`'s tzinfo before comparing mirrors
+        `billing.application.services._to_naive`'s identical, already-established fix for the
+        same naive-vs-aware situation (CLAUDE.md's own permanent lesson on this class of bug)."""
+        if self.trial_started_at is None or self.trial_ends_at is None:
+            return TrialState.NOT_STARTED
+        now = clock.now()
+        if now.tzinfo is not None and self.trial_ends_at.tzinfo is None:
+            now = now.replace(tzinfo=None)
+        return TrialState.TRIALING if now < self.trial_ends_at else TrialState.EXPIRED
 
 
 class Region(_AggregateRoot):

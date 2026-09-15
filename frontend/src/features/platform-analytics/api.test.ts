@@ -12,7 +12,13 @@ const STATS_WIRE = {
   vehicles: { total: 8 },
   devices: { total: 5, online: 4, offline: 1 },
   users: { total: 20, by_status: { active: 18, invited: 2 }, monthly_active: 12, created_today: 2 },
-  billing: { subscription_by_status: { active: 3 }, expiring_soon: 1, revenue: 4500 },
+  billing: {
+    subscription_by_status: { active: 3 },
+    expiring_soon: 1,
+    revenue: 4500,
+    active_by_billing_cycle: { monthly: 2, annual: 1 },
+  },
+  payment_due_organizations: 4,
   system_health: { database: "ok", broker: "down" },
 };
 
@@ -37,7 +43,13 @@ describe("platform-analytics api", () => {
         monthlyActive: 12,
         createdToday: 2,
       },
-      billing: { subscriptionByStatus: { active: 3 }, expiringSoon: 1, revenue: 4500 },
+      billing: {
+        subscriptionByStatus: { active: 3 },
+        expiringSoon: 1,
+        revenue: 4500,
+        activeByBillingCycle: { monthly: 2, annual: 1 },
+      },
+      paymentDueOrganizations: 4,
       systemHealth: { database: "ok", broker: "down" },
     });
   });

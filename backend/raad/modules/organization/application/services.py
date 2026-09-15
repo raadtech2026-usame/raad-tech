@@ -31,6 +31,7 @@ from raad.modules.organization.application.commands import (
     OnboardOrganizationCommand,
     ReactivateOrganizationCommand,
     RegisterOrganizationCommand,
+    RenameOrganizationCommand,
     RevokeRegionAssignmentCommand,
     RevokeSupportAssignmentCommand,
     SuspendOrganizationCommand,
@@ -121,6 +122,20 @@ class OrganizationApplicationService:
         """
         # --- Step 0: validate everything that can be validated before anything is written ----
         #
+        # Trial and plan selection are mutually exclusive at creation time: a trial exists
+        # precisely to defer subscription/plan selection, so a command asking for both describes
+        # an ambiguous intent (start billing now, or defer it?) rather than a valid combination
+        # this workflow resolves silently one way or the other.
+        if command.trial_enabled and command.plan_id:
+            raise DomainError(
+                "An organization cannot be onboarded with both a trial and a plan selected — "
+                "choose one. A trial defers subscription/plan selection until later."
+            )
+        if command.trial_enabled and not command.trial_duration_days:
+            raise DomainError(
+                "trial_duration_days is required when trial_enabled is set."
+            )
+        #
         # Onboarding spans three modules and therefore three Units of Work; one database
         # transaction cannot cover them (`.claude/rules/backend.md` #3). The next best guarantee
         # is to make the likely failures happen while there is still nothing to undo. A plan id
@@ -155,6 +170,12 @@ class OrganizationApplicationService:
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )
+            if command.trial_enabled:
+                organization.start_trial(
+                    duration_days=command.trial_duration_days,
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                )
             uow.organizations.add(organization)
             uow.record_events(organization.pull_domain_events())
             await uow.commit()
@@ -191,7 +212,7 @@ class OrganizationApplicationService:
             )
             raise
 
-        return organization_to_dto(organization), admin_user_id, temporary_password
+        return organization_to_dto(organization, clock=self._clock), admin_user_id, temporary_password
 
     async def _compensate_onboarding(
         self,
@@ -272,7 +293,21 @@ class OrganizationApplicationService:
             uow.organizations.add(organization)
             uow.record_events(organization.pull_domain_events())
             await uow.commit()
-            return organization_to_dto(organization)
+            return organization_to_dto(organization, clock=self._clock)
+
+    async def rename_organization(
+        self, command: RenameOrganizationCommand, *, uow: OrganizationUnitOfWork
+    ) -> OrganizationDTO:
+        async with uow:
+            organization = await self._get_organization_or_raise(
+                uow, command.organization_id
+            )
+            organization.rename(
+                name=command.name, clock=self._clock, actor_id=command.actor.user_id
+            )
+            uow.record_events(organization.pull_domain_events())
+            await uow.commit()
+            return organization_to_dto(organization, clock=self._clock)
 
     async def suspend_organization(
         self, command: SuspendOrganizationCommand, *, uow: OrganizationUnitOfWork
@@ -284,7 +319,7 @@ class OrganizationApplicationService:
             organization.suspend(clock=self._clock, actor_id=command.actor.user_id)
             uow.record_events(organization.pull_domain_events())
             await uow.commit()
-            return organization_to_dto(organization)
+            return organization_to_dto(organization, clock=self._clock)
 
     async def reactivate_organization(
         self, command: ReactivateOrganizationCommand, *, uow: OrganizationUnitOfWork
@@ -296,7 +331,7 @@ class OrganizationApplicationService:
             organization.reactivate(clock=self._clock, actor_id=command.actor.user_id)
             uow.record_events(organization.pull_domain_events())
             await uow.commit()
-            return organization_to_dto(organization)
+            return organization_to_dto(organization, clock=self._clock)
 
     async def deactivate_organization(
         self, command: DeactivateOrganizationCommand, *, uow: OrganizationUnitOfWork
@@ -308,7 +343,7 @@ class OrganizationApplicationService:
             organization.deactivate(clock=self._clock, actor_id=command.actor.user_id)
             uow.record_events(organization.pull_domain_events())
             await uow.commit()
-            return organization_to_dto(organization)
+            return organization_to_dto(organization, clock=self._clock)
 
     async def update_organization_geofence(
         self, command: UpdateOrganizationGeofenceCommand, *, uow: OrganizationUnitOfWork
@@ -328,7 +363,7 @@ class OrganizationApplicationService:
             )
             uow.record_events(organization.pull_domain_events())
             await uow.commit()
-            return organization_to_dto(organization)
+            return organization_to_dto(organization, clock=self._clock)
 
     async def update_organization_approaching_distance(
         self,
@@ -349,7 +384,7 @@ class OrganizationApplicationService:
             )
             uow.record_events(organization.pull_domain_events())
             await uow.commit()
-            return organization_to_dto(organization)
+            return organization_to_dto(organization, clock=self._clock)
 
     async def get_organization_by_id(
         self, query: GetOrganizationByIdQuery, *, uow: OrganizationUnitOfWork
@@ -358,7 +393,7 @@ class OrganizationApplicationService:
             organization = await self._get_organization_or_raise(
                 uow, query.organization_id
             )
-            return organization_to_dto(organization)
+            return organization_to_dto(organization, clock=self._clock)
 
     async def list_organizations(
         self, query: ListOrganizationsQuery, *, uow: OrganizationUnitOfWork
@@ -375,7 +410,7 @@ class OrganizationApplicationService:
                 search=query.search,
             )
             return OffsetPage(
-                data=[organization_to_dto(o) for o in page.data],
+                data=[organization_to_dto(o, clock=self._clock) for o in page.data],
                 total=page.total,
                 page=page.page,
                 page_size=page.page_size,
@@ -397,6 +432,18 @@ class OrganizationApplicationService:
                 by_status=by_status,
                 created_today=created_today,
             )
+
+    async def get_expired_trial_organization_ids(
+        self, *, now: datetime, uow: OrganizationUnitOfWork
+    ) -> list[str]:
+        """Platform Finance "Payment Due" organization KPI — a thin pass-through to
+        `OrganizationRepository.list_ids_with_expired_trial`, existing purely so
+        `platform_audit.PlatformStatsApplicationService` (this module's only caller) composes
+        this module's own **application service**, never its repository directly
+        (`.claude/rules/backend.md` #3), mirroring `get_organization_stats`'s identical
+        role for every other cross-module KPI composition."""
+        async with uow:
+            return await uow.organizations.list_ids_with_expired_trial(now=now)
 
     @staticmethod
     async def _get_organization_or_raise(

@@ -20,13 +20,28 @@ import { useAuthStore } from "../../shared/stores/authStore";
 
 export type ReportScope = "platform" | "organization";
 export type ReportFormat = "pdf" | "xlsx";
-/** Report Center re-design (2026-09-11), catalog cleanup (2026-09-13) — the two organization
- * tabs (`raad/modules/reporting/application/catalog.py`'s own `ReportDefinition.category` doc
- * names the grouping rationale; the "management" category and every report registered under it
- * were removed from the backend catalog outright). Platform reports still carry a `category`
- * (backend default) but the platform view ignores it — that catalogue keeps its existing
- * card-grid, untouched. */
-export type ReportCategory = "financial" | "transportation" | "platform";
+/** Report Center re-design (2026-09-11), catalog cleanup (2026-09-13), Platform Report Center
+ * (Organization Management phase) — `raad/modules/reporting/application/catalog.py`'s own
+ * `ReportDefinition.category` doc names the grouping rationale for each value. Every
+ * platform-scope definition now sets one explicitly too (previously all silently defaulted to
+ * `"financial"` and the platform view ignored the field entirely, rendering its own untouched
+ * card-grid instead) — `"subscriptions"` is genuinely new, and `"platform"` is the directory/
+ * operational catch-all (Organizations, Regions, Plans, Vehicles, Drivers, Devices, Audit Logs)
+ * for platform reports that are neither financial facts nor subscription-lifecycle facts. */
+export type ReportCategory = "financial" | "transportation" | "platform" | "subscriptions";
+/** `BillingCycle` (`billing/api.ts`'s own type) — duplicated here rather than imported, mirroring
+ * this file's own established "define your own narrow lookup rather than couple two feature
+ * folders" precedent for `ReportPickerOption`/`listParentsForReportPicker` below. */
+export type ReportBillingCycle = "monthly" | "quarterly" | "annual";
+/** `SubscriptionStatus` (`billing/api.ts`'s own type), duplicated here for the identical reason. */
+export type ReportSubscriptionStatus =
+  | "trial"
+  | "active"
+  | "past_due"
+  | "grace_period"
+  | "suspended"
+  | "expired"
+  | "cancelled";
 /** `ParentInvoiceStatus` (ADR-0042) — the only four values the Report Center's Status selector
  * offers, matching the directive's own named set exactly (no "cancelled" option in this UI, even
  * though the backend query also accepts it). */
@@ -59,6 +74,12 @@ export interface DownloadReportParams {
   /** Report Center re-design (2026-09-11) — `ParentInvoiceStatus`, already a filterable column
    * (ADR-0042); no new query capability, only report builders now plumbing it through. */
   status?: ReportStatus;
+  /** Platform Report Center (Organization Management phase) — narrows a platform-scope report
+   * to one organization. Deliberately a distinct query param from anything organization-scope
+   * reports use: an Org Admin's own tenant always comes from their principal, never this field. */
+  organizationId?: string;
+  subscriptionStatus?: ReportSubscriptionStatus;
+  billingCycle?: ReportBillingCycle;
 }
 
 function buildReportQuery(params: DownloadReportParams, extra: Record<string, string> = {}): URLSearchParams {
@@ -70,6 +91,9 @@ function buildReportQuery(params: DownloadReportParams, extra: Record<string, st
   if (params.parentId) qs.set("parent_id", params.parentId);
   if (params.paymentMethod) qs.set("payment_method", params.paymentMethod);
   if (params.status) qs.set("status", params.status);
+  if (params.organizationId) qs.set("organization_id", params.organizationId);
+  if (params.subscriptionStatus) qs.set("subscription_status", params.subscriptionStatus);
+  if (params.billingCycle) qs.set("billing_cycle", params.billingCycle);
   return qs;
 }
 
@@ -230,4 +254,25 @@ export async function listVehiclesForReportPicker(search: string): Promise<Repor
     id: vehicle.id,
     label: vehicle.label ? `${vehicle.plate_no} · ${vehicle.label}` : vehicle.plate_no,
   }));
+}
+
+interface OrganizationPickerWire {
+  id: string;
+  name: string;
+}
+
+/** Platform Report Center (Organization Management phase) — the same "own narrow lookup, never
+ * a cross-folder `organizations/api.ts` import" precedent `listParentsForReportPicker`/
+ * `listVehiclesForReportPicker` above already establish. Backs the searchable Organization
+ * selector so a Founder narrows a platform report by name, never a raw UUID. */
+export async function listOrganizationsForReportPicker(search: string): Promise<ReportPickerOption[]> {
+  const query = buildOffsetListQuery({
+    page: 1,
+    pageSize: 20,
+    sort: { field: "name", direction: "asc" },
+    filters: {},
+    search,
+  });
+  const wire = await apiRequest<OffsetPageWire<OrganizationPickerWire>>(`/organizations?${query}`);
+  return wire.data.map((org) => ({ id: org.id, label: org.name }));
 }

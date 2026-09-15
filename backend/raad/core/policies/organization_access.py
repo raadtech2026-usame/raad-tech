@@ -106,6 +106,7 @@ class OrganizationAccessPolicy(Policy):
         *,
         subscription_state: OrganizationSubscriptionState | None,
         is_platform_role: bool,
+        is_trialing: bool = False,
     ) -> PolicyDecision:
         """
         `is_platform_role` — the caller is RAAD's own staff (Founder / Regional Manager /
@@ -118,25 +119,43 @@ class OrganizationAccessPolicy(Policy):
         `subscription_state` — the organization's own subscription status, or `None` when the
         organization has **no subscription row at all**.
 
-        **`None` now denies (amended 2026-09-09, direct user directive).** It used to grant, on
-        the reasoning that an organization with no subscription is un-onboarded rather than
-        delinquent, and that denying would turn a provisioning bug into a total outage for that
-        school. That reasoning was sound and the outcome was still wrong: a provisioning bug is
-        exactly what happened — `open_organization_subscription` failed on every call for the
-        entire life of the feature — and this fail-open is what made it invisible. Every
-        organization on the platform had unrestricted access with no subscription, and no surface
-        anywhere reported it. Fail-open turned a loud, one-organization failure into a silent,
-        platform-wide one.
+        `is_trialing` — the organization's own `organization.domain.entities.Organization.
+        trial_state()` is `TRIALING` (organization-level trial, independent of `billing`; see
+        `organization.domain.value_objects.TrialState`). **Only consulted when
+        `subscription_state is None`** — a trial defers subscription/plan selection entirely, so
+        the common trialing organization has no `Subscription` row yet at all; once one exists
+        (a plan was chosen, whether during or after the trial), that `Subscription`'s own status
+        is the single source of truth and this flag is irrelevant — a trialing organization that
+        *also* has a real subscription is judged by that subscription exactly like any other, so
+        a suspended/cancelled subscription cannot be reopened for access by an unrelated trial
+        flag left set from an earlier phase of the same organization's life.
 
-        Two things make denying safe now, and both had to land first: onboarding no longer
-        reports success when provisioning fails (it compensates and re-raises), so this state can
-        no longer be *created* silently; and `/billing` stays exempt from the guard, so an
-        affected organization can still reach the page that fixes it.
+        **`None` now denies (amended 2026-09-09, direct user directive)** *unless the
+        organization is currently trialing.* It used to grant unconditionally, on the reasoning
+        that an organization with no subscription is un-onboarded rather than delinquent, and
+        that denying would turn a provisioning bug into a total outage for that school. That
+        reasoning was sound and the outcome was still wrong: a provisioning bug is exactly what
+        happened — `open_organization_subscription` failed on every call for the entire life of
+        the feature — and this fail-open is what made it invisible. Every organization on the
+        platform had unrestricted access with no subscription, and no surface anywhere reported
+        it. Fail-open turned a loud, one-organization failure into a silent, platform-wide one.
+        The trial carve-out re-admits exactly one legitimate reason for "no subscription yet":
+        a Founder deliberately started this organization on a trial and has not yet been asked
+        to choose a plan — that is working as designed, not a silent failure, and is
+        distinguishable from the provisioning-bug case by `is_trialing` alone.
+
+        Two things make denying the non-trialing case safe, and both had to land first:
+        onboarding no longer reports success when provisioning fails (it compensates and
+        re-raises), so a genuine provisioning bug can no longer be *created* silently; and
+        `/billing` stays exempt from the guard, so an affected organization can still reach the
+        page that fixes it.
         """
         if is_platform_role:
             return PolicyDecision(allowed=True)
 
         if subscription_state is None:
+            if is_trialing:
+                return PolicyDecision(allowed=True)
             return PolicyDecision(
                 allowed=False,
                 reason=ORGANIZATION_SUBSCRIPTION_MISSING,

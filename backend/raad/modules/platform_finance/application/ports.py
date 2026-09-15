@@ -25,10 +25,24 @@ from raad.modules.platform_finance.domain.repositories import (
 
 
 class SubscriptionRevenuePort(ABC):
-    """Collected SaaS revenue in a window, owned by `billing`."""
+    """SaaS revenue facts, owned by `billing` — three distinct numbers, never merged into one
+    (Platform Finance's own "Invoiced is distinct from Collected is distinct from Receivables"
+    accounting requirement)."""
 
     @abstractmethod
     async def collected_between(self, *, start: date, end: date) -> Decimal:
+        """Actual payments received in the window (invoices whose `paid_at` falls in it)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def invoiced_between(self, *, start: date, end: date) -> Decimal:
+        """Amount billed to organizations in the window (invoices `issued_at` in it), regardless
+        of whether collected yet."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def receivables_asof(self, *, as_of: date) -> Decimal:
+        """Amount still owed as of `as_of` — a point-in-time balance, not a period sum."""
         raise NotImplementedError
 
 

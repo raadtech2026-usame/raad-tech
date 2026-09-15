@@ -165,6 +165,21 @@ class SqlAlchemyOrganizationRepository(
         )
         return result.scalar_one()
 
+    async def list_ids_with_expired_trial(self, *, now: datetime) -> list[str]:
+        """Platform Finance "Payment Due" KPI (see the domain interface's own docstring) — a
+        direct SQL filter, not a Python-side scan: `trial_started_at IS NOT NULL` excludes
+        `TrialState.NOT_STARTED` organizations (which have never been offered a trial at all and
+        are not "payment due" in the sense this count means), `trial_ends_at < now` is
+        `TrialState.EXPIRED`'s own condition. Deliberately unscoped like `count_by_status` above
+        — this is a platform-wide KPI, not a caller-scoped list."""
+        statement = select(OrganizationModel.id).where(
+            OrganizationModel.deleted_at.is_(None),
+            OrganizationModel.trial_started_at.is_not(None),
+            OrganizationModel.trial_ends_at < _naive(now),
+        )
+        result = await self._session.execute(statement)
+        return list(result.scalars().all())
+
     def flush_tracked_changes(self) -> None:
         for organization, model in self._tracked.values():
             organization_to_model(organization, existing=model)

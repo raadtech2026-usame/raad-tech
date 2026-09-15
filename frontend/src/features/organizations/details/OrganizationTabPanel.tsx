@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
 import { Info, Users } from "lucide-react";
 import { Badge } from "../../../shared/components/Badge/Badge";
 import { EmptyState } from "../../../shared/components/EmptyState/EmptyState";
@@ -11,8 +10,6 @@ import {
   invoiceStatusTone,
   paymentStatusLabel,
   paymentStatusTone,
-  subscriptionStatusLabel,
-  subscriptionStatusTone,
 } from "../../billing/labels";
 import type { Organization } from "../api";
 import { orgTypeLabel, statusLabel, statusTone } from "../labels";
@@ -29,11 +26,12 @@ import {
   orgStudentCount,
   orgStudentInvoices,
   orgStudentPayments,
-  orgSubscriptions,
   orgUsers,
   orgVehicles,
 } from "./api";
+import { OrganizationOverviewSummary } from "./OrganizationOverviewSummary";
 import { OrganizationSettingsTab } from "./OrganizationSettingsTab";
+import { OrganizationSubscriptionPanel } from "./OrganizationSubscriptionPanel";
 import { OrganizationUsageTab } from "./OrganizationUsageTab";
 import type { OrganizationDetailTabId } from "./tabs";
 import styles from "./OrganizationDetailsPage.module.css";
@@ -50,6 +48,7 @@ interface Props {
   organizationId: string;
   organization: Organization;
   regionName: string | null;
+  onSelectTab: (tab: OrganizationDetailTabId) => void;
 }
 
 interface Column<T> {
@@ -178,84 +177,60 @@ export function OrganizationTabPanel({
   organizationId,
   organization,
   regionName,
+  onSelectTab,
 }: Props) {
   const base = ["organizations", "detail", organizationId] as const;
 
   switch (tab) {
     case "overview":
       return (
-        <dl className={styles.detail}>
-          <div>
-            <dt>Name</dt>
-            <dd>{organization.name}</dd>
-          </div>
-          <div>
-            <dt>Type</dt>
-            <dd>{orgTypeLabel(organization.orgType)}</dd>
-          </div>
-          <div>
-            <dt>Status</dt>
-            <dd>
-              <Badge variant={statusTone(organization.status)} dot>
-                {statusLabel(organization.status)}
-              </Badge>
-            </dd>
-          </div>
-          <div>
-            <dt>Region</dt>
-            <dd>{regionName ?? organization.regionId}</dd>
-          </div>
-          <div>
-            <dt>Parent organization</dt>
-            <dd>{organization.parentOrgId ?? "None — top level"}</dd>
-          </div>
-          <div>
-            <dt>Organization ID</dt>
-            <dd className={styles.mono}>{organization.id}</dd>
-          </div>
-          <div>
-            <dt>Created</dt>
-            <dd>{formatDateTime(organization.createdAt)}</dd>
-          </div>
-          <div>
-            <dt>Last updated</dt>
-            <dd>{formatDateTime(organization.updatedAt)}</dd>
-          </div>
-        </dl>
+        <div className={styles.stack}>
+          <dl className={styles.detail}>
+            <div>
+              <dt>Name</dt>
+              <dd>{organization.name}</dd>
+            </div>
+            <div>
+              <dt>Type</dt>
+              <dd>{orgTypeLabel(organization.orgType)}</dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd>
+                <Badge variant={statusTone(organization.status)} dot>
+                  {statusLabel(organization.status)}
+                </Badge>
+              </dd>
+            </div>
+            <div>
+              <dt>Region</dt>
+              <dd>{regionName ?? organization.regionId}</dd>
+            </div>
+            <div>
+              <dt>Parent organization</dt>
+              <dd>{organization.parentOrgId ?? "None — top level"}</dd>
+            </div>
+            <div>
+              <dt>Organization ID</dt>
+              <dd className={styles.mono}>{organization.id}</dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd>{formatDateTime(organization.createdAt)}</dd>
+            </div>
+            <div>
+              <dt>Last updated</dt>
+              <dd>{formatDateTime(organization.updatedAt)}</dd>
+            </div>
+          </dl>
+
+          <OrganizationOverviewSummary organizationId={organizationId} onSelectTab={onSelectTab} />
+        </div>
       );
 
     case "subscription":
       return (
-        <DataList
-          queryKey={[...base, "subscriptions"]}
-          queryFn={() => orgSubscriptions(organizationId)}
-          rowKey={(row) => row.id}
-          emptyTitle="No subscription"
-          emptyDescription="This organization has no RAAD subscription. Its users cannot open the dashboard until a plan is assigned."
-          columns={[
-            { header: "Plan", cell: (r) => <span className={styles.mono}>{r.planId}</span> },
-            {
-              header: "Status",
-              cell: (r) => (
-                <Badge variant={subscriptionStatusTone(r.status)} dot>
-                  {subscriptionStatusLabel(r.status)}
-                </Badge>
-              ),
-            },
-            { header: "Period start", cell: (r) => (r.currentPeriodStart ? formatDateOnly(r.currentPeriodStart) : "—") },
-            { header: "Period end", cell: (r) => (r.currentPeriodEnd ? formatDateOnly(r.currentPeriodEnd) : "—") },
-            { header: "Grace ends", cell: (r) => (r.gracePeriodEndsAt ? formatDateOnly(r.gracePeriodEndsAt) : "—") },
-            { header: "Auto-renew", cell: (r) => (r.autoRenew ? "Yes" : "No") },
-            {
-              header: "",
-              cell: (r) => (
-                <Link to={`/platform/billing/subscriptions/${r.id}`} className={styles.link}>
-                  View details →
-                </Link>
-              ),
-            },
-          ]}
-        />
+        <OrganizationSubscriptionPanel organizationId={organizationId} organization={organization} />
       );
 
     case "users":
@@ -483,7 +458,7 @@ export function OrganizationTabPanel({
       );
 
     case "settings":
-      return <OrganizationSettingsTab organization={organization} />;
+      return <OrganizationSettingsTab organization={organization} onSelectTab={onSelectTab} />;
 
     default:
       return (

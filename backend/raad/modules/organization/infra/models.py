@@ -89,6 +89,17 @@ class OrganizationModel(AuditedTableMixin, Base):
     # nullable - every organization has some approaching distance (defaults to 300m at the
     # domain layer, `Organization._DEFAULT_APPROACHING_DISTANCE_M`).
     approaching_distance_m: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Organization-level trial (added for the Founder-controlled trial workflow) — both
+    # nullable, set together or not at all via `Organization.start_trial()`. Deliberately not a
+    # `billing` column: a trial can exist before any `Plan`/`Subscription` is ever chosen for
+    # this organization (see `domain/entities.py`'s own module note on why this lives here, not
+    # on `billing.Subscription`).
+    trial_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    trial_ends_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
 
 
 class RegionAssignmentModel(Base):

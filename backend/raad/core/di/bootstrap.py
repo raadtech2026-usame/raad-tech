@@ -20,6 +20,7 @@ from raad.core.config.settings import Settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork, UnitOfWork
 from raad.core.di.container import Container
+from raad.core.di.billing_audit_adapter import AuditPlanHistoryAdapter
 from raad.core.di.session_cap_adapter import SystemSettingSessionCapAdapter
 from raad.core.events.outbox import OutboxWriter, SqlOutboxPublisher
 from raad.core.events.ports import BrokerConsumer, BrokerPort, OutboxPublisher
@@ -352,12 +353,17 @@ def build_container(settings: Settings) -> Container:
     # step needs it). `try_resolve` mirrors `LatestPositionPort`'s pattern above but, unlike
     # Tracking, a `None` result here does not block binding the service — it is passed straight
     # through to the optional constructor arg.
+    # `plan_history` is unconditionally bound (unlike `payment_provider`, which depends on
+    # optional provider credentials) — `AuditPlanHistoryAdapter` has no external dependency of
+    # its own to be missing, it only reads this same database's `audit_entries` table, so there
+    # is no configuration state in which it cannot be constructed.
     container.bind_singleton(
         BillingApplicationService,
         BillingApplicationService(
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
             payment_provider=container.try_resolve(PaymentProviderPort),
+            plan_history=AuditPlanHistoryAdapter(container),
         ),
     )
 

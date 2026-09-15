@@ -66,6 +66,9 @@ describe("organizations api", () => {
           status: "active",
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-02T00:00:00Z",
+          trialStartedAt: null,
+          trialEndsAt: null,
+          trialState: "not_started",
         },
       ],
       page: { total: 1, page: 1, pageSize: 25 },
@@ -106,6 +109,8 @@ describe("organizations api", () => {
         region_id: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
         parent_org_id: null,
         plan_id: null,
+        trial_enabled: false,
+        trial_duration_days: null,
         admin_full_name: "Amina Warsame",
         admin_email: "amina@greenvalley.example.com",
         admin_phone: null,
@@ -121,10 +126,49 @@ describe("organizations api", () => {
         status: "active",
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-02T00:00:00Z",
+        trialStartedAt: null,
+        trialEndsAt: null,
+        trialState: "not_started",
       },
       adminUserId: "01ARZ3NDEKTSV4RRFFQ69G5FBZ",
       temporaryPassword: "Temp-Pw9!xyz",
     });
+  });
+
+  it("createOrganization posts trial_enabled/trial_duration_days when a trial is chosen", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      organization: {
+        ...ORG_WIRE,
+        trial_started_at: "2026-01-01T00:00:00Z",
+        trial_ends_at: "2026-01-04T00:00:00Z",
+        trial_state: "trialing",
+      },
+      admin_user_id: "01ARZ3NDEKTSV4RRFFQ69G5FBZ",
+      temporary_password: "Temp-Pw9!xyz",
+    });
+
+    const result = await createOrganization({
+      name: "Green Valley School",
+      orgType: "school",
+      regionId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
+      parentOrgId: null,
+      trialEnabled: true,
+      trialDurationDays: 3,
+      adminFullName: "Amina Warsame",
+      adminEmail: "amina@greenvalley.example.com",
+      adminPhone: null,
+    });
+
+    expect(apiRequest).toHaveBeenCalledWith("/organizations", {
+      method: "POST",
+      body: expect.objectContaining({
+        plan_id: null,
+        trial_enabled: true,
+        trial_duration_days: 3,
+      }),
+    });
+    expect(result.organization.trialState).toBe("trialing");
+    expect(result.organization.trialEndsAt).toBe("2026-01-04T00:00:00Z");
   });
 
   it("updateOrganizationStatus sends only the status field", async () => {

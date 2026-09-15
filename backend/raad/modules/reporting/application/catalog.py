@@ -59,6 +59,27 @@ class ReportRequest:
     #: (ADR-0042). No new query capability, only report builders now plumbing a filter that
     #: column already supports.
     status: str | None = None
+    #: Platform Report Center (Organization Management phase). Deliberately a **different**
+    #: field from `organization_id` above, never the same one: `organization_id` is resolved
+    #: from `principal.org_id` alone and must never accept a client-supplied value (that field
+    #: existing at all is what keeps an Org Admin's own report tenant-safe). This field is the
+    #: platform-caller-chosen "narrow to one organization" filter on the Platform Report Center's
+    #: own reports — wired to the `organization_id` **query parameter** (a name that was never
+    #: used on the wire before this, so introducing it is additive, not a collision) — and is
+    #: read only by the specific platform-scope builders that support it
+    #: (`SubscriptionRepository`/`InvoiceRepository`/`PaymentRepository.filterable_fields` all
+    #: already whitelist `organization_id`, ADR-0021's own "narrow within what the caller may
+    #: already see" comment on that whitelist applying identically here for a platform caller who
+    #: may see every organization).
+    organization_filter_id: str | None = None
+    #: `SubscriptionStatus` (`billing.domain.value_objects`) — already a filterable column on
+    #: `SubscriptionRepository.list_page`. Read only by `platform.subscriptions`.
+    subscription_status: str | None = None
+    #: `BillingCycle` — not a `Subscription` column (it lives on `Plan`), so this cannot go
+    #: through `_collect`'s server-side `filters` the way `subscription_status` does; the builder
+    #: joins to `Plan` and filters client-side, the same technique `revenue_by_plan_report`
+    #: already uses for its own `Payment -> Invoice -> Subscription -> Plan` join.
+    billing_cycle: str | None = None
     scope: TenantRegionScope | None = None
 
 
@@ -91,11 +112,15 @@ class ReportDefinition:
     #: Which optional inputs this report actually uses, so the UI can show only the relevant
     #: filters rather than every filter for every report.
     accepts: tuple[str, ...] = field(default_factory=tuple)
-    #: Report Center re-design (2026-09-11) — "financial" | "transportation" | "management" |
-    #: "platform", the grouping the Report Center's own three (four, including platform)
-    #: sections render under. Backend-owned rather than a frontend-hardcoded mapping, the same
-    #: "a report added server-side needs no frontend change" reasoning this catalogue's own
-    #: module docstring already gives for `title`/`description`/`accepts`.
+    #: Report Center re-design (2026-09-11), Platform Report Center (Organization Management
+    #: phase) — "financial" | "transportation" | "subscriptions" | "platform" (the "management"
+    #: category and every report registered under it were removed from the catalog outright,
+    #: 2026-09-13). "platform" is the directory/operational catch-all for platform-scope reports
+    #: that are neither financial facts nor subscription-lifecycle facts (Organizations, Regions,
+    #: Plans, Vehicles, Drivers, Devices, Audit Logs). Backend-owned rather than a
+    #: frontend-hardcoded mapping, the same "a report added server-side needs no frontend change"
+    #: reasoning this catalogue's own module docstring already gives for `title`/`description`/
+    #: `accepts`.
     category: str = "financial"
 
 

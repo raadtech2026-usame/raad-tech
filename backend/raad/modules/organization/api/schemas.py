@@ -27,6 +27,11 @@ class OrganizationResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+    trial_started_at: datetime | None = None
+    trial_ends_at: datetime | None = None
+    #: Derived (`Organization.trial_state()`), never a stored column — see that method's
+    #: docstring. `"not_started" | "trialing" | "expired"`.
+    trial_state: str = "not_started"
 
 
 class RegisterOrganizationRequest(BaseModel):
@@ -38,7 +43,12 @@ class RegisterOrganizationRequest(BaseModel):
     **ADR-0040 §5 adds `plan_id`.** Supplying it opens the organization's subscription and
     issues its first invoice in the same workflow, with period dates computed by `billing` from
     the plan's own cycle. Optional, so the pre-ADR-0040 onboarding contract still works
-    unchanged."""
+    unchanged.
+
+    **`trial_enabled`/`trial_duration_days`** start the organization on a time-boxed trial
+    instead of (never alongside — the application layer rejects both) selecting a plan. A trial
+    defers subscription/plan selection entirely; see `organization.domain.entities.Organization.
+    start_trial` for the mechanism."""
 
     name: str
     org_type: str
@@ -48,6 +58,8 @@ class RegisterOrganizationRequest(BaseModel):
     admin_email: str | None = None
     admin_phone: str | None = None
     plan_id: str | None = None
+    trial_enabled: bool = False
+    trial_duration_days: int | None = None
 
 
 class OrganizationOnboardedResponse(BaseModel):
@@ -62,11 +74,13 @@ class OrganizationOnboardedResponse(BaseModel):
 
 
 class UpdateOrganizationRequest(BaseModel):
-    """Partial update, limited to the transition the Application layer actually exposes
-    (`OrganizationApplicationService` has `suspend_organization`/`reactivate_organization`/
-    `deactivate_organization`, no generic field-editing use-case) — `status`
-    (`"active"`/`"suspended"`/`"inactive"`, mapped to the matching command). At least one
-    field must be given.
+    """Partial update, limited to the transitions the Application layer actually exposes:
+    `status` (`"active"`/`"suspended"`/`"inactive"`, mapped to `suspend_organization`/
+    `reactivate_organization`/`deactivate_organization`) and, as of the Organization Management
+    phase, `name` (mapped to `rename_organization` — see `Organization.rename`'s own docstring
+    for why this is the one identity field with real backend support; `region_id`/`org_type`/
+    `parent_org_id` remain deliberately constructor-set-only). At least one field must be given;
+    both may be given in the same request.
 
     API Contracts §4.1 also lists `billing_model` as a `PATCH /organizations/{id}` input
     (**CR-1**). Never wired here even before ADR-0016 — `organization.domain.entities.
@@ -78,6 +92,7 @@ class UpdateOrganizationRequest(BaseModel):
     """
 
     status: str | None = None
+    name: str | None = None
 
 
 class RegionResponse(BaseModel):

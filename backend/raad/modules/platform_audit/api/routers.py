@@ -130,7 +130,9 @@ def _platform_stats_dto_to_response(stats: PlatformStatsDTO) -> PlatformStatsRes
             subscription_by_status=stats.billing.subscription_by_status,
             expiring_soon=stats.billing.expiring_soon,
             revenue=stats.billing.revenue,
+            active_by_billing_cycle=stats.billing.active_by_billing_cycle,
         ),
+        payment_due_organizations=stats.payment_due_organizations,
         system_health=SystemHealthResponse(
             database=stats.system_health.database, broker=stats.system_health.broker
         ),

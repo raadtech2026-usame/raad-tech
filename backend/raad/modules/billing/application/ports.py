@@ -118,6 +118,34 @@ class PaymentProviderPort(ABC):
         raise NotImplementedError
 
 
+class PlanHistoryPort(ABC):
+    """Whether a plan has ever been assigned to a subscription — current **or historical**
+    (Organization Management phase, found during this phase's own live verification, not
+    designed up front).
+
+    `SubscriptionRepository.exists_for_plan` (the primary check `delete_plan` already makes)
+    only sees a subscription's *current* `plan_id` column. That was a sound proxy for "has this
+    plan ever been used" right up until `Subscription.change_plan` shipped in this same phase:
+    once a subscription moves off a plan, that plan disappears from every subscription's current
+    `plan_id`, even though a real invoice may already have been issued at its price — `Invoice`
+    itself carries no `plan_id` at all (it only captures its own `amount`/`currency` at issue
+    time), so there is no other schema-level column to check. This port closes that gap by
+    consulting the permanent, append-only `audit_entries` ledger (ADR-0007) for any
+    `SubscriptionOpened`/`SubscriptionPlanChanged` event that ever named this plan as
+    `plan_id`/`old_plan_id`/`new_plan_id` — a fact that, unlike the mutable `plan_id` column,
+    survives every later `change_plan` call.
+
+    Optional on `BillingApplicationService` (mirrors `PaymentProviderPort`'s own optional-port
+    shape) so existing fake-backed unit tests that construct the service directly need not wire
+    it; the real, running application always binds it (`core/di/bootstrap.py`), and `delete_plan`
+    only skips this second check when the port is genuinely unbound.
+    """
+
+    @abstractmethod
+    async def plan_ever_referenced(self, plan_id: str) -> bool:
+        raise NotImplementedError
+
+
 class BillingUnitOfWork(UnitOfWork):
     """Bundles this module's five repositories onto one transaction boundary (LLD §8.2 contract
     skeleton style), mirroring `TransportOpsUnitOfWork`'s identical shape. The concrete

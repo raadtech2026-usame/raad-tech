@@ -1,17 +1,7 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import clsx from "clsx";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import {
-  ChevronDown,
-  ChevronUp,
-  Eye,
-  FileSpreadsheet,
-  FileText,
-  Printer,
-  Search,
-  Truck,
-  UserRound,
-} from "lucide-react";
+import { Eye, FileText, Truck, UserRound } from "lucide-react";
 import { Card } from "../../shared/components/Card/Card";
 import { PageSection } from "../../shared/components/PageSection/PageSection";
 import { Button } from "../../shared/components/Button/Button";
@@ -42,10 +32,9 @@ import {
 import { ReportSelectorList } from "./components/ReportSelectorList";
 import { DateRangePresetFilter } from "./components/DateRangePresetFilter";
 import { ReportEntitySelect } from "./components/ReportEntitySelect";
-import { ReportSummary } from "./components/ReportSummary";
-import { ReportResultTable } from "./components/ReportResultTable";
 import { ReportPreviewDocument, type ReportFilterSummaryItem } from "./components/ReportPreviewDocument";
 import { ExportActions } from "./components/ExportActions";
+import { PlatformReportCenter } from "./PlatformReportCenter";
 import styles from "./ReportsPage.module.css";
 
 /** Formats a `YYYY-MM-DD` string as "September 5, 2026" using its own literal calendar date —
@@ -87,10 +76,11 @@ function formatDisplayPeriod(period: string): string {
  * (Parent Payment Report, Vehicle Revenue, Student Transportation Report) were removed from the
  * backend catalog registration; see `core/di/report_definitions.py`'s own 2026-09-13 comment.
  *
- * **Platform dashboard keeps its existing card grid, deliberately untouched** — `category` is
- * backend-owned on every definition, but this redesign's own scope was the organization side;
- * RAAD-staff platform reports (subscriptions, invoices, revenue, audit logs…) still render as the
- * pre-redesign grid of cards, each with its own inline `start`/`end` filters.
+ * **Platform dashboard now shares the same design language** (`PlatformReportCenter.tsx`,
+ * Organization Management phase) — category nav + search, a compact per-report filter toolbar,
+ * an A4-style `ReportPreviewDocument` preview, PDF/Excel/Print export. The pre-redesign card grid
+ * (`start`/`end`-only filters per card, an inline collapsible preview) is retired, not kept
+ * alongside it — two visual languages for report browsing was the thing being fixed.
  *
  * **Select report -> apply filters -> View -> preview -> Export.** `Preview` calls
  * `GET /reports/{key}/preview`, the exact same `ReportTable` the PDF/XLSX renderers consume, so
@@ -121,7 +111,7 @@ export function ReportsPage() {
   return (
     <div className={clsx(styles.page, "raad-view-transition")}>
       {scope === "platform" ? (
-        <PlatformReportsGrid catalog={catalog} />
+        <PlatformReportCenter catalog={catalog} />
       ) : (
         <OrganizationReportCenter catalog={catalog} />
       )}
@@ -371,212 +361,3 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
   );
 }
 
-/* ---- Platform dashboard: the pre-redesign card grid, untouched ---------------------------- */
-
-function PlatformReportsGrid({
-  catalog,
-}: {
-  catalog: ReturnType<typeof useQuery<ReportDefinition[]>>;
-}) {
-  const [search, setSearch] = useState("");
-  const filtered = useMemo(() => {
-    const data = catalog.data ?? [];
-    const query = search.trim().toLowerCase();
-    if (!query) return data;
-    return data.filter(
-      (definition) =>
-        definition.title.toLowerCase().includes(query) || definition.description.toLowerCase().includes(query),
-    );
-  }, [catalog.data, search]);
-
-  return (
-    <PageSection
-      title="Platform reports"
-      description="Preview on screen, then export to PDF or Excel."
-      action={
-        (catalog.data?.length ?? 0) > 0 && (
-          <Input
-            icon={<Search size={14} />}
-            placeholder="Search reports…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            aria-label="Search the report catalogue"
-          />
-        )
-      }
-    >
-      {catalog.isError ? (
-        <Card padded>
-          <EmptyState
-            icon={<FileText size={22} />}
-            title="Could not load the report catalogue"
-            description={
-              catalog.error instanceof ApiError ? catalog.error.message : "Something went wrong. Please try again."
-            }
-          />
-        </Card>
-      ) : catalog.isLoading ? (
-        <div className={styles.grid}>
-          {Array.from({ length: 4 }, (_, i) => (
-            <Card key={i} padded>
-              <Skeleton height={18} width="55%" />
-              <Skeleton height={14} />
-              <Skeleton height={34} width={180} />
-            </Card>
-          ))}
-        </div>
-      ) : (catalog.data?.length ?? 0) === 0 ? (
-        <Card padded>
-          <EmptyState
-            icon={<FileText size={22} />}
-            title="No reports available for your role"
-            description="Report availability follows the same permissions as the data behind it."
-          />
-        </Card>
-      ) : filtered.length === 0 ? (
-        <Card padded>
-          <EmptyState
-            icon={<Search size={22} />}
-            title="No reports match your search"
-            description={`Nothing in the catalogue matches "${search}". Try a different term.`}
-          />
-        </Card>
-      ) : (
-        <div className={styles.grid}>
-          {filtered.map((definition) => (
-            <PlatformReportCard key={definition.key} definition={definition} />
-          ))}
-        </div>
-      )}
-    </PageSection>
-  );
-}
-
-function PlatformReportCard({ definition }: { definition: ReportDefinition }) {
-  const toast = useToast();
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
-  const [busy, setBusy] = useState<ReportFormat | null>(null);
-  const [preview, setPreview] = useState<ReportTablePreview | null>(null);
-  const [previewOpen, setPreviewOpen] = useState(false);
-
-  const accepts = new Set(definition.accepts);
-
-  function currentParams(): DownloadReportParams {
-    return { start: start || undefined, end: end || undefined };
-  }
-
-  const previewMutation = useMutation({
-    mutationFn: () => previewReport(definition.key, currentParams()),
-    onSuccess: (table) => {
-      setPreview(table);
-      setPreviewOpen(true);
-    },
-    onError: (error) => {
-      toast.error("Preview failed", error instanceof Error ? error.message : "Please try again.");
-    },
-  });
-
-  async function run(format: ReportFormat, print = false) {
-    setBusy(format);
-    try {
-      await downloadReport(definition.key, format, currentParams());
-      toast.success(
-        print ? "Report ready to print" : "Report downloaded",
-        print ? `${definition.title} was downloaded — open it to print.` : `${definition.title} (${format.toUpperCase()})`,
-      );
-    } catch (error) {
-      toast.error("Export failed", error instanceof Error ? error.message : "Please try again.");
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  return (
-    <Card padded className={styles.card}>
-      <div className={styles.cardHead}>
-        <span className={styles.icon}>
-          <FileText size={18} />
-        </span>
-        <div className={styles.cardText}>
-          <h3 className={styles.cardTitle}>{definition.title}</h3>
-          <p className={styles.cardDescription}>{definition.description}</p>
-        </div>
-      </div>
-
-      {accepts.size > 0 && (
-        <div className={styles.filters}>
-          {accepts.has("start") && (
-            <FormField label="From">
-              <Input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
-            </FormField>
-          )}
-          {accepts.has("end") && (
-            <FormField label="To">
-              <Input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
-            </FormField>
-          )}
-        </div>
-      )}
-
-      <div className={styles.actions}>
-        <Button
-          variant="primary"
-          size="sm"
-          leadingIcon={<Eye size={14} />}
-          loading={previewMutation.isPending}
-          disabled={busy !== null}
-          onClick={() => previewMutation.mutate()}
-        >
-          View
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          loading={busy === "pdf"}
-          disabled={busy !== null || previewMutation.isPending}
-          onClick={() => void run("pdf")}
-        >
-          <FileText size={14} /> PDF
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          loading={busy === "xlsx"}
-          disabled={busy !== null || previewMutation.isPending}
-          onClick={() => void run("xlsx")}
-        >
-          <FileSpreadsheet size={14} /> Excel
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy !== null || previewMutation.isPending}
-          onClick={() => void run("pdf", true)}
-          title="Downloads the PDF — open it to print"
-        >
-          <Printer size={14} /> Print
-        </Button>
-      </div>
-
-      {preview && (
-        <div className={styles.previewPanel}>
-          <button type="button" className={styles.previewToggle} onClick={() => setPreviewOpen((open) => !open)}>
-            <span>
-              {preview.title}
-              {preview.subtitle ? ` — ${preview.subtitle}` : ""}
-            </span>
-            {previewOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
-
-          {previewOpen && (
-            <div className={styles.previewBody}>
-              <ReportSummary metadata={preview.metadata} />
-              <ReportResultTable table={preview} />
-            </div>
-          )}
-        </div>
-      )}
-    </Card>
-  );
-}

@@ -22,6 +22,13 @@ import styles from "./CreateOrganizationForm.module.css";
 // — client-side format validation of the same real domain invariant, not a new business rule.
 const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
+/** Preset trial durations (Part 1's own requested set); "Custom" reveals a plain day-count
+ * input rather than adding a second pricing/duration engine — the backend accepts any integer
+ * in `organization.domain.entities`' documented 1-365 day bound regardless of which UI path
+ * produced it. */
+const TRIAL_DURATION_PRESETS = [3, 7, 14, 30] as const;
+const CUSTOM_TRIAL_DURATION = "custom";
+
 const schema = z
   .object({
     name: z.string().trim().min(1, "Organization name is required"),
@@ -32,10 +39,15 @@ const schema = z
       .refine((value) => value === "" || ULID_PATTERN.test(value), {
         message: "Must be a valid organization ID (26-character ULID)",
       }),
+    // Onboarding path: "trial" (defers plan selection) or "plan"/none (ADR-0040 §5's existing
+    // optional plan_id) — never both, the backend rejects a request setting both.
+    onboardingPath: z.enum(["none", "plan", "trial"]),
     // Optional (ADR-0040 §5): an organization can be onboarded before its commercial tier is
     // agreed, then have a subscription opened later. Supplying it here is the path that opens
     // the subscription and issues the first invoice in the same request.
     planId: z.string(),
+    trialDurationPreset: z.string(),
+    trialDurationCustomDays: z.string(),
     adminFullName: z.string().trim().min(1, "Org Admin name is required"),
     adminEmail: z.string().trim().email("Must be a valid email").or(z.literal("")),
     adminPhone: z.string().trim(),
@@ -46,7 +58,18 @@ const schema = z
   .refine((values) => values.adminEmail !== "" || values.adminPhone !== "", {
     message: "Provide an Org Admin email or phone number",
     path: ["adminEmail"],
-  });
+  })
+  .refine(
+    (values) =>
+      values.onboardingPath !== "trial" ||
+      values.trialDurationPreset !== CUSTOM_TRIAL_DURATION ||
+      (Number(values.trialDurationCustomDays) >= 1 &&
+        Number(values.trialDurationCustomDays) <= 365),
+    {
+      message: "Enter a custom duration between 1 and 365 days",
+      path: ["trialDurationCustomDays"],
+    },
+  );
 
 type FormValues = z.infer<typeof schema>;
 
@@ -54,11 +77,23 @@ const DEFAULT_VALUES: FormValues = {
   name: "",
   regionId: "",
   parentOrgId: "",
+  onboardingPath: "none",
   planId: "",
+  trialDurationPreset: String(TRIAL_DURATION_PRESETS[0]),
+  trialDurationCustomDays: "",
   adminFullName: "",
   adminEmail: "",
   adminPhone: "",
 };
+
+function resolveTrialDurationDays(values: FormValues): number | null {
+  if (values.onboardingPath !== "trial") return null;
+  if (values.trialDurationPreset === CUSTOM_TRIAL_DURATION) {
+    const parsed = Number(values.trialDurationCustomDays);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return Number(values.trialDurationPreset);
+}
 
 export interface CreateOrganizationFormProps {
   open: boolean;
@@ -132,11 +167,15 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
     register,
     handleSubmit,
     reset,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: DEFAULT_VALUES,
   });
+
+  const onboardingPath = watch("onboardingPath");
+  const trialDurationPreset = watch("trialDurationPreset");
 
   const mutation = useMutation({
     mutationFn: (values: FormValues) =>
@@ -145,7 +184,9 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
         orgType: "school",
         regionId: values.regionId,
         parentOrgId: values.parentOrgId || null,
-        planId: values.planId || null,
+        planId: values.onboardingPath === "plan" ? values.planId || null : null,
+        trialEnabled: values.onboardingPath === "trial",
+        trialDurationDays: resolveTrialDurationDays(values),
         adminFullName: values.adminFullName,
         adminEmail: values.adminEmail || null,
         adminPhone: values.adminPhone || null,
@@ -310,23 +351,65 @@ export function CreateOrganizationForm({ open, onClose }: CreateOrganizationForm
         </FormField>
 
         <FormField
-          label="Subscription plan"
-          hint={
-            plansQuery.isError
-              ? "Could not load plans — the organization can still be created and subscribed later."
-              : "Optional. Choosing one opens the subscription and issues the first invoice now; leaving it blank creates the organization without one."
-          }
-          error={errors.planId?.message}
+          label="Onboarding"
+          hint="Choose exactly one: defer billing with a trial, assign a plan now, or leave the organization unsubscribed until later."
         >
-          <Select {...register("planId")} disabled={plansQuery.isLoading}>
-            <option value="">No plan yet</option>
-            {(plansQuery.data ?? []).map((plan) => (
-              <option key={plan.id} value={plan.id}>
-                {plan.name} — {plan.amount} {plan.currency} / {plan.billingCycle}
-              </option>
-            ))}
+          <Select {...register("onboardingPath")} aria-label="Onboarding path">
+            <option value="none">No trial / no subscription yet</option>
+            <option value="plan">Choose a subscription plan now</option>
+            <option value="trial">Start with a trial</option>
           </Select>
         </FormField>
+
+        {onboardingPath === "plan" && (
+          <FormField
+            label="Subscription plan"
+            hint={
+              plansQuery.isError
+                ? "Could not load plans — the organization can still be created and subscribed later."
+                : "Opens the subscription and issues the first invoice now."
+            }
+            error={errors.planId?.message}
+          >
+            <Select {...register("planId")} disabled={plansQuery.isLoading}>
+              <option value="">Select a plan</option>
+              {(plansQuery.data ?? []).map((plan) => (
+                <option key={plan.id} value={plan.id}>
+                  {plan.name} — {plan.amount} {plan.currency} / {plan.billingCycle}
+                </option>
+              ))}
+            </Select>
+          </FormField>
+        )}
+
+        {onboardingPath === "trial" && (
+          <FormField
+            label="Trial duration"
+            hint="No subscription/plan is created now — the organization gets full access until the trial ends, then Founder assigns a plan from its Subscription tab."
+            error={errors.trialDurationCustomDays?.message}
+          >
+            <div className={styles.footerActions}>
+              <Select {...register("trialDurationPreset")} aria-label="Trial duration">
+                {TRIAL_DURATION_PRESETS.map((days) => (
+                  <option key={days} value={days}>
+                    {days} days
+                  </option>
+                ))}
+                <option value={CUSTOM_TRIAL_DURATION}>Custom…</option>
+              </Select>
+              {trialDurationPreset === CUSTOM_TRIAL_DURATION && (
+                <Input
+                  type="number"
+                  min={1}
+                  max={365}
+                  placeholder="Days"
+                  invalid={!!errors.trialDurationCustomDays}
+                  {...register("trialDurationCustomDays")}
+                />
+              )}
+            </div>
+          </FormField>
+        )}
 
         <FormField
           label="Parent organization ID"

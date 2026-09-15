@@ -86,6 +86,7 @@ from raad.modules.organization.application.commands import (
     OnboardOrganizationCommand,
     ReactivateOrganizationCommand,
     RegisterOrganizationCommand,
+    RenameOrganizationCommand,
     RevokeRegionAssignmentCommand,
     RevokeSupportAssignmentCommand,
     SuspendOrganizationCommand,
@@ -132,6 +133,9 @@ def _organization_dto_to_response(
         status=organization.status,
         created_at=organization.created_at,
         updated_at=organization.updated_at,
+        trial_started_at=organization.trial_started_at,
+        trial_ends_at=organization.trial_ends_at,
+        trial_state=organization.trial_state,
     )
 
 
@@ -210,6 +214,8 @@ async def register_organization(
         admin_phone=body.admin_phone,
         actor=principal,
         plan_id=body.plan_id,
+        trial_enabled=body.trial_enabled,
+        trial_duration_days=body.trial_duration_days,
     )
     organization, admin_user_id, temporary_password = await org_service.onboard_organization(
         command, uow=uow
@@ -249,12 +255,14 @@ async def get_organization(
     "/{organization_id}",
     response_model=OrganizationResponse,
     status_code=status.HTTP_200_OK,
-    summary="Update an organization's status",
+    summary="Update an organization's status and/or name",
     description=(
-        "In-scope (API Contracts §4.1). Limited to the `status` transition the Application "
-        "layer exposes — see `UpdateOrganizationRequest`'s docstring for why `billing_model` "
-        "is not accepted here. Authorization resolves against the real seeded RBAC permission matrix — "
-        "see `register_organization`'s note."
+        "In-scope (API Contracts §4.1). Limited to the transitions the Application layer "
+        "exposes — see `UpdateOrganizationRequest`'s docstring for why `billing_model`/"
+        "`region_id`/`org_type` are not accepted here. At least one of `status`/`name` is "
+        "required; both may be given in one request (applied as two separate commits, matching "
+        "`iam.update_user`'s identical composed-field precedent). Authorization resolves "
+        "against the real seeded RBAC permission matrix — see `register_organization`'s note."
     ),
 )
 async def update_organization(
@@ -266,37 +274,57 @@ async def update_organization(
     org_service: OrganizationApplicationService = Depends(get_organization_service),
     uow: OrganizationUnitOfWork = Depends(get_organization_uow),
 ) -> OrganizationResponse:
-    if body.status is None:
+    if body.status is None and body.name is None:
         raise ValidationError(
-            "'status' must be provided.", details={"fields": ["status"]}
+            "At least one of 'status' or 'name' must be provided.",
+            details={"fields": ["status", "name"]},
         )
 
-    if body.status == "active":
-        organization = await org_service.reactivate_organization(
-            ReactivateOrganizationCommand(
-                organization_id=organization_id, actor=principal
+    organization: OrganizationDTO | None = None
+
+    if body.status is not None:
+        if body.status == "active":
+            organization = await org_service.reactivate_organization(
+                ReactivateOrganizationCommand(
+                    organization_id=organization_id, actor=principal
+                ),
+                uow=uow,
+            )
+        elif body.status == "suspended":
+            organization = await org_service.suspend_organization(
+                SuspendOrganizationCommand(
+                    organization_id=organization_id, actor=principal
+                ),
+                uow=uow,
+            )
+        elif body.status == "inactive":
+            organization = await org_service.deactivate_organization(
+                DeactivateOrganizationCommand(
+                    organization_id=organization_id, actor=principal
+                ),
+                uow=uow,
+            )
+        else:
+            raise ValidationError(
+                f"Unsupported status: {body.status!r}", details={"field": "status"}
+            )
+
+    if body.name is not None:
+        organization = await org_service.rename_organization(
+            RenameOrganizationCommand(
+                organization_id=organization_id, name=body.name, actor=principal
             ),
             uow=uow,
-        )
-    elif body.status == "suspended":
-        organization = await org_service.suspend_organization(
-            SuspendOrganizationCommand(
-                organization_id=organization_id, actor=principal
-            ),
-            uow=uow,
-        )
-    elif body.status == "inactive":
-        organization = await org_service.deactivate_organization(
-            DeactivateOrganizationCommand(
-                organization_id=organization_id, actor=principal
-            ),
-            uow=uow,
-        )
-    else:
-        raise ValidationError(
-            f"Unsupported status: {body.status!r}", details={"field": "status"}
         )
 
+    if organization is None:
+        # Guaranteed not to happen by the "at least one field" guard above — an explicit raise
+        # rather than `assert`, since `assert` is stripped under `python -O`/`PYTHONOPTIMIZE`
+        # and this invariant must hold regardless of how the interpreter is invoked (mirrors
+        # `iam.api.routers.update_user`'s identical guard for the same composed-field shape).
+        raise RuntimeError(
+            "update_organization: no field was processed despite the guard above."
+        )
     return _organization_dto_to_response(organization)
 
 

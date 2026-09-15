@@ -20,15 +20,22 @@ from types import SimpleNamespace
 
 from raad.core.di.container import Container
 from raad.core.di.report_definitions import register_report_definitions
-from raad.core.pagination import OffsetPage
+from raad.core.pagination import FilterCondition, OffsetPage
 from raad.core.tenancy.principal import Principal, Role
 from raad.modules.billing.application.ports import BillingUnitOfWork
-from raad.modules.billing.domain.value_objects import BillingCycle, PaymentStatus, PlanStatus
+from raad.modules.billing.domain.value_objects import (
+    BillingCycle,
+    PaymentStatus,
+    PlanStatus,
+    SubscriptionStatus,
+)
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.domain.value_objects import DeviceLifecycleState, VehicleStatus
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.domain.value_objects import OrgType, OrganizationStatus, RegionStatus
 from raad.modules.platform_audit.application.ports import PlatformAuditUnitOfWork
+from raad.modules.platform_finance.application.ports import PlatformFinanceUnitOfWork
+from raad.modules.platform_finance.application.services import PlatformFinanceApplicationService
 from raad.modules.reporting.application.catalog import ReportCatalog, ReportRequest
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.domain.value_objects import DriverStatus
@@ -46,12 +53,22 @@ class _Amount:
 class _FakeRepo:
     """Serves a fixed row list through the same `list_page(...)` shape every real repository
     implements — mirrors `test_reporting_export.py`'s own `_CountingRepository`, but returns
-    caller-supplied domain-shaped fakes instead of bare integers."""
+    caller-supplied domain-shaped fakes instead of bare integers.
+
+    **Does not apply `filters`** — like every real repository's own `FilterCondition` handling,
+    that is SQL `WHERE`-clause behavior a fake cannot faithfully reproduce (the same "a fake
+    cannot see a real query-layer bug" limitation this codebase's own Permanent Engineering
+    Lessons name elsewhere). `last_filters` instead *records* what was passed, so a test can pin
+    "the builder asked for the right narrowing" without claiming the fake actually narrowed
+    anything — the real narrowing is the already-tested, generic `FilterCondition`/`list_page`
+    machinery every other filterable resource in this codebase already relies on."""
 
     def __init__(self, rows: list) -> None:
         self._rows = rows
+        self.last_filters: list | None = None
 
     async def list_page(self, page_request, *, filters, sort, search):
+        self.last_filters = filters
         start = (page_request.page - 1) * page_request.page_size
         chunk = self._rows[start : start + page_request.page_size]
         return OffsetPage(
@@ -78,6 +95,7 @@ class _FakeUow:
 
 FOUNDER = Principal(user_id="founder-1", role=Role.FOUNDER, org_id=None)
 FINANCE = Principal(user_id="finance-1", role=Role.FINANCE_STAFF, org_id=None)
+SUPPORT = Principal(user_id="support-1", role=Role.SUPPORT_STAFF, org_id=None)
 
 REGION_NORTH = SimpleNamespace(
     id="region-1", name="Northern Region", geographic_scope="North",
@@ -130,7 +148,11 @@ AUDIT_OPENED = SimpleNamespace(
     entity_type="Subscription", entity_id="sub-1", organization_id="org-1",
     actor_user_id=None,
 )
-SUBSCRIPTION_1 = SimpleNamespace(id="sub-1", plan_id="plan-1")
+SUBSCRIPTION_1 = SimpleNamespace(
+    id="sub-1", plan_id="plan-1", organization_id="org-1", status=SubscriptionStatus.ACTIVE,
+    current_period_start=datetime(2026, 8, 1), current_period_end=datetime(2026, 9, 1),
+    auto_renew=True,
+)
 INVOICE_1 = SimpleNamespace(id="inv-1", subscription_id="sub-1")
 PAYMENT_PAID = SimpleNamespace(
     organization_id="org-1", invoice_id="inv-1", amount=_Amount(199.5, "USD"),
@@ -140,6 +162,22 @@ PAYMENT_FAILED = SimpleNamespace(
     organization_id="org-1", invoice_id="inv-1", amount=_Amount(50.0, "USD"),
     status=PaymentStatus.FAILED, provider="stripe", created_at=datetime(2026, 9, 2, 9, 30, 0),
 )
+
+
+class _FakePlatformFinanceService:
+    """Stands in for `PlatformFinanceApplicationService` — only `get_platform_pnl` is ever
+    called by any report builder, and it is already thoroughly unit-tested in its own right
+    (`test_platform_finance.py`); this fake exists only so `platform_receivables`'s own row
+    formatting can be exercised in isolation, the same "a wrong attribute name fails here, not
+    only in a live export" reasoning this file's own module docstring gives for every builder."""
+
+    async def get_platform_pnl(self, *, start, end, uow):
+        return SimpleNamespace(
+            subscription_invoiced="500.00",
+            subscription_revenue="420.00",
+            subscription_receivables="80.00",
+            currency="USD",
+        )
 
 
 def _catalog() -> ReportCatalog:
@@ -165,6 +203,8 @@ def _catalog() -> ReportCatalog:
         PlatformAuditUnitOfWork,
         lambda: _FakeUow(audit_entries=[AUDIT_RENEWED, AUDIT_OPENED]),
     )
+    container.bind_factory(PlatformFinanceUnitOfWork, lambda: _FakeUow())
+    container.bind_factory(PlatformFinanceApplicationService, lambda: _FakePlatformFinanceService())
     catalog = ReportCatalog()
     register_report_definitions(catalog, container)
     return catalog
@@ -304,6 +344,124 @@ class RevenueBuilderTests(unittest.IsolatedAsyncioTestCase):
             ReportRequest(principal=FOUNDER, **_WINDOW)
         )
         self.assertEqual(table.rows, [["Unknown plan", "1", "199.50"]])
+
+
+class SubscriptionsReportFilterTests(unittest.IsolatedAsyncioTestCase):
+    """Platform Report Center (Organization Management phase) — `platform.subscriptions` gained
+    three new optional filters. `organization_id`/`subscription_status` are plumbed straight to
+    `_collect`'s server-side `FilterCondition`s (real narrowing is the already-proven, generic
+    `list_page` machinery — see `_FakeRepo`'s own docstring for why a fake cannot demonstrate
+    that part itself); `billing_cycle` is a genuine new join-then-filter written in this builder,
+    fully exercisable in-process since it runs entirely in Python after `_collect` returns."""
+
+    def _uow(self) -> _FakeUow:
+        return _FakeUow(
+            subscriptions=[SUBSCRIPTION_1],
+            plans=[PLAN_STANDARD, PLAN_PREMIUM],
+        )
+
+    def _catalog_with(self, uow: _FakeUow) -> ReportCatalog:
+        container = Container()
+        container.bind_singleton(BillingUnitOfWork, uow)
+        catalog = ReportCatalog()
+        register_report_definitions(catalog, container)
+        return catalog
+
+    async def test_organization_id_is_passed_through_as_a_filter_condition(self) -> None:
+        uow = self._uow()
+        await self._catalog_with(uow).get("platform.subscriptions").build(
+            ReportRequest(principal=FOUNDER, organization_filter_id="org-2")
+        )
+        self.assertEqual(
+            uow.subscriptions.last_filters,
+            [FilterCondition(field="organization_id", op="eq", value="org-2")],
+        )
+
+    async def test_subscription_status_is_passed_through_as_a_filter_condition(self) -> None:
+        uow = self._uow()
+        await self._catalog_with(uow).get("platform.subscriptions").build(
+            ReportRequest(principal=FOUNDER, subscription_status="past_due")
+        )
+        self.assertEqual(
+            uow.subscriptions.last_filters,
+            [FilterCondition(field="status", op="eq", value="past_due")],
+        )
+
+    async def test_no_filters_requested_means_no_filter_conditions_sent(self) -> None:
+        uow = self._uow()
+        await self._catalog_with(uow).get("platform.subscriptions").build(
+            ReportRequest(principal=FOUNDER)
+        )
+        self.assertEqual(uow.subscriptions.last_filters, [])
+
+    async def test_billing_cycle_keeps_only_subscriptions_on_a_matching_plan(self) -> None:
+        # SUBSCRIPTION_1 is on PLAN_STANDARD (monthly) — a second subscription on the annual
+        # PLAN_PREMIUM proves the filter actually excludes, not just happens to match everything.
+        subscription_annual = SimpleNamespace(
+            id="sub-2", plan_id="plan-2", organization_id="org-2", status=SubscriptionStatus.ACTIVE,
+            current_period_start=datetime(2026, 1, 1), current_period_end=datetime(2027, 1, 1),
+            auto_renew=True,
+        )
+        uow = _FakeUow(
+            subscriptions=[SUBSCRIPTION_1, subscription_annual],
+            plans=[PLAN_STANDARD, PLAN_PREMIUM],
+        )
+        table = await self._catalog_with(uow).get("platform.subscriptions").build(
+            ReportRequest(principal=FOUNDER, billing_cycle="annual")
+        )
+        self.assertEqual(len(table.rows), 1)
+        self.assertEqual(table.rows[0][1], "plan-2")
+        self.assertEqual(table.metadata.get("Billing cycle"), "Annual")
+
+    async def test_billing_cycle_excludes_a_subscription_on_a_now_deleted_plan(self) -> None:
+        """A subscription whose plan no longer resolves (e.g. hard-deleted per the Organization
+        Management phase's own new `DELETE /billing/plans/{id}`) must be excluded, never crash
+        and never be assumed to match by default."""
+        orphaned = SimpleNamespace(
+            id="sub-3", plan_id="plan-missing", organization_id="org-2", status=SubscriptionStatus.ACTIVE,
+            current_period_start=datetime(2026, 1, 1), current_period_end=datetime(2027, 1, 1),
+            auto_renew=True,
+        )
+        uow = _FakeUow(subscriptions=[SUBSCRIPTION_1, orphaned], plans=[PLAN_STANDARD, PLAN_PREMIUM])
+        table = await self._catalog_with(uow).get("platform.subscriptions").build(
+            ReportRequest(principal=FOUNDER, billing_cycle="monthly")
+        )
+        self.assertEqual(len(table.rows), 1)
+        self.assertEqual(table.rows[0][1], "plan-1")
+
+
+class ReceivablesBuilderTests(unittest.IsolatedAsyncioTestCase):
+    """Organization Management phase — `platform.receivables` reuses `get_platform_pnl` verbatim
+    (zero new application-layer code); this only pins the report's own row formatting."""
+
+    async def test_registered_with_the_financial_category_and_finance_roles(self) -> None:
+        definition = _catalog().get("platform.receivables")
+        self.assertIsNotNone(definition)
+        self.assertEqual(definition.category, "financial")
+        self.assertIn(Role.FOUNDER, definition.roles)
+        self.assertIn(Role.FINANCE_STAFF, definition.roles)
+        self.assertNotIn(Role.SUPPORT_STAFF, definition.roles)
+
+    async def test_reports_invoiced_collected_and_receivables_as_three_distinct_rows(self) -> None:
+        table = await _catalog().get("platform.receivables").build(
+            ReportRequest(principal=FOUNDER, **_WINDOW)
+        )
+        self.assertEqual(
+            table.rows,
+            [
+                ["Invoiced", "500.00"],
+                ["Collected", "420.00"],
+                [f"Receivables (as of {_WINDOW['end'].isoformat()})", "80.00"],
+            ],
+        )
+        # Invoiced/Collected/Receivables must never be silently merged into one number.
+        self.assertEqual(len({row[1] for row in table.rows}), 3)
+
+    async def test_support_staff_cannot_see_platform_receivables(self) -> None:
+        """Mirrors `platform.profit_and_loss`'s own posture — RAAD's own receivables are not a
+        support surface, `finance_staff`/`founder` only."""
+        keys = {d.key for d in _catalog().list_for(SUPPORT)}
+        self.assertNotIn("platform.receivables", keys)
 
 
 if __name__ == "__main__":  # pragma: no cover

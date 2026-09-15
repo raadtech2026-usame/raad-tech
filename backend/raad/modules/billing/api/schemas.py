@@ -63,6 +63,33 @@ class SubscriptionResponse(BaseModel):
     expired_at: datetime | None = None
 
 
+class OpenSubscriptionRequest(BaseModel):
+    """Founder/Finance action: opens a subscription (and issues its first invoice) for an
+    organization that does not already have one — the same orchestration `POST /organizations`'
+    own optional `plan_id` triggers at creation time, now reachable for an organization onboarded
+    without one (no trial, no plan yet) or whose trial has ended and is ready to be billed."""
+
+    organization_id: str
+    plan_id: str
+
+
+class RecordManualPaymentRequest(BaseModel):
+    """Founder/Finance-recorded payment against an invoice, for money received outside any
+    integrated `PaymentProviderPort` (e.g. a bank transfer). Recorded for the invoice's own exact
+    amount — there is no `amount` field here to under/over-report."""
+
+    invoice_id: str
+    reference: str | None = None
+
+
+class ChangeSubscriptionPlanRequest(BaseModel):
+    """Organization Management phase. See `Subscription.change_plan`'s own docstring — the
+    current billing period and every already-issued invoice are unaffected; the new plan's
+    price/cycle applies starting with the next invoice this subscription issues."""
+
+    new_plan_id: str
+
+
 class ExtendGracePeriodRequest(BaseModel):
     """ADR-0039 §1 / requirement 39G — platform-admin grace extension.
 

@@ -109,4 +109,9 @@ class PlatformStatsDTO:
     devices: DeviceStatsDTO
     users: UserStatsDTO
     billing: BillingStatsDTO
+    #: Organization Management phase — "Payment Due" organizations: trial expired
+    #: (`organization.TrialState.EXPIRED`) with no `billing.Subscription` ever opened for them.
+    #: Composed, never read directly — see `PlatformStatsApplicationService.
+    #: _count_payment_due_organizations`'s own docstring.
+    payment_due_organizations: int
     system_health: SystemHealthDTO

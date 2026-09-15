@@ -30,7 +30,7 @@ from __future__ import annotations
 from fastapi import Depends, Request
 
 from raad.core.di.container import Container
-from raad.core.errors.exceptions import OrganizationSubscriptionInactiveError
+from raad.core.errors.exceptions import NotFoundError, OrganizationSubscriptionInactiveError
 from raad.core.policies.organization_access import (
     ORGANIZATION_SUBSCRIPTION_INACTIVE,
     ORGANIZATION_SUBSCRIPTION_MISSING,
@@ -41,6 +41,9 @@ from raad.core.tenancy.principal import Principal, Role
 from raad.interfaces.http.deps import get_container
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
+from raad.modules.organization.application.ports import OrganizationUnitOfWork
+from raad.modules.organization.application.queries import GetOrganizationByIdQuery
+from raad.modules.organization.application.services import OrganizationApplicationService
 
 #: RAAD's own staff. Not members of any tenant, so a tenant's subscription state says nothing
 #: about whether they may work. Requirement 39G is explicit that these must keep functioning
@@ -160,8 +163,28 @@ async def _resolve_subscription_state(
     return True, subscription
 
 
+async def _resolve_is_trialing(principal: Principal, *, container: Container) -> bool:
+    """Organization-level trial (`organization.domain.value_objects.TrialState`), resolved
+    through `organization`'s own application service — never a cross-module DB read
+    (`.claude/rules/backend.md` #3). **Only ever called when the caller's organization has no
+    `Subscription` row at all** (see both call sites below) — a real subscription's own status
+    is always the sole source of truth once one exists (`OrganizationAccessPolicy.evaluate`'s own
+    docstring), so this extra query never runs for the common already-subscribed case."""
+    org_service = container.try_resolve(OrganizationApplicationService)
+    uow = container.try_resolve(OrganizationUnitOfWork)
+    if org_service is None or uow is None or principal.org_id is None:
+        return False
+    try:
+        organization = await org_service.get_organization_by_id(
+            GetOrganizationByIdQuery(organization_id=principal.org_id), uow=uow
+        )
+    except NotFoundError:
+        return False
+    return organization.trial_state == "trialing"
+
+
 def _decide(
-    container: Container, subscription: object | None
+    container: Container, subscription: object | None, *, is_trialing: bool = False
 ) -> "PolicyDecision":  # noqa: F821 - forward ref for readability only
     policy = container.resolve(OrganizationAccessPolicy)
     state = (
@@ -169,7 +192,9 @@ def _decide(
         if subscription is not None
         else None
     )
-    return policy.evaluate(subscription_state=state, is_platform_role=False)
+    return policy.evaluate(
+        subscription_state=state, is_platform_role=False, is_trialing=is_trialing
+    )
 
 
 async def is_organization_access_allowed(
@@ -194,7 +219,12 @@ async def is_organization_access_allowed(
     )
     if not enforceable:
         return True
-    return _decide(container, subscription).allowed
+    is_trialing = (
+        await _resolve_is_trialing(principal, container=container)
+        if subscription is None
+        else False
+    )
+    return _decide(container, subscription, is_trialing=is_trialing).allowed
 
 
 async def enforce_organization_subscription(
@@ -244,7 +274,12 @@ async def enforce_organization_subscription(
         # No billing subsystem bound in this deployment — see `_resolve_subscription_state`.
         return
 
-    decision = _decide(container, subscription)
+    is_trialing = (
+        await _resolve_is_trialing(principal, container=container)
+        if subscription is None
+        else False
+    )
+    decision = _decide(container, subscription, is_trialing=is_trialing)
     if decision.allowed:
         return
 

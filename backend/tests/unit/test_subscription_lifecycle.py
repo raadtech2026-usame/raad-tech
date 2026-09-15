@@ -199,6 +199,27 @@ class OrganizationAccessPolicyTests(unittest.TestCase):
         self.assertEqual(decision.reason, ORGANIZATION_SUBSCRIPTION_MISSING)
         self.assertEqual(decision.required_action, "REDIRECT_TO_PAYMENT")
 
+    def test_no_subscription_but_trialing_grants(self) -> None:
+        """Organization Lifecycle / Trial workflow: a trial defers subscription/plan selection
+        entirely, so the common trialing organization has no `Subscription` row yet at all —
+        `is_trialing=True` re-admits exactly this legitimate case, distinguishable from the
+        provisioning-bug case the test above covers."""
+        decision = self.policy.evaluate(
+            subscription_state=None, is_platform_role=False, is_trialing=True
+        )
+        self.assertTrue(decision.allowed)
+
+    def test_is_trialing_is_ignored_once_a_real_subscription_exists(self) -> None:
+        """A trialing organization that also has a real (e.g. suspended) subscription is judged
+        by that subscription alone — `is_trialing` must never reopen access for an unrelated,
+        stale trial flag left set from an earlier phase of the same organization's life."""
+        decision = self.policy.evaluate(
+            subscription_state=OrganizationSubscriptionState.SUSPENDED,
+            is_platform_role=False,
+            is_trialing=True,
+        )
+        self.assertFalse(decision.allowed)
+
     def test_only_the_three_documented_states_grant(self) -> None:
         """Exhaustive: every state not explicitly granted must deny.
 

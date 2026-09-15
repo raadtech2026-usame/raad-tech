@@ -151,6 +151,9 @@ describe("OrgBillingPage", () => {
       status: "active",
       createdAt: "2026-08-01T00:00:00Z",
       updatedAt: "2026-08-01T00:00:00Z",
+      trialStartedAt: null,
+      trialEndsAt: null,
+      trialState: "not_started",
     });
     vi.mocked(listPlans).mockReset().mockResolvedValue(offsetPage([PLAN]));
     vi.mocked(getCurrentSubscription).mockReset().mockResolvedValue(SUBSCRIPTION);

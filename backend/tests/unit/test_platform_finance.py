@@ -210,6 +210,12 @@ class FixedSubscriptionRevenue(SubscriptionRevenuePort):
         self.calls += 1
         return self.amount
 
+    async def invoiced_between(self, *, start: date, end: date) -> Decimal:
+        return self.amount
+
+    async def receivables_asof(self, *, as_of: date) -> Decimal:
+        return self.amount
+
 
 FOUNDER = Principal(user_id="founder-1", role=Role.FOUNDER, org_id=None)
 
@@ -310,6 +316,8 @@ class PlatformFinanceServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.revenue.calls, 1)
         self.assertEqual(pnl.subscription_revenue, "1200.00")
+        self.assertEqual(pnl.subscription_invoiced, "1200.00")
+        self.assertEqual(pnl.subscription_receivables, "1200.00")
         self.assertEqual(pnl.other_income, "300.00")
         self.assertEqual(pnl.total_revenue, "1500.00")
         self.assertEqual(pnl.total_expenses, "500.00")
@@ -328,6 +336,8 @@ class PlatformFinanceServiceTests(unittest.IsolatedAsyncioTestCase):
             start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
         )
         self.assertEqual(pnl.subscription_revenue, "0.00")
+        self.assertEqual(pnl.subscription_invoiced, "0.00")
+        self.assertEqual(pnl.subscription_receivables, "0.00")
 
     async def test_expenses_group_by_their_operating_heading(self) -> None:
         await self._expense("salaries", "500.00")

@@ -6,7 +6,10 @@ import { EmptyState } from "../../../shared/components/EmptyState/EmptyState";
 import type { ReportCategory, ReportDefinition } from "../api";
 import styles from "./ReportSelectorList.module.css";
 
-const CATEGORY_TABS: { id: ReportCategory; label: string }[] = [
+/** The Organization Report Center's own two categories — the historical default so every
+ * existing call site (which predates the `categories` prop) keeps its exact current behavior
+ * unchanged. The Platform Report Center passes its own `categories` explicitly instead. */
+const ORGANIZATION_CATEGORY_TABS: { id: ReportCategory; label: string }[] = [
   { id: "financial", label: "Financial" },
   { id: "transportation", label: "Transportation" },
 ];
@@ -19,6 +22,11 @@ export interface ReportSelectorListProps {
   onCategoryChange: (category: ReportCategory) => void;
   selectedKey: string | null;
   onSelect: (definition: ReportDefinition) => void;
+  /** Platform Report Center (Organization Management phase) — generalizes this component's
+   * previously-hardcoded two-tab category bar so the same selector serves both scopes with
+   * different category sets, without duplicating the tile-grid/search UI. Defaults to the
+   * Organization Report Center's own two categories when omitted. */
+  categories?: { id: ReportCategory; label: string }[];
 }
 
 /**
@@ -39,6 +47,7 @@ export function ReportSelectorList({
   onCategoryChange,
   selectedKey,
   onSelect,
+  categories = ORGANIZATION_CATEGORY_TABS,
 }: ReportSelectorListProps) {
   const query = search.trim().toLowerCase();
   const visible = query
@@ -60,7 +69,7 @@ export function ReportSelectorList({
         />
 
         {!query && (
-          <Tabs options={CATEGORY_TABS} activeId={activeCategory} onSelect={(id) => onCategoryChange(id as ReportCategory)} />
+          <Tabs options={categories} activeId={activeCategory} onSelect={(id) => onCategoryChange(id as ReportCategory)} />
         )}
       </div>
 

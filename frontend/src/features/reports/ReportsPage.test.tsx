@@ -9,10 +9,12 @@ vi.mock("./api", () => ({
   downloadReport: vi.fn(),
   listParentsForReportPicker: vi.fn(),
   listVehiclesForReportPicker: vi.fn(),
+  listOrganizationsForReportPicker: vi.fn(),
 }));
 
 import {
   downloadReport,
+  listOrganizationsForReportPicker,
   listParentsForReportPicker,
   listReportCatalog,
   listVehiclesForReportPicker,
@@ -46,8 +48,8 @@ const PLATFORM_REVENUE_REPORT: ReportDefinition = {
   title: "Revenue",
   description: "Collected subscription revenue — paid payments only.",
   scope: "platform",
-  accepts: ["start", "end"],
-  category: "platform",
+  accepts: ["start", "end", "organization_id"],
+  category: "financial",
 };
 
 function renderPage() {
@@ -258,11 +260,11 @@ describe("ReportsPage — organization Report Center", () => {
 });
 
 /**
- * Platform dashboard keeps its pre-redesign card grid, deliberately untouched by the Report
- * Center re-design (`reports/api.ts`'s own `ReportCategory` doc: "the platform view ignores
- * [category]... that catalogue keeps its existing card-grid").
+ * Platform dashboard — Platform Report Center (Organization Management phase), built to the
+ * same design language as the organization Report Center above: nothing shown until a report is
+ * picked from the tile grid, then that report's own filter toolbar, a View step before export.
  */
-describe("ReportsPage — platform card grid", () => {
+describe("ReportsPage — Platform Report Center", () => {
   beforeEach(() => {
     useAuthStore.setState({
       principal: { userId: "u1", role: "founder", organizationId: null, regionIds: [] },
@@ -275,23 +277,41 @@ describe("ReportsPage — platform card grid", () => {
     vi.mocked(listReportCatalog).mockResolvedValue([PLATFORM_REVENUE_REPORT]);
     vi.mocked(previewReport).mockReset();
     vi.mocked(downloadReport).mockReset().mockResolvedValue(undefined);
+    vi.mocked(listOrganizationsForReportPicker).mockReset().mockResolvedValue([]);
   });
 
-  it("renders every report as an always-expanded card with its own From/To filters", async () => {
-    renderPage();
-
-    expect(await screen.findByText("Revenue")).toBeInTheDocument();
-    expect(screen.getByLabelText("From")).toBeInTheDocument();
-    expect(screen.getByLabelText("To")).toBeInTheDocument();
-  });
-
-  it("exports a platform report unchanged", async () => {
+  it("shows no filters until a report is selected", async () => {
     const user = userEvent.setup();
     renderPage();
 
     await screen.findByText("Revenue");
+    expect(screen.queryByLabelText("Date range")).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("Revenue"));
+
+    expect(await screen.findByLabelText("Date range")).toBeInTheDocument();
+  });
+
+  it("exports a platform report once a preview has been viewed", async () => {
+    vi.mocked(previewReport).mockResolvedValue({
+      title: "Revenue",
+      subtitle: null,
+      headers: ["Date"],
+      rows: [["2026-09-01"]],
+      metadata: {},
+      numericColumns: [],
+      totalRow: null,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByText("Revenue"));
+    await user.click(screen.getByRole("button", { name: "View" }));
+    await screen.findByText("2026-09-01");
     await user.click(screen.getByRole("button", { name: "PDF" }));
 
-    await waitFor(() => expect(downloadReport).toHaveBeenCalledWith("platform.revenue", "pdf", expect.any(Object)));
+    await waitFor(() =>
+      expect(downloadReport).toHaveBeenCalledWith("platform.revenue", "pdf", expect.any(Object)),
+    );
   });
 });

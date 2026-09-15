@@ -10,9 +10,17 @@ import { toOffsetPage, type OffsetPage, type OffsetPageWire } from "../../shared
 export type OrgType = "school";
 
 /** `organization.domain.value_objects.OrganizationStatus` (Database Design §4.2's
- * `status ENUM(active,suspended,inactive)`). There is no `trial` status anywhere in the backend
- * schema or domain layer — only these three real values are ever rendered here. */
+ * `status ENUM(active,suspended,inactive)`) — the tenant's administrative lifecycle. Deliberately
+ * distinct from `TrialState`/`billing`'s `SubscriptionStatus` below: an organization can be
+ * `active` (administratively fine) while its trial is `expired` and it has no subscription yet. */
 export type OrganizationStatus = "active" | "suspended" | "inactive";
+
+/** `organization.domain.value_objects.TrialState` — derived, never a stored column (computed by
+ * `Organization.trial_state()` from `trial_started_at`/`trial_ends_at`). Deliberately independent
+ * of `billing`'s own `SubscriptionStatus.TRIAL` enum value, which means something unrelated (a
+ * subscription's permanent "just opened, not yet paid" starting label) — see that type's own
+ * comment in `features/billing/api.ts`. */
+export type TrialState = "not_started" | "trialing" | "expired";
 
 export interface Organization {
   id: string;
@@ -23,6 +31,9 @@ export interface Organization {
   status: OrganizationStatus;
   createdAt: string;
   updatedAt: string;
+  trialStartedAt: string | null;
+  trialEndsAt: string | null;
+  trialState: TrialState;
 }
 
 /** `organization.domain.value_objects.RegionStatus` (Database Design §4.1's
@@ -49,6 +60,9 @@ interface OrganizationWire {
   status: string;
   created_at: string;
   updated_at: string;
+  trial_started_at?: string | null;
+  trial_ends_at?: string | null;
+  trial_state?: string;
 }
 
 /** Wire shape of `organization.api.schemas.RegionResponse`. */
@@ -71,6 +85,9 @@ function toOrganization(wire: OrganizationWire): Organization {
     status: wire.status as OrganizationStatus,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    trialStartedAt: wire.trial_started_at ?? null,
+    trialEndsAt: wire.trial_ends_at ?? null,
+    trialState: (wire.trial_state as TrialState) ?? "not_started",
   };
 }
 
@@ -111,8 +128,15 @@ export interface CreateOrganizationInput {
    * issues its first invoice, reusing `open_subscription`'s own period arithmetic. Optional so
    * an organization can be created before its commercial tier is agreed. A failure on the
    * billing side is logged, not propagated — the organization still exists, and the platform
-   * Subscriptions view surfaces the gap. */
+   * Subscriptions view surfaces the gap. Mutually exclusive with `trialEnabled` — the backend
+   * rejects a request that sets both. */
   planId?: string | null;
+  /** Starts the organization on a time-boxed trial instead of selecting a plan now — a trial
+   * defers subscription/plan selection entirely (`organization.domain.entities.Organization.
+   * start_trial`). Mutually exclusive with `planId`. */
+  trialEnabled?: boolean;
+  /** Required when `trialEnabled` is set. */
+  trialDurationDays?: number | null;
   /** ADR-0017: Organization Onboarding is one guided workflow now — these identity fields
    * provision the Organization's first Org Admin login in the same request. At least one of
    * `adminEmail`/`adminPhone` is required (`iam.User`'s own invariant). */
@@ -151,6 +175,8 @@ export async function createOrganization(
       region_id: input.regionId,
       parent_org_id: input.parentOrgId ?? null,
       plan_id: input.planId ?? null,
+      trial_enabled: input.trialEnabled ?? false,
+      trial_duration_days: input.trialDurationDays ?? null,
       admin_full_name: input.adminFullName,
       admin_email: input.adminEmail ?? null,
       admin_phone: input.adminPhone ?? null,
@@ -175,6 +201,19 @@ export async function updateOrganizationStatus(
   const wire = await apiRequest<OrganizationWire>(`/organizations/${id}`, {
     method: "PATCH",
     body: { status },
+  });
+  return toOrganization(wire);
+}
+
+/** `PATCH /organizations/{id}` with `name` (Organization Management phase) — the one identity
+ * field this backend has real write support for (`Organization.rename`); `region_id`/`org_type`/
+ * `parent_org_id` remain deliberately constructor-set-only, per that entity's own documented
+ * decision. Same route as `updateOrganizationStatus`, a different body field — the backend
+ * accepts either or both in one request, though this frontend only ever sends one at a time. */
+export async function renameOrganization(id: string, name: string): Promise<Organization> {
+  const wire = await apiRequest<OrganizationWire>(`/organizations/${id}`, {
+    method: "PATCH",
+    body: { name },
   });
   return toOrganization(wire);
 }

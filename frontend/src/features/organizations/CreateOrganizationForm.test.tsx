@@ -135,6 +135,9 @@ describe("CreateOrganizationForm", () => {
         status: "active",
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
+        trialStartedAt: null,
+        trialEndsAt: null,
+        trialState: "not_started",
       },
       adminUserId: "01ARZ3NDEKTSV4RRFFQ69G5FBZ",
       temporaryPassword: "Temp-Pw9!xyz",
@@ -155,6 +158,8 @@ describe("CreateOrganizationForm", () => {
         parentOrgId: null,
         // ADR-0040 §5: optional, and null when the operator onboards without picking a tier.
         planId: null,
+        trialEnabled: false,
+        trialDurationDays: null,
         adminFullName: "Amina Warsame",
         adminEmail: "amina@greenvalley.example.com",
         adminPhone: null,
@@ -217,6 +222,9 @@ describe("CreateOrganizationForm", () => {
         status: "active",
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
+        trialStartedAt: null,
+        trialEndsAt: null,
+        trialState: "not_started",
       },
       adminUserId: "01ARZ3NDEKTSV4RRFFQ69G5FAX",
       temporaryPassword: "Temp-Pass-1234",
@@ -225,6 +233,7 @@ describe("CreateOrganizationForm", () => {
     renderForm();
     await screen.findByText("Northern Region");
     await fillRequiredFields();
+    await userEvent.selectOptions(screen.getByLabelText("Onboarding path"), "plan");
     // `FormField` wraps its control in the `<label>`, so the accessible name carries the hint
     // text too — matched by prefix rather than exact string.
     await userEvent.selectOptions(
@@ -236,8 +245,66 @@ describe("CreateOrganizationForm", () => {
 
     await waitFor(() =>
       expect(api.createOrganization).toHaveBeenCalledWith(
-        expect.objectContaining({ planId: "01ARZ3NDEKTSV4RRFFQ69G5FCP" }),
+        expect.objectContaining({
+          planId: "01ARZ3NDEKTSV4RRFFQ69G5FCP",
+          trialEnabled: false,
+          trialDurationDays: null,
+        }),
       ),
     );
+  });
+
+  it("starts a trial with the chosen duration and never sends a plan alongside it", async () => {
+    vi.mocked(api.createOrganization).mockResolvedValue({
+      organization: {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        name: "Green Valley School",
+        orgType: "school",
+        parentOrgId: null,
+        regionId: REGION.id,
+        status: "active",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        trialStartedAt: "2026-01-01T00:00:00Z",
+        trialEndsAt: "2026-01-04T00:00:00Z",
+        trialState: "trialing",
+      },
+      adminUserId: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+      temporaryPassword: "Temp-Pass-5678",
+    });
+
+    renderForm();
+    await screen.findByText("Northern Region");
+    await fillRequiredFields();
+    await userEvent.selectOptions(screen.getByLabelText("Onboarding path"), "trial");
+    await userEvent.selectOptions(await screen.findByLabelText("Trial duration"), "3");
+
+    await userEvent.click(screen.getByRole("button", { name: "Create organization" }));
+
+    await waitFor(() =>
+      expect(api.createOrganization).toHaveBeenCalledWith(
+        expect.objectContaining({
+          planId: null,
+          trialEnabled: true,
+          trialDurationDays: 3,
+        }),
+      ),
+    );
+  });
+
+  it("requires a valid custom trial duration between 1 and 365 days", async () => {
+    renderForm();
+    await screen.findByText("Northern Region");
+    await fillRequiredFields();
+    await userEvent.selectOptions(screen.getByLabelText("Onboarding path"), "trial");
+    await userEvent.selectOptions(await screen.findByLabelText("Trial duration"), "custom");
+    await userEvent.type(screen.getByPlaceholderText("Days"), "999");
+
+    await userEvent.click(screen.getByRole("button", { name: "Create organization" }));
+
+    expect(
+      await screen.findByText("Enter a custom duration between 1 and 365 days"),
+    ).toBeInTheDocument();
+    expect(api.createOrganization).not.toHaveBeenCalled();
   });
 });

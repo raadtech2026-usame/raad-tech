@@ -59,7 +59,13 @@ const SAMPLE_PLATFORM_STATS: PlatformStats = {
   vehicles: { total: 8 },
   devices: { total: 5, online: 4, offline: 1 },
   users: { total: 20, byStatus: { active: 18, invited: 2 }, monthlyActive: 12, createdToday: 2 },
-  billing: { subscriptionByStatus: { active: 6, trial: 1 }, expiringSoon: 1, revenue: 4500 },
+  billing: {
+    subscriptionByStatus: { active: 6, trial: 1 },
+    expiringSoon: 1,
+    revenue: 4500,
+    activeByBillingCycle: { monthly: 5, annual: 1 },
+  },
+  paymentDueOrganizations: 2,
   systemHealth: { database: "ok", broker: "down" },
 };
 

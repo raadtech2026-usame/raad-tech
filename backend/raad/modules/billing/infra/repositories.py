@@ -157,6 +157,15 @@ class SqlAlchemyPlanRepository(SqlAlchemyRepositoryBase[PlanModel], PlanReposito
             page_size=raw_page.page_size,
         )
 
+    async def delete(self, plan: Plan) -> None:
+        """See the domain interface's own docstring — the first and only real hard delete in
+        this codebase, deliberately narrow. Untracks the plan first so a subsequent
+        `flush_tracked_changes()` in the same commit never tries to re-project a deleted row."""
+        self._tracked.pop(str(plan.id), None)
+        model = await self.get_by_id(str(plan.id))
+        if model is not None:
+            await self._session.delete(model)
+
     def flush_tracked_changes(self) -> None:
         for plan, model in self._tracked.values():
             plan_to_model(plan, existing=model)
@@ -305,6 +314,37 @@ class SqlAlchemySubscriptionRepository(
         )
         return result.scalar_one()
 
+    async def exists_for_plan(self, plan_id: PlanId) -> bool:
+        """Organization Management phase — see the domain interface's own docstring for why
+        this is deliberately not status-filtered (a historical, even long-terminal, subscription
+        still counts as "referenced")."""
+        statement = (
+            select(SubscriptionModel.id)
+            .where(SubscriptionModel.plan_id == str(plan_id))
+            .limit(1)
+        )
+        result = await self._session.execute(statement)
+        return result.scalars().first() is not None
+
+    async def count_active_by_billing_cycle(self) -> dict[str, int]:
+        """Platform Finance "Monthly vs Annual Subscribers" KPI — see the domain interface's own
+        docstring. A real `JOIN` to `PlanModel`, deliberately unscoped like `count_by_status`
+        (a platform-wide KPI, not a caller-scoped list)."""
+        statement = (
+            select(PlanModel.billing_cycle, func.count())
+            .select_from(SubscriptionModel)
+            .join(PlanModel, PlanModel.id == SubscriptionModel.plan_id)
+            .where(
+                SubscriptionModel.deleted_at.is_(None),
+                SubscriptionModel.status.in_(
+                    ("trial", "active", "past_due", "grace_period")
+                ),
+            )
+            .group_by(PlanModel.billing_cycle)
+        )
+        result = await self._session.execute(statement)
+        return dict(result.all())
+
     def flush_tracked_changes(self) -> None:
         for subscription, model in self._tracked.values():
             subscription_to_model(subscription, existing=model)
@@ -440,6 +480,32 @@ class SqlAlchemyInvoiceRepository(
                 InvoiceModel.status == "paid",
                 InvoiceModel.paid_at >= _to_naive_utc(start),
                 InvoiceModel.paid_at < _to_naive_utc(end),
+            )
+        )
+        result = await self._session.execute(statement)
+        return result.scalar_one()
+
+    async def sum_issued_amount_between(self, *, start: datetime, end: datetime) -> float:
+        """Platform Finance "Invoiced" KPI — see the domain interface's own docstring."""
+        statement = self._apply_scope(
+            select(func.coalesce(func.sum(InvoiceModel.amount), 0.0)).where(
+                InvoiceModel.deleted_at.is_(None),
+                InvoiceModel.status != "void",
+                InvoiceModel.issued_at >= _to_naive_utc(start),
+                InvoiceModel.issued_at < _to_naive_utc(end),
+            )
+        )
+        result = await self._session.execute(statement)
+        return result.scalar_one()
+
+    async def sum_outstanding_amount(self, *, as_of: datetime) -> float:
+        """Platform Finance "Receivables" KPI — a point-in-time balance, not a period sum; see
+        the domain interface's own docstring for why."""
+        statement = self._apply_scope(
+            select(func.coalesce(func.sum(InvoiceModel.amount), 0.0)).where(
+                InvoiceModel.deleted_at.is_(None),
+                InvoiceModel.status == "issued",
+                InvoiceModel.issued_at <= _to_naive_utc(as_of),
             )
         )
         result = await self._session.execute(statement)

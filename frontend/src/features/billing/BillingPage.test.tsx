@@ -12,9 +12,16 @@ vi.mock("./api", () => ({
   listSubscriptions: vi.fn(),
   listInvoices: vi.fn(),
   listOrganizationsForPicker: vi.fn(),
+  deletePlan: vi.fn(),
 }));
 
-import { listInvoices, listOrganizationsForPicker, listPlans, listSubscriptions } from "./api";
+import {
+  deletePlan,
+  listInvoices,
+  listOrganizationsForPicker,
+  listPlans,
+  listSubscriptions,
+} from "./api";
 
 function offsetPage<T>(data: T[]) {
   return { data, page: { total: data.length, page: 1, pageSize: 25 } };
@@ -99,6 +106,7 @@ describe("BillingPage", () => {
     vi.mocked(listSubscriptions).mockReset().mockResolvedValue(offsetPage([SUBSCRIPTION]));
     vi.mocked(listInvoices).mockReset().mockResolvedValue(offsetPage([INVOICE]));
     vi.mocked(listOrganizationsForPicker).mockReset().mockResolvedValue([{ id: "org1", name: "Acme School" }]);
+    vi.mocked(deletePlan).mockReset();
   });
 
   it("shows the Plans tab by default with tabs for Subscriptions/Invoices", async () => {
@@ -198,5 +206,47 @@ describe("BillingPage", () => {
     expect(await screen.findByText("Standard")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Subscriptions" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Invoices" })).toBeInTheDocument();
+  });
+
+  it("deletes a plan after confirmation (Founder only)", async () => {
+    setRole("founder");
+    const user = userEvent.setup();
+    vi.mocked(deletePlan).mockResolvedValue(undefined);
+    renderPage();
+
+    await screen.findByText("Standard");
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(/Delete Standard/i);
+    await user.click(screen.getByRole("button", { name: "Delete plan" }));
+
+    await waitFor(() => expect(deletePlan).toHaveBeenCalledWith("p1"));
+  });
+
+  it("leaves the confirm dialog open when the backend refuses a still-referenced plan", async () => {
+    // No `ToastViewport` is mounted by this file's `renderPage()` (mirroring every other test in
+    // this suite — toast rendering is asserted nowhere in this codebase's tests), so this pins
+    // the real, DOM-visible consequence of a refused deletion instead: the dialog is not
+    // dismissed on error, unlike on success.
+    setRole("founder");
+    const user = userEvent.setup();
+    vi.mocked(deletePlan).mockRejectedValue(new Error("Plan 'Standard' cannot be deleted: referenced"));
+    renderPage();
+
+    await screen.findByText("Standard");
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(await screen.findByRole("button", { name: "Delete plan" }));
+
+    await waitFor(() => expect(deletePlan).toHaveBeenCalledWith("p1"));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("does not offer plan Edit/Disable/Delete to a non-Founder role", async () => {
+    setRole("org_admin");
+    renderPage();
+
+    await screen.findByText("Standard");
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
   });
 });

@@ -346,6 +346,118 @@ class BillingRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
     # migrated into `erp_student_invoices` and dropped (migration `7387f1b2ee6a`). Its
     # replacement is covered by `tests/integration/test_school_erp_repository.py`.
 
+    async def test_exists_for_plan_true_once_a_subscription_references_it(self) -> None:
+        """Organization Management phase — `SqlAlchemyPlanRepository.delete`'s safety guard."""
+        org_id = self.id_generator.new_id()
+        async with self._new_uow() as uow:
+            plan_id = await self._seed_plan(uow)
+            self.assertFalse(await uow.subscriptions.exists_for_plan(plan_id))
+            await self._seed_subscription(uow, org_id, plan_id)
+            self.assertTrue(await uow.subscriptions.exists_for_plan(plan_id))
+
+    async def test_delete_plan_succeeds_when_never_referenced(self) -> None:
+        """The codebase's first and only aggregate-root real `DELETE` — proves it actually
+        removes the row from real Postgres, not just an in-memory fake."""
+        async with self._new_uow() as uow:
+            plan = Plan.create(
+                id=PlanId(self.id_generator.new_id()),
+                name=f"Unused Plan {self.tag}",
+                billing_scope=BillingScope.ORGANIZATION,
+                price=Money(20.00, "USD"),
+                billing_cycle=BillingCycle.MONTHLY,
+                clock=self.clock,
+            )
+            uow.plans.add(plan)
+            await uow.commit()
+            # Deliberately not appended to self._created_plan_ids: this test asserts the row is
+            # actually gone, so there is nothing left for tearDown to clean up either way.
+
+        async with self._new_uow() as uow:
+            reloaded = await uow.plans.get(plan.id)
+            self.assertIsNotNone(reloaded)
+            await uow.plans.delete(reloaded)
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            self.assertIsNone(await uow.plans.get(plan.id))
+
+    async def test_delete_referenced_plan_is_rejected_by_the_real_foreign_key(self) -> None:
+        """`subscriptions.plan_id`'s real DB `FOREIGN KEY` (no `ON DELETE` clause) refuses a
+        raw delete even if the application-layer `exists_for_plan` guard were bypassed —
+        confirms the DB-level backstop `PlanRepository.delete`'s own docstring claims is real,
+        not just asserted in a comment."""
+        org_id = self.id_generator.new_id()
+        async with self._new_uow() as uow:
+            plan_id = await self._seed_plan(uow)
+            await self._seed_subscription(uow, org_id, plan_id)
+
+        from sqlalchemy.exc import IntegrityError
+
+        with self.assertRaises(IntegrityError):
+            async with self._new_uow() as uow:
+                plan = await uow.plans.get(plan_id)
+                await uow.plans.delete(plan)
+                await uow.commit()
+
+    async def test_count_active_by_billing_cycle_joins_plan_and_excludes_terminal(self) -> None:
+        """Platform Finance "Monthly vs Annual Subscribers" KPI, against real SQL.
+
+        Asserted as a **delta**, not an absolute count: this method is deliberately unscoped
+        (a platform-wide KPI, matching `count_by_status`'s own identical posture) and this test
+        runs against the shared dev database, which may already hold other monthly/annual
+        subscriptions from unrelated data — an absolute assertion would be a false failure the
+        moment that data changes, not a real regression."""
+        org_id = self.id_generator.new_id()
+        async with self._new_uow() as baseline_uow:
+            baseline = await baseline_uow.subscriptions.count_active_by_billing_cycle()
+
+        async with self._new_uow() as uow:
+            monthly_plan_id = await self._seed_plan(uow)
+            annual_plan = Plan.create(
+                id=PlanId(self.id_generator.new_id()),
+                name=f"Annual {self.tag}",
+                billing_scope=BillingScope.ORGANIZATION,
+                price=Money(200.00, "USD"),
+                billing_cycle=BillingCycle.ANNUAL,
+                clock=self.clock,
+            )
+            uow.plans.add(annual_plan)
+            await uow.commit()
+            self._created_plan_ids.append(str(annual_plan.id))
+
+            active_sub = Subscription.open(
+                id=SubscriptionId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                plan_id=monthly_plan_id,
+                clock=self.clock,
+            )
+            active_sub.renew(
+                period_start=datetime(2026, 7, 20, tzinfo=timezone.utc),
+                period_end=datetime(2026, 8, 19, tzinfo=timezone.utc),
+                clock=self.clock,
+            )
+            uow.subscriptions.add(active_sub)
+            self._created_subscription_ids.append(str(active_sub.id))
+
+            cancelled_sub = Subscription.open(
+                id=SubscriptionId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org_id),
+                plan_id=annual_plan.id,
+                clock=self.clock,
+            )
+            cancelled_sub.cancel(clock=self.clock)
+            uow.subscriptions.add(cancelled_sub)
+            self._created_subscription_ids.append(str(cancelled_sub.id))
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            counts = await uow.subscriptions.count_active_by_billing_cycle()
+
+        self.assertEqual(counts.get("monthly", 0) - baseline.get("monthly", 0), 1)
+        # The cancelled annual subscription must not be counted.
+        self.assertEqual(counts.get("annual", 0) - baseline.get("annual", 0), 0)
+
+
 @unittest.skipUnless(_db_available(), _SKIP_REASON)
 class PlanPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
     """Exercises `SqlAlchemyPlanRepository.list_page` (`core/db/repository.py`'s `list_page`)

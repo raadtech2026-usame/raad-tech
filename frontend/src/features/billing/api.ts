@@ -158,6 +158,17 @@ export async function setPlanStatus(planId: string, active: boolean): Promise<Pl
   return toPlan(wire);
 }
 
+/** `DELETE /billing/plans/{id}` — Founder-only, `billing.plans.manage`. Organization Management
+ * phase — the first and only aggregate-root hard delete in this codebase, deliberately narrow:
+ * the backend refuses with a 409 (surfaced as an `ApiError`) if any subscription, in any status,
+ * ever referenced this plan. Disable it instead to stop offering it while preserving that
+ * historical reference — this frontend does not pre-check "is this plan referenced" itself, since
+ * the backend's own real check is the only trustworthy answer and the error message already
+ * explains the refusal. */
+export async function deletePlan(planId: string): Promise<void> {
+  await apiRequest<void>(`/billing/plans/${encodeURIComponent(planId)}`, { method: "DELETE" });
+}
+
 /** Active organization plans, for the onboarding picker. Small and cached — the catalogue is a
  * handful of rows, not a paginated list. */
 export async function listActivePlansForPicker(): Promise<Plan[]> {
@@ -531,4 +542,77 @@ export async function extendGracePeriod(
     { method: "POST", body: { grace_period_ends_at: gracePeriodEndsAt } },
   );
   return toSubscription(wire);
+}
+
+// --- Organization Management phase: Subscription Control Center actions --------------------
+
+/** `POST /billing/subscriptions` — Founder/Finance only (`billing.subscriptions.manage`).
+ * Finds-or-opens a non-terminal subscription for the organization and issues its next invoice —
+ * the *same* call whether this is the organization's first subscription ("Create Subscription")
+ * or a later invoice against an existing one ("Create Invoice"); the backend's own
+ * `open_organization_subscription` orchestration already handles both, so the Subscription
+ * Control Center offers them as two differently-labelled buttons over one function, never two
+ * endpoints. Returns the newly-issued `Invoice`, not the `Subscription` — the invoice is what
+ * this action actually creates on every call. */
+export async function openOrCreateNextInvoice(
+  organizationId: string,
+  planId: string,
+): Promise<Invoice> {
+  const wire = await apiRequest<InvoiceWire>("/billing/subscriptions", {
+    method: "POST",
+    body: { organization_id: organizationId, plan_id: planId },
+  });
+  return toInvoice(wire);
+}
+
+/** `POST /billing/subscriptions/{id}/activate` — platform-admin only. Refuses while any invoice
+ * for this subscription is still unpaid — the deliberate second step after
+ * `recordManualPayment`/a provider charge, never automatic. */
+export async function activateSubscription(subscriptionId: string): Promise<Subscription> {
+  const wire = await apiRequest<SubscriptionWire>(
+    `/billing/subscriptions/${encodeURIComponent(subscriptionId)}/activate`,
+    { method: "POST" },
+  );
+  return toSubscription(wire);
+}
+
+/** `POST /billing/subscriptions/{id}/change-plan` — platform-admin only. Only ever changes
+ * `plan_id`: the current billing period and every already-issued invoice are unaffected — the
+ * new plan's price/cycle applies starting with the next invoice this subscription issues. Since
+ * a `Plan`'s `billing_cycle` is immutable per row, this is also how a subscription's billing
+ * cycle changes — there is no separate "change cycle" action. */
+export async function changeSubscriptionPlan(
+  subscriptionId: string,
+  newPlanId: string,
+): Promise<Subscription> {
+  const wire = await apiRequest<SubscriptionWire>(
+    `/billing/subscriptions/${encodeURIComponent(subscriptionId)}/change-plan`,
+    { method: "POST", body: { new_plan_id: newPlanId } },
+  );
+  return toSubscription(wire);
+}
+
+/** `POST /billing/subscriptions/{id}/cancel` — platform-admin only. A terminal transition, like
+ * `expire` — unlike `suspend`, there is no `reactivate` path back from `cancelled`. */
+export async function cancelSubscription(subscriptionId: string): Promise<Subscription> {
+  const wire = await apiRequest<SubscriptionWire>(
+    `/billing/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`,
+    { method: "POST" },
+  );
+  return toSubscription(wire);
+}
+
+/** `POST /billing/payments/manual` — Founder/Finance only (`billing.subscriptions.manage`,
+ * deliberately not `billing.payments.create`). Marks the invoice paid for money received outside
+ * any integrated payment provider (e.g. a bank transfer). Does not activate the subscription —
+ * see `activateSubscription`, the deliberate separate next step. */
+export async function recordManualSubscriptionPayment(
+  invoiceId: string,
+  reference?: string | null,
+): Promise<InitiatePaymentResult> {
+  const wire = await apiRequest<{ payment_id: string; status: string }>("/billing/payments/manual", {
+    method: "POST",
+    body: { invoice_id: invoiceId, reference: reference ?? null },
+  });
+  return { paymentId: wire.payment_id, status: wire.status };
 }

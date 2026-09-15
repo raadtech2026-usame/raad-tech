@@ -18,7 +18,12 @@ from __future__ import annotations
 import unittest
 from datetime import date, datetime, timezone
 
-from raad.core.errors.exceptions import AuthorizationError, DomainError, NotFoundError
+from raad.core.errors.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    DomainError,
+    NotFoundError,
+)
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import (
     FilterCondition,
@@ -30,8 +35,11 @@ from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.billing.application.commands import (
     ActivatePlanCommand,
+    ActivateSubscriptionCommand,
     CancelSubscriptionCommand,
+    ChangeSubscriptionPlanCommand,
     CreatePlanCommand,
+    DeletePlanCommand,
     DisablePlanCommand,
     ExpireSubscriptionCommand,
     InitiatePaymentCommand,
@@ -39,6 +47,7 @@ from raad.modules.billing.application.commands import (
     MarkPaymentExpiredCommand,
     PaymentCallbackCommand,
     OpenOrganizationSubscriptionCommand,
+    RecordManualSubscriptionPaymentCommand,
     SuspendSubscriptionCommand,
     VoidInvoiceCommand,
 )
@@ -209,10 +218,16 @@ class InMemoryPlanRepository(PlanRepository):
             search=search,
         )
 
+    async def delete(self, plan: Plan) -> None:
+        self.by_id.pop(str(plan.id), None)
+
 
 class InMemorySubscriptionRepository(SubscriptionRepository):
-    def __init__(self) -> None:
+    def __init__(self, *, plans: "InMemoryPlanRepository | None" = None) -> None:
         self.by_id: dict[str, Subscription] = {}
+        # Only needed for `count_active_by_billing_cycle`'s JOIN-equivalent lookup — optional so
+        # every pre-existing call site that doesn't care about billing-cycle stats is unaffected.
+        self._plans = plans
 
     async def get(self, subscription_id: SubscriptionId) -> Subscription | None:
         return self.by_id.get(str(subscription_id))
@@ -291,6 +306,22 @@ class InMemorySubscriptionRepository(SubscriptionRepository):
             and start <= sub.current_period_end < end
         )
 
+    async def exists_for_plan(self, plan_id) -> bool:
+        return any(str(sub.plan_id) == str(plan_id) for sub in self.by_id.values())
+
+    async def count_active_by_billing_cycle(self) -> dict[str, int]:
+        assert self._plans is not None, "InMemorySubscriptionRepository needs plans= for this"
+        counts: dict[str, int] = {}
+        for sub in self.by_id.values():
+            if sub.status.value not in ("trial", "active", "past_due", "grace_period"):
+                continue
+            plan = self._plans.by_id.get(str(sub.plan_id))
+            if plan is None:
+                continue
+            cycle = plan.billing_cycle.value
+            counts[cycle] = counts.get(cycle, 0) + 1
+        return counts
+
 
 class InMemoryInvoiceRepository(InvoiceRepository):
     def __init__(self) -> None:
@@ -350,6 +381,24 @@ class InMemoryInvoiceRepository(InvoiceRepository):
             if invoice.status.value == "paid"
             and invoice.paid_at is not None
             and start <= invoice.paid_at < end
+        )
+
+    async def sum_issued_amount_between(self, *, start, end) -> float:
+        return sum(
+            invoice.amount.amount
+            for invoice in self.by_id.values()
+            if invoice.status.value != "void"
+            and invoice.issued_at is not None
+            and start <= invoice.issued_at < end
+        )
+
+    async def sum_outstanding_amount(self, *, as_of) -> float:
+        return sum(
+            invoice.amount.amount
+            for invoice in self.by_id.values()
+            if invoice.status.value == "issued"
+            and invoice.issued_at is not None
+            and invoice.issued_at <= as_of
         )
 
 
@@ -450,17 +499,38 @@ class FakePaymentProvider(PaymentProviderPort):
 
 
 def make_uow() -> FakeBillingUnitOfWork:
+    plans = InMemoryPlanRepository()
     return FakeBillingUnitOfWork(
-        InMemoryPlanRepository(),
-        InMemorySubscriptionRepository(),
+        plans,
+        InMemorySubscriptionRepository(plans=plans),
         InMemoryInvoiceRepository(),
         InMemoryPaymentRepository(),
     )
 
 
-def make_service(provider: PaymentProviderPort | None = None) -> BillingApplicationService:
+class _FakePlanHistoryPort:
+    """Stands in for `PlanHistoryPort` — records every `plan_id` in `referenced_plan_ids` as
+    "ever referenced", independent of what `SubscriptionRepository.exists_for_plan` reports for
+    that plan's *current* subscriptions."""
+
+    def __init__(self, referenced_plan_ids: set[str] | None = None) -> None:
+        self.referenced_plan_ids = referenced_plan_ids or set()
+        self.calls: list[str] = []
+
+    async def plan_ever_referenced(self, plan_id: str) -> bool:
+        self.calls.append(plan_id)
+        return plan_id in self.referenced_plan_ids
+
+
+def make_service(
+    provider: PaymentProviderPort | None = None,
+    plan_history: "_FakePlanHistoryPort | None" = None,
+) -> BillingApplicationService:
     return BillingApplicationService(
-        clock=CLOCK, id_generator=SequentialIdGenerator(), payment_provider=provider
+        clock=CLOCK,
+        id_generator=SequentialIdGenerator(),
+        payment_provider=provider,
+        plan_history=plan_history,
     )
 
 
@@ -535,6 +605,263 @@ class PlanApplicationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(page.data), 1)
         self.assertEqual(page.total, 1)
+
+    async def test_delete_plan_succeeds_when_never_referenced(self) -> None:
+        """Organization Management phase — the codebase's first and only aggregate-root hard
+        delete, deliberately scoped to a plan nothing has ever subscribed to."""
+        service = make_service()
+        uow = make_uow()
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Unused",
+                billing_scope="organization",
+                amount=50.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(len(uow.plans.by_id), 1)
+
+        await service.delete_plan(DeletePlanCommand(plan_id=plan.id, actor=make_actor()), uow=uow)
+
+        self.assertEqual(len(uow.plans.by_id), 0)
+        with self.assertRaises(NotFoundError):
+            await service.get_plan_by_id(GetPlanByIdQuery(plan_id=plan.id), uow=uow)
+
+    async def test_delete_plan_refuses_when_referenced_by_any_subscription(self) -> None:
+        """Even a long-cancelled subscription's own historical reference blocks deletion — see
+        `PlanRepository.delete`'s own docstring for why this is deliberately not status-filtered."""
+        service = make_service()
+        uow = make_uow()
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="In Use",
+                billing_scope="organization",
+                amount=50.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=VALID_ORG_ULID, plan_id=plan.id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        with self.assertRaises(ConflictError):
+            await service.delete_plan(
+                DeletePlanCommand(plan_id=plan.id, actor=make_actor()), uow=uow
+            )
+        self.assertEqual(len(uow.plans.by_id), 1, "a refused delete must not remove the plan")
+
+    async def test_delete_plan_refuses_when_only_historically_referenced(self) -> None:
+        """Found live (Organization Management phase, via this phase's own dev-data
+        verification): `change_plan` moves a subscription's *current* `plan_id` off a plan, so
+        `exists_for_plan` alone no longer sees it — even though a real invoice may already have
+        been issued at that plan's price. `PlanHistoryPort` is the second, independent check that
+        closes this gap by consulting the permanent audit trail instead of the mutable
+        `Subscription.plan_id` column."""
+        service_no_history = make_service()
+        uow = make_uow()
+        old_plan = await service_no_history.create_plan(
+            CreatePlanCommand(
+                name="Old", billing_scope="organization", amount=100.00, currency="USD",
+                billing_cycle="monthly", vehicle_limit=None, actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        new_plan = await service_no_history.create_plan(
+            CreatePlanCommand(
+                name="New", billing_scope="organization", amount=30.00, currency="USD",
+                billing_cycle="monthly", vehicle_limit=None, actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        invoice = await service_no_history.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=VALID_ORG_ULID, plan_id=old_plan.id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        await service_no_history.change_subscription_plan(
+            ChangeSubscriptionPlanCommand(
+                subscription_id=invoice.subscription_id, new_plan_id=new_plan.id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        # `exists_for_plan` alone (no `PlanHistoryPort` wired) now sees the old plan as unused —
+        # the exact gap this test exists to close.
+        self.assertFalse(await uow.subscriptions.exists_for_plan(PlanId(old_plan.id)))
+
+        history = _FakePlanHistoryPort(referenced_plan_ids={old_plan.id})
+        service_with_history = make_service(plan_history=history)
+        with self.assertRaises(ConflictError):
+            await service_with_history.delete_plan(
+                DeletePlanCommand(plan_id=old_plan.id, actor=make_actor()), uow=uow
+            )
+        self.assertEqual(len(uow.plans.by_id), 2, "a refused delete must not remove the plan")
+
+    async def test_delete_plan_succeeds_when_neither_check_finds_a_reference(self) -> None:
+        """`PlanHistoryPort` is consulted, and truthfully reports no history — deletion still
+        succeeds when the plan really has never been used, wired or not."""
+        service = make_service(plan_history=_FakePlanHistoryPort())
+        uow = make_uow()
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Unused", billing_scope="organization", amount=50.00, currency="USD",
+                billing_cycle="monthly", vehicle_limit=None, actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        await service.delete_plan(DeletePlanCommand(plan_id=plan.id, actor=make_actor()), uow=uow)
+
+        self.assertEqual(len(uow.plans.by_id), 0)
+
+    async def test_delete_plan_skips_the_history_check_when_already_referenced(self) -> None:
+        """The cheaper, already-existing `exists_for_plan` check short-circuits — `PlanHistoryPort`
+        is never even called when the first check already refuses."""
+        history = _FakePlanHistoryPort()
+        service = make_service(plan_history=history)
+        uow = make_uow()
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="In Use", billing_scope="organization", amount=50.00, currency="USD",
+                billing_cycle="monthly", vehicle_limit=None, actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=VALID_ORG_ULID, plan_id=plan.id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        with self.assertRaises(ConflictError):
+            await service.delete_plan(DeletePlanCommand(plan_id=plan.id, actor=make_actor()), uow=uow)
+        self.assertEqual(history.calls, [])
+
+    async def test_delete_missing_plan_raises_not_found(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        with self.assertRaises(NotFoundError):
+            await service.delete_plan(
+                DeletePlanCommand(plan_id=NON_EXISTENT_ID, actor=make_actor()), uow=uow
+            )
+
+
+class ChangeSubscriptionPlanApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """Organization Management phase — see `Subscription.change_plan`'s own docstring for the
+    "current period/invoice unaffected, applies at next issuance" design this verifies."""
+
+    async def _make_plan(self, service, uow, *, name: str, amount: float) -> str:
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name=name,
+                billing_scope="organization",
+                amount=amount,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        return plan.id
+
+    async def test_change_plan_updates_plan_id_without_touching_period_or_invoice(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        old_plan_id = await self._make_plan(service, uow, name="Old", amount=100.0)
+        new_plan_id = await self._make_plan(service, uow, name="New", amount=150.0)
+
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=VALID_ORG_ULID, plan_id=old_plan_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        original_invoice = await service.get_invoice_by_id(
+            GetInvoiceByIdQuery(invoice_id=invoice.id), uow=uow
+        )
+
+        changed = await service.change_subscription_plan(
+            ChangeSubscriptionPlanCommand(
+                subscription_id=invoice.subscription_id,
+                new_plan_id=new_plan_id,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        self.assertEqual(changed.plan_id, new_plan_id)
+
+        # The already-issued invoice is completely untouched — still the old plan's amount.
+        reloaded_invoice = await service.get_invoice_by_id(
+            GetInvoiceByIdQuery(invoice_id=invoice.id), uow=uow
+        )
+        self.assertEqual(reloaded_invoice.amount, original_invoice.amount)
+        self.assertEqual(reloaded_invoice.amount, 100.0)
+
+    async def test_change_plan_refuses_on_terminal_subscription(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        old_plan_id = await self._make_plan(service, uow, name="Old", amount=100.0)
+        new_plan_id = await self._make_plan(service, uow, name="New", amount=150.0)
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=VALID_ORG_ULID, plan_id=old_plan_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        subscription_id = invoice.subscription_id
+        await service.cancel_subscription(
+            CancelSubscriptionCommand(subscription_id=subscription_id, actor=make_actor()),
+            uow=uow,
+        )
+
+        with self.assertRaises(DomainError):
+            await service.change_subscription_plan(
+                ChangeSubscriptionPlanCommand(
+                    subscription_id=subscription_id,
+                    new_plan_id=new_plan_id,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+    async def test_change_plan_refuses_an_inactive_new_plan(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        old_plan_id = await self._make_plan(service, uow, name="Old", amount=100.0)
+        new_plan_id = await self._make_plan(service, uow, name="New", amount=150.0)
+        await service.disable_plan(
+            DisablePlanCommand(plan_id=new_plan_id, actor=make_actor()), uow=uow
+        )
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=VALID_ORG_ULID, plan_id=old_plan_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        with self.assertRaises(DomainError):
+            await service.change_subscription_plan(
+                ChangeSubscriptionPlanCommand(
+                    subscription_id=invoice.subscription_id,
+                    new_plan_id=new_plan_id,
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
 
 
 class SubscriptionApplicationTests(unittest.IsolatedAsyncioTestCase):
@@ -677,6 +1004,111 @@ class SubscriptionApplicationTests(unittest.IsolatedAsyncioTestCase):
                 uow=uow,
             )
         self.assertEqual(len(uow.subscriptions.by_id), 0)
+
+
+class ManualPaymentAndActivationApplicationTests(unittest.IsolatedAsyncioTestCase):
+    """The Founder-recorded manual-payment workflow (Organization Lifecycle / Subscription
+    architecture pass): `record_manual_payment` marks the invoice paid without touching the
+    subscription; `activate_subscription` is the deliberate, separate step that actually renews
+    it — mirrors, but does not reuse, the existing self-service Stripe auto-activate path."""
+
+    async def _make_plan(self, service: BillingApplicationService, uow) -> str:
+        plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Standard",
+                billing_scope="organization",
+                amount=100.00,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        return plan.id
+
+    async def test_record_manual_payment_marks_invoice_paid_without_activating_subscription(
+        self,
+    ) -> None:
+        service = make_service()
+        uow = make_uow()
+        plan_id = await self._make_plan(service, uow)
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=VALID_ORG_ULID, plan_id=plan_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        subscription_before = await service.get_subscription_by_id(
+            GetSubscriptionByIdQuery(subscription_id=invoice.subscription_id), uow=uow
+        )
+        self.assertEqual(subscription_before.status, "trial")
+
+        payment = await service.record_manual_payment(
+            RecordManualSubscriptionPaymentCommand(
+                invoice_id=invoice.id, actor=make_actor(), reference="bank-txn-123"
+            ),
+            uow=uow,
+        )
+        self.assertEqual(payment.status, "paid")
+
+        paid_invoice = await service.get_invoice_by_id(
+            GetInvoiceByIdQuery(invoice_id=invoice.id), uow=uow
+        )
+        self.assertEqual(paid_invoice.status, "paid")
+
+        subscription_after = await service.get_subscription_by_id(
+            GetSubscriptionByIdQuery(subscription_id=invoice.subscription_id), uow=uow
+        )
+        self.assertEqual(
+            subscription_after.status,
+            "trial",
+            "recording a manual payment must not, by itself, activate the subscription",
+        )
+
+    async def test_activate_subscription_after_manual_payment_renews_it(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        plan_id = await self._make_plan(service, uow)
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=VALID_ORG_ULID, plan_id=plan_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        await service.record_manual_payment(
+            RecordManualSubscriptionPaymentCommand(
+                invoice_id=invoice.id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+        activated = await service.activate_subscription(
+            ActivateSubscriptionCommand(
+                subscription_id=invoice.subscription_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        self.assertEqual(activated.status, "active")
+        self.assertIsNotNone(activated.current_period_end)
+
+    async def test_activate_subscription_refuses_while_invoice_unpaid(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        plan_id = await self._make_plan(service, uow)
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=VALID_ORG_ULID, plan_id=plan_id, actor=make_actor()
+            ),
+            uow=uow,
+        )
+        with self.assertRaises(DomainError):
+            await service.activate_subscription(
+                ActivateSubscriptionCommand(
+                    subscription_id=invoice.subscription_id, actor=make_actor()
+                ),
+                uow=uow,
+            )
 
 
 class InvoiceApplicationTests(unittest.IsolatedAsyncioTestCase):
@@ -1845,6 +2277,68 @@ class BillingStatsApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats.subscription_by_status, {"active": 2, "cancelled": 1})
         self.assertEqual(stats.expiring_soon, 1)  # only the Jan 15 one is within the window
         self.assertEqual(stats.revenue, 100.0)  # only the Jan-paid invoice is within the window
+
+    async def test_active_by_billing_cycle_joins_plan_and_excludes_terminal_and_cancelled(
+        self,
+    ) -> None:
+        """Organization Management phase — Platform Finance "Monthly vs Annual Subscribers"."""
+        service = make_service()
+        uow = make_uow()
+        ids = SequentialIdGenerator()
+
+        monthly_plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Monthly",
+                billing_scope="organization",
+                amount=10.0,
+                currency="USD",
+                billing_cycle="monthly",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        annual_plan = await service.create_plan(
+            CreatePlanCommand(
+                name="Annual",
+                billing_scope="organization",
+                amount=100.0,
+                currency="USD",
+                billing_cycle="annual",
+                vehicle_limit=None,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        def _sub(*, status: SubscriptionStatus, plan_id: str) -> Subscription:
+            return Subscription(
+                id=SubscriptionId(ids.new_id()),
+                organization_id=OrganizationId(VALID_ORG_ULID),
+                plan_id=PlanId(plan_id),
+                status=status,
+                current_period_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                current_period_end=datetime(2026, 2, 1, tzinfo=timezone.utc),
+                auto_renew=True,
+                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+
+        uow.subscriptions.add(_sub(status=SubscriptionStatus.ACTIVE, plan_id=monthly_plan.id))
+        uow.subscriptions.add(_sub(status=SubscriptionStatus.TRIAL, plan_id=monthly_plan.id))
+        uow.subscriptions.add(_sub(status=SubscriptionStatus.ACTIVE, plan_id=annual_plan.id))
+        # Cancelled must not count, even though it's on a real plan.
+        uow.subscriptions.add(_sub(status=SubscriptionStatus.CANCELLED, plan_id=annual_plan.id))
+
+        stats = await service.get_billing_stats(
+            expiring_window_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            expiring_window_end=datetime(2026, 1, 31, tzinfo=timezone.utc),
+            revenue_window_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            revenue_window_end=datetime(2026, 1, 31, tzinfo=timezone.utc),
+            uow=uow,
+        )
+
+        self.assertEqual(stats.active_by_billing_cycle, {"monthly": 2, "annual": 1})
 
 
 if __name__ == "__main__":

@@ -123,6 +123,23 @@ class BillingSubscriptionRevenueAdapter(SubscriptionRevenuePort):
             )
         return Decimal(str(total or 0)).quantize(Decimal("0.01"))
 
+    async def invoiced_between(self, *, start: date, end: date) -> Decimal:
+        uow: BillingUnitOfWork = self._container.resolve(BillingUnitOfWork)
+        async with uow:
+            total = await uow.invoices.sum_issued_amount_between(
+                start=datetime.combine(start, time.min),
+                end=datetime.combine(end, time.max),
+            )
+        return Decimal(str(total or 0)).quantize(Decimal("0.01"))
+
+    async def receivables_asof(self, *, as_of: date) -> Decimal:
+        uow: BillingUnitOfWork = self._container.resolve(BillingUnitOfWork)
+        async with uow:
+            total = await uow.invoices.sum_outstanding_amount(
+                as_of=datetime.combine(as_of, time.max)
+            )
+        return Decimal(str(total or 0)).quantize(Decimal("0.01"))
+
 
 class BillingOnboardingAdapter(BillingProvisioningPort):
     """Opens an Organization's subscription at onboarding time (ADR-0040 §5).

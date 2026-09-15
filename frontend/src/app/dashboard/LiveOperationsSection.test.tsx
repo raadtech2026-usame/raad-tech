@@ -60,7 +60,8 @@ const PLATFORM_STATS: PlatformStats = {
   vehicles: { total: 0 },
   devices: { total: 0, online: 0, offline: 0 },
   users: { total: 0, byStatus: {}, monthlyActive: 0, createdToday: 0 },
-  billing: { subscriptionByStatus: {}, expiringSoon: 0, revenue: 0 },
+  billing: { subscriptionByStatus: {}, expiringSoon: 0, revenue: 0, activeByBillingCycle: {} },
+  paymentDueOrganizations: 0,
   systemHealth: { database: "ok", broker: "ok" },
 };
 

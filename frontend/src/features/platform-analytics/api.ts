@@ -31,6 +31,7 @@ interface BillingStatsWire {
   subscription_by_status: Record<string, number>;
   expiring_soon: number;
   revenue: number;
+  active_by_billing_cycle: Record<string, number>;
 }
 
 interface SystemHealthWire {
@@ -44,6 +45,7 @@ interface PlatformStatsWire {
   devices: DeviceStatsWire;
   users: UserStatsWire;
   billing: BillingStatsWire;
+  payment_due_organizations: number;
   system_health: SystemHealthWire;
 }
 
@@ -71,7 +73,17 @@ export interface PlatformStats {
     subscriptionByStatus: Record<string, number>;
     expiringSoon: number;
     revenue: number;
+    /** Organization Management phase — `count_active_by_billing_cycle` (a JOIN to `Plan`,
+     * platform-wide, non-terminal subscriptions only). Keys are `BillingCycle` values
+     * (`"monthly" | "quarterly" | "annual"`); a cycle with zero active subscribers is simply
+     * absent from the map, never a `0` entry. */
+    activeByBillingCycle: Record<string, number>;
   };
+  /** Organization Management phase — organizations whose trial has expired and which have no
+   * subscription row at all yet (an expired-trial organization that already has *any*
+   * subscription, in any status, is not counted here — its own subscription status already
+   * speaks for it). */
+  paymentDueOrganizations: number;
   /** `"ok" | "down" | "not_configured"` — `core.health.service.DependencyStatus.label`'s own
    * three values, passed through verbatim rather than re-derived here. */
   systemHealth: {
@@ -105,7 +117,9 @@ function toPlatformStats(wire: PlatformStatsWire): PlatformStats {
       subscriptionByStatus: wire.billing.subscription_by_status,
       expiringSoon: wire.billing.expiring_soon,
       revenue: wire.billing.revenue,
+      activeByBillingCycle: wire.billing.active_by_billing_cycle,
     },
+    paymentDueOrganizations: wire.payment_due_organizations,
     systemHealth: {
       database: wire.system_health.database,
       broker: wire.system_health.broker,

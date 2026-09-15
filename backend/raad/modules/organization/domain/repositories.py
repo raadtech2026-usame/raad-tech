@@ -85,6 +85,20 @@ class OrganizationRepository(ABC):
         never computed here; this method only counts."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_ids_with_expired_trial(self, *, now: datetime) -> list[str]:
+        """Backs the Platform Finance "Payment Due" organization count: an organization whose
+        trial has ended (`trial_started_at` set, `trial_ends_at` in the past) and which has no
+        current `billing.Subscription` at all is the organization-level "payment due" state
+        (`organization.domain.value_objects.TrialState.EXPIRED` + no subscription row — see
+        `Organization.trial_state()`'s own docstring for why this is never itself a stored
+        status). This module cannot check the "no subscription" half itself
+        (`.claude/rules/backend.md` #3) — the caller (`platform_audit.
+        PlatformStatsApplicationService`) checks that half through `billing`'s own application
+        service for exactly the ids this method returns, which is expected to be small (trial
+        organizations are a minority of the platform, not its bulk)."""
+        raise NotImplementedError
+
 
 class RegionRepository(ABC):
     @abstractmethod

@@ -3,10 +3,15 @@ import { Link } from "react-router-dom";
 import clsx from "clsx";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
+  AlertTriangle,
   ArrowUpRight,
   Banknote,
+  Calendar,
+  CalendarRange,
   CreditCard,
   FileText,
+  Hourglass,
   Landmark,
   Plus,
   ReceiptText,
@@ -28,6 +33,7 @@ import { Tabs } from "../../shared/components/Tabs/Tabs";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
+import { DateRangePresetFilter } from "../reports/components/DateRangePresetFilter";
 import { getPlatformStats, type PlatformStats } from "../platform-analytics/api";
 import { StatBar, type StatBarItem } from "../../app/dashboard/StatBar";
 import {
@@ -104,12 +110,6 @@ import styles from "./PlatformFinancePage.module.css";
  * that already existed.
  */
 
-const currencyFormatter = new Intl.NumberFormat(undefined, {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 0,
-});
-
 const numberFormatter = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 
 /** Formats an `AmountSummary`'s primary currency total, or an em dash when there is nothing to
@@ -136,18 +136,27 @@ function summaryFootnote(summary: AmountSummary, noun: string): string {
   return parts.join(" · ");
 }
 
-/** Trailing 12 months — the same default the Platform P&L endpoint applies server-side. */
-function platformWindow(): { start: string; end: string } {
-  const end = new Date();
-  const start = new Date(end);
-  start.setFullYear(start.getFullYear() - 1);
-  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+/** Formats a `Date` as `YYYY-MM-DD` using its own *local* calendar date — mirrors
+ * `DateRangePresetFilter`'s own `isoDate` helper (never `.toISOString()`, which normalises to
+ * UTC first and can silently shift the day for a timezone behind UTC). */
+function isoDate(d: Date): string {
+  const year = String(d.getFullYear()).padStart(4, "0");
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/** The page's initial period: month-to-date — the conventional default for a finance dashboard.
+ * The Founder can widen or narrow it via the period selector; nothing below assumes this range. */
+function defaultWindow(): { start: string; end: string } {
+  const now = new Date();
+  return { start: isoDate(new Date(now.getFullYear(), now.getMonth(), 1)), end: isoDate(now) };
 }
 
 type ReceivablesTab = "issued" | "paid" | "draft" | "void";
 
 const RECEIVABLES_TABS: { id: ReceivablesTab; label: string }[] = [
-  { id: "issued", label: "Outstanding" },
+  { id: "issued", label: "Unpaid" },
   { id: "paid", label: "Paid" },
   { id: "draft", label: "Draft" },
   { id: "void", label: "Void" },
@@ -170,6 +179,7 @@ export function PlatformFinancePage() {
 
   const [receivablesTab, setReceivablesTab] = useState<ReceivablesTab>("issued");
   const [opexTab, setOpexTab] = useState<OpexTab>("expenses");
+  const [period, setPeriod] = useState(defaultWindow);
   const [entryMode, setEntryMode] = useState<PlatformEntryMode | null>(null);
   const [categoryFormOpen, setCategoryFormOpen] = useState(false);
   const [voidingEntry, setVoidingEntry] = useState<{
@@ -185,19 +195,19 @@ export function PlatformFinancePage() {
 
   const invoiceCounts = useInvoiceStatusCounts();
   const paymentCounts = usePaymentStatusCounts();
-  const outstanding = useInvoicesByStatus("issued");
-  const collected = useInvoicesByStatus("paid");
   const tabInvoices = useInvoicesByStatus(receivablesTab);
   const recentPayments = useRecentPayments(8);
 
-  // ADR-0040 §1 — RAAD's own operating costs. A different bounded context
-  // (`platform_finance`, C12) reached through its own client, never folded into the billing
-  // reads above: `billing` is revenue RAAD collects, this is cost RAAD incurs, and
-  // ADR-0038 §2's separation principle applies to both boundaries.
-  const opexWindow = platformWindow();
+  // ADR-0040 §1 — RAAD's own operating costs, and (since the Organization Management phase)
+  // the platform's own Invoiced/Collected/Receivables figures too. `subscription_revenue`/
+  // `subscription_invoiced`/`subscription_receivables` are `billing` (C8) figures the P&L
+  // endpoint reads through `SubscriptionRevenuePort` — a different bounded context from the
+  // `platform_finance` (C12) expense/income reads below, composed here into one query only
+  // because the endpoint itself already composes them server-side (ADR-0038 §2's separation is
+  // about aggregates and permissions, not about which page may display a number).
   const platformPnl = useQuery({
-    queryKey: ["platform-finance", "pnl", opexWindow.start, opexWindow.end],
-    queryFn: () => getPlatformPnl(opexWindow.start, opexWindow.end),
+    queryKey: ["platform-finance", "pnl", period.start, period.end],
+    queryFn: () => getPlatformPnl(period.start, period.end),
     staleTime: 60_000,
   });
   const platformExpenses = useQuery({
@@ -278,68 +288,177 @@ export function PlatformFinancePage() {
       ];
 
   const activeSubscriptions = stats.data?.billing.subscriptionByStatus.active ?? 0;
+  const pnlError = platformPnl.isError
+    ? platformPnl.error instanceof ApiError
+      ? platformPnl.error.message
+      : "Something went wrong. Please try again."
+    : null;
+  const netProfitValue = platformPnl.data ? Number(platformPnl.data.netProfit) : 0;
+
+  const subscriptionByStatus = stats.data?.billing.subscriptionByStatus ?? {};
+  const activeByBillingCycle = stats.data?.billing.activeByBillingCycle ?? {};
 
   return (
     <div className={clsx(styles.page, "raad-view-transition")}>
       {/* ---- Financial KPIs ---- */}
-      <PageSection title="Financial overview">
+      <PageSection
+        title="Financial overview"
+        description={
+          platformPnl.data ? `${platformPnl.data.start} – ${platformPnl.data.end}` : undefined
+        }
+        action={
+          <DateRangePresetFilter
+            start={period.start}
+            end={period.end}
+            onChange={(range) => setPeriod(range)}
+          />
+        }
+      >
+        {pnlError ? (
+          <EmptyState icon={<Scale size={20} />} title="Could not load the financial overview" description={pnlError} />
+        ) : (
+          <div className={styles.kpiGrid}>
+            <StatCard
+              icon={<FileText size={18} />}
+              tone="brand"
+              label="Invoiced"
+              isLoading={platformPnl.isLoading}
+              value={
+                platformPnl.data
+                  ? formatAmount(Number(platformPnl.data.subscriptionInvoiced), platformPnl.data.currency)
+                  : "—"
+              }
+              footnote="Billed to organizations in the selected period"
+            />
+
+            <StatCard
+              icon={<Banknote size={18} />}
+              tone="success"
+              label="Collected"
+              isLoading={platformPnl.isLoading}
+              value={
+                platformPnl.data
+                  ? formatAmount(Number(platformPnl.data.subscriptionRevenue), platformPnl.data.currency)
+                  : "—"
+              }
+              footnote="Subscription payments actually received"
+            />
+
+            <StatCard
+              icon={<Landmark size={18} />}
+              tone="warning"
+              label="Receivables"
+              isLoading={platformPnl.isLoading}
+              value={
+                platformPnl.data
+                  ? formatAmount(Number(platformPnl.data.subscriptionReceivables), platformPnl.data.currency)
+                  : "—"
+              }
+              footnote={`As of ${platformPnl.data?.end ?? "today"} — not limited to the selected period`}
+            />
+
+            <StatCard
+              icon={<TrendingUp size={18} />}
+              tone="brand"
+              label="Revenue"
+              isLoading={platformPnl.isLoading}
+              value={
+                platformPnl.data
+                  ? formatAmount(Number(platformPnl.data.totalRevenue), platformPnl.data.currency)
+                  : "—"
+              }
+              footnote="Subscription collections plus other platform income"
+            />
+
+            <StatCard
+              icon={<TrendingDown size={18} />}
+              tone="danger"
+              label="Expenses"
+              isLoading={platformPnl.isLoading}
+              value={
+                platformPnl.data
+                  ? formatAmount(Number(platformPnl.data.totalExpenses), platformPnl.data.currency)
+                  : "—"
+              }
+              footnote="RAAD's own operating costs in the selected period"
+            />
+
+            <StatCard
+              icon={<Scale size={18} />}
+              tone={netProfitValue >= 0 ? "success" : "danger"}
+              label="Net profit"
+              isLoading={platformPnl.isLoading}
+              value={
+                platformPnl.data
+                  ? formatAmount(netProfitValue, platformPnl.data.currency)
+                  : "—"
+              }
+              footnote="Revenue minus expenses for the selected period"
+            />
+          </div>
+        )}
+      </PageSection>
+
+      {/* ---- Subscription metrics ---- */}
+      <PageSection
+        title="Subscription metrics"
+        description="Platform-wide subscription counts — independent of the period selected above."
+      >
         <div className={styles.kpiGrid}>
           <StatCard
-            icon={<TrendingUp size={18} />}
-            tone="success"
-            label="Revenue"
-            isLoading={stats.isLoading}
-            value={stats.data ? currencyFormatter.format(stats.data.billing.revenue) : "—"}
-            meta="Month to date"
-            metaTone="success"
-            footnote="Across every organization on the platform"
-          />
-
-          <StatCard
-            icon={<Landmark size={18} />}
-            tone="warning"
-            label="Outstanding"
-            isLoading={outstanding.isLoading}
-            value={outstanding.isError ? "—" : formatSummary(outstanding.summary)}
-            meta={
-              outstanding.isError
-                ? undefined
-                : `${outstanding.summary.matchingRows} unpaid`
-            }
-            metaTone={outstanding.summary.matchingRows > 0 ? "warning" : "success"}
-            footnote={
-              outstanding.isError
-                ? "Could not load issued invoices"
-                : summaryFootnote(outstanding.summary, "issued invoices")
-            }
-          />
-
-          <StatCard
-            icon={<Banknote size={18} />}
-            tone="brand"
-            label="Collected"
-            isLoading={collected.isLoading}
-            value={collected.isError ? "—" : formatSummary(collected.summary)}
-            meta={collected.isError ? undefined : `${collected.summary.matchingRows} paid`}
-            metaTone="success"
-            footnote={
-              collected.isError
-                ? "Could not load paid invoices"
-                : summaryFootnote(collected.summary, "paid invoices")
-            }
-          />
-
-          <StatCard
             icon={<CreditCard size={18} />}
-            tone="purple"
-            label="Subscriptions"
+            tone="success"
+            label="Active"
             isLoading={stats.isLoading}
             value={stats.data ? numberFormatter.format(activeSubscriptions) : "—"}
-            meta={stats.data ? `${stats.data.billing.expiringSoon} expiring` : undefined}
-            metaTone={
-              stats.data && stats.data.billing.expiringSoon > 0 ? "warning" : "neutral"
-            }
-            footnote="Active subscriptions billed to organizations"
+            meta={stats.data ? `${stats.data.billing.expiringSoon} expiring soon` : undefined}
+            metaTone={stats.data && stats.data.billing.expiringSoon > 0 ? "warning" : "neutral"}
+            footnote="Subscriptions currently billing organizations"
+          />
+
+          <StatCard
+            icon={<Hourglass size={18} />}
+            tone="purple"
+            label="Trial"
+            isLoading={stats.isLoading}
+            value={stats.data ? numberFormatter.format(subscriptionByStatus.trial ?? 0) : "—"}
+            footnote="Subscriptions still in their one-time trial label"
+          />
+
+          <StatCard
+            icon={<AlertTriangle size={18} />}
+            tone={stats.data && stats.data.paymentDueOrganizations > 0 ? "danger" : "neutral"}
+            label="Payment due"
+            isLoading={stats.isLoading}
+            value={stats.data ? numberFormatter.format(stats.data.paymentDueOrganizations) : "—"}
+            footnote="Organizations whose trial ended with no subscription opened yet"
+          />
+
+          <StatCard
+            icon={<AlertCircle size={18} />}
+            tone={subscriptionByStatus.past_due ? "warning" : "neutral"}
+            label="Past due"
+            isLoading={stats.isLoading}
+            value={stats.data ? numberFormatter.format(subscriptionByStatus.past_due ?? 0) : "—"}
+            footnote="Subscriptions with an unpaid period past its end date"
+          />
+
+          <StatCard
+            icon={<Calendar size={18} />}
+            tone="brand"
+            label="Monthly"
+            isLoading={stats.isLoading}
+            value={stats.data ? numberFormatter.format(activeByBillingCycle.monthly ?? 0) : "—"}
+            footnote="Active subscribers on a monthly billing cycle"
+          />
+
+          <StatCard
+            icon={<CalendarRange size={18} />}
+            tone="purple"
+            label="Annual"
+            isLoading={stats.isLoading}
+            value={stats.data ? numberFormatter.format(activeByBillingCycle.annual ?? 0) : "—"}
+            footnote="Active subscribers on an annual billing cycle"
           />
         </div>
       </PageSection>
@@ -423,7 +542,7 @@ export function PlatformFinancePage() {
             subtitle={
               tabInvoices.isLoading
                 ? "Loading…"
-                : summaryFootnote(tabInvoices.summary, "invoices")
+                : `${formatSummary(tabInvoices.summary)} · ${summaryFootnote(tabInvoices.summary, "invoices")}`
             }
             action={
               <Link to="/platform/billing" className={styles.inlineLink}>

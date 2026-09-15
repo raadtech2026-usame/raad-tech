@@ -200,6 +200,47 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "uniform-CRUD addition, 2026-09-10 - backs the Founder's Subscription Details page; "
         "GetSubscriptionByIdQuery/get_subscription_by_id already existed, unwired",
     ),
+    # Organization Lifecycle / Trial / Subscription Control Center phase (2026-09-14/15) -
+    # Founder-facing subscription workflow completion. All platform-admin only,
+    # billing.subscriptions.manage/billing.plans.manage (never org_admin), same posture as the
+    # ADR-0039 group above.
+    (
+        "POST",
+        "/api/v1/billing/subscriptions",
+        "Trial/Subscription phase - opens a subscription for an org that doesn't have one yet "
+        "(post-trial-expiry or 'no trial, no plan at creation'); wraps the existing "
+        "open_organization_subscription orchestration unchanged",
+    ),
+    (
+        "POST",
+        "/api/v1/billing/subscriptions/{subscription_id}/activate",
+        "Trial/Subscription phase - the deliberate second step of the manual-payment workflow, "
+        "after RecordManualSubscriptionPaymentCommand; reuses Subscription.renew() unchanged",
+    ),
+    (
+        "POST",
+        "/api/v1/billing/subscriptions/{subscription_id}/change-plan",
+        "Organization Management phase - Subscription.change_plan(): current period and every "
+        "already-issued invoice unaffected, new plan applies at next issuance",
+    ),
+    (
+        "POST",
+        "/api/v1/billing/subscriptions/{subscription_id}/cancel",
+        "Organization Management phase - exposes cancel_subscription (built since Phase 15, "
+        "never had a route until now)",
+    ),
+    (
+        "POST",
+        "/api/v1/billing/payments/manual",
+        "Trial/Subscription phase - Founder/Finance-recorded payment for money received "
+        "outside any integrated PaymentProviderPort; does not itself activate the subscription",
+    ),
+    (
+        "DELETE",
+        "/api/v1/billing/plans/{plan_id}",
+        "Organization Management phase - the codebase's first and only aggregate-root hard "
+        "delete, guarded by exists_for_plan (refuses if any subscription, ever, referenced it)",
+    ),
     ("GET", "/api/v1/parents/{parent_id}/students", "ListStudentsForParentQuery's own route"),
     ("GET", "/api/v1/students/{student_id}", "uniform-CRUD addition"),
     ("PATCH", "/api/v1/students/{student_id}", "uniform-CRUD addition"),

@@ -102,11 +102,15 @@ class ListSubscriptionsQuery:
 class BillingStatsDTO:
     """ADR-0020: "Subscription/Billing Status", "Expiring Organizations", and "Revenue" KPIs.
     `subscription_by_status` uses the same lower-case status strings `SubscriptionDTO.status`
-    already does."""
+    already does. `active_by_billing_cycle` (Organization Management phase, Platform Finance
+    "Monthly vs Annual Subscribers" KPI) uses `billing.domain.value_objects.BillingCycle`'s own
+    lower-case values (`monthly`/`quarterly`/`annual`), counting only non-terminal subscriptions
+    — see `SubscriptionRepository.count_active_by_billing_cycle`'s own docstring."""
 
     subscription_by_status: dict[str, int]
     expiring_soon: int
     revenue: float
+    active_by_billing_cycle: dict[str, int]
 
 
 @dataclass(frozen=True)

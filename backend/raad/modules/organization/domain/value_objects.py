@@ -74,3 +74,17 @@ class RegionStatus(str, Enum):
 
     ACTIVE = "active"
     INACTIVE = "inactive"
+
+
+class TrialState(str, Enum):
+    """Derived, **non-persisted** organization-level trial phase — never its own database
+    column, computed on read from `Organization.trial_started_at`/`trial_ends_at` by
+    `Organization.trial_state()`. Deliberately a separate concept from `billing.
+    SubscriptionStatus.TRIAL`: that enum value is a permanent, one-time "just opened, not yet
+    paid" label on a `Subscription` row and is never re-entered once set, whereas this state
+    exists even before any `Subscription`/`Plan` is ever chosen for the organization (a trial
+    is offered at organization-creation time, independent of billing)."""
+
+    NOT_STARTED = "not_started"
+    TRIALING = "trialing"
+    EXPIRED = "expired"

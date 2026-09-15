@@ -256,6 +256,41 @@ class SubscriptionTests(unittest.TestCase):
         events = subscription.pull_domain_events()
         self.assertEqual(events[0].event_type, "SubscriptionCancelled")
 
+    def test_change_plan_updates_plan_id_without_touching_period(self) -> None:
+        """Organization Management phase — see `Subscription.change_plan`'s own docstring:
+        the current period is a historical fact and must not move."""
+        subscription = self._make_subscription()
+        start = datetime(2026, 7, 20, tzinfo=timezone.utc)
+        end = datetime(2026, 8, 19, tzinfo=timezone.utc)
+        subscription.renew(period_start=start, period_end=end, clock=CLOCK)
+        subscription.pull_domain_events()
+
+        new_plan_id = PlanId(VALID_SUBSCRIPTION_ULID)
+        subscription.change_plan(new_plan_id=new_plan_id, clock=CLOCK)
+
+        self.assertEqual(subscription.plan_id, new_plan_id)
+        self.assertEqual(subscription.current_period_start, start)
+        self.assertEqual(subscription.current_period_end, end)
+        self.assertEqual(subscription.status, SubscriptionStatus.ACTIVE)
+        events = subscription.pull_domain_events()
+        self.assertEqual(events[0].event_type, "SubscriptionPlanChanged")
+
+    def test_change_plan_refuses_on_cancelled_subscription(self) -> None:
+        subscription = self._make_subscription()
+        subscription.cancel(clock=CLOCK)
+        with self.assertRaises(DomainError):
+            subscription.change_plan(
+                new_plan_id=PlanId(VALID_SUBSCRIPTION_ULID), clock=CLOCK
+            )
+
+    def test_change_plan_refuses_on_expired_subscription(self) -> None:
+        subscription = self._make_subscription()
+        subscription.expire(clock=CLOCK)
+        with self.assertRaises(DomainError):
+            subscription.change_plan(
+                new_plan_id=PlanId(VALID_SUBSCRIPTION_ULID), clock=CLOCK
+            )
+
 
 # --- Invoice ---------------------------------------------------------------------------------
 
