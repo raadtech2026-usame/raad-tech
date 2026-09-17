@@ -132,6 +132,120 @@ class CommandSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.correlation_id, "corr-3")
 
 
+class _SocketFake:
+    """Stands in for `ConnectionManager` from `CommandSender`'s point of view: which connection
+    IDs are open, and a send that reports whether the frame was queued on an open socket."""
+
+    def __init__(self) -> None:
+        self.open: set[str] = set()
+        self.sent: list[tuple[str, bytes]] = []
+        self.close_before_write = False
+
+    def is_open(self, connection_id: str) -> bool:
+        return connection_id in self.open
+
+    async def send(self, connection_id: str, frame: bytes) -> bool:
+        if self.close_before_write:
+            self.open.discard(connection_id)
+        if connection_id not in self.open:
+            return False
+        self.sent.append((connection_id, frame))
+        return True
+
+
+class CommandSenderConnectionLivenessTests(unittest.IsolatedAsyncioTestCase):
+    """C8 (2026-09-17): commands are only written to a socket this process actually holds open."""
+
+    async def asyncSetUp(self) -> None:
+        self.sockets = _SocketFake()
+        self.device_sessions = DeviceSessionManager(
+            registry=DeviceSessionRegistry(),
+            close_connection=_noop_close,
+            is_connection_open=self.sockets.is_open,
+        )
+        self.pending = PendingCommandTracker()
+        self.publisher = RecordingEventPublisher()
+        self.command_sender = CommandSender(
+            device_sessions=self.device_sessions,
+            send=self.sockets.send,
+            serial_counter=OutboundSerialCounter(),
+            pending=self.pending,
+            event_publisher=self.publisher,
+            min_command_interval_seconds=0.0,
+        )
+
+    async def _authenticate(self, connection_id: str) -> None:
+        self.sockets.open.add(connection_id)
+        await self.device_sessions.create(
+            connection_id=connection_id,
+            terminal_id=_PHONE,
+            device_id="device-1",
+            vehicle_id="vehicle-1",
+            organization_id="org-1",
+        )
+
+    async def _send(self, correlation_id: str = "corr-live") -> bool:
+        return await self.command_sender.send(
+            terminal_id=_PHONE, message_id=0x9101, body=b"\x00", correlation_id=correlation_id
+        )
+
+    def _assert_reported_offline(self, correlation_id: str = "corr-live") -> None:
+        self.assertEqual(len(self.publisher.published), 1)
+        result = self.publisher.published[0]
+        self.assertFalse(result.success)
+        self.assertEqual(result.reason, "device_offline")
+        self.assertEqual(result.correlation_id, correlation_id)
+
+    async def test_a_command_to_a_live_authenticated_connection_is_sent(self) -> None:
+        await self._authenticate("conn-live")
+
+        self.assertTrue(await self._send())
+
+        self.assertEqual([cid for cid, _ in self.sockets.sent], ["conn-live"])
+        self.assertEqual(len(self.pending), 1)
+        self.assertEqual(self.publisher.published, [])
+
+    async def test_c_stale_session_from_a_previous_process_gets_no_command(self) -> None:
+        """The session exists (e.g. left in Redis) but its connection was never opened by this
+        process: before C8 the command was "sent" into nothing and reported `timed_out` 15 s
+        later. Now it is reported offline immediately and nothing is left pending."""
+        await self.device_sessions.create(connection_id="conn-previous-process", terminal_id=_PHONE)
+
+        self.assertFalse(await self._send())
+
+        self.assertEqual(self.sockets.sent, [])
+        self.assertEqual(len(self.pending), 0)
+        self._assert_reported_offline()
+
+    async def test_e_a_disconnected_old_socket_gets_no_command(self) -> None:
+        await self._authenticate("conn-old")
+        self.sockets.open.discard("conn-old")  # the device dropped off; session not yet cleaned
+
+        self.assertFalse(await self._send())
+
+        self.assertEqual(self.sockets.sent, [])
+        self.assertEqual(len(self.pending), 0)
+        self._assert_reported_offline()
+
+    async def test_e_socket_closing_between_lookup_and_write_is_reported_offline(self) -> None:
+        await self._authenticate("conn-closing")
+        self.sockets.close_before_write = True
+
+        self.assertFalse(await self._send())
+
+        self.assertEqual(self.sockets.sent, [])
+        self.assertEqual(len(self.pending), 0)  # the registered entry is withdrawn again
+        self._assert_reported_offline()
+
+    async def test_d_f_after_a_reconnect_commands_go_only_to_the_new_connection(self) -> None:
+        await self._authenticate("conn-old")
+        await self._authenticate("conn-new")  # same terminal re-authenticates
+
+        self.assertTrue(await self._send())
+
+        self.assertEqual([cid for cid, _ in self.sockets.sent], ["conn-new"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

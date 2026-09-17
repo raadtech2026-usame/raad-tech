@@ -56,6 +56,31 @@ in-memory registry's own `save()` is a documented no-op, kept only for this inte
 now a method) — every call site was already inside an `async def`, so this is a mechanical
 `await`-adding change everywhere it ripples (both vendor stacks' handlers/servers, per the P0 #2
 plan), not a new capability.
+
+**A session is only valid on the connection that authenticated it (C8, 2026-09-17 — security and
+correctness).** Sessions are keyed by `terminal_id`, and `resolve()` returns whatever session holds
+that key. Handlers that trusted `resolve()` alone let *any* connection presenting a terminal ID use
+another connection's authenticated session: an unauthenticated socket could submit GPS positions
+or A/V capability reports under that identity and keep the session alive with heartbeats. With the
+Redis registry the same happened across restarts: a session written by a previous gateway process
+survives in Redis, bound to a connection that no longer exists, so a new, unauthenticated
+connection could use it, and a command could be "sent" to a socket that was gone. Three rules
+close this:
+
+- `resolve_for_connection(terminal_id, connection_id)` — what every inbound handler uses: the
+  session only if it is bound to *this* connection, and that connection is open.
+- `resolve_live(terminal_id)` — what outbound commands use: the session only if its connection is
+  open in this process.
+- `close_orphaned_sessions()` — closes (and reports `DeviceOffline` for) every session whose
+  connection is not open in this process: once at server start, before any connection is
+  accepted, and on every sweep, which also catches a session whose removal failed when its
+  connection closed (e.g. Redis refusing writes). This assumes one gateway process owns every
+  session in the registry, which is the only supported deployment (`RedisDeviceSessionRegistry`'s
+  own docstring: multi-node is not built).
+
+`touch()` accepts an optional `connection_id` and, when given, ignores a connection the session is
+not bound to. `is_connection_open` is optional so the dormant LSZ adapter and existing tests keep
+their behaviour; without it every connection is treated as open.
 """
 
 from __future__ import annotations
@@ -74,6 +99,7 @@ OnDeviceOnline = Callable[[DeviceSession], Awaitable[None]]
 OnDeviceOffline = Callable[[DeviceSession, str], Awaitable[None]]
 OnSessionSuperseded = Callable[[DeviceSession, DeviceSession], None]
 CloseConnection = Callable[[str, str], Awaitable[None]]
+IsConnectionOpen = Callable[[str], bool]
 
 
 async def _default_on_device_online(session: DeviceSession) -> None:
@@ -106,9 +132,11 @@ class DeviceSessionManager:
         on_device_online: OnDeviceOnline | None = None,
         on_device_offline: OnDeviceOffline | None = None,
         on_session_superseded: OnSessionSuperseded | None = None,
+        is_connection_open: IsConnectionOpen | None = None,
     ) -> None:
         self._registry = registry
         self._close_connection = close_connection
+        self._is_connection_open = is_connection_open or (lambda _connection_id: True)
         self._on_device_online = on_device_online or _default_on_device_online
         self._on_device_offline = on_device_offline or _default_on_device_offline
         self._on_session_superseded = (
@@ -154,14 +182,19 @@ class DeviceSessionManager:
 
         return session
 
-    async def touch(self, terminal_id: str) -> None:
+    async def touch(self, terminal_id: str, *, connection_id: str | None = None) -> None:
         """Phase 3.4 §5's `touch(terminal_id, at)` — "heartbeat/location updates last_seen".
         No message parsing happens here (Phase 9.2 scope); a heartbeat/location handler calls
         this. The first call after `create()` promotes `AUTHENTICATED -> ONLINE` — see module
         docstring's resolved conflict. `async` (device-gateway Redis integration) so the
-        `on_device_online` callback can actually publish an event, not just log one."""
+        `on_device_online` callback can actually publish an event, not just log one.
+
+        With `connection_id` (C8), a message arriving on a connection the session is not bound
+        to is ignored: it must not keep another connection's session alive or bring it online."""
         session = await self._registry.get(terminal_id)
         if session is None:
+            return
+        if connection_id is not None and session.connection_id != connection_id:
             return
         session.touch()
         if session.state == DeviceConnectivityState.AUTHENTICATED:
@@ -174,6 +207,57 @@ class DeviceSessionManager:
         itself rather than a separate dict (see module docstring re: `node_id`/`auth_state`).
         """
         return await self._registry.get(terminal_id)
+
+    async def resolve_for_connection(
+        self, terminal_id: str, connection_id: str
+    ) -> DeviceSession | None:
+        """The session for `terminal_id` only if it was authenticated on `connection_id` and that
+        connection is still open — see the module docstring (C8). Every inbound message handler
+        uses this instead of `resolve()`."""
+        session = await self._registry.get(terminal_id)
+        if session is None or session.connection_id != connection_id:
+            return None
+        if not self._is_connection_open(connection_id):
+            return None
+        return session
+
+    async def resolve_live(self, terminal_id: str) -> DeviceSession | None:
+        """The session for `terminal_id` only if its connection is open in this process — what
+        a platform-initiated command must be sent on (C8). A stale session whose socket is gone
+        resolves to `None`, so the caller reports the device offline instead of writing to a
+        connection that no longer exists."""
+        session = await self._registry.get(terminal_id)
+        if session is None or not self._is_connection_open(session.connection_id):
+            return None
+        return session
+
+    async def close_orphaned_sessions(self) -> int:
+        """Closes every session whose connection is not open in this process, reporting each as
+        offline (`reason="connection_lost"`). Returns how many were closed. See the module
+        docstring for when this runs and the single-process assumption it relies on."""
+        closed = 0
+        for session in list(await self._registry.all()):
+            if self._is_connection_open(session.connection_id):
+                continue
+            # Re-read and compare the connection, never `close(terminal_id)`: a device may have
+            # re-authenticated on a new connection since `all()` was read, and that fresh session
+            # must not be closed in place of the orphan. `remove_if_current` compares the
+            # connection too.
+            current = await self._registry.get(session.terminal_id)
+            if current is None or current.connection_id != session.connection_id:
+                continue
+            log_with_fields(
+                logger,
+                30,
+                "orphaned_session_closed",
+                terminal_id=current.terminal_id,
+                connection_id=current.connection_id,
+            )
+            current.mark_offline()
+            await self._registry.remove_if_current(current.terminal_id, current)
+            await self._on_device_offline(current, "connection_lost")
+            closed += 1
+        return closed
 
     async def close(self, terminal_id: str, *, reason: str) -> None:
         """Phase 3.4 §5's `close(terminal_id, reason)` — "emits device.offline" (here: fires
@@ -237,6 +321,7 @@ class DeviceSessionManager:
         ]
         for terminal_id in expired:
             await self.close(terminal_id, reason="session_expired")
+        await self.close_orphaned_sessions()
 
     async def shutdown(self) -> None:
         """Graceful shutdown: stop the sweep, close every remaining device session."""

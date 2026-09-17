@@ -164,6 +164,7 @@ class Jt808Server(DeviceProtocolAdapter):
             close_connection=self._close_connection,
             on_device_online=self._on_device_online,
             on_device_offline=self._on_device_offline,
+            is_connection_open=self._is_connection_open,
         )
         self._parser = PacketParser()
 
@@ -245,8 +246,13 @@ class Jt808Server(DeviceProtocolAdapter):
     async def _close_connection(self, connection_id: str, reason: str) -> None:
         await self._manager.close_connection(connection_id, reason=reason)
 
-    async def _send_frame(self, connection_id: str, data: bytes) -> None:
-        await self._manager.send_to_connection(connection_id, data)
+    async def _send_frame(self, connection_id: str, data: bytes) -> bool:
+        return await self._manager.send_to_connection(connection_id, data)
+
+    def _is_connection_open(self, connection_id: str) -> bool:
+        """Resolved at call time, like `_close_connection`/`_send_frame`: `DeviceSessionManager`
+        is built before `ConnectionManager` (see this module's docstring)."""
+        return self._manager.is_connection_open(connection_id)
 
     async def _on_device_online(self, session: DeviceSession) -> None:
         """Wired into `DeviceSessionManager` (device-gateway Redis integration) so the
@@ -388,6 +394,13 @@ class Jt808Server(DeviceProtocolAdapter):
             raise
 
     async def start(self) -> None:
+        # C8 (2026-09-17): before accepting any connection, close every session this process
+        # does not hold a socket for — with the Redis registry, sessions left behind by a
+        # previous gateway process (crash, container restart). Each is reported `DeviceOffline`
+        # so the business plane stops showing the device online until it genuinely reconnects.
+        orphaned = await self._device_sessions.close_orphaned_sessions()
+        if orphaned:
+            log_with_fields(logger, 30, "stale_sessions_closed_at_startup", count=orphaned)
         self._server = await asyncio.start_server(
             self._manager.handle_client, host=self._config.host, port=self._config.port
         )

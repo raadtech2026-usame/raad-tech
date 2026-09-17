@@ -42,7 +42,9 @@ class AvAttributesHandler(MessageHandler):
     async def handle(
         self, message: InboundMessage, context: HandlerContext
     ) -> HandlerResult:
-        session = await context.device_sessions.resolve(message.terminal_id)
+        session = await context.device_sessions.resolve_for_connection(
+            message.terminal_id, context.connection_id
+        )
         if session is None:
             log_with_fields(
                 logger,

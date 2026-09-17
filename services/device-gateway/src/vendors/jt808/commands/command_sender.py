@@ -33,7 +33,7 @@ from src.vendors.jt808.dispatcher.dispatcher import OutboundSerialCounter
 from src.vendors.jt808.protocol.encoder import build_frame
 from src.session.device_session_manager import DeviceSessionManager
 
-SendFrame = Callable[[str, bytes], Awaitable[None]]
+SendFrame = Callable[[str, bytes], Awaitable[bool | None]]
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 15.0
 
@@ -128,7 +128,11 @@ class CommandSender:
         and the actual write all happen in one uninterrupted critical section, and the
         inter-command gap is genuinely enforced rather than raced past by a concurrent caller."""
         await self._await_command_gap(terminal_id)
-        session = await self._device_sessions.resolve(terminal_id)
+        # C8 (2026-09-17): only a session whose socket is open in this process. `resolve()`
+        # also returned stale sessions (e.g. left in Redis by a previous gateway process), and
+        # the command was then "sent" to a connection that no longer existed, registered as
+        # pending, and reported as timed out 15 s later instead of as offline.
+        session = await self._device_sessions.resolve_live(terminal_id)
         if session is None:
             await self._publish_result(
                 terminal_id=terminal_id,
@@ -159,7 +163,24 @@ class CommandSender:
             organization_id=session.organization_id,
             timeout_seconds=timeout_seconds or self._default_timeout_seconds,
         )
-        await self._send(session.connection_id, frame)
+        sent = await self._send(session.connection_id, frame)
+        if sent is False:
+            # The socket closed between `resolve_live` and the write: nothing reached the device.
+            # (`None` is treated as sent, for `SendFrame` implementations that return nothing.)
+            self._pending.resolve(
+                terminal_id=terminal_id, message_id=message_id, serial_no=serial_no
+            )
+            await self._publish_result(
+                terminal_id=terminal_id,
+                organization_id=session.organization_id,
+                vehicle_id=session.vehicle_id,
+                device_id=session.device_id,
+                correlation_id=correlation_id,
+                message_id=message_id,
+                success=False,
+                reason="device_offline",
+            )
+            return False
         self._last_send_monotonic[terminal_id] = time.monotonic()
         return True
 

@@ -94,6 +94,12 @@ class Connection:
     def remote_address(self) -> str:
         return str(self._remote_address)
 
+    @property
+    def is_closing(self) -> bool:
+        """`True` from the moment `close()` starts: `send()` already drops frames from then on,
+        so a connection in this state can no longer deliver anything to the device."""
+        return self._closing
+
     def start(self) -> None:
         """Launches the read and write loops as background tasks. Separate from `__init__` so
         a caller (`ConnectionManager`) can register the connection/session *before* the read

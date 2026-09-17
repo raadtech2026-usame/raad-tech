@@ -39,7 +39,9 @@ class HeartbeatHandler(MessageHandler):
     async def handle(
         self, message: InboundMessage, context: HandlerContext
     ) -> HandlerResult:
-        await context.device_sessions.touch(message.terminal_id)
+        await context.device_sessions.touch(
+            message.terminal_id, connection_id=context.connection_id
+        )
 
         body = build_general_response_body(
             original_serial_no=message.serial_no,

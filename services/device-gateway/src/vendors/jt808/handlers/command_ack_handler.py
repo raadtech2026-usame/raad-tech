@@ -47,6 +47,23 @@ class CommandAckHandler(MessageHandler):
     async def handle(
         self, message: InboundMessage, context: HandlerContext
     ) -> HandlerResult:
+        # C8 (2026-09-17): only the connection holding the terminal's authenticated session may
+        # acknowledge its commands. Without this, any socket presenting the terminal ID could
+        # claim (and so consume) a pending command's result — e.g. report a `0x9101` accepted
+        # that the real device never received.
+        session = await context.device_sessions.resolve_for_connection(
+            message.terminal_id, context.connection_id
+        )
+        if session is None:
+            log_with_fields(
+                logger,
+                30,
+                "command_ack_dropped_unauthenticated",
+                connection_id=context.connection_id,
+                terminal_id=message.terminal_id,
+            )
+            return HandlerResult.no_response()
+
         ack = parse_terminal_general_response(message.body)
 
         pending = self._pending.resolve(

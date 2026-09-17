@@ -130,7 +130,9 @@ class LocationHandler(MessageHandler):
     async def handle(
         self, message: InboundMessage, context: HandlerContext
     ) -> HandlerResult:
-        session = await context.device_sessions.resolve(message.terminal_id)
+        session = await context.device_sessions.resolve_for_connection(
+            message.terminal_id, context.connection_id
+        )
         if (
             session is None
             or session.device_id is None
@@ -147,7 +149,9 @@ class LocationHandler(MessageHandler):
             )
             return _general_response(message, RESULT_FAILURE)
 
-        await context.device_sessions.touch(message.terminal_id)
+        await context.device_sessions.touch(
+            message.terminal_id, connection_id=context.connection_id
+        )
 
         try:
             report = parse_position_report_body(message.body)

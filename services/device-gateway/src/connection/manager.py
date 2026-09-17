@@ -117,15 +117,25 @@ class ConnectionManager:
         if connection is not None:
             await connection.close(reason=reason)
 
-    async def send_to_connection(self, connection_id: str, data: bytes) -> None:
+    def is_connection_open(self, connection_id: str) -> bool:
+        """Whether `connection_id` is a socket this process currently holds and is not closing
+        (2026-09-17, C8). Connection IDs are per-process UUIDs, so an ID recorded by an earlier
+        gateway process — a stale session left in Redis — is never open here."""
+        connection = self._connections.get(connection_id)
+        return connection is not None and not connection.is_closing
+
+    async def send_to_connection(self, connection_id: str, data: bytes) -> bool:
         """Public entry point for other layers to send bytes on a specific connection (Phase
         9.4 addition — the Message Dispatcher's automatic-response mechanism, `dispatcher/
         dispatcher.py`) without needing direct access to the `Connection` object. A no-op if
         the connection is already gone (the terminal disconnected before the response could
-        be sent — not an error, nothing to notify)."""
-        connection = self._connections.get(connection_id)
-        if connection is not None:
-            await connection.send(data)
+        be sent — not an error, nothing to notify). Returns whether the bytes were queued for
+        an open connection (2026-09-17), so a platform-initiated command can tell "sent" from
+        "the socket was already gone" instead of waiting out its timeout."""
+        if not self.is_connection_open(connection_id):
+            return False
+        await self._connections[connection_id].send(data)
+        return True
 
     def start_sweep(self) -> None:
         self._sweep_task = asyncio.create_task(self._sweep_loop())

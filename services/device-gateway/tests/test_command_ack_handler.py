@@ -39,14 +39,43 @@ def _make_message(*, original_serial_no: int, original_message_id: int, result: 
     )
 
 
-def _make_context() -> HandlerContext:
+async def _make_context(
+    *, connection_id: str = "conn-1", authenticated_connection_id: str | None = "conn-1"
+) -> HandlerContext:
+    """A handler context on `connection_id`. The terminal's session is authenticated on
+    `authenticated_connection_id` (the same connection by default; `None` for no session at
+    all) — since C8 an acknowledgement is only accepted from that connection."""
+
     async def _noop_close(connection_id: str, reason: str) -> None:
         return None
 
     device_sessions = DeviceSessionManager(
         registry=DeviceSessionRegistry(), close_connection=_noop_close
     )
-    return HandlerContext(connection_id="conn-1", device_sessions=device_sessions)
+    if authenticated_connection_id is not None:
+        await device_sessions.create(
+            connection_id=authenticated_connection_id,
+            terminal_id=_PHONE,
+            device_id="device-1",
+            vehicle_id="vehicle-1",
+            organization_id="org-1",
+        )
+    return HandlerContext(connection_id=connection_id, device_sessions=device_sessions)
+
+
+def _pending_9101(serial_no: int = 5) -> PendingCommandTracker:
+    pending = PendingCommandTracker()
+    pending.register(
+        terminal_id=_PHONE,
+        message_id=0x9101,
+        serial_no=serial_no,
+        correlation_id="corr-1",
+        device_id="device-1",
+        vehicle_id="vehicle-1",
+        organization_id="org-1",
+        timeout_seconds=30.0,
+    )
+    return pending
 
 
 class CommandAckHandlerTests(unittest.IsolatedAsyncioTestCase):
@@ -66,7 +95,7 @@ class CommandAckHandlerTests(unittest.IsolatedAsyncioTestCase):
         handler = CommandAckHandler(pending, publisher)
 
         message = _make_message(original_serial_no=5, original_message_id=0x9101, result=0)
-        result = await handler.handle(message, _make_context())
+        result = await handler.handle(message, await _make_context())
 
         self.assertIsNone(result.response_message_id)
         self.assertEqual(len(publisher.published), 1)
@@ -93,7 +122,7 @@ class CommandAckHandlerTests(unittest.IsolatedAsyncioTestCase):
         handler = CommandAckHandler(pending, publisher)
 
         message = _make_message(original_serial_no=2, original_message_id=0x9201, result=1)
-        await handler.handle(message, _make_context())
+        await handler.handle(message, await _make_context())
 
         event = publisher.published[0]
         self.assertFalse(event.success)
@@ -105,10 +134,48 @@ class CommandAckHandlerTests(unittest.IsolatedAsyncioTestCase):
         handler = CommandAckHandler(pending, publisher)
 
         message = _make_message(original_serial_no=99, original_message_id=0x9101, result=0)
-        result = await handler.handle(message, _make_context())
+        result = await handler.handle(message, await _make_context())
 
         self.assertEqual(publisher.published, [])
         self.assertIsNone(result.response_message_id)
+
+    async def test_ack_from_a_connection_with_no_session_is_dropped_and_leaves_the_command_pending(
+        self,
+    ) -> None:
+        """C8 (b): an unauthenticated connection presenting the terminal ID cannot report a
+        command's result — and must not consume the pending entry the real device will answer."""
+        pending = _pending_9101()
+        publisher = RecordingEventPublisher()
+        handler = CommandAckHandler(pending, publisher)
+
+        message = _make_message(original_serial_no=5, original_message_id=0x9101, result=0)
+        result = await handler.handle(
+            message, await _make_context(authenticated_connection_id=None)
+        )
+
+        self.assertIsNone(result.response_message_id)
+        self.assertEqual(publisher.published, [])
+        self.assertEqual(len(pending), 1)
+
+    async def test_ack_from_a_different_connection_than_the_authenticated_one_is_dropped(
+        self,
+    ) -> None:
+        """C8 (d): the terminal is authenticated on `conn-real`; a second socket claiming the same
+        terminal ID cannot acknowledge its commands."""
+        pending = _pending_9101()
+        publisher = RecordingEventPublisher()
+        handler = CommandAckHandler(pending, publisher)
+
+        message = _make_message(original_serial_no=5, original_message_id=0x9101, result=0)
+        await handler.handle(
+            message,
+            await _make_context(
+                connection_id="conn-impostor", authenticated_connection_id="conn-real"
+            ),
+        )
+
+        self.assertEqual(publisher.published, [])
+        self.assertEqual(len(pending), 1)
 
 
 if __name__ == "__main__":

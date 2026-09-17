@@ -10,7 +10,7 @@ is now `await`ed — `DeviceSessionRegistry.get`/`find_by_connection_id`/`count`
 import asyncio
 import unittest
 
-from src.session.device_session import DeviceConnectivityState
+from src.session.device_session import DeviceConnectivityState, DeviceSession
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
 
@@ -318,6 +318,168 @@ class RegistryConsistencyTests(unittest.IsolatedAsyncioTestCase):
         found = await registry.find_by_connection_id("conn-1")
         self.assertIs(found, session)
         self.assertIsNone(await registry.find_by_connection_id("no-such-connection"))
+
+
+class ConnectionBoundSessionTests(unittest.IsolatedAsyncioTestCase):
+    """C8 (2026-09-17, security and correctness): a session is usable only on the connection that
+    authenticated it, and only while that connection is open in this process."""
+
+    async def asyncSetUp(self) -> None:
+        self.open_connections: set[str] = set()
+        self.offline: list[tuple[str, str, str]] = []
+        self.online: list[str] = []
+
+        async def _on_offline(session, reason):
+            self.offline.append((session.terminal_id, session.connection_id, reason))
+
+        async def _on_online(session):
+            self.online.append(session.connection_id)
+
+        self.registry = DeviceSessionRegistry()
+        self.closer = RecordingCloser()
+        self.manager = DeviceSessionManager(
+            registry=self.registry,
+            close_connection=self.closer,
+            on_device_offline=_on_offline,
+            on_device_online=_on_online,
+            is_connection_open=lambda connection_id: connection_id in self.open_connections,
+        )
+
+    async def _authenticate(self, connection_id: str, terminal_id: str = "TERM-1"):
+        self.open_connections.add(connection_id)
+        return await self.manager.create(
+            connection_id=connection_id,
+            terminal_id=terminal_id,
+            device_id="device-1",
+            vehicle_id="vehicle-1",
+            organization_id="org-1",
+        )
+
+    async def test_a_valid_authenticated_connection_resolves_its_session(self) -> None:
+        await self._authenticate("conn-A")
+
+        session = await self.manager.resolve_for_connection("TERM-1", "conn-A")
+
+        self.assertIsNotNone(session)
+        self.assertEqual(session.connection_id, "conn-A")
+        self.assertIsNotNone(await self.manager.resolve_live("TERM-1"))
+
+    async def test_b_an_unauthenticated_connection_cannot_use_another_connections_session(
+        self,
+    ) -> None:
+        await self._authenticate("conn-A")
+        self.open_connections.add("conn-intruder")  # open socket, never authenticated
+
+        self.assertIsNone(await self.manager.resolve_for_connection("TERM-1", "conn-intruder"))
+        self.assertIsNone(await self.manager.resolve_for_connection("TERM-UNKNOWN", "conn-A"))
+
+    async def test_b_touch_from_another_connection_neither_refreshes_nor_brings_online(
+        self,
+    ) -> None:
+        session = await self._authenticate("conn-A")
+        last_seen_before = session.last_seen_at
+
+        await self.manager.touch("TERM-1", connection_id="conn-intruder")
+
+        current = await self.registry.get("TERM-1")
+        self.assertEqual(current.state, DeviceConnectivityState.AUTHENTICATED)
+        self.assertEqual(current.last_seen_at, last_seen_before)
+        self.assertEqual(self.online, [])
+
+        await self.manager.touch("TERM-1", connection_id="conn-A")
+        self.assertEqual(current.state, DeviceConnectivityState.ONLINE)
+        self.assertEqual(self.online, ["conn-A"])
+
+    async def test_c_stale_session_from_a_previous_process_is_unusable_and_closed(self) -> None:
+        """A session left in the registry by an earlier gateway process: its connection ID was
+        never opened by this process."""
+        await self.registry.add_exclusive(
+            DeviceSession(
+                terminal_id="TERM-1",
+                connection_id="conn-previous-process",
+                device_id="device-1",
+                vehicle_id="vehicle-1",
+                organization_id="org-1",
+            )
+        )
+        self.open_connections.add("conn-new")  # a new socket presenting the same terminal ID
+
+        self.assertIsNone(await self.manager.resolve_for_connection("TERM-1", "conn-new"))
+        self.assertIsNone(
+            await self.manager.resolve_for_connection("TERM-1", "conn-previous-process")
+        )
+        self.assertIsNone(await self.manager.resolve_live("TERM-1"))
+
+        closed = await self.manager.close_orphaned_sessions()
+
+        self.assertEqual(closed, 1)
+        self.assertIsNone(await self.registry.get("TERM-1"))
+        self.assertEqual(
+            self.offline, [("TERM-1", "conn-previous-process", "connection_lost")]
+        )
+
+    async def test_d_same_terminal_on_a_new_connection_moves_the_session(self) -> None:
+        await self._authenticate("conn-old")
+        await self._authenticate("conn-new")  # supersedes conn-old
+
+        self.assertEqual(self.closer.calls, [("conn-old", "superseded")])
+        self.assertIsNone(await self.manager.resolve_for_connection("TERM-1", "conn-old"))
+        self.assertIsNotNone(await self.manager.resolve_for_connection("TERM-1", "conn-new"))
+        self.assertEqual((await self.manager.resolve_live("TERM-1")).connection_id, "conn-new")
+
+    async def test_e_disconnected_socket_is_never_resolved_and_is_swept(self) -> None:
+        """The socket is gone but its session was not removed (e.g. the registry refused the
+        delete while Redis was full): nothing may use it, and the next sweep closes it."""
+        await self._authenticate("conn-A")
+        self.open_connections.discard("conn-A")
+
+        self.assertIsNone(await self.manager.resolve_for_connection("TERM-1", "conn-A"))
+        self.assertIsNone(await self.manager.resolve_live("TERM-1"))
+
+        await self.manager._sweep_once(timeout_seconds=3600)
+
+        self.assertIsNone(await self.registry.get("TERM-1"))
+        self.assertEqual(self.offline, [("TERM-1", "conn-A", "connection_lost")])
+
+    async def test_f_orphan_cleanup_never_closes_a_session_that_just_reconnected(self) -> None:
+        """Reconnect race: the sweep reads an orphaned session, and before it acts the device
+        re-authenticates on a new connection. The fresh session must survive."""
+        await self.registry.add_exclusive(
+            DeviceSession(terminal_id="TERM-1", connection_id="conn-dead")
+        )
+        original_all = self.registry.all
+
+        async def _all_then_reconnect():
+            snapshot = await original_all()
+            await self._authenticate("conn-fresh")  # replaces the stale entry mid-sweep
+            return snapshot
+
+        self.registry.all = _all_then_reconnect
+
+        closed = await self.manager.close_orphaned_sessions()
+
+        self.assertEqual(closed, 0)
+        self.assertEqual((await self.registry.get("TERM-1")).connection_id, "conn-fresh")
+        self.assertEqual(self.offline, [])
+
+    async def test_f_concurrent_terminals_are_isolated_from_each_other(self) -> None:
+        await self._authenticate("conn-A", terminal_id="TERM-A")
+        await self._authenticate("conn-B", terminal_id="TERM-B")
+
+        self.assertIsNone(await self.manager.resolve_for_connection("TERM-B", "conn-A"))
+        self.assertIsNone(await self.manager.resolve_for_connection("TERM-A", "conn-B"))
+        self.assertIsNotNone(await self.manager.resolve_for_connection("TERM-A", "conn-A"))
+        self.assertIsNotNone(await self.manager.resolve_for_connection("TERM-B", "conn-B"))
+
+    async def test_without_a_liveness_check_behaviour_is_unchanged(self) -> None:
+        """The dormant LSZ adapter constructs the manager without `is_connection_open`: orphan
+        cleanup is then a no-op, and only connection identity is checked."""
+        manager, _registry, _closer = make_manager()
+        await manager.create(connection_id="conn-A", terminal_id="TERM-1")
+
+        self.assertEqual(await manager.close_orphaned_sessions(), 0)
+        self.assertIsNotNone(await manager.resolve_for_connection("TERM-1", "conn-A"))
+        self.assertIsNone(await manager.resolve_for_connection("TERM-1", "conn-B"))
 
 
 if __name__ == "__main__":
