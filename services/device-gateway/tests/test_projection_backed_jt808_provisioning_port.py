@@ -279,25 +279,136 @@ class ProjectionBackedJt808ProvisioningPortTests(unittest.IsolatedAsyncioTestCas
         self.assertTrue(result.is_valid)
         self.assertEqual(result.device_id, "device-1")
 
-    async def test_a_verified_code_cannot_be_replayed(self) -> None:
-        """The fix for the overlapping-registration bug must not reopen a replay hole: once a
-        pending code has been successfully used, it is removed and a second presentation of the
-        same code fails closed, even though sibling still-pending codes remain valid."""
-        projection = _provisionable_projection()
-        port = ProjectionBackedJt808ProvisioningPort(projection)
-
+    async def test_same_code_authenticates_on_first_connection_and_every_reconnect(
+        self,
+    ) -> None:
+        """Regression test for the 2026-09-17 fix. The supplier spec (§7.1.1–§7.1.3) has the
+        terminal store the code from `0x8100` and present it again on every reconnect, without
+        re-registering. The previous implementation deleted the hash after the first success, so
+        the device's second or third reconnect failed closed and it lost its session."""
+        port = ProjectionBackedJt808ProvisioningPort(_provisionable_projection())
         registration = await port.authorize_registration(
             terminal_phone="013800138000", request=None
         )
-        first_result = await port.verify_auth_code(
-            terminal_phone="013800138000", auth_code=registration.auth_code
-        )
-        self.assertTrue(first_result.is_valid)
 
-        replay_result = await port.verify_auth_code(
-            terminal_phone="013800138000", auth_code=registration.auth_code
+        for attempt in range(1, 6):  # first connection, then four reconnects
+            result = await port.verify_auth_code(
+                terminal_phone="013800138000", auth_code=registration.auth_code
+            )
+            self.assertTrue(result.is_valid, f"authentication attempt {attempt} failed")
+            self.assertEqual(result.device_id, "device-1")
+
+    async def test_repeated_authentication_never_admits_a_wrong_or_tampered_code(self) -> None:
+        """Keeping a verified code valid must not loosen verification: after the real code has
+        authenticated several times, an unrelated code, a one-character tamper of the real code,
+        and an empty code all still fail closed."""
+        port = ProjectionBackedJt808ProvisioningPort(_provisionable_projection())
+        registration = await port.authorize_registration(
+            terminal_phone="013800138000", request=None
         )
-        self.assertFalse(replay_result.is_valid)
+        for _ in range(3):
+            await port.verify_auth_code(
+                terminal_phone="013800138000", auth_code=registration.auth_code
+            )
+
+        real = registration.auth_code
+        tampered = real[:-1] + ("A" if real[-1] != "A" else "B")
+        for presented in ("WRONG-CODE", tampered, ""):
+            result = await port.verify_auth_code(
+                terminal_phone="013800138000", auth_code=presented
+            )
+            self.assertFalse(result.is_valid, f"accepted {presented!r}")
+            self.assertIsNone(result.device_id)
+
+    async def test_valid_code_is_rejected_for_a_different_terminal(self) -> None:
+        """A code is bound to the terminal it was minted for: presenting it under another
+        terminal's identity fails closed."""
+        projection = _provisionable_projection()
+        projection.apply_event(
+            event_type="DeviceRegistered",
+            aggregate_id="device-2",
+            org_id="org-1",
+            payload={"terminal_id": "013800138999"},
+        )
+        projection.apply_event(
+            event_type="DeviceActivated", aggregate_id="device-2", org_id="org-1", payload={}
+        )
+        projection.apply_event(
+            event_type="DeviceAssignedToVehicle",
+            aggregate_id="assignment-2",
+            org_id="org-1",
+            payload={"device_id": "device-2", "vehicle_id": "vehicle-2"},
+        )
+        port = ProjectionBackedJt808ProvisioningPort(projection)
+        registration = await port.authorize_registration(
+            terminal_phone="013800138000", request=None
+        )
+        await port.authorize_registration(terminal_phone="013800138999", request=None)
+
+        result = await port.verify_auth_code(
+            terminal_phone="013800138999", auth_code=registration.auth_code
+        )
+        self.assertFalse(result.is_valid)
+
+    async def test_code_in_active_use_outlives_older_unused_codes_under_eviction(self) -> None:
+        """A verified code moves to the most-recently-used end, so a later burst of
+        re-registrations evicts abandoned codes before the one the device is actually using.
+        Without that, the code below (minted first) would be the first evicted."""
+        port = ProjectionBackedJt808ProvisioningPort(_provisionable_projection())
+        in_use = await port.authorize_registration(terminal_phone="013800138000", request=None)
+        abandoned = [
+            await port.authorize_registration(terminal_phone="013800138000", request=None)
+            for _ in range(4)
+        ]
+        self.assertTrue(
+            (
+                await port.verify_auth_code(
+                    terminal_phone="013800138000", auth_code=in_use.auth_code
+                )
+            ).is_valid
+        )
+
+        for _ in range(4):  # 9 codes minted in total, bound is 8: exactly one is evicted
+            await port.authorize_registration(terminal_phone="013800138000", request=None)
+
+        self.assertTrue(
+            (
+                await port.verify_auth_code(
+                    terminal_phone="013800138000", auth_code=in_use.auth_code
+                )
+            ).is_valid
+        )
+        self.assertFalse(
+            (
+                await port.verify_auth_code(
+                    terminal_phone="013800138000", auth_code=abandoned[0].auth_code
+                )
+            ).is_valid
+        )
+
+    async def test_code_keeps_authenticating_across_reconnects_after_a_restart_replay(
+        self,
+    ) -> None:
+        """A device-gateway restart rebuilds the hash from `DeviceAuthCodeIssued`; the device's
+        stored code must then keep working on every reconnect, not just the first."""
+        registration = await ProjectionBackedJt808ProvisioningPort(
+            _provisionable_projection()
+        ).authorize_registration(terminal_phone="013800138000", request=None)
+
+        restarted = _provisionable_projection()
+        restarted.apply_event(
+            event_type="DeviceAuthCodeIssued",
+            aggregate_id="device-1",
+            org_id="org-1",
+            payload={"auth_key_hash": registration.auth_key_hash},
+        )
+        port = ProjectionBackedJt808ProvisioningPort(restarted)
+
+        for _ in range(3):
+            result = await port.verify_auth_code(
+                terminal_phone="013800138000", auth_code=registration.auth_code
+            )
+            self.assertTrue(result.is_valid)
 
     async def test_pending_codes_beyond_the_bound_are_evicted_oldest_first(self) -> None:
         """`DeviceRecord.auth_key_hashes` is bounded (`_MAX_PENDING_AUTH_KEY_HASHES`), not

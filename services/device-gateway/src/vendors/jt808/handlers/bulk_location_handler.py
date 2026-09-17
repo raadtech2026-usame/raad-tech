@@ -5,9 +5,17 @@ docstring for why the whole message is treated uniformly rather than varying per
 primary spec's `position_data_type` byte.
 
 **Shares every architectural decision `location_handler.py` documents**: no `TrackingApplicationService`
-call, no geofence-evaluation trigger, authenticated-session-required-or-drop-with-audit-log, no
-wire response. Not repeated here in full — see that module's docstring for the resolved
-direct-call-vs-event-driven conflict record.
+call, no geofence-evaluation trigger, authenticated-session-required-or-drop-with-audit-log, and
+(since 2026-09-17) the same `0x8001` acknowledgement rules — `0` only after every item has been
+published, `1` without an authenticated session, `2` for an unparseable batch. Not repeated here
+in full — see that module's docstring for the spec citations.
+
+**Acknowledged once, for the whole message, echoing the serial number the parser exposes.** For a
+subpackaged `0x0704` that is the serial of the part that completed reassembly; the earlier parts
+are not acknowledged individually, because `PacketParser` consumes them before any handler runs.
+A publish failure part-way through a batch sends no acknowledgement, so the terminal resends the
+whole batch and the items published before the failure arrive twice — at-least-once delivery,
+consistent with the duplicate pass-through described below.
 
 **Event ordering is preserved by publishing sequentially, in wire order.** JT/T 808-2013 does
 not document that a device pre-sorts a batch's items by `event_time` before upload; `asyncio.
@@ -39,15 +47,34 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from src.vendors.jt808.dispatcher.general_response import (
+    GENERAL_RESPONSE_MESSAGE_ID,
+    RESULT_FAILURE,
+    RESULT_MESSAGE_ERROR,
+    RESULT_SUCCESS,
+    build_general_response_body,
+)
 from src.vendors.jt808.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
 from src.events.device_position_reported import DevicePositionReported
 from src.events.publisher_port import EventPublisher
 from src.gps_validation import is_plausible_coordinate
 from src.vendors.jt808.handlers.bulk_position_body import parse_bulk_position_report
 from src.logging_setup import get_logger, log_with_fields
+from src.vendors.jt808.protocol.exceptions import ProtocolError
 from src.vendors.jt808.protocol.message import InboundMessage
 
 logger = get_logger("jt808.handlers.bulk_location")
+
+
+def _general_response(message: InboundMessage, result: int) -> HandlerResult:
+    return HandlerResult(
+        response_message_id=GENERAL_RESPONSE_MESSAGE_ID,
+        response_body=build_general_response_body(
+            original_serial_no=message.serial_no,
+            original_message_id=message.message_id,
+            result=result,
+        ),
+    )
 
 
 class BulkLocationHandler(MessageHandler):
@@ -70,10 +97,24 @@ class BulkLocationHandler(MessageHandler):
                 "bulk_position_report_dropped_unauthenticated",
                 connection_id=context.connection_id,
                 terminal_id=message.terminal_id,
+                serial_no=message.serial_no,
             )
-            return HandlerResult.no_response()
+            return _general_response(message, RESULT_FAILURE)
 
-        batch = parse_bulk_position_report(message.body)
+        try:
+            batch = parse_bulk_position_report(message.body)
+        except ProtocolError as exc:
+            log_with_fields(
+                logger,
+                30,
+                "bulk_position_report_malformed",
+                connection_id=context.connection_id,
+                terminal_id=message.terminal_id,
+                serial_no=message.serial_no,
+                body_length=len(message.body),
+                error=str(exc),
+            )
+            return _general_response(message, RESULT_MESSAGE_ERROR)
 
         for report in batch.items:
             event = DevicePositionReported(
@@ -106,4 +147,4 @@ class BulkLocationHandler(MessageHandler):
             item_count=len(batch.items),
             position_data_type=batch.position_data_type,
         )
-        return HandlerResult.no_response()
+        return _general_response(message, RESULT_SUCCESS)

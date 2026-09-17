@@ -309,16 +309,47 @@ class DeviceGateway:
         await self.stop()
 
 
+def resolve_log_level(raw: str | None) -> tuple[int, bool]:
+    """`(level, recognized)` for a `DEVICE_GATEWAY_LOG_LEVEL` value. An empty or unset value is
+    INFO. An unrecognized value also falls back to INFO but reports `recognized=False`, so the
+    caller can say so instead of silently ignoring a typo. `logging.getLevelName`, not
+    `getattr(logging, ...)`: the latter also "resolves" non-level attributes such as
+    `BASIC_FORMAT` (a string), which then crashes `setLevel`."""
+    name = (raw or "").strip().upper()
+    if not name:
+        return logging.INFO, True
+    level = logging.getLevelName(name)
+    if isinstance(level, int):
+        return level, True
+    return logging.INFO, False
+
+
+def configure_gateway_logging(requested_level: str | None) -> int:
+    """Configures process logging from a `DEVICE_GATEWAY_LOG_LEVEL` value and states the
+    effective level as the first log line. The field is `effective_level`, not `level`:
+    `log_with_fields`'s own second parameter is named `level`, and passing it again as a field
+    raises `TypeError` — which crash-looped the gateway on startup the first time this line was
+    written (caught on the live dev stack, 2026-09-17)."""
+    level, recognized = resolve_log_level(requested_level)
+    configure_logging(level=level)
+    log_with_fields(
+        logger,
+        20 if recognized else 30,
+        "logging_configured" if recognized else "log_level_unrecognized",
+        effective_level=logging.getLevelName(level),
+        requested=requested_level,
+    )
+    return level
+
+
 async def main() -> None:
     # Env-configurable (2026-09-02), mirroring the Business API's own existing
     # RAAD_OBSERVABILITY__LOG_LEVEL convention - so raising this service to DEBUG for a
     # live diagnosis never requires editing code and rebuilding an image again. Defaults
     # to INFO, so no deployment behaves differently unless the variable is actually set.
-    configure_logging(
-        level=getattr(
-            logging, os.environ.get("DEVICE_GATEWAY_LOG_LEVEL", "INFO").upper(), logging.INFO
-        )
-    )
+    # Passed through by docker-compose.yml since 2026-09-17; before that, setting it in
+    # Coolify had no effect because no compose file forwarded it into the container.
+    configure_gateway_logging(os.environ.get("DEVICE_GATEWAY_LOG_LEVEL"))
     gateway = DeviceGateway()
     await gateway.serve_forever()
 

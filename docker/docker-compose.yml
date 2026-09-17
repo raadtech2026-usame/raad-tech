@@ -324,6 +324,12 @@ services:
       # `raad:events` (one event per GPS position report), so its own cap matters most. See
       # `src/broker_config.BrokerConfig.stream_max_length`.
       DEVICE_GATEWAY_STREAM_MAX_LENGTH: ${DEVICE_GATEWAY_STREAM_MAX_LENGTH:-0}
+      # `src/gateway.py` has read this since 2026-09-02, but nothing passed it into the container,
+      # so setting it in `docker/.env` or Coolify's environment UI changed nothing (found
+      # 2026-09-17). INFO shows connections, every parsed message, registration/authentication
+      # results and their replies; DEBUG adds every heartbeat/location acknowledgement and raw
+      # frame sizes. No level ever logs an auth code, its hash or a credential.
+      DEVICE_GATEWAY_LOG_LEVEL: ${DEVICE_GATEWAY_LOG_LEVEL:-INFO}
     ports:
       - "${DEVICE_GATEWAY_JT808_PORT:-7808}:7808"
       - "${DEVICE_GATEWAY_MDVR_PORT:-7809}:7809"

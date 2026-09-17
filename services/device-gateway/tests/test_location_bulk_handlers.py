@@ -16,7 +16,6 @@ from src.events.device_position_reported import DevicePositionReported
 from src.session.device_session import DeviceConnectivityState
 from src.vendors.jt808.handlers.bulk_location_handler import BulkLocationHandler
 from src.vendors.jt808.handlers.location_handler import LocationHandler
-from src.vendors.jt808.protocol.exceptions import MalformedFrameError
 from src.vendors.jt808.protocol.message import InboundMessage
 from src.session.device_session_manager import DeviceSessionManager
 from src.session.device_session_registry import DeviceSessionRegistry
@@ -26,15 +25,26 @@ TERMINAL_ID = "013800138000"
 
 
 def _make_message(
-    message_id: int, *, body: bytes, terminal_id: str = TERMINAL_ID
+    message_id: int, *, body: bytes, terminal_id: str = TERMINAL_ID, serial_no: int = 1
 ) -> InboundMessage:
     return InboundMessage(
         message_id=message_id,
         terminal_id=terminal_id,
-        serial_no=1,
+        serial_no=serial_no,
         body=body,
         encryption_method=0,
         received_at=datetime.now(timezone.utc),
+    )
+
+
+def _decode_general_response(result) -> tuple[int, int, int]:
+    """(original serial, original message id, result code) from a `0x8001` handler result —
+    Table 5.21's WORD/WORD/BYTE layout."""
+    body = result.response_body
+    return (
+        int.from_bytes(body[0:2], "big"),
+        int.from_bytes(body[2:4], "big"),
+        body[4],
     )
 
 
@@ -43,6 +53,19 @@ class RecordingEventPublisher:
         self.published: list[DevicePositionReported] = []
 
     async def publish(self, event: DevicePositionReported) -> None:
+        self.published.append(event)
+
+
+class FailingEventPublisher:
+    """Stands in for a broker write failure (e.g. Redis unreachable or out of memory)."""
+
+    def __init__(self, *, fail_on_call: int = 1) -> None:
+        self.published: list[DevicePositionReported] = []
+        self._fail_on_call = fail_on_call
+
+    async def publish(self, event: DevicePositionReported) -> None:
+        if len(self.published) + 1 == self._fail_on_call:
+            raise ConnectionError("broker unavailable")
         self.published.append(event)
 
 
@@ -81,7 +104,45 @@ class LocationHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(publisher.published), 1)
-        self.assertIsNone(result.response_message_id)  # no wire response, per design
+        # Supplier spec §7.8.1: 0x0200 is not a no-reply message, so it is acknowledged.
+        self.assertEqual(result.response_message_id, 0x8001)
+        self.assertEqual(_decode_general_response(result), (1, 0x0200, 0))
+        self.assertFalse(result.close_connection_after)
+
+    async def test_acknowledgement_echoes_the_reports_own_serial_number(self) -> None:
+        """The terminal matches a reply to its message by serial number and message ID (spec
+        §7.8.1: a mismatched reply must not end its wait), so both must be echoed verbatim."""
+        handler = LocationHandler(RecordingEventPublisher())
+        context = await self._authenticated_context()
+
+        for serial_no in (0, 0x1234, 0xFFFF):
+            result = await handler.handle(
+                _make_message(0x0200, body=_build_body(), serial_no=serial_no), context
+            )
+            self.assertEqual(_decode_general_response(result), (serial_no, 0x0200, 0))
+
+    async def test_publish_failure_sends_no_acknowledgement(self) -> None:
+        """A report RAAD failed to publish must stay unacknowledged, so the terminal retransmits
+        it rather than discarding a point that was never recorded."""
+        handler = LocationHandler(FailingEventPublisher())
+        context = await self._authenticated_context()
+
+        with self.assertRaises(ConnectionError):
+            await handler.handle(_make_message(0x0200, body=_build_body()), context)
+
+    async def test_fix_invalid_report_is_still_acknowledged_and_flagged(self) -> None:
+        """Acknowledging is about receipt, not GPS quality: the GPS-validity rule is unchanged
+        (the event still carries `is_gps_valid=False`), and the report is still answered."""
+        publisher = RecordingEventPublisher()
+        handler = LocationHandler(publisher)
+        context = await self._authenticated_context()
+
+        result = await handler.handle(
+            _make_message(0x0200, body=_build_body(status=0b0000)), context
+        )
+
+        self.assertFalse(publisher.published[0].is_gps_valid)
+        self.assertEqual(_decode_general_response(result), (1, 0x0200, 0))
 
     async def test_publisher_invocation_carries_resolved_identity(self) -> None:
         publisher = RecordingEventPublisher()
@@ -185,15 +246,22 @@ class LocationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(event.latitude, 39.908822)
         self.assertAlmostEqual(event.longitude, 116.397470)
 
-    async def test_malformed_position_body_raises_rather_than_publishes(self) -> None:
+    async def test_malformed_position_body_is_answered_with_message_error_not_published(
+        self,
+    ) -> None:
+        """Result `2` (message error, Table 5.21) stops the terminal retransmitting a body that
+        can never be parsed; nothing is published."""
         publisher = RecordingEventPublisher()
         handler = LocationHandler(publisher)
         context = await self._authenticated_context()
 
-        with self.assertRaises(MalformedFrameError):
-            await handler.handle(_make_message(0x0200, body=b"\x00" * 10), context)
+        result = await handler.handle(
+            _make_message(0x0200, body=b"\x00" * 10, serial_no=7), context
+        )
 
         self.assertEqual(publisher.published, [])
+        self.assertEqual(_decode_general_response(result), (7, 0x0200, 2))
+        self.assertFalse(result.close_connection_after)
 
     async def test_unauthenticated_terminal_drops_without_publishing_or_crashing(
         self,
@@ -217,6 +285,7 @@ class LocationHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(publisher.published, [])
         self.assertFalse(result.close_connection_after)  # dropped, connection untouched
+        self.assertEqual(_decode_general_response(result), (1, 0x0200, 1))  # failure
 
     async def test_session_missing_vehicle_id_drops_without_publishing(self) -> None:
         publisher = RecordingEventPublisher()
@@ -364,9 +433,27 @@ class BulkLocationHandlerTests(unittest.IsolatedAsyncioTestCase):
         context = await self._authenticated_context()
 
         body = self._bulk_body([_build_body(), _build_body(), _build_body()])
-        await handler.handle(_make_message(0x0704, body=body), context)
+        result = await handler.handle(
+            _make_message(0x0704, body=body, serial_no=0x0A0B), context
+        )
 
         self.assertEqual(len(publisher.published), 3)
+        # One acknowledgement for the whole batch, echoing its serial and message ID.
+        self.assertEqual(result.response_message_id, 0x8001)
+        self.assertEqual(_decode_general_response(result), (0x0A0B, 0x0704, 0))
+
+    async def test_publish_failure_part_way_through_a_batch_sends_no_acknowledgement(
+        self,
+    ) -> None:
+        publisher = FailingEventPublisher(fail_on_call=2)
+        handler = BulkLocationHandler(publisher)
+        context = await self._authenticated_context()
+
+        body = self._bulk_body([_build_body(), _build_body(), _build_body()])
+        with self.assertRaises(ConnectionError):
+            await handler.handle(_make_message(0x0704, body=body), context)
+
+        self.assertEqual(len(publisher.published), 1)
 
     async def test_all_batch_items_are_flagged_as_backfill(self) -> None:
         publisher = RecordingEventPublisher()
@@ -424,15 +511,17 @@ class BulkLocationHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(publisher.published, [])
 
-    async def test_malformed_batch_raises_rather_than_publishes(self) -> None:
+    async def test_malformed_batch_is_answered_with_message_error_not_published(self) -> None:
         publisher = RecordingEventPublisher()
         handler = BulkLocationHandler(publisher)
         context = await self._authenticated_context()
 
-        with self.assertRaises(MalformedFrameError):
-            await handler.handle(_make_message(0x0704, body=b"\x00"), context)
+        result = await handler.handle(
+            _make_message(0x0704, body=b"\x00", serial_no=9), context
+        )
 
         self.assertEqual(publisher.published, [])
+        self.assertEqual(_decode_general_response(result), (9, 0x0704, 2))
 
     async def test_batch_items_carry_gps_valid_per_item(self) -> None:
         """Root-cause fix — RAAD Live Tracking wrong-location investigation: each batch item's
@@ -470,6 +559,7 @@ class BulkLocationHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(publisher.published, [])
         self.assertFalse(result.close_connection_after)
+        self.assertEqual(_decode_general_response(result), (1, 0x0704, 1))  # failure
 
 
 if __name__ == "__main__":

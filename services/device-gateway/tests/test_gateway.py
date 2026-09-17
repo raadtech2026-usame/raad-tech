@@ -5,7 +5,10 @@ cleanly together.
 """
 
 import asyncio
+import contextlib
+import io
 import json
+import logging
 import unittest
 from datetime import datetime, timezone
 
@@ -13,7 +16,7 @@ from src.broker_config import BrokerConfig
 from src.cache_config import CacheConfig
 from src.events.device_position_reported import DevicePositionReported
 from src.events.redis_event_publisher import RedisEventPublisher
-from src.gateway import DeviceGateway
+from src.gateway import DeviceGateway, configure_gateway_logging, resolve_log_level
 from src.vendors.jt808.config import ServerConfig as Jt808Config
 from src.vendors.jt808.dispatcher import message_ids
 from src.vendors.jt808.protocol.checksum import compute_checksum
@@ -788,6 +791,64 @@ class DeviceGatewayRedisWiringTests(unittest.IsolatedAsyncioTestCase):
                 writer.close()
         finally:
             await gateway.stop()
+
+
+class ResolveLogLevelTests(unittest.TestCase):
+    """`DEVICE_GATEWAY_LOG_LEVEL` parsing (2026-09-17, now actually passed through by
+    docker-compose.yml)."""
+
+    def test_unset_or_blank_is_info(self) -> None:
+        self.assertEqual(resolve_log_level(None), (logging.INFO, True))
+        self.assertEqual(resolve_log_level("  "), (logging.INFO, True))
+
+    def test_standard_names_resolve_case_insensitively(self) -> None:
+        self.assertEqual(resolve_log_level("debug"), (logging.DEBUG, True))
+        self.assertEqual(resolve_log_level(" Warning "), (logging.WARNING, True))
+        self.assertEqual(resolve_log_level("ERROR"), (logging.ERROR, True))
+
+    def test_unrecognized_value_falls_back_to_info_and_says_so(self) -> None:
+        self.assertEqual(resolve_log_level("verbose"), (logging.INFO, False))
+        # A non-level attribute of the logging module must not be mistaken for a level.
+        self.assertEqual(resolve_log_level("BASIC_FORMAT"), (logging.INFO, False))
+
+
+class ConfigureGatewayLoggingTests(unittest.TestCase):
+    """Runs the exact startup path `main()` uses, through the real JSON formatter on stdout.
+    Regression test: the first version of this startup line passed a field named `level`,
+    colliding with `log_with_fields`'s own parameter, and crash-looped the gateway container."""
+
+    def setUp(self) -> None:
+        root = logging.getLogger()
+        self._saved_handlers = list(root.handlers)
+        self._saved_level = root.level
+
+    def tearDown(self) -> None:
+        root = logging.getLogger()
+        root.handlers[:] = self._saved_handlers
+        root.setLevel(self._saved_level)
+
+    def _startup_lines(self, requested: str | None) -> tuple[int, list[dict]]:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            level = configure_gateway_logging(requested)
+        return level, [json.loads(line) for line in stdout.getvalue().splitlines() if line]
+
+    def test_recognized_level_is_applied_and_stated_at_startup(self) -> None:
+        level, lines = self._startup_lines("debug")
+
+        self.assertEqual(level, logging.DEBUG)
+        self.assertEqual(logging.getLogger().level, logging.DEBUG)
+        self.assertEqual(lines[0]["message"], "logging_configured")
+        self.assertEqual(lines[0]["effective_level"], "DEBUG")
+        self.assertEqual(lines[0]["requested"], "debug")
+
+    def test_unrecognized_level_falls_back_to_info_with_a_warning(self) -> None:
+        level, lines = self._startup_lines("verbose")
+
+        self.assertEqual(level, logging.INFO)
+        self.assertEqual(lines[0]["message"], "log_level_unrecognized")
+        self.assertEqual(lines[0]["level"], "WARNING")
+        self.assertEqual(lines[0]["effective_level"], "INFO")
 
 
 if __name__ == "__main__":

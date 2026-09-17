@@ -30,7 +30,9 @@ from src.vendors.jt808.handlers.provisioning_port import (
 )
 from src.vendors.jt808.protocol.checksum import compute_checksum
 from src.vendors.jt808.protocol.escaping import escape
+from src.vendors.jt808.protocol.framing import FrameBuffer
 from src.vendors.jt808.protocol.header import encode_bcd_phone
+from src.vendors.jt808.protocol.parser import PacketParser
 from src.vendors.jt808.protocol.strings import encode_gbk_string
 from src.vendors.jt808.server import Jt808Server
 from tests.test_position_body import _build_body
@@ -181,15 +183,82 @@ class PositionPipelineIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.publisher.positions), 3)
         self.assertTrue(all(event.is_backfill for event in self.publisher.positions))
 
-    async def test_position_report_sends_no_wire_response(self) -> None:
+    async def _read_response(self, reader: asyncio.StreamReader):
+        """Reads bytes off the real socket until one complete frame arrives, then decodes it
+        with the production `PacketParser` — so the assertion is about what actually reached
+        the device side of the TCP connection, not about a handler's return value."""
+        frame_buffer = FrameBuffer(max_frame_size=8192)
+        while True:
+            chunk = await asyncio.wait_for(reader.read(256), timeout=2.0)
+            self.assertTrue(chunk, "server closed the connection before responding")
+            frames = frame_buffer.feed(chunk)
+            if frames:
+                return PacketParser().parse(frames[0], received_at=datetime.now(timezone.utc))
+
+    async def test_position_report_is_acknowledged_on_the_wire_after_publishing(self) -> None:
+        """Receive -> parse -> process -> ACK over a real TCP socket: the device side reads a
+        platform general response `0x8001` addressed to its own terminal, echoing the report's
+        serial number and message ID with result 0 — and only once the position has reached the
+        publisher (supplier spec §7.8.1)."""
         reader, writer = await self._open_client()
         await self._authenticate(writer, reader)
 
-        writer.write(build_wire_frame(0x0200, TERMINAL_PHONE, 2, body=_build_body()))
+        writer.write(build_wire_frame(0x0200, TERMINAL_PHONE, 0x0203, body=_build_body()))
         await writer.drain()
+        ack = await self._read_response(reader)
 
-        with self.assertRaises(asyncio.TimeoutError):
-            await asyncio.wait_for(reader.read(64), timeout=0.3)
+        self.assertEqual(ack.message_id, 0x8001)
+        self.assertEqual(ack.terminal_id, TERMINAL_PHONE)
+        self.assertEqual(int.from_bytes(ack.body[0:2], "big"), 0x0203)  # original serial
+        self.assertEqual(int.from_bytes(ack.body[2:4], "big"), 0x0200)  # original message ID
+        self.assertEqual(ack.body[4], 0)  # success
+        self.assertEqual(len(self.publisher.positions), 1)
+        self.assertEqual(self.server.manager.connection_count, 1)
+
+    async def test_every_report_in_a_stream_gets_its_own_acknowledgement(self) -> None:
+        reader, writer = await self._open_client()
+        await self._authenticate(writer, reader)
+
+        for serial_no in (10, 11, 12):
+            writer.write(
+                build_wire_frame(0x0200, TERMINAL_PHONE, serial_no, body=_build_body())
+            )
+            await writer.drain()
+            ack = await self._read_response(reader)
+            self.assertEqual(int.from_bytes(ack.body[0:2], "big"), serial_no)
+            self.assertEqual(ack.body[4], 0)
+
+        self.assertEqual(len(self.publisher.positions), 3)
+
+    async def test_batch_report_is_acknowledged_on_the_wire(self) -> None:
+        reader, writer = await self._open_client()
+        await self._authenticate(writer, reader)
+
+        body = bulk_body([_build_body(), _build_body()])
+        writer.write(build_wire_frame(0x0704, TERMINAL_PHONE, 0x0301, body=body))
+        await writer.drain()
+        ack = await self._read_response(reader)
+
+        self.assertEqual(ack.message_id, 0x8001)
+        self.assertEqual(int.from_bytes(ack.body[0:2], "big"), 0x0301)
+        self.assertEqual(int.from_bytes(ack.body[2:4], "big"), 0x0704)
+        self.assertEqual(ack.body[4], 0)
+        self.assertEqual(len(self.publisher.positions), 2)
+
+    async def test_report_without_authentication_is_answered_with_failure_on_the_wire(
+        self,
+    ) -> None:
+        reader, writer = await self._open_client()  # never authenticates
+
+        writer.write(build_wire_frame(0x0200, TERMINAL_PHONE, 5, body=_build_body()))
+        await writer.drain()
+        ack = await self._read_response(reader)
+
+        self.assertEqual(ack.message_id, 0x8001)
+        self.assertEqual(int.from_bytes(ack.body[0:2], "big"), 5)
+        self.assertEqual(ack.body[4], 1)  # failure
+        self.assertEqual(self.publisher.published, [])
+        self.assertEqual(self.server.manager.connection_count, 1)
 
     async def test_position_report_before_authentication_is_dropped_not_crashed(
         self,

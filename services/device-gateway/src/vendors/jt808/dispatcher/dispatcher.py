@@ -41,6 +41,8 @@ from __future__ import annotations
 import asyncio
 from typing import Awaitable, Callable
 
+from src.vendors.jt808.dispatcher import message_ids
+from src.vendors.jt808.dispatcher.general_response import GENERAL_RESPONSE_MESSAGE_ID
 from src.vendors.jt808.dispatcher.handler import HandlerContext, MessageHandler
 from src.vendors.jt808.dispatcher.registry import HandlerRegistry
 from src.logging_setup import get_logger, log_with_fields
@@ -57,6 +59,26 @@ OnUnknownMessage = Callable[[InboundMessage], None]
 OnHandlerError = Callable[[InboundMessage, Exception], None]
 
 _SERIAL_NO_WRAP = 0x10000  # WORD — 16 bits
+
+#: Replies to these messages decide whether a connection ever becomes a session, and there is one
+#: per connection, so `response_frame_sent` is logged at INFO for them: "did the device get our
+#: 0x8100/0x8001, and with what result?" is the first question when a terminal connects but never
+#: comes online. Every other reply (one per heartbeat or position report) stays at DEBUG.
+_SESSION_ESTABLISHMENT_MESSAGE_IDS = frozenset(
+    {message_ids.REGISTRATION, message_ids.AUTHENTICATION}
+)
+
+#: Where the result code sits in a reply body: `0x8001` Table 5.21 (serial WORD, message ID WORD,
+#: result BYTE) and `0x8100` (serial WORD, result BYTE, then the auth code). Only this one byte is
+#: logged — never the body, which for `0x8100` carries the plaintext auth code.
+_RESULT_BYTE_OFFSET_BY_RESPONSE_ID = {GENERAL_RESPONSE_MESSAGE_ID: 4, 0x8100: 2}
+
+
+def _response_result_code(response_message_id: int, body: bytes) -> int | None:
+    offset = _RESULT_BYTE_OFFSET_BY_RESPONSE_ID.get(response_message_id)
+    if offset is None or len(body) <= offset:
+        return None
+    return body[offset]
 
 
 class OutboundSerialCounter:
@@ -172,10 +194,11 @@ class MessageDispatcher:
             self._on_unknown_message(message)
 
         if result.response_message_id is not None and result.response_body is not None:
+            response_serial_no = self._serial_counter.next()
             frame = build_frame(
                 message_id=result.response_message_id,
                 terminal_phone=message.terminal_id,
-                serial_no=self._serial_counter.next(),
+                serial_no=response_serial_no,
                 body=result.response_body,
             )
             try:
@@ -199,12 +222,18 @@ class MessageDispatcher:
                 raise
             log_with_fields(
                 logger,
-                10,
+                20 if message.message_id in _SESSION_ESTABLISHMENT_MESSAGE_IDS else 10,
                 "response_frame_sent",
                 connection_id=connection_id,
                 terminal_id=message.terminal_id,
                 message_id=f"0x{message.message_id:04x}",
+                serial_no=message.serial_no,
                 response_message_id=f"0x{result.response_message_id:04x}",
+                response_serial_no=response_serial_no,
+                result=_response_result_code(
+                    result.response_message_id, result.response_body
+                ),
+                frame_length=len(frame),
             )
 
         if result.close_connection_after:

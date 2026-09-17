@@ -31,16 +31,27 @@ with no bound `DeviceSession` (or one missing `device_id`/`vehicle_id`/`organiza
 dropped, without closing the connection (nothing in any approved document calls for a forced
 disconnect on this specific case, unlike registration/auth failure, JT808 Technical Design §4).
 
-**No wire response is sent.** JT808 Technical Design §8's Handler table lists this handler's
-`Emits:` column as `device.position_reported` (+ `device.alarm_raised` if flagged) only — no
-platform general response (`0x8001`) is documented for `0x0200`. The primary spec's only
-mention of a general-response reply for this message (§7.3.3, alarm handling: "平台可通过回复平
-台通用应答消息进行报警处理" — "the platform *may* reply with a platform general response to
-process an alarm") is optional ("可"/"may") and per-alarm-bit ("收到应答后清零" applies to some
-alarm bits, not others, per Table 24) — building that fine-grained ack-timing logic is
-notification/business-response territory this phase's own scope list excludes ("Do NOT
-implement: ... Notification delivery"), so this handler follows the documented Handler table
-literally and sends nothing.
+**Every report is answered with a platform general response `0x8001` (fix, 2026-09-17).** This
+handler originally sent nothing, following JT808 Technical Design §8's Handler table literally.
+The confirmed supplier specification (`mdvrdocs/MDVR-808-1078-spec.pdf`, ADR-0025) is explicit
+instead: §7.8.1 — "除消息定义明确标注无需应答外，发送方应等待通用应答或特定应答" (unless a message
+is explicitly marked as needing no reply, the sender waits for a general or specific response);
+§5.2.1 does not mark `0x0200` as no-reply (compare §5.1.3, where `0x0003` is); and §3.5.3 —
+after the maximum retransmissions without a valid reply the terminal treats the link as broken.
+An unacknowledged terminal therefore retransmits every report and eventually reconnects, which
+matched the connection churn seen in production over 4G. The reply echoes this report's own
+serial number and message ID (Table 5.21). Result codes:
+
+- `0` success — sent only **after** `publish()` returns. If the snapshot write or the publish
+  raises, no acknowledgement is sent, so the terminal retransmits instead of discarding a point
+  RAAD never recorded.
+- `1` failure — no authenticated session (§7.1.2: the connection must not be treated as online).
+  The connection stays open, unchanged.
+- `2` message error — the body could not be parsed (`ProtocolError`). Answering stops the
+  terminal from retransmitting a report that can never succeed; the fact is still logged.
+
+The alarm-specific acknowledgement (result `4`, §7.3) stays unbuilt: alarm handling is a separate
+business flow this handler does not implement.
 
 **Calls `touch()` on every accepted position, not just on `0x0002` heartbeats** (JT808
 device-plane integration gap — mirrors `vendors.lsz.handlers.position_handler.
@@ -75,6 +86,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from src.vendors.jt808.dispatcher.general_response import (
+    GENERAL_RESPONSE_MESSAGE_ID,
+    RESULT_FAILURE,
+    RESULT_MESSAGE_ERROR,
+    RESULT_SUCCESS,
+    build_general_response_body,
+)
 from src.vendors.jt808.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
 from src.events.device_position_reported import DevicePositionReported
 from src.events.publisher_port import EventPublisher
@@ -82,9 +100,21 @@ from src.gps_validation import is_plausible_coordinate
 from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
 from src.vendors.jt808.handlers.position_body import parse_position_report_body
 from src.logging_setup import get_logger, log_with_fields
+from src.vendors.jt808.protocol.exceptions import ProtocolError
 from src.vendors.jt808.protocol.message import InboundMessage
 
 logger = get_logger("jt808.handlers.location")
+
+
+def _general_response(message: InboundMessage, result: int) -> HandlerResult:
+    return HandlerResult(
+        response_message_id=GENERAL_RESPONSE_MESSAGE_ID,
+        response_body=build_general_response_body(
+            original_serial_no=message.serial_no,
+            original_message_id=message.message_id,
+            result=result,
+        ),
+    )
 
 
 class LocationHandler(MessageHandler):
@@ -113,12 +143,26 @@ class LocationHandler(MessageHandler):
                 "position_report_dropped_unauthenticated",
                 connection_id=context.connection_id,
                 terminal_id=message.terminal_id,
+                serial_no=message.serial_no,
             )
-            return HandlerResult.no_response()
+            return _general_response(message, RESULT_FAILURE)
 
         await context.device_sessions.touch(message.terminal_id)
 
-        report = parse_position_report_body(message.body)
+        try:
+            report = parse_position_report_body(message.body)
+        except ProtocolError as exc:
+            log_with_fields(
+                logger,
+                30,
+                "position_report_malformed",
+                connection_id=context.connection_id,
+                terminal_id=message.terminal_id,
+                serial_no=message.serial_no,
+                body_length=len(message.body),
+                error=str(exc),
+            )
+            return _general_response(message, RESULT_MESSAGE_ERROR)
         is_gps_valid = report.gps_valid and is_plausible_coordinate(
             report.latitude, report.longitude
         )
@@ -151,4 +195,4 @@ class LocationHandler(MessageHandler):
             is_backfill=False,
             is_gps_valid=is_gps_valid,
         )
-        return HandlerResult.no_response()
+        return _general_response(message, RESULT_SUCCESS)

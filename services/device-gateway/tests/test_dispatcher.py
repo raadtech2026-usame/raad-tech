@@ -298,6 +298,61 @@ class ResponseSendObservabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.extra_fields["message_id"], "0x0002")
         self.assertEqual(record.extra_fields["response_message_id"], "0x8001")
 
+    async def test_session_establishment_replies_are_logged_at_info_with_result_code(
+        self,
+    ) -> None:
+        """2026-09-17: the `0x8100`/`0x8001` answering a registration or authentication must be
+        visible at the default INFO level, with its result code, because it is the first thing
+        to check when a terminal connects but never comes online."""
+        cases = (
+            (0x0100, 0x8100, b"\x00\x07\x00" + "SECRET-AUTH-CODE".encode("gbk"), 0),
+            (0x0102, 0x8001, b"\x00\x08\x01\x02\x01", 1),
+        )
+        for inbound_id, response_id, body, expected_result in cases:
+            registry = HandlerRegistry()
+            registry.register(
+                inbound_id,
+                _RecordingHandler(
+                    result=HandlerResult(response_message_id=response_id, response_body=body)
+                ),
+            )
+            dispatcher, _, _ = make_dispatcher(registry=registry)
+
+            with self.assertLogs("jt808.dispatcher", level="INFO") as captured:
+                await dispatcher.dispatch("conn-1", make_message(inbound_id))
+
+            record = next(
+                r for r in captured.records if r.getMessage() == "response_frame_sent"
+            )
+            self.assertEqual(record.levelname, "INFO")
+            self.assertEqual(record.extra_fields["result"], expected_result)
+            self.assertEqual(record.extra_fields["response_message_id"], f"0x{response_id:04x}")
+            self.assertIn("response_serial_no", record.extra_fields)
+            # Only the result byte is ever logged — never the body, which for 0x8100 carries the
+            # plaintext auth code.
+            self.assertNotIn("SECRET-AUTH-CODE", repr(record.__dict__))
+
+    async def test_per_message_acknowledgements_stay_at_debug(self) -> None:
+        """Heartbeat/location acknowledgements are one per message, so they stay at DEBUG and
+        do not flood the default INFO log."""
+        registry = HandlerRegistry()
+        registry.register(
+            0x0200,
+            _RecordingHandler(
+                result=HandlerResult(
+                    response_message_id=0x8001, response_body=b"\x00\x01\x02\x00\x00"
+                )
+            ),
+        )
+        dispatcher, _, _ = make_dispatcher(registry=registry)
+
+        with self.assertLogs("jt808.dispatcher", level="DEBUG") as captured:
+            await dispatcher.dispatch("conn-1", make_message(0x0200))
+
+        record = next(r for r in captured.records if r.getMessage() == "response_frame_sent")
+        self.assertEqual(record.levelname, "DEBUG")
+        self.assertEqual(record.extra_fields["result"], 0)
+
     async def test_failed_send_logs_response_frame_send_failed_and_still_raises(self) -> None:
         handler = _RecordingHandler(
             result=HandlerResult(

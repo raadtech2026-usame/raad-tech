@@ -241,6 +241,45 @@ class DeviceRegistryProjectionTests(unittest.TestCase):
             ["hash-2", "hash-3", "hash-4", "hash-5", "hash-6", "hash-7", "hash-8", "hash-9"],
         )
 
+    def test_repeated_auth_code_issued_event_is_stored_once(self) -> None:
+        """This process reads its own `DeviceAuthCodeIssued` events back off `raad:events`, and a
+        restart replays them again. Before the 2026-09-17 fix each mint was stored twice, so
+        eight overlapping registrations could evict a code after only four."""
+        projection = DeviceRegistryProjection()
+        projection.apply_event(
+            event_type="DeviceRegistered",
+            aggregate_id=DEVICE,
+            org_id=ORG,
+            payload={"terminal_id": "TERM-1", "serial_number": "00007"},
+        )
+        record = projection.lookup_by_terminal_id("TERM-1")
+        record.add_auth_key_hash("hash-live")
+        for _ in range(3):
+            projection.apply_event(
+                event_type="DeviceAuthCodeIssued",
+                aggregate_id=DEVICE,
+                org_id=ORG,
+                payload={"auth_key_hash": "hash-live"},
+            )
+        self.assertEqual(record.auth_key_hashes, ["hash-live"])
+
+    def test_mark_auth_key_hash_used_moves_it_to_the_most_recently_used_end(self) -> None:
+        projection = DeviceRegistryProjection()
+        projection.apply_event(
+            event_type="DeviceRegistered",
+            aggregate_id=DEVICE,
+            org_id=ORG,
+            payload={"terminal_id": "TERM-1", "serial_number": "00007"},
+        )
+        record = projection.lookup_by_terminal_id("TERM-1")
+        for n in range(3):
+            record.add_auth_key_hash(f"hash-{n}")
+
+        record.mark_auth_key_hash_used("hash-0")
+        record.mark_auth_key_hash_used("not-held")  # unknown hash: no-op, never inserted
+
+        self.assertEqual(record.auth_key_hashes, ["hash-1", "hash-2", "hash-0"])
+
     def test_reactivate_after_suspend_restores_provisionability(self) -> None:
         projection = DeviceRegistryProjection()
         projection.apply_event(

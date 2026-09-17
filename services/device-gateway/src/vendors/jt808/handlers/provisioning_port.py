@@ -170,9 +170,15 @@ class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
     connections for the same terminal and re-registering on each before completing `0x0102` on
     any of them; checking only the single most-recently-minted hash meant an earlier connection's
     own, still-unused code was silently invalidated by a sibling connection's later registration
-    before the device ever got to use it. Any of the terminal's own recently-issued, not-yet-
-    consumed codes now verifies successfully — see `DeviceRecord.auth_key_hashes`'s own docstring
-    for the full incident. A matched hash is removed on success so a spent code can't be replayed.
+    before the device ever got to use it. Any of the terminal's own recently-issued codes now
+    verifies successfully — see `DeviceRecord.auth_key_hashes`'s own docstring for the full
+    incident.
+
+    **A verified code is never consumed (fix, 2026-09-17).** The terminal stores the code and
+    presents it again on every reconnect (supplier spec §7.1.1–§7.1.3), so a matched hash stays
+    valid and is only moved to the most-recently-used position. An unknown, tampered or evicted
+    code still fails closed exactly as before — see `DeviceRecord`'s module docstring for why
+    single use was never the security boundary.
     """
 
     def __init__(self, projection: DeviceRegistryProjection) -> None:
@@ -205,10 +211,12 @@ class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
         if record is None or not record.is_provisionable or not record.auth_key_hashes:
             return AuthenticationResult(is_valid=False)
 
+        # Most recently used first: on an ordinary reconnect that is the device's own code, so
+        # the PBKDF2 comparison usually succeeds on the first candidate.
         matched_hash = next(
             (
                 candidate
-                for candidate in record.auth_key_hashes
+                for candidate in reversed(record.auth_key_hashes)
                 if verify_code(auth_code, candidate)
             ),
             None,
@@ -216,7 +224,7 @@ class ProjectionBackedJt808ProvisioningPort(DeviceProvisioningPort):
         if matched_hash is None:
             return AuthenticationResult(is_valid=False)
 
-        record.auth_key_hashes.remove(matched_hash)
+        record.mark_auth_key_hash_used(matched_hash)
         return AuthenticationResult(
             is_valid=True,
             device_id=record.device_id,

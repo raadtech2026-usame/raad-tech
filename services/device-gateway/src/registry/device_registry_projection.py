@@ -51,10 +51,24 @@ silently invalidated by a sibling connection's later registration. `0x0102` then
 every time, indefinitely, with no code-level error anywhere (`verify_auth_code` correctly
 reports "wrong code," not a bug) — confirmed live: 19 registrations for one terminal in a 2-hour
 production window, only 1 ever reached `0x0102`, and that one failed for exactly this reason.
-Keeping the last `_MAX_PENDING_AUTH_KEY_HASHES` still-unconsumed hashes (oldest evicted first)
-lets any of a terminal's own recently-issued codes still authenticate, regardless of how many
-sibling registrations arrived in between — `verify_auth_code` removes a hash the instant it's
-successfully used, so a spent code still can't be replayed.
+Keeping the last `_MAX_PENDING_AUTH_KEY_HASHES` hashes (least recently used evicted first) lets
+any of a terminal's own recently-issued codes still authenticate, regardless of how many sibling
+registrations arrived in between.
+
+**A verified code stays valid — it is a long-lived credential, not a one-time token (fix,
+2026-09-17).** The 2026-09-15 change above also removed a hash the moment it verified, to stop a
+"spent" code being replayed. That contradicts the supplier specification
+(`mdvrdocs/MDVR-808-1078-spec.pdf` §7.1.1–§7.1.3): the terminal *stores* the code from `0x8100`
+and presents that same code in `0x0102` on every later reconnect, registering again only when it
+holds no valid code. Consuming it made every legitimate reconnect after the first fail closed.
+Security rests on what the code is — 192 random bits, platform-minted, stored only as a PBKDF2
+hash, rotated by a fresh `0x0100` — not on single use, which bought nothing real anyway: JT/T 808
+is plaintext TCP, so anyone positioned to replay a `0x0102` could equally have read the `0x8100`
+that issued it. A verified hash is instead moved to the most-recently-used end
+(`mark_auth_key_hash_used`), so the credential a device is actively using is the last to be
+evicted by later registration bursts. `add_auth_key_hash` ignores a hash it already holds: this
+process reads its own `DeviceAuthCodeIssued` events back off `raad:events`, and without that
+guard every mint was stored twice, silently halving the bound.
 """
 
 from __future__ import annotations
@@ -78,7 +92,7 @@ class DeviceRecord:
     #: ADR-0025 §3: hashes of the JT/T 808 `0x0102` credential(s), minted locally by
     #: `ProjectionBackedJt808ProvisioningPort.authorize_registration` on every successful
     #: `0x0100` (`fleet_device` never originates this value; the device-gateway process is the
-    #: one that mints it) and appended here immediately, oldest evicted past
+    #: one that mints it) and appended here immediately, least recently used evicted past
     #: `_MAX_PENDING_AUTH_KEY_HASHES`. Empty until a first successful registration mints one.
     #: Also fed by a replayed `DeviceAuthCodeIssued` broker event, the same as every other field
     #: on this record — `apply_event`'s own `DeviceAuthCodeIssued` branch — so
@@ -93,8 +107,15 @@ class DeviceRecord:
         return self.is_active and self.vehicle_id is not None
 
     def add_auth_key_hash(self, auth_key_hash: str) -> None:
+        if auth_key_hash in self.auth_key_hashes:
+            return
         self.auth_key_hashes.append(auth_key_hash)
         del self.auth_key_hashes[:-_MAX_PENDING_AUTH_KEY_HASHES]
+
+    def mark_auth_key_hash_used(self, auth_key_hash: str) -> None:
+        if auth_key_hash in self.auth_key_hashes:
+            self.auth_key_hashes.remove(auth_key_hash)
+            self.auth_key_hashes.append(auth_key_hash)
 
 
 _ACTIVATING_EVENTS = {"DeviceActivated", "DeviceReactivated"}

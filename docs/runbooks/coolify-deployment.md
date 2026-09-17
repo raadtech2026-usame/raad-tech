@@ -100,6 +100,7 @@ documents goes — **never** a committed `.env` file for this path. Set at minim
 | `RAAD_PAYMENT__PROVIDER` | `stripe`, once you're ready to accept real payments (ADR-0022) — leave unset until then; `POST /billing/payments` fails loudly with no bound provider rather than faking a charge, so there's no harm in deploying with this unset first and setting it later. |
 | `RAAD_PAYMENT__PROVIDER_CREDENTIALS` | `{"secret_key":"sk_live_...","webhook_secret":"whsec_..."}` — Stripe's real *secret* key and webhook signing secret. Composition-root/env-var only (ADR-0022) — this is exactly the kind of value that must live in Coolify's own environment-variable store, never in a committed file or in `SystemSetting` (`org_admin` holds `admin.settings.read`/`.update` too). |
 | `BACKUP_RCLONE_REMOTE` | As in `vps-deployment.md`, if an off-site backup destination is already provisioned. |
+| `DEVICE_GATEWAY_LOG_LEVEL` | Optional, default `INFO`. Set `DEBUG` temporarily while diagnosing a terminal (adds one line per heartbeat/location acknowledgement), then redeploy `device-gateway` back at `INFO`. No level logs an auth code, its hash or a credential. Only takes effect with a `docker-compose.coolify.full.yml` generated on or after 2026-09-17 — earlier versions never passed it into the container. |
 
 ## Step 4 — Assign domains
 
