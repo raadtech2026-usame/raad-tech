@@ -18,7 +18,7 @@ normally like any other field."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from raad.modules.fleet_device.domain.entities import (
     Camera,
@@ -62,6 +62,15 @@ def _naive(value: datetime | None) -> datetime | None:
     audit-mixin `created_at`/`updated_at` columns, which already get a naive value from
     `core.db.mixins.utcnow`'s own Python-level `default=`."""
     return value.replace(tzinfo=None) if value is not None and value.tzinfo else value
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    """The read-side inverse of `_naive`: a `DateTime(timezone=False)` column stores UTC, and a
+    value the domain compares against a tz-aware `Clock.now()` must come back tz-aware, or the
+    subtraction raises `TypeError` (CLAUDE.md, Permanent Engineering Lessons)."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
 
 
 # --- Vehicle ------------------------------------------------------------------------------
@@ -205,7 +214,8 @@ def model_to_device(model: DeviceModel) -> Device:
         auth_key_hash=model.auth_key_hash,
         last_seen_at=model.last_seen_at,
         is_online=model.is_online,
-        av_attributes_requested_at=model.av_attributes_requested_at,
+        # Aware on read: `Device.is_av_attributes_discovery_due` subtracts it from a tz-aware now.
+        av_attributes_requested_at=_aware_utc(model.av_attributes_requested_at),
         audio_capability=(
             AudioCapability(
                 codec=model.audio_codec,

@@ -9,7 +9,7 @@ emission.
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from raad.core.errors.exceptions import ConflictError, DomainError, RuleViolationError
 from raad.core.time.clock import Clock
@@ -465,6 +465,89 @@ class DeviceLifecycleTests(unittest.TestCase):
                 requested_at = datetime(2026, 8, 18, tzinfo=timezone.utc)
                 device.record_av_attributes_requested(requested_at)
                 self.assertEqual(device.av_attributes_requested_at, requested_at)
+
+    # --- is_av_attributes_discovery_due (2026-09-17 retry fix) ----------------------------
+
+    _RETRY_AFTER = timedelta(minutes=10)
+    _NOW = datetime(2026, 9, 17, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _online_device(self) -> Device:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.record_last_seen(self._NOW, is_online=True)
+        return device
+
+    def test_discovery_is_due_for_an_online_device_never_asked(self) -> None:
+        device = self._online_device()
+        self.assertTrue(
+            device.is_av_attributes_discovery_due(now=self._NOW, retry_after=self._RETRY_AFTER)
+        )
+
+    def test_discovery_is_never_due_while_offline(self) -> None:
+        device = self.make_device(DeviceLifecycleState.ACTIVATED)
+        device.record_last_seen(self._NOW, is_online=False)
+        self.assertFalse(
+            device.is_av_attributes_discovery_due(now=self._NOW, retry_after=self._RETRY_AFTER)
+        )
+
+    def test_unanswered_request_is_not_resent_before_the_retry_interval(self) -> None:
+        device = self._online_device()
+        device.record_av_attributes_requested(self._NOW)
+        for elapsed in (timedelta(0), timedelta(seconds=30), timedelta(minutes=9, seconds=59)):
+            with self.subTest(elapsed=elapsed):
+                self.assertFalse(
+                    device.is_av_attributes_discovery_due(
+                        now=self._NOW + elapsed, retry_after=self._RETRY_AFTER
+                    )
+                )
+
+    def test_unanswered_request_is_due_again_once_the_retry_interval_has_passed(self) -> None:
+        """The defect this fixes: under ADR-0030's once-only rule, a lost request meant this
+        device never got cameras."""
+        device = self._online_device()
+        device.record_av_attributes_requested(self._NOW)
+        self.assertTrue(
+            device.is_av_attributes_discovery_due(
+                now=self._NOW + self._RETRY_AFTER, retry_after=self._RETRY_AFTER
+            )
+        )
+
+    def test_discovery_is_never_due_again_once_cameras_are_registered(self) -> None:
+        device = self._online_device()
+        device.record_av_attributes_requested(self._NOW)
+        device.register_camera(
+            id=CameraId(VALID_CAMERA_ULID),
+            channel_no=1,
+            position=CameraPosition.OTHER,
+            label="Channel 1",
+            clock=FixedClock(self._NOW),
+        )
+        self.assertFalse(
+            device.is_av_attributes_discovery_due(
+                now=self._NOW + timedelta(days=30), retry_after=self._RETRY_AFTER
+            )
+        )
+
+    def test_discovery_is_never_due_again_once_the_terminal_reported_its_capability(
+        self,
+    ) -> None:
+        device = self._online_device()
+        device.record_av_attributes_requested(self._NOW)
+        device.record_audio_capability(
+            AudioCapability(
+                codec=6,
+                channels=1,
+                sample_rate=3,
+                sample_bits=1,
+                frame_length=320,
+                supports_output=True,
+                video_codec=2,
+            )
+        )
+        self.assertFalse(
+            device.is_av_attributes_discovery_due(
+                now=self._NOW + timedelta(days=30), retry_after=self._RETRY_AFTER
+            )
+        )
 
     # --- record_audio_capability (ADR-0033) -----------------------------------------------
 

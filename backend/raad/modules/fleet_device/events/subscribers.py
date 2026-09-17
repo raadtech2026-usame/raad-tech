@@ -95,49 +95,57 @@ class DeviceConnectivityProcessor(EventProcessor):
             uow=uow,
         )
         if discover_terminal_id is not None:
-            await self._publish_av_attributes_query(discover_terminal_id)
+            await publish_av_attributes_query(self._container, discover_terminal_id)
 
-    async def _publish_av_attributes_query(self, terminal_id: str) -> None:
-        """ADR-0030 — the "when" half of automatic channel discovery: the *first* `DeviceOnline`
-        for a device that has never had discovery requested before (the guard `record_device_seen`
-        already set, in the same transaction, before this runs). Reuses `Jt1078RelayAdapter`'s
-        exact broker wire contract (`video/infra/adapters.py`'s own `_signal_device_start`) — a
-        deliberate choice, not a coincidence: `query_av_attributes` is a JT/T 1078 A/V-family
-        command like every other entry in device-gateway's `redis_video_signaling_consumer.
-        _BUILDERS`, so publishing it through the *same* stream/event shape means no new consumer
-        or wire contract was needed on the device-gateway side, only one new dispatch-table entry.
 
-        **Fails silently (logged, not raised) when no broker is configured** — matches this
-        backend's own established "optional dependency, degrade don't crash" posture for every
-        broker-touching component (`core/di/bootstrap.py`'s own `try_resolve(BrokerPort)` calls);
-        a dev/test environment with no broker still processes `DeviceOnline` for `last_seen_at`/
-        `is_online` correctly, it just never gets to request channel discovery."""
-        broker = self._container.try_resolve(BrokerPort)
-        if broker is None:
-            logger.info(
-                "av_attributes_query_skipped_no_broker",
-                extra={"terminal_id": terminal_id},
-            )
-            return
-        correlation_id = str(uuid.uuid4())
-        await broker.publish(
-            DomainEvent(
-                event_id=str(uuid.uuid4()),
-                event_type=_SIGNAL_EVENT_TYPE,
-                version=1,
-                occurred_at=datetime.now(timezone.utc),
-                org_id=None,
-                correlation_id=correlation_id,
-                payload={
-                    "terminal_id": terminal_id,
-                    "correlation_id": correlation_id,
-                    "command": "query_av_attributes",
-                    "fields": {},
-                },
-                aggregate_type="Device",
-                aggregate_id=terminal_id,
-            )
+async def publish_av_attributes_query(container: Container, terminal_id: str) -> bool:
+    """ADR-0030 — sends one `0x9003` channel-discovery request to `terminal_id`. Called when a
+    request is due (`Device.is_av_attributes_discovery_due`, which the caller has already recorded
+    in the same commit that decided it): by `DeviceConnectivityProcessor` on `DeviceOnline`, and
+    since 2026-09-17 by the worker's periodic retry sweep. Reuses `Jt1078RelayAdapter`'s exact
+    broker wire contract (`video/infra/adapters.py`'s own `_signal_device_start`) — a deliberate
+    choice, not a coincidence: `query_av_attributes` is a JT/T 1078 A/V-family command like every
+    other entry in device-gateway's `redis_video_signaling_consumer._BUILDERS`, so publishing it
+    through the *same* stream/event shape means no new consumer or wire contract was needed on
+    the device-gateway side, only one new dispatch-table entry.
+
+    **Fails silently (logged, not raised) when no broker is configured** — matches this backend's
+    own established "optional dependency, degrade don't crash" posture for every broker-touching
+    component (`core/di/bootstrap.py`'s own `try_resolve(BrokerPort)` calls); a dev/test
+    environment with no broker still processes `DeviceOnline` for `last_seen_at`/`is_online`
+    correctly, it just never gets to request channel discovery. Returns whether a request was
+    actually published."""
+    broker = container.try_resolve(BrokerPort)
+    if broker is None:
+        logger.info(
+            "av_attributes_query_skipped_no_broker",
+            extra={"terminal_id": terminal_id},
         )
+        return False
+    correlation_id = str(uuid.uuid4())
+    await broker.publish(
+        DomainEvent(
+            event_id=str(uuid.uuid4()),
+            event_type=_SIGNAL_EVENT_TYPE,
+            version=1,
+            occurred_at=datetime.now(timezone.utc),
+            org_id=None,
+            correlation_id=correlation_id,
+            payload={
+                "terminal_id": terminal_id,
+                "correlation_id": correlation_id,
+                "command": "query_av_attributes",
+                "fields": {},
+            },
+            aggregate_type="Device",
+            aggregate_id=terminal_id,
+        )
+    )
+    logger.info(
+        "av_attributes_query_published",
+        extra={"terminal_id": terminal_id, "correlation_id": correlation_id},
+    )
+    return True
 
 
 class DeviceAuthCodeProcessor(EventProcessor):

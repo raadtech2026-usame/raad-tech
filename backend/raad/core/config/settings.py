@@ -243,6 +243,13 @@ class WorkerSettings(BaseModel):
     #: existed.
     video_stale_session_timeout_seconds: float = 7200.0
     intercom_stale_session_timeout_seconds: float = 180.0
+    #: Camera/AV discovery retry (2026-09-17, amending ADR-0030's once-per-device request).
+    #: `..._retry_after_seconds`: how long an unanswered `0x9003` waits before it may be sent
+    #: again, on reconnect or by the sweep. `..._retry_interval_seconds`: how often the worker
+    #: sweeps for online devices still waiting, so a device that stays connected is retried too.
+    #: See `Device.is_av_attributes_discovery_due`.
+    av_attributes_discovery_retry_after_seconds: float = 600.0
+    av_attributes_discovery_retry_interval_seconds: float = 300.0
 
 
 #: Audit finding B3. Substrings that mark a value as a development placeholder rather than a

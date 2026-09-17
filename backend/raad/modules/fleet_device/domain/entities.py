@@ -29,7 +29,7 @@ in a later phase — not a domain behavior of `Device`.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from raad.core.errors.exceptions import ConflictError, DomainError, RuleViolationError
 from raad.core.events.base import DomainEvent
@@ -282,10 +282,10 @@ class Device(_AggregateRoot):
         #: `DeviceOnline`/`DeviceOffline` connectivity event), never claimed `True` by default.
         #: Same "connectivity telemetry, not business state" reasoning as `last_seen_at` itself.
         self.is_online = is_online
-        #: ADR-0030: set once RAAD publishes a `0x9003` channel-discovery request for this
-        #: device (`record_av_attributes_requested`) — the idempotency guard so a later
-        #: `DeviceOnline` reconnect never re-triggers discovery signaling. `None` means never
-        #: requested.
+        #: ADR-0030: when RAAD last published a `0x9003` channel-discovery request for this
+        #: device (`record_av_attributes_requested`). `None` means never requested. Since
+        #: 2026-09-17 this is the *last* request, not a once-only flag — see
+        #: `is_av_attributes_discovery_due` for the retry rule it now guards.
         self.av_attributes_requested_at = av_attributes_requested_at
         #: ADR-0033: the terminal's own real `0x1003` audio capability, recorded verbatim via
         #: `record_audio_capability` — `None` until a real report has been received. Was
@@ -595,6 +595,35 @@ class Device(_AggregateRoot):
         `DomainEvent`: a provisioning-workflow bookkeeping fact, not a business state change.
         Callable regardless of `lifecycle_state`, same reasoning as those two."""
         self.av_attributes_requested_at = requested_at
+
+    def is_av_attributes_discovery_due(self, *, now: datetime, retry_after: timedelta) -> bool:
+        """Whether a `0x9003` channel-discovery request should be sent now (fix, 2026-09-17).
+
+        ADR-0030 requested discovery exactly once per device, ever. One lost request — the
+        terminal busy, the session superseded or dropped at that moment, or the device only
+        obeying commands from a different main platform — therefore left the device with no
+        cameras permanently, with nothing to retry it. The rule is now:
+
+        - the device must be online (only a live session can carry the command);
+        - discovery must still be unanswered: no camera registered and no `0x1003` audio
+          capability recorded. Once the terminal has answered, it is never asked again, so the
+          once-per-device behaviour is unchanged for every device where discovery worked;
+        - and either it was never requested, or the last request is at least `retry_after` old.
+          That wait is what stops a flapping connection from resending the command on every
+          reconnect.
+
+        Resending is safe: the answer is applied idempotently (`register_camera` rejects a
+        duplicate channel), so a duplicate report creates no duplicate state. A terminal that
+        never answers keeps being asked once per `retry_after` while it is online — a small,
+        bounded cost, and it means discovery completes by itself once the device-side cause is
+        fixed."""
+        if not self.is_online:
+            return False
+        if self._cameras or self.audio_capability is not None:
+            return False
+        if self.av_attributes_requested_at is None:
+            return True
+        return now - self.av_attributes_requested_at >= retry_after
 
     def record_audio_capability(self, audio_capability: AudioCapability) -> None:
         """ADR-0033: records the terminal's own real `0x1003` audio capability. Mirrors

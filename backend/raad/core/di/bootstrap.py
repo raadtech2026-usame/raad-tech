@@ -11,6 +11,8 @@ Streams at MVP) are now bound for real, conditional on their own settings being 
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import httpx
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -269,6 +271,9 @@ def build_container(settings: Settings) -> Container:
         DeviceApplicationService(
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
+            av_attributes_discovery_retry_after=timedelta(
+                seconds=settings.workers.av_attributes_discovery_retry_after_seconds
+            ),
         ),
     )
     container.bind_singleton(

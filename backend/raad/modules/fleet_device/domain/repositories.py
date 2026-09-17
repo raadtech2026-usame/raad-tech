@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 
 from raad.core.pagination import (
     FilterCondition,
@@ -193,6 +194,18 @@ class DeviceRepository(ABC):
         `OnlineDeviceAssignment` projection, not reconstructed `Device` aggregates: this is a
         read-model query with no business behavior to invoke, the same reasoning
         `count_total`/`count_online` above already apply."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_due_for_av_attributes_discovery(
+        self, *, requested_before: datetime, limit: int
+    ) -> list[DeviceId]:
+        """Candidates for a retried `0x9003` channel-discovery request (2026-09-17): online, no
+        camera registered, no audio capability recorded, and never requested or last requested
+        before `requested_before`, oldest request first. A pre-filter only — the caller loads
+        each aggregate and re-checks `Device.is_av_attributes_discovery_due` before acting, so the
+        domain rule, not this query, is authoritative. Scope-filtered like every other `list_*`
+        method (ADR-0021)."""
         raise NotImplementedError
 
 

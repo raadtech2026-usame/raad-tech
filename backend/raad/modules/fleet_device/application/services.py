@@ -24,6 +24,7 @@ than built.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta
 
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
@@ -274,13 +275,27 @@ class VehicleApplicationService:
         return vehicle
 
 
+#: How long an unanswered `0x9003` channel-discovery request waits before it may be sent again
+#: (2026-09-17). Ten minutes is far longer than any real `0x1003` reply takes (seconds), so a
+#: slow terminal is never double-asked, and short enough that a lost request is retried within
+#: one ordinary monitoring glance. Overridden from `WorkerSettings` in `core/di/bootstrap.py`.
+DEFAULT_AV_DISCOVERY_RETRY_AFTER = timedelta(minutes=10)
+
+
 class DeviceApplicationService:
     """Device lifecycle + camera + device↔vehicle assignment use-cases (the LLD §4.2
     `DeviceAppService`), and the `GetDeviceByIdQuery` read path."""
 
-    def __init__(self, *, clock: Clock, id_generator: IdGenerator) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        id_generator: IdGenerator,
+        av_attributes_discovery_retry_after: timedelta = DEFAULT_AV_DISCOVERY_RETRY_AFTER,
+    ) -> None:
         self._clock = clock
         self._id_generator = id_generator
+        self._av_attributes_discovery_retry_after = av_attributes_discovery_retry_after
 
     # --- Device lifecycle -------------------------------------------------------------
 
@@ -445,16 +460,17 @@ class DeviceApplicationService:
         device-gateway) is a real, expected occurrence, not an error.
 
         **Return value widened by ADR-0030** (previously always `None`, no HTTP route calls
-        this): returns the device's own `terminal_id` when this call is the transition that
-        should trigger automatic JT/T 1078 channel discovery — `is_online=True` (a real
-        `DeviceOnline`, never `DeviceOffline`) *and* `av_attributes_requested_at is None` (never
-        requested before, this codebase's own idempotency-guard convention). The guard is set
-        in the *same* transaction/commit as `record_last_seen`, before the caller ever publishes
-        anything — so a crash between this method returning and the caller's broker-publish call
-        loses at most one discovery request, never doubles one up on retry. `None` in every other
-        case (unknown device, `DeviceOffline`, or already requested) — the caller
-        (`events/subscribers.py`'s `DeviceConnectivityProcessor`) treats `None` as "nothing to
-        publish", exactly the same no-op posture this method already had before this ADR."""
+        this): returns the device's own `terminal_id` when this call should trigger automatic
+        JT/T 1078 channel discovery, `None` otherwise (unknown device, `DeviceOffline`, or
+        discovery not due) — the caller (`events/subscribers.py`'s `DeviceConnectivityProcessor`)
+        treats `None` as "nothing to publish".
+
+        **When discovery is due changed on 2026-09-17** — `Device.is_av_attributes_discovery_due`:
+        still unanswered and never requested, or last requested at least
+        `av_attributes_discovery_retry_after` ago. Previously only a never-requested device
+        qualified, so one lost request meant no cameras forever. The request timestamp is set in
+        the *same* commit as `record_last_seen`, before the caller publishes; a crash in between
+        now costs one retry interval rather than discovery for the device's whole life."""
         async with uow:
             device = await uow.devices.get(DeviceId(command.device_id))
             if device is None:
@@ -464,11 +480,43 @@ class DeviceApplicationService:
                 )
                 return None
             device.record_last_seen(command.seen_at, is_online=command.is_online)
-            should_discover = command.is_online and device.av_attributes_requested_at is None
+            should_discover = device.is_av_attributes_discovery_due(
+                now=command.seen_at, retry_after=self._av_attributes_discovery_retry_after
+            )
             if should_discover:
                 device.record_av_attributes_requested(command.seen_at)
             await uow.commit()
             return str(device.terminal_id) if should_discover else None
+
+    async def claim_due_av_attributes_discovery(
+        self, *, uow: FleetDeviceUnitOfWork, limit: int = 100
+    ) -> list[str]:
+        """The periodic half of the 2026-09-17 discovery retry, run by the worker scheduler.
+        `record_device_seen` alone only retries when a device *reconnects*; a device that stays
+        connected for days after its one request was lost would otherwise wait that long for
+        cameras. Returns the `terminal_id` of every device a request is now due for, having
+        recorded the request time for each in one commit — the caller publishes exactly one
+        `0x9003` per returned terminal. Claiming before publishing means a concurrent or repeated
+        run finds nothing left to claim until the retry interval has passed again; the worst case
+        (this run and a reconnect racing on one device) is one extra request, whose answer is
+        applied idempotently."""
+        now = self._clock.now()
+        claimed: list[str] = []
+        async with uow:
+            candidate_ids = await uow.devices.list_due_for_av_attributes_discovery(
+                requested_before=now - self._av_attributes_discovery_retry_after, limit=limit
+            )
+            for device_id in candidate_ids:
+                device = await uow.devices.get(device_id)
+                if device is None or not device.is_av_attributes_discovery_due(
+                    now=now, retry_after=self._av_attributes_discovery_retry_after
+                ):
+                    continue
+                device.record_av_attributes_requested(now)
+                claimed.append(str(device.terminal_id))
+            if claimed:
+                await uow.commit()
+        return claimed
 
     async def record_auth_key_hash(
         self, command: RecordAuthKeyHashCommand, *, uow: FleetDeviceUnitOfWork

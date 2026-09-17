@@ -12,7 +12,7 @@ one-active-vehicle-per-device invariants.
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from raad.core.errors.exceptions import ConflictError, NotFoundError
 from raad.core.ids.generator import IdGenerator
@@ -272,6 +272,31 @@ class InMemoryDeviceRepository(DeviceRepository):
         correct, honest default: no test here ever seeds a `device_assignments`-equivalent on
         this repository."""
         return []
+
+    async def list_due_for_av_attributes_discovery(
+        self, *, requested_before: datetime, limit: int
+    ) -> list[DeviceId]:
+        """Mirrors the SQL pre-filter's own conditions and ordering (never-requested first, then
+        oldest request) — the real one is exercised against Postgres in
+        `tests/integration/test_fleet_device_repository.py`."""
+        due = [
+            device
+            for device in self.by_id.values()
+            if device.is_online
+            and not device.cameras
+            and device.audio_capability is None
+            and (
+                device.av_attributes_requested_at is None
+                or device.av_attributes_requested_at < requested_before
+            )
+        ]
+        due.sort(
+            key=lambda device: (
+                device.av_attributes_requested_at is not None,
+                device.av_attributes_requested_at or requested_before,
+            )
+        )
+        return [device.id for device in due[:limit]]
 
 
 class InMemoryDeviceAssignmentRepository(DeviceAssignmentRepository):
@@ -1438,33 +1463,67 @@ class RecordDeviceSeenTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(uow.devices.by_id[device_id].av_attributes_requested_at)
         self.assertEqual(uow.commit_count, commit_count_before + 1)
 
-    async def test_returns_none_once_discovery_already_requested(self) -> None:
-        """A later `DeviceOnline` reconnect for the same device must not re-trigger discovery
-        (ADR-0030 Decision §1: "once per device, on first successful authentication")."""
-        _vehicle_service, device_service, uow = make_services()
-        device_id = await _register_activated_device(device_service, uow)
-
-        first = await device_service.record_device_seen(
+    async def _online(self, device_service, uow, device_id: str, seen_at: datetime):
+        return await device_service.record_device_seen(
             RecordDeviceSeenCommand(
-                device_id=device_id,
-                seen_at=datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc),
-                is_online=True,
-                actor=make_actor(),
+                device_id=device_id, seen_at=seen_at, is_online=True, actor=make_actor()
             ),
             uow=uow,
         )
-        second = await device_service.record_device_seen(
-            RecordDeviceSeenCommand(
-                device_id=device_id,
-                seen_at=datetime(2026, 7, 26, 12, 0, 0, tzinfo=timezone.utc),
-                is_online=True,
-                actor=make_actor(),
-            ),
-            uow=uow,
+
+    async def test_reconnect_within_the_retry_interval_does_not_resend_discovery(self) -> None:
+        """A flapping connection must not resend `0x9003` on every reconnect."""
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+        first_seen = datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+
+        first = await self._online(device_service, uow, device_id, first_seen)
+        second = await self._online(
+            device_service, uow, device_id, first_seen + timedelta(minutes=2)
         )
 
         self.assertEqual(first, "TERM-001")
         self.assertIsNone(second)
+        self.assertEqual(uow.devices.by_id[device_id].av_attributes_requested_at, first_seen)
+
+    async def test_reconnect_after_an_unanswered_request_retries_discovery(self) -> None:
+        """Regression test for the 2026-09-17 fix. Previously a device whose one `0x9003` was
+        lost never got cameras: every later reconnect returned `None` forever."""
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+        first_seen = datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+        reconnect = datetime(2026, 7, 26, 12, 0, 0, tzinfo=timezone.utc)
+
+        await self._online(device_service, uow, device_id, first_seen)
+        retried = await self._online(device_service, uow, device_id, reconnect)
+
+        self.assertEqual(retried, "TERM-001")
+        self.assertEqual(uow.devices.by_id[device_id].av_attributes_requested_at, reconnect)
+
+    async def test_reconnect_after_discovery_was_answered_never_requests_again(self) -> None:
+        """Once the terminal has answered (cameras registered), ADR-0030's once-per-device
+        behaviour is unchanged — no reconnect ever resends discovery."""
+        _vehicle_service, device_service, uow = make_services()
+        device_id = await _register_activated_device(device_service, uow)
+        await self._online(
+            device_service, uow, device_id, datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+        )
+        await device_service.register_camera(
+            RegisterCameraCommand(
+                device_id=device_id,
+                channel_no=1,
+                position=CameraPosition.OTHER,
+                label="Channel 1",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+
+        later = await self._online(
+            device_service, uow, device_id, datetime(2026, 8, 25, 12, 0, 0, tzinfo=timezone.utc)
+        )
+
+        self.assertIsNone(later)
 
     async def test_unknown_device_id_is_a_safe_no_op_not_an_error(self) -> None:
         """A connectivity event for a terminal this backend never registered (stray/
@@ -1553,6 +1612,107 @@ class RecordDeviceSeenTests(unittest.IsolatedAsyncioTestCase):
             GetDeviceByIdQuery(device_id=device_id), uow=uow
         )
         self.assertTrue(after.is_online)
+
+
+class ClaimDueAvAttributesDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    """2026-09-17 — the periodic retry for a device that stays connected after its only
+    discovery request was lost (`DeviceApplicationService.claim_due_av_attributes_discovery`)."""
+
+    _START = datetime(2026, 9, 17, 12, 0, 0, tzinfo=timezone.utc)
+
+    async def asyncSetUp(self) -> None:
+        self.clock = FixedClock(self._START)
+        self.device_service = DeviceApplicationService(
+            clock=self.clock, id_generator=SequentialIdGenerator()
+        )
+        self.uow = FakeFleetDeviceUnitOfWork(
+            InMemoryVehicleRepository(),
+            InMemoryDeviceRepository(),
+            InMemoryDeviceAssignmentRepository(),
+        )
+
+    async def _online_device(self, terminal_id: str) -> str:
+        device_id = await _register_activated_device(
+            self.device_service, self.uow, terminal_id=terminal_id
+        )
+        await self.device_service.record_device_seen(
+            RecordDeviceSeenCommand(
+                device_id=device_id, seen_at=self.clock.now(), is_online=True, actor=make_actor()
+            ),
+            uow=self.uow,
+        )
+        return device_id
+
+    async def test_nothing_is_claimed_before_the_retry_interval_passes(self) -> None:
+        await self._online_device("TERM-A")  # its first request was just sent on DeviceOnline
+        self.clock._now = self._START + timedelta(minutes=9)
+
+        claimed = await self.device_service.claim_due_av_attributes_discovery(uow=self.uow)
+
+        self.assertEqual(claimed, [])
+
+    async def test_a_still_connected_device_with_an_unanswered_request_is_claimed_once(
+        self,
+    ) -> None:
+        device_id = await self._online_device("TERM-A")
+        self.clock._now = self._START + timedelta(minutes=11)
+        commits_before = self.uow.commit_count
+
+        first = await self.device_service.claim_due_av_attributes_discovery(uow=self.uow)
+        second = await self.device_service.claim_due_av_attributes_discovery(uow=self.uow)
+
+        self.assertEqual(first, ["TERM-A"])
+        # Claiming recorded the request time, so an immediate re-run (or an overlapping worker)
+        # finds nothing — no duplicate 0x9003.
+        self.assertEqual(second, [])
+        self.assertEqual(
+            self.uow.devices.by_id[device_id].av_attributes_requested_at, self.clock.now()
+        )
+        self.assertEqual(self.uow.commit_count, commits_before + 1)
+
+    async def test_answered_offline_and_recent_devices_are_not_claimed(self) -> None:
+        answered = await self._online_device("TERM-ANSWERED")
+        await self.device_service.register_camera(
+            RegisterCameraCommand(
+                device_id=answered,
+                channel_no=1,
+                position=CameraPosition.OTHER,
+                label="Channel 1",
+                actor=make_actor(),
+            ),
+            uow=self.uow,
+        )
+        offline = await self._online_device("TERM-OFFLINE")
+        await self.device_service.record_device_seen(
+            RecordDeviceSeenCommand(
+                device_id=offline, seen_at=self.clock.now(), is_online=False, actor=make_actor()
+            ),
+            uow=self.uow,
+        )
+        await self._online_device("TERM-DUE")
+        self.clock._now = self._START + timedelta(minutes=11)
+        await self._online_device("TERM-RECENT")  # requested just now, at the new time
+
+        claimed = await self.device_service.claim_due_av_attributes_discovery(uow=self.uow)
+
+        self.assertEqual(claimed, ["TERM-DUE"])
+
+    async def test_limit_bounds_one_run(self) -> None:
+        for n in range(3):
+            await self._online_device(f"TERM-{n}")
+        self.clock._now = self._START + timedelta(minutes=11)
+
+        claimed = await self.device_service.claim_due_av_attributes_discovery(
+            uow=self.uow, limit=2
+        )
+
+        self.assertEqual(len(claimed), 2)
+
+    async def test_no_due_device_commits_nothing(self) -> None:
+        commits_before = self.uow.commit_count
+        claimed = await self.device_service.claim_due_av_attributes_discovery(uow=self.uow)
+        self.assertEqual(claimed, [])
+        self.assertEqual(self.uow.commit_count, commits_before)
 
 
 class RecordAudioCapabilityTests(unittest.IsolatedAsyncioTestCase):

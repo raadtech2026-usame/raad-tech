@@ -32,6 +32,7 @@ from raad.modules.fleet_device.events.subscribers import (
     SYSTEM_PRINCIPAL,
     DeviceAvAttributesReportedProcessor,
     DeviceConnectivityProcessor,
+    publish_av_attributes_query,
 )
 
 _OCCURRED_AT = datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
@@ -249,6 +250,29 @@ class DeviceConnectivityProcessorAvAttributesDiscoveryTests(unittest.IsolatedAsy
             aggregate_id="00007",
         )
         await processor.process(event)  # must not raise
+
+
+class PublishAvAttributesQueryTests(unittest.IsolatedAsyncioTestCase):
+    """`publish_av_attributes_query` — extracted 2026-09-17 so the reconnect processor and the
+    worker's periodic retry sweep send the identical `0x9003` request."""
+
+    async def test_publishes_one_query_and_reports_success(self) -> None:
+        container = Container()
+        broker = _RecordingBroker()
+        container.bind_singleton(BrokerPort, broker)
+
+        published = await publish_av_attributes_query(container, "00000000014482607571")
+
+        self.assertTrue(published)
+        self.assertEqual(len(broker.published), 1)
+        event = broker.published[0]
+        self.assertEqual(event.event_type, "Jt1078SignalCommandRequested")
+        self.assertEqual(event.payload["terminal_id"], "00000000014482607571")
+        self.assertEqual(event.payload["command"], "query_av_attributes")
+        self.assertEqual(event.payload["correlation_id"], event.correlation_id)
+
+    async def test_reports_nothing_published_without_a_broker(self) -> None:
+        self.assertFalse(await publish_av_attributes_query(Container(), "00007"))
 
 
 class DeviceAvAttributesReportedProcessorTests(unittest.IsolatedAsyncioTestCase):

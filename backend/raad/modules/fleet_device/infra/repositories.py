@@ -30,7 +30,9 @@ behavior, and changing it would be a validation-behavior change outside that sco
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from datetime import datetime, timezone
+
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
@@ -77,6 +79,7 @@ from raad.modules.fleet_device.infra.mappers import (
     vehicle_to_model,
 )
 from raad.modules.fleet_device.infra.models import (
+    CameraModel,
     DeviceAssignmentModel,
     DeviceInventoryModel,
     DeviceModel,
@@ -340,6 +343,38 @@ class SqlAlchemyDeviceRepository(
             )
             for row in result.all()
         ]
+
+    async def list_due_for_av_attributes_discovery(
+        self, *, requested_before: datetime, limit: int
+    ) -> list[DeviceId]:
+        """See the interface docstring. `cameras` rows are matched without a `deleted_at` filter
+        on purpose: the aggregate loads every camera row through `DeviceModel.cameras`, and this
+        pre-filter must agree with `Device.is_av_attributes_discovery_due`, which the caller
+        re-checks on that aggregate."""
+        has_camera = exists().where(CameraModel.device_id == DeviceModel.id)
+        # The column is naive UTC (`mappers._naive`); compare like with like.
+        cutoff = (
+            requested_before.astimezone(timezone.utc).replace(tzinfo=None)
+            if requested_before.tzinfo is not None
+            else requested_before
+        )
+        statement = select(DeviceModel.id).where(
+            DeviceModel.deleted_at.is_(None),
+            DeviceModel.is_online.is_(True),
+            DeviceModel.audio_codec.is_(None),
+            ~has_camera,
+            or_(
+                DeviceModel.av_attributes_requested_at.is_(None),
+                DeviceModel.av_attributes_requested_at < cutoff,
+            ),
+        )
+        statement = (
+            self._apply_scope(statement)
+            .order_by(DeviceModel.av_attributes_requested_at.asc().nulls_first())
+            .limit(limit)
+        )
+        result = await self._session.execute(statement)
+        return [DeviceId(row.id) for row in result.all()]
 
     def flush_tracked_changes(self) -> None:
         for device, model in self._tracked.values():

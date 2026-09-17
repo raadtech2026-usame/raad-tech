@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from datetime import timedelta
 
 from sqlalchemy import text
 
@@ -48,6 +49,8 @@ from raad.modules.fleet_device.domain.entities import (
 )
 from raad.modules.fleet_device.domain.value_objects import (
     AssignmentId,
+    CameraId,
+    CameraPosition,
     DeviceId,
     DeviceInventoryState,
     DeviceLifecycleState,
@@ -1038,6 +1041,138 @@ class DeviceInventoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
             result = await uow.devices.get(DeviceId(device_id))
 
         self.assertIsNone(result)
+
+
+@unittest.skipUnless(_db_available(), _SKIP_REASON)
+class AvAttributesDiscoveryRetryRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    """2026-09-17 camera/AV discovery retry, against the live schema: the SQL pre-filter
+    `list_due_for_av_attributes_discovery` must agree with `Device.is_av_attributes_discovery_due`,
+    and `av_attributes_requested_at` must come back tz-aware — the domain subtracts it from a
+    tz-aware now, which a naive value turns into a `TypeError` no fake repository can reveal."""
+
+    async def asyncSetUp(self) -> None:
+        settings = get_settings()
+        self.engine = build_engine(settings.db)
+        self.session_factory = build_session_factory(self.engine)
+        self.id_generator = UlidGenerator()
+        self.clock = SystemClock()
+        self.tag = uuid.uuid4().hex[:8]
+        self.org_id = self.id_generator.new_id()
+        self._created_device_ids: list[str] = []
+
+    async def asyncTearDown(self) -> None:
+        async with self.engine.begin() as conn:
+            if self._created_device_ids:
+                await conn.execute(
+                    text("DELETE FROM cameras WHERE device_id = ANY(:ids)"),
+                    {"ids": self._created_device_ids},
+                )
+                await conn.execute(
+                    text("DELETE FROM devices WHERE id = ANY(:ids)"),
+                    {"ids": self._created_device_ids},
+                )
+        await self.engine.dispose()
+
+    def _new_uow(self, *, scoped: bool = False) -> SqlAlchemyFleetDeviceUnitOfWork:
+        """`scoped=True` confines reads and claims to this test's own throwaway organization, so
+        a run against a shared development database never claims (and so never writes to) a
+        real device that happens to be online without cameras."""
+        uow = SqlAlchemyFleetDeviceUnitOfWork(self.session_factory, OutboxWriter(), AuditWriter())
+        if scoped:
+            uow.scope = TenantRegionScope(organization_ids=frozenset({self.org_id}))
+        return uow
+
+    async def _seed(
+        self,
+        name: str,
+        *,
+        online: bool = True,
+        requested_minutes_ago: int | None = None,
+        with_camera: bool = False,
+    ) -> str:
+        now = self.clock.now()
+        async with self._new_uow() as uow:
+            device = Device.register(
+                id=DeviceId(self.id_generator.new_id()),
+                organization_id=OrganizationId(self.org_id),
+                terminal_id=TerminalId(f"AV-{name}-{self.tag}"),
+                clock=self.clock,
+            )
+            device.activate(clock=self.clock)
+            device.record_last_seen(now, is_online=online)
+            if requested_minutes_ago is not None:
+                device.record_av_attributes_requested(
+                    now - timedelta(minutes=requested_minutes_ago)
+                )
+            if with_camera:
+                device.register_camera(
+                    id=CameraId(self.id_generator.new_id()),
+                    channel_no=1,
+                    position=CameraPosition.OTHER,
+                    label="Channel 1",
+                    clock=self.clock,
+                )
+            uow.devices.add(device)
+            uow.record_events(device.pull_domain_events())
+            await uow.commit()
+        self._created_device_ids.append(str(device.id))
+        return str(device.id)
+
+    async def test_pre_filter_selects_exactly_the_devices_the_domain_rule_calls_due(
+        self,
+    ) -> None:
+        never_asked = await self._seed("NEVER")
+        stale = await self._seed("STALE", requested_minutes_ago=30)
+        recent = await self._seed("RECENT", requested_minutes_ago=2)
+        answered = await self._seed("ANSWERED", requested_minutes_ago=30, with_camera=True)
+        offline = await self._seed("OFFLINE", online=False, requested_minutes_ago=30)
+
+        now = self.clock.now()
+        retry_after = timedelta(minutes=10)
+        async with self._new_uow(scoped=True) as uow:
+            candidates = await uow.devices.list_due_for_av_attributes_discovery(
+                requested_before=now - retry_after, limit=10_000
+            )
+            candidate_ids = {str(device_id) for device_id in candidates}
+            due_by_domain = set()
+            for device_id in self._created_device_ids:
+                device = await uow.devices.get(DeviceId(device_id))
+                # Tz-aware on read, or this comparison raises TypeError.
+                self.assertTrue(
+                    device.av_attributes_requested_at is None
+                    or device.av_attributes_requested_at.tzinfo is not None
+                )
+                if device.is_av_attributes_discovery_due(now=now, retry_after=retry_after):
+                    due_by_domain.add(device_id)
+
+        ours = candidate_ids & set(self._created_device_ids)
+        self.assertEqual(ours, {never_asked, stale})
+        self.assertEqual(ours, due_by_domain)
+        self.assertNotIn(recent, ours)
+        self.assertNotIn(answered, ours)
+        self.assertNotIn(offline, ours)
+
+    async def test_claim_records_the_request_so_a_second_claim_finds_nothing(self) -> None:
+        stale = await self._seed("CLAIM", requested_minutes_ago=30)
+        service = DeviceApplicationService(
+            clock=self.clock, id_generator=self.id_generator
+        )
+
+        first = await service.claim_due_av_attributes_discovery(
+            uow=self._new_uow(scoped=True), limit=10_000
+        )
+        second = await service.claim_due_av_attributes_discovery(
+            uow=self._new_uow(scoped=True), limit=10_000
+        )
+
+        terminal = f"AV-CLAIM-{self.tag}"
+        self.assertIn(terminal, first)
+        self.assertNotIn(terminal, second)
+        async with self._new_uow() as uow:
+            device = await uow.devices.get(DeviceId(stale))
+        self.assertLess(
+            self.clock.now() - device.av_attributes_requested_at, timedelta(minutes=1)
+        )
 
 
 if __name__ == "__main__":

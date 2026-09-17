@@ -53,6 +53,9 @@ from raad.interfaces.workers.report_worker import ReportWorker
 from raad.interfaces.workers.scheduler import SchedulerWorker
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.fleet_device.application.services import DeviceApplicationService
+from raad.modules.fleet_device.events.subscribers import publish_av_attributes_query
 from raad.modules.tracking.application.ports import TrackingUnitOfWork
 from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.video.application.ports import VideoUnitOfWork
@@ -271,6 +274,41 @@ def _register_scheduled_jobs(
             name="reconcile_stale_intercom_sessions",
             interval_seconds=settings.workers.intercom_reconciliation_interval_seconds,
             handler=reconcile_stale_intercom_sessions,
+        )
+    )
+
+    async def retry_av_attributes_discovery() -> None:
+        """2026-09-17 — resends the `0x9003` camera/AV discovery request to online devices whose
+        earlier request was never answered. `DeviceConnectivityProcessor` already retries on
+        reconnect; this covers a device that stays connected. Claiming records each request time
+        before anything is published, so an overlapping run finds nothing to claim."""
+
+        async def _body() -> None:
+            service = container.resolve(DeviceApplicationService)
+            terminal_ids = await service.claim_due_av_attributes_discovery(
+                uow=container.resolve(FleetDeviceUnitOfWork)
+            )
+            published = 0
+            for terminal_id in terminal_ids:
+                if await publish_av_attributes_query(container, terminal_id):
+                    published += 1
+            if terminal_ids:
+                logger.info(
+                    "av_attributes_discovery_retried",
+                    extra={"claimed": len(terminal_ids), "published": published},
+                )
+
+        await _with_lock(
+            "retry_av_attributes_discovery",
+            int(settings.workers.av_attributes_discovery_retry_interval_seconds),
+            _body,
+        )
+
+    scheduler.register(
+        ScheduledJob(
+            name="retry_av_attributes_discovery",
+            interval_seconds=settings.workers.av_attributes_discovery_retry_interval_seconds,
+            handler=retry_av_attributes_discovery,
         )
     )
 
