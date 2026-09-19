@@ -342,6 +342,29 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(session.session_id, self.relay._hubs)
         self.assertIsNone(self.relay.session_manager.resolve(session.session_id))
 
+    async def test_ending_a_session_closes_the_devices_ingest_connection(self) -> None:
+        """2026-09-19 production: an MDVR that keeps streaming after an acknowledged stop must
+        not be kept alive by the relay - ending the session closes the device's own socket."""
+        session, _token = self.relay.create_live_session(
+            terminal_id="138001380000", correlation_id="corr-orphan", logical_channel=1
+        )
+        device_reader, device_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.ingest_server.bound_port
+        )
+        device_writer.write(
+            _build_device_frame(sim_card="138001380000", body=b"\x00\x00\x01\x65IDR-DATA")
+        )
+        await device_writer.drain()
+        await asyncio.sleep(0.1)
+
+        with self.assertLogs("jt1078_relay.relay", level="INFO") as removed:
+            await self.relay.session_manager.end_session(session.session_id, reason="explicit_stop")
+
+        self.assertEqual(await asyncio.wait_for(device_reader.read(1), timeout=2.0), b"")
+        summary = [r.extra_fields for r in removed.records if r.getMessage() == "session_removed"]
+        self.assertEqual(summary[0]["device_connections_closed"], 1)
+        device_writer.close()
+
     async def test_viewer_drops_are_logged_and_totalled_on_session_removal(self) -> None:
         """2026-09-19: `broadcast_video`'s backpressured-viewer return value used to be discarded,
         so a relay-side drop left no trace. It is now logged and totalled per session."""

@@ -19,6 +19,17 @@ a channel with no pending session) are ever fed to the reassembler/repackager/vi
 **One `ExtendedRtpStreamDemuxer` + `FrameReassembler` pair per connection** — a fresh instance for
 every accepted TCP connection, discarded when that connection closes (ADR-0024 §4: no state
 survives beyond an active session's own connection).
+
+**A device connection never outlives its session (2026-09-19).** Ending a session closed the
+browser's sockets but never the device's ingest connection, and this handler kept reading from it
+and discarding every frame — so a device that keeps streaming after its stop command had nothing
+on the relay's side to make it stop. Production on 2026-09-19: the MDVR acknowledged `0x9102`
+(result 0) for three channel-1 sessions yet kept streaming for 17+ minutes, 0.4–2.8 Mbps of SIM
+data going nowhere, apparently when live video and two-way intercom overlapped on channel 1. Now
+`close_session_connections` closes every device connection correlated to a session when the relay
+removes it, and a connection that delivers a frame after its session is gone is closed on the
+spot (`ingest_connection_closed_session_ended`). A device that then reconnects with no session
+to match is rejected by the existing unsolicited-connection path.
 """
 
 from __future__ import annotations
@@ -58,6 +69,9 @@ class IngestServer:
         self._uplink_registry = uplink_registry
         self._server: asyncio.base_events.Server | None = None
         self._connections: set[asyncio.StreamWriter] = set()
+        #: Device connections correlated to each session — more than one when the device
+        #: reconnects mid-session — so ending the session can close all of them.
+        self._session_connections: dict[str, set[asyncio.StreamWriter]] = {}
 
     @property
     def bound_port(self) -> int:
@@ -68,10 +82,22 @@ class IngestServer:
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle_connection, self._host, self._port)
 
+    def close_session_connections(self, session_id: str) -> int:
+        """Closes every device connection correlated to `session_id` (module docstring); called
+        by the relay when it removes the session. Returns how many were still open."""
+        writers = self._session_connections.pop(session_id, set())
+        closed = 0
+        for writer in writers:
+            if not writer.is_closing():
+                writer.close()
+                closed += 1
+        return closed
+
     async def stop(self) -> None:
         for writer in list(self._connections):
             writer.close()
         self._connections.clear()
+        self._session_connections.clear()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -138,6 +164,7 @@ class IngestServer:
                             logical_channel=frame.logical_channel,
                             is_audio=frame.is_audio,
                         )
+                        self._session_connections.setdefault(session_id, set()).add(writer)
                         await self._session_manager.mark_ingest_active(session_id)
                         if self._uplink_registry is not None:
                             self._uplink_registry.register(
@@ -146,6 +173,18 @@ class IngestServer:
                                 sim_card_number=frame.sim_card_number,
                                 logical_channel=frame.logical_channel,
                             )
+                    elif self._session_manager.resolve(session_id) is None:
+                        # The session ended but the device is still streaming on it - stop
+                        # accepting the orphaned stream (module docstring).
+                        log_with_fields(
+                            logger,
+                            30,
+                            "ingest_connection_closed_session_ended",
+                            session_id=session_id,
+                            peer_address=str(peer),
+                            logical_channel=frame.logical_channel,
+                        )
+                        return
                     else:
                         self._session_manager.touch_ingest(session_id)
 
@@ -155,6 +194,11 @@ class IngestServer:
         finally:
             self._connections.discard(writer)
             if session_id is not None:
+                session_writers = self._session_connections.get(session_id)
+                if session_writers is not None:
+                    session_writers.discard(writer)
+                    if not session_writers:
+                        del self._session_connections[session_id]
                 if self._uplink_registry is not None:
                     self._uplink_registry.unregister(session_id)
                 # 2026-09-02: act on the device's own close immediately instead of letting the

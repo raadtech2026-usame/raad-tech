@@ -227,6 +227,10 @@ class Jt1078Relay:
         # from a browser-side disconnect (both surface only as `IncompleteReadError` on the read
         # loop, since `send_close` closes this side's own writer too). One line, terminal states
         # only (at most once per session), no behavioral change.
+        # The device's own ingest connection goes too (2026-09-19, `ingest/ingest_server.py`'s
+        # module docstring): a device that ignores its stop command would otherwise keep
+        # streaming into a session that no longer exists.
+        device_connections_closed = self._ingest_server.close_session_connections(session_id)
         log_with_fields(
             logger,
             20,
@@ -235,6 +239,7 @@ class Jt1078Relay:
             outcome=outcome,
             reason=reason,
             viewer_chunks_dropped=self._drop_tracker.pop_total(session_id),
+            device_connections_closed=device_connections_closed,
         )
         hub = self._hubs.pop(session_id, None)
         self._spawn_background(

@@ -228,6 +228,93 @@ class IngestServerTests(unittest.IsolatedAsyncioTestCase):
         writer.close()
 
 
+class OrphanedDeviceStreamTests(unittest.IsolatedAsyncioTestCase):
+    """2026-09-19 production: the MDVR acknowledged `0x9102` yet kept streaming channel 1 for 17+
+    minutes, and the relay kept reading and discarding it. A device connection must not outlive
+    its session."""
+
+    async def asyncSetUp(self) -> None:
+        self.session_manager = SessionManager(event_publisher=LoggingSessionEventPublisher())
+        self.received: list[tuple[str, bytes]] = []
+
+        async def on_frame(session_id, reassembled):
+            self.received.append((session_id, reassembled.body))
+
+        self.ingest = IngestServer(
+            host="127.0.0.1", port=0, session_manager=self.session_manager, on_reassembled_frame=on_frame
+        )
+        await self.ingest.start()
+
+    async def asyncTearDown(self) -> None:
+        await self.ingest.stop()
+
+    async def _streaming_device(self, session) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.ingest.bound_port)
+        writer.write(_build_frame(sim_card="138001380000", body=b"F0", packet_sequence=0))
+        await writer.drain()
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.received, [(session.session_id, b"F0")])
+        return reader, writer
+
+    def _live_session(self):
+        return self.session_manager.create_session(
+            terminal_id="138001380000",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-orphan",
+            logical_channel=1,
+        )
+
+    async def test_close_session_connections_closes_the_device_socket(self) -> None:
+        session = self._live_session()
+        reader, writer = await self._streaming_device(session)
+
+        closed = self.ingest.close_session_connections(session.session_id)
+
+        self.assertEqual(closed, 1)
+        self.assertEqual(await asyncio.wait_for(reader.read(1), timeout=2.0), b"")
+        # Idempotent: nothing left to close for this session.
+        self.assertEqual(self.ingest.close_session_connections(session.session_id), 0)
+        writer.close()
+
+    async def test_a_frame_after_the_session_ended_closes_the_connection_unprocessed(self) -> None:
+        session = self._live_session()
+        reader, writer = await self._streaming_device(session)
+        await self.session_manager.end_session(session.session_id, reason="explicit_stop")
+
+        with self.assertLogs("jt1078_relay.ingest.server", level="WARNING") as logs:
+            writer.write(_build_frame(sim_card="138001380000", body=b"ORPHAN", packet_sequence=1))
+            await writer.drain()
+            self.assertEqual(await asyncio.wait_for(reader.read(1), timeout=2.0), b"")
+
+        self.assertIn("ingest_connection_closed_session_ended", [r.getMessage() for r in logs.records])
+        self.assertEqual(self.received, [(session.session_id, b"F0")])  # the orphan frame was never processed
+        writer.close()
+
+    async def test_closing_one_sessions_connections_leaves_another_channels_stream_alone(self) -> None:
+        live = self._live_session()
+        other = self.session_manager.create_session(
+            terminal_id="138001380000",
+            kind=VideoSessionKind.LIVE,
+            correlation_id="corr-other",
+            logical_channel=2,
+        )
+        reader_1, writer_1 = await self._streaming_device(live)
+        reader_2, writer_2 = await asyncio.open_connection("127.0.0.1", self.ingest.bound_port)
+        writer_2.write(_build_frame(sim_card="138001380000", body=b"C2", logical_channel=2))
+        await writer_2.drain()
+        await asyncio.sleep(0.1)
+
+        self.ingest.close_session_connections(live.session_id)
+        self.assertEqual(await asyncio.wait_for(reader_1.read(1), timeout=2.0), b"")
+
+        writer_2.write(_build_frame(sim_card="138001380000", body=b"C2-AGAIN", logical_channel=2, packet_sequence=1))
+        await writer_2.drain()
+        await asyncio.sleep(0.1)
+        self.assertIn((other.session_id, b"C2-AGAIN"), self.received)
+        writer_1.close()
+        writer_2.close()
+
+
 class IngestDisconnectWiringTests(unittest.IsolatedAsyncioTestCase):
     """Proves the wiring end to end over a real loopback socket: the device closing its own
     media connection tears the session down immediately, instead of leaving it ACTIVE until the
