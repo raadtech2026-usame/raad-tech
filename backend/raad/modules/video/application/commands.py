@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from raad.core.tenancy.principal import Principal
+from raad.modules.video.application.ports import LiveStreamType
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,8 @@ class RequestLiveVideoCommand:
     #: through to `VideoProviderPort.start_live` so the relay can decide, per-session, whether it
     #: has a real decoder for this exact codec - never guessed here or downstream.
     audio_codec: int | None = None
+    #: ADR-0043: main or sub encoder stream, passed straight through to the provider.
+    stream_type: LiveStreamType = LiveStreamType.MAIN
 
 
 @dataclass(frozen=True)

@@ -36,9 +36,19 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 
 from raad.core.db.unit_of_work import UnitOfWork
 from raad.modules.video.domain.repositories import VideoSessionRepository
+
+
+class LiveStreamType(str, Enum):
+    """Which of the terminal's two encoder outputs a live session asks for (ADR-0043). `MAIN` is
+    the full-resolution recording stream; `SUB` is the terminal's own low-bitrate preview stream.
+    A request-time choice only — not persisted on `VideoSession`."""
+
+    MAIN = "main"
+    SUB = "sub"
 
 
 @dataclass(frozen=True)
@@ -69,6 +79,7 @@ class VideoProviderPort(ABC):
         channel_no: int,
         reference: str,
         audio_codec: int | None = None,
+        stream_type: LiveStreamType = LiveStreamType.MAIN,
     ) -> str:
         """Requests a live stream from the provider; returns a stream URL/token.
 
@@ -77,7 +88,10 @@ class VideoProviderPort(ABC):
         `VideoProviderPort` widening precedent `terminal_id`/`channel_no` already established.
         `None` when the device has no captured `AudioCapability` yet; the relay's own explicit
         per-codec dispatch table treats that identically to any codec it hasn't implemented —
-        no audio, video unaffected."""
+        no audio, video unaffected.
+
+        `stream_type` (ADR-0043): main or sub encoder stream; defaults to main, the behavior
+        every caller had before the parameter existed."""
         raise NotImplementedError
 
     @abstractmethod

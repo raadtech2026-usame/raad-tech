@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from raad.core.events.base import DomainEvent
 from raad.core.events.ports import BrokerPort
+from raad.modules.video.application.ports import LiveStreamType
 from raad.modules.video.infra.adapters import Jt1078RelayAdapter
 
 
@@ -116,7 +117,25 @@ class StartLiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fields["udp_port"], 0)
         self.assertEqual(fields["logical_channel"], 3)
         self.assertEqual(fields["data_type"], 0)
-        self.assertEqual(fields["stream_type"], 0)
+        self.assertEqual(fields["stream_type"], 0)  # default: main stream (ADR-0043)
+
+    async def test_sub_stream_is_signalled_as_stream_type_one(self) -> None:
+        """ADR-0043: `LiveStreamType.SUB` maps to JT/T 1078 Table 6.2 stream type 1."""
+        adapter, _rpc, broker = _make_adapter(
+            {"ok": True, "session_id": "vs-sub", "viewer_token": "tok-sub",
+             "ingest_host": "10.0.0.5", "ingest_port": 7910}
+        )
+
+        await adapter.start_live(
+            device_id="device-1",
+            camera_id="camera-1",
+            terminal_id="00000000013800138000",
+            channel_no=2,
+            reference="vs-sub",
+            stream_type=LiveStreamType.SUB,
+        )
+
+        self.assertEqual(broker.published[0].payload["fields"]["stream_type"], 1)
 
     async def test_device_signal_is_published_only_after_the_relay_confirms_the_session(
         self,

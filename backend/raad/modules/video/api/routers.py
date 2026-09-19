@@ -83,7 +83,7 @@ from raad.modules.video.application.commands import (
     RequestPlaybackVideoCommand,
     StopVideoSessionCommand,
 )
-from raad.modules.video.application.ports import VideoUnitOfWork
+from raad.modules.video.application.ports import LiveStreamType, VideoUnitOfWork
 from raad.modules.video.application.queries import GetVideoSessionByIdQuery, VideoSessionDTO
 from raad.modules.video.application.services import VideoApplicationService
 
@@ -171,6 +171,7 @@ async def request_live_video(
         channel_no=camera.channel_no,
         actor=principal,
         audio_codec=device.audio_codec,
+        stream_type=LiveStreamType(body.stream_type),
     )
     session = await video_service.request_live_video(command, uow=uow)
     return _session_dto_to_response(session)

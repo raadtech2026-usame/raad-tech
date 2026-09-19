@@ -31,6 +31,7 @@ from raad.modules.video.application.commands import (
 )
 from raad.modules.video.application.ports import (
     IntercomStreamUrls,
+    LiveStreamType,
     VideoProviderPort,
     VideoUnitOfWork,
 )
@@ -130,6 +131,7 @@ class FakeVideoProvider(VideoProviderPort):
         channel_no: int,
         reference: str,
         audio_codec: int | None = None,
+        stream_type: LiveStreamType = LiveStreamType.MAIN,
     ) -> str:
         self.start_live_calls.append(
             {
@@ -139,6 +141,7 @@ class FakeVideoProvider(VideoProviderPort):
                 "channel_no": channel_no,
                 "reference": reference,
                 "audio_codec": audio_codec,
+                "stream_type": stream_type,
             }
         )
         return self.stream_url
@@ -250,6 +253,28 @@ class RequestLiveVideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.status, "requested")
         self.assertEqual(session.stream_url, provider.stream_url)
         self.assertEqual(len(provider.start_live_calls), 1)
+        # ADR-0043: a command that doesn't choose keeps the pre-existing main-stream behavior.
+        self.assertEqual(provider.start_live_calls[0]["stream_type"], LiveStreamType.MAIN)
+
+    async def test_sub_stream_choice_is_passed_through_to_the_provider(self) -> None:
+        """ADR-0043: the multi-camera grid asks for the terminal's low-bitrate sub stream."""
+        provider = FakeVideoProvider()
+        service = make_service(provider=provider)
+
+        await service.request_live_video(
+            RequestLiveVideoCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-ref-3",
+                camera_id="camera-ref-3",
+                terminal_id="00000000013800138000",
+                channel_no=3,
+                actor=make_actor(),
+                stream_type=LiveStreamType.SUB,
+            ),
+            uow=make_uow(),
+        )
+
+        self.assertEqual(provider.start_live_calls[0]["stream_type"], LiveStreamType.SUB)
 
     async def test_audio_codec_is_passed_through_to_the_provider(self) -> None:
         """The G.711A audio fix's own backend-side threading (`DeviceDTO.audio_codec` ->

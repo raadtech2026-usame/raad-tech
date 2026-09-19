@@ -12,13 +12,23 @@ docstring for why.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RequestLiveVideoRequest(BaseModel):
     device_id: str
     camera_id: str
+    #: ADR-0043 — optional and additive: omitting it keeps the documented `{device_id,
+    #: camera_id}` body and its original main-stream behavior.
+    stream_type: Literal["main", "sub"] = Field(
+        default="main",
+        description=(
+            "Terminal encoder stream: `main` (full resolution) or `sub` (low-bitrate preview, "
+            "for multi-camera grids)."
+        ),
+    )
 
 
 class RequestPlaybackVideoRequest(BaseModel):

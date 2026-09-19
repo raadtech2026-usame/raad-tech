@@ -114,6 +114,7 @@ class VideoApplicationService:
             channel_no=command.channel_no,
             reference=str(session.id),
             audio_codec=command.audio_codec,
+            stream_type=command.stream_type,
         )
         # ADR-0026 §7: no eager `session.activate()` here - the relay hasn't confirmed media is
         # actually flowing yet (only that the RPC + device signal succeeded). `status` stays

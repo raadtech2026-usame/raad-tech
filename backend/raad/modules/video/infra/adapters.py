@@ -45,8 +45,15 @@ from datetime import datetime, timezone
 
 from raad.core.events.base import DomainEvent
 from raad.core.events.ports import BrokerPort
-from raad.modules.video.application.ports import IntercomStreamUrls, VideoProviderPort
+from raad.modules.video.application.ports import (
+    IntercomStreamUrls,
+    LiveStreamType,
+    VideoProviderPort,
+)
 from raad.modules.video.infra.jt1078_relay_client import Jt1078RelayRpcClient
+
+#: `0x9101` "码流类型" (stream type) byte, JT/T 1078 Table 6.2: 0 = main stream, 1 = sub stream.
+_JT1078_STREAM_TYPE = {LiveStreamType.MAIN: 0, LiveStreamType.SUB: 1}
 
 _SIGNAL_EVENT_TYPE = "Jt1078SignalCommandRequested"
 
@@ -72,6 +79,7 @@ class Jt1078RelayAdapter(VideoProviderPort):
         channel_no: int,
         reference: str,
         audio_codec: int | None = None,
+        stream_type: LiveStreamType = LiveStreamType.MAIN,
     ) -> str:
         response = await self._rpc.call(
             "create_live_session",
@@ -94,7 +102,7 @@ class Jt1078RelayAdapter(VideoProviderPort):
                 "udp_port": 0,
                 "logical_channel": channel_no,
                 "data_type": 0,  # 0 = A/V, spec Table 6.2
-                "stream_type": 0,  # 0 = main stream
+                "stream_type": _JT1078_STREAM_TYPE[stream_type],
             },
         )
         return self._viewer_url(response["viewer_token"])
