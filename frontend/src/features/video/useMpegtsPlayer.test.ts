@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useMpegtsPlayer } from "./useMpegtsPlayer";
+import { JUMP_TO_LIVE_LATENCY_SECONDS, useMpegtsPlayer } from "./useMpegtsPlayer";
 
 type Handler = (...args: unknown[]) => void;
 
@@ -114,6 +114,34 @@ describe("useMpegtsPlayer", () => {
     // as before, while a channel that actually streams audio (the G.711A fix) is picked up too.
     expect(FakePlayer.instances[0].mediaDataSource).not.toHaveProperty("hasAudio");
     expect(result.current.state).toBe("connecting");
+  });
+
+  it("jumps to the live edge on a large video backlog while keeping smooth catch-up for small drift", () => {
+    const videoRef = makeVideoRef();
+    renderHook(() => useMpegtsPlayer(STREAM_URL, videoRef));
+
+    expect(FakePlayer.instances[0].config).toMatchObject({
+      liveSync: true,
+      liveSyncMaxLatency: 1.5,
+      liveSyncTargetLatency: 0.5,
+      liveBufferLatencyChasing: true,
+      liveBufferLatencyMaxLatency: JUMP_TO_LIVE_LATENCY_SECONDS,
+      liveBufferLatencyMinRemain: 0.5,
+    });
+    // The jump threshold must sit above the speed-up threshold, or small drift would seek.
+    expect(JUMP_TO_LIVE_LATENCY_SECONDS).toBeGreaterThan(1.5);
+    // Never chase a paused tile (library default) - the operator paused it deliberately.
+    expect(FakePlayer.instances[0].config).not.toHaveProperty("liveBufferLatencyChasingOnPaused");
+  });
+
+  it("never jumps the intercom (audio-only) downlink - a skip mid-sentence is worse than a speed-up", () => {
+    const videoRef = makeVideoRef();
+    renderHook(() => useMpegtsPlayer(STREAM_URL, videoRef, { hasVideo: false }));
+
+    expect(FakePlayer.instances[0].config).toMatchObject({
+      liveSync: true,
+      liveBufferLatencyChasing: false,
+    });
   });
 
   it("attaches the player to the given video element and loads/plays it", () => {

@@ -62,11 +62,27 @@ import mpegts from "mpegts.js";
  * jitter never triggers a speed-up — only genuine, sustained latency drift does, per this phase's
  * own "tolerate reasonable jitter... prevent long freeze/catch-up cycles... do not turn the
  * player into delayed playback" targets.
+ *
+ * **Jump to live on a large backlog (2026-09-19, video only).** Speed-up alone is right for small
+ * drift but wrong for what production actually produced on 2026-09-18: an MDVR over 4G stalls a
+ * channel for 3–10 s and then delivers the backlog in one burst. At 1.2x, working off an 8 s
+ * backlog to the 0.5 s target takes ~37 s, so the operator watches visibly delayed video long
+ * after the link recovered. mpegts.js's own `liveBufferLatencyChasing` now runs alongside
+ * `liveSync`: once the buffer is more than `JUMP_TO_LIVE_LATENCY_SECONDS` ahead of the playhead it
+ * seeks straight to `LIVE_SYNC_TARGET_LATENCY_SECONDS` behind the live edge, while drift between
+ * 1.5 s and that threshold still gets the smooth speed-up. A skip is the honest thing for a live
+ * safety view: the stale seconds are gone, the picture is current again. Enabled only when
+ * `hasVideo` — the ADR-0036 intercom downlink keeps smooth catch-up, since a jump mid-sentence
+ * is far worse than a brief speed-up — and never while paused (the library's own default), so a
+ * paused tile resumes and then jumps to live.
  */
 
 const LIVE_SYNC_MAX_LATENCY_SECONDS = 1.5;
 const LIVE_SYNC_TARGET_LATENCY_SECONDS = 0.5;
 const LIVE_SYNC_PLAYBACK_RATE = 1.2;
+/** Buffered-ahead latency beyond which the player seeks to the live edge instead of speeding up.
+ * Above `LIVE_SYNC_MAX_LATENCY_SECONDS` so ordinary drift keeps the smooth path. */
+export const JUMP_TO_LIVE_LATENCY_SECONDS = 3;
 const AUTO_CLEANUP_MAX_BACKWARD_DURATION_SECONDS = 30;
 const AUTO_CLEANUP_MIN_BACKWARD_DURATION_SECONDS = 10;
 
@@ -181,6 +197,9 @@ export function useMpegtsPlayer(
         liveSyncMaxLatency: LIVE_SYNC_MAX_LATENCY_SECONDS,
         liveSyncTargetLatency: LIVE_SYNC_TARGET_LATENCY_SECONDS,
         liveSyncPlaybackRate: LIVE_SYNC_PLAYBACK_RATE,
+        liveBufferLatencyChasing: hasVideo,
+        liveBufferLatencyMaxLatency: JUMP_TO_LIVE_LATENCY_SECONDS,
+        liveBufferLatencyMinRemain: LIVE_SYNC_TARGET_LATENCY_SECONDS,
         autoCleanupSourceBuffer: true,
         autoCleanupMaxBackwardDuration: AUTO_CLEANUP_MAX_BACKWARD_DURATION_SECONDS,
         autoCleanupMinBackwardDuration: AUTO_CLEANUP_MIN_BACKWARD_DURATION_SECONDS,
