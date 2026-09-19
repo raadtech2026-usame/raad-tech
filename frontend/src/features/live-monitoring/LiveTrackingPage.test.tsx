@@ -441,7 +441,8 @@ describe("LiveTrackingPage", () => {
         await userEvent.click(await screen.findByRole("button", { name: "Start Live" }));
 
         await waitFor(() =>
-          expect(videoApi.requestLiveVideo).toHaveBeenCalledWith(DEVICE.id, DEVICE.cameras[0].id),
+          // A device's only camera gets the main stream (ADR-0043).
+          expect(videoApi.requestLiveVideo).toHaveBeenCalledWith(DEVICE.id, DEVICE.cameras[0].id, "main"),
         );
       },
     );
@@ -521,7 +522,8 @@ describe("LiveTrackingPage", () => {
 
       await waitFor(() => expect(videoApi.requestLiveVideo).toHaveBeenCalledTimes(4));
       for (const camera of DEVICE_4_CAMERAS.cameras) {
-        expect(videoApi.requestLiveVideo).toHaveBeenCalledWith(DEVICE_4_CAMERAS.id, camera.id);
+        // Every tile of a multi-camera wall uses the low-bitrate sub stream (ADR-0043).
+        expect(videoApi.requestLiveVideo).toHaveBeenCalledWith(DEVICE_4_CAMERAS.id, camera.id, "sub");
       }
       expect(await screen.findAllByTestId("live-video")).toHaveLength(4);
       expect(await screen.findByText("4/4 Live")).toBeInTheDocument();
