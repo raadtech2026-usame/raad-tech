@@ -32,6 +32,17 @@ backfill classification.
 Each item's own body is parsed via `position_body.parse_position_report_body` — a malformed or
 truncated item raises `MalformedFrameError` exactly as a malformed `0x0200` body would,
 propagating to the dispatcher's existing handler-error catch-all (Phase 9.4).
+
+**A declared item count larger than the items actually present is tolerated when the body ends
+exactly on an item boundary (2026-09-19).** The production `LSZ-C5804DG-Q-F` uploads its backlog
+as 997-byte bodies holding exactly seven complete 142-byte items (3 + 7 x 142) while its count
+field claims more — the terminal fills the ~1 KB body limit and stops, without subpackaging and
+without lowering the count. Rejecting that as malformed answered every upload with result 2, so
+the terminal resent the same batch every ~5 s and none of its complete items were ever recorded
+(166 rejections in one hour, 2026-09-18). The complete items are now returned, with
+`declared_item_count` kept so the handler can log the mismatch. The strict cases are unchanged:
+no complete item at all, a length prefix cut in half, or an item whose declared length runs past
+the end of the body is still a `MalformedFrameError` — those are damaged frames, not a short count.
 """
 
 from __future__ import annotations
@@ -49,6 +60,9 @@ _ITEM_LENGTH_PREFIX = 2  # each item's own WORD length prefix
 class BulkPositionReport:
     position_data_type: int
     items: list[PositionReportBody]
+    #: The body's own item-count field. Equal to `len(items)` for a well-formed batch; larger
+    #: only for the short-count case described in the module docstring.
+    declared_item_count: int = 0
 
 
 def parse_bulk_position_report(body: bytes) -> BulkPositionReport:
@@ -64,6 +78,8 @@ def parse_bulk_position_report(body: bytes) -> BulkPositionReport:
     items: list[PositionReportBody] = []
     offset = _HEADER_LENGTH
     for index in range(item_count):
+        if offset == len(body) and items:
+            break  # short count: the body ended cleanly after the last complete item
         if len(body) < offset + _ITEM_LENGTH_PREFIX:
             raise MalformedFrameError(
                 f"Bulk position report truncated before item {index}'s length prefix."
@@ -79,4 +95,6 @@ def parse_bulk_position_report(body: bytes) -> BulkPositionReport:
         items.append(parse_position_report_body(item_body))
         offset += item_length
 
-    return BulkPositionReport(position_data_type=position_data_type, items=items)
+    return BulkPositionReport(
+        position_data_type=position_data_type, items=items, declared_item_count=item_count
+    )

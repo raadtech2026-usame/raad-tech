@@ -8,7 +8,10 @@ primary spec's `position_data_type` byte.
 call, no geofence-evaluation trigger, authenticated-session-required-or-drop-with-audit-log, and
 (since 2026-09-17) the same `0x8001` acknowledgement rules — `0` only after every item has been
 published, `1` without an authenticated session, `2` for an unparseable batch. Not repeated here
-in full — see that module's docstring for the spec citations.
+in full — see that module's docstring for the spec citations. A batch whose count field claims
+more items than the body holds is not "unparseable" when the body ends cleanly on an item
+boundary: its complete items are published and acknowledged with `0` (2026-09-19, see
+`bulk_position_body.py`), which stops the terminal resending the same backlog every few seconds.
 
 **Acknowledged once, for the whole message, echoing the serial number the parser exposes.** For a
 subpackaged `0x0704` that is the serial of the part that completed reassembly; the earlier parts
@@ -117,6 +120,20 @@ class BulkLocationHandler(MessageHandler):
                 error=str(exc),
             )
             return _general_response(message, RESULT_MESSAGE_ERROR)
+
+        if batch.declared_item_count > len(batch.items):
+            # Short count (`bulk_position_body.py`'s module docstring): the complete items are
+            # published and acknowledged; the rest were never sent by the terminal.
+            log_with_fields(
+                logger,
+                20,
+                "bulk_position_report_short_count",
+                connection_id=context.connection_id,
+                terminal_id=message.terminal_id,
+                serial_no=message.serial_no,
+                declared_item_count=batch.declared_item_count,
+                parsed_item_count=len(batch.items),
+            )
 
         for report in batch.items:
             event = DevicePositionReported(

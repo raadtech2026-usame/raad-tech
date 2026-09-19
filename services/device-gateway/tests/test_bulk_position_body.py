@@ -80,6 +80,45 @@ class BulkPositionBodyParsingTests(unittest.TestCase):
         with self.assertRaises(MalformedFrameError):
             parse_bulk_position_report(body)
 
+    def test_short_count_ending_on_item_boundary_returns_complete_items(self) -> None:
+        """Production shape (2026-09-18): the count claims more items than the body holds, but
+        the body ends exactly after the last complete item — the complete items are returned."""
+        item_bodies = [
+            _build_body(raw_latitude=n * 1_000_000, raw_longitude=n * 1_000_000)
+            for n in range(1, 8)
+        ]
+        body = (8).to_bytes(2, "big") + bytes([1])  # claims 8, carries 7
+        for item_body in item_bodies:
+            body += len(item_body).to_bytes(2, "big") + item_body
+
+        report = parse_bulk_position_report(body)
+
+        self.assertEqual(len(report.items), 7)
+        self.assertEqual(report.declared_item_count, 8)
+        self.assertEqual([round(item.latitude) for item in report.items], list(range(1, 8)))
+
+    def test_well_formed_batch_declared_count_matches_items(self) -> None:
+        item_body = _build_body()
+        body = (
+            (1).to_bytes(2, "big")
+            + bytes([0])
+            + len(item_body).to_bytes(2, "big")
+            + item_body
+        )
+        self.assertEqual(parse_bulk_position_report(body).declared_item_count, 1)
+
+    def test_short_count_with_half_a_length_prefix_still_raises(self) -> None:
+        item_body = _build_body()
+        body = (
+            (2).to_bytes(2, "big")
+            + bytes([0])
+            + len(item_body).to_bytes(2, "big")
+            + item_body
+            + bytes([0x00])  # one byte of the second item's two-byte length prefix
+        )
+        with self.assertRaises(MalformedFrameError):
+            parse_bulk_position_report(body)
+
     def test_malformed_item_body_propagates_malformed_frame_error(self) -> None:
         short_item = b"\x00" * 10  # too short to be a valid position body
         body = (

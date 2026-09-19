@@ -523,6 +523,26 @@ class BulkLocationHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(publisher.published, [])
         self.assertEqual(_decode_general_response(result), (9, 0x0704, 2))
 
+    async def test_short_count_batch_publishes_complete_items_and_acknowledges_success(
+        self,
+    ) -> None:
+        """Regression (2026-09-18 production): a count field claiming more items than the body
+        holds was answered with result 2, so the terminal resent the batch every ~5 s forever.
+        The complete items are now published and the batch acknowledged with result 0."""
+        publisher = RecordingEventPublisher()
+        handler = BulkLocationHandler(publisher)
+        context = await self._authenticated_context()
+
+        items = [_build_body() for _ in range(7)]
+        body = (8).to_bytes(2, "big") + self._bulk_body(items)[2:]  # claims 8, carries 7
+        result = await handler.handle(
+            _make_message(0x0704, body=body, serial_no=718), context
+        )
+
+        self.assertEqual(len(publisher.published), 7)
+        self.assertTrue(all(event.is_backfill for event in publisher.published))
+        self.assertEqual(_decode_general_response(result), (718, 0x0704, 0))
+
     async def test_batch_items_carry_gps_valid_per_item(self) -> None:
         """Root-cause fix — RAAD Live Tracking wrong-location investigation: each batch item's
         own "positioned" status bit is evaluated independently, not once for the whole message."""
