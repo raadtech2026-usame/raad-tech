@@ -45,6 +45,7 @@ from src.session.viewer_token import (
     mint_token,
 )
 from src.viewer.broadcast_hub import SessionBroadcastHub
+from src.viewer.drop_tracker import ViewerDropTracker
 from src.viewer.viewer_server import ViewerServer
 
 logger = get_logger("jt1078_relay.relay")
@@ -122,6 +123,7 @@ class Jt1078Relay:
         self._redis_client = redis_client or self._build_redis_client()
 
         self._hubs: dict[str, SessionBroadcastHub] = {}
+        self._drop_tracker = ViewerDropTracker()
         self._audio_transcode_sessions: dict[str, _AudioTranscodeSession] = {}
         # Holds references to fire-and-forget transcoder start/stop tasks spawned from the
         # synchronous `_on_session_created`/`_on_session_removed` callbacks (`SessionManager`'s
@@ -226,7 +228,13 @@ class Jt1078Relay:
         # loop, since `send_close` closes this side's own writer too). One line, terminal states
         # only (at most once per session), no behavioral change.
         log_with_fields(
-            logger, 20, "session_removed", session_id=session_id, outcome=outcome, reason=reason
+            logger,
+            20,
+            "session_removed",
+            session_id=session_id,
+            outcome=outcome,
+            reason=reason,
+            viewer_chunks_dropped=self._drop_tracker.pop_total(session_id),
         )
         hub = self._hubs.pop(session_id, None)
         self._spawn_background(
@@ -270,11 +278,12 @@ class Jt1078Relay:
         audio_state = self._audio_transcode_sessions.get(session_id)
         if hub is None or audio_state is None:
             return
-        await hub.broadcast_audio_aac(
+        backpressured = await hub.broadcast_audio_aac(
             aac_payload=aac_payload,
             audio_specific_config=AAC_LC_8KHZ_MONO_AUDIO_SPECIFIC_CONFIG,
             timestamp_ms=audio_state.next_output_timestamp_ms(),
         )
+        self._drop_tracker.record(session_id, dropped=len(backpressured), kind="audio")
 
     async def _on_reassembled_frame(self, session_id: str, frame: ReassembledFrame) -> None:
         hub = self._hubs.get(session_id)
@@ -300,11 +309,12 @@ class Jt1078Relay:
                     last_i_frame_interval_ms=frame.last_i_frame_interval_ms,
                     timestamp_ms=frame.timestamp_ms,
                 )
-            await hub.broadcast_video(
+            backpressured = await hub.broadcast_video(
                 annex_b_payload=frame.body,
                 is_keyframe=is_keyframe,
                 timestamp_ms=frame.timestamp_ms,
             )
+            self._drop_tracker.record(session_id, dropped=len(backpressured), kind="video")
         elif frame.is_audio:
             session = self._session_manager.resolve(session_id)
             audio_codec = session.audio_codec if session is not None else None

@@ -342,6 +342,38 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(session.session_id, self.relay._hubs)
         self.assertIsNone(self.relay.session_manager.resolve(session.session_id))
 
+    async def test_viewer_drops_are_logged_and_totalled_on_session_removal(self) -> None:
+        """2026-09-19: `broadcast_video`'s backpressured-viewer return value used to be discarded,
+        so a relay-side drop left no trace. It is now logged and totalled per session."""
+        from src.ingest.frame_reassembly import ReassembledFrame
+
+        session, _token = self.relay.create_live_session(
+            terminal_id="138001380000", correlation_id="corr-drops", logical_channel=3
+        )
+
+        class _BackpressuredHub:
+            async def broadcast_video(self, **_kwargs):
+                return [object()]  # one viewer had to drop an older chunk
+
+        self.relay._hubs[session.session_id] = _BackpressuredHub()
+        frame = ReassembledFrame(
+            logical_channel=3,
+            data_type=1,  # P-frame: no keyframe diagnostic line
+            timestamp_ms=1_000,
+            last_i_frame_interval_ms=1000,
+            last_frame_interval_ms=40,
+            body=b"\x00\x00\x00\x01\x41",
+        )
+        with self.assertLogs("jt1078.viewer.drop_tracker", level="WARNING") as dropped:
+            await self.relay._on_reassembled_frame(session.session_id, frame)
+            await self.relay._on_reassembled_frame(session.session_id, frame)
+        self.assertEqual(dropped.records[0].extra_fields["video_dropped"], 1)
+
+        with self.assertLogs("jt1078_relay.relay", level="INFO") as removed:
+            await self.relay.session_manager.end_session(session.session_id, reason="explicit_stop")
+        summary = [r.extra_fields for r in removed.records if r.getMessage() == "session_removed"]
+        self.assertEqual(summary[0]["viewer_chunks_dropped"], 2)
+
     async def test_intercom_session_failing_closes_viewer_and_uplink_sockets(self) -> None:
         """Bug 1 regression test — REQUESTED -> FAILED. Before this fix, `fail_session` only
         dereferenced the hub from `self.relay._hubs`; a browser already connected (both the
