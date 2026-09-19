@@ -51,6 +51,12 @@ const PENDING_PHASES = new Set<VideoSessionPhase>(["requesting", "connecting", "
  * remount both tiles on every focus change, tearing down and re-requesting real backend sessions
  * for no reason. Grid-area placement avoids that failure mode entirely while still giving the
  * focused tile a large, centered slot and the rest a compact filmstrip.
+ *
+ * **Stream choice (ADR-0043).** Every tile asks for the terminal's low-bitrate sub stream except
+ * the focused tile and a device's only camera, which ask for the main stream. Four main streams
+ * over one 4G uplink were measured delaying and freezing channels on 2026-09-18. Focusing or
+ * unfocusing restarts exactly the one tile whose stream changed — deliberately, and only that
+ * tile; every other tile keeps its session.
  */
 export function MultiCameraVideoPanel({ deviceId, cameras, deviceOnline }: MultiCameraVideoPanelProps) {
   const [liveRequested, setLiveRequested] = useState(false);
@@ -249,6 +255,7 @@ export function MultiCameraVideoPanel({ deviceId, cameras, deviceOnline }: Multi
                     variant={isFocusMode ? (isFocused ? "main" : "thumb") : "grid"}
                     onSelect={cameras.length > 1 ? setFocusedCameraId : undefined}
                     isFocused={isFocused}
+                    streamType={isFocused || cameras.length === 1 ? "main" : "sub"}
                   />
                 </div>
               );

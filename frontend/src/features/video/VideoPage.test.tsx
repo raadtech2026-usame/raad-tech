@@ -94,7 +94,7 @@ describe("VideoPage", () => {
     await selectDeviceAndCamera();
     await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
 
-    expect(api.requestLiveVideo).toHaveBeenCalledWith(DEVICE.id, DEVICE.cameras[0].id);
+    expect(api.requestLiveVideo).toHaveBeenCalledWith(DEVICE.id, DEVICE.cameras[0].id, "main");
     expect(await screen.findByText("Requesting a live session…")).toBeInTheDocument();
   });
 

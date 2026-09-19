@@ -41,7 +41,7 @@ describe("CameraTile", () => {
     vi.mocked(requestLiveVideo).mockImplementation(() => new Promise(() => {}));
     renderTile();
     await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(1));
-    expect(requestLiveVideo).toHaveBeenCalledWith("device-1", "cam-1");
+    expect(requestLiveVideo).toHaveBeenCalledWith("device-1", "cam-1", "main");
   });
 
   it("shows the channel number and camera label", async () => {

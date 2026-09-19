@@ -180,16 +180,24 @@ export const OPEN_VIDEO_SESSION_STATUSES: ReadonlySet<VideoSessionStatus> = new 
   "active",
 ]);
 
-/** `POST /video/live` (API Contracts §4.5) — body `{device_id, camera_id}` verbatim, no other
- * field exists on `RequestLiveVideoRequest`. D5-enforced entirely server-side before any session
- * is created; this call raises `ApiError` (403 `VIDEO_FORBIDDEN`, 404, or 500 if no
+/** Which of the terminal's two encoder outputs a live session asks for (ADR-0043): `main` is
+ * full resolution, `sub` is the terminal's low-bitrate preview stream. */
+export type LiveStreamType = "main" | "sub";
+
+/** `POST /video/live` (API Contracts §4.5) — body `{device_id, camera_id}` plus ADR-0043's
+ * optional `stream_type` (server default `main`). D5-enforced entirely server-side before any
+ * session is created; this call raises `ApiError` (403 `VIDEO_FORBIDDEN`, 404, or 500 if no
  * `VideoProviderPort` is bound on this deployment) exactly like every other mutation in this
  * frontend — `VideoPage.tsx` maps those to its own error/unavailable states, never a client-side
  * guess at authorization. */
-export async function requestLiveVideo(deviceId: string, cameraId: string): Promise<VideoSession> {
+export async function requestLiveVideo(
+  deviceId: string,
+  cameraId: string,
+  streamType: LiveStreamType = "main",
+): Promise<VideoSession> {
   const wire = await apiRequest<VideoSessionWire>("/video/live", {
     method: "POST",
-    body: { device_id: deviceId, camera_id: cameraId },
+    body: { device_id: deviceId, camera_id: cameraId, stream_type: streamType },
   });
   return toVideoSession(wire);
 }

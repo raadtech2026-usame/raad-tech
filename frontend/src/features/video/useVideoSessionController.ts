@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
-import { requestLiveVideo, stopVideoSession, type VideoSession } from "./api";
+import { requestLiveVideo, stopVideoSession, type LiveStreamType, type VideoSession } from "./api";
 import { useMpegtsPlayer, type UseMpegtsPlayerResult } from "./useMpegtsPlayer";
 
 export type VideoSessionPhase =
@@ -38,6 +38,12 @@ export interface UseVideoSessionControllerResult {
   canStop: boolean;
   start: () => void;
   stop: () => Promise<void>;
+}
+
+export interface UseVideoSessionControllerOptions {
+  /** ADR-0043: which terminal stream to request. Defaults to `"main"`. Changing it while a
+   * session is open restarts that session on the new stream (see the effect below). */
+  streamType?: LiveStreamType;
 }
 
 // Phase 6 (2026-09-02) — bounded, backed-off auto-recovery from an unexpected relay WebSocket
@@ -98,9 +104,18 @@ const RECONNECT_STABILITY_MS = 45000;
 export function useVideoSessionController(
   deviceId: string | null,
   cameraId: string | null,
+  options: UseVideoSessionControllerOptions = {},
 ): UseVideoSessionControllerResult {
   const toast = useToast();
+  const streamType: LiveStreamType = options.streamType ?? "main";
+  // Read by `start()` and the auto-reconnect path, which run from callbacks/timers that may
+  // outlive the render they were created in.
+  const streamTypeRef = useRef(streamType);
+  streamTypeRef.current = streamType;
   const [session, setSession] = useState<VideoSession | null>(null);
+  // The stream the *current* session was actually opened on - compared against `streamType`
+  // to decide whether a restart is needed.
+  const [sessionStreamType, setSessionStreamType] = useState<LiveStreamType | null>(null);
   const [manuallyStopped, setManuallyStopped] = useState(false);
   const [requestError, setRequestError] = useState<VideoRequestError | null>(null);
   const stoppedSessionIdsRef = useRef<Set<string>>(new Set());
@@ -109,7 +124,7 @@ export function useVideoSessionController(
   const startClickedAtRef = useRef<number | null>(null);
 
   const startMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: (requestedStreamType: LiveStreamType) => {
       // Phase 4 diagnostic instrumentation — timestamps the browser's own side of the startup
       // path (Start click -> POST /video/live -> response -> player "connected"), so the
       // 20-30s startup delay this phase investigates can be measured, not guessed at, without
@@ -117,10 +132,14 @@ export function useVideoSessionController(
       // via DevTools) rather than a new telemetry dependency - this module has none today.
       startClickedAtRef.current = performance.now();
       // eslint-disable-next-line no-console
-      console.debug("[video:startup] POST /video/live sent", { deviceId, cameraId });
-      return requestLiveVideo(deviceId as string, cameraId as string);
+      console.debug("[video:startup] POST /video/live sent", {
+        deviceId,
+        cameraId,
+        streamType: requestedStreamType,
+      });
+      return requestLiveVideo(deviceId as string, cameraId as string, requestedStreamType);
     },
-    onSuccess: (newSession) => {
+    onSuccess: (newSession, requestedStreamType) => {
       const elapsedMs = startClickedAtRef.current !== null
         ? Math.round(performance.now() - startClickedAtRef.current)
         : null;
@@ -130,6 +149,7 @@ export function useVideoSessionController(
         requestRoundTripMs: elapsedMs,
       });
       setSession(newSession);
+      setSessionStreamType(requestedStreamType);
       setManuallyStopped(false);
       setRequestError(null);
     },
@@ -235,7 +255,7 @@ export function useVideoSessionController(
       // now-dead session) and clears the closed player's `streamUrl` before requesting a brand
       // new session - never reconnects the old (single-use, now-consumed) viewer token.
       setSession(null);
-      startMutation.mutate();
+      startMutation.mutate(streamTypeRef.current);
     };
 
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -257,6 +277,25 @@ export function useVideoSessionController(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player.state, manuallyStopped, session, deviceId, cameraId]);
 
+  // ADR-0043 — the requested stream changed while a session is open (a video-wall tile gained or
+  // lost focus): replace that one session with one on the new stream. Same teardown path as
+  // auto-recovery above: `setSession(null)` lets the per-session cleanup effect stop the old
+  // session, then a brand-new session is requested. Waits while a request is in flight; if that
+  // request was for the old stream, this runs again once it lands. Never undoes a user's Stop.
+  useEffect(() => {
+    if (!session || manuallyStopped || startMutation.isPending) return;
+    if (sessionStreamType === null || sessionStreamType === streamType) return;
+    // eslint-disable-next-line no-console
+    console.debug("[video:stream] switching stream", {
+      sessionId: session.id,
+      from: sessionStreamType,
+      to: streamType,
+    });
+    setSession(null);
+    startMutation.mutate(streamType);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamType, session, sessionStreamType, manuallyStopped, startMutation.isPending]);
+
   async function stop(): Promise<void> {
     if (!session) return;
     setManuallyStopped(true);
@@ -265,7 +304,7 @@ export function useVideoSessionController(
   }
 
   function start(): void {
-    startMutation.mutate();
+    startMutation.mutate(streamTypeRef.current);
   }
 
   function computePhase(): VideoSessionPhase {

@@ -63,7 +63,48 @@ describe("useVideoSessionController", () => {
     act(() => result.current.start());
 
     await waitFor(() => expect(result.current.phase).toBe("requesting"));
-    expect(requestLiveVideo).toHaveBeenCalledWith("device-1", "camera-1");
+    expect(requestLiveVideo).toHaveBeenCalledWith("device-1", "camera-1", "main");
+  });
+
+  it("restarts the open session on the new stream when streamType changes (ADR-0043)", async () => {
+    vi.mocked(requestLiveVideo).mockImplementation((_d, _c, streamType) =>
+      Promise.resolve({ ...SESSION, id: `session-${streamType}` }),
+    );
+    const { result, rerender } = renderHook(
+      ({ streamType }: { streamType: "main" | "sub" }) =>
+        useVideoSessionController("device-1", "camera-1", { streamType }),
+      { wrapper, initialProps: { streamType: "sub" } },
+    );
+
+    act(() => result.current.start());
+    await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(1));
+    expect(requestLiveVideo).toHaveBeenLastCalledWith("device-1", "camera-1", "sub");
+
+    rerender({ streamType: "main" });
+
+    await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(2));
+    expect(requestLiveVideo).toHaveBeenLastCalledWith("device-1", "camera-1", "main");
+    await waitFor(() => expect(stopVideoSession).toHaveBeenCalledWith("session-sub"));
+  });
+
+  it("does not restart a session the user stopped when streamType changes", async () => {
+    vi.mocked(requestLiveVideo).mockResolvedValue(SESSION);
+    const { result, rerender } = renderHook(
+      ({ streamType }: { streamType: "main" | "sub" }) =>
+        useVideoSessionController("device-1", "camera-1", { streamType }),
+      { wrapper, initialProps: { streamType: "sub" } },
+    );
+    act(() => result.current.start());
+    await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.canStop).toBe(true));
+    await act(async () => {
+      await result.current.stop();
+    });
+
+    rerender({ streamType: "main" });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(requestLiveVideo).toHaveBeenCalledTimes(1);
   });
 
   it("reaches 'connected' once the session exists and the player reports connected", async () => {

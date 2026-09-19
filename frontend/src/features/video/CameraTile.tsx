@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from
 import { Maximize2, Minimize2, Pause, Play } from "lucide-react";
 import clsx from "clsx";
 import { Badge, type BadgeVariant } from "../../shared/components/Badge/Badge";
-import type { VideoCameraOption } from "./api";
+import type { LiveStreamType, VideoCameraOption } from "./api";
 import { VideoPlayerPanel } from "./VideoPlayerPanel";
 import { useVideoSessionController, type VideoSessionPhase } from "./useVideoSessionController";
 import styles from "./CameraTile.module.css";
@@ -21,9 +21,13 @@ export interface CameraTileProps {
   variant?: "grid" | "main" | "thumb";
   /** Present only when this tile is one of several selectable tiles (`MultiCameraVideoPanel`
    * omits it entirely for a single-camera device) — clicking the tile (outside its own
-   * fullscreen button) calls this with the camera's id to enter/change Focus mode. Purely a
-   * frontend presentation switch; it never starts, stops, or re-requests a video session. */
+   * fullscreen button) calls this with the camera's id to enter/change Focus mode. It never
+   * touches the session itself; the parent may respond by changing `streamType`. */
   onSelect?: (cameraId: string) => void;
+  /** ADR-0043: the terminal stream this tile's session uses (default `"main"`). The wall asks
+   * for `"sub"` on every tile except a focused or only camera; a change restarts only this
+   * tile's session (`useVideoSessionController`). */
+  streamType?: LiveStreamType;
   /** Whether this tile is the currently focused one (Focus mode's main tile) — a styling hint
    * only (highlighted border, `aria-pressed`), computed and owned entirely by the parent grid. */
   isFocused?: boolean;
@@ -58,8 +62,9 @@ export function CameraTile({
   variant = "grid",
   onSelect,
   isFocused,
+  streamType = "main",
 }: CameraTileProps) {
-  const session = useVideoSessionController(deviceId, camera.id);
+  const session = useVideoSessionController(deviceId, camera.id, { streamType });
   const startedRef = useRef(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);

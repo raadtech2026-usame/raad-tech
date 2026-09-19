@@ -87,6 +87,21 @@ describe("video api", () => {
     expect(result[0].id).toBe("01DEVICE0000000000000000A");
   });
 
+  it("requestLiveVideo sends the chosen sub stream (ADR-0043)", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce(SESSION_WIRE);
+
+    await requestLiveVideo("01DEVICE0000000000000000A", "01CAMERA000000000000000A", "sub");
+
+    expect(apiRequest).toHaveBeenCalledWith("/video/live", {
+      method: "POST",
+      body: {
+        device_id: "01DEVICE0000000000000000A",
+        camera_id: "01CAMERA000000000000000A",
+        stream_type: "sub",
+      },
+    });
+  });
+
   it("requestLiveVideo posts device_id/camera_id verbatim and maps the response", async () => {
     vi.mocked(apiRequest).mockResolvedValueOnce(SESSION_WIRE);
 
@@ -94,7 +109,11 @@ describe("video api", () => {
 
     expect(apiRequest).toHaveBeenCalledWith("/video/live", {
       method: "POST",
-      body: { device_id: "01DEVICE0000000000000000A", camera_id: "01CAMERA000000000000000A" },
+      body: {
+        device_id: "01DEVICE0000000000000000A",
+        camera_id: "01CAMERA000000000000000A",
+        stream_type: "main", // ADR-0043 default
+      },
     });
     expect(result).toEqual({
       id: "01SESSION000000000000000A",

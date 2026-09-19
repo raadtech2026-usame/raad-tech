@@ -16,7 +16,7 @@ vi.mock("./useMpegtsPlayer", () => ({
   useMpegtsPlayer: () => playerReturn,
 }));
 
-import { requestLiveVideo, stopVideoSession, type VideoSession } from "./api";
+import { requestLiveVideo, stopVideoSession, type LiveStreamType, type VideoSession } from "./api";
 import { MultiCameraVideoPanel } from "./MultiCameraVideoPanel";
 
 const CAMERAS_4 = [
@@ -84,9 +84,34 @@ describe("MultiCameraVideoPanel", () => {
 
     await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(4));
     for (const camera of CAMERAS_4) {
-      expect(requestLiveVideo).toHaveBeenCalledWith("device-1", camera.id);
+      // A multi-camera wall asks every tile for the low-bitrate sub stream (ADR-0043).
+      expect(requestLiveVideo).toHaveBeenCalledWith("device-1", camera.id, "sub");
     }
     expect(screen.getAllByText(/^Channel \d$/)).toHaveLength(4);
+  });
+
+  it("restarts only the focused camera on the main stream, and back to sub when leaving focus (ADR-0043)", async () => {
+    vi.mocked(requestLiveVideo).mockImplementation(
+      (deviceId: string, cameraId: string, streamType?: LiveStreamType) =>
+        Promise.resolve({ ...sessionFor(deviceId, cameraId), id: `session-${cameraId}-${streamType}` }),
+    );
+    renderPanel();
+    await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
+    await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(4));
+
+    await userEvent.click(screen.getByRole("button", { name: "View Rear in focus mode" }));
+
+    await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(5));
+    expect(requestLiveVideo).toHaveBeenLastCalledWith("device-1", "cam-3", "main");
+    await waitFor(() => expect(stopVideoSession).toHaveBeenCalledWith("session-cam-3-sub"));
+    // Only the focused tile was restarted; the other three kept their sub-stream sessions.
+    expect(stopVideoSession).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(screen.getByRole("button", { name: /Back to grid/ }));
+
+    await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(6));
+    expect(requestLiveVideo).toHaveBeenLastCalledWith("device-1", "cam-3", "sub");
+    await waitFor(() => expect(stopVideoSession).toHaveBeenCalledWith("session-cam-3-main"));
   });
 
   it("renders a single full-width tile for a device with exactly one camera — never assumes four", async () => {
@@ -98,7 +123,8 @@ describe("MultiCameraVideoPanel", () => {
     await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
 
     await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(1));
-    expect(requestLiveVideo).toHaveBeenCalledWith("device-1", "cam-1");
+    // A device's only camera gets the main stream (ADR-0043).
+    expect(requestLiveVideo).toHaveBeenCalledWith("device-1", "cam-1", "main");
     expect(screen.getAllByText(/^Channel \d$/)).toHaveLength(1);
   });
 
