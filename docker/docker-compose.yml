@@ -113,9 +113,17 @@ services:
       - raad_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-raad} -d ${POSTGRES_DB:-raad}"]
-      interval: 5s
+      # ADR-0045 healthcheck cadence: steady-state `interval` is 30s, but `start_interval`
+      # keeps startup gating fast (2s) for the whole `start_period`, so `depends_on:
+      # condition: service_healthy` still releases dependents promptly. Measured before this
+      # change: ~86 `docker exec`s/minute across the box (~124k/day), of which this stack
+      # contributed ~50/min; each exec is a full process creation through dockerd+containerd.
+      # Requires Docker Engine >= 25 for `start_interval` (production runs 29.8.0).
+      interval: 30s
       timeout: 3s
       retries: 10
+      start_period: 30s
+      start_interval: 2s
 
   redis:
     image: redis:7-alpine
@@ -175,9 +183,17 @@ services:
       # stack "unhealthy" from the moment auth was enabled. `--no-auth-warning` only silences
       # redis-cli's own stderr nag about passing a password on a command line, not a real check.
       test: ["CMD-SHELL", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping"]
-      interval: 5s
+      # ADR-0045 healthcheck cadence: steady-state `interval` is 30s, but `start_interval`
+      # keeps startup gating fast (2s) for the whole `start_period`, so `depends_on:
+      # condition: service_healthy` still releases dependents promptly. Measured before this
+      # change: ~86 `docker exec`s/minute across the box (~124k/day), of which this stack
+      # contributed ~50/min; each exec is a full process creation through dockerd+containerd.
+      # Requires Docker Engine >= 25 for `start_interval` (production runs 29.8.0).
+      interval: 30s
       timeout: 3s
       retries: 5
+      start_period: 20s
+      start_interval: 2s
 
   migrate:
     build: *backend-build
@@ -216,10 +232,21 @@ services:
           "-c",
           "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)",
         ]
-      interval: 10s
+      # Retained as a Python probe deliberately: python:3.11-slim ships no curl, wget or nc
+      # (verified inside the running container), so an HTTP/TCP shell probe would mean adding a
+      # package to the image. Cadence is the lever instead. NB this probe runs a REAL readiness
+      # check (Postgres SELECT 1 + Redis PING), so 10s was also 6 DB round-trips/minute.
+      # ADR-0045 healthcheck cadence: steady-state `interval` is 30s, but `start_interval`
+      # keeps startup gating fast (2s) for the whole `start_period`, so `depends_on:
+      # condition: service_healthy` still releases dependents promptly. Measured before this
+      # change: ~86 `docker exec`s/minute across the box (~124k/day), of which this stack
+      # contributed ~50/min; each exec is a full process creation through dockerd+containerd.
+      # Requires Docker Engine >= 25 for `start_interval` (production runs 29.8.0).
+      interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 30s
+      start_interval: 2s
 
   worker:
     build: *backend-build
@@ -270,6 +297,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+      start_interval: 2s
 
   backup:
     build:
@@ -344,10 +372,17 @@ services:
           "-c",
           "import socket; socket.create_connection(('localhost', 7809), 2)",
         ]
-      interval: 10s
+      # ADR-0045 healthcheck cadence: steady-state `interval` is 30s, but `start_interval`
+      # keeps startup gating fast (2s) for the whole `start_period`, so `depends_on:
+      # condition: service_healthy` still releases dependents promptly. Measured before this
+      # change: ~86 `docker exec`s/minute across the box (~124k/day), of which this stack
+      # contributed ~50/min; each exec is a full process creation through dockerd+containerd.
+      # Requires Docker Engine >= 25 for `start_interval` (production runs 29.8.0).
+      interval: 30s
       timeout: 3s
       retries: 5
-      start_period: 5s
+      start_period: 20s
+      start_interval: 2s
 
   jt1078-relay:
     build:
@@ -439,10 +474,17 @@ services:
           "-c",
           "import socket; socket.create_connection(('localhost', 7911), 2)",
         ]
-      interval: 10s
+      # ADR-0045 healthcheck cadence: steady-state `interval` is 30s, but `start_interval`
+      # keeps startup gating fast (2s) for the whole `start_period`, so `depends_on:
+      # condition: service_healthy` still releases dependents promptly. Measured before this
+      # change: ~86 `docker exec`s/minute across the box (~124k/day), of which this stack
+      # contributed ~50/min; each exec is a full process creation through dockerd+containerd.
+      # Requires Docker Engine >= 25 for `start_interval` (production runs 29.8.0).
+      interval: 30s
       timeout: 3s
       retries: 5
-      start_period: 5s
+      start_period: 20s
+      start_interval: 2s
 
   frontend:
     build:
@@ -474,10 +516,17 @@ services:
       # above), does not fall back to the IPv4 address Vite/nginx actually bind — confirmed
       # against a live container, not assumed (ADR-0013's own Verification).
       test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:5173/"]
-      interval: 10s
+      # ADR-0045 healthcheck cadence: steady-state `interval` is 30s, but `start_interval`
+      # keeps startup gating fast (2s) for the whole `start_period`, so `depends_on:
+      # condition: service_healthy` still releases dependents promptly. Measured before this
+      # change: ~86 `docker exec`s/minute across the box (~124k/day), of which this stack
+      # contributed ~50/min; each exec is a full process creation through dockerd+containerd.
+      # Requires Docker Engine >= 25 for `start_interval` (production runs 29.8.0).
+      interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 20s
+      start_interval: 2s
 
   prometheus:
     image: prom/prometheus:v2.53.0
@@ -534,10 +583,13 @@ services:
         condition: service_started
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/health"]
-      interval: 10s
+      # Same ADR-0045 cadence as every other service here. This one only ever runs under the
+      # `gateway` profile (the generic-VPS path), never under Coolify.
+      interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 20s
+      start_interval: 2s
 
 volumes:
   raad_postgres_data:

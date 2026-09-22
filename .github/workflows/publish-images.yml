@@ -1,0 +1,141 @@
+# RAAD — production container image build & publish (ADR-0045).
+#
+# WHY THIS EXISTS: Coolify previously built all seven RAAD compose services *on the production
+# VPS*. On a 4 vCPU box a `docker compose build` saturated ~70-100% of every core for 1-2
+# minutes per deploy (1-minute load average measured at 5.41 on 2026-09-22 16:10 UTC), which is
+# what triggered Hostinger's "VPS has exceeded its CPU limit" warning. Every CPU peak in ten days
+# of retained `sar` history correlated 1:1 with a Coolify deployment; nothing else on the box ever
+# came close. This workflow moves that build work to GitHub-hosted runners so the VPS only ever
+# pulls a finished image.
+#
+# FIVE IMAGES, NOT SEVEN: `backend`, `migrate` and `worker` are the same image built from the same
+# context and Dockerfile, differing only in the `command:` their compose service supplies. They
+# share one `raad-backend` image here instead of being built three times.
+#
+# TAGGING: production references the full 40-character commit SHA only. Coolify writes
+# SOURCE_COMMIT into the .env it passes to `docker compose pull`/`up`, so
+# `image: ghcr.io/.../raad-backend:${SOURCE_COMMIT}` resolves to exactly the commit being
+# deployed with no tag plumbing anywhere. The `main` tag published alongside it is a human
+# convenience and is deliberately never referenced by the production compose file.
+#
+# SECURITY (public repository): this workflow must never run on `pull_request` from a fork.
+# `push: [main]` and `workflow_dispatch` only — a fork PR must not be able to reach the
+# `packages: write` token or the frontend build-arg secrets.
+
+name: Publish Images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Two pushes to main must not race to publish. Deliberately NOT `cancel-in-progress`: cancelling
+# a half-pushed image set would leave a commit with some tags present and some missing, which is
+# exactly the state the `deploy` job's `needs:` gate exists to prevent.
+concurrency:
+  group: publish-images
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: raadtech2026-usame
+
+jobs:
+  build:
+    name: build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Surface every broken image in one run rather than hiding four failures behind the first.
+      fail-fast: false
+      matrix:
+        include:
+          - image: raad-backend
+            context: backend
+            file: docker/backend.Dockerfile
+          - image: raad-frontend
+            context: frontend
+            file: docker/frontend.Dockerfile
+            target: prod
+          - image: raad-device-gateway
+            context: services/device-gateway
+            file: docker/device-gateway.Dockerfile
+          - image: raad-jt1078-relay
+            context: services/jt1078
+            file: docker/jt1078-relay.Dockerfile
+          - image: raad-backup
+            context: .
+            file: docker/backup.Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.image }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target || '' }}
+          push: true
+          provenance: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:main
+          # Registry-backed cache rather than type=gha: the five images total ~2.1 GB and
+          # raad-jt1078-relay alone is 842 MB (it apt-installs ffmpeg), which does not sit
+          # comfortably inside the 10 GB GitHub Actions cache that also evicts after 7 idle days.
+          # A public GHCR package is free to store and keeps intermediate stages too.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:buildcache,mode=max
+          # Only raad-frontend consumes these; Vite inlines them into the JS bundle at build time,
+          # so they are client-public by construction. The deployed bundle at
+          # app.raadsystems.tech already serves the Mapbox pk. token to anonymous visitors.
+          # NEVER add a value here that is not already public — a build arg is baked into the
+          # image layer permanently and cannot be redacted later.
+          build-args: |
+            VITE_API_BASE_URL=${{ vars.VITE_API_BASE_URL }}
+            VITE_WS_BASE_URL=${{ vars.VITE_WS_BASE_URL }}
+            VITE_MAPBOX_ACCESS_TOKEN=${{ secrets.VITE_MAPBOX_ACCESS_TOKEN }}
+            VITE_STRIPE_PUBLISHABLE_KEY=${{ secrets.VITE_STRIPE_PUBLISHABLE_KEY }}
+
+  deploy:
+    name: trigger Coolify deployment
+    # THE GATE: this job cannot start unless every matrix leg above pushed successfully, so a
+    # partially-built commit is structurally undeployable.
+    needs: build
+    runs-on: ubuntu-latest
+    # Deliberately opt-in. Until COOLIFY_DEPLOY_ENABLED is set to 'true' this workflow only
+    # publishes images and deployment stays a manual click in Coolify — the staged cutover in
+    # docs/runbooks/ghcr-deployment.md depends on being able to publish without deploying.
+    if: github.ref == 'refs/heads/main' && vars.COOLIFY_DEPLOY_ENABLED == 'true'
+    permissions:
+      contents: read
+    steps:
+      - name: Trigger Coolify deployment
+        env:
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
+        run: |
+          set -euo pipefail
+          # --fail-with-body so a non-2xx is a hard failure and the body is still shown; the
+          # Authorization header is passed via an env var and never appears in the command line
+          # or the run log.
+          curl --fail-with-body -sS -X GET \
+            -H "Authorization: Bearer ${COOLIFY_API_TOKEN}" \
+            "${COOLIFY_URL}/api/v1/deploy?uuid=${COOLIFY_APP_UUID}&force=false" \
+            -o response.json
+          echo "Coolify accepted the deployment request:"
+          # Print only the deployment_uuid / message, never the whole body (it echoes no secret
+          # today, but pinning the fields keeps it that way if Coolify's response shape changes).
+          python3 -c "import json;d=json.load(open('response.json'));print(json.dumps({k:v for k,v in d.items() if k in ('message','deployments','deployment_uuid')}, indent=2))"

@@ -1,133 +1,97 @@
 # ==============================================================================================
-# GENERATED FILE — DO NOT HAND-EDIT. Regenerate instead (see command below).
+# GENERATED FILE - DO NOT HAND-EDIT. Regenerate instead (see command below).
 #
 # This is the single-file, fully-merged production Compose stack for a Coolify "Docker Compose"
-# resource, produced because Coolify v4.3.19's Compose resource type offers only "Managed by
-# Coolify" or "Raw (deploy file as-is)" — there is no UI to supply a second `-f` override file.
-# The project's real source of truth stays split, exactly as designed
+# resource, produced because Coolify's Compose resource type offers only "Managed by Coolify" or
+# "Raw (deploy file as-is)" - there is no UI to supply a second `-f` override file. The project's
+# real source of truth stays split, exactly as designed
 # (docs/runbooks/coolify-deployment.md, docker/README.md):
 #
-#   docker/docker-compose.yml           — the base stack (dev-safe on its own)
-#   docker/docker-compose.coolify.yml   — the Coolify overlay (ADR-0022)
+#   docker/docker-compose.yml           - the base stack (dev-safe on its own)
+#   docker/docker-compose.coolify.yml   - the Coolify overlay (ADR-0022, ADR-0045)
 #
-# This file is the mechanical, byte-faithful result of merging exactly those two — nothing added,
-# removed, or hand-adjusted beyond what `docker compose config` itself produces. If either source
-# file changes, regenerate this file the same way; never patch it directly, or it will silently
-# drift from the two files it's supposed to mirror.
+# This file is the mechanical result of merging exactly those two - nothing added, removed, or
+# hand-adjusted beyond what `docker compose config` produces plus the two numbered patches below.
+# If either source file changes, regenerate this file the same way; never patch it directly, or
+# it will silently drift from the two files it is supposed to mirror.
 #
-# Regenerate with (from the repository root; `--no-interpolate` is required — without it, this
+# Regenerate with (from the repository root; `--no-interpolate` is required - without it, this
 # command bakes whatever is in your *local* docker/.env, including local secrets, into the
-# committed file, and defeats Coolify's own environment-variable substitution at deploy time;
-# `--no-path-resolution` is required — without it, build contexts/bind mounts are rewritten to
-# this machine's own absolute filesystem path, which is meaningless on Coolify's VPS):
+# committed file, and defeats Coolify's own environment-variable substitution at deploy time,
+# `${SOURCE_COMMIT}` included; `--no-path-resolution` is required - without it, bind mounts are
+# rewritten to this machine's own absolute filesystem path, meaningless on Coolify's VPS):
 #
 #   COMPOSE_PROFILES= docker compose --env-file /dev/null \
 #     -f docker/docker-compose.yml -f docker/docker-compose.coolify.yml \
 #     config --no-interpolate --no-path-resolution > docker/docker-compose.coolify.full.yml
 #
-# REQUIRED POST-GENERATION PATCH 1 (Coolify deployment failure, found 2026-09-13): the command
-# above reproduces `services.backup.entrypoint: []` verbatim from docker-compose.yml's own
-# `entrypoint: []` (a standard, valid Compose directive clearing the postgres:16-alpine base
-# image's own ENTRYPOINT so `command: ["/app/backup-loop.sh"]` runs directly). Coolify v4.3.19's
-# own Compose-file validator rejects the empty-*array* form outright: "services.backup.entrypoint
-# must be a null" — it only accepts a string or null for this field, unlike `docker compose
-# config` itself, which accepts and normalizes both forms identically. After running the
-# regenerate command above, manually change that one line from `entrypoint: []` to
-# `entrypoint: ""` (empty string, not empty array) before committing. This is not a behavior
-# change: empirically verified in this environment (`docker inspect` on a container created from
-# each form) that `entrypoint: []` and `entrypoint: ""` compile to the byte-identical Docker
-# Engine container config (`Entrypoint: []`, same `Cmd`) — only the YAML field's declared type
-# changes, from array to string, which is what satisfies Coolify's stricter schema.
+# `docker compose config` strips all comments, so this header must be re-prepended by hand after
+# every regeneration, together with the two patches below. `scripts/regenerate-coolify-compose.sh`
+# does all three steps and is the supported way to do it.
 #
-# REQUIRED POST-GENERATION PATCH 2 (Coolify deployment failure, found 2026-09-13, root-caused
-# 2026-09-14): every `build.context` and relative bind-mount `source:` in this file must be
-# written relative to the REPOSITORY ROOT, not relative to this file's own `docker/` directory —
-# the opposite of what a plain `docker compose -f docker/docker-compose.coolify.full.yml build`
-# would need (which resolves relative paths against the compose file's own directory, the
-# Compose Specification's documented default). Root cause, confirmed against Coolify's own
-# source, not inferred: `app/Jobs/ApplicationDeploymentJob.php` builds every Compose deployment
-# with `--project-directory {workdir} -f {workdir}{docker_compose_location} build`, i.e. it
-# unconditionally pins `--project-directory` to the repository root regardless of where the
-# compose file itself lives. Per the Compose Specification, an *explicit* `--project-directory`
-# is what relative paths resolve against, not the compose file's directory — so a path written
-# as `../backend` (correct for `docker/`-relative resolution) instead resolves to one level
-# *above* the repository root under Coolify's forced invocation, landing outside the cloned repo
-# entirely (`unable to prepare context: path "/artifacts/backend" not found` and identically for
-# `frontend`, `services/device-gateway`, `services/jt1078`, and every relative bind-mount
-# `source:` — nginx's/prometheus's own config mounts included). This is a confirmed, open,
-# contributor-acknowledged upstream Coolify bug (coollabsio/coolify#5182 — a project contributor
-# cites this exact source line and states "coolify sets the compose project directory to be the
-# root of the repo instead of the location of the compose file... yes its a bug"), reproduced
-# empirically in this environment by running `docker compose --project-directory . -f
-# docker/docker-compose.coolify.full.yml config` and observing every affected path resolve one
-# directory level above this repository's own root. "Preserve Repository During Deployment"
-# (a Coolify setting) does NOT fix this — it only controls whether repo files stay available for
-# *volume* mounts post-build, not how `build.context` is resolved during the build itself.
-# `dockerfile:` fields need no matching change: per the Compose Specification, a relative
-# `dockerfile:` path is always resolved relative to `context:` (confirmed by inspecting this
-# environment's own `docker compose config` output — `dockerfile:` stays an unresolved relative
-# string while `context:` alone gets resolved to an absolute path), so each `context:`'s real
-# target directory is unchanged, only how its string is written.
+# ----------------------------------------------------------------------------------------------
+# PRE-BUILT IMAGES (ADR-0045, 2026-09-22) - the most important thing to know about this file.
 #
-# DISCLOSED COUPLING RISK: Patch 2 makes this file's paths correct *only* under Coolify's current,
-# buggy forced `--project-directory`. If Coolify fixes coollabsio/coolify#5182 upstream, this
-# file's paths would need to revert to `docker/`-relative (i.e., undo Patch 2) — check that issue
-# before ever regenerating this file after a Coolify upgrade, not just before every use.
-# Practical consequence, verified in this environment: this file can no longer be built directly
-# with a plain `docker compose -f docker/docker-compose.coolify.full.yml build` — that resolves
-# `context: backend` against `docker/` (Compose's default project-directory) and looks for a
-# nonexistent `docker/backend`. To exercise this file manually (outside Coolify), pass the same
-# flag Coolify does, from the repository root:
-#   docker compose --project-directory . -f docker/docker-compose.coolify.full.yml build
-# `docker/docker-compose.yml`/`docker-compose.prod.yml` (the actual dev/generic-VPS path) are
-# unaffected — they are never run this way and keep working exactly as before.
+# Every RAAD service below carries `image: ghcr.io/raadtech2026-usame/raad-*:${SOURCE_COMMIT}` and
+# NO `build:` section. Coolify's deployment job runs, in order:
 #
-# REQUIRED POST-GENERATION PATCH 3 (Coolify deployment failure, found 2026-09-14, after Patch 2
-# fixed the build-context errors): repo-root-relative bind-mount `source:` values written as a
-# bare path with no leading path-separator token (`infrastructure/nginx/conf.d/frontend.conf`,
-# matching Patch 2's own `context:` convention) fail differently from `build.context` — not with
-# a missing-path error, but `service "frontend" refers to undefined volume
-# infrastructure/nginx/conf.d/frontend.conf: invalid compose project`. A bind-mount `source:`
-# without a leading `.`/`/`/`~` is ambiguous with a *named volume* reference even when `type:
-# bind` is stated explicitly, and Coolify's validator resolves that ambiguity by checking it
-# against the top-level `volumes:` list — where it unsurprisingly isn't defined. `build.context`
-# has no such named-volume namespace to collide with, which is why Patch 2 left it bare
-# deliberately and correctly; bind-mount `source:` needed the opposite treatment. Fixed by
-# prefixing every repo-root-relative bind-mount `source:` with `./` (`./infrastructure/...`) —
-# `build.context` values are unchanged by this patch, per the previous paragraph's own reasoning.
+#   docker compose ... build --pull              (no-op here: nothing is buildable)
+#   docker compose --env-file <workdir>/.env ... pull --ignore-buildable
+#   docker compose ... up --pull always --build -d
 #
-# In Coolify: New Resource -> Docker Compose -> Raw, pointing at this exact file. Then follow
-# docs/runbooks/coolify-deployment.md Steps 3-7 verbatim (env vars via Coolify's own UI, domain
-# assignment, the device-plane firewall/DNS step) — none of that is expressible inside a Compose
-# file and none of it changed by generating this one.
+# so every service is pulled, not built. Building these seven services on the 4 vCPU production
+# VPS saturated ~70-100% of all cores for 1-2 minutes per deploy (1-minute load average measured
+# at 5.41 on 2026-09-22 16:10 UTC) and is what triggered Hostinger's CPU-limit warning.
+# GitHub Actions (.github/workflows/publish-images.yml) now builds and publishes the images.
 #
-# Five things this merge faithfully carries over or requires patching, disclosed rather than
-# silently fixed or hidden, since fixing any of them invisibly would be a service-definition
-# change beyond what the merge itself produces (1-2) or would silently regress on a plain
-# regeneration (3-5):
-#   1. `COMPOSE_PROFILES` must be left unset/empty in Coolify's own environment-variable store.
-#      `nginx` is still present below (gated behind `profiles: [gateway]`, from the base file,
-#      untouched by the Coolify overlay) — it only starts if that profile is activated. `certbot`
-#      does not appear at all: it is defined only in docker-compose.prod.yml, which is not part of
-#      this merge.
-#   2. `frontend`'s healthcheck still probes `http://127.0.0.1:5173/` (the Vite dev server port)
-#      even though this overlay builds `frontend` with `target: prod`, which serves on 80 via its
-#      own nginx instead. This mismatch is inherited unchanged from the source files (the same gap
-#      exists in a docker-compose.prod.yml merge) — not introduced or corrected here.
-#   3. `services.backup.entrypoint` is `""` here, not the `[]` a straight regeneration would
-#      produce — see REQUIRED POST-GENERATION PATCH 1 above. Re-running the regenerate command
-#      without reapplying this one-line patch will silently reintroduce that Coolify validation
-#      failure.
-#   4. Every `build.context` below is repository-root-relative (e.g. `context: backend`, not
-#      `context: ../backend`), not the `docker/`-relative form a straight regeneration would
-#      produce — see REQUIRED POST-GENERATION PATCH 2 above and its disclosed coupling risk.
-#      Re-running the regenerate command without reapplying this patch will silently reintroduce
-#      the "unable to prepare context: path ... not found" failure.
-#   5. Every repo-root-relative bind-mount `source:` below is written with an explicit `./`
-#      prefix (e.g. `./infrastructure/nginx/conf.d/frontend.conf`), unlike `build.context` in
-#      item 4 above, which is deliberately bare — see REQUIRED POST-GENERATION PATCH 3 above.
-#      Re-running the regenerate command without reapplying this patch will silently reintroduce
-#      the "refers to undefined volume ...: invalid compose project" failure.
+# `${SOURCE_COMMIT}` is written by Coolify itself into the `.env` it passes to compose, so the
+# tag always equals the commit being deployed. Deliberately NO `:-` default: an empty value
+# yields an invalid image reference that fails at `pull`, BEFORE `up` touches a running
+# container - the safe failure. A fallback to a mutable tag would silently deploy wrong code.
+#
+# backend, migrate and worker intentionally share ONE image (`raad-backend`); they differ only in
+# their `command:`. Coolify used to build that identical image three times per deploy.
+#
+# ----------------------------------------------------------------------------------------------
+# REQUIRED POST-GENERATION PATCH 1 (Coolify deployment failure, found 2026-09-13): the regenerate
+# command reproduces `services.backup.entrypoint: []` verbatim from docker-compose.yml's own
+# `entrypoint: []` (a valid Compose directive clearing the postgres:16-alpine base image's
+# ENTRYPOINT so `command: ["/app/backup-loop.sh"]` runs directly). Coolify's own Compose-file
+# validator rejects the empty-*array* form: "services.backup.entrypoint must be a null" - it
+# accepts only a string or null, unlike `docker compose config`, which normalizes both forms
+# identically. After regenerating, change that one line to `entrypoint: ""` (empty string).
+# Not a behavior change: verified by `docker inspect` that both forms compile to the identical
+# Docker Engine container config; only the YAML field's declared type changes.
+#
+# REQUIRED POST-GENERATION PATCH 2 (Coolify deployment failure, found 2026-09-14): every
+# repo-root-relative bind-mount `source:` must be written with an explicit `./` prefix
+# (`./infrastructure/...`). A bare path with no leading `./` is ambiguous with a *named volume*
+# reference even when `type: bind` is stated, and Coolify's validator resolves that ambiguity
+# against the top-level `volumes:` list, failing with `service "frontend" refers to undefined
+# volume infrastructure/nginx/conf.d/frontend.conf: invalid compose project`. Coolify builds
+# every Compose deployment with `--project-directory {workdir}` pinned to the repository root
+# (app/Jobs/ApplicationDeploymentJob.php), so these paths resolve against the repo root, which is
+# why they are repo-root-relative rather than `docker/`-relative.
+#
+# A THIRD PATCH USED TO LIVE HERE AND IS NOW OBSOLETE (ADR-0045). It rewrote every
+# `build.context` to be repository-root-relative, working around confirmed upstream Coolify bug
+# coollabsio/coolify#5182 (the forced `--project-directory` breaks `docker/`-relative build
+# contexts). With no `build:` sections left in this file there are no build contexts to rewrite,
+# so that patch - and the documented coupling risk of having to undo it if #5182 is ever fixed -
+# is simply gone.
+#
+# In Coolify: New Resource -> Docker Compose, pointing at this exact file. Then follow
+# docs/runbooks/coolify-deployment.md and docs/runbooks/ghcr-deployment.md - env vars via
+# Coolify's own UI, domain assignment, the device-plane firewall/DNS step - none of which is
+# expressible inside a Compose file.
+#
+# Two things this merge faithfully carries over, disclosed rather than silently fixed:
+#   1. `COMPOSE_PROFILES` must be left unset/empty in Coolify's environment-variable store.
+#      `nginx` is still present below (gated behind `profiles: [gateway]`, from the base file) -
+#      it only starts if that profile is activated. `certbot` does not appear at all: it is
+#      defined only in docker-compose.prod.yml, which is not part of this merge.
+#   2. The base file's frontend healthcheck probes port 5173 (the Vite dev server); the Coolify
+#      overlay replaces it with a port-80 probe matching the published `prod`-stage image.
 # ==============================================================================================
 name: docker
 networks:
@@ -135,9 +99,6 @@ networks:
     name: docker_default
 services:
   backend:
-    build:
-      context: backend
-      dockerfile: ../docker/backend.Dockerfile
     command:
       - uvicorn
       - raad.main:app
@@ -169,9 +130,10 @@ services:
       RAAD_PAYMENT__PROVIDER_CREDENTIALS: ${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}
       RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
     healthcheck:
-      interval: 10s
+      interval: 30s
       retries: 5
-      start_period: 10s
+      start_interval: 2s
+      start_period: 30s
       test:
         - CMD
         - python
@@ -179,6 +141,7 @@ services:
         - import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready',
           timeout=3)
       timeout: 5s
+    image: ghcr.io/raadtech2026-usame/raad-backend:${SOURCE_COMMIT}
     logging:
       driver: json-file
       options:
@@ -188,9 +151,6 @@ services:
       default: null
     restart: unless-stopped
   backup:
-    build:
-      context: .
-      dockerfile: docker/backup.Dockerfile
     command:
       - /app/backup-loop.sh
     container_name: raad-backup
@@ -210,6 +170,7 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:-raad}
       PGPORT: "5432"
       PGUSER: ${POSTGRES_USER:-raad}
+    image: ghcr.io/raadtech2026-usame/raad-backup:${SOURCE_COMMIT}
     logging:
       driver: json-file
       options:
@@ -224,9 +185,6 @@ services:
         type: volume
         volume: {}
   device-gateway:
-    build:
-      context: services/device-gateway
-      dockerfile: ../../docker/device-gateway.Dockerfile
     container_name: raad-device-gateway
     depends_on:
       redis:
@@ -238,15 +196,17 @@ services:
       DEVICE_GATEWAY_REDIS_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
       DEVICE_GATEWAY_STREAM_MAX_LENGTH: ${DEVICE_GATEWAY_STREAM_MAX_LENGTH:-0}
     healthcheck:
-      interval: 10s
+      interval: 30s
       retries: 5
-      start_period: 5s
+      start_interval: 2s
+      start_period: 20s
       test:
         - CMD
         - python
         - -c
         - import socket; socket.create_connection(('localhost', 7809), 2)
       timeout: 3s
+    image: ghcr.io/raadtech2026-usame/raad-device-gateway:${SOURCE_COMMIT}
     logging:
       driver: json-file
       options:
@@ -259,15 +219,6 @@ services:
       - ${DEVICE_GATEWAY_MDVR_PORT:-7809}:7809
     restart: unless-stopped
   frontend:
-    build:
-      args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
-        VITE_MAPBOX_ACCESS_TOKEN: ${VITE_MAPBOX_ACCESS_TOKEN:-}
-        VITE_STRIPE_PUBLISHABLE_KEY: ${VITE_STRIPE_PUBLISHABLE_KEY:-}
-        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL}
-      context: frontend
-      dockerfile: ../docker/frontend.Dockerfile
-      target: prod
     container_name: raad-frontend
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost/api/v1}
@@ -275,9 +226,10 @@ services:
       VITE_STRIPE_PUBLISHABLE_KEY: ${VITE_STRIPE_PUBLISHABLE_KEY:-}
       VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost}
     healthcheck:
-      interval: 10s
+      interval: 30s
       retries: 5
-      start_period: 10s
+      start_interval: 2s
+      start_period: 20s
       test:
         - CMD
         - wget
@@ -285,6 +237,7 @@ services:
         - --spider
         - http://127.0.0.1/
       timeout: 5s
+    image: ghcr.io/raadtech2026-usame/raad-frontend:${SOURCE_COMMIT}
     logging:
       driver: json-file
       options:
@@ -301,9 +254,6 @@ services:
         target: /etc/nginx/conf.d/default.conf
         type: bind
   jt1078-relay:
-    build:
-      context: services/jt1078
-      dockerfile: ../../docker/jt1078-relay.Dockerfile
     container_name: raad-jt1078-relay
     depends_on:
       redis:
@@ -323,15 +273,17 @@ services:
       JT1078_RELAY_VIEWER_STUCK_TIMEOUT_SECONDS: ${JT1078_RELAY_VIEWER_STUCK_TIMEOUT_SECONDS:-30}
       JT1078_RELAY_VIEWER_TOKEN_SECRET: ${JT1078_RELAY_VIEWER_TOKEN_SECRET:-dev-only-change-me}
     healthcheck:
-      interval: 10s
+      interval: 30s
       retries: 5
-      start_period: 5s
+      start_interval: 2s
+      start_period: 20s
       test:
         - CMD
         - python
         - -c
         - import socket; socket.create_connection(('localhost', 7911), 2)
       timeout: 3s
+    image: ghcr.io/raadtech2026-usame/raad-jt1078-relay:${SOURCE_COMMIT}
     logging:
       driver: json-file
       options:
@@ -344,9 +296,6 @@ services:
       - ${JT1078_RELAY_VIEWER_PORT:-7911}:7911
     restart: unless-stopped
   migrate:
-    build:
-      context: backend
-      dockerfile: ../docker/backend.Dockerfile
     command:
       - alembic
       - upgrade
@@ -368,6 +317,7 @@ services:
       RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
       RAAD_PAYMENT__PROVIDER_CREDENTIALS: ${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}
       RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+    image: ghcr.io/raadtech2026-usame/raad-backend:${SOURCE_COMMIT}
     logging:
       driver: json-file
       options:
@@ -386,9 +336,10 @@ services:
         condition: service_started
         required: true
     healthcheck:
-      interval: 10s
+      interval: 30s
       retries: 5
-      start_period: 10s
+      start_interval: 2s
+      start_period: 20s
       test:
         - CMD
         - wget
@@ -423,8 +374,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-raad}
       POSTGRES_USER: ${POSTGRES_USER:-raad}
     healthcheck:
-      interval: 5s
+      interval: 30s
       retries: 10
+      start_interval: 2s
+      start_period: 30s
       test:
         - CMD-SHELL
         - pg_isready -U ${POSTGRES_USER:-raad} -d ${POSTGRES_DB:-raad}
@@ -492,8 +445,10 @@ services:
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev-only-change-me}
     healthcheck:
-      interval: 5s
+      interval: 30s
       retries: 5
+      start_interval: 2s
+      start_period: 20s
       test:
         - CMD-SHELL
         - redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping
@@ -513,9 +468,6 @@ services:
         type: volume
         volume: {}
   worker:
-    build:
-      context: backend
-      dockerfile: ../docker/backend.Dockerfile
     command:
       - python
       - -m
@@ -546,6 +498,7 @@ services:
     healthcheck:
       interval: 30s
       retries: 3
+      start_interval: 2s
       start_period: 20s
       test:
         - CMD
@@ -555,6 +508,7 @@ services:
           open('/proc/'+p+'/cmdline','rb').read().decode('utf-8','ignore') for p in
           os.listdir('/proc') if p.isdigit()) else 1)
       timeout: 5s
+    image: ghcr.io/raadtech2026-usame/raad-backend:${SOURCE_COMMIT}
     logging:
       driver: json-file
       options:
@@ -573,7 +527,7 @@ volumes:
   raad_redis_data:
     name: docker_raad_redis_data
 x-backend-build:
-  context: backend
+  context: ../backend
   dockerfile: ../docker/backend.Dockerfile
 x-backend-env:
   RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}

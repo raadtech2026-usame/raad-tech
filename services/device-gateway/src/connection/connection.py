@@ -95,6 +95,30 @@ class Connection:
         return str(self._remote_address)
 
     @property
+    def _lifecycle_log_level(self) -> int:
+        """`DEBUG` for a connection dialled from inside this container, `INFO` for every real
+        one (ADR-0045).
+
+        The container's own Docker healthcheck opens a TCP connection to `localhost` every
+        interval and closes it immediately, producing `connection_accepted` +
+        `connection_closing` + `connection_closed` each time. At the previous 10s cadence that
+        was ~26,000 log lines/day of pure self-noise, which buried genuine device events while
+        the JT/T 808 MDVR integration was being debugged.
+
+        Loopback is a sound discriminator here and not merely a heuristic: a real terminal
+        reaches this process through Docker's published port, so its peer address is the bridge
+        gateway or the client's own address — never `127.0.0.1`/`::1`, which nothing outside this
+        container can source. Only the level changes; the events are still emitted, so
+        `DEVICE_GATEWAY_LOG_LEVEL=DEBUG` brings them all back for troubleshooting.
+        """
+        host = None
+        if isinstance(self._remote_address, tuple) and self._remote_address:
+            host = self._remote_address[0]
+        if host in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            return 10  # DEBUG
+        return 20  # INFO
+
+    @property
     def is_closing(self) -> bool:
         """`True` from the moment `close()` starts: `send()` already drops frames from then on,
         so a connection in this state can no longer deliver anything to the device."""
@@ -108,7 +132,7 @@ class Connection:
         self._write_task = asyncio.create_task(self._write_loop())
         log_with_fields(
             logger,
-            20,
+            self._lifecycle_log_level,
             "connection_accepted",
             connection_id=self.connection_id,
             remote_address=self.remote_address,
@@ -132,7 +156,7 @@ class Connection:
         self._closing = True
         log_with_fields(
             logger,
-            20,
+            self._lifecycle_log_level,
             "connection_closing",
             connection_id=self.connection_id,
             reason=reason,
@@ -197,7 +221,7 @@ class Connection:
 
         log_with_fields(
             logger,
-            20,
+            self._lifecycle_log_level,
             "connection_closed",
             connection_id=self.connection_id,
             reason=reason,

@@ -1,0 +1,21 @@
+# Repository-root build context (ADR-0045).
+#
+# Only ONE image builds from the repository root: `raad-backup`
+# (docker/backup.Dockerfile, `context: .`). Its Dockerfile copies exactly three files:
+#   scripts/db/backup.sh, scripts/db/restore.sh, scripts/db/backup-loop.sh
+#
+# Without this file the root context was 168 MB (backend/ 103 MB, .git 42 MB, frontend/ 8.4 MB,
+# services/ 8 MB, mdvrdocs/ 3.3 MB, docs/ 2.8 MB) shipped to the builder on every single build,
+# to produce an image whose own additions total 16 KB.
+#
+# ALLOWLIST, NOT DENYLIST: `*` excludes everything, then `!scripts` re-includes the one directory
+# that is actually needed. A denylist would silently regrow every time a large directory is added
+# to the repository. Docker cannot re-include a file whose parent directory is excluded, which is
+# why the whole `scripts` directory (24 KB) is re-included rather than the three files.
+#
+# IF YOU ADD ANOTHER ROOT-CONTEXT BUILD you must re-include its paths here too. The failure mode
+# is loud and immediate — `COPY` fails with "file not found" during the build, in CI, before
+# anything reaches production — not a silently wrong image.
+
+*
+!scripts

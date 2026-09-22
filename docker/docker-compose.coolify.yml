@@ -3,6 +3,23 @@
 # alternative to docker-compose.prod.yml, not a replacement — docker-compose.prod.yml's own
 # generic-VPS/nginx/certbot path stays fully valid; pick exactly one, never combine both.
 #
+# PRE-BUILT IMAGES, NOT ON-VPS BUILDS (ADR-0045, 2026-09-22). Every RAAD service below carries
+# `build: !reset null` + `image: ghcr.io/.../<svc>:${SOURCE_COMMIT}` instead of a build section.
+# Coolify's deployment job runs `docker compose ... pull --ignore-buildable` followed by
+# `up --pull always --build -d`: a service with no `build:` is pulled, and `build` over a compose
+# file with zero build sections is a no-op. Building the seven services on the 4 vCPU production
+# VPS saturated ~70-100% of all cores for 1-2 minutes per deploy and is what triggered
+# Hostinger's CPU-limit warning; GitHub Actions now builds them
+# (.github/workflows/publish-images.yml) and the VPS only pulls.
+#
+# `${SOURCE_COMMIT}` is written by Coolify itself into the .env it passes to compose, so the
+# image tag always equals the commit being deployed — there is no tag to update by hand and the
+# stack can never reference an image built from different source than the checkout. There is
+# deliberately NO `:-` fallback on that variable: if it were ever empty, an invalid image
+# reference fails the pull *before* `up` touches a running container, which is the safe outcome.
+# A fallback to a mutable tag like `main` would instead silently deploy the wrong code.
+# Local development is unaffected — docker-compose.yml/.dev.yml/.prod.yml still build from source.
+#
 # The one architectural difference from docker-compose.prod.yml: Coolify already runs its own
 # Traefik instance as the platform's reverse proxy/TLS terminator (Let's Encrypt, automatic
 # renewal, all managed through Coolify's own UI). This stack's own `nginx`/`certbot` services
@@ -37,16 +54,44 @@ services:
     ports: !reset []
 
   backend:
+    build: !reset null
+    image: ghcr.io/raadtech2026-usame/raad-backend:${SOURCE_COMMIT}
     ports: !reset []
 
+  # `migrate` and `worker` are the *same image* as `backend` — same build context, same
+  # Dockerfile, differing only in the `command:` the base file gives each one. Coolify used to
+  # build that image three times; GitHub Actions now builds it once and all three reference it.
+  migrate:
+    build: !reset null
+    image: ghcr.io/raadtech2026-usame/raad-backend:${SOURCE_COMMIT}
+
+  worker:
+    build: !reset null
+    image: ghcr.io/raadtech2026-usame/raad-backend:${SOURCE_COMMIT}
+
+  device-gateway:
+    build: !reset null
+    image: ghcr.io/raadtech2026-usame/raad-device-gateway:${SOURCE_COMMIT}
+
+  jt1078-relay:
+    build: !reset null
+    image: ghcr.io/raadtech2026-usame/raad-jt1078-relay:${SOURCE_COMMIT}
+
+  backup:
+    build: !reset null
+    image: ghcr.io/raadtech2026-usame/raad-backup:${SOURCE_COMMIT}
+
   frontend:
-    build:
-      target: prod
-      args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
-        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL}
-        VITE_MAPBOX_ACCESS_TOKEN: ${VITE_MAPBOX_ACCESS_TOKEN:-}
-        VITE_STRIPE_PUBLISHABLE_KEY: ${VITE_STRIPE_PUBLISHABLE_KEY:-}
+    # `build: !reset null` removes the entire build block the base file declares (context,
+    # dockerfile, target AND the four VITE_* build args) — Compose has no other way to delete an
+    # inherited mapping, and leaving any part of it behind would make this service "buildable"
+    # again, which is precisely what `docker compose pull --ignore-buildable` skips. The VITE_*
+    # args now live in the GitHub Actions workflow (.github/workflows/publish-images.yml); they
+    # are inlined into the JS bundle at build time, so they must be supplied wherever the build
+    # happens. The base file's VITE_* *runtime* `environment:` entries are left untouched and are
+    # inert for the prod target.
+    build: !reset null
+    image: ghcr.io/raadtech2026-usame/raad-frontend:${SOURCE_COMMIT}
     # Same SPA-fallback fix docker-compose.prod.yml's own `frontend` service now carries (see
     # that file's comment on this exact mount) — load-bearing here specifically, since this
     # overlay has no gateway nginx of its own in front of this container at all; Coolify's
@@ -55,15 +100,19 @@ services:
       - ../infrastructure/nginx/conf.d/frontend.conf:/etc/nginx/conf.d/default.conf:ro
     ports: !reset []
     # Corrects the base file's dev-target healthcheck (docker-compose.yml's own frontend
-    # healthcheck probes port 5173, the Vite dev server) — this overlay's own `build.target:
-    # prod` above serves via nginx on port 80 instead, so that probe can never succeed against
-    # this image and left the container permanently "unhealthy" in production (Coolify's Traefik
+    # healthcheck probes port 5173, the Vite dev server) — the published `raad-frontend` image is
+    # built from the Dockerfile's `prod` stage and serves via nginx on port 80 instead, so that
+    # probe can never succeed against this image and left the container permanently "unhealthy"
+    # in production (Coolify's Traefik
     # in turn excludes an unhealthy container from routing, surfacing as a live 503 + Traefik's
     # own default self-signed cert on the public domain). Identical fix applied in
     # docker-compose.prod.yml, which has the same target: prod / port-5173 mismatch.
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/"]
-      interval: 10s
+      # ADR-0045 cadence, matching the base file: 30s steady state, 2s during start_period so
+      # Traefik starts routing to a freshly deployed container promptly.
+      interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 20s
+      start_interval: 2s

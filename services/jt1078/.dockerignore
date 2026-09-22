@@ -1,0 +1,14 @@
+# Build context for docker/jt1078-relay.Dockerfile (ADR-0045).
+#
+# Mirrors services/device-gateway/.dockerignore exactly — the two device-plane services have the
+# same shape (pyproject.toml + src/ + tests/) and the same Dockerfile pattern
+# (COPY pyproject.toml, COPY src, pip install -e .). `tests/` is excluded because the image never
+# runs the suite; CI runs it from the checkout, not from the image.
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.git
+tests/
