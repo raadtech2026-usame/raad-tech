@@ -77,6 +77,10 @@ _TRANSCODABLE_AUDIO_CODECS: frozenset[int] = frozenset({6})
 # — the same distinction those two events already carry on the backend/broker side.
 _CLOSE_CODE_SESSION_FAILED = 4010
 _CLOSE_CODE_SESSION_ENDED = 4011
+#: This one viewer stopped consuming and was closed; the session itself is untouched and any
+#: other viewer keeps watching (2026-09-22). Distinct from the two session-terminal codes above
+#: so a browser (and a log reader) can tell "you fell behind" from "the session ended".
+_CLOSE_CODE_VIEWER_STUCK = 4012
 
 # AAC-LC's frame size is fixed at 1024 samples; at the fixed 8kHz this transcoder always encodes
 # at (`codec/aac_transcoder.py`'s own `_SOURCE_SAMPLE_RATE_HZ`), that's exactly 128ms/frame -
@@ -199,8 +203,19 @@ class Jt1078Relay:
         # `broadcast_audio_aac` for this session - the FLV header's own claim and actual tag
         # delivery must never disagree (2026-08-28 regression fix).
         has_audio = session.audio_codec in _TRANSCODABLE_AUDIO_CODECS
+        # Stuck-viewer detection is for *watching* a stream (2026-09-22). An INTERCOM session
+        # opts out: its audio queue holds only a few seconds, and a browser that is not playing
+        # the downlink (muted tab, blocked autoplay) must never lose the operator's talk path,
+        # which is the half of intercom confirmed working in the field.
+        stuck_timeout = self._config.viewer_stuck_timeout_seconds
         self._hubs[session.session_id] = SessionBroadcastHub(
-            session.session_id, has_audio=has_audio
+            session.session_id,
+            has_audio=has_audio,
+            stuck_timeout_seconds=(
+                None
+                if session.kind == VideoSessionKind.INTERCOM or stuck_timeout <= 0
+                else stuck_timeout
+            ),
         )
         if has_audio:
             self._spawn_background(self._start_audio_transcoder(session.session_id))
@@ -251,6 +266,28 @@ class Jt1078Relay:
         if audio_state is not None:
             self._spawn_background(audio_state.transcoder.stop())
 
+    async def _close_stuck_viewers(self, session_id: str, hub: SessionBroadcastHub) -> None:
+        """Closes viewers the hub has flagged as continuously backpressured past
+        `viewer_stuck_timeout_seconds` (2026-09-22). Production evidence: browsers that stopped
+        consuming for 40 s to 4 minutes while the MDVR kept streaming over cellular, with nothing
+        in the relay to end it — a session ends only when the browser disconnects itself or the
+        *device* stops. Closing the viewer unblocks that path: its read loop tears down, and with
+        no viewers left the existing `viewer_grace_seconds` sweep ends the session, which already
+        signals the device to stop (`SessionManager._signal_device_stop`) and closes its ingest
+        connection. Only the stuck viewer is closed; other viewers of the same session keep
+        watching, and JT/T 808 is untouched."""
+        for connection in hub.take_stuck_viewers():
+            log_with_fields(
+                logger,
+                30,
+                "viewer_closed_stuck",
+                session_id=session_id,
+                stuck_timeout_seconds=self._config.viewer_stuck_timeout_seconds,
+            )
+            await self._viewer_server.close_viewer(
+                connection, code=_CLOSE_CODE_VIEWER_STUCK, reason=b"viewer_stuck"
+            )
+
     def _spawn_background(self, coro: Awaitable[None]) -> None:
         task = asyncio.ensure_future(coro)
         self._background_tasks.add(task)
@@ -289,6 +326,7 @@ class Jt1078Relay:
             timestamp_ms=audio_state.next_output_timestamp_ms(),
         )
         self._drop_tracker.record(session_id, dropped=len(backpressured), kind="audio")
+        await self._close_stuck_viewers(session_id, hub)
 
     async def _on_reassembled_frame(self, session_id: str, frame: ReassembledFrame) -> None:
         hub = self._hubs.get(session_id)
@@ -320,6 +358,7 @@ class Jt1078Relay:
                 timestamp_ms=frame.timestamp_ms,
             )
             self._drop_tracker.record(session_id, dropped=len(backpressured), kind="video")
+            await self._close_stuck_viewers(session_id, hub)
         elif frame.is_audio:
             session = self._session_manager.resolve(session_id)
             audio_codec = session.audio_codec if session is not None else None

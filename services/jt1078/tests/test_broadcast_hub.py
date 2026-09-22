@@ -241,5 +241,102 @@ class SessionBroadcastHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(viewer.sent), 1 + 2)
 
 
+class StuckViewerDetectionTests(unittest.IsolatedAsyncioTestCase):
+    """2026-09-22: a browser that stops consuming leaves the MDVR streaming over cellular to
+    nobody. The hub flags a viewer only after `stuck_timeout_seconds` of *continuous*
+    backpressure - a viewer that receives anything at all resets its own clock."""
+
+    class _Clock:
+        def __init__(self) -> None:
+            self.now = 1000.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    class _NeverDrainingConnection:
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+            self.gate = asyncio.Event()
+
+        async def send_binary(self, data: bytes) -> None:
+            if len(self.sent) > 0:
+                await self.gate.wait()
+            self.sent.append(data)
+
+    async def _broadcast(self, hub, n: int = 1) -> None:
+        for i in range(n):
+            await hub.broadcast_video(
+                annex_b_payload=b"\x00\x00\x01\x65D", is_keyframe=True, timestamp_ms=i
+            )
+
+    async def test_a_stuck_viewer_is_flagged_only_after_the_timeout(self) -> None:
+        clock = self._Clock()
+        hub = SessionBroadcastHub(
+            "session-1", send_queue_maxsize=1, stuck_timeout_seconds=30.0, clock=clock
+        )
+        viewer = self._NeverDrainingConnection()
+        await hub.add_viewer(viewer)
+
+        await self._broadcast(hub, 4)  # queue fills, chunks start dropping
+        self.assertEqual(hub.take_stuck_viewers(), [], "not stuck until the timeout has passed")
+
+        clock.now += 29.0
+        await self._broadcast(hub, 2)
+        self.assertEqual(hub.take_stuck_viewers(), [], "29 s of backpressure is still tolerated")
+
+        clock.now += 2.0
+        await self._broadcast(hub, 1)
+        self.assertEqual(hub.take_stuck_viewers(), [viewer])
+        # Reported exactly once; the next report needs another full timeout.
+        self.assertEqual(hub.take_stuck_viewers(), [])
+
+    async def test_a_viewer_that_keeps_receiving_is_never_flagged(self) -> None:
+        """The whole safety property: a slow-but-alive viewer on a poor mobile link keeps
+        draining between bursts, so it must never be disconnected."""
+        clock = self._Clock()
+        hub = SessionBroadcastHub(
+            "session-1", send_queue_maxsize=4, stuck_timeout_seconds=30.0, clock=clock
+        )
+        viewer = FakeConnection()  # drains immediately
+        await hub.add_viewer(viewer)
+
+        for _ in range(10):
+            clock.now += 60.0  # far beyond the timeout, but delivery keeps succeeding
+            await self._broadcast(hub, 2)
+            await hub.wait_until_idle()
+
+        self.assertEqual(hub.take_stuck_viewers(), [])
+
+    async def test_detection_is_disabled_without_a_timeout(self) -> None:
+        """How an INTERCOM session opts out (`relay.py._on_session_created`)."""
+        clock = self._Clock()
+        hub = SessionBroadcastHub("session-1", send_queue_maxsize=1, clock=clock)
+        self.assertIsNone(hub.stuck_timeout_seconds)
+        viewer = self._NeverDrainingConnection()
+        await hub.add_viewer(viewer)
+
+        await self._broadcast(hub, 3)
+        clock.now += 3600.0
+        await self._broadcast(hub, 3)
+
+        self.assertEqual(hub.take_stuck_viewers(), [])
+
+    async def test_removing_a_viewer_forgets_it_was_stuck(self) -> None:
+        clock = self._Clock()
+        hub = SessionBroadcastHub(
+            "session-1", send_queue_maxsize=1, stuck_timeout_seconds=30.0, clock=clock
+        )
+        viewer = self._NeverDrainingConnection()
+        await hub.add_viewer(viewer)
+        await self._broadcast(hub, 3)
+        clock.now += 31.0
+        await self._broadcast(hub, 1)
+
+        hub.remove_viewer(viewer)
+
+        self.assertEqual(hub.take_stuck_viewers(), [])
+        self.assertEqual(hub.viewer_count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

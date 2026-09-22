@@ -342,6 +342,63 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(session.session_id, self.relay._hubs)
         self.assertIsNone(self.relay.session_manager.resolve(session.session_id))
 
+    async def test_a_stuck_viewer_is_closed_without_ending_the_session(self) -> None:
+        """2026-09-22: a viewer that stops consuming is disconnected on its own, so the session's
+        existing viewer-grace timeout can end it and stop the device. The session itself is left
+        alone here - other viewers of the same camera keep watching."""
+        from src.ingest.frame_reassembly import ReassembledFrame
+
+        session, _token = self.relay.create_live_session(
+            terminal_id="138001380000", correlation_id="corr-stuck", logical_channel=1
+        )
+        stuck_viewer = object()
+        closed: list[tuple[object, int, bytes]] = []
+
+        class _StuckHub:
+            async def broadcast_video(self, **_kwargs):
+                return []
+
+            def take_stuck_viewers(self):
+                return [stuck_viewer]
+
+        async def _record_close(connection, *, code, reason):
+            closed.append((connection, code, reason))
+
+        self.relay._hubs[session.session_id] = _StuckHub()
+        self.relay.viewer_server.close_viewer = _record_close  # type: ignore[assignment]
+        frame = ReassembledFrame(
+            logical_channel=1,
+            data_type=1,
+            timestamp_ms=1_000,
+            last_i_frame_interval_ms=1000,
+            last_frame_interval_ms=40,
+            body=b"\x00\x00\x00\x01\x41",
+        )
+
+        with self.assertLogs("jt1078_relay.relay", level="WARNING") as logs:
+            await self.relay._on_reassembled_frame(session.session_id, frame)
+
+        self.assertEqual(closed, [(stuck_viewer, 4012, b"viewer_stuck")])
+        self.assertIn("viewer_closed_stuck", [r.getMessage() for r in logs.records])
+        # The session is untouched by the viewer close - only the viewer went away.
+        self.assertIsNotNone(self.relay.session_manager.resolve(session.session_id))
+
+    async def test_intercom_sessions_never_enable_stuck_viewer_detection(self) -> None:
+        """An intercom browser that is not playing the downlink must never lose the operator
+        talk path, which is the half confirmed working in the field."""
+        live, _t1 = self.relay.create_live_session(
+            terminal_id="138001380000", correlation_id="corr-live", logical_channel=1
+        )
+        intercom = self.relay.session_manager.create_session(
+            terminal_id="138001380000",
+            kind=VideoSessionKind.INTERCOM,
+            correlation_id="corr-intercom",
+            logical_channel=1,
+        )
+
+        self.assertEqual(self.relay._hubs[live.session_id].stuck_timeout_seconds, 30.0)
+        self.assertIsNone(self.relay._hubs[intercom.session_id].stuck_timeout_seconds)
+
     async def test_ending_a_session_closes_the_devices_ingest_connection(self) -> None:
         """2026-09-19 production: an MDVR that keeps streaming after an acknowledged stop must
         not be kept alive by the relay - ending the session closes the device's own socket."""
@@ -377,6 +434,9 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         class _BackpressuredHub:
             async def broadcast_video(self, **_kwargs):
                 return [object()]  # one viewer had to drop an older chunk
+
+            def take_stuck_viewers(self):
+                return []  # backpressured, but not yet past the stuck timeout
 
         self.relay._hubs[session.session_id] = _BackpressuredHub()
         frame = ReassembledFrame(

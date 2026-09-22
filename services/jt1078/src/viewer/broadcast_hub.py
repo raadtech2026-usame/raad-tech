@@ -38,6 +38,8 @@ asynchronously now instead of within the triggering `broadcast_*` call).
 from __future__ import annotations
 
 import asyncio
+import time
+from collections.abc import Callable
 
 from src.logging_setup import get_logger, log_with_fields
 from src.repackager.flv_muxer import FlvMuxer
@@ -59,16 +61,26 @@ DEFAULT_VIEWER_SEND_QUEUE_MAXSIZE = 32
 
 class _ViewerState:
     """One viewer's own muxer + bounded send queue + its dedicated sender task — grouped so
-    `SessionBroadcastHub._viewers` stays a single `dict`, not three dicts kept in lockstep."""
+    `SessionBroadcastHub._viewers` stays a single `dict`, not three dicts kept in lockstep.
 
-    __slots__ = ("muxer", "queue", "task")
+    `last_progress_at` is the last time a chunk was queued for this viewer *without* having to
+    drop an older one — the only honest evidence that the browser is still draining its socket
+    (2026-09-22, stuck-viewer detection)."""
+
+    __slots__ = ("muxer", "queue", "task", "last_progress_at")
 
     def __init__(
-        self, *, muxer: FlvMuxer, queue: "asyncio.Queue[bytes]", task: asyncio.Task
+        self,
+        *,
+        muxer: FlvMuxer,
+        queue: "asyncio.Queue[bytes]",
+        task: asyncio.Task,
+        last_progress_at: float,
     ) -> None:
         self.muxer = muxer
         self.queue = queue
         self.task = task
+        self.last_progress_at = last_progress_at
 
 
 class SessionBroadcastHub:
@@ -78,6 +90,8 @@ class SessionBroadcastHub:
         *,
         has_audio: bool = False,
         send_queue_maxsize: int = DEFAULT_VIEWER_SEND_QUEUE_MAXSIZE,
+        stuck_timeout_seconds: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """`has_audio` must reflect whether this session actually has a working audio decoder
         (`relay.py`'s own `_AUDIO_DECODERS` dispatch table, the same source of truth
@@ -87,11 +101,32 @@ class SessionBroadcastHub:
         self.session_id = session_id
         self._has_audio = has_audio
         self._send_queue_maxsize = send_queue_maxsize
+        #: `None` disables stuck-viewer detection entirely — how an INTERCOM session opts out
+        #: (`relay.py._on_session_created`): its audio queue holds only a few seconds, and a
+        #: browser that is not playing the downlink must never lose the operator's talk path.
+        self._stuck_timeout_seconds = stuck_timeout_seconds
+        self._clock = clock
         self._viewers: dict[WebSocketConnection, _ViewerState] = {}
+        #: Viewers seen to be continuously backpressured past the timeout, awaiting collection
+        #: by `take_stuck_viewers`. A dict (not a set) purely to keep detection order stable.
+        self._stuck: dict[WebSocketConnection, None] = {}
 
     @property
     def viewer_count(self) -> int:
         return len(self._viewers)
+
+    @property
+    def stuck_timeout_seconds(self) -> float | None:
+        return self._stuck_timeout_seconds
+
+    def take_stuck_viewers(self) -> list[WebSocketConnection]:
+        """Viewers that have delivered nothing for `stuck_timeout_seconds` of continuous
+        backpressure — returned once, then forgotten. The caller (`relay.py`) closes them; each
+        one's own re-detection clock is reset when it is reported, so a close that takes a moment
+        to land cannot produce a second report before another full timeout has passed."""
+        stuck = list(self._stuck)
+        self._stuck.clear()
+        return stuck
 
     async def add_viewer(self, connection: WebSocketConnection) -> None:
         """The FLV header is still sent directly, synchronously, here — not through the new
@@ -101,11 +136,14 @@ class SessionBroadcastHub:
         muxer = FlvMuxer()
         queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=self._send_queue_maxsize)
         task = asyncio.ensure_future(self._run_sender(connection, queue))
-        self._viewers[connection] = _ViewerState(muxer=muxer, queue=queue, task=task)
+        self._viewers[connection] = _ViewerState(
+            muxer=muxer, queue=queue, task=task, last_progress_at=self._clock()
+        )
         await connection.send_binary(muxer.start(has_audio=self._has_audio))
 
     def remove_viewer(self, connection: WebSocketConnection) -> None:
         state = self._viewers.pop(connection, None)
+        self._stuck.pop(connection, None)
         if state is not None:
             state.task.cancel()
 
@@ -164,7 +202,9 @@ class SessionBroadcastHub:
             )
             self._viewers.pop(connection, None)
 
-    def _enqueue(self, state: _ViewerState, chunk: bytes) -> bool:
+    def _enqueue(
+        self, connection: WebSocketConnection, state: _ViewerState, chunk: bytes
+    ) -> bool:
         """Non-blocking enqueue for one viewer's own send queue. Returns `True` if an older,
         not-yet-delivered chunk had to be dropped to make room (backpressure occurred for this
         viewer — it has fallen behind), `False` if the queue had room outright. Drop-*oldest*
@@ -174,6 +214,11 @@ class SessionBroadcastHub:
         while True:
             try:
                 state.queue.put_nowait(chunk)
+                if dropped:
+                    self._note_backpressure(connection, state)
+                else:
+                    # Room without dropping anything: this viewer is still draining its socket.
+                    state.last_progress_at = self._clock()
                 return dropped
             except asyncio.QueueFull:
                 dropped = True
@@ -182,6 +227,18 @@ class SessionBroadcastHub:
                     state.queue.task_done()
                 except asyncio.QueueEmpty:
                     continue  # raced the sender task draining it - retry the put
+
+    def _note_backpressure(self, connection: WebSocketConnection, state: _ViewerState) -> None:
+        """A chunk had to be dropped for this viewer. Flag it only once it has gone
+        `stuck_timeout_seconds` without a single drop-free delivery — ordinary jitter always
+        produces one long before that, so a viewer that receives *anything* is never flagged."""
+        if self._stuck_timeout_seconds is None:
+            return
+        now = self._clock()
+        if now - state.last_progress_at < self._stuck_timeout_seconds:
+            return
+        state.last_progress_at = now  # re-detection needs another full timeout
+        self._stuck[connection] = None
 
     async def wait_until_idle(self) -> None:
         """Test/observability helper — awaits until every viewer's currently-queued chunks have
@@ -215,7 +272,7 @@ class SessionBroadcastHub:
             )
             if not chunk:
                 continue
-            if self._enqueue(state, chunk):
+            if self._enqueue(connection, state, chunk):
                 backpressured.append(connection)
         return backpressured
 
@@ -237,7 +294,7 @@ class SessionBroadcastHub:
                 sample_rate_hz=sample_rate_hz,
                 timestamp_ms=timestamp_ms,
             )
-            if self._enqueue(state, chunk):
+            if self._enqueue(connection, state, chunk):
                 backpressured.append(connection)
         return backpressured
 
@@ -257,6 +314,6 @@ class SessionBroadcastHub:
                 audio_specific_config=audio_specific_config,
                 timestamp_ms=timestamp_ms,
             )
-            if self._enqueue(state, chunk):
+            if self._enqueue(connection, state, chunk):
                 backpressured.append(connection)
         return backpressured

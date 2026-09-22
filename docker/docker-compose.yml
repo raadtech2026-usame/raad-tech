@@ -401,6 +401,10 @@ services:
       JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS: ${JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS:-5}
       JT1078_RELAY_ABSOLUTE_IDLE_SECONDS: ${JT1078_RELAY_ABSOLUTE_IDLE_SECONDS:-60}
       JT1078_RELAY_VIEWER_GRACE_SECONDS: ${JT1078_RELAY_VIEWER_GRACE_SECONDS:-15}
+      # How long a viewer may be continuously backpressured (every chunk dropped, nothing
+      # delivered) before the relay closes it, so the session can end and the device stop
+      # streaming. 0 disables. Never applied to intercom sessions.
+      JT1078_RELAY_VIEWER_STUCK_TIMEOUT_SECONDS: ${JT1078_RELAY_VIEWER_STUCK_TIMEOUT_SECONDS:-30}
       # Audit finding B18 — concurrency ceilings. The global default of 50 comes from Phase 2
       # §13.1's own "e.g. start 50 global"; it is an illustrative figure from a design document,
       # NOT a measured capacity for any particular host. Every active session costs a real

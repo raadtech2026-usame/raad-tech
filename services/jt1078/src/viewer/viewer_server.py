@@ -197,6 +197,29 @@ class ViewerServer:
                 log_with_fields(logger, 20, "viewer_disconnected", session_id=session_id)
             await connection.close_transport()
 
+    async def close_viewer(
+        self,
+        connection: WebSocketConnection,
+        *,
+        code: int,
+        reason: bytes,
+        close_frame_timeout_seconds: float = 1.0,
+    ) -> None:
+        """Closes one viewer connection, leaving every other viewer of the same session (and the
+        session itself) untouched — `relay.py` uses it for a viewer that has stopped consuming
+        (2026-09-22). The courtesy close frame is **bounded**: `send_close` awaits `drain()`, and
+        a stuck viewer is precisely the case where that may never complete, so the transport is
+        closed regardless. Closing it unblocks that connection's own read loop, whose `finally`
+        already performs the ordinary teardown (`hub.remove_viewer`, `session_manager.
+        remove_viewer`), so the session's existing viewer-grace timeout applies from there."""
+        try:
+            await asyncio.wait_for(
+                connection.send_close(code=code, reason=reason), close_frame_timeout_seconds
+            )
+        except Exception:  # noqa: BLE001 - best-effort: the peer may be stuck, slow or gone
+            pass
+        await connection.close_transport()
+
     async def close_session(
         self,
         session_id: str,

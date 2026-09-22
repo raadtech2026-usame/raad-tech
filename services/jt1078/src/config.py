@@ -61,6 +61,15 @@ class RelayConfig:
     absolute_idle_seconds: float = 60.0
     ingest_timeout_seconds: float = 30.0
     idle_sweep_interval_seconds: float = 5.0
+    #: How long a viewer may be *continuously* backpressured — every chunk dropped, nothing
+    #: delivered — before the relay closes it (2026-09-22). Production showed browsers that
+    #: stopped consuming for 40 s to 4 minutes while the MDVR kept streaming over cellular, with
+    #: nothing to end the session. `30` sits above the player's own 3 s freeze threshold and
+    #: matches `ingest_timeout_seconds`, while the send queue holds only ~1-3 s, so reaching it
+    #: means ~10-30 queue lengths of total failure. A viewer that receives *anything* resets its
+    #: own clock, so ordinary jitter or a slow link never trips it. `<= 0` disables the check.
+    #: Never applied to INTERCOM sessions - see `relay.py._on_session_created`.
+    viewer_stuck_timeout_seconds: float = 30.0
     #: ADR-0026 §8. `50` cites `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md`
     #: §13.1's own "e.g., start 50 global" - the one concrete number an approved document names.
     #: `<= 0` means "no ceiling." No approved document names a per-org number, so that one
@@ -106,6 +115,9 @@ class RelayConfig:
             ),
             viewer_grace_seconds=float(
                 os.environ.get("JT1078_RELAY_VIEWER_GRACE_SECONDS", "15")
+            ),
+            viewer_stuck_timeout_seconds=float(
+                os.environ.get("JT1078_RELAY_VIEWER_STUCK_TIMEOUT_SECONDS", "30")
             ),
             max_global_sessions=int(
                 os.environ.get("JT1078_RELAY_MAX_GLOBAL_SESSIONS", "50")
