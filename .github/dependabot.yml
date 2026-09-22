@@ -1,0 +1,69 @@
+# Dependabot version updates (ADR-0045, Phase 19 repository hardening).
+#
+# Security *alerts* and automated security fixes are enabled at the repository level; this file
+# adds scheduled version updates on top. Deliberately conservative so it never becomes noise that
+# gets ignored:
+#   - weekly, not daily
+#   - a low open-PR limit per ecosystem
+#   - grouped minor/patch updates, so routine bumps arrive as one reviewable PR
+#
+# Every ecosystem here maps to a real build input for one of the five published images, so a
+# Dependabot PR is exercised by the same CI that produces production images.
+
+version: 2
+updates:
+  # The image build pipeline itself. Action updates are the highest-value ones here: a compromised
+  # or abandoned action runs with packages:write against GHCR.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # raad-backend (also runs as migrate and worker)
+  - package-ecosystem: pip
+    directory: "/backend"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      backend-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # raad-frontend
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # raad-device-gateway (device plane; redis is its only third-party dependency)
+  - package-ecosystem: pip
+    directory: "/services/device-gateway"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # raad-jt1078-relay (device plane)
+  - package-ecosystem: pip
+    directory: "/services/jt1078"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # Base images: python:3.11-slim, node:20-alpine, nginx:1.27-alpine, postgres:16-alpine.
+  # A base-image CVE is invisible to the language ecosystems above.
+  - package-ecosystem: docker
+    directory: "/docker"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
