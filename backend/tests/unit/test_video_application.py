@@ -120,6 +120,8 @@ class FakeVideoProvider(VideoProviderPort):
         self.start_live_calls: list[dict] = []
         self.start_playback_calls: list[dict] = []
         self.start_intercom_calls: list[dict] = []
+        self.search_recordings_calls: list[dict] = []
+        self.control_playback_calls: list[dict] = []
         self.stop_calls: list[dict] = []
 
     async def start_live(
@@ -194,6 +196,46 @@ class FakeVideoProvider(VideoProviderPort):
         )
         return IntercomStreamUrls(
             downlink_url=self.stream_url, uplink_url=f"{self.stream_url}-uplink"
+        )
+
+    async def search_recordings(
+        self,
+        *,
+        terminal_id: str,
+        channel_no: int,
+        window_start: datetime,
+        window_end: datetime,
+        reference: str,
+    ) -> None:
+        self.search_recordings_calls.append(
+            {
+                "terminal_id": terminal_id,
+                "channel_no": channel_no,
+                "window_start": window_start,
+                "window_end": window_end,
+                "reference": reference,
+            }
+        )
+
+    async def control_playback(
+        self,
+        *,
+        terminal_id: str,
+        channel_no: int,
+        reference: str,
+        control: int,
+        speed_multiplier: int = 0,
+        position: datetime | None = None,
+    ) -> None:
+        self.control_playback_calls.append(
+            {
+                "terminal_id": terminal_id,
+                "channel_no": channel_no,
+                "reference": reference,
+                "control": control,
+                "speed_multiplier": speed_multiplier,
+                "position": position,
+            }
         )
 
     async def stop(self, *, reference: str) -> None:

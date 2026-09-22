@@ -57,7 +57,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request, status
 
 from raad.core.di.container import Container
-from raad.core.errors.exceptions import NotFoundError
+from raad.core.errors.exceptions import NotFoundError, ValidationError
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
 from raad.interfaces.http.deps import get_container, require_permission
@@ -72,19 +72,30 @@ from raad.modules.fleet_device.application.queries import (
 from raad.modules.fleet_device.application.services import DeviceApplicationService
 from raad.modules.video.api.deps import get_video_service, get_video_uow
 from raad.modules.video.api.schemas import (
+    PlaybackControlRequest,
+    RecordingSearchResponse,
+    RecordingSegmentResponse,
     RequestIntercomRequest,
     RequestLiveVideoRequest,
     RequestPlaybackVideoRequest,
+    SearchRecordingsRequest,
     VideoSessionResponse,
 )
 from raad.modules.video.application.commands import (
+    ControlPlaybackCommand,
     RequestIntercomCommand,
     RequestLiveVideoCommand,
     RequestPlaybackVideoCommand,
+    SearchRecordingsCommand,
     StopVideoSessionCommand,
 )
 from raad.modules.video.application.ports import LiveStreamType, VideoUnitOfWork
-from raad.modules.video.application.queries import GetVideoSessionByIdQuery, VideoSessionDTO
+from raad.modules.video.application.queries import (
+    GetRecordingSearchQuery,
+    GetVideoSessionByIdQuery,
+    RecordingSearchDTO,
+    VideoSessionDTO,
+)
 from raad.modules.video.application.services import VideoApplicationService
 
 video_router = APIRouter()
@@ -106,6 +117,31 @@ def _session_dto_to_response(session: VideoSessionDTO) -> VideoSessionResponse:
         created_at=session.created_at,
         stream_url=session.stream_url,
         uplink_url=session.uplink_url,
+    )
+
+
+def _recording_search_to_response(result: RecordingSearchDTO) -> RecordingSearchResponse:
+    return RecordingSearchResponse(
+        search_id=result.search_id,
+        device_id=result.device_id,
+        status=result.status,
+        segments=(
+            None
+            if result.segments is None
+            else [
+                RecordingSegmentResponse(
+                    channel_no=segment.channel_no,
+                    start_time=segment.start_time,
+                    end_time=segment.end_time,
+                    alarm_flag=segment.alarm_flag,
+                    resource_type=segment.resource_type,
+                    stream_type=segment.stream_type,
+                    storage_type=segment.storage_type,
+                    size_bytes=segment.size_bytes,
+                )
+                for segment in result.segments
+            ]
+        ),
     )
 
 
@@ -306,4 +342,167 @@ async def stop_video_session(
 
     command = StopVideoSessionCommand(video_session_id=session_id, actor=principal)
     session = await video_service.stop_video_session(command, uow=uow)
+    return _session_dto_to_response(session)
+
+
+#: `0x9202` control byte (spec Table 6.11) per named API action. `2` (stop) is deliberately
+#: absent - `POST /video/sessions/{id}/stop` is the single teardown path (ADR-0044 §4).
+_PLAYBACK_CONTROL_BYTE = {
+    "resume": 0,
+    "pause": 1,
+    "fast_forward": 3,
+    "rewind": 4,
+    "seek": 5,
+    "keyframe_only": 6,
+}
+#: Only these two actions carry a speed; every other control ignores the field (Table 6.11).
+_SPEED_ACTIONS = frozenset({"fast_forward", "rewind"})
+
+
+@video_router.post(
+    "/recordings/search",
+    response_model=RecordingSearchResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Ask a device which recordings it holds",
+    description=(
+        "ADR-0044 §2. Sends `0x9205` to the terminal and returns immediately with a `pending` "
+        "search id; the terminal's own `0x1205` answer arrives asynchronously and is readable "
+        "from `GET /video/recordings/search/{search_id}`. No video is transferred to or stored "
+        "on RAAD by this route - the MDVR remains the sole recording store. Creates no "
+        "`VideoSession` and consumes no relay session ceiling. D5-enforced, exactly as "
+        "`POST /video/playback` is."
+    ),
+)
+async def search_recordings(
+    request: Request,
+    body: SearchRecordingsRequest,
+    principal: Principal = Depends(require_permission(Permission("video.playback.start"))),
+    video_service: VideoApplicationService = Depends(get_video_service),
+    device_service: DeviceApplicationService = Depends(get_device_service),
+    device_uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> RecordingSearchResponse:
+    device = await _resolve_device_or_raise(
+        body.device_id, device_service=device_service, device_uow=device_uow
+    )
+    camera = _resolve_camera_or_raise(device, body.camera_id)
+
+    container: Container = get_container(request)
+    await enforce_d5(
+        principal=principal,
+        device_organization_id=device.organization_id,
+        device_id=device.id,
+        purpose="playback",
+        camera_position=camera.position,
+        container=container,
+    )
+
+    result = await video_service.search_recordings(
+        SearchRecordingsCommand(
+            organization_id=device.organization_id,
+            device_id=body.device_id,
+            terminal_id=device.terminal_id,
+            channel_no=camera.channel_no,
+            window_start=body.window_start,
+            window_end=body.window_end,
+            actor=principal,
+        )
+    )
+    return _recording_search_to_response(result)
+
+
+@video_router.get(
+    "/recordings/search/{search_id}",
+    response_model=RecordingSearchResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Read a recording search's result",
+    description=(
+        "ADR-0044 §2/§3. `pending` until the terminal answers; `ready` with `segments` once it "
+        "has. A `search_id` is never a capability on its own - the caller's own scope is "
+        "re-checked here, and a search belonging to another organization answers 404 exactly "
+        "like an unknown one, never 403 (this codebase's cross-tenant-probing convention)."
+    ),
+)
+async def get_recording_search(
+    request: Request,
+    search_id: str,
+    principal: Principal = Depends(require_permission(Permission("video.playback.start"))),
+    video_service: VideoApplicationService = Depends(get_video_service),
+    device_service: DeviceApplicationService = Depends(get_device_service),
+    device_uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> RecordingSearchResponse:
+    result = await video_service.get_recording_search(
+        GetRecordingSearchQuery(search_id=search_id), organization_id=principal.org_id
+    )
+    # `organization_id` alone cannot scope a RAAD-staff caller, whose `principal.org_id` is
+    # `None` by design - re-resolving the device runs the request's real `TenantRegionScope`
+    # (an out-of-scope device 404s at the repository layer, ADR-0021) and lets the same D5
+    # chain that authorized the search authorize this read.
+    device = await _resolve_device_or_raise(
+        result.device_id, device_service=device_service, device_uow=device_uow
+    )
+    container: Container = get_container(request)
+    await enforce_d5(
+        principal=principal,
+        device_organization_id=device.organization_id,
+        device_id=device.id,
+        purpose="playback",
+        camera_position=None,  # the search itself was already camera-authorized
+        container=container,
+    )
+    return _recording_search_to_response(result)
+
+
+@video_router.post(
+    "/sessions/{session_id}/playback-control",
+    response_model=VideoSessionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Control a running playback session",
+    description=(
+        "ADR-0044 §4. Pause/resume/fast-forward/rewind/seek/keyframe-only on a playback "
+        "session, forwarded to the terminal as `0x9202`. Refuses (409) a session that is not a "
+        "playback session or is already ended. Stopping is `POST /video/sessions/{id}/stop`, "
+        "the single teardown path - deliberately not an action here."
+    ),
+)
+async def control_playback(
+    request: Request,
+    session_id: str,
+    body: PlaybackControlRequest,
+    principal: Principal = Depends(require_permission(Permission("video.playback.start"))),
+    video_service: VideoApplicationService = Depends(get_video_service),
+    uow: VideoUnitOfWork = Depends(get_video_uow),
+    device_service: DeviceApplicationService = Depends(get_device_service),
+    device_uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> VideoSessionResponse:
+    if body.action == "seek" and body.position is None:
+        raise ValidationError("`position` is required for the `seek` action.")
+
+    existing = await video_service.get_video_session_by_id(
+        GetVideoSessionByIdQuery(video_session_id=session_id), uow=uow
+    )
+    device = await _resolve_device_or_raise(
+        existing.device_id, device_service=device_service, device_uow=device_uow
+    )
+    camera = _resolve_camera_or_raise(device, existing.camera_id)
+
+    container: Container = get_container(request)
+    await enforce_d5(
+        principal=principal,
+        device_organization_id=existing.organization_id,
+        device_id=existing.device_id,
+        purpose=existing.purpose,
+        camera_position=camera.position,
+        container=container,
+    )
+
+    command = ControlPlaybackCommand(
+        video_session_id=session_id,
+        terminal_id=device.terminal_id,
+        channel_no=camera.channel_no,
+        control=_PLAYBACK_CONTROL_BYTE[body.action],
+        actor=principal,
+        speed_multiplier=body.speed if body.action in _SPEED_ACTIONS else 0,
+        position=body.position if body.action == "seek" else None,
+    )
+    session = await video_service.control_playback(command, uow=uow)
     return _session_dto_to_response(session)

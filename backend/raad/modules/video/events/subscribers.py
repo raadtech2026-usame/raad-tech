@@ -46,6 +46,8 @@ processor above already establishes)."""
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from raad.core.di.container import Container
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.events.base import DomainEvent
@@ -60,7 +62,11 @@ from raad.modules.video.application.commands import (
     MarkVideoSessionFailedCommand,
     StopVideoSessionCommand,
 )
-from raad.modules.video.application.ports import VideoUnitOfWork
+from raad.modules.video.application.ports import (
+    RecordingSearchResultPort,
+    RecordingSegment,
+    VideoUnitOfWork,
+)
 from raad.modules.video.application.services import VideoApplicationService
 
 SYSTEM_PRINCIPAL = Principal(user_id="system", role=Role.FOUNDER, org_id=None)
@@ -196,6 +202,45 @@ class ParentVideoPlaybackAccessRevokedProcessor(EventProcessor):
         await self._handler.handle(event)
 
 
+class RecordingSearchResultProcessor(EventProcessor):
+    """ADR-0044 §2 — the terminal's own `0x1205` answer, published by device-gateway as
+    `DeviceResourceListReported`, stored under the `search_id` the request carried as its
+    correlation id so `GET /video/recordings/search/{id}` can read it.
+
+    A result whose search is unknown or already expired is dropped by the port itself, never
+    resurrected: without a remembered request there is no organization to scope it by. An event
+    for a deployment with no Redis (port unbound) is ignored rather than crashing the shared
+    consumer — a missing recording list is a degraded read, never a reason to wedge the pipeline
+    every other processor shares."""
+
+    event_type = "DeviceResourceListReported"
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def process(self, event: DomainEvent) -> None:
+        search_id = event.payload.get("correlation_id")
+        if not search_id:
+            return
+        port = self._container.try_resolve(RecordingSearchResultPort)
+        if port is None:
+            return
+        segments = tuple(
+            RecordingSegment(
+                channel_no=item["logical_channel"],
+                start_time=datetime.fromisoformat(item["start_time"]),
+                end_time=datetime.fromisoformat(item["end_time"]),
+                alarm_flag=item.get("alarm_flag", 0),
+                resource_type=item.get("resource_type", 0),
+                stream_type=item.get("stream_type", 0),
+                storage_type=item.get("storage_type", 0),
+                size_bytes=item.get("file_size_bytes", 0),
+            )
+            for item in event.payload.get("items") or ()
+        )
+        await port.save_segments(search_id=search_id, segments=segments)
+
+
 def register_video_processors(registry: EventProcessorRegistry, container: Container) -> None:
     """Called from `core/di/bootstrap.py` when wiring a broker consumer — mirrors
     `fleet_device.events.subscribers.register_fleet_device_processors`'s identical shape."""
@@ -204,3 +249,4 @@ def register_video_processors(registry: EventProcessorRegistry, container: Conta
     registry.register(VideoSessionFailedProcessor(container))
     registry.register(ParentVideoLiveAccessRevokedProcessor(container))
     registry.register(ParentVideoPlaybackAccessRevokedProcessor(container))
+    registry.register(RecordingSearchResultProcessor(container))

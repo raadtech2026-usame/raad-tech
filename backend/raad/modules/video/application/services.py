@@ -35,17 +35,26 @@ from raad.core.ids.generator import IdGenerator
 from raad.core.logging.setup import get_logger
 from raad.core.time.clock import Clock
 from raad.modules.video.application.commands import (
+    ControlPlaybackCommand,
     MarkVideoSessionActiveCommand,
     MarkVideoSessionEndedCommand,
     MarkVideoSessionFailedCommand,
     RequestIntercomCommand,
     RequestLiveVideoCommand,
     RequestPlaybackVideoCommand,
+    SearchRecordingsCommand,
     StopVideoSessionCommand,
 )
-from raad.modules.video.application.ports import VideoProviderPort, VideoUnitOfWork
+from raad.modules.video.application.ports import (
+    RecordingSearchResultPort,
+    VideoProviderPort,
+    VideoUnitOfWork,
+)
 from raad.modules.video.application.queries import (
+    GetRecordingSearchQuery,
     GetVideoSessionByIdQuery,
+    RecordingSearchDTO,
+    RecordingSegmentDTO,
     VideoSessionDTO,
     video_session_to_dto,
 )
@@ -73,10 +82,14 @@ class VideoApplicationService:
         clock: Clock,
         id_generator: IdGenerator,
         video_provider: VideoProviderPort | None = None,
+        recording_search_results: RecordingSearchResultPort | None = None,
     ) -> None:
         self._clock = clock
         self._id_generator = id_generator
         self._video_provider = video_provider
+        #: ADR-0044 §2. `None` on a deployment without Redis - the two recording-search methods
+        #: then fail loudly rather than answering with a silently empty recording list.
+        self._recording_search_results = recording_search_results
 
     async def request_live_video(
         self, command: RequestLiveVideoCommand, *, uow: VideoUnitOfWork
@@ -413,6 +426,120 @@ class VideoApplicationService:
             if reconciled:
                 await uow.commit()
             return reconciled
+
+    def _require_recording_search_results(self) -> RecordingSearchResultPort:
+        if self._recording_search_results is None:
+            raise NotImplementedError(
+                "No RecordingSearchResultPort is bound - recording search needs a reachable "
+                "RAAD_REDIS__URL (ADR-0044 §2). Failing loudly rather than answering with an "
+                "empty recording list the device never reported."
+            )
+        return self._recording_search_results
+
+    async def search_recordings(self, command: SearchRecordingsCommand) -> RecordingSearchDTO:
+        """ADR-0044 §2 — asks the terminal what it has recorded (`0x9205`) and returns
+        immediately with a `pending` search. The device answers asynchronously; `events/
+        subscribers.RecordingSearchResultProcessor` stores that answer under the same id, which
+        `get_recording_search` then reads.
+
+        No `VideoSession` is created: a search starts no media and consumes no session ceiling.
+        D5 and the caller's scope have already been checked by the route, exactly as for
+        `POST /video/playback`."""
+        port = self._require_recording_search_results()
+        if self._video_provider is None:
+            raise NotImplementedError(
+                "No VideoProviderPort is bound - see request_live_video's identical message."
+            )
+        search_id = self._id_generator.new_id()
+        # Remembered *before* the device is asked, so a `GET` that arrives before the terminal
+        # answers reports `pending` rather than a misleading `404`.
+        await port.remember_request(
+            search_id=search_id,
+            organization_id=command.organization_id,
+            device_id=command.device_id,
+        )
+        await self._video_provider.search_recordings(
+            terminal_id=command.terminal_id,
+            channel_no=command.channel_no,
+            window_start=command.window_start,
+            window_end=command.window_end,
+            reference=search_id,
+        )
+        return RecordingSearchDTO(
+            search_id=search_id, device_id=command.device_id, status="pending"
+        )
+
+    async def get_recording_search(
+        self, query: GetRecordingSearchQuery, *, organization_id: str | None
+    ) -> RecordingSearchDTO:
+        """ADR-0044 §2/§3. `organization_id` is the caller's own resolved scope, or `None` for a
+        RAAD-staff caller whose scope spans organizations; a mismatch answers exactly like an
+        unknown search (`NotFoundError` -> 404), so a `search_id` never confirms the existence of
+        another organization's search."""
+        port = self._require_recording_search_results()
+        result = await port.get(query.search_id)
+        if result is None or (
+            organization_id is not None and result.organization_id != organization_id
+        ):
+            raise NotFoundError(f"Recording search {query.search_id} not found.")
+        if result.segments is None:
+            return RecordingSearchDTO(
+                search_id=result.search_id, device_id=result.device_id, status="pending"
+            )
+        return RecordingSearchDTO(
+            search_id=result.search_id,
+            device_id=result.device_id,
+            status="ready",
+            segments=tuple(
+                RecordingSegmentDTO(
+                    channel_no=segment.channel_no,
+                    start_time=segment.start_time,
+                    end_time=segment.end_time,
+                    alarm_flag=segment.alarm_flag,
+                    resource_type=segment.resource_type,
+                    stream_type=segment.stream_type,
+                    storage_type=segment.storage_type,
+                    size_bytes=segment.size_bytes,
+                )
+                for segment in result.segments
+            ),
+        )
+
+    async def control_playback(
+        self, command: ControlPlaybackCommand, *, uow: VideoUnitOfWork
+    ) -> VideoSessionDTO:
+        """ADR-0044 §4 — `0x9202` against a running playback session. Refuses a session that is
+        not playback (`ConflictError`) and one already ended (`ConflictError`), so a control can
+        never reach the device for a stream this session no longer owns. The session row itself
+        is unchanged: pausing is a device-side state, and `VideoSession` models the *session's*
+        lifecycle, not the position of the tape."""
+        async with uow:
+            session = await self._get_session_or_raise(uow, command.video_session_id)
+            if session.purpose is not VideoPurpose.PLAYBACK:
+                raise ConflictError(
+                    f"VideoSession {command.video_session_id} is a {session.purpose.value} "
+                    "session; playback control applies to playback sessions only."
+                )
+            if session.status in _TERMINAL_STATUSES:
+                raise ConflictError(
+                    f"VideoSession {command.video_session_id} is already "
+                    f"{session.status.value}; nothing is playing to control."
+                )
+            dto = video_session_to_dto(session)
+
+        if self._video_provider is None:
+            raise NotImplementedError(
+                "No VideoProviderPort is bound - see request_live_video's identical message."
+            )
+        await self._video_provider.control_playback(
+            terminal_id=command.terminal_id,
+            channel_no=command.channel_no,
+            reference=str(session.id),
+            control=command.control,
+            speed_multiplier=command.speed_multiplier,
+            position=command.position,
+        )
+        return dto
 
     @staticmethod
     async def _get_session_or_raise(

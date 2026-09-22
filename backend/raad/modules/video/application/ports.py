@@ -129,8 +129,102 @@ class VideoProviderPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def search_recordings(
+        self,
+        *,
+        terminal_id: str,
+        channel_no: int,
+        window_start: datetime,
+        window_end: datetime,
+        reference: str,
+    ) -> None:
+        """ADR-0044 §2 — asks the terminal which recordings it holds for this channel and window
+        (`0x9205`). **Fire-and-forget by nature**: the terminal answers asynchronously with
+        `0x1205`, which reaches the backend as a `DeviceResourceListReported` event carrying
+        `reference` back as its correlation id, so there is nothing to return here.
+        `channel_no=0` asks for every channel, the spec's own convention."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def control_playback(
+        self,
+        *,
+        terminal_id: str,
+        channel_no: int,
+        reference: str,
+        control: int,
+        speed_multiplier: int = 0,
+        position: datetime | None = None,
+    ) -> None:
+        """ADR-0044 §4 — `0x9202` playback control (Table 6.11): `control` 1 pause, 2 stop,
+        3 fast-forward, 4 keyframe reverse, 5 seek, 6 keyframe-only; `speed_multiplier` 1..5 maps
+        to 1/2/4/8/16x and is only read for 3/4; `position` only for 5. Stopping a session keeps
+        going through `stop()` instead, so a session has exactly one teardown path."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def stop(self, *, reference: str) -> None:
         """Tears down a previously started stream."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class RecordingSegment:
+    """One recording the terminal reports it holds (`0x1205`, Table 6.9). Times are the device's
+    own, already converted to UTC by the gateway; `size_bytes` is the terminal's own figure for
+    that file — reported so an operator can judge a segment, never used to transfer anything."""
+
+    channel_no: int
+    start_time: datetime
+    end_time: datetime
+    alarm_flag: int
+    resource_type: int
+    stream_type: int
+    storage_type: int
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class RecordingSearchResult:
+    """A completed search, as cached by `RecordingSearchResultPort`. `organization_id`/`device_id`
+    are stored so the read side can re-check the caller's own scope (ADR-0044 §3) — a `search_id`
+    is never a capability on its own."""
+
+    search_id: str
+    organization_id: str
+    device_id: str
+    #: `None` while the terminal has not answered yet — deliberately distinct from an empty
+    #: tuple, which is a real answer ("this device holds nothing for that window").
+    segments: tuple[RecordingSegment, ...] | None
+
+
+class RecordingSearchResultPort(ABC):
+    """ADR-0044 §2 — the short-lived store a recording search's asynchronous result lands in.
+    Redis-backed in production (`infra/recording_search.py`), with a TTL: a recording list is a
+    momentary fact about the *device's* storage, never a RAAD record, so it is deliberately not
+    a PostgreSQL table."""
+
+    @abstractmethod
+    async def remember_request(
+        self, *, search_id: str, organization_id: str, device_id: str
+    ) -> None:
+        """Records that a search was asked for, before any device answer exists — this is what
+        makes a later `GET` able to answer `pending` (the search is running) rather than `404`
+        (no such search)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def save_segments(
+        self, *, search_id: str, segments: tuple[RecordingSegment, ...]
+    ) -> None:
+        """Stores the terminal's own answer against a search already remembered. A result for an
+        unknown/expired search is dropped, never resurrected."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get(self, search_id: str) -> RecordingSearchResult | None:
+        """The search's current state, or `None` when unknown or expired. `segments is None`
+        distinguishes "still waiting for the device" from "the device answered: nothing"."""
         raise NotImplementedError
 
 

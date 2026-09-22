@@ -171,6 +171,24 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/video/intercom",
         "ADR-0036 - two-way intercom, its own video.intercom.start permission, RAAD-staff-only",
     ),
+    # ADR-0044 - MDVR recording playback. The MDVR stays the sole recording store; these three
+    # routes ask it what it holds and steer what it is already sending, never transfer or store
+    # video on the VPS. All three reuse video.playback.start (no new permission, no migration).
+    (
+        "POST",
+        "/api/v1/video/recordings/search",
+        "ADR-0044 SS2 - 0x9205 recording query, answered asynchronously by the terminal",
+    ),
+    (
+        "GET",
+        "/api/v1/video/recordings/search/{search_id}",
+        "ADR-0044 SS2/SS3 - reads the cached 0x1205 answer, caller scope re-checked",
+    ),
+    (
+        "POST",
+        "/api/v1/video/sessions/{session_id}/playback-control",
+        "ADR-0044 SS4 - 0x9202 pause/resume/seek/speed; stopping stays the /stop route",
+    ),
     # ADR-0039 - organization subscription lifecycle. API Contracts SS4.7 documents five billing
     # routes and no subscription-write surface at all; these four are the platform-admin
     # lifecycle controls (requirement 39G/39S) plus the Org Admin's own self-scoped read.

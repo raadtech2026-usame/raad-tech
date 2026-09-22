@@ -254,6 +254,93 @@ class StartPlaybackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.payload["fields"]["playback_mode"], 0)
 
 
+class SearchRecordingsTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0044 §2. Every field name below is read by name in `device-gateway`'s own
+    `_build_query_resource_list`; a rename on either side makes the consumer drop the command
+    and log it, which looks exactly like a device that never answered."""
+
+    async def test_publishes_query_resource_list_with_no_relay_rpc(self) -> None:
+        """A search starts no media session, so there is nothing to allocate on the relay -
+        calling it would consume a session slot for a question."""
+        adapter, rpc, broker = _make_adapter({"ok": True})
+        start = datetime(2026, 9, 21, 8, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 9, 21, 9, 0, tzinfo=timezone.utc)
+
+        await adapter.search_recordings(
+            terminal_id="00000000013800138000",
+            channel_no=3,
+            window_start=start,
+            window_end=end,
+            reference="search-1",
+        )
+
+        self.assertEqual(rpc.calls, [])
+        self.assertEqual(len(broker.published), 1)
+        event = broker.published[0]
+        self.assertEqual(event.payload["command"], "query_resource_list")
+        self.assertEqual(event.payload["terminal_id"], "00000000013800138000")
+        # The search id travels as the correlation id and comes back on the device's own
+        # 0x1205 - this is the only link between the question and its answer.
+        self.assertEqual(event.payload["correlation_id"], "search-1")
+        fields = event.payload["fields"]
+        self.assertEqual(fields["logical_channel"], 3)
+        self.assertEqual(fields["start_time"], start.isoformat())
+        self.assertEqual(fields["end_time"], end.isoformat())
+        for required in ("alarm_flag_filter", "resource_type", "stream_type", "storage_type"):
+            self.assertIn(required, fields)
+
+
+class ControlPlaybackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_publishes_playback_control_with_the_gateways_own_field_names(self) -> None:
+        adapter, rpc, broker = _make_adapter({"ok": True})
+
+        await adapter.control_playback(
+            terminal_id="00000000013800138000",
+            channel_no=1,
+            reference="vs-1",
+            control=1,
+        )
+
+        self.assertEqual(rpc.calls, [])
+        event = broker.published[0]
+        self.assertEqual(event.payload["command"], "playback_control")
+        fields = event.payload["fields"]
+        # `av_channel`, not `logical_channel`: `_build_playback_control` reads this exact name
+        # (spec Table 6.11 calls it the audio/video channel).
+        self.assertEqual(fields["av_channel"], 1)
+        self.assertEqual(fields["control"], 1)
+        self.assertEqual(fields["speed_multiplier"], 0)
+        self.assertNotIn("seek_position", fields)
+
+    async def test_seek_position_is_sent_under_the_name_the_gateway_reads(self) -> None:
+        adapter, _rpc, broker = _make_adapter({"ok": True})
+        position = datetime(2026, 9, 21, 8, 30, tzinfo=timezone.utc)
+
+        await adapter.control_playback(
+            terminal_id="00000000013800138000",
+            channel_no=1,
+            reference="vs-1",
+            control=5,
+            position=position,
+        )
+
+        fields = broker.published[0].payload["fields"]
+        self.assertEqual(fields["seek_position"], position.isoformat())
+
+    async def test_speed_multiplier_is_forwarded(self) -> None:
+        adapter, _rpc, broker = _make_adapter({"ok": True})
+
+        await adapter.control_playback(
+            terminal_id="00000000013800138000",
+            channel_no=1,
+            reference="vs-1",
+            control=3,
+            speed_multiplier=4,
+        )
+
+        self.assertEqual(broker.published[0].payload["fields"]["speed_multiplier"], 4)
+
+
 class StopTests(unittest.IsolatedAsyncioTestCase):
     async def test_stop_only_calls_the_relay_never_publishes_a_second_device_signal(self) -> None:
         """The relay's own SessionManager.end_session already publishes the device stop-signal

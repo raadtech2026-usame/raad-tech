@@ -285,6 +285,12 @@ class _FakeVideoProvider(VideoProviderPort):
             uplink_url="https://stream.example/token-uplink",
         )
 
+    async def search_recordings(self, **kwargs) -> None:
+        return None
+
+    async def control_playback(self, **kwargs) -> None:
+        return None
+
     async def stop(self, *, reference: str) -> None:
         self.stop_calls.append(reference)
 

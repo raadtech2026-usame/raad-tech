@@ -59,6 +59,10 @@ const LiveTrackingPage = lazy(() =>
 const VideoPage = lazy(() =>
   import("../features/video/VideoPage").then((m) => ({ default: m.VideoPage })),
 );
+// ADR-0044 — lazy for the same reason as `VideoPage`: it mounts the same `mpegts.js` player.
+const RecordingsPage = lazy(() =>
+  import("../features/video/RecordingsPage").then((m) => ({ default: m.RecordingsPage })),
+);
 const OrgBillingPage = lazy(() =>
   import("../features/billing/OrgBillingPage").then((m) => ({
     default: m.OrgBillingPage,
@@ -230,6 +234,7 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/trips": <TripsPage />,
   "/org/tracking": <Lazy><LiveTrackingPage /></Lazy>,
   "/org/video": <Lazy><VideoPage /></Lazy>,
+  "/org/recordings": <Lazy><RecordingsPage /></Lazy>,
   "/org/notifications": <NotificationsPage />,
   "/org/finance": <OrgFinancePage />,
   "/org/reports": <ReportsPage />,

@@ -72,6 +72,37 @@ class RequestIntercomCommand:
 
 
 @dataclass(frozen=True)
+class SearchRecordingsCommand:
+    """`POST /video/recordings/search` (ADR-0044 §2). `channel_no` is `0` for "every channel",
+    the spec's own convention for `0x9205`."""
+
+    organization_id: str
+    device_id: str
+    terminal_id: str
+    channel_no: int
+    window_start: datetime
+    window_end: datetime
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class ControlPlaybackCommand:
+    """`POST /video/sessions/{id}/playback-control` (ADR-0044 §4). `control`/`speed_multiplier`/
+    `position` are the wire values `VideoProviderPort.control_playback` documents; the API layer
+    translates its own named actions into them, so no protocol number reaches a client."""
+
+    video_session_id: str
+    #: Resolved by the route from the session's own device/camera, exactly as
+    #: `RequestPlaybackVideoCommand` does - `VideoSession` itself stores neither.
+    terminal_id: str
+    channel_no: int
+    control: int
+    actor: Principal
+    speed_multiplier: int = 0
+    position: datetime | None = None
+
+
+@dataclass(frozen=True)
 class StopVideoSessionCommand:
     """`POST /video/sessions/{id}/stop` (API Contracts §4.5, "teardown")."""
 

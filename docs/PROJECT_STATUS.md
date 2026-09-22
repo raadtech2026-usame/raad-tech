@@ -414,6 +414,7 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0028 | Unified Vehicle Operations Frontend (GPS + Video from One Vehicle Selection) | ✅ Complete (commit `8b5bd0c`) — unifies GPS + the already-existing F10 web video page (commit `600c4da`, 2026-08-14, predates this ADR by two days) into one Vehicle Operations view |
 | 0029 | Platform Admin Live-Video Access (Founder/Regional Manager/Support Staff) | ✅ Complete (commit `857d68b`) |
 | 0030 | Automatic Camera/Channel Discovery | ✅ Complete — device-gateway (`0x9003`/`0x1003`) and backend (discovery-trigger processor, camera-creation processor) implemented and tested (backend unit/architecture/integration + device-gateway unit, all passing; migration `7d3a9c1e5b42` live-Postgres round-tripped), live-verified against the physical `LSZ-C5804DG-Q-F` bench unit per the ADR's own verification transcript |
+| 0044 | MDVR Recording Playback — Search, Start, Control | ✅ Backend + frontend complete, **not hardware-verified** — three new routes (`POST /video/recordings/search`, `GET /video/recordings/search/{id}`, `POST /video/sessions/{id}/playback-control`), Redis-cached asynchronous search result (no new table, no migration), `/org/recordings` page. The MDVR stays the sole recording store; nothing is stored on the VPS. Reuses `video.playback.start` — no new permission. The device plane needed no change at all. The physical unit has been offline since 2026-09-20, so every layer is covered by unit tests against fakes only |
 | 0031 | Fleet Overview Online-Vehicles Read Model | ✅ Complete — new `GET /tracking/vehicles/online` (`FleetOverviewApplicationService`), two additive `fleet_device` repository methods, `LatestPositionPort.get_latest_many`; a real per-vehicle-ownership authorization gap found and fixed while wiring the route (bulk fleet visibility could otherwise leak to a Parent's own mobile JWT), closed with an explicit role-set gate; `position` is `null` for every vehicle today (the pre-existing, disclosed JT808 `LatestPositionWriter` wiring gap, unaffected by this ADR) |
 
 **A real doc-staleness gap found 2026-08-19, since corrected throughout this file and
@@ -2071,6 +2072,39 @@ confirmation.
 ## 9. Recent Completed Work
 
 Reverse-chronological (most recent first):
+
+- **MDVR recording playback — search, start, control** (2026-09-22, ADR-0044). Operators can now
+  watch video the recorder already holds, without RAAD ever storing a frame of it. Three new
+  routes, all reusing `video.playback.start` (no new permission, no migration, no schema change):
+  `POST /video/recordings/search` sends `0x9205` and returns a `pending` search id;
+  `GET /video/recordings/search/{id}` reads the terminal's own `0x1205` answer, cached in Redis
+  for 15 minutes; `POST /video/sessions/{id}/playback-control` forwards `0x9202`
+  pause/resume/fast-forward/rewind/seek/keyframe-only. **The device plane needed no change at
+  all** — every message was already implemented and tested there.
+
+  Three decisions worth knowing before changing this. (1) **The search result is a Redis cache,
+  not a table**: a recording list is a momentary fact about the *device's* storage, so persisting
+  it would make the VPS a second, immediately-stale copy of the MDVR's archive index — precisely
+  what the ADR exists to prevent. (2) **A `search_id` is not a capability**: the read route
+  re-checks the caller's own scope and re-resolves the device through the request's real
+  `TenantRegionScope`, so another organization's search 404s exactly like an unknown one.
+  (3) **`segments: null` (pending) is deliberately distinct from `[]`** (the device answered:
+  nothing) — collapsing them would leave an operator either polling an answered question or
+  reading "no recordings" from a device that never replied. The DTO's own default was `()` when
+  first written, which quietly broke that distinction; fixed with the tests that caught it.
+
+  Playback gets its own frontend controller (`usePlaybackSessionController`) rather than an
+  option on the live one: the live hook's auto-reconnect would silently restart a recording from
+  the top of its window and spend another `0x9201` on the cellular link each time. Transport
+  controls are stateless by design — the terminal answers `0x9202` on the device plane, so a
+  successful HTTP response means "the command was sent", never "the tape moved", and the page
+  says so instead of rendering an optimistic "Paused".
+
+  **Verified:** backend 1884 unit/architecture/contract tests + 169 subtests; frontend 842 tests,
+  `tsc -b` clean, production build clean. **Not verified:** integration tests (no Docker/
+  PostgreSQL running in this environment at the time — the change adds no migration and no SQL),
+  and nothing at all against hardware: the MDVR has been offline since 2026-09-20 and reported
+  storage faults on 3 units, so whether it holds any recordings is still unknown.
 
 - **ERP workflow completion, audit and seven defect fixes** (2026-09-08). ADR-0040 built the ERP
   finance engine; this pass audited it against a running stack and closed the gap between "the

@@ -197,6 +197,64 @@ class Jt1078RelayAdapter(VideoProviderPort):
             uplink_url=self._viewer_url(response["uplink_token"]),
         )
 
+    async def search_recordings(
+        self,
+        *,
+        terminal_id: str,
+        channel_no: int,
+        window_start: datetime,
+        window_end: datetime,
+        reference: str,
+    ) -> None:
+        """ADR-0044 §2 — `0x9205`. No relay RPC at all: a search starts no media session, so
+        there is nothing to allocate; this only publishes the command the device-gateway's
+        existing `RedisVideoSignalingConsumer` already knows how to encode. The terminal's own
+        `0x1205` answer comes back as a `DeviceResourceListReported` event carrying `reference`
+        as its correlation id."""
+        await self._signal_device_start(
+            command="query_resource_list",
+            terminal_id=terminal_id,
+            correlation_id=reference,
+            fields={
+                "logical_channel": channel_no,
+                "start_time": window_start.isoformat(),
+                "end_time": window_end.isoformat(),
+                "alarm_flag_filter": 0,  # no alarm filter
+                "resource_type": 0,  # 0 = A/V, spec Table 6.7
+                "stream_type": 0,  # 0 = all
+                "storage_type": 0,  # 0 = all
+            },
+        )
+
+    async def control_playback(
+        self,
+        *,
+        terminal_id: str,
+        channel_no: int,
+        reference: str,
+        control: int,
+        speed_multiplier: int = 0,
+        position: datetime | None = None,
+    ) -> None:
+        """ADR-0044 §4 — `0x9202` on a running playback session, published on the same broker
+        contract every other device command uses. Stopping stays with `stop()` (the relay's own
+        teardown already sends `0x9202` control 2), so this never doubles as a second stop."""
+        fields: dict = {
+            "av_channel": channel_no,
+            "control": control,
+            "speed_multiplier": speed_multiplier,
+        }
+        if position is not None:
+            # `seek_position` verbatim: the field name device-gateway's own
+            # `_build_playback_control` reads (`commands/redis_video_signaling_consumer.py`).
+            fields["seek_position"] = position.isoformat()
+        await self._signal_device_start(
+            command="playback_control",
+            terminal_id=terminal_id,
+            correlation_id=reference,
+            fields=fields,
+        )
+
     async def stop(self, *, reference: str) -> None:
         await self._rpc.call("end_session", {"session_id": reference})
 

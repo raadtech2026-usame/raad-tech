@@ -228,3 +228,149 @@ export async function stopVideoSession(
   });
   return toVideoSession(wire);
 }
+
+/** `POST /video/playback` (API Contracts §4.5) — starts the device replaying its *own* stored
+ * recording for the given window. The MDVR remains the recording store (ADR-0044 §1); this
+ * returns the same relay viewer URL a live session does, so the player is identical. */
+export async function requestPlaybackVideo(
+  deviceId: string,
+  cameraId: string,
+  windowStart: string,
+  windowEnd: string,
+): Promise<VideoSession> {
+  const wire = await apiRequest<VideoSessionWire>("/video/playback", {
+    method: "POST",
+    body: {
+      device_id: deviceId,
+      camera_id: cameraId,
+      window_start: windowStart,
+      window_end: windowEnd,
+    },
+  });
+  return toVideoSession(wire);
+}
+
+/** One recording the *device* reports it holds (ADR-0044 §2). Every field is the terminal's own
+ * figure — nothing here is stored by RAAD, and `sizeBytes` is shown so an operator can judge a
+ * segment, never because anything is downloaded. */
+export interface RecordingSegment {
+  channelNo: number;
+  startTime: string;
+  endTime: string;
+  alarmFlag: number;
+  resourceType: number;
+  streamType: number;
+  storageType: number;
+  sizeBytes: number;
+}
+
+export type RecordingSearchStatus = "pending" | "ready";
+
+export interface RecordingSearch {
+  searchId: string;
+  deviceId: string;
+  status: RecordingSearchStatus;
+  /** `null` while the terminal has not answered yet — deliberately distinct from `[]`, which is
+   * the device's real answer "nothing recorded in that window" (ADR-0044 §2). Rendering the two
+   * the same way would leave an operator polling a question that has already been answered. */
+  segments: RecordingSegment[] | null;
+}
+
+interface RecordingSegmentWire {
+  channel_no: number;
+  start_time: string;
+  end_time: string;
+  alarm_flag: number;
+  resource_type: number;
+  stream_type: number;
+  storage_type: number;
+  size_bytes: number;
+}
+
+interface RecordingSearchWire {
+  search_id: string;
+  device_id: string;
+  status: string;
+  segments: RecordingSegmentWire[] | null;
+}
+
+function toRecordingSearch(wire: RecordingSearchWire): RecordingSearch {
+  return {
+    searchId: wire.search_id,
+    deviceId: wire.device_id,
+    status: wire.status as RecordingSearchStatus,
+    segments:
+      wire.segments === null || wire.segments === undefined
+        ? null
+        : wire.segments.map((segment) => ({
+            channelNo: segment.channel_no,
+            startTime: segment.start_time,
+            endTime: segment.end_time,
+            alarmFlag: segment.alarm_flag,
+            resourceType: segment.resource_type,
+            streamType: segment.stream_type,
+            storageType: segment.storage_type,
+            sizeBytes: segment.size_bytes,
+          })),
+  };
+}
+
+/** `POST /video/recordings/search` (ADR-0044 §2) — asks the terminal what it has recorded. The
+ * device answers asynchronously over the cellular link, so this returns a `pending` search
+ * immediately; poll `getRecordingSearch` for the answer. */
+export async function searchRecordings(
+  deviceId: string,
+  cameraId: string,
+  windowStart: string,
+  windowEnd: string,
+): Promise<RecordingSearch> {
+  const wire = await apiRequest<RecordingSearchWire>("/video/recordings/search", {
+    method: "POST",
+    body: {
+      device_id: deviceId,
+      camera_id: cameraId,
+      window_start: windowStart,
+      window_end: windowEnd,
+    },
+  });
+  return toRecordingSearch(wire);
+}
+
+/** `GET /video/recordings/search/{id}` (ADR-0044 §2/§3). Results are cached server-side for 15
+ * minutes; after that the search 404s and must be re-run against the device. */
+export async function getRecordingSearch(searchId: string): Promise<RecordingSearch> {
+  const wire = await apiRequest<RecordingSearchWire>(`/video/recordings/search/${searchId}`);
+  return toRecordingSearch(wire);
+}
+
+/** The named playback actions the API offers (ADR-0044 §4). `stop` is deliberately absent —
+ * `stopVideoSession` is the single teardown path, so a session can never be stopped at the
+ * device while still open in RAAD. */
+export type PlaybackControlAction =
+  | "resume"
+  | "pause"
+  | "fast_forward"
+  | "rewind"
+  | "seek"
+  | "keyframe_only";
+
+/** `POST /video/sessions/{id}/playback-control` (ADR-0044 §4).
+ *
+ * **Availability is firmware-dependent and this call cannot tell you so.** The terminal answers
+ * `0x9202` with an ordinary general result; a refusal surfaces as a failed *command* on the
+ * device plane, not as an error here — so a successful response means "the command was sent",
+ * never "the tape moved". The UI must reflect that honestly rather than optimistically. */
+export async function controlPlayback(
+  sessionId: string,
+  action: PlaybackControlAction,
+  options?: { speed?: number; position?: string },
+): Promise<VideoSession> {
+  const body: Record<string, unknown> = { action };
+  if (options?.speed !== undefined) body.speed = options.speed;
+  if (options?.position !== undefined) body.position = options.position;
+  const wire = await apiRequest<VideoSessionWire>(
+    `/video/sessions/${sessionId}/playback-control`,
+    { method: "POST", body },
+  );
+  return toVideoSession(wire);
+}

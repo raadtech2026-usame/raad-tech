@@ -163,10 +163,15 @@ from raad.modules.notifications.infra.repositories import (
 from raad.modules.reporting.application.ports import ReportingUnitOfWork
 from raad.modules.reporting.application.services import ReportingApplicationService
 from raad.modules.reporting.infra.repositories import SqlAlchemyReportingUnitOfWork
-from raad.modules.video.application.ports import VideoProviderPort, VideoUnitOfWork
+from raad.modules.video.application.ports import (
+    RecordingSearchResultPort,
+    VideoProviderPort,
+    VideoUnitOfWork,
+)
 from raad.modules.video.application.services import VideoApplicationService
 from raad.modules.video.events.subscribers import register_video_processors
 from raad.modules.video.infra.adapters import Jt1078RelayAdapter
+from raad.modules.video.infra.recording_search import RedisRecordingSearchResultPort
 from raad.modules.video.infra.jt1078_relay_client import Jt1078RelayRpcClient
 from raad.modules.video.infra.repositories import SqlAlchemyVideoUnitOfWork
 from raad.modules.platform_audit.application.ports import PlatformAuditUnitOfWork
@@ -493,6 +498,14 @@ def build_container(settings: Settings) -> Container:
         container.bind_singleton(
             GeofenceStatePort, RedisGeofenceStatePort(latest_position_redis_client)
         )
+        # RecordingSearchResultPort (ADR-0044 §2) - the MDVR's own recording index, cached for
+        # minutes, never persisted: storing it in PostgreSQL would make the VPS a second,
+        # immediately-stale copy of the device's archive, which is precisely what that ADR
+        # exists to prevent. Same "reuse, don't duplicate" client as the two ports above.
+        container.bind_singleton(
+            RecordingSearchResultPort,
+            RedisRecordingSearchResultPort(latest_position_redis_client),
+        )
         # LoginRateLimiter (Priority 1 Item 3, PROJECT_STATUS.md) - same "reuse, don't
         # duplicate" reasoning as GeofenceStatePort immediately above. Left unbound without a
         # reachable RAAD_REDIS__URL, same policy as everything else in this `if` block -
@@ -614,6 +627,10 @@ def build_container(settings: Settings) -> Container:
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
             video_provider=container.try_resolve(VideoProviderPort),
+            # ADR-0044 §2: bound only when Redis is configured (the `if settings.redis.url:`
+            # block above). Without it, recording search fails loudly at call time rather than
+            # answering with an empty list the device never reported.
+            recording_search_results=container.try_resolve(RecordingSearchResultPort),
         ),
     )
 

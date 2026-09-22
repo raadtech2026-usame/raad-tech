@@ -24,6 +24,41 @@ class GetVideoSessionByIdQuery:
 
 
 @dataclass(frozen=True)
+class GetRecordingSearchQuery:
+    """ADR-0044 §2 — reads a recording search's asynchronous result by its own id."""
+
+    search_id: str
+
+
+@dataclass(frozen=True)
+class RecordingSearchDTO:
+    """`status` is `"pending"` until the terminal's own `0x1205` answer arrives, then `"ready"`.
+    A ready search with an empty `segments` list is a real answer — the device holds nothing for
+    that window — and is deliberately distinguishable from still waiting."""
+
+    search_id: str
+    device_id: str
+    status: str
+    #: `None` while pending, so "still waiting for the device" and "the device answered:
+    #: nothing" are distinguishable by value and not only by `status` - `()` is the real,
+    #: empty answer. The API schema (`api/schemas.RecordingSearchResponse`) carries the same
+    #: `null`-vs-`[]` distinction onto the wire.
+    segments: tuple["RecordingSegmentDTO", ...] | None = None
+
+
+@dataclass(frozen=True)
+class RecordingSegmentDTO:
+    channel_no: int
+    start_time: datetime
+    end_time: datetime
+    alarm_flag: int
+    resource_type: int
+    stream_type: int
+    storage_type: int
+    size_bytes: int
+
+
+@dataclass(frozen=True)
 class VideoSessionDTO:
     id: str
     organization_id: str

@@ -11,6 +11,7 @@ import {
   CalendarClock,
   Radio,
   Video,
+  FileVideo,
   Bell,
   FileText,
   CreditCard,
@@ -127,6 +128,9 @@ export const organizationNav: NavItem[] = [
   link("Trips", CalendarClock, "/org/trips"),
   link("Live Tracking", Radio, "/org/tracking"),
   link("Live Video", Video, "/org/video"),
+  // ADR-0044 — playback of what the recorder already holds, beside live video and gated by the
+  // same Org-Admin-only posture (`.claude/rules/frontend.md` #4): no platform role gets it.
+  link("Recordings", FileVideo, "/org/recordings"),
   link("Notifications", Bell, "/org/notifications"),
   header("Business"),
   link("Finance", Wallet, "/org/finance"),
