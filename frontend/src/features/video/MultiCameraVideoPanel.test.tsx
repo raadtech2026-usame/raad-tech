@@ -90,6 +90,36 @@ describe("MultiCameraVideoPanel", () => {
     expect(screen.getAllByText(/^Channel \d$/)).toHaveLength(4);
   });
 
+  it("renders a two-camera device as a 2-up wall, both on the sub stream (CH1/CH3 install)", async () => {
+    // This bus has two physical cameras (channels 1 and 3); the MDVR still reports four
+    // channels, so the panel must lay out whatever it is given, not assume four.
+    const twoCameras = [CAMERAS_4[0], CAMERAS_4[2]];
+    vi.mocked(requestLiveVideo).mockImplementation(
+      (deviceId: string, cameraId: string, streamType?: LiveStreamType) =>
+        Promise.resolve({ ...sessionFor(deviceId, cameraId), id: `session-${cameraId}-${streamType}` }),
+    );
+    const { container } = renderPanel(twoCameras);
+
+    await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
+
+    await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(2));
+    expect(requestLiveVideo).toHaveBeenCalledWith("device-1", "cam-1", "sub");
+    expect(requestLiveVideo).toHaveBeenCalledWith("device-1", "cam-3", "sub");
+    expect(screen.getAllByText(/^Channel \d$/)).toHaveLength(2);
+    const wall = container.querySelector("[data-mode]");
+    expect(wall).toHaveAttribute("data-mode", "grid");
+    expect(wall).toHaveAttribute("data-count", "2");
+
+    // Focusing one camera restarts only that one, on the main stream; the other keeps its session.
+    await userEvent.click(screen.getByRole("button", { name: "View Rear in focus mode" }));
+
+    await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(3));
+    expect(requestLiveVideo).toHaveBeenLastCalledWith("device-1", "cam-3", "main");
+    await waitFor(() => expect(stopVideoSession).toHaveBeenCalledWith("session-cam-3-sub"));
+    expect(stopVideoSession).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("[data-mode]")).toHaveAttribute("data-mode", "focus");
+  });
+
   it("restarts only the focused camera on the main stream, and back to sub when leaving focus (ADR-0043)", async () => {
     vi.mocked(requestLiveVideo).mockImplementation(
       (deviceId: string, cameraId: string, streamType?: LiveStreamType) =>
