@@ -6,7 +6,7 @@
 # `redis>=5.0` (device-gateway Redis integration, ADR-0010/ADR-0012); everything else is stdlib,
 # so no compiler toolchain is needed on top of python:3.11-slim.
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
