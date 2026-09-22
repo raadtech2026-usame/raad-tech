@@ -46,7 +46,16 @@ runtime (`services/jt1078/README.md`), so there is nothing to containerize yet.
   `.env`, no flag needed) for including `nginx` (and, in `docker-compose.prod.yml`, `certbot`) in
   every command below; the Coolify path (its own separate environment-variables UI, never this
   file) deliberately leaves it unset instead, since Coolify already runs its own reverse proxy.
-- `backend.Dockerfile` — builds the Business API image; also reused for `migrate`/`worker`.
+> **Production does not build any of these (ADR-0045).** GitHub Actions
+> (`.github/workflows/publish-images.yml`) builds five images and pushes them to GHCR; the Coolify
+> stack references them by immutable full-commit-SHA tag and only pulls. The Dockerfiles below are
+> still the single source of truth for *how* each image is built — they are simply built in CI
+> rather than on the VPS. Local development (`docker-compose.yml` / `.dev.yml` / `.prod.yml`)
+> still builds from source exactly as before. Regenerate the deployed compose file with
+> `./scripts/regenerate-coolify-compose.sh`, never by hand.
+
+- `backend.Dockerfile` — builds the Business API image; also reused for `migrate`/`worker`. In CI
+  this produces the single `raad-backend` image that all three services share.
 - `frontend.Dockerfile` — multi-stage (`deps` → `dev` / `build` → `prod`); `target` picks dev
   vs. prod.
 - `device-gateway.Dockerfile` — builds the device-plane gateway image.

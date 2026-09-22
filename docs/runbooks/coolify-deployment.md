@@ -1,5 +1,15 @@
 # Runbook: Coolify deployment (Hostinger VPS)
 
+> **SUPERSEDED IN PART BY ADR-0045 (2026-09-22) — read this first.**
+> Coolify no longer builds RAAD's images. GitHub Actions builds them and publishes them to GHCR;
+> Coolify only pulls `ghcr.io/raadtech2026-usame/raad-*:${SOURCE_COMMIT}`. Building the seven
+> services on the 4 vCPU VPS saturated ~70-100% of all cores for 1-2 minutes per deploy and
+> triggered Hostinger's CPU-limit warning.
+> **The build/publish/deploy loop, the required GitHub secrets and variables, rollback and
+> troubleshooting now live in `docs/runbooks/ghcr-deployment.md`.**
+> Everything below — first-time resource creation, domains, environment variables, the
+> device-plane DNS/firewall step — remains correct and is still the setup reference.
+
 ADR-0022 (`docs/architecture/adr/0022-payment-provider-architecture.md`, "Coolify vs nginx"
 decision). An **alternative** path to `docs/runbooks/vps-deployment.md`, not a replacement — that
 guide (generic VPS, this stack's own `nginx`/`certbot`) remains fully valid. Pick exactly one path
