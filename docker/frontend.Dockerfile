@@ -13,7 +13,7 @@
 #           as a runtime mount, not baked in here, so this Dockerfile's build context never needs
 #           to reach outside frontend/.
 
-FROM node:20-alpine AS deps
+FROM node:25-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
