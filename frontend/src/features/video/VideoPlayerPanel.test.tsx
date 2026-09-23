@@ -36,6 +36,32 @@ describe("VideoPlayerPanel", () => {
     expect(screen.getByText(/audio isn't available/)).toBeInTheDocument();
   });
 
+  it("keeps the same video element mounted through a freeze so playback can resume", () => {
+    const videoRef = ref();
+    const { rerender } = render(
+      <VideoPlayerPanel phase="connected" requestError={null} player={IDLE_PLAYER} videoRef={videoRef} />,
+    );
+    const element = screen.getByTestId("live-video");
+
+    rerender(
+      <VideoPlayerPanel
+        phase="stalled"
+        requestError={null}
+        player={{ ...IDLE_PLAYER, state: "connected", stalled: true }}
+        videoRef={videoRef}
+      />,
+    );
+    expect(screen.getByTestId("live-video")).toBe(element);
+    expect(videoRef.current).toBe(element);
+    expect(screen.getByTestId("stalled-overlay")).toHaveTextContent("No signal");
+
+    rerender(
+      <VideoPlayerPanel phase="connected" requestError={null} player={IDLE_PLAYER} videoRef={videoRef} />,
+    );
+    expect(screen.getByTestId("live-video")).toBe(element);
+    expect(screen.queryByTestId("stalled-overlay")).not.toBeInTheDocument();
+  });
+
   it("says the device is offline, and that video will come back on its own", () => {
     render(<VideoPlayerPanel phase="deviceOffline" requestError={null} player={IDLE_PLAYER} videoRef={ref()} />);
     expect(screen.getByText("Device offline")).toBeInTheDocument();

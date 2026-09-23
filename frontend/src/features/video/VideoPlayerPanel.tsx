@@ -45,13 +45,23 @@ export function VideoPlayerPanel({
           on `"connected"`, or the player would have no element to attach to. Audio is
           deliberately excluded (see `useMpegtsPlayer`'s own module docstring), so `muted` is
           set unconditionally rather than depending on autoplay-gesture propagation. */}
-      {(phase === "connecting" || phase === "connected") && (
+      {/* "stalled" keeps the element too (2026-09-23). Unmounting it on a freeze paused the
+          detached element and left the stall detector with no element to watch, so a 3-second
+          device-side gap turned into a permanent "No signal" while frames kept arriving - the
+          tile only came back when someone pressed Stop. */}
+      {(phase === "connecting" || phase === "connected" || phase === "stalled") && (
         <div className={styles.videoWrap}>
           <video ref={videoRef} className={styles.video} muted playsInline data-testid="live-video" />
           {phase === "connecting" && (
             <div className={styles.videoOverlay}>
               <Loader2 size={28} className={styles.spin} />
               <span>Connecting to the relay…</span>
+            </div>
+          )}
+          {phase === "stalled" && (
+            <div className={styles.videoOverlay} data-testid="stalled-overlay">
+              <Loader2 size={28} className={styles.spin} />
+              <span>No signal — waiting for video…</span>
             </div>
           )}
           {phase === "connected" && showAudioNotice && (
