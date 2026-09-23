@@ -89,6 +89,15 @@ class WebSocketConnection:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def pending_write_bytes(self) -> int | None:
+        """Bytes asyncio has accepted for this socket that the kernel has not taken yet -
+        diagnostic only (`SessionBroadcastHub.viewer_stats`)."""
+        transport = self._writer.transport
+        if transport is None or transport.is_closing():
+            return None
+        return transport.get_write_buffer_size()
+
     async def accept(self) -> tuple[str, dict[str, list[str]]]:
         """Performs the handshake. Returns `(path, query_params)` from the request line, so the
         caller (`relay.py`'s viewer route) can extract the signed token from the query string —

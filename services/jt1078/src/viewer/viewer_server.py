@@ -191,10 +191,16 @@ class ViewerServer:
                 log_with_fields(logger, 20, "uplink_disconnected", session_id=session_id)
             elif session_id is not None and is_broadcast_viewer:
                 hub = self._hubs.get(session_id)
+                # Read before removal: how much this viewer received tells a page closed after
+                # minutes of healthy video apart from a browser that stopped draining (2026-09-23).
+                stats: dict[str, object] = {}
                 if hub is not None:
+                    stats = hub.viewer_stats(connection) or {}
                     hub.remove_viewer(connection)
                 self._session_manager.remove_viewer(session_id)
-                log_with_fields(logger, 20, "viewer_disconnected", session_id=session_id)
+                log_with_fields(
+                    logger, 20, "viewer_disconnected", session_id=session_id, **stats
+                )
             await connection.close_transport()
 
     async def close_viewer(

@@ -65,9 +65,23 @@ class _ViewerState:
 
     `last_progress_at` is the last time a chunk was queued for this viewer *without* having to
     drop an older one — the only honest evidence that the browser is still draining its socket
-    (2026-09-22, stuck-viewer detection)."""
+    (2026-09-22, stuck-viewer detection).
 
-    __slots__ = ("muxer", "queue", "task", "last_progress_at")
+    The counters exist only for diagnosis (2026-09-23): production could see *that* a viewer
+    stopped draining but not how much it had received first, so a browser that never drained
+    looked the same as one that drained for minutes and then stalled."""
+
+    __slots__ = (
+        "muxer",
+        "queue",
+        "task",
+        "last_progress_at",
+        "connected_at",
+        "last_delivery_at",
+        "delivered_chunks",
+        "delivered_bytes",
+        "dropped_chunks",
+    )
 
     def __init__(
         self,
@@ -81,6 +95,11 @@ class _ViewerState:
         self.queue = queue
         self.task = task
         self.last_progress_at = last_progress_at
+        self.connected_at = last_progress_at
+        self.last_delivery_at: float | None = None
+        self.delivered_chunks = 0
+        self.delivered_bytes = 0
+        self.dropped_chunks = 0
 
 
 class SessionBroadcastHub:
@@ -127,6 +146,28 @@ class SessionBroadcastHub:
         stuck = list(self._stuck)
         self._stuck.clear()
         return stuck
+
+    def viewer_stats(self, connection: WebSocketConnection) -> dict[str, object] | None:
+        """Log fields describing one attached viewer's delivery so far, or `None` once it has
+        left the hub. `transport_buffer_bytes` is what asyncio still holds for the socket on top
+        of the queue - a large value means the peer is not reading, not that RAAD is slow."""
+        state = self._viewers.get(connection)
+        if state is None:
+            return None
+        now = self._clock()
+        return {
+            "connected_seconds": round(now - state.connected_at, 1),
+            "seconds_since_last_delivery": (
+                None
+                if state.last_delivery_at is None
+                else round(now - state.last_delivery_at, 1)
+            ),
+            "delivered_chunks": state.delivered_chunks,
+            "delivered_bytes": state.delivered_bytes,
+            "dropped_chunks": state.dropped_chunks,
+            "queued_chunks": state.queue.qsize(),
+            "transport_buffer_bytes": getattr(connection, "pending_write_bytes", None),
+        }
 
     async def add_viewer(self, connection: WebSocketConnection) -> None:
         """The FLV header is still sent directly, synchronously, here — not through the new
@@ -188,6 +229,11 @@ class SessionBroadcastHub:
                     )
                     return
                 else:
+                    state = self._viewers.get(connection)
+                    if state is not None:
+                        state.delivered_chunks += 1
+                        state.delivered_bytes += len(chunk)
+                        state.last_delivery_at = self._clock()
                     queue.task_done()
         except asyncio.CancelledError:
             raise
@@ -225,6 +271,7 @@ class SessionBroadcastHub:
                 try:
                     state.queue.get_nowait()
                     state.queue.task_done()
+                    state.dropped_chunks += 1
                 except asyncio.QueueEmpty:
                     continue  # raced the sender task draining it - retry the put
 

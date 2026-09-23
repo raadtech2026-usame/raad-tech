@@ -338,5 +338,65 @@ class StuckViewerDetectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hub.viewer_count, 0)
 
 
+class ViewerStatsTests(unittest.IsolatedAsyncioTestCase):
+    """2026-09-23 diagnostics: a stuck viewer's log line must say how much it had received and
+    how long ago, so "never drained" and "drained for minutes, then stalled" are told apart."""
+
+    class _Clock:
+        def __init__(self) -> None:
+            self.now = 1000.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    async def _broadcast(self, hub, n: int) -> None:
+        for i in range(n):
+            await hub.broadcast_video(
+                annex_b_payload=b"\x00\x00\x01\x65D", is_keyframe=True, timestamp_ms=i
+            )
+
+    async def test_counts_what_a_draining_viewer_received(self) -> None:
+        clock = self._Clock()
+        hub = SessionBroadcastHub("session-1", clock=clock)
+        viewer = FakeConnection()
+        await hub.add_viewer(viewer)
+        await self._broadcast(hub, 3)
+        await hub.wait_until_idle()
+        clock.now += 12.0
+
+        stats = hub.viewer_stats(viewer)
+
+        self.assertEqual(stats["delivered_chunks"], 3)
+        # Everything after the FLV header went through the queue and is counted.
+        self.assertEqual(stats["delivered_bytes"], sum(len(c) for c in viewer.sent[1:]))
+        self.assertEqual(stats["dropped_chunks"], 0)
+        self.assertEqual(stats["connected_seconds"], 12.0)
+        self.assertEqual(stats["seconds_since_last_delivery"], 12.0)
+        self.assertEqual(stats["queued_chunks"], 0)
+
+    async def test_counts_chunks_dropped_for_a_viewer_that_never_drains(self) -> None:
+        hub = SessionBroadcastHub("session-1", send_queue_maxsize=1)
+        viewer = StuckViewerDetectionTests._NeverDrainingConnection()
+        await hub.add_viewer(viewer)
+        await self._broadcast(hub, 5)
+        await asyncio.sleep(0)
+
+        stats = hub.viewer_stats(viewer)
+
+        # The FLV header is the only thing that ever reached this viewer, and it bypasses the
+        # queue, so nothing counts as delivered.
+        self.assertEqual(stats["delivered_chunks"], 0)
+        self.assertIsNone(stats["seconds_since_last_delivery"])
+        self.assertGreater(stats["dropped_chunks"], 0)
+
+    async def test_returns_none_once_the_viewer_has_left(self) -> None:
+        hub = SessionBroadcastHub("session-1")
+        viewer = FakeConnection()
+        await hub.add_viewer(viewer)
+        hub.remove_viewer(viewer)
+
+        self.assertIsNone(hub.viewer_stats(viewer))
+
+
 if __name__ == "__main__":
     unittest.main()

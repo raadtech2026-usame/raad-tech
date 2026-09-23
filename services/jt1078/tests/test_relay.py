@@ -361,6 +361,9 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
             def take_stuck_viewers(self):
                 return [stuck_viewer]
 
+            def viewer_stats(self, _connection):
+                return {"delivered_bytes": 4096, "dropped_chunks": 750}
+
         async def _record_close(connection, *, code, reason):
             closed.append((connection, code, reason))
 
@@ -380,6 +383,9 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(closed, [(stuck_viewer, 4012, b"viewer_stuck")])
         self.assertIn("viewer_closed_stuck", [r.getMessage() for r in logs.records])
+        stuck_record = next(r for r in logs.records if r.getMessage() == "viewer_closed_stuck")
+        self.assertEqual(stuck_record.extra_fields["delivered_bytes"], 4096)
+        self.assertEqual(stuck_record.extra_fields["dropped_chunks"], 750)
         # The session is untouched by the viewer close - only the viewer went away.
         self.assertIsNotNone(self.relay.session_manager.resolve(session.session_id))
 

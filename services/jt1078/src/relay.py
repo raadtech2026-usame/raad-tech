@@ -283,6 +283,7 @@ class Jt1078Relay:
                 "viewer_closed_stuck",
                 session_id=session_id,
                 stuck_timeout_seconds=self._config.viewer_stuck_timeout_seconds,
+                **(hub.viewer_stats(connection) or {}),
             )
             await self._viewer_server.close_viewer(
                 connection, code=_CLOSE_CODE_VIEWER_STUCK, reason=b"viewer_stuck"

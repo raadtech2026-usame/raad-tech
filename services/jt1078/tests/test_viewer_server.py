@@ -173,6 +173,30 @@ class ViewerServerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
         self.assertEqual(session.viewer_count, 1)
 
+    async def test_viewer_disconnect_logs_what_the_viewer_received(self) -> None:
+        """2026-09-23 diagnostics: the disconnect line carries the viewer's delivery counters,
+        read before the viewer leaves the hub."""
+        session = self.session_manager.create_session(
+            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="c1", logical_channel=1
+        )
+        self.hubs[session.session_id] = SessionBroadcastHub(session.session_id)
+        token = mint_token(session_id=session.session_id, secret=SECRET, ttl_seconds=30)
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.server.bound_port)
+        await _ws_handshake(reader, writer, token=token)
+        await asyncio.wait_for(_read_ws_frame(reader), timeout=2.0)
+        await asyncio.sleep(0.05)
+
+        with self.assertLogs("jt1078_relay.viewer.server", level="INFO") as logs:
+            writer.close()
+            for _ in range(40):
+                if session.viewer_count == 0:
+                    break
+                await asyncio.sleep(0.05)
+
+        record = next(r for r in logs.records if r.getMessage() == "viewer_disconnected")
+        self.assertEqual(record.extra_fields["delivered_chunks"], 0)
+        self.assertIn("connected_seconds", record.extra_fields)
+
     async def test_viewer_connection_receives_periodic_keepalive_pings(self) -> None:
         """2026-09-02 — regression coverage for the new WS-level keepalive
         (`ViewerServer._ping_loop`/`_pump_with_keepalive`), added while diagnosing a real,
