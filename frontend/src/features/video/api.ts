@@ -180,6 +180,16 @@ export const OPEN_VIDEO_SESSION_STATUSES: ReadonlySet<VideoSessionStatus> = new 
   "active",
 ]);
 
+/** `GET /devices/{device_id}` (existing), reading only `is_online` — the gateway's own JT/T 808
+ * connectivity, kept current by `DeviceConnectivityProcessor` (ADR-0020/0027). Used before an
+ * automatic live-video reconnect: production outages (2026-09-18, 2026-09-20) took the MDVR's
+ * whole link down, and every 0x9101 sent into that dead link only failed on `ingest_timeout`.
+ * Same `fleet_device.devices.read` grant the unified view already relies on. */
+export async function getDeviceOnline(deviceId: string): Promise<boolean> {
+  const wire = await apiRequest<{ is_online: boolean }>(`/devices/${deviceId}`);
+  return wire.is_online;
+}
+
 /** Which of the terminal's two encoder outputs a live session asks for (ADR-0043): `main` is
  * full resolution, `sub` is the terminal's low-bitrate preview stream. */
 export type LiveStreamType = "main" | "sub";

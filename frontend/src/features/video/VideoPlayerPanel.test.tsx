@@ -36,6 +36,12 @@ describe("VideoPlayerPanel", () => {
     expect(screen.getByText(/audio isn't available/)).toBeInTheDocument();
   });
 
+  it("says the device is offline, and that video will come back on its own", () => {
+    render(<VideoPlayerPanel phase="deviceOffline" requestError={null} player={IDLE_PLAYER} videoRef={ref()} />);
+    expect(screen.getByText("Device offline")).toBeInTheDocument();
+    expect(screen.getByText(/reconnects automatically/)).toBeInTheDocument();
+  });
+
   it("prefers the request error message over the player's own error message", () => {
     render(
       <VideoPlayerPanel

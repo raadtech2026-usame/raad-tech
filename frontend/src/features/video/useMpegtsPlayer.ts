@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import mpegts from "mpegts.js";
 
 /**
@@ -93,6 +93,30 @@ const AUTO_CLEANUP_MIN_BACKWARD_DURATION_SECONDS = 10;
 const STALL_THRESHOLD_MS = 3000;
 const STALL_POLL_MS = 1000;
 
+/** What the browser knew about the stream at one moment - logged when the picture freezes,
+ * recovers, or the socket closes (2026-09-23). The relay can see whether a viewer is draining its
+ * socket but not whether the browser is decoding what it drains; these lines are that half. */
+function mediaSnapshot(
+  element: HTMLMediaElement | null,
+  statistics: Record<string, unknown> | null,
+): Record<string, unknown> {
+  let bufferedAheadSeconds: number | null = null;
+  if (element && element.buffered.length > 0) {
+    const end = element.buffered.end(element.buffered.length - 1);
+    bufferedAheadSeconds = Math.round((end - element.currentTime) * 10) / 10;
+  }
+  return {
+    currentTime: element ? Math.round(element.currentTime * 10) / 10 : null,
+    paused: element?.paused ?? null,
+    readyState: element?.readyState ?? null,
+    attached: element?.isConnected ?? null,
+    bufferedAheadSeconds,
+    speedKBps: statistics?.speed ?? null,
+    decodedFrames: statistics?.decodedFrames ?? null,
+    droppedFrames: statistics?.droppedFrames ?? null,
+  };
+}
+
 export type MpegtsPlayerState = "idle" | "connecting" | "connected" | "closed" | "error";
 
 export interface UseMpegtsPlayerResult {
@@ -137,9 +161,11 @@ export function useMpegtsPlayer(
   const [state, setState] = useState<MpegtsPlayerState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [stalled, setStalled] = useState(false);
+  const statisticsRef = useRef<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     setErrorMessage(null);
+    statisticsRef.current = null;
 
     if (!streamUrl) {
       setState("idle");
@@ -182,6 +208,14 @@ export function useMpegtsPlayer(
     }
     function handleLoadingComplete(): void {
       setState((current) => (current === "error" ? current : "closed"));
+      // eslint-disable-next-line no-console
+      console.debug("[video:mpegts] stream closed", {
+        elapsedMs: Math.round(performance.now() - connectStartedAt),
+        ...mediaSnapshot(videoRef.current, statisticsRef.current),
+      });
+    }
+    function handleStatistics(statistics: unknown): void {
+      statisticsRef.current = statistics as Record<string, unknown>;
     }
 
     const player = mpegts.createPlayer(
@@ -208,6 +242,7 @@ export function useMpegtsPlayer(
     player.on(mpegts.Events.ERROR, handleError);
     player.on(mpegts.Events.MEDIA_INFO, handleMediaInfo);
     player.on(mpegts.Events.LOADING_COMPLETE, handleLoadingComplete);
+    player.on(mpegts.Events.STATISTICS_INFO, handleStatistics);
 
     try {
       player.attachMediaElement(videoElement);
@@ -224,6 +259,7 @@ export function useMpegtsPlayer(
       player.off(mpegts.Events.ERROR, handleError);
       player.off(mpegts.Events.MEDIA_INFO, handleMediaInfo);
       player.off(mpegts.Events.LOADING_COMPLETE, handleLoadingComplete);
+      player.off(mpegts.Events.STATISTICS_INFO, handleStatistics);
       try {
         player.pause();
         player.unload();
@@ -254,6 +290,7 @@ export function useMpegtsPlayer(
     }
     let lastPosition = videoRef.current?.currentTime ?? 0;
     let lastAdvancedAt = Date.now();
+    let frozenSince: number | null = null;
     const timerId = window.setInterval(() => {
       const element = videoRef.current;
       if (!element) return;
@@ -261,6 +298,14 @@ export function useMpegtsPlayer(
       if (position !== lastPosition) {
         lastPosition = position;
         lastAdvancedAt = Date.now();
+        if (frozenSince !== null) {
+          // eslint-disable-next-line no-console
+          console.debug("[video:stall] picture moving again", {
+            frozenMs: Date.now() - frozenSince,
+            ...mediaSnapshot(element, statisticsRef.current),
+          });
+          frozenSince = null;
+        }
         setStalled(false);
         return;
       }
@@ -270,7 +315,14 @@ export function useMpegtsPlayer(
         lastAdvancedAt = Date.now();
         return;
       }
-      if (Date.now() - lastAdvancedAt >= STALL_THRESHOLD_MS) setStalled(true);
+      if (Date.now() - lastAdvancedAt >= STALL_THRESHOLD_MS) {
+        if (frozenSince === null) {
+          frozenSince = lastAdvancedAt;
+          // eslint-disable-next-line no-console
+          console.debug("[video:stall] picture frozen", mediaSnapshot(element, statisticsRef.current));
+        }
+        setStalled(true);
+      }
     }, STALL_POLL_MS);
     return () => window.clearInterval(timerId);
     // eslint-disable-next-line react-hooks/exhaustive-deps

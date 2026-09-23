@@ -2,7 +2,13 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
-import { requestLiveVideo, stopVideoSession, type LiveStreamType, type VideoSession } from "./api";
+import {
+  getDeviceOnline,
+  requestLiveVideo,
+  stopVideoSession,
+  type LiveStreamType,
+  type VideoSession,
+} from "./api";
 import { useMpegtsPlayer, type UseMpegtsPlayerResult } from "./useMpegtsPlayer";
 
 export type VideoSessionPhase =
@@ -16,6 +22,9 @@ export type VideoSessionPhase =
    * must never be counted as Live. See `useMpegtsPlayer`'s `stalled` for why this is measured
    * from the media element's own playback position. */
   | "stalled"
+  /** The session ended unexpectedly and the terminal itself is offline (its JT/T 808 link is
+   * down), so no reconnect is attempted until it comes back (2026-09-23). */
+  | "deviceOffline"
   | "stopped"
   | "unavailable"
   | "error";
@@ -67,6 +76,20 @@ const RECONNECT_BASE_DELAY_MS = 5000;
 // earned back. Comfortably longer than the relay's own 30s `ingest_timeout`, so a session that
 // only ever survives to that timeout can never refill the budget it just spent.
 const RECONNECT_STABILITY_MS = 45000;
+// While the terminal is offline, how often to re-check it before reconnecting. The gateway only
+// marks a silent terminal offline after its own JT/T 808 idle timeout, so this is not the
+// detection latency - it only bounds how long a recovered device waits for its picture.
+const DEVICE_ONLINE_POLL_MS = 10000;
+
+/** `false` only when the backend positively reports the terminal offline. A failed lookup is not
+ * evidence the device is down, so it falls back to the ordinary reconnect path. */
+async function isDeviceReachable(deviceId: string): Promise<boolean> {
+  try {
+    return await getDeviceOnline(deviceId);
+  } catch {
+    return true;
+  }
+}
 
 /**
  * ADR-0028 §G: the video session lifecycle half of `VideoPage`, extracted unchanged in
@@ -117,6 +140,7 @@ export function useVideoSessionController(
   // to decide whether a restart is needed.
   const [sessionStreamType, setSessionStreamType] = useState<LiveStreamType | null>(null);
   const [manuallyStopped, setManuallyStopped] = useState(false);
+  const [waitingForDevice, setWaitingForDevice] = useState(false);
   const [requestError, setRequestError] = useState<VideoRequestError | null>(null);
   const stoppedSessionIdsRef = useRef<Set<string>>(new Set());
   const reconnectAttemptsRef = useRef(0);
@@ -191,6 +215,7 @@ export function useVideoSessionController(
   useEffect(() => {
     setSession(null);
     setManuallyStopped(false);
+    setWaitingForDevice(false);
     setRequestError(null);
   }, [deviceId, cameraId]);
 
@@ -232,8 +257,18 @@ export function useVideoSessionController(
   // full reasoning). `reconnectScheduledRef` guards against scheduling more than one pending
   // reconnect for the same "closed" occurrence (this effect can otherwise re-run for unrelated
   // reasons - e.g. `session` identity - while still `"closed"`).
+  //
+  // A player `"error"` (mpegts.js network/media failure) is recovered the same way as a close
+  // (2026-09-23): previously only `"closed"` was, so an errored tile kept its session open on the
+  // relay and stayed on "Error" until someone pressed Stop.
+  //
+  // Before each attempt the terminal's own online state is checked (2026-09-23). When the whole
+  // MDVR link drops - seen in production on 2026-09-18 and 2026-09-20 - every retry used to send
+  // a fresh 0x9101 into the dead link and fail on `ingest_timeout`, spending the retry budget
+  // while the device was still away. An offline terminal instead moves to `"deviceOffline"`,
+  // which waits for it without spending an attempt (effect further below).
   useEffect(() => {
-    if (player.state !== "closed") {
+    if (player.state !== "closed" && player.state !== "error") {
       reconnectScheduledRef.current = false;
       return;
     }
@@ -243,8 +278,21 @@ export function useVideoSessionController(
     if (deviceId === null || cameraId === null) return;
 
     reconnectScheduledRef.current = true;
+    let cancelled = false;
 
-    const attemptReconnect = (): void => {
+    const attemptReconnect = async (): Promise<void> => {
+      const online = await isDeviceReachable(deviceId);
+      if (cancelled) return;
+      if (!online) {
+        // eslint-disable-next-line no-console
+        console.debug("[video:reconnect] terminal offline, waiting for it before reconnecting", {
+          sessionId: session.id,
+        });
+        // Clearing the session runs the per-session cleanup above, which stops the dead one.
+        setSession(null);
+        setWaitingForDevice(true);
+        return;
+      }
       reconnectAttemptsRef.current += 1;
       // eslint-disable-next-line no-console
       console.debug("[video:reconnect] attempting auto-recovery", {
@@ -265,17 +313,52 @@ export function useVideoSessionController(
       const onVisible = (): void => {
         if (document.visibilityState !== "visible") return;
         document.removeEventListener("visibilitychange", onVisible);
-        attemptReconnect();
+        void attemptReconnect();
       };
       document.addEventListener("visibilitychange", onVisible);
-      return () => document.removeEventListener("visibilitychange", onVisible);
+      return () => {
+        cancelled = true;
+        document.removeEventListener("visibilitychange", onVisible);
+      };
     }
 
     const delay = RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttemptsRef.current;
-    const timeoutId = window.setTimeout(attemptReconnect, delay);
-    return () => window.clearTimeout(timeoutId);
+    const timeoutId = window.setTimeout(() => void attemptReconnect(), delay);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player.state, manuallyStopped, session, deviceId, cameraId]);
+
+  // "deviceOffline" - poll the terminal until it is back, then open a fresh session with a full
+  // retry budget: the failures that led here were the device's absence, not this camera's.
+  useEffect(() => {
+    if (!waitingForDevice || deviceId === null || cameraId === null) return;
+    let cancelled = false;
+    let timeoutId: number | undefined;
+
+    const poll = async (): Promise<void> => {
+      const online = await isDeviceReachable(deviceId);
+      if (cancelled) return;
+      if (!online || (typeof document !== "undefined" && document.visibilityState === "hidden")) {
+        timeoutId = window.setTimeout(() => void poll(), DEVICE_ONLINE_POLL_MS);
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.debug("[video:reconnect] terminal back online, reconnecting", { deviceId, cameraId });
+      setWaitingForDevice(false);
+      reconnectAttemptsRef.current = 0;
+      startMutation.mutate(streamTypeRef.current);
+    };
+
+    timeoutId = window.setTimeout(() => void poll(), DEVICE_ONLINE_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitingForDevice, deviceId, cameraId]);
 
   // ADR-0043 — the requested stream changed while a session is open (a video-wall tile gained or
   // lost focus): replace that one session with one on the new stream. Same teardown path as
@@ -297,6 +380,12 @@ export function useVideoSessionController(
   }, [streamType, session, sessionStreamType, manuallyStopped, startMutation.isPending]);
 
   async function stop(): Promise<void> {
+    if (waitingForDevice) {
+      // No session is open while waiting (the dead one was already stopped) - just stop waiting.
+      setWaitingForDevice(false);
+      setManuallyStopped(true);
+      return;
+    }
     if (!session) return;
     setManuallyStopped(true);
     await ensureStopped(session.id);
@@ -304,13 +393,15 @@ export function useVideoSessionController(
   }
 
   function start(): void {
+    setWaitingForDevice(false);
     startMutation.mutate(streamTypeRef.current);
   }
 
   function computePhase(): VideoSessionPhase {
     if (startMutation.isPending) return "requesting";
     if (requestError) return requestError.unavailable ? "unavailable" : "error";
-    if (!session) return "idle";
+    if (waitingForDevice) return "deviceOffline";
+    if (!session) return manuallyStopped ? "stopped" : "idle";
     if (manuallyStopped) return "stopped";
     // A `null` streamUrl is permanent for this session (no VideoProviderPort bound on this
     // deployment) — `useMpegtsPlayer` never even attempts a connection in that case, so
@@ -341,7 +432,11 @@ export function useVideoSessionController(
     phase !== "connecting" &&
     phase !== "connected" &&
     phase !== "stalled";
-  const canStop = phase === "connecting" || phase === "connected" || phase === "stalled";
+  const canStop =
+    phase === "connecting" ||
+    phase === "connected" ||
+    phase === "stalled" ||
+    phase === "deviceOffline";
 
   return { phase, requestError, player, videoRef, canStart, canStop, start, stop };
 }

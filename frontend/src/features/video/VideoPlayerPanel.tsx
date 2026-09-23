@@ -72,6 +72,13 @@ export function VideoPlayerPanel({
           description="Press Start Live to request a new session."
         />
       )}
+      {phase === "deviceOffline" && (
+        <EmptyState
+          icon={<VideoOff size={28} />}
+          title="Device offline"
+          description="The vehicle's recorder lost its connection. Video reconnects automatically once it is back online."
+        />
+      )}
       {phase === "unavailable" && (
         <EmptyState
           icon={<VideoOff size={28} />}

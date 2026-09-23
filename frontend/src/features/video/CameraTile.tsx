@@ -42,6 +42,7 @@ const PHASE_BADGE: Record<VideoSessionPhase, { label: string; variant: BadgeVari
   // Never pulsing - a pulsing badge reads as "flowing", which is exactly the false confidence
   // this phase exists to correct.
   stalled: { label: "No signal", variant: "warning" },
+  deviceOffline: { label: "Device offline", variant: "warning" },
   stopped: { label: "Stopped", variant: "neutral" },
   unavailable: { label: "Unavailable", variant: "warning" },
   error: { label: "Error", variant: "danger" },

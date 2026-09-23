@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
 vi.mock("./api", () => ({
+  getDeviceOnline: vi.fn(),
   requestLiveVideo: vi.fn(),
   stopVideoSession: vi.fn(),
 }));
@@ -17,7 +18,7 @@ vi.mock("./useMpegtsPlayer", () => ({
   useMpegtsPlayer: () => playerReturn,
 }));
 
-import { requestLiveVideo, stopVideoSession } from "./api";
+import { getDeviceOnline, requestLiveVideo, stopVideoSession } from "./api";
 import { useVideoSessionController } from "./useVideoSessionController";
 
 const SESSION = {
@@ -44,6 +45,7 @@ function wrapper({ children }: { children: ReactNode }) {
 describe("useVideoSessionController", () => {
   beforeEach(() => {
     vi.mocked(requestLiveVideo).mockReset();
+    vi.mocked(getDeviceOnline).mockReset().mockResolvedValue(true);
     vi.mocked(stopVideoSession).mockReset().mockResolvedValue({ ...SESSION, status: "ended" });
     playerReturn.state = "idle";
     playerReturn.errorMessage = null;
@@ -355,6 +357,106 @@ describe("useVideoSessionController", () => {
         document.dispatchEvent(new Event("visibilitychange"));
       });
       expect(requestLiveVideo).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("device offline and player errors (2026-09-23)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function startConnected() {
+      vi.mocked(requestLiveVideo).mockResolvedValue(SESSION);
+      playerReturn.state = "connected";
+      const hook = renderHook(() => useVideoSessionController("device-1", "camera-1"), { wrapper });
+      act(() => hook.result.current.start());
+      await waitFor(() => expect(hook.result.current.phase).toBe("connected"));
+      vi.useFakeTimers();
+      Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+      return hook;
+    }
+
+    it("waits for an offline terminal instead of reconnecting into a dead link, then reconnects once it is back", async () => {
+      const { result, rerender } = await startConnected();
+      vi.mocked(getDeviceOnline).mockResolvedValue(false);
+
+      playerReturn.state = "closed";
+      act(() => rerender());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+
+      expect(getDeviceOnline).toHaveBeenCalledWith("device-1");
+      expect(result.current.phase).toBe("deviceOffline");
+      expect(result.current.canStop).toBe(true);
+      expect(stopVideoSession).toHaveBeenCalledWith("session-1"); // the dead session is released
+      playerReturn.state = "idle"; // the real player goes idle once the stream URL is cleared
+      act(() => rerender());
+
+      // Still offline: polling spends no reconnect attempts, however long it lasts.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120_000);
+      });
+      expect(requestLiveVideo).toHaveBeenCalledTimes(1);
+      expect(result.current.phase).toBe("deviceOffline");
+
+      vi.mocked(getDeviceOnline).mockResolvedValue(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(requestLiveVideo).toHaveBeenCalledTimes(2);
+    });
+
+    it("stopping while waiting for the terminal ends the wait for good", async () => {
+      const { result, rerender } = await startConnected();
+      vi.mocked(getDeviceOnline).mockResolvedValue(false);
+      playerReturn.state = "closed";
+      act(() => rerender());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(result.current.phase).toBe("deviceOffline");
+
+      await act(async () => {
+        await result.current.stop();
+      });
+      expect(result.current.phase).toBe("stopped");
+
+      vi.mocked(getDeviceOnline).mockResolvedValue(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(requestLiveVideo).toHaveBeenCalledTimes(1);
+    });
+
+    it("reconnects normally when the online check itself fails", async () => {
+      const { rerender } = await startConnected();
+      vi.mocked(getDeviceOnline).mockRejectedValue(new Error("network"));
+
+      playerReturn.state = "closed";
+      act(() => rerender());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+
+      expect(requestLiveVideo).toHaveBeenCalledTimes(2);
+    });
+
+    it("recovers from a player error the same way as from a close", async () => {
+      const { result, rerender } = await startConnected();
+      vi.mocked(requestLiveVideo).mockResolvedValue({ ...SESSION, id: "session-2" });
+
+      playerReturn.state = "error";
+      playerReturn.errorMessage = "MediaError: MediaMSEError";
+      act(() => rerender());
+      expect(result.current.phase).toBe("error");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+
+      expect(requestLiveVideo).toHaveBeenCalledTimes(2);
+      expect(stopVideoSession).toHaveBeenCalledWith("session-1");
     });
   });
 

@@ -46,7 +46,12 @@ const { FakePlayer, EVENTS } = vi.hoisted(() => {
     }
   }
 
-  const EVENTS = { ERROR: "error", MEDIA_INFO: "media_info", LOADING_COMPLETE: "loading_complete" };
+  const EVENTS = {
+    ERROR: "error",
+    MEDIA_INFO: "media_info",
+    LOADING_COMPLETE: "loading_complete",
+    STATISTICS_INFO: "statistics_info",
+  };
 
   return { FakePlayer, EVENTS };
 });
