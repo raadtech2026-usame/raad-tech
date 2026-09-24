@@ -133,12 +133,13 @@ class PlatformFinanceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         kind: ExpenseKind = ExpenseKind.RENT,
         occurred_on: date = date(2099, 1, 10),
         category_id: PlatformCategoryId | None = None,
+        currency: str = "USD",
     ) -> PlatformExpense:
         expense = PlatformExpense.record(
             id=PlatformExpenseId(self.id_generator.new_id()),
             kind=kind,
             category_id=category_id,
-            amount=Money(amount=Decimal(amount), currency="USD"),
+            amount=Money(amount=Decimal(amount), currency=currency),
             occurred_on=occurred_on,
             clock=self.clock,
         )
@@ -279,6 +280,24 @@ class PlatformFinanceRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         # 1000.00 must be excluded — only the non-voided 80.50 counts.
         self.assertEqual(total, Decimal("80.50"))
+
+    async def test_currencies_between_mirrors_the_sum_filters(self) -> None:
+        """Finance P0.5: in-window, non-voided rows only — the same rows `sum_between` adds."""
+        await self._record_expense(occurred_on=date(2098, 3, 5))
+        voided = await self._record_expense(occurred_on=date(2098, 3, 6), currency="SOS")
+        await self._record_expense(occurred_on=date(2098, 4, 1), currency="EUR")
+        async with self._uow() as uow:
+            loaded = await uow.expenses.get(voided.id)
+            loaded.void(reason="wrong currency", clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._uow() as uow:
+            currencies = await uow.expenses.currencies_between(
+                start=date(2098, 3, 1), end=date(2098, 3, 31)
+            )
+
+        self.assertEqual(currencies, {"USD"})
 
     async def test_sum_by_kind_between_groups_correctly(self) -> None:
         window = (date(2099, 1, 1), date(2099, 1, 31))

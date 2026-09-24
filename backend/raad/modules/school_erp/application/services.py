@@ -185,6 +185,24 @@ def _enforce_own_organization(*, actor: Principal, organization_id: str) -> None
 _PARENT_FINANCE_DEFAULT_CURRENCY = "USD"
 
 
+def _ensure_single_currency(*currency_sets: set[str], figure: str) -> str | None:
+    """Refuses to present a total that adds amounts in different currencies.
+
+    Every figure here is a plain `SUM(amount)`, and the old queries labelled that sum with
+    `MIN(currency)` — so USD 100 and SOS 50,000 came back as "50100.00 SOS". A wrong number that
+    looks right is worse than no number, so this fails loudly instead (finance P0.5). Real
+    multi-currency needs a base currency per organization, which is a separate, pending decision.
+    """
+    currencies = set().union(*currency_sets)
+    if len(currencies) > 1:
+        raise ConflictError(
+            f"{figure} cannot be calculated: the finance records it covers use more than one "
+            f"currency ({', '.join(sorted(currencies))}), and amounts in different currencies "
+            "cannot be added together. Contact RAAD support to correct the records."
+        )
+    return next(iter(currencies), None)
+
+
 def _money(value: Decimal) -> str:
     """See `application/queries.py`'s own `_money` — duplicated here rather than imported
     (a private, single-line helper), matching `_decimal`'s own module-local precedent above."""
@@ -684,9 +702,12 @@ class SchoolErpApplicationService:
         `outstanding_amount` is "Receivables" in every consumer's own display labels (the wire
         field names are kept stable; only the frontend's rendered text changed)."""
         async with uow:
-            totals = await uow.parent_invoices.summarise_totals(
-                period=BillingPeriod(period) if period else None
+            billing_period = BillingPeriod(period) if period else None
+            _ensure_single_currency(
+                await uow.parent_invoices.currencies_for_period(period=billing_period),
+                figure="The finance summary",
             )
+            totals = await uow.parent_invoices.summarise_totals(period=billing_period)
             return finance_totals_to_dto(totals)
 
     async def get_vehicle_financial_overview(
@@ -700,10 +721,15 @@ class SchoolErpApplicationService:
         """
         async with uow:
             billing_period = BillingPeriod(period) if period else None
+            start, end = self._period_bounds(billing_period)
+            _ensure_single_currency(
+                await uow.parent_invoices.currencies_for_period(period=billing_period),
+                await uow.expenses.currencies_between(start=start, end=end),
+                figure="The vehicle financial overview",
+            )
             summaries = await uow.parent_invoices.summarise_by_vehicle(
                 period=billing_period
             )
-            start, end = self._period_bounds(billing_period)
             expenses_by_vehicle = await uow.expenses.sum_by_vehicle_between(
                 start=start, end=end
             )
@@ -732,6 +758,12 @@ class SchoolErpApplicationService:
         disclosed `invoice_date`-based window it uses in place of a payment-transaction date this
         module no longer records (ADR-0042 decision 4)."""
         async with uow:
+            window_currency = _ensure_single_currency(
+                await uow.parent_invoices.currencies_invoiced_between(start=start, end=end),
+                await uow.income.currencies_between(start=start, end=end),
+                await uow.expenses.currencies_between(start=start, end=end),
+                figure="Profit & Loss",
+            )
             student_revenue = await uow.parent_invoices.sum_collected_between(
                 start=start, end=end
             )
@@ -758,7 +790,9 @@ class SchoolErpApplicationService:
                 expenses_by_category={
                     k: f"{v:.2f}" for k, v in expenses_by_category.items()
                 },
-                currency=totals.currency,
+                # The currency the window's rows are actually in; the all-time label only when
+                # the window holds no rows at all.
+                currency=window_currency or totals.currency,
             )
 
     async def list_invoices_for_vehicle(
@@ -1439,6 +1473,10 @@ class ParentFinanceApplicationService:
         async with school_erp_uow:
             invoices = await school_erp_uow.parent_invoices.list_for_parent(ParentId(parent_id))
         billable = [inv for inv in invoices if inv.status != ParentInvoiceStatus.CANCELLED]
+        _ensure_single_currency(
+            {inv.amount.currency for inv in billable},
+            figure="This family's financial summary",
+        )
 
         currency = billable[0].amount.currency if billable else _PARENT_FINANCE_DEFAULT_CURRENCY
 

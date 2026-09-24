@@ -391,6 +391,39 @@ class SchoolErpRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fetched.is_voided)
         self.assertEqual(fetched.voided_reason, "Fuel receipt entered twice")
 
+    async def test_expense_currencies_mirror_the_sum_filters(self) -> None:
+        """Finance P0.5: the currency check must see exactly the rows `sum_between` adds —
+        in-window, not voided, this organization only."""
+        cases = (
+            (self.org_a, "USD", date(2026, 12, 5), False),
+            (self.org_a, "SOS", date(2026, 12, 6), True),  # voided
+            (self.org_a, "EUR", date(2027, 1, 2), False),  # outside the window
+            (self.org_b, "KES", date(2026, 12, 7), False),  # another organization
+        )
+        for org, currency, occurred_on, void in cases:
+            expense = Expense.record(
+                id=ExpenseId(self.id_generator.new_id()),
+                organization_id=OrganizationId(org),
+                category_id=None,
+                amount=Money(amount=Decimal("10.00"), currency=currency),
+                occurred_on=occurred_on,
+                clock=self.clock,
+            )
+            if void:
+                expense.void(reason="wrong currency", clock=self.clock)
+            async with self._uow(org) as uow:
+                uow.expenses.add(expense)
+                uow.record_events(expense.pull_domain_events())
+                await uow.commit()
+            self._expense_ids.append(str(expense.id))
+
+        async with self._uow(self.org_a) as uow:
+            currencies = await uow.expenses.currencies_between(
+                start=date(2026, 12, 1), end=date(2026, 12, 31)
+            )
+
+        self.assertEqual(currencies, {"USD"})
+
 
 if __name__ == "__main__":
     unittest.main()

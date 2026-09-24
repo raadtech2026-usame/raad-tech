@@ -395,6 +395,13 @@ class InMemoryIncomeRepository(IncomeRepository):
             totals[key] = totals.get(key, Decimal("0.00")) + income.amount.amount
         return totals
 
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        return {
+            i.amount.currency
+            for i in self.by_id.values()
+            if not i.is_voided and start <= i.occurred_on <= end
+        }
+
 
 class InMemoryExpenseRepository(ExpenseRepository):
     def __init__(self) -> None:
@@ -450,6 +457,9 @@ class InMemoryExpenseRepository(ExpenseRepository):
             key = str(expense.vehicle_id)
             totals[key] = totals.get(key, Decimal("0.00")) + expense.amount.amount
         return totals
+
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        return {e.amount.currency for e in self._live(start, end)}
 
 
 class InMemoryParentBillingProfileRepository(ParentBillingProfileRepository):
@@ -617,6 +627,16 @@ class InMemoryParentInvoiceRepository(ParentInvoiceRepository):
             Decimal("0.00"),
         )
 
+    async def currencies_for_period(self, *, period: BillingPeriod | None = None) -> set[str]:
+        return {i.amount.currency for i in self._live(period=period)}
+
+    async def currencies_invoiced_between(self, *, start: date, end: date) -> set[str]:
+        return {
+            i.amount.currency
+            for i in self.by_id.values()
+            if i.status is not ParentInvoiceStatus.CANCELLED and start <= i.invoice_date <= end
+        }
+
 
 class FakeSchoolErpUnitOfWork(SchoolErpUnitOfWork):
     def __init__(self) -> None:
@@ -767,6 +787,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         amount: str,
         period: str = "2026-09",
         amount_paid: str | None = None,
+        currency: str = "USD",
     ) -> ParentInvoice:
         """ADR-0042 — seeds one real `ParentInvoice` directly onto the fake `parent_invoices`
         repository, the same way the real `generate_parent_invoices` use case would produce one
@@ -777,7 +798,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
             organization_id=OrganizationId(ORG),
             parent_id=ParentId(parent_id),
             period=BillingPeriod(period),
-            amount=Money(amount=Decimal(amount), currency="USD"),
+            amount=Money(amount=Decimal(amount), currency=currency),
             due_date=date(2026, 9, 30),
             children=[
                 BilledChild(
@@ -1100,6 +1121,70 @@ class FinanceSummaryTests(_Base):
         self.assertEqual(summary.outstanding_amount, "30.00")
         self.assertEqual(summary.invoice_count, 2)
         self.assertEqual(summary.paid_invoice_count, 1)
+
+
+class MixedCurrencyTests(_Base):
+    """Finance P0.5. Every figure is a plain SUM; the old queries labelled it `MIN(currency)`,
+    so USD 50 + SOS 50,000 came back as "50050.00 SOS". Each read now refuses instead."""
+
+    def _seed_mixed(self) -> None:
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=BUS_1, amount="50.00", amount_paid="50.00"
+        )
+        self._seed_parent_invoice(
+            PARENT_B, student_id=STUDENT_B, vehicle_id=BUS_2, amount="50000.00",
+            amount_paid="50000.00", currency="SOS",
+        )
+
+    async def test_every_school_total_refuses_to_add_two_currencies(self) -> None:
+        self._seed_mixed()
+        reads = {
+            "summary": lambda: self.service.get_finance_summary(period="2026-09", uow=self.uow),
+            "vehicles": lambda: self.service.get_vehicle_financial_overview(
+                period="2026-09", uow=self.uow
+            ),
+            "pnl": lambda: self.service.get_profit_and_loss(
+                start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+            ),
+        }
+        for name, read in reads.items():
+            with self.subTest(read=name):
+                with self.assertRaises(ConflictError) as raised:
+                    await read()
+                self.assertIn("SOS, USD", str(raised.exception))
+
+    async def test_a_foreign_expense_blocks_pnl_but_not_when_outside_the_window(self) -> None:
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=BUS_1, amount="50.00", amount_paid="50.00"
+        )
+        category_id = await self._expense_category()
+        for occurred_on in (date(2026, 9, 15), date(2026, 10, 2)):
+            await self.service.record_expense(
+                RecordExpenseCommand(
+                    organization_id=ORG, category_id=category_id, amount="9000.00",
+                    currency="SOS", occurred_on=occurred_on, description="Diesel",
+                    reference=None, vehicle_id=BUS_1, actor=self.actor,
+                ),
+                uow=self.uow,
+            )
+        with self.assertRaises(ConflictError):
+            await self.service.get_profit_and_loss(
+                start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+            )
+        # October holds only the SOS expense, so it is a consistent single-currency window.
+        october = await self.service.get_profit_and_loss(
+            start=date(2026, 10, 1), end=date(2026, 10, 31), uow=self.uow
+        )
+        self.assertEqual(october.total_expenses, "9000.00")
+        self.assertEqual(october.currency, "SOS")
+
+    async def test_a_single_currency_school_is_unaffected(self) -> None:
+        self._seed_parent_invoice(
+            PARENT_A, student_id=STUDENT_A, vehicle_id=BUS_1, amount="50.00", amount_paid="20.00"
+        )
+        summary = await self.service.get_finance_summary(period="2026-09", uow=self.uow)
+        self.assertEqual(summary.billed_amount, "50.00")
+        self.assertEqual(summary.currency, "USD")
 
 
 class VehicleFinancialOverviewTests(_Base):

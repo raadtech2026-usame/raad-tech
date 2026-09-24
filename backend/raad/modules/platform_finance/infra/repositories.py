@@ -253,6 +253,21 @@ class _PlatformLedgerMixin:
         rows = (await self._session.execute(statement)).all()  # type: ignore[attr-defined]
         return {row.kind: _dec(row.total) for row in rows}
 
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        """Same filters as `sum_between`, so the check covers exactly the rows it adds up."""
+        statement = (
+            select(self.model.currency)  # type: ignore[attr-defined]
+            .where(
+                self.model.occurred_on >= start,  # type: ignore[attr-defined]
+                self.model.occurred_on <= end,  # type: ignore[attr-defined]
+                self.model.is_voided.is_(False),  # type: ignore[attr-defined]
+                self.model.deleted_at.is_(None),  # type: ignore[attr-defined]
+            )
+            .distinct()
+        )
+        rows = (await self._session.execute(statement)).scalars().all()  # type: ignore[attr-defined]
+        return {currency.strip() for currency in rows}
+
 
 class SqlAlchemyPlatformExpenseRepository(
     _PlatformLedgerMixin,

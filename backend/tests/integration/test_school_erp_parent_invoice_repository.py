@@ -107,13 +107,14 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         period: str = "2026-09",
         parent_id: str | None = None,
         children: list[BilledChild] | None = None,
+        currency: str = "USD",
     ) -> ParentInvoice:
         invoice = ParentInvoice.generate(
             id=ParentInvoiceId(self.id_generator.new_id()),
             organization_id=OrganizationId(organization_id),
             parent_id=ParentId(parent_id or self.id_generator.new_id()),
             period=BillingPeriod(period),
-            amount=Money(amount=Decimal(amount), currency="USD"),
+            amount=Money(amount=Decimal(amount), currency=currency),
             due_date=date(2026, 9, 30),
             children=children
             or [
@@ -251,6 +252,37 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row.collected_amount, Decimal("60.00"))
         self.assertEqual(row.outstanding_amount, Decimal("40.00"))
         self.assertEqual(row.student_count, 2)
+
+    # -- Currency guard (finance P0.5) ----------------------------------------------------------
+
+    async def test_currency_queries_mirror_the_aggregate_filters(self) -> None:
+        """`currencies_for_period`/`currencies_invoiced_between` must see exactly the rows the
+        sums see: the period's non-cancelled invoices, in this organization only."""
+        await self._generate_invoice(organization_id=self.org_a, period="2026-09")
+        cancelled = await self._generate_invoice(
+            organization_id=self.org_a, period="2026-09", currency="EUR"
+        )
+        await self._generate_invoice(organization_id=self.org_a, period="2026-10", currency="SOS")
+        await self._generate_invoice(organization_id=self.org_b, period="2026-09", currency="KES")
+        async with self._uow(self.org_a) as uow:
+            loaded = await uow.parent_invoices.get(cancelled.id)
+            loaded.cancel(reason="issued in error", clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        today = self.clock.now().date()
+        async with self._uow(self.org_a) as uow:
+            september = await uow.parent_invoices.currencies_for_period(
+                period=BillingPeriod("2026-09")
+            )
+            all_periods = await uow.parent_invoices.currencies_for_period(period=None)
+            invoiced_today = await uow.parent_invoices.currencies_invoiced_between(
+                start=today, end=today
+            )
+
+        self.assertEqual(september, {"USD"})
+        self.assertEqual(all_periods, {"USD", "SOS"})
+        self.assertEqual(invoiced_today, {"USD", "SOS"})
 
 
 if __name__ == "__main__":

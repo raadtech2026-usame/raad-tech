@@ -2073,6 +2073,21 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Finance P0.5: totals refuse to add two currencies** (2026-09-25, finance P0 integrity
+  pass; no migration). Every finance figure is a plain `SUM(amount)`. The old queries labelled
+  that sum with `MIN(currency)`, so a school with USD 100 and SOS 50,000 would have been shown
+  "50100.00 SOS". Each aggregate now has a `currencies_*` query using exactly its own filters
+  (window, not voided, not cancelled, tenant-scoped). The school finance summary, vehicle
+  overview, Profit & Loss and per-family summary raise `ConflictError` (409, naming the
+  currencies) when those rows span more than one currency. The school P&L now labels itself
+  with the window's real currency instead of an all-time `MIN`. RAAD's platform P&L refuses
+  ledger rows in anything other than its `USD` reporting currency. **Not yet covered:** the
+  subscription-revenue side of the platform P&L (a `billing` query). It ships with P0.1–P0.3,
+  which touch the same billing test fakes. Live-verified over HTTP (409 with a real USD+SOS
+  mix; single-currency windows unaffected; recovery after void). **Before deploying**, run
+  the production read-only check for organizations that already mix currencies: their finance
+  pages would start returning 409.
+
 - **Finance P0.4 — void reasons are required and stored** (2026-09-25, finance P0 integrity
   pass; no ADR, no architecture change). Voiding income or an expense removes money from every
   total and from Profit & Loss, yet `erp_income`, `erp_expenses`, `platform_income` and

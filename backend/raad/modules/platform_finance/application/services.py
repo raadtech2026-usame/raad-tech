@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from raad.core.errors.exceptions import DomainError, NotFoundError
+from raad.core.errors.exceptions import ConflictError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.tenancy.principal import Principal
 from raad.core.time.clock import Clock
@@ -333,6 +333,20 @@ class PlatformFinanceApplicationService:
         self, *, start: date, end: date, uow: PlatformFinanceUnitOfWork
     ) -> PlatformPnlDTO:
         async with uow:
+            # Every figure here is a plain SUM labelled with one reporting currency, so a row in
+            # any other currency would be added in silently at the wrong value (finance P0.5).
+            # Subscription revenue from `billing` is not covered by this check yet.
+            ledger_currencies = (
+                await uow.income.currencies_between(start=start, end=end)
+            ) | (await uow.expenses.currencies_between(start=start, end=end))
+            foreign = ledger_currencies - {self.DEFAULT_CURRENCY}
+            if foreign:
+                raise ConflictError(
+                    "The platform P&L cannot be calculated: RAAD's ledger has entries in "
+                    f"{', '.join(sorted(foreign))} in this window, but its books are kept in "
+                    f"{self.DEFAULT_CURRENCY} and amounts in different currencies cannot be "
+                    "added together."
+                )
             other_income = await uow.income.sum_between(start=start, end=end)
             total_expenses = await uow.expenses.sum_between(start=start, end=end)
             expenses_by_kind = await uow.expenses.sum_by_kind_between(start=start, end=end)
