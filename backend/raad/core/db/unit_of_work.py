@@ -17,8 +17,40 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from raad.core.db.base import Base
+from raad.core.db.mixins import AuditActorMixin
 from raad.core.events.base import DomainEvent
+from raad.core.logging.context import principal_id_var
 from raad.core.tenancy.scope import TenantRegionScope
+
+_ACTOR_ID_LENGTH = 26  # `created_by`/`updated_by` are CHAR(26) user ULIDs.
+
+
+def _stamp_actor_columns(session: AsyncSession) -> None:
+    """Fills `created_by`/`updated_by` on every audited row this commit writes.
+
+    The columns existed on every audited table and nothing ever wrote them — the actor was
+    recorded only in `audit_entries`. The acting user is already bound per request by
+    `interfaces/http/middleware.py` (the same context variable every log line reads), so it is
+    read here, at the one point every write passes through, rather than threaded through every
+    repository. Outside a request (workers, scheduled jobs, signed webhooks) nothing is bound
+    and the columns stay NULL, which `AuditActorMixin` already defines as "system".
+
+    `updated_by` is set only on rows with a real attribute change. Repositories re-project every
+    tracked aggregate onto its row before commit, including ones that were only read; stamping
+    those would turn a read into an UPDATE and bump their `row_version`.
+    """
+    actor_id = principal_id_var.get()
+    if not actor_id or len(actor_id) > _ACTOR_ID_LENGTH:
+        return
+    sync_session = session.sync_session
+    for instance in sync_session.new:
+        if isinstance(instance, AuditActorMixin):
+            if instance.created_by is None:
+                instance.created_by = actor_id
+            instance.updated_by = actor_id
+    for instance in sync_session.dirty:
+        if isinstance(instance, AuditActorMixin) and sync_session.is_modified(instance):
+            instance.updated_by = actor_id
 
 if TYPE_CHECKING:
     # Deferred to break the core.db <-> core.events / core.db <-> core.audit import cycles
@@ -185,6 +217,7 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         # their own statements, and a statement triggers autoflush — which would flush the
         # business rows in SQLAlchemy's own broken order before this method ever got the chance
         # to impose the right one.
+        _stamp_actor_columns(self.session)
         await self._flush_in_dependency_order()
         await self._outbox_writer.write_all(self.session, self._events)
         await self._audit_writer.write_all(self.session, self._events)

@@ -880,6 +880,19 @@ Bugs found during implementation that represent a durable rule for future code, 
   object into a cell produced a perfectly good PDF (reportlab `str()`s it) and a 500 for XLSX
   (openpyxl raises). When two backends consume the same intermediate structure, normalise at the
   boundary — the format that happens to be forgiving is not proof the data is right.
+- **Audit actor columns are stamped in one place: `SqlAlchemyUnitOfWork.commit()`.**
+  `created_by`/`updated_by` come from the request's bound user (`principal_id_var`, set by the
+  HTTP middleware), never from a repository or a call site. Workers and webhooks bind nobody and
+  correctly write NULL ("system"). Stamp `updated_by` only on rows `session.is_modified()`
+  reports as changed. Repositories re-project every tracked aggregate onto its row before
+  commit, including rows that were only read, so stamping all dirty rows would turn every read
+  into an UPDATE and a `row_version` bump. `tests/integration/test_unit_of_work_actor_columns.py`
+  is the guard.
+- **A total that adds `amount` columns must prove it adds one currency.** `SUM(amount)`
+  labelled with `MIN(currency)` silently produces a plausible, wrong figure. Every finance
+  aggregate has a sibling `currencies_*` query with the *same* filters, and the service refuses
+  (409) when the set has more than one element. Keep the two filter sets identical when either
+  changes.
 - **Every `AppError` subclass needs an explicit row in `core/errors/handlers._STATUS_TABLE`.**
   The fallback is 500, so a plain `DomainError` — a business rule correctly refusing input —
   answered as a server fault, logged as `unhandled_app_error` and paged an on-call. Base classes

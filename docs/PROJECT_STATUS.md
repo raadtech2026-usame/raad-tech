@@ -2073,6 +2073,18 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Finance P0.6: `created_by`/`updated_by` are finally written** (2026-09-25, finance P0
+  integrity pass; platform-wide, no migration). The columns existed on every audited table
+  (`AuditActorMixin`) and nothing ever set them, so "who created or last changed this row" was
+  answerable only by searching `audit_entries`. `SqlAlchemyUnitOfWork.commit()` now stamps them
+  from the acting user the HTTP middleware already binds per request (`principal_id_var`).
+  Workers, scheduled jobs and signed webhooks bind nobody and leave NULL ("system").
+  `updated_by` is set only on rows with a real change. Repositories re-project every tracked
+  aggregate before commit, so stamping every dirty row would have turned reads into UPDATEs and
+  bumped `row_version`. `tests/integration/test_unit_of_work_actor_columns.py` guards that
+  against a real session. Live-verified over HTTP (school expense and platform category;
+  reads leave `row_version` untouched). History is not backfilled.
+
 - **Finance P0.5: totals refuse to add two currencies** (2026-09-25, finance P0 integrity
   pass; no migration). Every finance figure is a plain `SUM(amount)`. The old queries labelled
   that sum with `MIN(currency)`, so a school with USD 100 and SOS 50,000 would have been shown
