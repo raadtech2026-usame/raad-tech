@@ -195,6 +195,30 @@ class PlatformFinanceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched.amount.amount, Decimal("999.99"))
         self.assertEqual(fetched.kind, PlatformIncomeKind.GRANT)
 
+    async def test_void_reason_round_trips_on_both_ledger_tables(self) -> None:
+        """`voided_reason` (migration `b3d7e1f94a26`) is persisted by the mapper, not just held
+        on the in-memory aggregate — a fake repository cannot prove that."""
+        expense = await self._record_expense(amount="12.00")
+        income = await self._record_income(amount="34.00")
+
+        async with self._uow() as uow:
+            loaded_expense = await uow.expenses.get(expense.id)
+            loaded_income = await uow.income.get(income.id)
+            loaded_expense.void(reason="Entered twice", clock=self.clock)
+            loaded_income.void(reason="Grant was withdrawn", clock=self.clock)
+            uow.record_events(loaded_expense.pull_domain_events())
+            uow.record_events(loaded_income.pull_domain_events())
+            await uow.commit()
+
+        async with self._uow() as uow:
+            fetched_expense = await uow.expenses.get(expense.id)
+            fetched_income = await uow.income.get(income.id)
+
+        self.assertTrue(fetched_expense.is_voided)
+        self.assertEqual(fetched_expense.voided_reason, "Entered twice")
+        self.assertTrue(fetched_income.is_voided)
+        self.assertEqual(fetched_income.voided_reason, "Grant was withdrawn")
+
     async def test_category_round_trips_and_is_listed(self) -> None:
         category = await self._create_category(kind=PlatformCategoryKind.INCOME)
 

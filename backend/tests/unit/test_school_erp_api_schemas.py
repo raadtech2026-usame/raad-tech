@@ -26,8 +26,11 @@ from raad.modules.school_erp.api.schemas import (
     RecordIncomeRequest,
     RecordStudentPaymentRequest,
     UpdateFeePlanRequest,
+    VoidLedgerEntryRequest,
+    VoidStudentPaymentRequest,
     _MoneyValidatingModel,
 )
+from raad.modules.platform_finance.api.routers import VoidRequest as PlatformVoidRequest
 
 #: Every request model carrying an amount, with the minimum payload FastAPI would hand it.
 _MONEY_REQUESTS = [
@@ -120,6 +123,31 @@ class MoneyCoercionTests(unittest.TestCase):
         """The validator runs on `"*"`, so it sees every field — it must only rewrite amounts."""
         plan = CreateFeePlanRequest(name="  Monthly  ", amount="10", currency="USD")
         self.assertEqual(plan.name, "  Monthly  ")
+
+
+class VoidReasonSchemaTests(unittest.TestCase):
+    """Every void request — school ledger, legacy student payment, and RAAD's own ledger — must
+    carry a reason. A missing field is a 422 at the edge; a whitespace-only one gets past Pydantic
+    and is refused by the domain (`_require_void_reason`), which the domain tests cover."""
+
+    _VOID_REQUESTS = (VoidLedgerEntryRequest, VoidStudentPaymentRequest, PlatformVoidRequest)
+
+    def test_a_missing_or_empty_reason_is_refused(self) -> None:
+        for model in self._VOID_REQUESTS:
+            for payload in ({}, {"reason": None}, {"reason": ""}):
+                with self.subTest(model=model.__name__, payload=payload):
+                    with self.assertRaises(ValidationError):
+                        model(**payload)
+
+    def test_a_reason_longer_than_the_column_is_refused(self) -> None:
+        for model in self._VOID_REQUESTS:
+            with self.subTest(model=model.__name__), self.assertRaises(ValidationError):
+                model(reason="x" * 256)
+
+    def test_a_real_reason_is_accepted(self) -> None:
+        for model in self._VOID_REQUESTS:
+            with self.subTest(model=model.__name__):
+                self.assertEqual(model(reason="Duplicate entry").reason, "Duplicate entry")
 
 
 if __name__ == "__main__":  # pragma: no cover

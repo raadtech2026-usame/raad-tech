@@ -106,6 +106,8 @@ export interface LedgerEntry {
   reference: string | null;
   vehicleId?: string | null;
   isVoided: boolean;
+  /** Why the entry was voided; null for live entries and for voids recorded before reasons were stored. */
+  voidedReason: string | null;
 }
 
 export interface FinanceSummary {
@@ -218,6 +220,7 @@ interface LedgerWire {
   reference: string | null;
   vehicle_id?: string | null;
   is_voided: boolean;
+  voided_reason: string | null;
 }
 
 function toFeePlan(w: FeePlanWire): FeePlan {
@@ -298,6 +301,7 @@ function toLedgerEntry(w: LedgerWire): LedgerEntry {
     reference: w.reference,
     vehicleId: w.vehicle_id ?? null,
     isVoided: w.is_voided,
+    voidedReason: w.voided_reason ?? null,
   };
 }
 
@@ -634,7 +638,7 @@ export async function archiveCategory(categoryId: string): Promise<FinancialCate
 
 export async function voidStudentPayment(
   paymentId: string,
-  reason: string | null,
+  reason: string,
 ): Promise<StudentPayment> {
   const wire = await apiRequest<StudentPaymentWire>(
     `/school-finance/student-payments/${encodeURIComponent(paymentId)}/void`,
@@ -669,22 +673,22 @@ export async function recordExpense(input: {
 
 export async function voidIncome(
   incomeId: string,
-  reason?: string | null,
+  reason: string,
 ): Promise<LedgerEntry> {
   const wire = await apiRequest<LedgerWire>(
     `/school-finance/income/${encodeURIComponent(incomeId)}/void`,
-    { method: "POST", body: { reason: reason ?? null } },
+    { method: "POST", body: { reason } },
   );
   return toLedgerEntry(wire);
 }
 
 export async function voidExpense(
   expenseId: string,
-  reason?: string | null,
+  reason: string,
 ): Promise<LedgerEntry> {
   const wire = await apiRequest<LedgerWire>(
     `/school-finance/expenses/${encodeURIComponent(expenseId)}/void`,
-    { method: "POST", body: { reason: reason ?? null } },
+    { method: "POST", body: { reason } },
   );
   return toLedgerEntry(wire);
 }

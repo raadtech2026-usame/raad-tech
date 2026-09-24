@@ -109,7 +109,7 @@ class RecordPlatformIncomeRequest(BaseModel):
 
 
 class VoidRequest(BaseModel):
-    reason: str | None = Field(default=None, max_length=255)
+    reason: str = Field(min_length=1, max_length=255)
 
 
 class PlatformExpenseResponse(BaseModel):
@@ -124,6 +124,7 @@ class PlatformExpenseResponse(BaseModel):
     reference: str | None
     attachment_url: str | None
     is_voided: bool
+    voided_reason: str | None
 
 
 class PlatformIncomeResponse(BaseModel):
@@ -137,6 +138,7 @@ class PlatformIncomeResponse(BaseModel):
     source: str | None
     reference: str | None
     is_voided: bool
+    voided_reason: str | None
 
 
 class PlatformPnlResponse(BaseModel):

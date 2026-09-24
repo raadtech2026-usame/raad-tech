@@ -58,6 +58,7 @@ from raad.modules.school_erp.domain.value_objects import (
 
 _MAX_NAME = 160
 _MAX_DESCRIPTION = 500
+_MAX_VOID_REASON = 255  # `voided_reason VARCHAR(255)` on every voidable financial table.
 _ZERO = Decimal("0.00")
 _MIN_DUE_DAY = 1
 _MAX_DUE_DAY = 28  # every month has a 28th — Part 5's "Due Day" needs no month-length handling.
@@ -91,6 +92,18 @@ def _validate_name(name: str, *, field: str = "name") -> None:
 def _validate_description(description: str | None) -> None:
     if description is not None and len(description) > _MAX_DESCRIPTION:
         raise DomainError(f"description must be at most {_MAX_DESCRIPTION} characters")
+
+
+def _require_void_reason(reason: str | None) -> str:
+    """A void removes money from every total, so the record must say why. The UI used to send a
+    fixed "Voided by school" string that explained nothing; the reason is now required here, in
+    the domain, so no caller can skip it."""
+    cleaned = (reason or "").strip()
+    if not cleaned:
+        raise DomainError("A reason is required to void a financial entry")
+    if len(cleaned) > _MAX_VOID_REASON:
+        raise DomainError(f"reason must be at most {_MAX_VOID_REASON} characters")
+    return cleaned
 
 
 def _validate_due_day(due_day: int) -> None:
@@ -751,20 +764,19 @@ class StudentPayment(_AggregateRoot):
         )
         return payment
 
-    def void(
-        self, *, reason: str | None = None, clock: Clock, actor_id: str | None = None
-    ) -> None:
+    def void(self, *, reason: str | None, clock: Clock, actor_id: str | None = None) -> None:
         if self.is_voided:
             return
+        cleaned = _require_void_reason(reason)
         self.is_voided = True
-        self.voided_reason = reason
+        self.voided_reason = cleaned
         self.updated_at = clock.now()
         self._record(
             erp_events.student_payment_voided(
                 payment_id=str(self.id),
                 organization_id=str(self.organization_id),
                 invoice_id=str(self.invoice_id),
-                reason=reason,
+                reason=cleaned,
                 occurred_at=self.updated_at,
                 actor_id=actor_id,
             )
@@ -799,6 +811,7 @@ class Income(_AggregateRoot):
         is_voided: bool,
         created_at: datetime,
         updated_at: datetime,
+        voided_reason: str | None = None,
     ) -> None:
         super().__init__()
         _validate_description(description)
@@ -813,6 +826,8 @@ class Income(_AggregateRoot):
         self.reference = reference
         self.attachment_url = attachment_url
         self.is_voided = is_voided
+        # Nullable: entries voided before reasons were stored have none.
+        self.voided_reason = voided_reason
         self.created_at = created_at
         self.updated_at = updated_at
 
@@ -865,18 +880,18 @@ class Income(_AggregateRoot):
         )
         return income
 
-    def void(
-        self, *, reason: str | None = None, clock: Clock, actor_id: str | None = None
-    ) -> None:
+    def void(self, *, reason: str | None, clock: Clock, actor_id: str | None = None) -> None:
         if self.is_voided:
             return
+        cleaned = _require_void_reason(reason)
         self.is_voided = True
+        self.voided_reason = cleaned
         self.updated_at = clock.now()
         self._record(
             erp_events.income_voided(
                 income_id=str(self.id),
                 organization_id=str(self.organization_id),
-                reason=reason,
+                reason=cleaned,
                 occurred_at=self.updated_at,
                 actor_id=actor_id,
             )
@@ -910,11 +925,13 @@ class Expense(_AggregateRoot):
         is_voided: bool,
         created_at: datetime,
         updated_at: datetime,
+        voided_reason: str | None = None,
     ) -> None:
         super().__init__()
         _validate_description(description)
         if amount.amount <= _ZERO:
             raise DomainError("Expense amount must be greater than zero")
+        self.voided_reason = voided_reason
         self.id = id
         self.organization_id = organization_id
         self.category_id = category_id
@@ -980,18 +997,18 @@ class Expense(_AggregateRoot):
         )
         return expense
 
-    def void(
-        self, *, reason: str | None = None, clock: Clock, actor_id: str | None = None
-    ) -> None:
+    def void(self, *, reason: str | None, clock: Clock, actor_id: str | None = None) -> None:
         if self.is_voided:
             return
+        cleaned = _require_void_reason(reason)
         self.is_voided = True
+        self.voided_reason = cleaned
         self.updated_at = clock.now()
         self._record(
             erp_events.expense_voided(
                 expense_id=str(self.id),
                 organization_id=str(self.organization_id),
-                reason=reason,
+                reason=cleaned,
                 occurred_at=self.updated_at,
                 actor_id=actor_id,
             )

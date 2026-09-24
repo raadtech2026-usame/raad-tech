@@ -944,13 +944,31 @@ class StudentPaymentTests(_Base):
         (invoice,) = await self._generate(plan_id, [STUDENT_A])
         payment = await self._pay(invoice.id, "50.00")
         command = VoidStudentPaymentCommand(
-            payment_id=payment.id, reason=None, actor=self.actor
+            payment_id=payment.id, reason="Recorded against the wrong family", actor=self.actor
         )
         await self.service.void_student_payment(command, uow=self.uow)
         await self.service.void_student_payment(command, uow=self.uow)
 
         self.assertEqual(
             self.uow.student_invoices.by_id[invoice.id].amount_paid, Decimal("0.00")
+        )
+
+    async def test_voiding_without_a_reason_is_refused_and_changes_nothing(self) -> None:
+        plan_id = await self._fee_plan("50.00")
+        (invoice,) = await self._generate(plan_id, [STUDENT_A])
+        payment = await self._pay(invoice.id, "50.00")
+        for blank in (None, "", "   "):
+            with self.subTest(reason=blank):
+                with self.assertRaises(DomainError):
+                    await self.service.void_student_payment(
+                        VoidStudentPaymentCommand(
+                            payment_id=payment.id, reason=blank, actor=self.actor
+                        ),
+                        uow=self.uow,
+                    )
+        self.assertFalse(self.uow.student_payments.by_id[payment.id].is_voided)
+        self.assertEqual(
+            self.uow.student_invoices.by_id[invoice.id].amount_paid, Decimal("50.00")
         )
 
     async def test_paying_an_unknown_invoice_raises_not_found(self) -> None:

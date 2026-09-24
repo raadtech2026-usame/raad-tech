@@ -2073,6 +2073,21 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Finance P0.4 — void reasons are required and stored** (2026-09-25, finance P0 integrity
+  pass; no ADR, no architecture change). Voiding income or an expense removes money from every
+  total and from Profit & Loss, yet `erp_income`, `erp_expenses`, `platform_income` and
+  `platform_expenses` had nowhere to record why. The reason lived only in the event payload, and
+  both finance pages sent a hardcoded "Voided by school"/"Voided by RAAD" that explained nothing.
+  Migration `b3d7e1f94a26` adds a nullable `voided_reason` to all four tables and backfills
+  historical voids from `audit_entries.metadata_json` (every void already wrote its reason
+  there). The domain now refuses a void with no reason (`_require_void_reason`, in both
+  `school_erp` and `platform_finance`, and on the legacy `StudentPayment` too). The request
+  schemas make `reason` required (422 when absent; whitespace-only reaches the domain and is a
+  400). Both pages ask for a real reason in the existing confirm dialog, and show it on the
+  voided row. **API behaviour change:** `POST …/income|expenses/{id}/void` and
+  `POST /school-finance/student-payments/{id}/void` now require `reason`. Live-verified over
+  HTTP on both ledgers; migration upgrade→downgrade→upgrade clean, `alembic check` clean.
+
 - **MDVR recording playback — search, start, control** (2026-09-22, ADR-0044). Operators can now
   watch video the recorder already holds, without RAAD ever storing a frame of it. Three new
   routes, all reusing `video.playback.start` (no new permission, no migration, no schema change):

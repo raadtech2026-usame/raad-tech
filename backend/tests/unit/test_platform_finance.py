@@ -362,6 +362,20 @@ class PlatformFinanceServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(pnl.total_expenses, "0.00")
         self.assertTrue(self.uow.expenses.by_id[expense.id].is_voided)
+        self.assertEqual(self.uow.expenses.by_id[expense.id].voided_reason, "Duplicate entry")
+
+    async def test_voiding_without_a_reason_is_refused_and_keeps_it_in_the_pnl(self) -> None:
+        expense = await self._expense("marketing", "80.00")
+        for blank in (None, "", "   "):
+            with self.subTest(reason=blank), self.assertRaises(DomainError):
+                await self.service.void_expense(
+                    expense_id=expense.id, reason=blank, actor=FOUNDER, uow=self.uow
+                )
+        pnl = await self.service.get_platform_pnl(
+            start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+        )
+        self.assertEqual(pnl.total_expenses, "80.00")
+        self.assertFalse(self.uow.expenses.by_id[expense.id].is_voided)
 
     async def test_voiding_an_unknown_expense_raises_not_found(self) -> None:
         with self.assertRaises(NotFoundError):

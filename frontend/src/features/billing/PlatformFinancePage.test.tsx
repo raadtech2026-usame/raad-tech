@@ -322,6 +322,7 @@ describe("PlatformFinancePage", () => {
       vendor: "Landlord",
       reference: null,
       isVoided: false,
+      voidedReason: null,
     };
     vi.mocked(listPlatformExpenses).mockResolvedValue(pageOf([expense]));
     vi.mocked(voidPlatformExpense).mockResolvedValue({ ...expense, isVoided: true });
@@ -332,11 +333,40 @@ describe("PlatformFinancePage", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent(/expense entry/i);
-    await user.click(within(dialog).getByRole("button", { name: /void entry/i }));
+    const confirm = within(dialog).getByRole("button", { name: /void entry/i });
+    // A void removes money from the P&L, so it cannot be confirmed without saying why.
+    expect(confirm).toBeDisabled();
+    await user.type(within(dialog).getByLabelText(/reason/i), "   ");
+    expect(confirm).toBeDisabled();
+    await user.clear(within(dialog).getByLabelText(/reason/i));
+    await user.type(within(dialog).getByLabelText(/reason/i), "  Rent entered twice  ");
+    expect(confirm).toBeEnabled();
+    await user.click(confirm);
 
     await waitFor(() =>
-      expect(voidPlatformExpense).toHaveBeenCalledWith("exp-1", expect.any(String)),
+      expect(voidPlatformExpense).toHaveBeenCalledWith("exp-1", "Rent entered twice"),
     );
+  });
+
+  it("shows the recorded reason on a voided expense instead of a Void button", async () => {
+    const voided: PlatformExpense = {
+      id: "exp-2",
+      kind: "rent",
+      categoryId: null,
+      amount: "500.00",
+      currency: "USD",
+      occurredOn: "2026-09-01",
+      description: null,
+      vendor: "Landlord",
+      reference: null,
+      isVoided: true,
+      voidedReason: "Rent entered twice",
+    };
+    vi.mocked(listPlatformExpenses).mockResolvedValue(pageOf([voided]));
+    renderPage();
+
+    expect(await screen.findByText("Rent entered twice")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void" })).not.toBeInTheDocument();
   });
 
   it("voids a platform income entry after confirmation", async () => {
@@ -352,6 +382,7 @@ describe("PlatformFinancePage", () => {
       source: "Ministry of Education",
       reference: null,
       isVoided: false,
+      voidedReason: null,
     };
     vi.mocked(listPlatformIncome).mockResolvedValue(pageOf([income]));
     vi.mocked(voidPlatformIncome).mockResolvedValue({ ...income, isVoided: true });
@@ -364,10 +395,11 @@ describe("PlatformFinancePage", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent(/income entry/i);
+    await user.type(within(dialog).getByLabelText(/reason/i), "Grant was withdrawn");
     await user.click(within(dialog).getByRole("button", { name: /void entry/i }));
 
     await waitFor(() =>
-      expect(voidPlatformIncome).toHaveBeenCalledWith("inc-1", expect.any(String)),
+      expect(voidPlatformIncome).toHaveBeenCalledWith("inc-1", "Grant was withdrawn"),
     );
   });
 });

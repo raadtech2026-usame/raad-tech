@@ -224,6 +224,7 @@ class IncomeModel(AuditedTableMixin, Base):
     #: Consequences). Present so adding one later is additive, not a financial-table migration.
     attachment_url: Mapped[str | None] = mapped_column(VARCHAR(500), nullable=True)
     is_voided: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    voided_reason: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
 
     __table_args__ = (
         Index("ix_erp_income__org_occurred", "organization_id", "occurred_on"),
@@ -247,6 +248,7 @@ class ExpenseModel(AuditedTableMixin, Base):
     vehicle_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True, index=True)
     attachment_url: Mapped[str | None] = mapped_column(VARCHAR(500), nullable=True)
     is_voided: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    voided_reason: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
 
     __table_args__ = (
         Index("ix_erp_expenses__org_occurred", "organization_id", "occurred_on"),

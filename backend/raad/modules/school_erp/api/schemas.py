@@ -220,7 +220,7 @@ class RecordStudentPaymentRequest(_MoneyValidatingModel):
 
 
 class VoidStudentPaymentRequest(BaseModel):
-    reason: str | None = Field(default=None, max_length=255)
+    reason: str = Field(min_length=1, max_length=255)
 
 
 class StudentPaymentResponse(BaseModel):
@@ -270,7 +270,9 @@ class RecordExpenseRequest(_MoneyValidatingModel):
 
 
 class VoidLedgerEntryRequest(BaseModel):
-    reason: str | None = Field(default=None, max_length=255)
+    """A void removes money from every total, so a reason is required (P0 finance integrity)."""
+
+    reason: str = Field(min_length=1, max_length=255)
 
 
 class IncomeResponse(BaseModel):
@@ -284,6 +286,7 @@ class IncomeResponse(BaseModel):
     reference: str | None
     attachment_url: str | None
     is_voided: bool
+    voided_reason: str | None
     created_at: datetime
 
 
@@ -299,6 +302,7 @@ class ExpenseResponse(BaseModel):
     vehicle_id: str | None
     attachment_url: str | None
     is_voided: bool
+    voided_reason: str | None
     created_at: datetime
 
 

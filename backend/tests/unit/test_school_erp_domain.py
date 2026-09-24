@@ -262,6 +262,12 @@ class StudentPaymentTests(unittest.TestCase):
         self.assertEqual(payment.voided_reason, "duplicate")
         self.assertEqual(payment.pull_domain_events(), [])
 
+    def test_void_requires_a_reason(self) -> None:
+        payment = self._payment()
+        with self.assertRaises(DomainError):
+            payment.void(reason="  ", clock=CLOCK)
+        self.assertFalse(payment.is_voided)
+
 
 class FeePlanTests(unittest.TestCase):
     def test_rejects_a_discount_larger_than_the_fee(self) -> None:
@@ -316,6 +322,52 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(
             expense.pull_domain_events()[0].payload["vehicle_id"], "bus-1"
         )
+
+    def _entries(self) -> list[Income | Expense]:
+        common = dict(
+            organization_id=ORG,
+            category_id=None,
+            amount=Money(amount=Decimal("80.00"), currency="USD"),
+            occurred_on=date(2026, 9, 1),
+            clock=CLOCK,
+        )
+        return [
+            Income.record(id=IncomeId(ULID_C), **common),
+            Expense.record(id=ExpenseId(ULID_C), **common),
+        ]
+
+    def test_void_requires_a_reason_and_leaves_the_entry_untouched_without_one(self) -> None:
+        for entry in self._entries():
+            entry.pull_domain_events()
+            for blank in (None, "", "   "):
+                with self.subTest(entry=type(entry).__name__, reason=blank):
+                    with self.assertRaises(DomainError):
+                        entry.void(reason=blank, clock=CLOCK)
+                    self.assertFalse(entry.is_voided)
+                    self.assertIsNone(entry.voided_reason)
+            self.assertEqual(entry.pull_domain_events(), [])
+
+    def test_void_stores_the_trimmed_reason_and_puts_it_on_the_event(self) -> None:
+        for entry in self._entries():
+            with self.subTest(entry=type(entry).__name__):
+                entry.pull_domain_events()
+                entry.void(reason="  Duplicate of receipt #4411  ", clock=CLOCK)
+                self.assertTrue(entry.is_voided)
+                self.assertEqual(entry.voided_reason, "Duplicate of receipt #4411")
+                (event,) = entry.pull_domain_events()
+                self.assertEqual(event.payload["reason"], "Duplicate of receipt #4411")
+
+    def test_void_rejects_a_reason_longer_than_the_column(self) -> None:
+        for entry in self._entries():
+            with self.subTest(entry=type(entry).__name__), self.assertRaises(DomainError):
+                entry.void(reason="x" * 256, clock=CLOCK)
+
+    def test_second_void_keeps_the_first_reason(self) -> None:
+        for entry in self._entries():
+            with self.subTest(entry=type(entry).__name__):
+                entry.void(reason="first", clock=CLOCK)
+                entry.void(reason="second", clock=CLOCK)
+                self.assertEqual(entry.voided_reason, "first")
 
     def test_category_kind_is_part_of_its_identity(self) -> None:
         category = FinancialCategory.create(

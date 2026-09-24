@@ -85,6 +85,7 @@ class PlatformExpenseModel(AuditedTableMixin, Base):
     #: Consequences). Present so adding one later is additive.
     attachment_url: Mapped[str | None] = mapped_column(VARCHAR(500), nullable=True)
     is_voided: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    voided_reason: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
 
     __table_args__ = (
         Index("ix_platform_expenses__occurred_kind", "occurred_on", "kind"),
@@ -107,6 +108,7 @@ class PlatformIncomeModel(AuditedTableMixin, Base):
     source: Mapped[str | None] = mapped_column(VARCHAR(160), nullable=True)
     reference: Mapped[str | None] = mapped_column(VARCHAR(120), nullable=True)
     is_voided: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    voided_reason: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
 
     __table_args__ = (
         Index("ix_platform_income__occurred_kind", "occurred_on", "kind"),

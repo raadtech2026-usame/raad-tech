@@ -78,6 +78,7 @@ class PlatformExpenseDTO:
     reference: str | None
     attachment_url: str | None
     is_voided: bool
+    voided_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,7 @@ class PlatformIncomeDTO:
     source: str | None
     reference: str | None
     is_voided: bool
+    voided_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -145,6 +147,7 @@ def _expense_dto(expense: PlatformExpense) -> PlatformExpenseDTO:
         reference=expense.reference,
         attachment_url=expense.attachment_url,
         is_voided=expense.is_voided,
+        voided_reason=expense.voided_reason,
     )
 
 
@@ -160,6 +163,7 @@ def _income_dto(income: PlatformIncome) -> PlatformIncomeDTO:
         source=income.source,
         reference=income.reference,
         is_voided=income.is_voided,
+        voided_reason=income.voided_reason,
     )
 
 
