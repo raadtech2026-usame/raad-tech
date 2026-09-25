@@ -2073,6 +2073,25 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Finance P0.1 + P0.3: SaaS payments are checked against their invoice** (2026-09-25,
+  finance P0 integrity pass; no migration). Neither payment path looked at the invoice.
+  `record_manual_payment` created a second PAID payment for an already-paid invoice.
+  `Invoice.mark_paid` turned a VOID invoice into PAID. `Invoice.void` voided a PAID one. And
+  `initiate_payment` accepted any amount, marking the invoice fully paid while revenue counted
+  the invoice amount. Now `ensure_invoice_payable` (409 CONFLICT if paid, 409 RULE_VIOLATION if
+  void) and `ensure_payment_matches_invoice` (400 if the amount or currency differs, compared
+  via `Decimal(str(...))`) run before any Payment row exists or any provider is charged. They
+  run *after* the idempotency lookup, so a client retrying a successful request still gets its
+  original payment. The two invoice transitions raise `RuleViolationError`. **P0.3:** a signed
+  webhook confirming money for an invoice that was voided, or paid by another payment, while
+  the charge was in flight is acknowledged (200). The payment stays PAID because the money is
+  real, but the invoice and subscription are left untouched and a `PaymentRequiresReview`
+  event (`invoice_void`/`invoice_already_paid`) lands in `audit_entries` for a manual refund.
+  Refusing it would have made the provider retry forever. P0.1 and P0.3 must ship together.
+  Live-verified over HTTP (refusals only; payment and invoice rows unchanged). The P0.3 webhook
+  branch is unit-tested only: a live signed webhook needs a Stripe secret this environment
+  does not have.
+
 - **Finance P0.2: paying a renewal invoice no longer grants an extra free period**
   (2026-09-25, finance P0 integrity pass; no migration, no API change). The lifecycle job
   moves a settled subscription into period N+1 and issues invoice N+1 in the same tick. Paying

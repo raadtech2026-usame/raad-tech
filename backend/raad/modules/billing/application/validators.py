@@ -15,10 +15,22 @@ repositories.py`'s `PaymentRepository`), not a boolean gate that belongs in this
 
 from __future__ import annotations
 
-from raad.core.errors.exceptions import NotFoundError
+from decimal import Decimal
+
+from raad.core.errors.exceptions import (
+    ConflictError,
+    DomainError,
+    NotFoundError,
+    RuleViolationError,
+)
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.domain.entities import Invoice, Plan, Subscription
-from raad.modules.billing.domain.value_objects import InvoiceId, PlanId, SubscriptionId
+from raad.modules.billing.domain.value_objects import (
+    InvoiceId,
+    InvoiceStatus,
+    PlanId,
+    SubscriptionId,
+)
 
 
 async def ensure_plan_exists(uow: BillingUnitOfWork, plan_id: PlanId) -> Plan:
@@ -42,3 +54,32 @@ async def ensure_invoice_exists(uow: BillingUnitOfWork, invoice_id: InvoiceId) -
     if invoice is None:
         raise NotFoundError(f"Invoice {invoice_id} not found.")
     return invoice
+
+
+def ensure_invoice_payable(invoice: Invoice) -> None:
+    """Finance P0.1: a payment may only be taken against an issued, unpaid invoice. Checked
+    before a Payment row is created and before any provider is charged."""
+    if invoice.status == InvoiceStatus.PAID:
+        raise ConflictError(f"Invoice {invoice.number} is already paid.")
+    if invoice.status == InvoiceStatus.VOID:
+        raise RuleViolationError(f"Invoice {invoice.number} is void and cannot be paid.")
+
+
+def ensure_payment_matches_invoice(invoice: Invoice, *, amount: float, currency: str) -> None:
+    """Finance P0.1: invoices carry no partial-payment state, so a successful payment marks the
+    whole invoice paid and revenue counts the invoice amount. A different amount would be
+    recorded as full settlement. `billing.Money` is still float-backed, so the comparison goes
+    through `Decimal(str(...))` rather than float equality."""
+    if currency.upper() != invoice.amount.currency:
+        raise DomainError(
+            f"Payment currency {currency.upper()} does not match invoice currency "
+            f"{invoice.amount.currency}."
+        )
+    if Decimal(str(amount)).quantize(Decimal("0.01")) != Decimal(
+        str(invoice.amount.amount)
+    ).quantize(Decimal("0.01")):
+        raise DomainError(
+            f"Payment amount {Decimal(str(amount)):.2f} {currency.upper()} does not match "
+            f"invoice amount {Decimal(str(invoice.amount.amount)):.2f} "
+            f"{invoice.amount.currency}."
+        )

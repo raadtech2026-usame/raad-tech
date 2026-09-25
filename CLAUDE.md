@@ -888,6 +888,12 @@ Bugs found during implementation that represent a durable rule for future code, 
   commit, including rows that were only read, so stamping all dirty rows would turn every read
   into an UPDATE and a `row_version` bump. `tests/integration/test_unit_of_work_actor_columns.py`
   is the guard.
+- **A payment-provider webhook confirming captured money must be acknowledged even when it
+  cannot be applied.** If the invoice was voided or settled by another payment while the charge
+  was in flight, raising returns a non-2xx and the provider retries indefinitely, while the money
+  is real either way. Keep the payment PAID, leave the invoice and subscription untouched, and
+  record `PaymentRequiresReview` for a manual refund (`_apply_paid_side_effects`, finance P0.3).
+  Every new rule that makes an invoice unpayable needs this branch checked in the same change.
 - **A total that adds `amount` columns must prove it adds one currency.** `SUM(amount)`
   labelled with `MIN(currency)` silently produces a plausible, wrong figure. Every finance
   aggregate has a sibling `currencies_*` query with the *same* filters, and the service refuses

@@ -95,6 +95,8 @@ from raad.modules.billing.application.queries import (
 )
 from raad.modules.billing.application.validators import (
     ensure_invoice_exists,
+    ensure_invoice_payable,
+    ensure_payment_matches_invoice,
     ensure_plan_exists,
     ensure_subscription_exists,
 )
@@ -109,6 +111,7 @@ from raad.modules.billing.domain.value_objects import (
     BillingCycle,
     BillingScope,
     InvoiceId,
+    InvoiceStatus,
     Money,
     OrganizationId,
     PaymentId,
@@ -899,6 +902,13 @@ class BillingApplicationService:
                 return payment_to_dto(existing)
 
             invoice = await ensure_invoice_exists(uow, InvoiceId(command.invoice_id))
+            # Finance P0.1 — refused before a Payment row exists and before any provider is
+            # charged. The idempotency lookup above still runs first, so a client retrying an
+            # already-successful request gets its original payment back, not this refusal.
+            ensure_invoice_payable(invoice)
+            ensure_payment_matches_invoice(
+                invoice, amount=command.amount, currency=command.currency
+            )
 
             payment = Payment.initiate(
                 id=PaymentId(self._id_generator.new_id()),
@@ -975,6 +985,9 @@ class BillingApplicationService:
         """
         async with uow:
             invoice = await ensure_invoice_exists(uow, InvoiceId(command.invoice_id))
+            # Finance P0.1: recording a second payment against a paid invoice created a duplicate
+            # PAID payment, and a void invoice was flipped back to paid.
+            ensure_invoice_payable(invoice)
             payment = Payment.initiate(
                 id=PaymentId(self._id_generator.new_id()),
                 organization_id=invoice.organization_id,
@@ -1013,6 +1026,26 @@ class BillingApplicationService:
         even reach this method) and for committing."""
         payment.mark_paid(provider_ref=provider_ref, clock=self._clock, actor_id=actor_id)
         invoice = await ensure_invoice_exists(uow, payment.invoice_id)
+        if invoice.status in (InvoiceStatus.VOID, InvoiceStatus.PAID):
+            # Finance P0.3. The provider has already taken the money, so the payment stays paid
+            # and the webhook is acknowledged — refusing it would only make the provider retry
+            # forever. But the invoice was voided, or settled by another payment, while this one
+            # was in flight: it must not be flipped back to paid, and the subscription must not
+            # be extended a second time. The audit entry is what Finance refunds from.
+            reason = (
+                "invoice_void" if invoice.status == InvoiceStatus.VOID else "invoice_already_paid"
+            )
+            payment.flag_for_review(reason=reason, clock=self._clock, actor_id=actor_id)
+            logger.warning(
+                "payment_requires_review",
+                extra={
+                    "payment_id": str(payment.id),
+                    "invoice_id": str(invoice.id),
+                    "reason": reason,
+                },
+            )
+            uow.record_events(payment.pull_domain_events())
+            return
         invoice.mark_paid(clock=self._clock, actor_id=actor_id)
         subscription = await ensure_subscription_exists(uow, invoice.subscription_id)
         plan = await ensure_plan_exists(uow, subscription.plan_id)

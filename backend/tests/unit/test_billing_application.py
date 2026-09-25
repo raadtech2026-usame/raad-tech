@@ -23,6 +23,7 @@ from raad.core.errors.exceptions import (
     ConflictError,
     DomainError,
     NotFoundError,
+    RuleViolationError,
 )
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import (
@@ -1232,6 +1233,200 @@ class InvoiceApplicationTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 uow=uow,
             )
+
+
+class PaymentIntegrityTests(unittest.IsolatedAsyncioTestCase):
+    """Finance P0.1 (payment guards) and P0.3 (a confirmed payment for an invoice that changed
+    underneath it). Every refusal must happen before a Payment row exists and before any
+    provider is charged."""
+
+    async def _make_invoice(self, uow) -> str:
+        return await PaymentApplicationTests._make_invoice(self, uow)  # 25.00 USD
+
+    def _initiate(self, invoice_id: str, *, key: str, amount: float = 25.00, currency="USD"):
+        return InitiatePaymentCommand(
+            invoice_id=invoice_id,
+            method="stripe",
+            amount=amount,
+            currency=currency,
+            idempotency_key=key,
+            actor=make_actor(),
+            payment_method_token="pm_card_visa",
+        )
+
+    async def _pay_manually(self, service, uow, invoice_id: str):
+        return await service.record_manual_payment(
+            RecordManualSubscriptionPaymentCommand(invoice_id=invoice_id, actor=make_actor()),
+            uow=uow,
+        )
+
+    async def _void(self, service, uow, invoice_id: str) -> None:
+        await service.void_invoice(
+            VoidInvoiceCommand(invoice_id=invoice_id, actor=make_actor()), uow=uow
+        )
+
+    # ---- P0.1: manual payments ------------------------------------------------------------
+
+    async def test_a_second_manual_payment_on_a_paid_invoice_is_refused(self) -> None:
+        service, uow = make_service(), make_uow()
+        invoice_id = await self._make_invoice(uow)
+        await self._pay_manually(service, uow, invoice_id)
+
+        with self.assertRaises(ConflictError):
+            await self._pay_manually(service, uow, invoice_id)
+        self.assertEqual(len(uow.payments.by_id), 1)
+
+    async def test_a_manual_payment_on_a_void_invoice_is_refused_and_it_stays_void(self) -> None:
+        service, uow = make_service(), make_uow()
+        invoice_id = await self._make_invoice(uow)
+        await self._void(service, uow, invoice_id)
+
+        with self.assertRaises(RuleViolationError):
+            await self._pay_manually(service, uow, invoice_id)
+        self.assertEqual(uow.invoices.by_id[invoice_id].status, InvoiceStatus.VOID)
+        self.assertEqual(uow.payments.by_id, {})
+
+    # ---- P0.1: provider payments ----------------------------------------------------------
+
+    async def test_charging_a_paid_invoice_is_refused_before_the_provider_is_called(
+        self,
+    ) -> None:
+        provider = FakePaymentProvider(result_status="succeeded")
+        service, uow = make_service(provider=provider), make_uow()
+        invoice_id = await self._make_invoice(uow)
+        await self._pay_manually(service, uow, invoice_id)
+
+        with self.assertRaises(ConflictError):
+            await service.initiate_payment(self._initiate(invoice_id, key="k-paid"), uow=uow)
+        self.assertEqual(provider.charge_calls, [])
+        self.assertEqual(len(uow.payments.by_id), 1)  # only the manual one
+
+    async def test_charging_a_void_invoice_is_refused_before_the_provider_is_called(
+        self,
+    ) -> None:
+        provider = FakePaymentProvider(result_status="succeeded")
+        service, uow = make_service(provider=provider), make_uow()
+        invoice_id = await self._make_invoice(uow)
+        await self._void(service, uow, invoice_id)
+
+        with self.assertRaises(RuleViolationError):
+            await service.initiate_payment(self._initiate(invoice_id, key="k-void"), uow=uow)
+        self.assertEqual(provider.charge_calls, [])
+        self.assertEqual(uow.invoices.by_id[invoice_id].status, InvoiceStatus.VOID)
+
+    async def test_an_amount_or_currency_that_does_not_match_the_invoice_is_refused(
+        self,
+    ) -> None:
+        """Before P0.1 a $1.00 charge settled a $25.00 invoice in full, and revenue then
+        reported the full $25.00."""
+        provider = FakePaymentProvider(result_status="succeeded")
+        service, uow = make_service(provider=provider), make_uow()
+        invoice_id = await self._make_invoice(uow)
+
+        for amount, currency in ((1.00, "USD"), (25.01, "USD"), (25.00, "EUR")):
+            with self.subTest(amount=amount, currency=currency):
+                with self.assertRaises(DomainError):
+                    await service.initiate_payment(
+                        self._initiate(
+                            invoice_id,
+                            key=f"k-{amount}-{currency}",
+                            amount=amount,
+                            currency=currency,
+                        ),
+                        uow=uow,
+                    )
+        self.assertEqual(provider.charge_calls, [])
+        self.assertEqual(uow.payments.by_id, {})
+        self.assertEqual(uow.invoices.by_id[invoice_id].status, InvoiceStatus.ISSUED)
+
+    async def test_a_matching_amount_written_differently_is_accepted(self) -> None:
+        provider = FakePaymentProvider(result_status="succeeded")
+        service, uow = make_service(provider=provider), make_uow()
+        invoice_id = await self._make_invoice(uow)
+
+        payment = await service.initiate_payment(
+            self._initiate(invoice_id, key="k-float", amount=25.0, currency="usd"), uow=uow
+        )
+        self.assertEqual(payment.status, "paid")
+
+    async def test_a_retry_of_a_successful_request_still_returns_the_original_payment(
+        self,
+    ) -> None:
+        """The idempotency lookup runs before the new guards, so a client that retries after a
+        success (the invoice is now paid) gets its payment back, not a 409."""
+        provider = FakePaymentProvider(result_status="succeeded")
+        service, uow = make_service(provider=provider), make_uow()
+        invoice_id = await self._make_invoice(uow)
+        first = await service.initiate_payment(self._initiate(invoice_id, key="k-retry"), uow=uow)
+
+        again = await service.initiate_payment(self._initiate(invoice_id, key="k-retry"), uow=uow)
+        self.assertEqual(again.id, first.id)
+        self.assertEqual(len(provider.charge_calls), 1)
+
+    # ---- P0.3: webhook for an invoice that changed while the payment was in flight --------
+
+    async def _processing_payment(self):
+        provider = FakePaymentProvider(result_status="pending")
+        service, uow = make_service(provider=provider), make_uow()
+        invoice_id = await self._make_invoice(uow)
+        payment = await service.initiate_payment(
+            self._initiate(invoice_id, key="k-webhook"), uow=uow
+        )
+        self.assertEqual(payment.status, "processing")
+        return service, uow, invoice_id, payment
+
+    async def _confirm(self, service, uow, payment):
+        return await service.handle_payment_callback(
+            PaymentCallbackCommand(
+                payment_id=payment.id, status="paid", provider_ref="pi_123", actor=make_actor()
+            ),
+            uow=uow,
+        )
+
+    def _review_events(self, uow) -> list:
+        return [e for e in uow.recorded_events if e.event_type == "PaymentRequiresReview"]
+
+    def _period_end(self, uow, invoice_id: str):
+        subscription_id = str(uow.invoices.by_id[invoice_id].subscription_id)
+        return uow.subscriptions.by_id[subscription_id].current_period_end
+
+    async def test_confirmed_money_for_a_voided_invoice_is_kept_and_flagged_not_applied(
+        self,
+    ) -> None:
+        service, uow, invoice_id, payment = await self._processing_payment()
+        await self._void(service, uow, invoice_id)
+        period_before = self._period_end(uow, invoice_id)
+
+        result = await self._confirm(service, uow, payment)  # no exception: webhook acknowledged
+
+        self.assertEqual(result.status, "paid")
+        self.assertEqual(uow.invoices.by_id[invoice_id].status, InvoiceStatus.VOID)
+        self.assertEqual(self._period_end(uow, invoice_id), period_before)
+        (review,) = self._review_events(uow)
+        self.assertEqual(review.payload["reason"], "invoice_void")
+        self.assertEqual(review.payload["invoice_id"], invoice_id)
+
+    async def test_confirmed_money_for_an_invoice_paid_meanwhile_is_flagged_not_reapplied(
+        self,
+    ) -> None:
+        service, uow, invoice_id, payment = await self._processing_payment()
+        await self._pay_manually(service, uow, invoice_id)
+        period_before = self._period_end(uow, invoice_id)
+
+        result = await self._confirm(service, uow, payment)
+
+        self.assertEqual(result.status, "paid")
+        self.assertEqual(uow.invoices.by_id[invoice_id].status, InvoiceStatus.PAID)
+        self.assertEqual(self._period_end(uow, invoice_id), period_before)
+        (review,) = self._review_events(uow)
+        self.assertEqual(review.payload["reason"], "invoice_already_paid")
+
+    async def test_a_replayed_webhook_for_a_flagged_payment_is_not_flagged_twice(self) -> None:
+        service, uow, invoice_id, payment = await self._processing_payment()
+        await self._void(service, uow, invoice_id)
+        await self._confirm(service, uow, payment)
+        await self._confirm(service, uow, payment)
+        self.assertEqual(len(self._review_events(uow)), 1)
 
 
 class PaymentApplicationTests(unittest.IsolatedAsyncioTestCase):

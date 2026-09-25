@@ -14,7 +14,7 @@ from __future__ import annotations
 import unittest
 from datetime import date, datetime, timezone
 
-from raad.core.errors.exceptions import DomainError
+from raad.core.errors.exceptions import DomainError, RuleViolationError
 from raad.core.time.clock import Clock
 from raad.modules.billing.domain.entities import (
     Invoice,
@@ -346,6 +346,28 @@ class InvoiceTests(unittest.TestCase):
         self.assertEqual(invoice.status, InvoiceStatus.VOID)
         events = invoice.pull_domain_events()
         self.assertEqual(events[0].event_type, "InvoiceVoided")
+
+    def test_a_void_invoice_cannot_be_marked_paid(self) -> None:
+        """Finance P0.1: money arriving for a withdrawn invoice is a refund case, never a reason
+        to resurrect the invoice as paid."""
+        invoice = self._make_invoice()
+        invoice.void(clock=CLOCK)
+        invoice.pull_domain_events()
+        with self.assertRaises(RuleViolationError):
+            invoice.mark_paid(clock=CLOCK)
+        self.assertEqual(invoice.status, InvoiceStatus.VOID)
+        self.assertIsNone(invoice.paid_at)
+        self.assertEqual(invoice.pull_domain_events(), [])
+
+    def test_a_paid_invoice_cannot_be_voided(self) -> None:
+        """Finance P0.1: voiding would silently remove collected money from revenue."""
+        invoice = self._make_invoice()
+        invoice.mark_paid(clock=CLOCK)
+        invoice.pull_domain_events()
+        with self.assertRaises(RuleViolationError):
+            invoice.void(clock=CLOCK)
+        self.assertEqual(invoice.status, InvoiceStatus.PAID)
+        self.assertEqual(invoice.pull_domain_events(), [])
 
     def test_invoice_status_enum_has_no_failed_value(self) -> None:
         self.assertNotIn("failed", [status.value for status in InvoiceStatus])

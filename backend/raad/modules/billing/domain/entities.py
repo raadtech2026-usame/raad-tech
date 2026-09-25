@@ -59,7 +59,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from raad.core.errors.exceptions import DomainError
+from raad.core.errors.exceptions import DomainError, RuleViolationError
 from raad.core.events.base import DomainEvent
 from raad.core.time.clock import Clock
 from raad.modules.billing.domain import events as billing_events
@@ -703,6 +703,10 @@ class Invoice(_AggregateRoot):
         same-state no-op."""
         if self.status == InvoiceStatus.PAID:
             return
+        if self.status == InvoiceStatus.VOID:
+            # Finance P0.1: a voided invoice was withdrawn; money arriving for it is a refund
+            # case, never a reason to bring it back to life as paid.
+            raise RuleViolationError(f"Invoice {self.number} is void and cannot be paid.")
         self.status = InvoiceStatus.PAID
         self.paid_at = clock.now()
         self.updated_at = self.paid_at
@@ -720,6 +724,12 @@ class Invoice(_AggregateRoot):
         completeness, same posture as `Subscription.suspend`/`cancel`."""
         if self.status == InvoiceStatus.VOID:
             return
+        if self.status == InvoiceStatus.PAID:
+            # Finance P0.1: voiding would erase collected money from revenue; a paid invoice
+            # needs a credit note or refund instead, neither of which exists yet.
+            raise RuleViolationError(
+                f"Invoice {self.number} is paid and cannot be voided."
+            )
         self.status = InvoiceStatus.VOID
         self.updated_at = clock.now()
         self._record(
@@ -898,6 +908,22 @@ class Payment(_AggregateRoot):
                 invoice_id=str(self.invoice_id),
                 provider_ref=provider_ref,
                 occurred_at=self.confirmed_at,
+                actor_id=actor_id,
+            )
+        )
+
+    def flag_for_review(
+        self, *, reason: str, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """Records that this (paid) payment could not be applied to its invoice — see
+        `billing_events.payment_requires_review`. Changes no state; the audit entry is the point."""
+        self._record(
+            billing_events.payment_requires_review(
+                payment_id=str(self.id),
+                organization_id=str(self.organization_id),
+                invoice_id=str(self.invoice_id),
+                reason=reason,
+                occurred_at=clock.now(),
                 actor_id=actor_id,
             )
         )
