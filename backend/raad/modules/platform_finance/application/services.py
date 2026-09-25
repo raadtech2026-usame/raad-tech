@@ -332,20 +332,25 @@ class PlatformFinanceApplicationService:
     async def get_platform_pnl(
         self, *, start: date, end: date, uow: PlatformFinanceUnitOfWork
     ) -> PlatformPnlDTO:
+        # Every figure here is a plain SUM labelled with one reporting currency, so a row in
+        # any other currency would be added in silently at the wrong value (finance P0.5). That
+        # covers RAAD's own ledger and the subscription invoices `billing` reports alike.
+        subscription_currencies: set[str] = set()
+        if self._subscription_revenue is not None:
+            subscription_currencies = await self._subscription_revenue.currencies_between(
+                start=start, end=end
+            )
         async with uow:
-            # Every figure here is a plain SUM labelled with one reporting currency, so a row in
-            # any other currency would be added in silently at the wrong value (finance P0.5).
-            # Subscription revenue from `billing` is not covered by this check yet.
             ledger_currencies = (
                 await uow.income.currencies_between(start=start, end=end)
             ) | (await uow.expenses.currencies_between(start=start, end=end))
-            foreign = ledger_currencies - {self.DEFAULT_CURRENCY}
+            foreign = (ledger_currencies | subscription_currencies) - {self.DEFAULT_CURRENCY}
             if foreign:
                 raise ConflictError(
-                    "The platform P&L cannot be calculated: RAAD's ledger has entries in "
-                    f"{', '.join(sorted(foreign))} in this window, but its books are kept in "
-                    f"{self.DEFAULT_CURRENCY} and amounts in different currencies cannot be "
-                    "added together."
+                    "The platform P&L cannot be calculated: entries in "
+                    f"{', '.join(sorted(foreign))} fall in this window (RAAD's own ledger or "
+                    f"subscription invoices), but its books are kept in {self.DEFAULT_CURRENCY} "
+                    "and amounts in different currencies cannot be added together."
                 )
             other_income = await uow.income.sum_between(start=start, end=end)
             total_expenses = await uow.expenses.sum_between(start=start, end=end)

@@ -208,9 +208,14 @@ class FakePlatformFinanceUnitOfWork(PlatformFinanceUnitOfWork):
 
 
 class FixedSubscriptionRevenue(SubscriptionRevenuePort):
-    def __init__(self, amount: Decimal) -> None:
+    def __init__(self, amount: Decimal, currencies: set[str] | None = None) -> None:
         self.amount = amount
+        # The currencies of the invoices behind `amount`; USD unless a test says otherwise.
+        self.currencies = {"USD"} if currencies is None else currencies
         self.calls = 0
+
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        return set(self.currencies)
 
     async def collected_between(self, *, start: date, end: date) -> Decimal:
         self.calls += 1
@@ -406,6 +411,43 @@ class PlatformFinanceServiceTests(unittest.IsolatedAsyncioTestCase):
                 start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
             )
         self.assertIn("SOS", str(raised.exception))
+
+    def _service_with_subscription_currencies(self, currencies: set[str]):
+        return PlatformFinanceApplicationService(
+            clock=CLOCK,
+            id_generator=SequentialIdGenerator(),
+            subscription_revenue=FixedSubscriptionRevenue(Decimal("1200.00"), currencies),
+        )
+
+    async def test_subscription_revenue_in_the_ledger_currency_is_accepted(self) -> None:
+        await self._expense("rent", "80.00")
+        pnl = await self._service_with_subscription_currencies({"USD"}).get_platform_pnl(
+            start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+        )
+        self.assertEqual(pnl.subscription_revenue, "1200.00")
+        self.assertEqual(pnl.total_revenue, "1200.00")
+        self.assertEqual(pnl.net_profit, "1120.00")
+        self.assertEqual(pnl.currency, "USD")
+
+    async def test_subscription_invoices_in_another_currency_block_the_pnl(self) -> None:
+        """Finance P0.5 completion: before this, a SOS subscription invoice was summed into
+        subscription_revenue and labelled USD, exactly like the ledger case above."""
+        for currencies in ({"USD", "SOS"}, {"SOS"}):
+            with self.subTest(currencies=sorted(currencies)):
+                with self.assertRaises(ConflictError) as raised:
+                    await self._service_with_subscription_currencies(
+                        currencies
+                    ).get_platform_pnl(
+                        start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+                    )
+                self.assertIn("SOS", str(raised.exception))
+                self.assertIn("subscription invoices", str(raised.exception))
+
+    async def test_a_window_with_no_subscription_invoices_is_not_blocked(self) -> None:
+        pnl = await self._service_with_subscription_currencies(set()).get_platform_pnl(
+            start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+        )
+        self.assertEqual(pnl.currency, "USD")
 
     async def test_a_foreign_entry_outside_the_window_or_voided_does_not_block_the_pnl(
         self,

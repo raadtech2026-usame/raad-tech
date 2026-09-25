@@ -276,6 +276,14 @@ class InvoiceRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def revenue_currencies_between(self, *, start: datetime, end: datetime) -> set[str]:
+        """The distinct currencies among exactly the invoices the three Platform P&L figures
+        add up — `sum_paid_amount_between`, `sum_issued_amount_between` (both over
+        `[start, end)`) and `sum_outstanding_amount(as_of=end)` — so the P&L can refuse a total
+        that would mix currencies (finance P0.5)."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def sum_paid_amount_between(self, *, start: datetime, end: datetime) -> float:
         """ADR-0020: "Revenue" KPI — sums `invoices.amount` for `status=paid` rows whose
         `paid_at` falls in `[start, end)`. Deliberately currency-naive (a plain sum across

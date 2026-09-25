@@ -383,6 +383,28 @@ class InMemoryInvoiceRepository(InvoiceRepository):
         ]
         return max(ends) if ends else None
 
+    async def revenue_currencies_between(self, *, start, end) -> set[str]:
+        """Mirrors the real query: the three revenue sums' own filters, OR-ed."""
+        return {
+            invoice.amount.currency
+            for invoice in self.by_id.values()
+            if (
+                invoice.status.value == "paid"
+                and invoice.paid_at is not None
+                and start <= invoice.paid_at < end
+            )
+            or (
+                invoice.status.value != "void"
+                and invoice.issued_at is not None
+                and start <= invoice.issued_at < end
+            )
+            or (
+                invoice.status.value == "issued"
+                and invoice.issued_at is not None
+                and invoice.issued_at <= end
+            )
+        }
+
     async def sum_paid_amount_between(self, *, start, end) -> float:
         return sum(
             invoice.amount.amount

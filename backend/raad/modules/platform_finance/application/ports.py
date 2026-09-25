@@ -45,6 +45,13 @@ class SubscriptionRevenuePort(ABC):
         """Amount still owed as of `as_of` — a point-in-time balance, not a period sum."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        """The currencies of exactly the invoices behind the three figures above for this
+        window (receivables as of `end`), so the P&L can refuse to add a foreign-currency
+        subscription amount into RAAD's single-currency books (finance P0.5)."""
+        raise NotImplementedError
+
 
 class PlatformFinanceUnitOfWork(UnitOfWork):
     categories: PlatformCategoryRepository

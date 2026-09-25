@@ -2127,9 +2127,12 @@ Reverse-chronological (most recent first):
   overview, Profit & Loss and per-family summary raise `ConflictError` (409, naming the
   currencies) when those rows span more than one currency. The school P&L now labels itself
   with the window's real currency instead of an all-time `MIN`. RAAD's platform P&L refuses
-  ledger rows in anything other than its `USD` reporting currency. **Not yet covered:** the
-  subscription-revenue side of the platform P&L (a `billing` query). It ships with P0.1–P0.3,
-  which touch the same billing test fakes. Live-verified over HTTP (409 with a real USD+SOS
+  ledger rows in anything other than its `USD` reporting currency. The subscription-revenue
+  side of the platform P&L was completed in a follow-up commit:
+  `SubscriptionRevenuePort.currencies_between` reads
+  `InvoiceRepository.revenue_currencies_between`, which ORs exactly the filters of the
+  collected/invoiced/receivables sums, and any non-`USD` subscription invoice in the window now
+  gets the same 409. Live-verified over HTTP (409 with a real USD+SOS
   mix; single-currency windows unaffected; recovery after void). **Before deploying**, run
   the production read-only check for organizations that already mix currencies: their finance
   pages would start returning 409.
