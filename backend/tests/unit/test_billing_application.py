@@ -374,6 +374,14 @@ class InMemoryInvoiceRepository(InvoiceRepository):
             for i in self.by_id.values()
         )
 
+    async def latest_paid_period_end(self, subscription_id: SubscriptionId):
+        ends = [
+            i.period_end
+            for i in self.by_id.values()
+            if str(i.subscription_id) == str(subscription_id) and i.status.value == "paid"
+        ]
+        return max(ends) if ends else None
+
     async def sum_paid_amount_between(self, *, start, end) -> float:
         return sum(
             invoice.amount.amount

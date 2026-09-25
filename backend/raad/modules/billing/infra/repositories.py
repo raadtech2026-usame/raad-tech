@@ -471,6 +471,15 @@ class SqlAlchemyInvoiceRepository(
         result = await self._session.execute(statement)
         return result.scalars().first() is not None
 
+    async def latest_paid_period_end(self, subscription_id: SubscriptionId) -> date | None:
+        """Addressed by a resolved subscription id, like `exists_for_period` above."""
+        statement = select(func.max(InvoiceModel.period_end)).where(
+            InvoiceModel.subscription_id == str(subscription_id),
+            InvoiceModel.deleted_at.is_(None),
+            InvoiceModel.status == "paid",
+        )
+        return (await self._session.execute(statement)).scalar()
+
     async def sum_paid_amount_between(self, *, start: datetime, end: datetime) -> float:
         """ADR-0020: "Revenue" KPI — see the domain interface's own docstring for the
         currency-naive scope call."""

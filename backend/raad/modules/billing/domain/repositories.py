@@ -266,6 +266,16 @@ class InvoiceRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def latest_paid_period_end(self, subscription_id: SubscriptionId) -> date | None:
+        """The furthest `period_end` of any *paid* invoice for this subscription, or `None`.
+
+        What a payment has actually bought. `activate_subscription` compares it with the
+        subscription's current period so that activating after a manual payment never extends
+        the subscription past the period that payment covered (finance P0.2).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def sum_paid_amount_between(self, *, start: datetime, end: datetime) -> float:
         """ADR-0020: "Revenue" KPI — sums `invoices.amount` for `status=paid` rows whose
         `paid_at` falls in `[start, end)`. Deliberately currency-naive (a plain sum across

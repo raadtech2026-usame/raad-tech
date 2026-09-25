@@ -2073,6 +2073,21 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Finance P0.2: paying a renewal invoice no longer grants an extra free period**
+  (2026-09-25, finance P0 integrity pass; no migration, no API change). The lifecycle job
+  moves a settled subscription into period N+1 and issues invoice N+1 in the same tick. Paying
+  that invoice then extended again from `current_period_end`, to N+2. That happened on the
+  card path (`_apply_paid_side_effects`) and on the manual path (`activate_subscription`
+  after `record_manual_payment`). Confirmed test-first: both new regression tests failed on
+  the old code with the period end one full cycle too far (2026-08-18 → 2026-09-17). The fix
+  (`_period_after_payment`) keeps the dates when the subscription already reaches the end of
+  what was paid for (the invoice's own `period_end`; for Activate, the new
+  `InvoiceRepository.latest_paid_period_end`) and only restores status. First activation
+  and every other case keep the original arithmetic. A late payment of a past-due renewal now
+  restores access on the paid period, and the next lifecycle tick bills N+2 normally. Existing
+  subscriptions that already received a free period are not changed. Finding them is
+  pre-flight check Q1.
+
 - **Finance P0.6: `created_by`/`updated_by` are finally written** (2026-09-25, finance P0
   integrity pass; platform-wide, no migration). The columns existed on every audited table
   (`AuditActorMixin`) and nothing ever set them, so "who created or last changed this row" was

@@ -864,6 +864,28 @@ class InvoicePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.total, 3)
         self.assertEqual(len(page.data), 2)
 
+    async def test_latest_paid_period_end_ignores_unpaid_invoices(self) -> None:
+        """Finance P0.2: what a payment has actually bought — the furthest *paid* period end."""
+        plan_id = await self._seed_plan()
+        subscription_id = await self._seed_subscription(plan_id)
+
+        async with self._new_uow() as uow:
+            self.assertIsNone(await uow.invoices.latest_paid_period_end(subscription_id))
+
+        july = await self._seed_invoice(subscription_id)
+        await self._seed_invoice(
+            subscription_id, period_start=date(2026, 8, 1), period_end=date(2026, 8, 31)
+        )
+        async with self._new_uow() as uow:
+            loaded = await uow.invoices.get(july.id)
+            loaded.mark_paid(clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            latest = await uow.invoices.latest_paid_period_end(subscription_id)
+        self.assertEqual(latest, date(2026, 7, 31))
+
     async def test_list_page_filters_by_status(self) -> None:
         plan_id = await self._seed_plan()
         subscription_id = await self._seed_subscription(plan_id)

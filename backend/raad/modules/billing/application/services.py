@@ -134,6 +134,34 @@ def _advance_period(start: datetime, cycle: BillingCycle) -> datetime:
     return start + timedelta(days=_BILLING_CYCLE_DAYS[cycle])
 
 
+def _period_after_payment(
+    subscription: Subscription,
+    cycle: BillingCycle,
+    *,
+    paid_through: date | None,
+    now: datetime,
+) -> tuple[datetime, datetime]:
+    """The billing period a subscription should be on once a payment is applied.
+
+    `advance_subscription_lifecycle` moves a settled subscription into period N+1 *and* issues
+    invoice N+1 in the same tick. Extending from `current_period_end` again when that invoice is
+    paid handed the organization period N+2 for free (finance P0.2). So when the subscription
+    already reaches the end of what was paid for, the dates stay as they are and only the
+    status is restored. Every other case — first activation, or a payment that covers a period
+    beyond the current one — keeps the original arithmetic unchanged.
+    """
+    current_end = subscription.current_period_end
+    if (
+        current_end is not None
+        and paid_through is not None
+        and _to_naive(current_end).date() >= paid_through
+    ):
+        start = subscription.current_period_start or current_end
+        return start, current_end
+    start = current_end or now
+    return start, _advance_period(start, cycle)
+
+
 logger = get_logger(__name__)
 
 
@@ -477,8 +505,12 @@ class BillingApplicationService:
                     "record the payment first."
                 )
             plan = await ensure_plan_exists(uow, subscription.plan_id)
-            period_start = subscription.current_period_end or self._clock.now()
-            period_end = _advance_period(period_start, plan.billing_cycle)
+            period_start, period_end = _period_after_payment(
+                subscription,
+                plan.billing_cycle,
+                paid_through=await uow.invoices.latest_paid_period_end(subscription.id),
+                now=self._clock.now(),
+            )
             subscription.renew(
                 period_start=period_start,
                 period_end=period_end,
@@ -984,8 +1016,12 @@ class BillingApplicationService:
         invoice.mark_paid(clock=self._clock, actor_id=actor_id)
         subscription = await ensure_subscription_exists(uow, invoice.subscription_id)
         plan = await ensure_plan_exists(uow, subscription.plan_id)
-        period_start = subscription.current_period_end or self._clock.now()
-        period_end = _advance_period(period_start, plan.billing_cycle)
+        period_start, period_end = _period_after_payment(
+            subscription,
+            plan.billing_cycle,
+            paid_through=invoice.period_end,
+            now=self._clock.now(),
+        )
         subscription.renew(
             period_start=period_start, period_end=period_end, clock=self._clock, actor_id=actor_id
         )

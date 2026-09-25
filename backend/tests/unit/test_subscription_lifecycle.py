@@ -37,8 +37,12 @@ from raad.interfaces.http.subscription_guard import (
     is_organization_access_allowed,
 )
 from raad.modules.billing.application.commands import (
+    ActivateSubscriptionCommand,
     ExtendGracePeriodCommand,
+    InitiatePaymentCommand,
+    OpenOrganizationSubscriptionCommand,
     ReactivateSubscriptionCommand,
+    RecordManualSubscriptionPaymentCommand,
 )
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.billing.domain.entities import Invoice, Plan, Subscription
@@ -55,6 +59,7 @@ from raad.modules.billing.domain.value_objects import (
 
 from tests.unit.test_billing_application import (
     CLOCK,
+    FakePaymentProvider,
     FixedClock,
     SequentialIdGenerator,
     make_uow,
@@ -585,6 +590,154 @@ class AdvanceSubscriptionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(current)
         self.assertEqual(current.status, "expired")
         self.assertIsNone(active)
+
+
+# =============================================================================================
+# Paying the renewal invoice must not extend the subscription a second time (finance P0.2)
+# =============================================================================================
+
+
+class PaymentAfterLifecycleRenewalTests(unittest.IsolatedAsyncioTestCase):
+    """The lifecycle job renews a settled subscription into period N+1 *and* issues invoice
+    N+1 in the same tick. Paying that invoice must leave the subscription on period N+1: the
+    organization paid for one period, so it must receive exactly one.
+
+    Both payment paths are covered because both used to extend from `current_period_end`,
+    which the lifecycle job had already moved to the end of N+1 — the card path through
+    `_apply_paid_side_effects`, the manual path through `activate_subscription`.
+    """
+
+    async def _renew_through_the_lifecycle(self, service, uow):
+        subscription = _subscription(period_end=CLOCK.now() - timedelta(days=1))
+        _seed(uow, subscription, with_unpaid_invoice=False)
+        counts = await service.advance_subscription_lifecycle(grace_period_days=7, uow=uow)
+        self.assertEqual(counts["renewed"], 1)
+        (renewal_invoice,) = await uow.invoices.list_all()
+        # Sanity: the lifecycle already put the subscription on exactly the invoiced period.
+        self.assertEqual(subscription.current_period_end.date(), renewal_invoice.period_end)
+        return subscription, renewal_invoice, subscription.current_period_end
+
+    async def test_card_payment_of_the_renewal_invoice_does_not_add_a_free_period(self) -> None:
+        uow = make_uow()
+        service = BillingApplicationService(
+            clock=CLOCK,
+            id_generator=SequentialIdGenerator(),
+            payment_provider=FakePaymentProvider(result_status="succeeded"),
+        )
+        subscription, invoice, renewed_end = await self._renew_through_the_lifecycle(
+            service, uow
+        )
+
+        await service.initiate_payment(
+            InitiatePaymentCommand(
+                invoice_id=str(invoice.id),
+                method="stripe",
+                amount=invoice.amount.amount,
+                currency=invoice.amount.currency,
+                idempotency_key="p0-2-card-renewal",
+                actor=_principal(Role.FOUNDER, org_id=None),
+                payment_method_token="pm_card_visa",
+            ),
+            uow=uow,
+        )
+
+        self.assertEqual((await uow.invoices.get(invoice.id)).status.value, "paid")
+        self.assertEqual(subscription.current_period_end, renewed_end)
+        self.assertEqual(subscription.status, SubscriptionStatus.ACTIVE)
+
+    async def test_manual_payment_then_activate_does_not_add_a_free_period(self) -> None:
+        uow = make_uow()
+        service = _service()
+        subscription, invoice, renewed_end = await self._renew_through_the_lifecycle(
+            service, uow
+        )
+        founder = _principal(Role.FOUNDER, org_id=None)
+
+        await service.record_manual_payment(
+            RecordManualSubscriptionPaymentCommand(invoice_id=str(invoice.id), actor=founder),
+            uow=uow,
+        )
+        await service.activate_subscription(
+            ActivateSubscriptionCommand(subscription_id=str(subscription.id), actor=founder),
+            uow=uow,
+        )
+
+        self.assertEqual(subscription.current_period_end, renewed_end)
+        self.assertEqual(subscription.status, SubscriptionStatus.ACTIVE)
+
+    async def test_a_late_payment_restores_access_and_the_next_tick_bills_the_next_period(
+        self,
+    ) -> None:
+        """Past due, then paid: access comes back on the period that was paid for, and the
+        following period is reached the normal way — renewed *with* its own invoice."""
+        uow = make_uow()
+        subscription, invoice, renewed_end = await self._renew_through_the_lifecycle(
+            _service(), uow
+        )
+        later_clock = FixedClock(renewed_end + timedelta(days=1))
+        later = BillingApplicationService(
+            clock=later_clock,
+            id_generator=SequentialIdGenerator(),
+            payment_provider=FakePaymentProvider(result_status="succeeded"),
+        )
+        await later.advance_subscription_lifecycle(grace_period_days=7, uow=uow)
+        self.assertEqual(subscription.status, SubscriptionStatus.PAST_DUE)
+
+        await later.initiate_payment(
+            InitiatePaymentCommand(
+                invoice_id=str(invoice.id),
+                method="stripe",
+                amount=invoice.amount.amount,
+                currency=invoice.amount.currency,
+                idempotency_key="p0-2-late-payment",
+                actor=_principal(Role.FOUNDER, org_id=None),
+                payment_method_token="pm_card_visa",
+            ),
+            uow=uow,
+        )
+        self.assertEqual(subscription.status, SubscriptionStatus.ACTIVE)
+        self.assertIsNone(subscription.grace_period_ends_at)
+        self.assertEqual(subscription.current_period_end, renewed_end)
+
+        counts = await later.advance_subscription_lifecycle(grace_period_days=7, uow=uow)
+        self.assertEqual(counts["renewed"], 1)
+        invoices = await uow.invoices.list_all()
+        self.assertEqual(len(invoices), 2)
+        self.assertEqual(subscription.current_period_end, renewed_end + timedelta(days=30))
+
+    async def test_the_first_payment_of_a_new_subscription_still_opens_its_first_period(
+        self,
+    ) -> None:
+        """The case the original arithmetic was written for — no period yet — is unchanged."""
+        uow = make_uow()
+        uow.plans.add(_plan())
+        service = BillingApplicationService(
+            clock=CLOCK,
+            id_generator=SequentialIdGenerator(),
+            payment_provider=FakePaymentProvider(result_status="succeeded"),
+        )
+        founder = _principal(Role.FOUNDER, org_id=None)
+        invoice = await service.open_organization_subscription(
+            OpenOrganizationSubscriptionCommand(
+                organization_id=ORG_A, plan_id=PLAN_ID, actor=founder
+            ),
+            uow=uow,
+        )
+        await service.initiate_payment(
+            InitiatePaymentCommand(
+                invoice_id=invoice.id,
+                method="stripe",
+                amount=100.0,
+                currency="USD",
+                idempotency_key="p0-2-first-payment",
+                actor=founder,
+                payment_method_token="pm_card_visa",
+            ),
+            uow=uow,
+        )
+        subscription = await uow.subscriptions.get(SubscriptionId(invoice.subscription_id))
+        self.assertEqual(subscription.status, SubscriptionStatus.ACTIVE)
+        self.assertEqual(subscription.current_period_end, CLOCK.now() + timedelta(days=30))
 
 
 # =============================================================================================
