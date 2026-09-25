@@ -42,7 +42,9 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
-    "sqlalchemy>=2.0",
+    # `[asyncio]` pulls in greenlet, which the async engine needs: SQLAlchemy 2.1 stopped
+    # installing it by default. `<2.1` keeps the minor version every test has run against.
+    "sqlalchemy[asyncio]>=2.0,<2.1",
     "alembic>=1.13",
     "asyncpg>=0.29",
     "redis>=5.0",
