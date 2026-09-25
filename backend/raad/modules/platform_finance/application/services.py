@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from raad.core.errors.exceptions import DomainError, NotFoundError
+from raad.core.errors.exceptions import ConflictError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.tenancy.principal import Principal
 from raad.core.time.clock import Clock
@@ -78,6 +78,7 @@ class PlatformExpenseDTO:
     reference: str | None
     attachment_url: str | None
     is_voided: bool
+    voided_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,7 @@ class PlatformIncomeDTO:
     source: str | None
     reference: str | None
     is_voided: bool
+    voided_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -145,6 +147,7 @@ def _expense_dto(expense: PlatformExpense) -> PlatformExpenseDTO:
         reference=expense.reference,
         attachment_url=expense.attachment_url,
         is_voided=expense.is_voided,
+        voided_reason=expense.voided_reason,
     )
 
 
@@ -160,6 +163,7 @@ def _income_dto(income: PlatformIncome) -> PlatformIncomeDTO:
         source=income.source,
         reference=income.reference,
         is_voided=income.is_voided,
+        voided_reason=income.voided_reason,
     )
 
 
@@ -328,7 +332,26 @@ class PlatformFinanceApplicationService:
     async def get_platform_pnl(
         self, *, start: date, end: date, uow: PlatformFinanceUnitOfWork
     ) -> PlatformPnlDTO:
+        # Every figure here is a plain SUM labelled with one reporting currency, so a row in
+        # any other currency would be added in silently at the wrong value (finance P0.5). That
+        # covers RAAD's own ledger and the subscription invoices `billing` reports alike.
+        subscription_currencies: set[str] = set()
+        if self._subscription_revenue is not None:
+            subscription_currencies = await self._subscription_revenue.currencies_between(
+                start=start, end=end
+            )
         async with uow:
+            ledger_currencies = (
+                await uow.income.currencies_between(start=start, end=end)
+            ) | (await uow.expenses.currencies_between(start=start, end=end))
+            foreign = (ledger_currencies | subscription_currencies) - {self.DEFAULT_CURRENCY}
+            if foreign:
+                raise ConflictError(
+                    "The platform P&L cannot be calculated: entries in "
+                    f"{', '.join(sorted(foreign))} fall in this window (RAAD's own ledger or "
+                    f"subscription invoices), but its books are kept in {self.DEFAULT_CURRENCY} "
+                    "and amounts in different currencies cannot be added together."
+                )
             other_income = await uow.income.sum_between(start=start, end=end)
             total_expenses = await uow.expenses.sum_between(start=start, end=end)
             expenses_by_kind = await uow.expenses.sum_by_kind_between(start=start, end=end)

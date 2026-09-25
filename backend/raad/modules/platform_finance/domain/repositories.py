@@ -63,6 +63,12 @@ class PlatformExpenseRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        """The distinct currencies among exactly the rows `sum_between` adds up — the P&L checks
+        them before presenting a total (finance P0.5)."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def sum_by_kind_between(self, *, start: date, end: date) -> dict[str, Decimal]:
         """Cost per operating heading — what makes "where does the money go" answerable."""
         raise NotImplementedError
@@ -90,6 +96,12 @@ class PlatformIncomeRepository(ABC):
 
     @abstractmethod
     async def sum_between(self, *, start: date, end: date) -> Decimal:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        """The distinct currencies among exactly the rows `sum_between` adds up — the P&L checks
+        them before presenting a total (finance P0.5)."""
         raise NotImplementedError
 
     @abstractmethod

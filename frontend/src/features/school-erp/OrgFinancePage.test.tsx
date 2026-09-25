@@ -555,6 +555,7 @@ describe("OrgFinancePage", () => {
     reference: null,
     vehicleId: "bus-1",
     isVoided: false,
+    voidedReason: null,
   };
 
   it("voids an expense entry after confirmation", async () => {
@@ -573,11 +574,30 @@ describe("OrgFinancePage", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent(/expense entry/i);
-    await user.click(within(dialog).getByRole("button", { name: /void entry/i }));
+    const confirm = within(dialog).getByRole("button", { name: /void entry/i });
+    // A void removes money from Profit & Loss, so it cannot be confirmed without saying why.
+    expect(confirm).toBeDisabled();
+    await user.type(within(dialog).getByLabelText(/reason/i), "  Fuel receipt entered twice ");
+    expect(confirm).toBeEnabled();
+    await user.click(confirm);
 
     await waitFor(() =>
-      expect(voidExpense).toHaveBeenCalledWith("exp-1", expect.any(String)),
+      expect(voidExpense).toHaveBeenCalledWith("exp-1", "Fuel receipt entered twice"),
     );
+  });
+
+  it("shows the recorded reason under a voided entry", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listExpenses).mockResolvedValue({
+      data: [{ ...EXPENSE_ENTRY, isVoided: true, voidedReason: "Fuel receipt entered twice" }],
+      page: { total: 1, page: 1, pageSize: 25 },
+    });
+    renderPage();
+    await screen.findByText("2026-09-PARENT1");
+
+    await user.click(screen.getByRole("tab", { name: "Expenses" }));
+    expect(await screen.findByText("Fuel receipt entered twice")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Void" })).not.toBeInTheDocument();
   });
 
   it("voids an income entry after confirmation", async () => {
@@ -597,10 +617,11 @@ describe("OrgFinancePage", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent(/income entry/i);
+    await user.type(within(dialog).getByLabelText(/reason/i), "Donation was returned");
     await user.click(within(dialog).getByRole("button", { name: /void entry/i }));
 
     await waitFor(() =>
-      expect(voidIncome).toHaveBeenCalledWith("inc-1", expect.any(String)),
+      expect(voidIncome).toHaveBeenCalledWith("inc-1", "Donation was returned"),
     );
   });
 

@@ -864,6 +864,89 @@ class InvoicePaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.total, 3)
         self.assertEqual(len(page.data), 2)
 
+    async def test_revenue_currencies_cover_exactly_the_three_pnl_figures(self) -> None:
+        """Finance P0.5: the currency check must see exactly the invoices the Platform P&L's
+        collected / invoiced / receivables sums see. Dates sit in 2098-2099 so the local dev
+        invoices cannot land in the window; each case gets its own currency so the assertion
+        names which filter included or excluded it. Real dev data can still appear through the
+        receivables branch (every still-issued invoice as of `end`), so this checks inclusion
+        and exclusion rather than equality."""
+
+        class _At:
+            def __init__(self, moment: datetime) -> None:
+                self._moment = moment
+
+            def now(self) -> datetime:
+                return self._moment
+
+        plan_id = await self._seed_plan()
+        subscription_id = await self._seed_subscription(plan_id)
+        in_window = _At(datetime(2099, 3, 10, 12, 0))
+        before_window = _At(datetime(2098, 6, 1, 12, 0))
+
+        async def issue(currency: str, clock) -> Invoice:
+            async with self._new_uow() as uow:
+                invoice = Invoice.issue(
+                    id=InvoiceId(self.id_generator.new_id()),
+                    organization_id=OrganizationId(self.id_generator.new_id()),
+                    subscription_id=subscription_id,
+                    amount=Money(10.0, currency),
+                    period_start=date(2099, 3, 1),
+                    period_end=date(2099, 3, 31),
+                    due_at=None,
+                    clock=clock,
+                )
+                uow.invoices.add(invoice)
+                uow.record_events(invoice.pull_domain_events())
+                await uow.commit()
+            self._created_invoice_ids.append(str(invoice.id))
+            return invoice
+
+        async def transition(invoice: Invoice, action: str, clock) -> None:
+            async with self._new_uow() as uow:
+                loaded = await uow.invoices.get(invoice.id)
+                getattr(loaded, action)(clock=clock)
+                uow.record_events(loaded.pull_domain_events())
+                await uow.commit()
+
+        await transition(await issue("EUR", before_window), "mark_paid", in_window)  # collected
+        await issue("GBP", in_window)  # invoiced in window (and still receivable)
+        await issue("KES", before_window)  # receivable as of the window's end
+        await transition(await issue("JPY", in_window), "void", in_window)  # void: excluded
+        await transition(
+            await issue("CHF", before_window), "mark_paid", before_window
+        )  # paid and issued outside the window: excluded
+
+        async with self._new_uow() as uow:
+            currencies = await uow.invoices.revenue_currencies_between(
+                start=datetime(2099, 3, 1), end=datetime(2099, 3, 31, 23, 59, 59)
+            )
+
+        self.assertTrue({"EUR", "GBP", "KES"} <= currencies, currencies)
+        self.assertFalse({"JPY", "CHF"} & currencies, currencies)
+
+    async def test_latest_paid_period_end_ignores_unpaid_invoices(self) -> None:
+        """Finance P0.2: what a payment has actually bought — the furthest *paid* period end."""
+        plan_id = await self._seed_plan()
+        subscription_id = await self._seed_subscription(plan_id)
+
+        async with self._new_uow() as uow:
+            self.assertIsNone(await uow.invoices.latest_paid_period_end(subscription_id))
+
+        july = await self._seed_invoice(subscription_id)
+        await self._seed_invoice(
+            subscription_id, period_start=date(2026, 8, 1), period_end=date(2026, 8, 31)
+        )
+        async with self._new_uow() as uow:
+            loaded = await uow.invoices.get(july.id)
+            loaded.mark_paid(clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._new_uow() as uow:
+            latest = await uow.invoices.latest_paid_period_end(subscription_id)
+        self.assertEqual(latest, date(2026, 7, 31))
+
     async def test_list_page_filters_by_status(self) -> None:
         plan_id = await self._seed_plan()
         subscription_id = await self._seed_subscription(plan_id)

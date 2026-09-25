@@ -24,6 +24,8 @@ import {
 import { Button } from "../../shared/components/Button/Button";
 import { Card, CardHeader, CardBody } from "../../shared/components/Card/Card";
 import { ConfirmDialog } from "../../shared/components/ConfirmDialog/ConfirmDialog";
+import { FormField } from "../../shared/components/FormField/FormField";
+import { Input } from "../../shared/components/Input/Input";
 import { PageSection } from "../../shared/components/PageSection/PageSection";
 import { StatCard } from "../../shared/components/StatCard/StatCard";
 import { Badge } from "../../shared/components/Badge/Badge";
@@ -186,6 +188,7 @@ export function PlatformFinancePage() {
     entry: PlatformExpense | PlatformIncome;
     kind: "income" | "expense";
   } | null>(null);
+  const [voidReason, setVoidReason] = useState("");
 
   const stats = useQuery<PlatformStats>({
     queryKey: ["platform-analytics-stats"],
@@ -239,17 +242,19 @@ export function PlatformFinancePage() {
     mutationFn: async (target: {
       entry: PlatformExpense | PlatformIncome;
       kind: "income" | "expense";
+      reason: string;
     }): Promise<void> => {
       if (target.kind === "income") {
-        await voidPlatformIncome(target.entry.id, "Voided by RAAD");
+        await voidPlatformIncome(target.entry.id, target.reason);
       } else {
-        await voidPlatformExpense(target.entry.id, "Voided by RAAD");
+        await voidPlatformExpense(target.entry.id, target.reason);
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["platform-finance"] });
       toast.success("Entry voided", "It stays on record as voided and no longer counts toward the platform P&L.");
       setVoidingEntry(null);
+      setVoidReason("");
     },
     onError: (error) => {
       toast.error(
@@ -831,8 +836,10 @@ export function PlatformFinancePage() {
                             <td className={styles.alignRight}>
                               {formatAmount(Number(expense.amount), expense.currency)}
                             </td>
-                            <td>
-                              {!expense.isVoided && (
+                            {expense.isVoided ? (
+                              <td className={styles.voidReason}>{expense.voidedReason ?? ""}</td>
+                            ) : (
+                              <td>
                                 <Button
                                   size="sm"
                                   variant="ghost"
@@ -840,8 +847,8 @@ export function PlatformFinancePage() {
                                 >
                                   Void
                                 </Button>
-                              )}
-                            </td>
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
@@ -903,8 +910,10 @@ export function PlatformFinancePage() {
                             <td className={styles.alignRight}>
                               {formatAmount(Number(entry.amount), entry.currency)}
                             </td>
-                            <td>
-                              {!entry.isVoided && (
+                            {entry.isVoided ? (
+                              <td className={styles.voidReason}>{entry.voidedReason ?? ""}</td>
+                            ) : (
+                              <td>
                                 <Button
                                   size="sm"
                                   variant="ghost"
@@ -912,8 +921,8 @@ export function PlatformFinancePage() {
                                 >
                                   Void
                                 </Button>
-                              )}
-                            </td>
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
@@ -972,9 +981,24 @@ export function PlatformFinancePage() {
         confirmLabel="Void entry"
         tone="danger"
         loading={voidMutation.isPending}
-        onConfirm={() => voidingEntry && voidMutation.mutate(voidingEntry)}
-        onCancel={() => setVoidingEntry(null)}
-      />
+        confirmDisabled={voidReason.trim() === ""}
+        onConfirm={() =>
+          voidingEntry && voidMutation.mutate({ ...voidingEntry, reason: voidReason.trim() })
+        }
+        onCancel={() => {
+          setVoidingEntry(null);
+          setVoidReason("");
+        }}
+      >
+        <FormField label="Reason" hint="Required. Kept on the voided entry for the audit record.">
+          <Input
+            value={voidReason}
+            maxLength={255}
+            placeholder="e.g. Invoice from vendor was entered twice"
+            onChange={(event) => setVoidReason(event.target.value)}
+          />
+        </FormField>
+      </ConfirmDialog>
     </div>
   );
 }

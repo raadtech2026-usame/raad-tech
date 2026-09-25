@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
@@ -470,6 +470,44 @@ class SqlAlchemyInvoiceRepository(
         )
         result = await self._session.execute(statement)
         return result.scalars().first() is not None
+
+    async def latest_paid_period_end(self, subscription_id: SubscriptionId) -> date | None:
+        """Addressed by a resolved subscription id, like `exists_for_period` above."""
+        statement = select(func.max(InvoiceModel.period_end)).where(
+            InvoiceModel.subscription_id == str(subscription_id),
+            InvoiceModel.deleted_at.is_(None),
+            InvoiceModel.status == "paid",
+        )
+        return (await self._session.execute(statement)).scalar()
+
+    async def revenue_currencies_between(self, *, start: datetime, end: datetime) -> set[str]:
+        """The three revenue sums' own filters, OR-ed — see the domain interface."""
+        naive_start, naive_end = _to_naive_utc(start), _to_naive_utc(end)
+        statement = self._apply_scope(
+            select(InvoiceModel.currency)
+            .where(
+                InvoiceModel.deleted_at.is_(None),
+                or_(
+                    and_(
+                        InvoiceModel.status == "paid",
+                        InvoiceModel.paid_at >= naive_start,
+                        InvoiceModel.paid_at < naive_end,
+                    ),
+                    and_(
+                        InvoiceModel.status != "void",
+                        InvoiceModel.issued_at >= naive_start,
+                        InvoiceModel.issued_at < naive_end,
+                    ),
+                    and_(
+                        InvoiceModel.status == "issued",
+                        InvoiceModel.issued_at <= naive_end,
+                    ),
+                ),
+            )
+            .distinct()
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return {currency.strip() for currency in rows}
 
     async def sum_paid_amount_between(self, *, start: datetime, end: datetime) -> float:
         """ADR-0020: "Revenue" KPI — see the domain interface's own docstring for the

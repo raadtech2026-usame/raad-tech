@@ -55,6 +55,8 @@ export interface PlatformExpense {
   vendor: string | null;
   reference: string | null;
   isVoided: boolean;
+  /** Why the entry was voided; null for live entries and for voids recorded before reasons were stored. */
+  voidedReason: string | null;
 }
 
 export interface PlatformIncome {
@@ -68,6 +70,8 @@ export interface PlatformIncome {
   source: string | null;
   reference: string | null;
   isVoided: boolean;
+  /** Why the entry was voided; null for live entries and for voids recorded before reasons were stored. */
+  voidedReason: string | null;
 }
 
 export type PlatformCategoryKind = "income" | "expense";
@@ -111,6 +115,7 @@ interface ExpenseWire {
   vendor: string | null;
   reference: string | null;
   is_voided: boolean;
+  voided_reason: string | null;
 }
 
 interface IncomeWire {
@@ -124,6 +129,7 @@ interface IncomeWire {
   source: string | null;
   reference: string | null;
   is_voided: boolean;
+  voided_reason: string | null;
 }
 
 function toExpense(w: ExpenseWire): PlatformExpense {
@@ -138,6 +144,7 @@ function toExpense(w: ExpenseWire): PlatformExpense {
     vendor: w.vendor,
     reference: w.reference,
     isVoided: w.is_voided,
+    voidedReason: w.voided_reason ?? null,
   };
 }
 
@@ -153,6 +160,7 @@ function toIncome(w: IncomeWire): PlatformIncome {
     source: w.source,
     reference: w.reference,
     isVoided: w.is_voided,
+    voidedReason: w.voided_reason ?? null,
   };
 }
 
@@ -199,22 +207,22 @@ export async function createPlatformCategory(input: {
 
 export async function voidPlatformExpense(
   expenseId: string,
-  reason?: string | null,
+  reason: string,
 ): Promise<PlatformExpense> {
   const wire = await apiRequest<ExpenseWire>(
     `/platform-finance/expenses/${encodeURIComponent(expenseId)}/void`,
-    { method: "POST", body: { reason: reason ?? null } },
+    { method: "POST", body: { reason } },
   );
   return toExpense(wire);
 }
 
 export async function voidPlatformIncome(
   incomeId: string,
-  reason?: string | null,
+  reason: string,
 ): Promise<PlatformIncome> {
   const wire = await apiRequest<IncomeWire>(
     `/platform-finance/income/${encodeURIComponent(incomeId)}/void`,
-    { method: "POST", body: { reason: reason ?? null } },
+    { method: "POST", body: { reason } },
   );
   return toIncome(wire);
 }

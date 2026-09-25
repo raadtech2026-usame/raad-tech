@@ -29,6 +29,7 @@ from raad.modules.platform_finance.domain.value_objects import (
 
 _MAX_NAME = 160
 _MAX_DESCRIPTION = 500
+_MAX_VOID_REASON = 255  # `voided_reason VARCHAR(255)` on both ledger tables.
 _ZERO = Decimal("0.00")
 
 
@@ -80,6 +81,17 @@ def _validate_name(name: str) -> None:
 def _validate_description(description: str | None) -> None:
     if description is not None and len(description) > _MAX_DESCRIPTION:
         raise DomainError(f"description must be at most {_MAX_DESCRIPTION} characters")
+
+
+def _require_void_reason(reason: str | None) -> str:
+    """A void removes money from RAAD's P&L, so the record must say why — required here, in the
+    domain, rather than trusted to a caller."""
+    cleaned = (reason or "").strip()
+    if not cleaned:
+        raise DomainError("A reason is required to void a financial entry")
+    if len(cleaned) > _MAX_VOID_REASON:
+        raise DomainError(f"reason must be at most {_MAX_VOID_REASON} characters")
+    return cleaned
 
 
 class PlatformFinancialCategory(_AggregateRoot):
@@ -185,8 +197,11 @@ class PlatformExpense(_AggregateRoot):
         is_voided: bool,
         created_at: datetime,
         updated_at: datetime,
+        voided_reason: str | None = None,
     ) -> None:
         super().__init__()
+        # Nullable: entries voided before reasons were stored have none.
+        self.voided_reason = voided_reason
         _validate_description(description)
         if amount.amount <= _ZERO:
             raise DomainError("Expense amount must be greater than zero")
@@ -258,12 +273,12 @@ class PlatformExpense(_AggregateRoot):
         )
         return expense
 
-    def void(
-        self, *, reason: str | None = None, clock: Clock, actor_id: str | None = None
-    ) -> None:
+    def void(self, *, reason: str | None, clock: Clock, actor_id: str | None = None) -> None:
         if self.is_voided:
             return
+        cleaned = _require_void_reason(reason)
         self.is_voided = True
+        self.voided_reason = cleaned
         self.updated_at = clock.now()
         self._record(
             _event(
@@ -271,7 +286,7 @@ class PlatformExpense(_AggregateRoot):
                 aggregate_type="PlatformExpense",
                 aggregate_id=str(self.id),
                 occurred_at=self.updated_at,
-                payload={"expense_id": str(self.id), "reason": reason, "actor_id": actor_id},
+                payload={"expense_id": str(self.id), "reason": cleaned, "actor_id": actor_id},
             )
         )
 
@@ -298,8 +313,11 @@ class PlatformIncome(_AggregateRoot):
         is_voided: bool,
         created_at: datetime,
         updated_at: datetime,
+        voided_reason: str | None = None,
     ) -> None:
         super().__init__()
+        # Nullable: entries voided before reasons were stored have none.
+        self.voided_reason = voided_reason
         _validate_description(description)
         if amount.amount <= _ZERO:
             raise DomainError("Income amount must be greater than zero")
@@ -373,12 +391,12 @@ class PlatformIncome(_AggregateRoot):
         )
         return income
 
-    def void(
-        self, *, reason: str | None = None, clock: Clock, actor_id: str | None = None
-    ) -> None:
+    def void(self, *, reason: str | None, clock: Clock, actor_id: str | None = None) -> None:
         if self.is_voided:
             return
+        cleaned = _require_void_reason(reason)
         self.is_voided = True
+        self.voided_reason = cleaned
         self.updated_at = clock.now()
         self._record(
             _event(
@@ -386,6 +404,6 @@ class PlatformIncome(_AggregateRoot):
                 aggregate_type="PlatformIncome",
                 aggregate_id=str(self.id),
                 occurred_at=self.updated_at,
-                payload={"income_id": str(self.id), "reason": reason, "actor_id": actor_id},
+                payload={"income_id": str(self.id), "reason": cleaned, "actor_id": actor_id},
             )
         )

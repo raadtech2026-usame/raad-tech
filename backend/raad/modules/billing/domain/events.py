@@ -516,6 +516,29 @@ def payment_failed(
     )
 
 
+def payment_requires_review(
+    *,
+    payment_id: str,
+    organization_id: str,
+    invoice_id: str,
+    reason: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """`PaymentRequiresReview` (finance P0.3). A provider confirmed money that could not be
+    applied — the invoice was voided, or already paid by another payment, while this one was in
+    flight. The payment is kept as paid (the money is real) and this event lands in
+    `audit_entries`, where Finance can find it and refund by hand; no refund feature exists yet."""
+    return _new_event(
+        event_type="PaymentRequiresReview",
+        aggregate_type="Payment",
+        aggregate_id=payment_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"invoice_id": invoice_id, "reason": reason, "actor_id": actor_id},
+    )
+
+
 def payment_expired(
     *,
     payment_id: str,

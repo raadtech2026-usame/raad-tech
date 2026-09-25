@@ -21,7 +21,7 @@ import unittest
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from raad.core.errors.exceptions import DomainError, NotFoundError
+from raad.core.errors.exceptions import ConflictError, DomainError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import (
     FilterCondition,
@@ -143,6 +143,9 @@ class InMemoryExpenseRepository(PlatformExpenseRepository):
             totals[key] = totals.get(key, Decimal("0.00")) + expense.amount.amount
         return totals
 
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        return {entry.amount.currency for entry in self._live(start, end)}
+
 
 class InMemoryIncomeRepository(PlatformIncomeRepository):
     def __init__(self) -> None:
@@ -181,6 +184,9 @@ class InMemoryIncomeRepository(PlatformIncomeRepository):
             totals[key] = totals.get(key, Decimal("0.00")) + income.amount.amount
         return totals
 
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        return {entry.amount.currency for entry in self._live(start, end)}
+
 
 class FakePlatformFinanceUnitOfWork(PlatformFinanceUnitOfWork):
     def __init__(self) -> None:
@@ -202,9 +208,14 @@ class FakePlatformFinanceUnitOfWork(PlatformFinanceUnitOfWork):
 
 
 class FixedSubscriptionRevenue(SubscriptionRevenuePort):
-    def __init__(self, amount: Decimal) -> None:
+    def __init__(self, amount: Decimal, currencies: set[str] | None = None) -> None:
         self.amount = amount
+        # The currencies of the invoices behind `amount`; USD unless a test says otherwise.
+        self.currencies = {"USD"} if currencies is None else currencies
         self.calls = 0
+
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        return set(self.currencies)
 
     async def collected_between(self, *, start: date, end: date) -> Decimal:
         self.calls += 1
@@ -362,6 +373,96 @@ class PlatformFinanceServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(pnl.total_expenses, "0.00")
         self.assertTrue(self.uow.expenses.by_id[expense.id].is_voided)
+        self.assertEqual(self.uow.expenses.by_id[expense.id].voided_reason, "Duplicate entry")
+
+    async def test_voiding_without_a_reason_is_refused_and_keeps_it_in_the_pnl(self) -> None:
+        expense = await self._expense("marketing", "80.00")
+        for blank in (None, "", "   "):
+            with self.subTest(reason=blank), self.assertRaises(DomainError):
+                await self.service.void_expense(
+                    expense_id=expense.id, reason=blank, actor=FOUNDER, uow=self.uow
+                )
+        pnl = await self.service.get_platform_pnl(
+            start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+        )
+        self.assertEqual(pnl.total_expenses, "80.00")
+        self.assertFalse(self.uow.expenses.by_id[expense.id].is_voided)
+
+    async def _foreign_expense(self, amount: str, on: date = date(2026, 9, 12)):
+        return await self.service.record_expense(
+            kind="fuel",
+            category_id=None,
+            amount=amount,
+            currency="SOS",
+            occurred_on=on,
+            description=None,
+            vendor=None,
+            reference=None,
+            actor=FOUNDER,
+            uow=self.uow,
+        )
+
+    async def test_pnl_refuses_to_add_an_entry_in_another_currency(self) -> None:
+        """Before P0.5 this returned total_expenses "50080.00" labelled USD."""
+        await self._expense("rent", "80.00")
+        await self._foreign_expense("50000.00")
+        with self.assertRaises(ConflictError) as raised:
+            await self.service.get_platform_pnl(
+                start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+            )
+        self.assertIn("SOS", str(raised.exception))
+
+    def _service_with_subscription_currencies(self, currencies: set[str]):
+        return PlatformFinanceApplicationService(
+            clock=CLOCK,
+            id_generator=SequentialIdGenerator(),
+            subscription_revenue=FixedSubscriptionRevenue(Decimal("1200.00"), currencies),
+        )
+
+    async def test_subscription_revenue_in_the_ledger_currency_is_accepted(self) -> None:
+        await self._expense("rent", "80.00")
+        pnl = await self._service_with_subscription_currencies({"USD"}).get_platform_pnl(
+            start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+        )
+        self.assertEqual(pnl.subscription_revenue, "1200.00")
+        self.assertEqual(pnl.total_revenue, "1200.00")
+        self.assertEqual(pnl.net_profit, "1120.00")
+        self.assertEqual(pnl.currency, "USD")
+
+    async def test_subscription_invoices_in_another_currency_block_the_pnl(self) -> None:
+        """Finance P0.5 completion: before this, a SOS subscription invoice was summed into
+        subscription_revenue and labelled USD, exactly like the ledger case above."""
+        for currencies in ({"USD", "SOS"}, {"SOS"}):
+            with self.subTest(currencies=sorted(currencies)):
+                with self.assertRaises(ConflictError) as raised:
+                    await self._service_with_subscription_currencies(
+                        currencies
+                    ).get_platform_pnl(
+                        start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+                    )
+                self.assertIn("SOS", str(raised.exception))
+                self.assertIn("subscription invoices", str(raised.exception))
+
+    async def test_a_window_with_no_subscription_invoices_is_not_blocked(self) -> None:
+        pnl = await self._service_with_subscription_currencies(set()).get_platform_pnl(
+            start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+        )
+        self.assertEqual(pnl.currency, "USD")
+
+    async def test_a_foreign_entry_outside_the_window_or_voided_does_not_block_the_pnl(
+        self,
+    ) -> None:
+        await self._expense("rent", "80.00")
+        await self._foreign_expense("50000.00", on=date(2026, 8, 20))
+        voided = await self._foreign_expense("700.00")
+        await self.service.void_expense(
+            expense_id=voided.id, reason="Wrong currency", actor=FOUNDER, uow=self.uow
+        )
+        pnl = await self.service.get_platform_pnl(
+            start=date(2026, 9, 1), end=date(2026, 9, 30), uow=self.uow
+        )
+        self.assertEqual(pnl.total_expenses, "80.00")
+        self.assertEqual(pnl.currency, "USD")
 
     async def test_voiding_an_unknown_expense_raises_not_found(self) -> None:
         with self.assertRaises(NotFoundError):

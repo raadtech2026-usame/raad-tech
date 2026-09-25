@@ -224,6 +224,7 @@ class IncomeDTO:
     reference: str | None
     attachment_url: str | None
     is_voided: bool
+    voided_reason: str | None
     created_at: datetime
 
 
@@ -239,6 +240,7 @@ def income_to_dto(income: Income) -> IncomeDTO:
         reference=income.reference,
         attachment_url=income.attachment_url,
         is_voided=income.is_voided,
+        voided_reason=income.voided_reason,
         created_at=income.created_at,
     )
 
@@ -256,6 +258,7 @@ class ExpenseDTO:
     vehicle_id: str | None
     attachment_url: str | None
     is_voided: bool
+    voided_reason: str | None
     created_at: datetime
 
 
@@ -272,6 +275,7 @@ def expense_to_dto(expense: Expense) -> ExpenseDTO:
         vehicle_id=str(expense.vehicle_id) if expense.vehicle_id else None,
         attachment_url=expense.attachment_url,
         is_voided=expense.is_voided,
+        voided_reason=expense.voided_reason,
         created_at=expense.created_at,
     )
 

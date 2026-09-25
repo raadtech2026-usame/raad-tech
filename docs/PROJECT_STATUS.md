@@ -2073,6 +2073,85 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Finance P0.1 + P0.3: SaaS payments are checked against their invoice** (2026-09-25,
+  finance P0 integrity pass; no migration). Neither payment path looked at the invoice.
+  `record_manual_payment` created a second PAID payment for an already-paid invoice.
+  `Invoice.mark_paid` turned a VOID invoice into PAID. `Invoice.void` voided a PAID one. And
+  `initiate_payment` accepted any amount, marking the invoice fully paid while revenue counted
+  the invoice amount. Now `ensure_invoice_payable` (409 CONFLICT if paid, 409 RULE_VIOLATION if
+  void) and `ensure_payment_matches_invoice` (400 if the amount or currency differs, compared
+  via `Decimal(str(...))`) run before any Payment row exists or any provider is charged. They
+  run *after* the idempotency lookup, so a client retrying a successful request still gets its
+  original payment. The two invoice transitions raise `RuleViolationError`. **P0.3:** a signed
+  webhook confirming money for an invoice that was voided, or paid by another payment, while
+  the charge was in flight is acknowledged (200). The payment stays PAID because the money is
+  real, but the invoice and subscription are left untouched and a `PaymentRequiresReview`
+  event (`invoice_void`/`invoice_already_paid`) lands in `audit_entries` for a manual refund.
+  Refusing it would have made the provider retry forever. P0.1 and P0.3 must ship together.
+  Live-verified over HTTP (refusals only; payment and invoice rows unchanged). The P0.3 webhook
+  branch is unit-tested only: a live signed webhook needs a Stripe secret this environment
+  does not have.
+
+- **Finance P0.2: paying a renewal invoice no longer grants an extra free period**
+  (2026-09-25, finance P0 integrity pass; no migration, no API change). The lifecycle job
+  moves a settled subscription into period N+1 and issues invoice N+1 in the same tick. Paying
+  that invoice then extended again from `current_period_end`, to N+2. That happened on the
+  card path (`_apply_paid_side_effects`) and on the manual path (`activate_subscription`
+  after `record_manual_payment`). Confirmed test-first: both new regression tests failed on
+  the old code with the period end one full cycle too far (2026-08-18 → 2026-09-17). The fix
+  (`_period_after_payment`) keeps the dates when the subscription already reaches the end of
+  what was paid for (the invoice's own `period_end`; for Activate, the new
+  `InvoiceRepository.latest_paid_period_end`) and only restores status. First activation
+  and every other case keep the original arithmetic. A late payment of a past-due renewal now
+  restores access on the paid period, and the next lifecycle tick bills N+2 normally. Existing
+  subscriptions that already received a free period are not changed. Finding them is
+  pre-flight check Q1.
+
+- **Finance P0.6: `created_by`/`updated_by` are finally written** (2026-09-25, finance P0
+  integrity pass; platform-wide, no migration). The columns existed on every audited table
+  (`AuditActorMixin`) and nothing ever set them, so "who created or last changed this row" was
+  answerable only by searching `audit_entries`. `SqlAlchemyUnitOfWork.commit()` now stamps them
+  from the acting user the HTTP middleware already binds per request (`principal_id_var`).
+  Workers, scheduled jobs and signed webhooks bind nobody and leave NULL ("system").
+  `updated_by` is set only on rows with a real change. Repositories re-project every tracked
+  aggregate before commit, so stamping every dirty row would have turned reads into UPDATEs and
+  bumped `row_version`. `tests/integration/test_unit_of_work_actor_columns.py` guards that
+  against a real session. Live-verified over HTTP (school expense and platform category;
+  reads leave `row_version` untouched). History is not backfilled.
+
+- **Finance P0.5: totals refuse to add two currencies** (2026-09-25, finance P0 integrity
+  pass; no migration). Every finance figure is a plain `SUM(amount)`. The old queries labelled
+  that sum with `MIN(currency)`, so a school with USD 100 and SOS 50,000 would have been shown
+  "50100.00 SOS". Each aggregate now has a `currencies_*` query using exactly its own filters
+  (window, not voided, not cancelled, tenant-scoped). The school finance summary, vehicle
+  overview, Profit & Loss and per-family summary raise `ConflictError` (409, naming the
+  currencies) when those rows span more than one currency. The school P&L now labels itself
+  with the window's real currency instead of an all-time `MIN`. RAAD's platform P&L refuses
+  ledger rows in anything other than its `USD` reporting currency. The subscription-revenue
+  side of the platform P&L was completed in a follow-up commit:
+  `SubscriptionRevenuePort.currencies_between` reads
+  `InvoiceRepository.revenue_currencies_between`, which ORs exactly the filters of the
+  collected/invoiced/receivables sums, and any non-`USD` subscription invoice in the window now
+  gets the same 409. Live-verified over HTTP (409 with a real USD+SOS
+  mix; single-currency windows unaffected; recovery after void). **Before deploying**, run
+  the production read-only check for organizations that already mix currencies: their finance
+  pages would start returning 409.
+
+- **Finance P0.4 — void reasons are required and stored** (2026-09-25, finance P0 integrity
+  pass; no ADR, no architecture change). Voiding income or an expense removes money from every
+  total and from Profit & Loss, yet `erp_income`, `erp_expenses`, `platform_income` and
+  `platform_expenses` had nowhere to record why. The reason lived only in the event payload, and
+  both finance pages sent a hardcoded "Voided by school"/"Voided by RAAD" that explained nothing.
+  Migration `b3d7e1f94a26` adds a nullable `voided_reason` to all four tables and backfills
+  historical voids from `audit_entries.metadata_json` (every void already wrote its reason
+  there). The domain now refuses a void with no reason (`_require_void_reason`, in both
+  `school_erp` and `platform_finance`, and on the legacy `StudentPayment` too). The request
+  schemas make `reason` required (422 when absent; whitespace-only reaches the domain and is a
+  400). Both pages ask for a real reason in the existing confirm dialog, and show it on the
+  voided row. **API behaviour change:** `POST …/income|expenses/{id}/void` and
+  `POST /school-finance/student-payments/{id}/void` now require `reason`. Live-verified over
+  HTTP on both ledgers; migration upgrade→downgrade→upgrade clean, `alembic check` clean.
+
 - **MDVR recording playback — search, start, control** (2026-09-22, ADR-0044). Operators can now
   watch video the recorder already holds, without RAAD ever storing a frame of it. Three new
   routes, all reusing `video.playback.start` (no new permission, no migration, no schema change):

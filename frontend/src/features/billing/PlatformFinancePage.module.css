@@ -295,3 +295,12 @@
   opacity: 0.55;
   text-decoration: line-through;
 }
+
+/* The void reason explains the strike-through, so it is the one thing on a voided row that must
+   stay readable. */
+.voidedRow td.voidReason {
+  opacity: 1;
+  text-decoration: none;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}

@@ -295,6 +295,7 @@ def income_to_model(income: Income, *, existing: IncomeModel | None = None) -> I
     model.reference = income.reference
     model.attachment_url = income.attachment_url
     model.is_voided = income.is_voided
+    model.voided_reason = income.voided_reason
     model.created_at = _to_naive_utc(income.created_at)
     model.updated_at = _to_naive_utc(income.updated_at)
     return model
@@ -311,6 +312,7 @@ def model_to_income(model: IncomeModel) -> Income:
         reference=model.reference,
         attachment_url=model.attachment_url,
         is_voided=model.is_voided,
+        voided_reason=model.voided_reason,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
@@ -328,6 +330,7 @@ def expense_to_model(expense: Expense, *, existing: ExpenseModel | None = None) 
     model.vehicle_id = str(expense.vehicle_id) if expense.vehicle_id else None
     model.attachment_url = expense.attachment_url
     model.is_voided = expense.is_voided
+    model.voided_reason = expense.voided_reason
     model.created_at = _to_naive_utc(expense.created_at)
     model.updated_at = _to_naive_utc(expense.updated_at)
     return model
@@ -345,6 +348,7 @@ def model_to_expense(model: ExpenseModel) -> Expense:
         vehicle_id=VehicleId(_char(model.vehicle_id)) if model.vehicle_id else None,
         attachment_url=model.attachment_url,
         is_voided=model.is_voided,
+        voided_reason=model.voided_reason,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )

@@ -140,6 +140,16 @@ class BillingSubscriptionRevenueAdapter(SubscriptionRevenuePort):
             )
         return Decimal(str(total or 0)).quantize(Decimal("0.01"))
 
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        # Same datetime bounds as `collected_between`/`invoiced_between`/`receivables_asof`,
+        # so the check covers exactly the invoices those three sum.
+        uow: BillingUnitOfWork = self._container.resolve(BillingUnitOfWork)
+        async with uow:
+            return await uow.invoices.revenue_currencies_between(
+                start=datetime.combine(start, time.min),
+                end=datetime.combine(end, time.max),
+            )
+
 
 class BillingOnboardingAdapter(BillingProvisioningPort):
     """Opens an Organization's subscription at onboarding time (ADR-0040 §5).

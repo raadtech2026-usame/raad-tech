@@ -263,6 +263,13 @@ class IncomeRepository(ABC):
     async def sum_by_category_between(self, *, start: date, end: date) -> dict[str, Decimal]:
         raise NotImplementedError
 
+    @abstractmethod
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        """The distinct currencies among exactly the rows `sum_between` adds up. Every total in
+        this module is a plain `SUM(amount)`, which is only meaningful in one currency — the
+        application layer checks this before presenting any total (finance P0.5)."""
+        raise NotImplementedError
+
 
 class ExpenseRepository(ABC):
     @abstractmethod
@@ -296,6 +303,13 @@ class ExpenseRepository(ABC):
     async def sum_by_vehicle_between(self, *, start: date, end: date) -> dict[str, Decimal]:
         """Per-bus operating cost, so the Vehicle Financial Overview can show cost against the
         revenue `StudentInvoiceRepository.summarise_by_vehicle` returns."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        """The distinct currencies among exactly the rows `sum_between` adds up. Every total in
+        this module is a plain `SUM(amount)`, which is only meaningful in one currency — the
+        application layer checks this before presenting any total (finance P0.5)."""
         raise NotImplementedError
 
 
@@ -410,4 +424,16 @@ class ParentInvoiceRepository(ABC):
         billing period rather than to whatever day the payment happened to be recorded — the same
         "attribute to the bill, not the receipt" basis `Income`/`Expense` already use via their
         own `occurred_on` filtering, for consistency across every P&L line."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def currencies_for_period(self, *, period: BillingPeriod | None = None) -> set[str]:
+        """The distinct currencies among exactly the invoices `summarise_totals`/
+        `summarise_by_vehicle` aggregate for `period` (all periods when `None`) — see
+        `IncomeRepository.currencies_between` for why (finance P0.5)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def currencies_invoiced_between(self, *, start: date, end: date) -> set[str]:
+        """The distinct currencies among exactly the invoices `sum_collected_between` adds up."""
         raise NotImplementedError

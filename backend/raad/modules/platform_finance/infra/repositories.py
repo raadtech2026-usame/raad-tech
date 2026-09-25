@@ -119,6 +119,7 @@ def _expense_to_model(
     model.reference = expense.reference
     model.attachment_url = expense.attachment_url
     model.is_voided = expense.is_voided
+    model.voided_reason = expense.voided_reason
     model.created_at = _naive(expense.created_at)
     model.updated_at = _naive(expense.updated_at)
     return model
@@ -136,6 +137,7 @@ def _model_to_expense(model: PlatformExpenseModel) -> PlatformExpense:
         reference=model.reference,
         attachment_url=model.attachment_url,
         is_voided=model.is_voided,
+        voided_reason=model.voided_reason,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
@@ -154,6 +156,7 @@ def _income_to_model(
     model.source = income.source
     model.reference = income.reference
     model.is_voided = income.is_voided
+    model.voided_reason = income.voided_reason
     model.created_at = _naive(income.created_at)
     model.updated_at = _naive(income.updated_at)
     return model
@@ -170,6 +173,7 @@ def _model_to_income(model: PlatformIncomeModel) -> PlatformIncome:
         source=model.source,
         reference=model.reference,
         is_voided=model.is_voided,
+        voided_reason=model.voided_reason,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
@@ -248,6 +252,21 @@ class _PlatformLedgerMixin:
         )
         rows = (await self._session.execute(statement)).all()  # type: ignore[attr-defined]
         return {row.kind: _dec(row.total) for row in rows}
+
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        """Same filters as `sum_between`, so the check covers exactly the rows it adds up."""
+        statement = (
+            select(self.model.currency)  # type: ignore[attr-defined]
+            .where(
+                self.model.occurred_on >= start,  # type: ignore[attr-defined]
+                self.model.occurred_on <= end,  # type: ignore[attr-defined]
+                self.model.is_voided.is_(False),  # type: ignore[attr-defined]
+                self.model.deleted_at.is_(None),  # type: ignore[attr-defined]
+            )
+            .distinct()
+        )
+        rows = (await self._session.execute(statement)).scalars().all()  # type: ignore[attr-defined]
+        return {currency.strip() for currency in rows}
 
 
 class SqlAlchemyPlatformExpenseRepository(

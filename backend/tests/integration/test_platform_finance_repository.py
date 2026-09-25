@@ -133,12 +133,13 @@ class PlatformFinanceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         kind: ExpenseKind = ExpenseKind.RENT,
         occurred_on: date = date(2099, 1, 10),
         category_id: PlatformCategoryId | None = None,
+        currency: str = "USD",
     ) -> PlatformExpense:
         expense = PlatformExpense.record(
             id=PlatformExpenseId(self.id_generator.new_id()),
             kind=kind,
             category_id=category_id,
-            amount=Money(amount=Decimal(amount), currency="USD"),
+            amount=Money(amount=Decimal(amount), currency=currency),
             occurred_on=occurred_on,
             clock=self.clock,
         )
@@ -194,6 +195,30 @@ class PlatformFinanceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(fetched)
         self.assertEqual(fetched.amount.amount, Decimal("999.99"))
         self.assertEqual(fetched.kind, PlatformIncomeKind.GRANT)
+
+    async def test_void_reason_round_trips_on_both_ledger_tables(self) -> None:
+        """`voided_reason` (migration `b3d7e1f94a26`) is persisted by the mapper, not just held
+        on the in-memory aggregate — a fake repository cannot prove that."""
+        expense = await self._record_expense(amount="12.00")
+        income = await self._record_income(amount="34.00")
+
+        async with self._uow() as uow:
+            loaded_expense = await uow.expenses.get(expense.id)
+            loaded_income = await uow.income.get(income.id)
+            loaded_expense.void(reason="Entered twice", clock=self.clock)
+            loaded_income.void(reason="Grant was withdrawn", clock=self.clock)
+            uow.record_events(loaded_expense.pull_domain_events())
+            uow.record_events(loaded_income.pull_domain_events())
+            await uow.commit()
+
+        async with self._uow() as uow:
+            fetched_expense = await uow.expenses.get(expense.id)
+            fetched_income = await uow.income.get(income.id)
+
+        self.assertTrue(fetched_expense.is_voided)
+        self.assertEqual(fetched_expense.voided_reason, "Entered twice")
+        self.assertTrue(fetched_income.is_voided)
+        self.assertEqual(fetched_income.voided_reason, "Grant was withdrawn")
 
     async def test_category_round_trips_and_is_listed(self) -> None:
         category = await self._create_category(kind=PlatformCategoryKind.INCOME)
@@ -255,6 +280,24 @@ class PlatformFinanceRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         # 1000.00 must be excluded — only the non-voided 80.50 counts.
         self.assertEqual(total, Decimal("80.50"))
+
+    async def test_currencies_between_mirrors_the_sum_filters(self) -> None:
+        """Finance P0.5: in-window, non-voided rows only — the same rows `sum_between` adds."""
+        await self._record_expense(occurred_on=date(2098, 3, 5))
+        voided = await self._record_expense(occurred_on=date(2098, 3, 6), currency="SOS")
+        await self._record_expense(occurred_on=date(2098, 4, 1), currency="EUR")
+        async with self._uow() as uow:
+            loaded = await uow.expenses.get(voided.id)
+            loaded.void(reason="wrong currency", clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        async with self._uow() as uow:
+            currencies = await uow.expenses.currencies_between(
+                start=date(2098, 3, 1), end=date(2098, 3, 31)
+            )
+
+        self.assertEqual(currencies, {"USD"})
 
     async def test_sum_by_kind_between_groups_correctly(self) -> None:
         window = (date(2099, 1, 1), date(2099, 1, 31))

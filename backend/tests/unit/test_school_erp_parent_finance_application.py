@@ -23,7 +23,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from raad.core.errors.exceptions import DomainError, NotFoundError, RuleViolationError
+from raad.core.errors.exceptions import (
+    ConflictError,
+    DomainError,
+    NotFoundError,
+    RuleViolationError,
+)
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
@@ -195,6 +200,12 @@ class InMemoryParentInvoiceRepository(ParentInvoiceRepository):
     async def sum_collected_between(self, *, start, end):
         raise NotImplementedError("not exercised by this test file")
 
+    async def currencies_for_period(self, *, period=None):
+        raise NotImplementedError("not exercised by this test file")
+
+    async def currencies_invoiced_between(self, *, start, end):
+        raise NotImplementedError("not exercised by this test file")
+
 
 class FakeSchoolErpUnitOfWork:
     """Bundles only the two repositories `ParentFinanceApplicationService` actually reads/
@@ -337,13 +348,14 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         monthly_fee: str = "80.00",
         billing_start_period: str = "2026-09",
         due_day: int = 10,
+        currency: str = "USD",
     ) -> ParentBillingProfile:
         dto = await self.service.create_or_update_billing_profile(
             CreateOrUpdateParentBillingProfileCommand(
                 organization_id=ORG,
                 parent_id=parent_id,
                 monthly_fee=monthly_fee,
-                currency="USD",
+                currency=currency,
                 billing_start_period=billing_start_period,
                 due_day=due_day,
                 actor=self.actor,
@@ -722,6 +734,21 @@ class FinancialSummaryTests(_Base):
             transport_ops_uow=self.transport_ops_uow,
         )
         self.assertEqual(summary.total_due, "80.00")
+
+
+    async def test_a_family_billed_in_two_currencies_is_refused_not_summed(self) -> None:
+        """Finance P0.5: USD 80 + SOS 9000 must not be reported as one "9080.00" total."""
+        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._generate(period="2026-09")
+        await self._open_profile(PARENT_A, monthly_fee="9000.00", currency="SOS")
+        await self._generate(period="2026-10")
+
+        with self.assertRaises(ConflictError):
+            await self.service.get_parent_financial_summary(
+                PARENT_A,
+                school_erp_uow=self.school_erp_uow,
+                transport_ops_uow=self.transport_ops_uow,
+            )
 
 
 class ListParentInvoicesTests(_Base):

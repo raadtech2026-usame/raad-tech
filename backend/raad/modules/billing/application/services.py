@@ -95,6 +95,8 @@ from raad.modules.billing.application.queries import (
 )
 from raad.modules.billing.application.validators import (
     ensure_invoice_exists,
+    ensure_invoice_payable,
+    ensure_payment_matches_invoice,
     ensure_plan_exists,
     ensure_subscription_exists,
 )
@@ -109,6 +111,7 @@ from raad.modules.billing.domain.value_objects import (
     BillingCycle,
     BillingScope,
     InvoiceId,
+    InvoiceStatus,
     Money,
     OrganizationId,
     PaymentId,
@@ -132,6 +135,34 @@ _BILLING_CYCLE_DAYS = {
 
 def _advance_period(start: datetime, cycle: BillingCycle) -> datetime:
     return start + timedelta(days=_BILLING_CYCLE_DAYS[cycle])
+
+
+def _period_after_payment(
+    subscription: Subscription,
+    cycle: BillingCycle,
+    *,
+    paid_through: date | None,
+    now: datetime,
+) -> tuple[datetime, datetime]:
+    """The billing period a subscription should be on once a payment is applied.
+
+    `advance_subscription_lifecycle` moves a settled subscription into period N+1 *and* issues
+    invoice N+1 in the same tick. Extending from `current_period_end` again when that invoice is
+    paid handed the organization period N+2 for free (finance P0.2). So when the subscription
+    already reaches the end of what was paid for, the dates stay as they are and only the
+    status is restored. Every other case — first activation, or a payment that covers a period
+    beyond the current one — keeps the original arithmetic unchanged.
+    """
+    current_end = subscription.current_period_end
+    if (
+        current_end is not None
+        and paid_through is not None
+        and _to_naive(current_end).date() >= paid_through
+    ):
+        start = subscription.current_period_start or current_end
+        return start, current_end
+    start = current_end or now
+    return start, _advance_period(start, cycle)
 
 
 logger = get_logger(__name__)
@@ -477,8 +508,12 @@ class BillingApplicationService:
                     "record the payment first."
                 )
             plan = await ensure_plan_exists(uow, subscription.plan_id)
-            period_start = subscription.current_period_end or self._clock.now()
-            period_end = _advance_period(period_start, plan.billing_cycle)
+            period_start, period_end = _period_after_payment(
+                subscription,
+                plan.billing_cycle,
+                paid_through=await uow.invoices.latest_paid_period_end(subscription.id),
+                now=self._clock.now(),
+            )
             subscription.renew(
                 period_start=period_start,
                 period_end=period_end,
@@ -867,6 +902,13 @@ class BillingApplicationService:
                 return payment_to_dto(existing)
 
             invoice = await ensure_invoice_exists(uow, InvoiceId(command.invoice_id))
+            # Finance P0.1 — refused before a Payment row exists and before any provider is
+            # charged. The idempotency lookup above still runs first, so a client retrying an
+            # already-successful request gets its original payment back, not this refusal.
+            ensure_invoice_payable(invoice)
+            ensure_payment_matches_invoice(
+                invoice, amount=command.amount, currency=command.currency
+            )
 
             payment = Payment.initiate(
                 id=PaymentId(self._id_generator.new_id()),
@@ -943,6 +985,9 @@ class BillingApplicationService:
         """
         async with uow:
             invoice = await ensure_invoice_exists(uow, InvoiceId(command.invoice_id))
+            # Finance P0.1: recording a second payment against a paid invoice created a duplicate
+            # PAID payment, and a void invoice was flipped back to paid.
+            ensure_invoice_payable(invoice)
             payment = Payment.initiate(
                 id=PaymentId(self._id_generator.new_id()),
                 organization_id=invoice.organization_id,
@@ -981,11 +1026,35 @@ class BillingApplicationService:
         even reach this method) and for committing."""
         payment.mark_paid(provider_ref=provider_ref, clock=self._clock, actor_id=actor_id)
         invoice = await ensure_invoice_exists(uow, payment.invoice_id)
+        if invoice.status in (InvoiceStatus.VOID, InvoiceStatus.PAID):
+            # Finance P0.3. The provider has already taken the money, so the payment stays paid
+            # and the webhook is acknowledged — refusing it would only make the provider retry
+            # forever. But the invoice was voided, or settled by another payment, while this one
+            # was in flight: it must not be flipped back to paid, and the subscription must not
+            # be extended a second time. The audit entry is what Finance refunds from.
+            reason = (
+                "invoice_void" if invoice.status == InvoiceStatus.VOID else "invoice_already_paid"
+            )
+            payment.flag_for_review(reason=reason, clock=self._clock, actor_id=actor_id)
+            logger.warning(
+                "payment_requires_review",
+                extra={
+                    "payment_id": str(payment.id),
+                    "invoice_id": str(invoice.id),
+                    "reason": reason,
+                },
+            )
+            uow.record_events(payment.pull_domain_events())
+            return
         invoice.mark_paid(clock=self._clock, actor_id=actor_id)
         subscription = await ensure_subscription_exists(uow, invoice.subscription_id)
         plan = await ensure_plan_exists(uow, subscription.plan_id)
-        period_start = subscription.current_period_end or self._clock.now()
-        period_end = _advance_period(period_start, plan.billing_cycle)
+        period_start, period_end = _period_after_payment(
+            subscription,
+            plan.billing_cycle,
+            paid_through=invoice.period_end,
+            now=self._clock.now(),
+        )
         subscription.renew(
             period_start=period_start, period_end=period_end, clock=self._clock, actor_id=actor_id
         )

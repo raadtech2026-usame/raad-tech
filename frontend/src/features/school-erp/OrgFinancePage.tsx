@@ -149,6 +149,7 @@ export function OrgFinancePage() {
     entry: LedgerEntry;
     kind: "income" | "expense";
   } | null>(null);
+  const [voidReason, setVoidReason] = useState("");
   const [editingCategory, setEditingCategory] = useState<FinancialCategory | null>(null);
 
   // Parent Invoice tab state (ADR-0042, refined for the Finance UI cleanup) — Parent/status/
@@ -260,14 +261,15 @@ export function OrgFinancePage() {
     invoiceDateTo !== "";
 
   const voidLedgerMutation = useMutation({
-    mutationFn: (target: { entry: LedgerEntry; kind: "income" | "expense" }) =>
+    mutationFn: (target: { entry: LedgerEntry; kind: "income" | "expense"; reason: string }) =>
       target.kind === "income"
-        ? voidIncome(target.entry.id, "Voided by school")
-        : voidExpense(target.entry.id, "Voided by school"),
+        ? voidIncome(target.entry.id, target.reason)
+        : voidExpense(target.entry.id, target.reason),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["school-finance"] });
       toast.success("Entry voided", "It stays on record as voided and no longer counts toward totals.");
       setVoidingLedgerEntry(null);
+      setVoidReason("");
     },
     onError: (error) => {
       toast.error(
@@ -663,6 +665,9 @@ export function OrgFinancePage() {
                             <Badge variant={e.isVoided ? "danger" : "success"} dot>
                               {e.isVoided ? "Voided" : "Recorded"}
                             </Badge>
+                            {e.isVoided && e.voidedReason && (
+                              <div className={styles.muted}>{e.voidedReason}</div>
+                            )}
                           </td>
                           <td className={styles.rowAction}>
                             {!e.isVoided && (
@@ -952,9 +957,25 @@ export function OrgFinancePage() {
         confirmLabel="Void entry"
         tone="danger"
         loading={voidLedgerMutation.isPending}
-        onConfirm={() => voidingLedgerEntry && voidLedgerMutation.mutate(voidingLedgerEntry)}
-        onCancel={() => setVoidingLedgerEntry(null)}
-      />
+        confirmDisabled={voidReason.trim() === ""}
+        onConfirm={() =>
+          voidingLedgerEntry &&
+          voidLedgerMutation.mutate({ ...voidingLedgerEntry, reason: voidReason.trim() })
+        }
+        onCancel={() => {
+          setVoidingLedgerEntry(null);
+          setVoidReason("");
+        }}
+      >
+        <FormField label="Reason" hint="Required. Kept on the voided entry for the audit record.">
+          <Input
+            value={voidReason}
+            maxLength={255}
+            placeholder="e.g. Duplicate of fuel receipt #4411"
+            onChange={(event) => setVoidReason(event.target.value)}
+          />
+        </FormField>
+      </ConfirmDialog>
     </div>
   );
 }

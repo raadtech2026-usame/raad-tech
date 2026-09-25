@@ -639,6 +639,21 @@ class _LedgerRepositoryMixin:
         rows = (await self._session.execute(statement)).all()  # type: ignore[attr-defined]
         return {(_char(row.category_id) or ""): _dec(row.total) for row in rows}
 
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        """Same filters as `sum_between`, so the check covers exactly the rows it adds up."""
+        statement = self._apply_scope(  # type: ignore[attr-defined]
+            select(self.model.currency)  # type: ignore[attr-defined]
+            .where(
+                self.model.occurred_on >= start,  # type: ignore[attr-defined]
+                self.model.occurred_on <= end,  # type: ignore[attr-defined]
+                self.model.is_voided.is_(False),  # type: ignore[attr-defined]
+                self.model.deleted_at.is_(None),  # type: ignore[attr-defined]
+            )
+            .distinct()
+        )
+        rows = (await self._session.execute(statement)).scalars().all()  # type: ignore[attr-defined]
+        return {_char(currency) for currency in rows}
+
 
 class SqlAlchemyIncomeRepository(
     _LedgerRepositoryMixin, SqlAlchemyRepositoryBase[IncomeModel], IncomeRepository
@@ -1090,6 +1105,34 @@ class SqlAlchemyParentInvoiceRepository(
             )
         )
         return _dec((await self._session.execute(statement)).scalar())
+
+    async def currencies_for_period(self, *, period: BillingPeriod | None = None) -> set[str]:
+        statement = self._apply_scope(
+            select(self.model.currency)
+            .where(
+                self.model.deleted_at.is_(None),
+                self.model.status != "cancelled",
+            )
+            .distinct()
+        )
+        if period is not None:
+            statement = statement.where(self.model.period == str(period))
+        rows = (await self._session.execute(statement)).scalars().all()
+        return {_char(currency) for currency in rows}
+
+    async def currencies_invoiced_between(self, *, start: date, end: date) -> set[str]:
+        statement = self._apply_scope(
+            select(self.model.currency)
+            .where(
+                self.model.invoice_date >= start,
+                self.model.invoice_date <= end,
+                self.model.status != "cancelled",
+                self.model.deleted_at.is_(None),
+            )
+            .distinct()
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return {_char(currency) for currency in rows}
 
     def flush_tracked_changes(self) -> None:
         for invoice, model in self._tracked.values():
