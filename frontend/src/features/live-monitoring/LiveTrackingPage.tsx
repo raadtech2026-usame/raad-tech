@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Cpu, Video, WifiOff } from "lucide-react";
@@ -93,7 +94,26 @@ export function LiveTrackingPage() {
     (s) => s.principal !== null && FLEET_OVERVIEW_ELIGIBLE_ROLES.has(s.principal.role),
   );
 
-  const [selectedVehicleId, setSelectedVehicleId] = useState<string>("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const vehicleParam = searchParams.get("vehicle") || "";
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string>(vehicleParam);
+
+  const handleSelectVehicle = (id: string) => {
+    setSelectedVehicleId(id);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (id && id !== ALL_VEHICLES_ID) {
+          next.set("vehicle", id);
+        } else {
+          next.delete("vehicle");
+        }
+        return next;
+      },
+      { replace: true },
+    );
+  };
+
   const isFleetMode = selectedVehicleId === ALL_VEHICLES_ID;
   // Neither the GPS/device hooks below nor the video panel should ever see the fleet-mode
   // sentinel as if it were a real vehicle id — an empty string is each hook's own existing
@@ -166,7 +186,7 @@ export function LiveTrackingPage() {
         vehicles={vehiclesQuery.data ?? []}
         vehiclesLoading={vehiclesQuery.isLoading}
         selectedVehicleId={selectedVehicleId}
-        onSelectVehicle={setSelectedVehicleId}
+        onSelectVehicle={handleSelectVehicle}
         gps={gps}
         deviceStatus={activeDevice.status}
         device={activeDevice.device}
@@ -191,7 +211,7 @@ export function LiveTrackingPage() {
               vehicles={onlineVehiclesQuery.data?.vehicles ?? []}
               totalOnline={onlineVehiclesQuery.data?.totalOnline ?? 0}
               isLoading={onlineVehiclesQuery.isLoading}
-              onSelectVehicle={setSelectedVehicleId}
+              onSelectVehicle={handleSelectVehicle}
             />
           ) : (
             <VehicleMapPanel

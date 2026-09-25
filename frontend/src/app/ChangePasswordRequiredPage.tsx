@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
-import { KeyRound } from "lucide-react";
+import { Eye, EyeOff, KeyRound } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -39,6 +40,9 @@ export function ChangePasswordRequiredPage() {
   const navigate = useNavigate();
   const principal = useAuthStore((s) => s.principal);
   const clearPasswordChangeRequired = useAuthStore((s) => s.clearPasswordChangeRequired);
+
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const {
     register,
@@ -81,21 +85,43 @@ export function ChangePasswordRequiredPage() {
 
         <form className={styles.form} onSubmit={onValid} noValidate>
           <FormField label="New password" error={errors.newPassword?.message}>
-            <Input
-              type="password"
-              autoComplete="new-password"
-              autoFocus
-              invalid={!!errors.newPassword}
-              {...register("newPassword")}
-            />
+            <div className={styles.passwordWrapper}>
+              <Input
+                type={showNewPassword ? "text" : "password"}
+                autoComplete="new-password"
+                autoFocus
+                invalid={!!errors.newPassword}
+                className={styles.passwordInput}
+                {...register("newPassword")}
+              />
+              <button
+                type="button"
+                className={styles.passwordToggle}
+                onClick={() => setShowNewPassword((p) => !p)}
+                aria-label={showNewPassword ? "Hide password" : "Show password"}
+              >
+                {showNewPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
           </FormField>
           <FormField label="Confirm password" error={errors.confirmPassword?.message}>
-            <Input
-              type="password"
-              autoComplete="new-password"
-              invalid={!!errors.confirmPassword}
-              {...register("confirmPassword")}
-            />
+            <div className={styles.passwordWrapper}>
+              <Input
+                type={showConfirmPassword ? "text" : "password"}
+                autoComplete="new-password"
+                invalid={!!errors.confirmPassword}
+                className={styles.passwordInput}
+                {...register("confirmPassword")}
+              />
+              <button
+                type="button"
+                className={styles.passwordToggle}
+                onClick={() => setShowConfirmPassword((p) => !p)}
+                aria-label={showConfirmPassword ? "Hide password" : "Show password"}
+              >
+                {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
           </FormField>
 
           <Button

@@ -27,6 +27,7 @@ export interface StatCardProps {
   /** Trailing control in the header row (a link, a menu). */
   action?: ReactNode;
   isLoading?: boolean;
+  density?: "normal" | "compact";
   className?: string;
 }
 
@@ -52,10 +53,11 @@ export function StatCard({
   tone = "brand",
   action,
   isLoading,
+  density = "normal",
   className,
 }: StatCardProps) {
   return (
-    <div className={clsx(styles.card, className)}>
+    <div className={clsx(styles.card, density === "compact" && styles.compact, className)}>
       <div className={styles.header}>
         {icon && <span className={clsx(styles.icon, styles[`tone_${tone}`])}>{icon}</span>}
         <span className={styles.label}>{label}</span>

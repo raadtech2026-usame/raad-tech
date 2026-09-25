@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowUpRight, Radio, WifiOff } from "lucide-react";
+import { Button } from "../../shared/components/Button/Button";
 import { Card, CardHeader } from "../../shared/components/Card/Card";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
 import { LiveIndicator } from "../../shared/components/LiveIndicator/LiveIndicator";
@@ -205,6 +206,11 @@ export function LiveOperationsSection() {
                 icon={<Radio size={22} />}
                 title="No vehicles on an active trip"
                 description="The live map will show a vehicle here the moment a trip starts."
+                action={
+                  <Button variant="secondary" size="sm" onClick={() => navigate("/platform/trips")}>
+                    View Scheduled Trips
+                  </Button>
+                }
               />
             </div>
           )}

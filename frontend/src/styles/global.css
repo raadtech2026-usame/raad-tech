@@ -33,18 +33,18 @@ body {
   color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  /* Manrope ships contextual alternates and proper kerning; both are off by default in some
-   * engines. Enabling them is most visible in the display-size headings. */
   text-rendering: optimizeLegibility;
   font-kerning: normal;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
 }
 
-/* Headings are set in the display face everywhere by default, with the optical tracking
- * correction applied once here rather than re-declared in every component. */
+/* Headings set in the technical display face (Sora) with optical negative tracking */
 h1,
 h2,
 h3,
-h4 {
+h4,
+h5,
+h6 {
   font-family: var(--font-display);
   letter-spacing: var(--tracking-display);
   line-height: var(--line-height-tight);
@@ -52,9 +52,9 @@ h4 {
   margin: 0;
 }
 
-/* Every number the product displays is tabular, so a value changing in place (a live counter,
- * a KPI refetch, a table column) never reflows its neighbours by a fraction of a character. */
+/* Tabular figures for numbers, metrics, timestamps, and coordinates */
 .raad-numeric,
+.raad-mono,
 table td,
 table th {
   font-variant-numeric: tabular-nums;
@@ -72,7 +72,7 @@ a:hover {
 
 ::selection {
   background: var(--color-brand-primary-tint-strong);
-  color: var(--color-text-primary);
+  color: var(--color-brand-primary);
 }
 
 button,
@@ -82,20 +82,17 @@ textarea {
   font-family: inherit;
 }
 
-/* One consistent keyboard-focus ring for everything that does not define its own. Scoped to
- * :focus-visible so a mouse click never paints a ring, which is the behaviour that makes teams
- * remove focus styles altogether. */
+/* Accessible focus ring with clear high-contrast offset */
 :focus-visible {
   outline: 2px solid var(--color-brand-primary);
   outline-offset: 2px;
   border-radius: var(--radius-xs);
 }
 
-/* Thin, low-contrast scrollbars — visible on hover of the scrolling region, near-invisible at
- * rest, so a dense table does not gain a heavy gray gutter down its side. */
+/* Ultra-thin, sleek custom scrollbar */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -103,33 +100,49 @@ textarea {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--n-200);
+  background: var(--color-border-input);
   border-radius: var(--radius-full);
-  border: 3px solid transparent;
+  border: 2px solid transparent;
   background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--n-300);
+  background: var(--color-border-strong);
   background-clip: content-box;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--n-200) transparent;
+  scrollbar-color: var(--color-border-input) transparent;
 }
 
+/* Animations for IoT telemetry and radar updates */
 @keyframes raad-pulse {
   0% {
     transform: translate(-50%, -50%) scale(1);
-    opacity: 0.55;
+    opacity: 0.75;
   }
   70% {
-    transform: translate(-50%, -50%) scale(2.6);
+    transform: translate(-50%, -50%) scale(2.4);
     opacity: 0;
   }
   100% {
     opacity: 0;
+  }
+}
+
+@keyframes raad-radar-ping {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
   }
 }
 
@@ -139,14 +152,14 @@ textarea {
     opacity: 1;
   }
   50% {
-    opacity: 0.25;
+    opacity: 0.35;
   }
 }
 
 @keyframes raad-fade-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -154,14 +167,26 @@ textarea {
   }
 }
 
-/* Route-level entrance. Deliberately short and small-travel: a page transition long enough to
- * notice is a page transition that gets in the way on the tenth navigation of the day. */
+/* Smooth route view transition */
 .raad-view-transition {
-  animation: raad-fade-in 0.28s var(--ease-emphasized);
+  animation: raad-fade-in 0.22s var(--ease-emphasized);
 }
 
-/* Visually hidden but reachable by assistive tech — used for the responsive labels that
- * replace a table header once the table reflows into stacked rows on a phone. */
+/* Telemetry & Technical Utility Classes */
+.raad-telemetry-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.raad-glass-panel {
+  background: var(--color-bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border-subtle);
+}
+
+/* Visually hidden for screen readers */
 .raad-visually-hidden {
   position: absolute;
   width: 1px;

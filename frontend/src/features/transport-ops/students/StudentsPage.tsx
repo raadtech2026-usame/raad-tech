@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Pencil, Plus, Search, UserMinus, UserPlus, Users } from "lucide-react";
+import { GraduationCap, Pencil, Plus, Search, UserMinus, UserPlus, Users } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
@@ -10,7 +10,7 @@ import { ApiError } from "../../../shared/api/types";
 import { DataTable, type DataTableColumnMeta } from "../../../shared/components/Table/DataTable";
 import { FilterChips, type FilterChipOption } from "../../../shared/components/Table/FilterChips";
 import { Pagination } from "../../../shared/components/Table/Pagination";
-import { MonoText } from "../../../shared/components/Table/cells";
+import { LeadCell, MonoText } from "../../../shared/components/Table/cells";
 import { DetailDrawer } from "../../../shared/components/Drawer/DetailDrawer";
 import { EmptyState } from "../../../shared/components/EmptyState/EmptyState";
 import { Badge } from "../../../shared/components/Badge/Badge";
@@ -265,7 +265,15 @@ export function StudentsPage() {
         id: "fullName",
         header: "Student",
         meta: { sortField: "full_name" } satisfies DataTableColumnMeta,
-        cell: ({ row }) => <span>{row.original.fullName}</span>,
+        cell: ({ row }) => (
+          <LeadCell
+            icon={<GraduationCap size={15} />}
+            title={row.original.fullName}
+            subtitle="Student Rider"
+            iconTint="var(--color-brand-primary-tint)"
+            iconColor="var(--color-brand-primary)"
+          />
+        ),
       },
       {
         id: "status",

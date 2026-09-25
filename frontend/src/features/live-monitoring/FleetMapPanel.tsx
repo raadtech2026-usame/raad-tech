@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bus, Radio } from "lucide-react";
+import { Bus, Crosshair, Radio } from "lucide-react";
 import { Card, CardHeader } from "../../shared/components/Card/Card";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
 import { LiveIndicator } from "../../shared/components/LiveIndicator/LiveIndicator";
@@ -189,6 +189,23 @@ export function FleetMapPanel({ vehicles, totalOnline, isLoading, onSelectVehicl
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vehicles, resolvedPositions]);
 
+  const fitAllVehicles = () => {
+    const provider = providerRef.current;
+    if (!provider) return;
+    if (resolvedPositions.size > 1) {
+      let sw = { lat: Infinity, lng: Infinity };
+      let ne = { lat: -Infinity, lng: -Infinity };
+      for (const { lat, lng } of resolvedPositions.values()) {
+        sw = { lat: Math.min(sw.lat, lat), lng: Math.min(sw.lng, lng) };
+        ne = { lat: Math.max(ne.lat, lat), lng: Math.max(ne.lng, lng) };
+      }
+      provider.fitBounds({ sw, ne }, 60);
+    } else if (resolvedPositions.size === 1) {
+      const only = resolvedPositions.values().next().value;
+      if (only) provider.setCenter({ lat: only.lat, lng: only.lng });
+    }
+  };
+
   const onlineWithPosition = resolvedPositions.size;
 
   return (
@@ -217,6 +234,17 @@ export function FleetMapPanel({ vehicles, totalOnline, isLoading, onSelectVehicl
             onPositionChange={handlePositionChange}
           />
         ))}
+        {resolvedPositions.size > 0 && (
+          <button
+            type="button"
+            className={styles.fitBoundsButton}
+            onClick={fitAllVehicles}
+            aria-label="Fit all vehicles in view"
+          >
+            <Crosshair size={14} aria-hidden="true" />
+            Fit all vehicles
+          </button>
+        )}
         {!isLoading && vehicles.length === 0 && (
           <div className={styles.overlay}>
             <EmptyState icon={<Radio size={28} />} title="No vehicles are currently online" />

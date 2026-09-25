@@ -15,7 +15,7 @@ export interface LogoProps {
 export function Logo({
   size = 34,
   withWordmark,
-  wordmarkColor = "#fff",
+  wordmarkColor = "var(--color-text-primary)",
   taglineColor = "var(--color-brand-primary)",
   className,
 }: LogoProps) {

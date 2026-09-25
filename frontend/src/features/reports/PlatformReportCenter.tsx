@@ -103,7 +103,7 @@ export function PlatformReportCenter({
   const selected = definitions.find((d) => d.key === selectedKey) ?? null;
 
   return (
-    <PageSection title="Platform Report Center" description="Search, preview, then export to PDF or Excel.">
+    <PageSection title="Platform Report Catalogue" description="Generate system-wide operational, billing, and fleet telematics exports.">
       {catalog.isError ? (
         <Card padded>
           <EmptyState

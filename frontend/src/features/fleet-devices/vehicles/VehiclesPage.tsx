@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Plus, Search, Truck } from "lucide-react";
+import { AlertCircle, CheckCircle2, Plus, Radio, Search, Truck, Wrench } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
+import { StatCard } from "../../../shared/components/StatCard/StatCard";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { useToast } from "../../../shared/components/Toast/toastStore";
@@ -83,6 +85,7 @@ export function VehiclesPage() {
   usePageHeader("Vehicles", "Buses on the platform, their status, and their assigned devices");
 
   const principal = useAuthStore((s) => s.principal);
+  const navigate = useNavigate();
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -217,12 +220,56 @@ export function VehiclesPage() {
 
   const activeStatusFilter = filters.status ?? "all";
 
+  const kpiStats = useMemo(() => {
+    let active = 0;
+    let maintenance = 0;
+    let inactive = 0;
+    for (const v of rows) {
+      if (v.status === "active") active++;
+      else if (v.status === "maintenance") maintenance++;
+      else if (v.status === "inactive") inactive++;
+    }
+    return { active, maintenance, inactive };
+  }, [rows]);
+
   // Coarse, presentation-only role gating (`.claude/rules/frontend.md` #2) — see this component's
   // own docstring for the exact RBAC citation.
   const canManage = principal?.role === "founder" || principal?.role === "org_admin";
 
   return (
     <div className={styles.page}>
+      <div className={styles.kpiGrid}>
+        <StatCard
+          icon={<Truck size={16} />}
+          label="Total Fleet"
+          value={total}
+          tone="brand"
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<CheckCircle2 size={16} />}
+          label="Active"
+          value={kpiStats.active}
+          tone="success"
+          meta={rows.length > 0 ? `${Math.round((kpiStats.active / rows.length) * 100)}%` : undefined}
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<Wrench size={16} />}
+          label="In Maintenance"
+          value={kpiStats.maintenance}
+          tone="warning"
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<AlertCircle size={16} />}
+          label="Inactive"
+          value={kpiStats.inactive}
+          tone="neutral"
+          isLoading={isLoading}
+        />
+      </div>
+
       <div className={styles.toolbar}>
         <FilterChips
           options={STATUS_FILTERS}
@@ -324,38 +371,53 @@ export function VehiclesPage() {
             : []
         }
         footer={
-          selectedVehicle &&
-          canManage && (
+          selectedVehicle && (
             <div className={styles.drawerActions}>
-              {selectedVehicle.status !== "active" && (
+              {principal?.role !== "finance_staff" && (
                 <Button
-                  variant="secondary"
-                  loading={isPendingFor("active")}
-                  disabled={statusMutation.isPending}
-                  onClick={() => statusMutation.mutate({ id: selectedVehicle.id, status: "active" })}
+                  variant="primary"
+                  leadingIcon={<Radio size={14} />}
+                  onClick={() => {
+                    const trackingPath = principal?.role === "org_admin" ? "/org/tracking" : "/platform/tracking";
+                    navigate(`${trackingPath}?vehicle=${selectedVehicle.id}`);
+                  }}
                 >
-                  Activate
+                  Track Live
                 </Button>
               )}
-              {selectedVehicle.status !== "maintenance" && (
-                <Button
-                  variant="secondary"
-                  loading={isPendingFor("maintenance")}
-                  disabled={statusMutation.isPending}
-                  onClick={() => statusMutation.mutate({ id: selectedVehicle.id, status: "maintenance" })}
-                >
-                  Mark under maintenance
-                </Button>
-              )}
-              {selectedVehicle.status !== "inactive" && (
-                <Button
-                  variant="danger"
-                  loading={isPendingFor("inactive")}
-                  disabled={statusMutation.isPending}
-                  onClick={() => statusMutation.mutate({ id: selectedVehicle.id, status: "inactive" })}
-                >
-                  Deactivate
-                </Button>
+              {canManage && (
+                <>
+                  {selectedVehicle.status !== "active" && (
+                    <Button
+                      variant="secondary"
+                      loading={isPendingFor("active")}
+                      disabled={statusMutation.isPending}
+                      onClick={() => statusMutation.mutate({ id: selectedVehicle.id, status: "active" })}
+                    >
+                      Activate
+                    </Button>
+                  )}
+                  {selectedVehicle.status !== "maintenance" && (
+                    <Button
+                      variant="secondary"
+                      loading={isPendingFor("maintenance")}
+                      disabled={statusMutation.isPending}
+                      onClick={() => statusMutation.mutate({ id: selectedVehicle.id, status: "maintenance" })}
+                    >
+                      Mark under maintenance
+                    </Button>
+                  )}
+                  {selectedVehicle.status !== "inactive" && (
+                    <Button
+                      variant="danger"
+                      loading={isPendingFor("inactive")}
+                      disabled={statusMutation.isPending}
+                      onClick={() => statusMutation.mutate({ id: selectedVehicle.id, status: "inactive" })}
+                    >
+                      Deactivate
+                    </Button>
+                  )}
+                </>
               )}
             </div>
           )

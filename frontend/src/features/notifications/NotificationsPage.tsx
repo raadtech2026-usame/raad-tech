@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { Bell, Check } from "lucide-react";
+import { Bell, Check, CheckCheck, Inbox } from "lucide-react";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
 import { Badge } from "../../shared/components/Badge/Badge";
 import { Button } from "../../shared/components/Button/Button";
@@ -102,11 +102,54 @@ export function NotificationsPage() {
     },
   });
 
+  const [unreadOnly, setUnreadOnly] = useState(false);
   const notifications = query.data?.pages.flatMap((page) => page.data) ?? [];
+  const unreadNotifications = notifications.filter((n) => n.status === "unread");
+  const displayedNotifications = unreadOnly ? unreadNotifications : notifications;
+
+  const markAllMutation = useMutation({
+    mutationFn: async () => {
+      await Promise.all(unreadNotifications.map((n) => markNotificationRead(n.id)));
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: LIST_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: UNREAD_COUNT_QUERY_KEY });
+      toast.success("All caught up", "All unread notifications marked as read.");
+    },
+    onError: (error: unknown) => {
+      toast.error(
+        "Could not mark all as read",
+        error instanceof ApiError ? error.message : "Something went wrong. Please try again.",
+      );
+    },
+  });
 
   return (
     <div className={styles.page}>
-      <FilterChips options={TYPE_FILTERS} activeId={typeFilter} onSelect={setTypeFilter} />
+      <div className={styles.toolbar}>
+        <div className={styles.toolbarLeft}>
+          <FilterChips options={TYPE_FILTERS} activeId={typeFilter} onSelect={setTypeFilter} />
+          <Button
+            size="sm"
+            variant={unreadOnly ? "primary" : "secondary"}
+            leadingIcon={<Inbox size={14} />}
+            onClick={() => setUnreadOnly((prev) => !prev)}
+          >
+            {unreadOnly ? "Showing unread" : "Unread only"}
+          </Button>
+        </div>
+        {unreadNotifications.length > 0 && (
+          <Button
+            size="sm"
+            variant="secondary"
+            leadingIcon={<CheckCheck size={14} />}
+            loading={markAllMutation.isPending}
+            onClick={() => markAllMutation.mutate()}
+          >
+            Mark all as read
+          </Button>
+        )}
+      </div>
 
       {query.isError ? (
         <EmptyState
@@ -129,10 +172,21 @@ export function NotificationsPage() {
           title="No notifications yet"
           description="Notifications about your trips, subscription, and the platform will appear here."
         />
+      ) : unreadOnly && displayedNotifications.length === 0 ? (
+        <EmptyState
+          icon={<CheckCheck size={22} />}
+          title="No unread notifications"
+          description="You're all caught up! Switch off 'Unread only' to see earlier notifications."
+          action={
+            <Button variant="secondary" size="sm" onClick={() => setUnreadOnly(false)}>
+              Show all notifications
+            </Button>
+          }
+        />
       ) : (
         <>
           <ul className={styles.list}>
-            {notifications.map((notification) => (
+            {displayedNotifications.map((notification) => (
               <li key={notification.id}>
                 <Card padded className={clsx(styles.row, notification.status === "unread" && styles.unread)}>
                   <div className={styles.rowHead}>

@@ -10,14 +10,14 @@
   border-radius: var(--radius-full);
   line-height: 1.5;
   white-space: nowrap;
-  /* Always present, transparent by default: a badge that gains a border only in its outlined
-     variant shifts by 2px between the two, which is visible when both appear in one table. */
   border: 1px solid transparent;
+  user-select: none;
 }
 
 .outlined {
-  padding: 5px 11px;
+  padding: 4px 10px;
   font-size: var(--text-xs);
+  background: var(--color-bg-surface) !important;
 }
 
 .dot {
@@ -26,12 +26,11 @@
   border-radius: 50%;
   background: currentColor;
   flex: 0 0 auto;
-  /* Lifts the dot off the pill's own tint so it stays legible as a status marker at 6px. */
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.65);
 }
 
 .pulsing {
-  animation: raad-blink 1.4s infinite;
+  animation: raad-blink 2s infinite ease-in-out;
 }
 
 .success {
@@ -40,10 +39,20 @@
   border-color: var(--color-success-border);
 }
 
+.success.outlined {
+  color: var(--color-success);
+  border-color: var(--color-success);
+}
+
 .warning {
   color: var(--color-warning-text);
   background: var(--color-warning-tint);
   border-color: var(--color-warning-border);
+}
+
+.warning.outlined {
+  color: var(--color-warning);
+  border-color: var(--color-warning);
 }
 
 .danger {
@@ -52,10 +61,20 @@
   border-color: var(--color-danger-border);
 }
 
+.danger.outlined {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
 .info {
   color: var(--color-info-text);
   background: var(--color-info-tint);
   border-color: var(--color-info-border);
+}
+
+.info.outlined {
+  color: var(--color-brand-primary);
+  border-color: var(--color-brand-primary);
 }
 
 .neutral {
@@ -64,8 +83,18 @@
   border-color: var(--color-neutral-border);
 }
 
+.neutral.outlined {
+  color: var(--color-neutral-text);
+  border-color: var(--color-border-default);
+}
+
 .purple {
   color: var(--color-purple-text);
   background: var(--color-purple-tint);
   border-color: var(--color-purple-border);
+}
+
+.purple.outlined {
+  color: var(--color-purple);
+  border-color: var(--color-purple);
 }

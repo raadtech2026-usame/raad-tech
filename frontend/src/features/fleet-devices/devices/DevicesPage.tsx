@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Cpu, Link2, Pencil, Plus, Search } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cpu, Link2, Pencil, Plus, Radio, Search } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
+import { StatCard } from "../../../shared/components/StatCard/StatCard";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { useToast } from "../../../shared/components/Toast/toastStore";
@@ -275,6 +276,22 @@ export function DevicesPage() {
 
   const activeLifecycleFilter = filters.lifecycle_state ?? "all";
 
+  const kpiStats = useMemo(() => {
+    let assigned = 0;
+    let activated = 0;
+    let registered = 0;
+    let suspended = 0;
+    let retired = 0;
+    for (const d of rows) {
+      if (d.lifecycleState === "assigned") assigned++;
+      else if (d.lifecycleState === "activated") activated++;
+      else if (d.lifecycleState === "registered") registered++;
+      else if (d.lifecycleState === "suspended") suspended++;
+      else if (d.lifecycleState === "retired") retired++;
+    }
+    return { assigned, activated, registered, suspended, retired };
+  }, [rows]);
+
   // Coarse, presentation-only role gating — see this component's own docstring for the exact
   // RBAC citation.
   const canManageLifecycle = principal?.role === "founder" || principal?.role === "support_staff";
@@ -284,6 +301,38 @@ export function DevicesPage() {
 
   return (
     <div className={styles.page}>
+      <div className={styles.kpiGrid}>
+        <StatCard
+          icon={<Cpu size={16} />}
+          label="Total Terminals"
+          value={total}
+          tone="brand"
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<CheckCircle2 size={16} />}
+          label="Assigned to Fleet"
+          value={kpiStats.assigned}
+          tone="success"
+          meta={rows.length > 0 ? `${Math.round((kpiStats.assigned / rows.length) * 100)}%` : undefined}
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<Radio size={16} />}
+          label="Ready / Staged"
+          value={kpiStats.activated + kpiStats.registered}
+          tone="purple"
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<AlertTriangle size={16} />}
+          label="Suspended / Retired"
+          value={kpiStats.suspended + kpiStats.retired}
+          tone="warning"
+          isLoading={isLoading}
+        />
+      </div>
+
       <div className={styles.toolbar}>
         <FilterChips
           options={LIFECYCLE_FILTERS}

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import clsx from "clsx";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Navigation, Plus, Search } from "lucide-react";
+import { AlertCircle, CheckCircle2, Navigation, Plus, Search } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
+import { StatCard } from "../../../shared/components/StatCard/StatCard";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { useToast } from "../../../shared/components/Toast/toastStore";
@@ -10,7 +12,7 @@ import { ApiError } from "../../../shared/api/types";
 import { DataTable, type DataTableColumnMeta } from "../../../shared/components/Table/DataTable";
 import { FilterChips, type FilterChipOption } from "../../../shared/components/Table/FilterChips";
 import { Pagination } from "../../../shared/components/Table/Pagination";
-import { MonoText } from "../../../shared/components/Table/cells";
+import { LeadCell, MonoText } from "../../../shared/components/Table/cells";
 import { DetailDrawer } from "../../../shared/components/Drawer/DetailDrawer";
 import { EmptyState } from "../../../shared/components/EmptyState/EmptyState";
 import { Badge } from "../../../shared/components/Badge/Badge";
@@ -77,19 +79,51 @@ function StopsSection({
 
       {route.stops.length === 0 && <span className={styles.stopsEmpty}>No stops added yet.</span>}
 
-      {route.stops.map((stop) => (
-        <div key={stop.id} className={styles.stopRow}>
-          <div>
-            <div className={styles.stopName}>
-              {stop.sequenceNo}. {stop.name}
-            </div>
-            <div className={styles.stopMeta}>
-              {stop.latitude.toFixed(4)}, {stop.longitude.toFixed(4)}
-              {stop.geofenceRadiusM ? ` · ${stop.geofenceRadiusM}m geofence` : ""}
-            </div>
-          </div>
+      {route.stops.length > 0 && (
+        <div className={styles.timeline}>
+          {route.stops.map((stop, index) => {
+            const isFirst = index === 0;
+            const isLast = index === route.stops.length - 1 && route.stops.length > 1;
+            return (
+              <div key={stop.id} className={styles.timelineItem}>
+                <div className={styles.timelineTrack}>
+                  <div
+                    className={clsx(
+                      styles.timelineNode,
+                      isFirst && styles.nodeOrigin,
+                      isLast && styles.nodeTerminus,
+                    )}
+                  >
+                    <span className={styles.nodeNumber}>{stop.sequenceNo}</span>
+                  </div>
+                  {!isLast && index < route.stops.length - 1 && (
+                    <div className={styles.timelineLine} />
+                  )}
+                </div>
+                <div className={styles.timelineContent}>
+                  <div className={styles.stopNameRow}>
+                    <div className={styles.stopName}>
+                      {stop.sequenceNo}. {stop.name}
+                    </div>
+                    {isFirst && <span className={styles.transitTag}>Origin</span>}
+                    {isLast && <span className={styles.transitTag}>Terminus</span>}
+                  </div>
+                  <div className={styles.stopMeta}>
+                    <span className={styles.stopCoordinates}>
+                      {stop.latitude.toFixed(4)}, {stop.longitude.toFixed(4)}
+                    </span>
+                    {stop.geofenceRadiusM ? (
+                      <span className={styles.geofenceBadge}>
+                        {stop.geofenceRadiusM}m geofence
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
-      ))}
+      )}
 
       {route.stops.length > 0 && (
         <span className={styles.stopsCaption}>
@@ -204,7 +238,15 @@ export function RoutesPage() {
         id: "name",
         header: "Route",
         meta: { sortField: "name" } satisfies DataTableColumnMeta,
-        cell: ({ row }) => <span>{row.original.name}</span>,
+        cell: ({ row }) => (
+          <LeadCell
+            icon={<Navigation size={15} />}
+            title={row.original.name}
+            subtitle="Transit Corridor"
+            iconTint="var(--color-brand-primary-tint)"
+            iconColor="var(--color-brand-primary)"
+          />
+        ),
       },
       {
         id: "status",
@@ -222,6 +264,16 @@ export function RoutesPage() {
 
   const activeStatusFilter = filters.status ?? "all";
 
+  const kpiStats = useMemo(() => {
+    let active = 0;
+    let inactive = 0;
+    for (const r of rows) {
+      if (r.status === "active") active++;
+      else if (r.status === "inactive") inactive++;
+    }
+    return { active, inactive };
+  }, [rows]);
+
   // Coarse, presentation-only role gating (`.claude/rules/frontend.md` #2) — see this
   // component's own docstring for the exact RBAC citation.
   const canManage = principal?.role === "founder" || principal?.role === "org_admin";
@@ -231,6 +283,30 @@ export function RoutesPage() {
 
   return (
     <div className={styles.page}>
+      <div className={styles.kpiGrid}>
+        <StatCard
+          icon={<Navigation size={16} />}
+          label="Total Corridors"
+          value={total}
+          tone="brand"
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<CheckCircle2 size={16} />}
+          label="Active Routes"
+          value={kpiStats.active}
+          tone="success"
+          meta={rows.length > 0 ? `${Math.round((kpiStats.active / rows.length) * 100)}%` : undefined}
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<AlertCircle size={16} />}
+          label="Inactive Routes"
+          value={kpiStats.inactive}
+          tone="neutral"
+          isLoading={isLoading}
+        />
+      </div>
       <div className={styles.toolbar}>
         <FilterChips
           options={STATUS_FILTERS}

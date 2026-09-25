@@ -1,13 +1,11 @@
-/* Application header.
- *
- * Sits on the same subtle ground as the content column beneath it, separated by a hairline
- * rather than by a white slab — the page title then reads as the top of the content, which is
- * what it is, instead of as a second chrome layer stacked under the sidebar's brand block. */
+/* Enterprise SaaS Application Header */
 
 .topbar {
   height: var(--topbar-height);
   flex: 0 0 auto;
-  background: var(--color-bg-subtle);
+  background: var(--color-bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--color-border-subtle);
   display: flex;
   align-items: center;
@@ -73,6 +71,47 @@
   margin-left: var(--space-4);
 }
 
+.searchInner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+}
+
+.searchInner:hover {
+  opacity: 0.9;
+}
+
+.searchInner > div {
+  width: 100%;
+  cursor: pointer;
+}
+
+.searchInner input {
+  padding-right: 48px;
+}
+
+.searchKbd {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-faint);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xs);
+  pointer-events: none;
+}
+
 .actions {
   margin-left: auto;
   display: flex;
@@ -80,9 +119,44 @@
   gap: var(--space-2);
 }
 
-/* Hairline separating the utility icons from identity — the icons are actions on the page, the
-   avatar is a different class of control, and grouping them without a break reads as one strip
-   of six equivalent buttons. */
+.telemetryStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border-radius: var(--radius-full);
+  background: var(--color-success-tint);
+  border: 1px solid var(--color-success-border);
+  cursor: default;
+  user-select: none;
+}
+
+.telemetryPulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-success);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.telemetryPulse::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 1px solid var(--color-success);
+  animation: raad-blink 2s infinite ease-in-out;
+}
+
+.telemetryText {
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-extrabold);
+  color: var(--color-success-text);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+}
+
 .divider {
   width: 1px;
   height: 24px;
@@ -126,9 +200,9 @@
   right: 0;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  min-width: 232px;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  min-width: 240px;
   z-index: var(--z-dropdown);
   overflow: hidden;
   animation: raad-menu-in 160ms var(--ease-emphasized);
@@ -186,9 +260,132 @@
   background: var(--color-danger-tint);
 }
 
+/* Quick Jump Command Palette (⌘K) */
+.quickJumpOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(6px);
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh var(--space-4) var(--space-4);
+  animation: fadeIn 0.15s ease-out;
+}
+
+.quickJumpModal {
+  width: 100%;
+  max-width: 520px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-card);
+  border-radius: var(--radius-2xl);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.quickJumpHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+}
+
+.quickJumpIcon {
+  color: var(--color-brand-primary);
+  flex-shrink: 0;
+}
+
+.quickJumpInput {
+  border: none;
+  background: transparent;
+  width: 100%;
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  outline: none;
+  font-family: inherit;
+}
+
+.quickJumpInput::placeholder {
+  color: var(--color-text-muted);
+}
+
+.quickJumpList {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.quickJumpItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: all var(--transition-fast);
+}
+
+.quickJumpItem:hover,
+.quickJumpItem:focus {
+  background: var(--color-brand-primary-tint);
+  color: var(--color-brand-primary);
+  outline: none;
+}
+
+.quickJumpItemIcon {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+  transition: color var(--transition-fast);
+}
+
+.quickJumpItem:hover .quickJumpItemIcon,
+.quickJumpItem:focus .quickJumpItemIcon {
+  color: var(--color-brand-primary);
+}
+
+.quickJumpPath {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--color-text-muted);
+}
+
+.quickJumpEmpty {
+  padding: 24px;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.quickJumpFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-base);
+  font-size: var(--text-2xs);
+  color: var(--color-text-muted);
+}
+
 @media (max-width: 1280px) {
   .search {
-    max-width: 260px;
+    max-width: 240px;
   }
 
   .accountLabel {
@@ -231,5 +428,9 @@
 
   .title {
     font-size: var(--text-lg);
+  }
+
+  .telemetryStatus {
+    display: none;
   }
 }

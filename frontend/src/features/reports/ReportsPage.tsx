@@ -134,7 +134,7 @@ function OrganizationReportCenter({
   const selected = definitions.find((d) => d.key === selectedKey) ?? null;
 
   return (
-    <PageSection title="Report Center" description="Search, preview, then export to PDF or Excel.">
+    <PageSection title="Report Catalogue & Export" description="Select a report template, configure parameters, and export to PDF or Excel.">
       {catalog.isError ? (
         <Card padded>
           <EmptyState

@@ -6,6 +6,8 @@ export interface CardProps extends HTMLAttributes<HTMLDivElement> {
   /** Adds the card's own internal padding. Off by default so callers embedding a table or a
    * full-bleed map/chart aren't fighting inherited padding. */
   padded?: boolean;
+  /** Dense internal padding for compact operational dashboards and telemetry panels. */
+  compact?: boolean;
   /** Lifts the card off the surface. Reserve for cards that genuinely float above the page
    * (an overlay panel), not for ordinary content — a page where everything is elevated reads
    * as a page where nothing is. */
@@ -20,6 +22,7 @@ export interface CardProps extends HTMLAttributes<HTMLDivElement> {
 
 export function Card({
   padded,
+  compact,
   elevated,
   interactive,
   inset,
@@ -32,6 +35,7 @@ export function Card({
       className={clsx(
         styles.card,
         padded && styles.padded,
+        compact && styles.compact,
         elevated && styles.elevated,
         interactive && styles.interactive,
         inset && styles.inset,

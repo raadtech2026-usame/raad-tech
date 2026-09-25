@@ -4,6 +4,12 @@
   gap: var(--space-5);
 }
 
+.kpiGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-4);
+}
+
 /* Page toolbar: filters on the left, actions on the right. Wraps rather than compressing, so a
  * long filter row never squeezes the primary action down to an unreadable width. Below the phone
  * breakpoint it stops being a row at all (see the media query at the foot of this file). */
@@ -38,8 +44,9 @@
   gap: var(--space-3);
   padding: var(--space-4);
   border: 1px solid var(--color-border-card);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: var(--color-bg-surface);
+  box-shadow: var(--shadow-xs);
   margin-bottom: var(--space-4);
 }
 
@@ -51,11 +58,11 @@
 }
 
 .stopsTitle {
-  font-weight: var(--font-weight-bold);
+  font-weight: var(--font-weight-extrabold);
   font-size: var(--text-2xs);
   color: var(--color-text-faint);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: var(--tracking-caps);
 }
 
 .stopsEmpty {
@@ -63,34 +70,135 @@
   color: var(--color-text-muted);
 }
 
-.stopRow {
+.timeline {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  margin: var(--space-2) 0;
+}
+
+.timelineItem {
+  display: flex;
+  gap: var(--space-3);
+  position: relative;
+  min-height: 48px;
+}
+
+.timelineTrack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  width: 24px;
+  flex-shrink: 0;
+}
+
+.timelineNode {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--color-bg-subtle);
+  border: 2px solid var(--color-border-card);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-2) 0;
-  border-top: 1px solid var(--color-border-subtle);
+  justify-content: center;
+  z-index: 2;
+  box-shadow: var(--shadow-xs);
+  transition: all var(--transition-fast);
 }
 
-.stopRow:first-of-type {
-  border-top: none;
-}
-
-.stopName {
-  font-weight: var(--font-weight-medium);
-  font-size: var(--text-base);
+.nodeNumber {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-bold);
   color: var(--color-text-secondary);
 }
 
+.nodeOrigin {
+  background: var(--color-brand-primary-tint);
+  border-color: var(--color-brand-primary);
+}
+
+.nodeOrigin .nodeNumber {
+  color: var(--color-brand-primary);
+}
+
+.nodeTerminus {
+  background: var(--color-success-tint);
+  border-color: var(--color-success);
+}
+
+.nodeTerminus .nodeNumber {
+  color: var(--color-success-text);
+}
+
+.timelineLine {
+  position: absolute;
+  top: 24px;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--color-border-default);
+  z-index: 1;
+}
+
+.timelineContent {
+  flex: 1;
+  padding-bottom: var(--space-3);
+}
+
+.stopNameRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.stopName {
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+}
+
+.transitTag {
+  font-size: 10px;
+  font-weight: var(--font-weight-extrabold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--color-bg-inset);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border-subtle);
+}
+
 .stopMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 2px;
   font-size: var(--text-2xs);
   color: var(--color-text-muted);
+}
+
+.stopCoordinates {
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
+
+.geofenceBadge {
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-2xs);
 }
 
 .stopsCaption {
   font-size: var(--text-2xs);
   color: var(--color-text-faint);
   font-style: italic;
+  margin-top: var(--space-2);
 }
 
 @media (max-width: 900px) {

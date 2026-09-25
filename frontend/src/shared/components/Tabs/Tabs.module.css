@@ -45,7 +45,7 @@
 
 .tab:hover:not(.active) {
   color: var(--color-text-secondary);
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--color-bg-subtle);
 }
 
 .tab:focus-visible {

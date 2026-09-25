@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, Bell, CircleHelp, LogOut, Menu } from "lucide-react";
+import { Search, Bell, CircleHelp, LogOut, Menu, Sun, Moon } from "lucide-react";
 import { useAuthStore } from "../../shared/stores/authStore";
+import { useThemeStore } from "../../shared/theme/themeStore";
 import { getRoleDisplay } from "../../shared/auth/roleDisplay";
 import { Avatar } from "../../shared/components/Avatar/Avatar";
 import { IconButton } from "../../shared/components/IconButton/IconButton";
 import { Input } from "../../shared/components/Input/Input";
+import { platformNav, organizationNav, getNavForRole } from "./navConfig";
 import styles from "./TopBar.module.css";
 
 export interface TopBarProps {
@@ -29,12 +31,34 @@ export function TopBar({
 }: TopBarProps) {
   const principal = useAuthStore((s) => s.principal);
   const logout = useAuthStore((s) => s.logout);
+  const { resolvedTheme, toggleTheme } = useThemeStore();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [quickJumpOpen, setQuickJumpOpen] = useState(false);
+  const [quickJumpSearch, setQuickJumpSearch] = useState("");
+  const quickJumpInputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  // An account menu that only closes via its own trigger is a menu users leave open by accident
-  // and then click straight through. Both dismissal paths a menu is expected to have:
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setQuickJumpOpen((prev) => !prev);
+      } else if (e.key === "Escape" && quickJumpOpen) {
+        setQuickJumpOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [quickJumpOpen]);
+
+  useEffect(() => {
+    if (quickJumpOpen) {
+      const timer = setTimeout(() => quickJumpInputRef.current?.focus(), 50);
+      return () => clearTimeout(timer);
+    }
+  }, [quickJumpOpen]);
+
   useEffect(() => {
     if (!menuOpen) return;
     const onPointerDown = (event: MouseEvent) => {
@@ -52,6 +76,25 @@ export function TopBar({
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [menuOpen]);
+
+  const availableNav = useMemo(() => {
+    if (!principal) return [];
+    const baseNav = principal.role === "org_admin" ? organizationNav : platformNav;
+    const items = getNavForRole(baseNav, principal.role);
+    return items.filter((item): item is Extract<typeof item, { type: "link" }> => item.type === "link");
+  }, [principal]);
+
+  const filteredNav = availableNav.filter((item) => {
+    if (!quickJumpSearch.trim()) return true;
+    const q = quickJumpSearch.toLowerCase();
+    return item.label.toLowerCase().includes(q) || item.path.toLowerCase().includes(q);
+  });
+
+  const handleNavigate = (path: string) => {
+    setQuickJumpOpen(false);
+    setQuickJumpSearch("");
+    navigate(path);
+  };
 
   if (!principal) {
     return null;
@@ -78,17 +121,37 @@ export function TopBar({
       </div>
 
       <div className={styles.search}>
-        <Input
-          placeholder="Search buses, students, routes…"
-          icon={<Search size={16} />}
-          disabled
-          title="Global search is not available yet"
-          aria-label="Global search (not available yet)"
-        />
+        <div
+          className={styles.searchInner}
+          onClick={() => setQuickJumpOpen(true)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setQuickJumpOpen(true);
+            }
+          }}
+          aria-label="Quick jump (⌘K)"
+        >
+          <Input
+            placeholder="Search buses, students, routes…"
+            icon={<Search size={15} />}
+            readOnly
+            title="Press ⌘K or click to open Quick Jump"
+            aria-label="Global search (not available yet)"
+          />
+          <kbd className={styles.searchKbd} aria-hidden="true">⌘K</kbd>
+        </div>
       </div>
 
       <div className={styles.actions}>
-        {liveIndicator}
+        {liveIndicator ?? (
+          <div className={styles.telemetryStatus} title="Real-time telematics gateway active">
+            <span className={styles.telemetryPulse} />
+            <span className={styles.telemetryText}>Fleet Live</span>
+          </div>
+        )}
         <IconButton
           icon={<Bell size={18} />}
           aria-label="Notifications"
@@ -96,6 +159,12 @@ export function TopBar({
           onClick={() => navigate(notificationsPath)}
         />
         <IconButton icon={<CircleHelp size={18} />} aria-label="Help" className={styles.helpButton} />
+        <IconButton
+          icon={resolvedTheme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+          aria-label={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          title={resolvedTheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          onClick={toggleTheme}
+        />
 
         <span className={styles.divider} aria-hidden="true" />
 
@@ -130,6 +199,58 @@ export function TopBar({
           )}
         </div>
       </div>
+
+      {quickJumpOpen && (
+        <div
+          className={styles.quickJumpOverlay}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setQuickJumpOpen(false);
+          }}
+        >
+          <div className={styles.quickJumpModal} role="dialog" aria-modal="true" aria-label="Quick Jump">
+            <div className={styles.quickJumpHeader}>
+              <Search size={16} className={styles.quickJumpIcon} aria-hidden="true" />
+              <input
+                ref={quickJumpInputRef}
+                type="text"
+                className={styles.quickJumpInput}
+                placeholder="Jump to a page (e.g. tracking, vehicles, routes)..."
+                value={quickJumpSearch}
+                onChange={(e) => setQuickJumpSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && filteredNav.length > 0) {
+                    handleNavigate(filteredNav[0].path);
+                  }
+                }}
+              />
+            </div>
+            <div className={styles.quickJumpList}>
+              {filteredNav.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.path}
+                    type="button"
+                    className={styles.quickJumpItem}
+                    onClick={() => handleNavigate(item.path)}
+                  >
+                    <Icon size={16} className={styles.quickJumpItemIcon} aria-hidden="true" />
+                    <span>{item.label}</span>
+                    <span className={styles.quickJumpPath}>{item.path}</span>
+                  </button>
+                );
+              })}
+              {filteredNav.length === 0 && (
+                <div className={styles.quickJumpEmpty}>No destination matching "{quickJumpSearch}"</div>
+              )}
+            </div>
+            <div className={styles.quickJumpFooter}>
+              <span>Press <kbd>Enter</kbd> to select</span>
+              <span><kbd>Esc</kbd> to close</span>
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

@@ -1,10 +1,7 @@
 .card {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-card);
-  border-radius: var(--radius-2xl);
-  /* Contact shadow only. A card sitting flat on the page with a hairline border is the correct
-     default; reserving real elevation for things that actually float is what makes elevation
-     mean something when it does appear. */
+  border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xs);
   transition:
     border-color var(--transition-base),
@@ -13,15 +10,18 @@
 }
 
 .padded {
-  padding: var(--space-6);
+  padding: var(--space-5);
+}
+
+.compact {
+  padding: var(--space-3) var(--space-4);
 }
 
 .elevated {
   box-shadow: var(--shadow-md);
+  border-color: var(--color-border-input);
 }
 
-/* Hover for cards that are themselves controls. 2px of travel, not 6 — enough to register as a
-   response, small enough that a grid of them does not visibly jump under a moving cursor. */
 .interactive {
   cursor: pointer;
 }
@@ -37,8 +37,6 @@
   box-shadow: var(--shadow-focus);
 }
 
-/* Nested panel: sits inside an already-white card, so it drops the border and steps down onto
-   the inset ground instead of drawing a second box outline within the first. */
 .inset {
   background: var(--color-bg-inset);
   border-color: transparent;
@@ -46,14 +44,15 @@
   border-radius: var(--radius-lg);
 }
 
-/* ---- Header --------------------------------------------------------------------------- */
+/* ---- Header ---- */
 
 .header {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-5) var(--space-6);
+  padding: var(--space-4) var(--space-5);
   border-bottom: 1px solid var(--color-border-subtle);
+  background: transparent;
 }
 
 .headerIcon {
@@ -61,11 +60,12 @@
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--radius-md);
   background: var(--color-bg-inset);
   color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .headerText {
@@ -79,7 +79,7 @@
 .headerTitle {
   font-family: var(--font-display);
   font-weight: var(--font-weight-bold);
-  font-size: var(--text-lg);
+  font-size: var(--text-base);
   letter-spacing: var(--tracking-tight);
   color: var(--color-text-primary);
   line-height: 1.25;
@@ -100,44 +100,42 @@
 }
 
 .body {
-  padding: var(--space-5) var(--space-6) var(--space-6);
+  padding: var(--space-4) var(--space-5) var(--space-5);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
 }
 
 .footer {
-  padding: var(--space-4) var(--space-6);
+  padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--color-border-subtle);
   display: flex;
   align-items: center;
   gap: var(--space-3);
   background: var(--color-bg-subtle);
-  border-radius: 0 0 var(--radius-2xl) var(--radius-2xl);
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
 }
 
 @media (max-width: 900px) {
   .padded {
-    padding: var(--space-5);
+    padding: var(--space-4);
   }
 
   .header {
-    padding: var(--space-4) var(--space-5);
+    padding: var(--space-3) var(--space-4);
   }
 
   .body {
-    padding: var(--space-4) var(--space-5) var(--space-5);
+    padding: var(--space-3) var(--space-4) var(--space-4);
   }
 
   .footer {
-    padding: var(--space-3) var(--space-5);
+    padding: var(--space-3) var(--space-4);
   }
 }
 
 @media (max-width: 600px) {
   .header {
-    /* A long title plus an action control cannot share one row at this width without the
-       action being squeezed to an unusable size — so it wraps to its own line instead. */
     flex-wrap: wrap;
   }
 

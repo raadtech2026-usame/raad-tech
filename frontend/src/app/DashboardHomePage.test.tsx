@@ -310,6 +310,29 @@ describe("DashboardHomePage", () => {
     expect(screen.getAllByText("Students").length).toBeGreaterThan(0);
   });
 
+  it("never describes a KPI card's count when that count failed to load", async () => {
+    setOrgAdmin();
+    // The total loads; only the active-vehicles count fails. That must not read as "All Active".
+    vi.mocked(listVehicles).mockImplementation(async (params: OffsetListParams) => {
+      if (params.filters.status === "active") throw new Error("network");
+      return pageOf(12) as unknown as OffsetPage<never>;
+    });
+    vi.mocked(listDevices).mockResolvedValue(pageOf(9) as never);
+    vi.mocked(listDrivers).mockRejectedValue(new Error("network"));
+    vi.mocked(listRoutes).mockResolvedValue(pageOf(4) as never);
+    vi.mocked(listStudents).mockResolvedValue(pageOf(30) as never);
+    vi.mocked(listParents).mockResolvedValue(pageOf(22) as never);
+
+    renderDashboard();
+
+    expect(await screen.findByText("12 registered")).toBeInTheDocument();
+    expect(screen.queryByText("All Active")).not.toBeInTheDocument();
+    expect(screen.queryByText(/standby/)).not.toBeInTheDocument();
+    // A failed drivers count shows "—", and nothing claiming there are no drivers.
+    expect(screen.queryByText("No drivers registered")).not.toBeInTheDocument();
+    expect(screen.queryByText("Certified")).not.toBeInTheDocument();
+  });
+
   it("shows the org's own subscription status and school finance summary", async () => {
     setOrgAdmin();
     vi.mocked(getCurrentSubscription).mockResolvedValue({

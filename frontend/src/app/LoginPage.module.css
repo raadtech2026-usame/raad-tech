@@ -1,13 +1,5 @@
-/* Sign-in.
- *
- * The two coloured radial blobs that used to sit in opposite corners are gone. A pair of
- * saturated glows at 20%/80% is the most recognisable stock-template background there is, and it
- * carried no meaning — RAAD is a transport operations platform, not a consumer app.
- *
- * What replaces it is a fine measurement grid on ink, with a single soft cool light behind the
- * card. The grid is drawn from the same neutral ramp as the rest of the product at very low
- * alpha, so it reads as texture rather than as ornament, and it is the visual language of an
- * operations console — plotting, tracking, position. */
+/* Enterprise SaaS Sign-in Experience */
+
 .page {
   min-height: 100vh;
   min-height: 100dvh;
@@ -16,28 +8,233 @@
   justify-content: center;
   background-color: var(--color-bg-ink);
   background-image:
-    radial-gradient(ellipse 80% 60% at 50% 0%, rgba(30, 99, 255, 0.16), transparent 70%),
+    radial-gradient(ellipse 70% 50% at 50% -10%, rgba(30, 99, 255, 0.22), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 85% 85%, rgba(16, 185, 129, 0.12), transparent 60%),
     repeating-linear-gradient(
       to right,
-      rgba(255, 255, 255, 0.035) 0 1px,
+      rgba(255, 255, 255, 0.03) 0 1px,
       transparent 1px 64px
     ),
     repeating-linear-gradient(
       to bottom,
-      rgba(255, 255, 255, 0.035) 0 1px,
+      rgba(255, 255, 255, 0.03) 0 1px,
       transparent 1px 64px
     );
   padding: var(--space-6);
 }
 
-.card {
+.container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-9);
+  max-width: 1080px;
   width: 100%;
-  max-width: 408px;
+}
+
+/* ---- Left Side: Enterprise Showcase ---- */
+
+.showcase {
+  flex: 1 1 520px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  color: var(--color-text-on-ink);
+}
+
+.showcaseTop {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.brandBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
+  background: rgba(30, 99, 255, 0.16);
+  border: 1px solid rgba(30, 99, 255, 0.35);
+  color: #60a5fa;
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  width: fit-content;
+}
+
+.livePulseIcon {
+  color: #38bdf8;
+  animation: raad-blink 1.6s infinite;
+}
+
+.showcaseTitle {
+  font-family: var(--font-display);
+  font-size: clamp(1.75rem, 1.4rem + 1.5vw, var(--text-4xl));
+  font-weight: var(--font-weight-extrabold);
+  line-height: 1.15;
+  letter-spacing: var(--tracking-display);
+  color: #ffffff;
+  margin: 0;
+}
+
+.showcaseDescription {
+  font-size: var(--text-base);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-on-ink-muted);
+  margin: 0;
+  max-width: 48ch;
+}
+
+/* Telemetry Card Preview */
+.telemetryCard {
+  background: rgba(17, 24, 39, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-2xl);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(10px);
+}
+
+.telemetryCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.telemetryVehicle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.vehicleAvatar {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-md);
+  background: rgba(30, 99, 255, 0.2);
+  color: #93c5fd;
+  border: 1px solid rgba(30, 99, 255, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vehicleName {
+  font-weight: var(--font-weight-bold);
+  font-size: var(--text-sm);
+  color: #ffffff;
+}
+
+.vehicleRoute {
+  font-size: var(--text-2xs);
+  color: #94a3b8;
+}
+
+.liveStatusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #34d399;
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+}
+
+.liveStatusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+  animation: raad-blink 1.4s infinite;
+}
+
+.telemetryMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+}
+
+.metricItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.metricLabel {
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-medium);
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+}
+
+.metricValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-bold);
+  color: #f1f5f9;
+}
+
+.metricValueSuccess {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-bold);
+  color: #34d399;
+}
+
+/* Feature Checklist */
+.featureList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.featureItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: #cbd5e1;
+}
+
+.featureCheck {
+  color: #34d399;
+  flex-shrink: 0;
+}
+
+.showcaseFooter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: #64748b;
+  padding-top: var(--space-2);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ---- Right Side: Sign-In Card ---- */
+
+.card {
+  flex: 0 0 420px;
   background: var(--color-bg-surface);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: var(--radius-3xl);
-  box-shadow: var(--shadow-xl);
-  padding: var(--space-9) var(--space-8);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.45);
+  padding: var(--space-8);
+  display: flex;
+  flex-direction: column;
 }
 
 .brand {
@@ -45,29 +242,67 @@
   flex-direction: column;
   align-items: center;
   gap: var(--space-3);
-  margin-bottom: var(--space-8);
+  margin-bottom: var(--space-6);
 }
 
 .heading {
   font-family: var(--font-display);
   font-weight: var(--font-weight-extrabold);
-  font-size: var(--text-3xl);
+  font-size: var(--text-2xl);
   letter-spacing: var(--tracking-display);
   color: var(--color-text-primary);
   text-align: center;
 }
 
 .tagline {
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
   color: var(--color-text-muted);
   text-align: center;
-  max-width: 30ch;
+  max-width: 32ch;
+  margin-top: 2px;
 }
 
 .form {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+
+.passwordWrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.passwordInput {
+  width: 100%;
+  padding-right: 40px !important;
+}
+
+.passwordToggle {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast);
+}
+
+.passwordToggle:hover {
+  color: var(--color-text-primary);
+}
+
+.submitButton {
+  margin-top: var(--space-2);
 }
 
 .alert {
@@ -78,30 +313,90 @@
   border: 1px solid var(--color-danger-border);
   border-radius: var(--radius-md);
   padding: var(--space-3);
+  margin: 0;
+}
+
+.securityNotice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: var(--text-2xs);
+  color: var(--color-text-faint);
+  margin-top: var(--space-4);
+  text-align: center;
+}
+
+.securityIcon {
+  color: var(--color-brand-primary);
 }
 
 .footer {
-  margin-top: var(--space-7);
-  padding-top: var(--space-5);
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
   border-top: 1px solid var(--color-border-subtle);
   text-align: center;
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
   color: var(--color-text-faint);
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .container {
+    flex-direction: column;
+    gap: var(--space-7);
+  }
+
+  .showcase {
+    flex: auto;
+    max-width: 480px;
+    text-align: center;
+    align-items: center;
+  }
+
+  .brandBadge {
+    margin: 0 auto;
+  }
+
+  .showcaseTitle {
+    text-align: center;
+  }
+
+  .showcaseDescription {
+    text-align: center;
+  }
+
+  .featureItem {
+    justify-content: center;
+  }
+
+  .showcaseFooter {
+    justify-content: center;
+  }
+
+  .card {
+    flex: auto;
+    width: 100%;
+    max-width: 440px;
+  }
 }
 
 @media (max-width: 600px) {
   .page {
     padding: var(--space-4);
     align-items: flex-start;
-    padding-top: var(--space-9);
+  }
+
+  .showcase {
+    display: none;
   }
 
   .card {
-    padding: var(--space-7) var(--space-5);
+    padding: var(--space-6) var(--space-5);
     border-radius: var(--radius-2xl);
   }
 
   .heading {
-    font-size: var(--text-2xl);
+    font-size: var(--text-xl);
   }
 }

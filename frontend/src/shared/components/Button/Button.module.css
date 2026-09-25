@@ -10,9 +10,9 @@
   border: 1px solid transparent;
   cursor: pointer;
   white-space: nowrap;
-  /* Every button is at least this tall regardless of its label, so a toolbar of mixed buttons
-     and inputs lines up on one baseline instead of stepping by a pixel or two. */
   min-height: 38px;
+  position: relative;
+  user-select: none;
   transition:
     background var(--transition-fast),
     border-color var(--transition-fast),
@@ -21,15 +21,14 @@
     transform var(--transition-fast);
 }
 
-/* A 1px press displacement. Almost subliminal, and the single cheapest thing that makes a
-   button feel like a physical control rather than a colored rectangle. */
 .button:active:not(:disabled) {
   transform: translateY(1px);
 }
 
 .button:disabled {
   cursor: not-allowed;
-  opacity: 0.5;
+  opacity: 0.55;
+  box-shadow: none !important;
 }
 
 .button:focus-visible {
@@ -40,31 +39,38 @@
 /* Sizes */
 .md {
   font-size: var(--text-base);
-  padding: 9px var(--space-4);
+  padding: 8px var(--space-4);
+  min-height: 38px;
 }
 
 .sm {
   font-size: var(--text-sm);
-  padding: 6px var(--space-3);
+  padding: 5px var(--space-3);
   min-height: 32px;
 }
 
 /* Variants */
 .primary {
-  background: var(--color-brand-primary);
+  background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
   color: var(--color-text-inverse);
-  /* A tinted shadow in the button's own hue, not a gray one — a gray shadow under a saturated
-     button reads as dirt. Kept tight so it is depth, not a glow. */
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08), 0 2px 6px -1px rgba(30, 99, 255, 0.35);
+  border-color: #1e40af;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 1px 2px rgba(15, 23, 42, 0.08),
+    0 2px 6px -1px rgba(37, 99, 235, 0.35);
 }
 
 .primary:hover:not(:disabled) {
-  background: var(--color-brand-primary-hover);
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.1), 0 4px 10px -2px rgba(30, 99, 255, 0.42);
+  background: linear-gradient(180deg, #1d4ed8 0%, #1e40af 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    0 2px 4px rgba(15, 23, 42, 0.1),
+    0 4px 10px -1px rgba(37, 99, 235, 0.45);
 }
 
 .primary:active:not(:disabled) {
-  background: var(--color-brand-primary-active);
+  background: #1e40af;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 .secondary {
@@ -78,6 +84,11 @@
   background: var(--color-bg-subtle);
   border-color: var(--color-border-input);
   color: var(--color-text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.secondary:active:not(:disabled) {
+  background: var(--color-bg-inset);
 }
 
 .ghost {
@@ -94,11 +105,13 @@
   background: var(--color-bg-surface);
   border-color: var(--color-danger-border);
   color: var(--color-danger-text);
+  box-shadow: var(--shadow-xs);
 }
 
 .danger:hover:not(:disabled) {
   background: var(--color-danger-tint);
   border-color: var(--color-danger);
+  color: var(--color-danger-text);
 }
 
 .danger:focus-visible {
@@ -106,14 +119,21 @@
 }
 
 .dangerSolid {
-  background: var(--color-danger);
+  background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%);
   color: var(--color-text-inverse);
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08), 0 2px 6px -1px rgba(225, 59, 82, 0.35);
+  border-color: #b91c1c;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 1px 2px rgba(15, 23, 42, 0.08),
+    0 2px 6px -1px rgba(239, 68, 68, 0.35);
 }
 
 .dangerSolid:hover:not(:disabled) {
-  background: #c92f45;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.1), 0 4px 10px -2px rgba(225, 59, 82, 0.42);
+  background: linear-gradient(180deg, #dc2626 0%, #b91c1c 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 2px 4px rgba(15, 23, 42, 0.1),
+    0 4px 10px -1px rgba(239, 68, 68, 0.45);
 }
 
 .dangerSolid:focus-visible {

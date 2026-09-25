@@ -4,6 +4,24 @@
   gap: var(--space-5);
 }
 
+.kpiGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-4);
+}
+
+@media (max-width: 1024px) {
+  .kpiGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .kpiGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Page toolbar: filters on the left, actions on the right. Wraps rather than compressing, so a
  * long filter row never squeezes the primary action down to an unreadable width. Below the phone
  * breakpoint it stops being a row at all (see the media query at the foot of this file). */

@@ -1,8 +1,5 @@
-/* Stacked, full-page-width layout (redesign): Map and Live Cameras are no longer side-by-side
- * columns sharing one viewport-height budget — the page now grows to its natural content height
- * and the surrounding app shell scrolls, so the user scrolls down from the map to reach the
- * camera wall below it. Both sections get the page's full width; each is sized independently
- * (below), not squeezed to fit a fixed remaining space. */
+/* Enterprise Live Tracking Workspace */
+
 .page {
   display: flex;
   flex-direction: column;
@@ -13,6 +10,10 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border-default);
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
 }
 
 .disconnected {
@@ -20,28 +21,32 @@
   align-items: center;
   gap: 6px;
   font-size: var(--text-xs);
-  color: var(--color-text-faint);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-muted);
 }
 
 .lastUpdate {
   font-size: var(--text-2xs);
-  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .workspace {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-5);
 }
 
-/* Map: the upper section, full width, a substantial but bounded height (not the whole viewport,
- * so Live Cameras below is reachable with one natural scroll, not several). */
+/* Map: Upper section, full width, bounded viewport height */
 .mapSection {
   width: 100%;
-  height: min(56vh, 620px);
-  /* Mapbox GL JS's own documented floor (`VehicleMapPanel.module.css`'s `.mapArea`, 320px) plus
-   * a small margin so this section is never shorter than that regardless of viewport height. */
-  min-height: 340px;
+  height: min(58vh, 640px);
+  min-height: 360px;
+  border-radius: var(--radius-2xl);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-border-card);
 }
 
 .mapSection > * {
@@ -49,19 +54,18 @@
   width: 100%;
 }
 
-/* No video-eligible role for this session: the map is the only section, so it can take a
- * taller share of the page instead of leaving room for a video wall that will never render. */
 .workspaceMapOnly .mapSection {
-  height: min(72vh, 760px);
+  height: min(74vh, 780px);
 }
 
-/* Live Cameras: the lower section, full page width, sized generously enough that a 2x2 wall
- * gets real per-tile screen space — this is the page's dominant area by design, just reached by
- * scrolling down from the map rather than by narrowing the map beside it. */
+/* Live Cameras: Lower section, full width */
 .videoSection {
   width: 100%;
   height: min(80vh, 840px);
   min-height: 480px;
+  border-radius: var(--radius-2xl);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
 }
 
 .videoSection > * {
@@ -76,10 +80,6 @@
     min-height: 320px;
   }
 
-  /* The wall's own internal grid (`MultiCameraVideoPanel.module.css`) already collapses to a
-   * responsive single-column layout below this width — this section no longer needs a tall
-   * fixed height to hold a 2x2 grid at that point, so it's allowed to size to its own content
-   * instead (the page itself keeps scrolling normally). */
   .videoSection {
     height: auto;
     min-height: 420px;
@@ -92,6 +92,7 @@
   flex: 1;
   min-height: 360px;
   overflow: hidden;
+  border-radius: var(--radius-2xl);
 }
 
 .videoStateBody {
@@ -99,17 +100,14 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--space-4);
+  padding: var(--space-6);
 }
 
-/* Phone. The map and the camera wall are both viewport-height-relative above, which on a short
- * phone screen leaves each one too small to read while still consuming the whole viewport. Fixed
- * minimums instead: the page simply scrolls, which is the correct behaviour on a handset. */
 @media (max-width: 600px) {
   .mapSection,
   .workspaceMapOnly .mapSection {
-    height: 320px;
-    min-height: 320px;
+    height: 340px;
+    min-height: 340px;
   }
 
   .videoSection {
@@ -124,5 +122,6 @@
   .mapHeaderStatus {
     flex-wrap: wrap;
     gap: var(--space-2);
+    border-radius: var(--radius-md);
   }
 }

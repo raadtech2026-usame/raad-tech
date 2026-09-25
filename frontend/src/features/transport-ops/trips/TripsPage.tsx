@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { CalendarClock, Plus, UserRound } from "lucide-react";
+import { CalendarClock, CheckCircle2, Clock, Plus, Radio, UserRound } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
+import { StatCard } from "../../../shared/components/StatCard/StatCard";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { useToast } from "../../../shared/components/Toast/toastStore";
@@ -243,14 +244,21 @@ export function TripsPage() {
       {
         id: "vehicle",
         header: "Vehicle",
-        cell: ({ row }) => <span>{vehiclePlateById.get(row.original.vehicleId) ?? row.original.vehicleId}</span>,
+        cell: ({ row }) => {
+          const plate = vehiclePlateById.get(row.original.vehicleId);
+          return plate ? <span className={styles.plateBadge}>{plate}</span> : <MonoText>{row.original.vehicleId}</MonoText>;
+        },
       },
       {
         id: "status",
         header: "Status",
         meta: { sortField: "status" } satisfies DataTableColumnMeta,
         cell: ({ row }) => (
-          <Badge variant={statusTone(row.original.status)} dot>
+          <Badge
+            variant={statusTone(row.original.status)}
+            dot
+            pulsing={row.original.status === "in_progress"}
+          >
             {statusLabel(row.original.status)}
           </Badge>
         ),
@@ -262,6 +270,20 @@ export function TripsPage() {
   const activeStatusFilter = filters.status ?? "all";
   const activeTypeFilter = filters.trip_type ?? "all";
 
+  const kpiStats = useMemo(() => {
+    let inProgress = 0;
+    let scheduled = 0;
+    let completed = 0;
+    let interrupted = 0;
+    for (const t of rows) {
+      if (t.status === "in_progress") inProgress++;
+      else if (t.status === "scheduled") scheduled++;
+      else if (t.status === "completed") completed++;
+      else if (t.status === "interrupted") interrupted++;
+    }
+    return { inProgress, scheduled, completed, interrupted };
+  }, [rows]);
+
   // Coarse, presentation-only role gating (`.claude/rules/frontend.md` #2) — see this
   // component's own docstring for the exact RBAC citation.
   const canManage = principal?.role === "founder" || principal?.role === "org_admin";
@@ -270,6 +292,37 @@ export function TripsPage() {
 
   return (
     <div className={styles.page}>
+      <div className={styles.kpiGrid}>
+        <StatCard
+          icon={<Radio size={16} />}
+          label="In Transit (Live)"
+          value={kpiStats.inProgress}
+          tone="success"
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<Clock size={16} />}
+          label="Scheduled"
+          value={kpiStats.scheduled}
+          tone="brand"
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<CheckCircle2 size={16} />}
+          label="Completed"
+          value={kpiStats.completed}
+          tone="neutral"
+          isLoading={isLoading}
+        />
+        <StatCard
+          icon={<CalendarClock size={16} />}
+          label="Total Trips"
+          value={total}
+          tone="purple"
+          isLoading={isLoading}
+        />
+      </div>
+
       <div className={styles.toolbar}>
         <div className={styles.filterGroup}>
           <FilterChips

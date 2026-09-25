@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -164,7 +165,9 @@ function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const utils = render(
     <QueryClientProvider client={queryClient}>
-      <LiveTrackingPage />
+      <MemoryRouter>
+        <LiveTrackingPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
   return {
@@ -172,7 +175,9 @@ function renderPage() {
     rerenderSame: () =>
       utils.rerender(
         <QueryClientProvider client={queryClient}>
-          <LiveTrackingPage />
+          <MemoryRouter>
+            <LiveTrackingPage />
+          </MemoryRouter>
         </QueryClientProvider>,
       ),
   };

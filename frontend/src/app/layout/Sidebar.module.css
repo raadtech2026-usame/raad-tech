@@ -228,9 +228,10 @@
    the brand color stays on the icon, where it reads as identity rather than as an alert. */
 .linkActive,
 .linkActive:hover {
-  background: var(--color-bg-subtle);
-  border-color: var(--color-border-subtle);
-  color: var(--color-text-sidebar-active);
+  background: var(--color-brand-primary-tint);
+  border-color: var(--color-brand-primary-tint-strong);
+  color: var(--color-brand-primary);
+  font-weight: var(--font-weight-bold);
   box-shadow: var(--shadow-xs);
 }
 

@@ -9,20 +9,20 @@
  * query doing the work. */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--space-5);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-4);
 }
 
 @media (max-width: 900px) {
   .grid {
-    gap: var(--space-4);
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--space-3);
   }
 }
 
 @media (max-width: 600px) {
   .grid {
-    /* Below this width a 240px floor would still force a horizontal squeeze on the narrowest
-       phones, so the row simply becomes a single column. */
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-2);
   }
 }

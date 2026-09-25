@@ -45,7 +45,7 @@
 }
 
 .chip:hover:not(.active) {
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--color-bg-subtle);
   color: var(--color-text-secondary);
 }
 
