@@ -84,6 +84,7 @@ treated as "live" when `False`).
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 from src.vendors.jt808.dispatcher.general_response import (
@@ -95,9 +96,15 @@ from src.vendors.jt808.dispatcher.general_response import (
 )
 from src.vendors.jt808.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
 from src.events.device_position_reported import DevicePositionReported
+from src.events.device_video_signal_status_reported import DeviceVideoSignalStatusReported
 from src.events.publisher_port import EventPublisher
 from src.gps_validation import is_plausible_coordinate
 from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
+from src.vendors.jt808.handlers.position_additional_info import (
+    VideoSignalStatus,
+    parse_additional_items,
+    video_signal_status,
+)
 from src.vendors.jt808.handlers.position_body import parse_position_report_body
 from src.logging_setup import get_logger, log_with_fields
 from src.vendors.jt808.protocol.exceptions import ProtocolError
@@ -117,15 +124,53 @@ def _general_response(message: InboundMessage, result: int) -> HandlerResult:
     )
 
 
+#: ADR-0046 §1: republish an unchanged video-signal mask at most this often, so the backend's
+#: time-limited copy (30 minutes) never lapses while the terminal is online.
+VIDEO_SIGNAL_REFRESH_SECONDS = 300.0
+
+
+class VideoSignalStatusTracker:
+    """Decides when a terminal's `0x15`/`0x16` report is news: the mask changed, it is the first
+    report on this connection, or the last publish is older than the refresh interval. A position
+    report arrives every ~20 s; publishing each one would be noise."""
+
+    def __init__(
+        self,
+        *,
+        refresh_seconds: float = VIDEO_SIGNAL_REFRESH_SECONDS,
+        clock=time.monotonic,
+    ) -> None:
+        self._refresh_seconds = refresh_seconds
+        self._clock = clock
+        self._last: dict[str, tuple[str, VideoSignalStatus, float]] = {}
+
+    def should_publish(
+        self, terminal_id: str, connection_id: str, status: VideoSignalStatus
+    ) -> bool:
+        now = self._clock()
+        previous = self._last.get(terminal_id)
+        if (
+            previous is not None
+            and previous[0] == connection_id
+            and previous[1] == status
+            and now - previous[2] < self._refresh_seconds
+        ):
+            return False
+        self._last[terminal_id] = (connection_id, status, now)
+        return True
+
+
 class LocationHandler(MessageHandler):
     def __init__(
         self,
         event_publisher: EventPublisher,
         *,
         latest_position_writer: LatestPositionWriter | None = None,
+        video_signal_tracker: VideoSignalStatusTracker | None = None,
     ) -> None:
         self._event_publisher = event_publisher
         self._latest_position_writer = latest_position_writer or LoggingLatestPositionWriter()
+        self._video_signal_tracker = video_signal_tracker or VideoSignalStatusTracker()
 
     async def handle(
         self, message: InboundMessage, context: HandlerContext
@@ -189,6 +234,7 @@ class LocationHandler(MessageHandler):
         )
         await self._latest_position_writer.write(event)
         await self._event_publisher.publish(event)
+        await self._publish_video_signal_status(message, context, session, event)
 
         log_with_fields(
             logger,
@@ -200,3 +246,36 @@ class LocationHandler(MessageHandler):
             is_gps_valid=is_gps_valid,
         )
         return _general_response(message, RESULT_SUCCESS)
+
+    async def _publish_video_signal_status(
+        self, message: InboundMessage, context: HandlerContext, session, position
+    ) -> None:
+        """ADR-0046 §1: the terminal's own per-channel camera signal (item `0x15`). A failure here
+        is logged and never affects the position report itself."""
+        try:
+            status = video_signal_status(parse_additional_items(message.body))
+            if status is None or not self._video_signal_tracker.should_publish(
+                message.terminal_id, context.connection_id, status
+            ):
+                return
+            await self._event_publisher.publish(
+                DeviceVideoSignalStatusReported(
+                    terminal_id=message.terminal_id,
+                    organization_id=session.organization_id,
+                    vehicle_id=session.vehicle_id,
+                    device_id=session.device_id,
+                    video_signal_loss_mask=status.loss_mask,
+                    video_signal_occlusion_mask=status.occlusion_mask,
+                    event_time=position.event_time,
+                    received_at=position.received_at,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - never lose a position over an extra item
+            log_with_fields(
+                logger,
+                30,
+                "video_signal_status_publish_failed",
+                connection_id=context.connection_id,
+                terminal_id=message.terminal_id,
+                error=str(exc),
+            )

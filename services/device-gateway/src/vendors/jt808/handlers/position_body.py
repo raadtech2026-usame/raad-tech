@@ -31,7 +31,9 @@ against the original Table 23 citation below — unchanged):
 Total fixed length: 4+4+4+4+2+2+2+6 = 28 bytes. A real body may carry a trailing "位置附加信息
 项列表" (additional-info item list, Table 26) after these 28 bytes — variable-length,
 ID+length+value encoded. This parser only extracts the fixed portion; the additional-info list
-is neither decoded nor validated (JT808 Technical Design §10's canonical `PositionReport` shape
+is decoded separately, and only for the JT/T 1078 video items (`position_additional_info.py`,
+ADR-0046: item `0x15` is how RAAD knows which channels have a camera). Otherwise it is not
+validated (JT808 Technical Design §10's canonical `PositionReport` shape
 has no field any additional-info item would fill — altitude itself is parsed here for
 structural completeness but is *not* part of that canonical shape either, since no approved
 document defines a Tracking-side altitude concept yet, `tracking/domain/value_objects.py`'s own

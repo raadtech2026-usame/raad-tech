@@ -55,6 +55,7 @@ from src.events.device_offline import DeviceOffline
 from src.events.device_online import DeviceOnline
 from src.events.device_position_reported import DevicePositionReported
 from src.events.device_resource_list_reported import DeviceResourceListReported
+from src.events.device_video_signal_status_reported import DeviceVideoSignalStatusReported
 from src.events.publisher_port import DeviceEvent, EventPublisher
 
 DEFAULT_STREAM_NAME = "raad:events"
@@ -231,6 +232,23 @@ def _fields_for(event: DeviceEvent) -> dict[str, str]:
                 "audio_frame_length": event.audio_frame_length,
                 "supports_audio_output": event.supports_audio_output,
                 "video_codec": event.video_codec,
+            },
+        )
+    if isinstance(event, DeviceVideoSignalStatusReported):
+        return _envelope(
+            event_type="DeviceVideoSignalStatusReported",
+            org_id=event.organization_id,
+            aggregate_type="Device",
+            aggregate_id=event.terminal_id,
+            occurred_at=event.event_time,
+            payload={
+                "organization_id": event.organization_id,
+                "vehicle_id": event.vehicle_id,
+                "device_id": event.device_id,
+                "terminal_id": event.terminal_id,
+                "video_signal_loss_mask": event.video_signal_loss_mask,
+                "video_signal_occlusion_mask": event.video_signal_occlusion_mask,
+                "event_time": event.event_time.isoformat(),
             },
         )
     raise TypeError(f"Unrecognized device-plane event type: {type(event)!r}")

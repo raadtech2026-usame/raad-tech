@@ -38,6 +38,7 @@ from src.events.device_offline import DeviceOffline
 from src.events.device_online import DeviceOnline
 from src.events.device_position_reported import DevicePositionReported
 from src.events.device_resource_list_reported import DeviceResourceListReported
+from src.events.device_video_signal_status_reported import DeviceVideoSignalStatusReported
 from src.logging_setup import get_logger, log_with_fields
 
 logger = get_logger("device_gateway.events.publisher")
@@ -51,6 +52,7 @@ DeviceEvent = Union[
     DeviceCommandResult,
     DeviceResourceListReported,
     DeviceAvAttributesReported,
+    DeviceVideoSignalStatusReported,
 ]
 
 
@@ -177,5 +179,18 @@ class LoggingEventPublisher(EventPublisher):
                 input_audio_sample_bits=event.input_audio_sample_bits,
                 supports_audio_output=event.supports_audio_output,
                 video_codec=event.video_codec,
+                event_time=event.event_time.isoformat(),
+            )
+        elif isinstance(event, DeviceVideoSignalStatusReported):
+            log_with_fields(
+                logger,
+                20,
+                "device_video_signal_status_reported",
+                organization_id=event.organization_id,
+                vehicle_id=event.vehicle_id,
+                device_id=event.device_id,
+                terminal_id=event.terminal_id,
+                video_signal_loss_mask=event.video_signal_loss_mask,
+                video_signal_occlusion_mask=event.video_signal_occlusion_mask,
                 event_time=event.event_time.isoformat(),
             )
