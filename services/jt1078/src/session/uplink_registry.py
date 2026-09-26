@@ -162,6 +162,9 @@ class IngestConnection:
             silent=mean < 32,
         )
 
+    def owns(self, writer: asyncio.StreamWriter) -> bool:
+        return self._writer is writer
+
     def log_session_summary(self) -> None:
         """One authoritative line per talk session, emitted when the device's ingest connection
         goes away (`IngestConnectionRegistry.unregister`). Unlike the periodic reports above this
@@ -185,10 +188,17 @@ class IngestConnectionRegistry:
             payload_type=payload_type,
         )
 
-    def unregister(self, session_id: str) -> None:
-        connection = self._connections.pop(session_id, None)
-        if connection is not None:
-            connection.log_session_summary()
+    def unregister(self, session_id: str, *, writer: asyncio.StreamWriter | None = None) -> None:
+        """`writer`, when given, must be the registered connection's own: a superseded older
+        connection closing must not remove the newer one's bridge (ADR-0046). Keys are device
+        stream ids since ADR-0046 (an intercom stream has exactly one session)."""
+        connection = self._connections.get(session_id)
+        if connection is None:
+            return
+        if writer is not None and not connection.owns(writer):
+            return
+        del self._connections[session_id]
+        connection.log_session_summary()
 
     async def send_audio(self, session_id: str, body: bytes) -> bool:
         connection = self._connections.get(session_id)

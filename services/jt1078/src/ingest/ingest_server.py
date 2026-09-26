@@ -16,6 +16,14 @@ if the *first* frame's identity doesn't correlate to any `REQUESTED`/`ACTIVE` se
 exact channel, the connection is closed immediately — no frames from an unrecognized device (or
 a channel with no pending session) are ever fed to the reassembler/repackager/viewer pipeline.
 
+**Attribution is to a device stream, not a viewer's session (ADR-0046 §2).** A connection is
+matched once, on its first frame, to the relay-owned stream of that terminal, channel and kind
+(`SessionManager.resolve_ingest_stream`); every session watching that stream shares it. The
+connection remembers the stream generation it was matched in: when the stream restarts or ends,
+frames still arriving on the old connection close it instead of feeding the new generation's
+viewers. A newer connection for the same running stream supersedes (closes) the older one, since a
+terminal that reconnects after a radio blip leaves the old socket half-dead on this side.
+
 **One `ExtendedRtpStreamDemuxer` + `FrameReassembler` pair per connection** — a fresh instance for
 every accepted TCP connection, discarded when that connection closes (ADR-0024 §4: no state
 survives beyond an active session's own connection).
@@ -64,14 +72,12 @@ class IngestServer:
         self._port = port
         self._session_manager = session_manager
         self._on_reassembled_frame = on_reassembled_frame
-        #: ADR-0036. `None` (default) keeps every pre-existing caller/test unchanged — no uplink
-        #: bridging happens unless a real registry is wired in (`relay.py`'s composition root).
+        #: ADR-0036. `None` keeps callers without an intercom path unchanged.
         self._uplink_registry = uplink_registry
         self._server: asyncio.base_events.Server | None = None
         self._connections: set[asyncio.StreamWriter] = set()
-        #: Device connections correlated to each session — more than one when the device
-        #: reconnects mid-session — so ending the session can close all of them.
-        self._session_connections: dict[str, set[asyncio.StreamWriter]] = {}
+        #: Device connections attributed to each stream.
+        self._stream_connections: dict[str, set[asyncio.StreamWriter]] = {}
 
     @property
     def bound_port(self) -> int:
@@ -82,10 +88,10 @@ class IngestServer:
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle_connection, self._host, self._port)
 
-    def close_session_connections(self, session_id: str) -> int:
-        """Closes every device connection correlated to `session_id` (module docstring); called
-        by the relay when it removes the session. Returns how many were still open."""
-        writers = self._session_connections.pop(session_id, set())
+    def close_stream_connections(self, stream_id: str) -> int:
+        """Closes every device connection attributed to `stream_id` (the stream ended or is
+        restarting). Returns how many were still open."""
+        writers = self._stream_connections.pop(stream_id, set())
         closed = 0
         for writer in writers:
             if not writer.is_closing():
@@ -93,11 +99,17 @@ class IngestServer:
                 closed += 1
         return closed
 
+    # Pre-ADR-0046 name; connections are keyed by stream, no longer by session.
+    close_session_connections = close_stream_connections
+
+    def open_connection_count(self, stream_id: str) -> int:
+        return len(self._stream_connections.get(stream_id, ()))
+
     async def stop(self) -> None:
         for writer in list(self._connections):
             writer.close()
         self._connections.clear()
-        self._session_connections.clear()
+        self._stream_connections.clear()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -107,18 +119,14 @@ class IngestServer:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         self._connections.add(writer)
-        # Bug 2 observability fix: previously this class logged nothing at all on a bare TCP
-        # connect — the only log lines were `malformed_ingest_frame` (a parse failure) and
-        # `unsolicited_ingest_connection_rejected` (a *decoded* frame with no matching session).
-        # A device that never connects at all and a device that connects but never sends a single
-        # valid frame were therefore indistinguishable after the fact - exactly the ambiguity that
-        # left session `01M1EQZE1D1831D74MHXCTDGQP`'s failure unprovable from logs alone. This one
-        # line closes that gap without changing any behavior.
+        # A bare connect is logged so "the device never dialed" and "dialed but sent nothing
+        # valid" stay distinguishable after the fact.
         peer = writer.get_extra_info("peername")
         log_with_fields(logger, 20, "ingest_connection_accepted", peer_address=str(peer))
         demuxer = ExtendedRtpStreamDemuxer()
         reassembler = FrameReassembler()
-        session_id: str | None = None
+        stream_id: str | None = None
+        generation: int | None = None
         try:
             while True:
                 chunk = await reader.read(_READ_CHUNK_SIZE)
@@ -129,17 +137,12 @@ class IngestServer:
                 except MalformedExtendedRtpFrameError as exc:
                     log_with_fields(logger, 30, "malformed_ingest_frame", error=str(exc))
                     break
-
                 for frame in frames:
-                    if session_id is None:
-                        # Bug 2 fix: `is_audio` lets `resolve_ingest_by_terminal_id` prefer an
-                        # INTERCOM session over a same-channel LIVE/PLAYBACK session (or vice
-                        # versa) when both are pending for this device — see that method's own
-                        # docstring for the full reasoning and the real scenario this closes.
-                        session = self._session_manager.resolve_ingest_by_terminal_id(
+                    if stream_id is None:
+                        stream = self._session_manager.resolve_ingest_stream(
                             frame.sim_card_number, frame.logical_channel, is_audio=frame.is_audio
                         )
-                        if session is None:
+                        if stream is None:
                             log_with_fields(
                                 logger,
                                 30,
@@ -149,64 +152,81 @@ class IngestServer:
                                 is_audio=frame.is_audio,
                             )
                             return
-                        session_id = session.session_id
-                        # Bug 2 observability fix: the success path previously logged nothing at
-                        # all - a silent correlation is indistinguishable from "no frame ever
-                        # arrived" once the connection later closes. `kind` is the one field that
-                        # would have made the LIVE-vs-INTERCOM ambiguity this fix resolves visible
-                        # in production logs, not just provable by reading the code.
+                        stream_id, generation = stream.stream_id, stream.generation
+                        superseded = self._attach(stream_id, writer)
                         log_with_fields(
                             logger,
                             20,
                             "ingest_connection_correlated",
-                            session_id=session_id,
-                            kind=session.kind.value,
+                            stream_id=stream_id,
+                            generation=generation,
+                            kind=stream.kind.value,
                             logical_channel=frame.logical_channel,
                             is_audio=frame.is_audio,
+                            superseded_connections=superseded,
                         )
-                        self._session_connections.setdefault(session_id, set()).add(writer)
-                        await self._session_manager.mark_ingest_active(session_id)
+                        self._session_manager.note_ingest_connected(stream_id)
+                        await self._session_manager.mark_stream_active(stream_id)
                         if self._uplink_registry is not None:
                             self._uplink_registry.register(
-                                session_id,
+                                stream_id,
                                 writer=writer,
                                 sim_card_number=frame.sim_card_number,
                                 logical_channel=frame.logical_channel,
                             )
-                    elif self._session_manager.resolve(session_id) is None:
-                        # The session ended but the device is still streaming on it - stop
-                        # accepting the orphaned stream (module docstring).
-                        log_with_fields(
-                            logger,
-                            30,
-                            "ingest_connection_closed_session_ended",
-                            session_id=session_id,
-                            peer_address=str(peer),
-                            logical_channel=frame.logical_channel,
-                        )
-                        return
                     else:
-                        self._session_manager.touch_ingest(session_id)
-
+                        current = self._session_manager.resolve_stream(stream_id)
+                        if current is None or current.generation != generation:
+                            # The stream ended or restarted, but the device is still sending on
+                            # this connection: stop accepting the orphaned media.
+                            log_with_fields(
+                                logger,
+                                30,
+                                "ingest_connection_closed_session_ended",
+                                stream_id=stream_id,
+                                generation=generation,
+                                peer_address=str(peer),
+                                logical_channel=frame.logical_channel,
+                            )
+                            return
+                        self._session_manager.touch_stream(stream_id)
                     reassembled = reassembler.feed(frame)
                     if reassembled is not None:
-                        await self._on_reassembled_frame(session_id, reassembled)
+                        await self._on_reassembled_frame(stream_id, reassembled)
         finally:
             self._connections.discard(writer)
-            if session_id is not None:
-                session_writers = self._session_connections.get(session_id)
-                if session_writers is not None:
-                    session_writers.discard(writer)
-                    if not session_writers:
-                        del self._session_connections[session_id]
+            if stream_id is not None:
+                remaining = self._detach(stream_id, writer)
                 if self._uplink_registry is not None:
-                    self._uplink_registry.unregister(session_id)
-                # 2026-09-02: act on the device's own close immediately instead of letting the
-                # idle sweep infer it ~60s later. Packet-verified against the physical bench
-                # unit: after a radio-link outage the MDVR sends FIN on every JT/T 1078
-                # connection rather than resuming, and that FIN lands here. A no-op when the
-                # session is already gone (i.e. *we* closed this connection during a normal
-                # teardown) — see `SessionManager.handle_ingest_disconnected`'s own docstring.
-                await self._session_manager.handle_ingest_disconnected(session_id)
+                    self._uplink_registry.unregister(stream_id, writer=writer)
+                # The device's own close ends the stream at once rather than ~60 s later on the
+                # idle sweep (packet-verified 2026-09-02). A no-op when the relay closed this
+                # connection itself, or when a newer connection or generation carries the stream.
+                await self._session_manager.handle_ingest_disconnected(
+                    stream_id, generation=generation, remaining_connections=remaining
+                )
             if not writer.is_closing():
                 writer.close()
+
+    def _attach(self, stream_id: str, writer: asyncio.StreamWriter) -> int:
+        """Registers `writer` for `stream_id`, closing any older connection of that stream.
+        Returns how many were superseded."""
+        writers = self._stream_connections.setdefault(stream_id, set())
+        superseded = 0
+        for older in list(writers):
+            writers.discard(older)
+            if not older.is_closing():
+                older.close()
+                superseded += 1
+        writers.add(writer)
+        return superseded
+
+    def _detach(self, stream_id: str, writer: asyncio.StreamWriter) -> int:
+        writers = self._stream_connections.get(stream_id)
+        if writers is None:
+            return 0
+        writers.discard(writer)
+        if not writers:
+            del self._stream_connections[stream_id]
+            return 0
+        return len(writers)

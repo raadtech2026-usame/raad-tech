@@ -34,6 +34,7 @@ from src.events.redis_session_event_publisher import RedisSessionEventPublisher
 from src.ingest.frame_reassembly import ReassembledFrame
 from src.ingest.ingest_server import IngestServer
 from src.logging_setup import configure_logging, get_logger, log_with_fields
+from src.session.device_stream import DeviceStream
 from src.session.session_manager import SessionManager
 from src.session.session_request_server import SessionRequestServer
 from src.session.uplink_registry import IngestConnectionRegistry
@@ -126,7 +127,10 @@ class Jt1078Relay:
         self._broker_config = broker_config or BrokerConfig.from_env()
         self._redis_client = redis_client or self._build_redis_client()
 
+        #: session id -> its stream's hub (the viewer server admits by session token).
         self._hubs: dict[str, SessionBroadcastHub] = {}
+        #: device stream id -> hub (ADR-0046: one hub per stream, shared by its sessions).
+        self._stream_hubs: dict[str, SessionBroadcastHub] = {}
         self._drop_tracker = ViewerDropTracker()
         self._audio_transcode_sessions: dict[str, _AudioTranscodeSession] = {}
         # Holds references to fire-and-forget transcoder start/stop tasks spawned from the
@@ -145,8 +149,14 @@ class Jt1078Relay:
             ingest_timeout_seconds=self._config.ingest_timeout_seconds,
             max_global_sessions=self._config.max_global_sessions,
             max_sessions_per_organization=self._config.max_sessions_per_organization,
+            stream_linger_seconds=self._config.stream_linger_seconds,
+            start_serialization_window_seconds=self._config.start_serialization_window_seconds,
+            ingest_target=(self._config.effective_public_ingest_host, self._config.ingest_port),
             on_session_created=self._on_session_created,
             on_session_removed=self._on_session_removed,
+            on_stream_created=self._on_stream_created,
+            on_stream_removed=self._on_stream_removed,
+            on_stream_restarting=self._on_stream_restarting,
         )
         #: ADR-0036 — shared between `IngestServer` (registers a device's own live ingest socket
         #: the moment it's correlated) and `ViewerServer` (forwards a browser's uplink audio to
@@ -198,63 +208,37 @@ class Jt1078Relay:
             return RedisSingleUseTokenGuard(self._redis_client)
         return InMemorySingleUseTokenGuard()
 
-    def _on_session_created(self, session: VideoSession) -> None:
-        # Same source of truth `_on_reassembled_frame` uses to decide whether to ever call
-        # `broadcast_audio_aac` for this session - the FLV header's own claim and actual tag
-        # delivery must never disagree (2026-08-28 regression fix).
-        has_audio = session.audio_codec in _TRANSCODABLE_AUDIO_CODECS
-        # Stuck-viewer detection is for *watching* a stream (2026-09-22). An INTERCOM session
-        # opts out: its audio queue holds only a few seconds, and a browser that is not playing
-        # the downlink (muted tab, blocked autoplay) must never lose the operator's talk path,
-        # which is the half of intercom confirmed working in the field.
+    def _on_stream_created(self, stream: DeviceStream) -> None:
+        """ADR-0046: one hub (and, when the terminal's audio is transcodable, one AAC transcoder)
+        per device stream, shared by every session watching it."""
+        has_audio = stream.audio_codec in _TRANSCODABLE_AUDIO_CODECS
         stuck_timeout = self._config.viewer_stuck_timeout_seconds
-        self._hubs[session.session_id] = SessionBroadcastHub(
-            session.session_id,
+        is_intercom = stream.kind == VideoSessionKind.INTERCOM
+        self._stream_hubs[stream.stream_id] = SessionBroadcastHub(
+            stream.stream_id,
             has_audio=has_audio,
-            stuck_timeout_seconds=(
-                None
-                if session.kind == VideoSessionKind.INTERCOM or stuck_timeout <= 0
-                else stuck_timeout
-            ),
+            expects_video=not is_intercom,
+            # Intercom opts out: its downlink queue holds seconds of audio, and a browser not
+            # playing it must never lose the operator's talk path.
+            stuck_timeout_seconds=(None if is_intercom or stuck_timeout <= 0 else stuck_timeout),
         )
         if has_audio:
-            self._spawn_background(self._start_audio_transcoder(session.session_id))
+            self._spawn_background(self._start_audio_transcoder(stream.stream_id))
+
+    def _on_session_created(self, session: VideoSession) -> None:
+        """Maps the session's viewer token to its stream's shared hub."""
+        hub = self._stream_hubs.get(session.stream_id or "")
+        if hub is not None:
+            self._hubs[session.session_id] = hub
 
     def _on_session_removed(self, session_id: str, outcome: str, reason: str) -> None:
-        """Bug 1 fix: previously only dereferenced the hub from `self._hubs`, leaving any browser
-        already connected to it (viewer *and*, for intercom, uplink) holding an open, silent
-        WebSocket forever — the exact cause of `useIntercomController`'s "stuck Connecting..."
-        symptom. Now also actively closes those connections with a distinguishable close code, via
-        `ViewerServer.close_session` (spawned as a background task, matching this hook's own
-        pre-existing sync-callable contract — `SessionManager.fail_session`/`end_session` call
-        this synchronously, never awaited)."""
+        """Closes only this session's viewers (and intercom uplink), with a close code that says
+        why; the device stream and its other sessions are unaffected (ADR-0046). Whether the
+        device is told to stop is the stream's decision, not the session's."""
         code = _CLOSE_CODE_SESSION_FAILED if outcome == "failed" else _CLOSE_CODE_SESSION_ENDED
-        # WS close `reason` is capped at 123 bytes of UTF-8 (RFC 6455 §5.5.1: 125-byte control
-        # frame minus the 2-byte status code) - every real reason string this relay ever passes
-        # (e.g. "ingest_timeout") is far shorter, but truncate defensively rather than ever raise
-        # on an unexpectedly long one.
         reason_bytes = reason.encode("utf-8")[:123]
-        # Observability (2026-09-02): this teardown previously logged *nothing at all*, which is
-        # why `ingest_timeout` — measured to be the single most common session outcome here (76 of
-        # 125 sampled sessions ended at 30-35s, exactly `SessionManager`'s own
-        # `ingest_timeout_seconds` + `idle_sweep_interval_seconds` granularity) — never appeared
-        # anywhere in this service's logs, and a relay-initiated teardown was indistinguishable
-        # from a browser-side disconnect (both surface only as `IncompleteReadError` on the read
-        # loop, since `send_close` closes this side's own writer too). One line, terminal states
-        # only (at most once per session), no behavioral change.
-        # The device's own ingest connection goes too (2026-09-19, `ingest/ingest_server.py`'s
-        # module docstring): a device that ignores its stop command would otherwise keep
-        # streaming into a session that no longer exists.
-        device_connections_closed = self._ingest_server.close_session_connections(session_id)
         log_with_fields(
-            logger,
-            20,
-            "session_removed",
-            session_id=session_id,
-            outcome=outcome,
-            reason=reason,
-            viewer_chunks_dropped=self._drop_tracker.pop_total(session_id),
-            device_connections_closed=device_connections_closed,
+            logger, 20, "session_removed", session_id=session_id, outcome=outcome, reason=reason
         )
         hub = self._hubs.pop(session_id, None)
         self._spawn_background(
@@ -262,26 +246,54 @@ class Jt1078Relay:
                 session_id, hub=hub, code=code, reason=reason_bytes
             )
         )
-        audio_state = self._audio_transcode_sessions.pop(session_id, None)
+
+    def _on_stream_restarting(self, stream: DeviceStream) -> None:
+        """Stream-type change: the old generation's connections close, viewers stay attached and
+        resynchronise on the new generation's first keyframe."""
+        closed = self._ingest_server.close_stream_connections(stream.stream_id)
+        hub = self._stream_hubs.get(stream.stream_id)
+        if hub is not None:
+            hub.begin_new_generation()
+        log_with_fields(
+            logger,
+            20,
+            "stream_restart_connections_closed",
+            stream_id=stream.stream_id,
+            generation=stream.generation,
+            device_connections_closed=closed,
+        )
+
+    def _on_stream_removed(self, stream_id: str, reason: str) -> None:
+        device_connections_closed = self._ingest_server.close_stream_connections(stream_id)
+        log_with_fields(
+            logger,
+            20,
+            "stream_removed",
+            stream_id=stream_id,
+            reason=reason,
+            viewer_chunks_dropped=self._drop_tracker.pop_total(stream_id),
+            device_connections_closed=device_connections_closed,
+        )
+        hub = self._stream_hubs.pop(stream_id, None)
+        if hub is not None and hub.viewer_count:
+            code = _CLOSE_CODE_SESSION_ENDED
+            self._spawn_background(hub.close_all(code=code, reason=reason.encode("utf-8")[:123]))
+        audio_state = self._audio_transcode_sessions.pop(stream_id, None)
         if audio_state is not None:
             self._spawn_background(audio_state.transcoder.stop())
 
-    async def _close_stuck_viewers(self, session_id: str, hub: SessionBroadcastHub) -> None:
-        """Closes viewers the hub has flagged as continuously backpressured past
-        `viewer_stuck_timeout_seconds` (2026-09-22). Production evidence: browsers that stopped
-        consuming for 40 s to 4 minutes while the MDVR kept streaming over cellular, with nothing
-        in the relay to end it — a session ends only when the browser disconnects itself or the
-        *device* stops. Closing the viewer unblocks that path: its read loop tears down, and with
-        no viewers left the existing `viewer_grace_seconds` sweep ends the session, which already
-        signals the device to stop (`SessionManager._signal_device_stop`) and closes its ingest
-        connection. Only the stuck viewer is closed; other viewers of the same session keep
-        watching, and JT/T 808 is untouched."""
+    async def _close_stuck_viewers(self, stream_id: str, hub: SessionBroadcastHub) -> None:
+        """Closes viewers the hub flagged as delivering nothing for
+        `viewer_stuck_timeout_seconds` while data waited (2026-09-22; ADR-0046 §5 redefines
+        "stuck" so a slow-but-draining viewer is resynchronised instead). Closing the viewer ends
+        its session after `viewer_grace_seconds`; the stream stops only if no other session is
+        watching it."""
         for connection in hub.take_stuck_viewers():
             log_with_fields(
                 logger,
                 30,
                 "viewer_closed_stuck",
-                session_id=session_id,
+                session_id=stream_id,
                 stuck_timeout_seconds=self._config.viewer_stuck_timeout_seconds,
                 **(hub.viewer_stats(connection) or {}),
             )
@@ -294,31 +306,27 @@ class Jt1078Relay:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-    async def _start_audio_transcoder(self, session_id: str) -> None:
+    async def _start_audio_transcoder(self, stream_id: str) -> None:
         async def _on_aac_frame(aac_payload: bytes) -> None:
-            await self._on_transcoded_aac_frame(session_id, aac_payload)
+            await self._on_transcoded_aac_frame(stream_id, aac_payload)
 
         transcoder = AacTranscoder(on_aac_frame=_on_aac_frame)
         try:
             await transcoder.start()
         except Exception as exc:  # noqa: BLE001 - a missing/broken ffmpeg must be logged, never
-            # silently vanish (the same "don't let a background task's exception disappear
-            # unlogged" lesson this codebase already applies to every `run_forever` consumer
-            # loop) - the session simply stays video-only, exactly like an unrecognized codec.
+            # crash the relay or the stream's video
             log_with_fields(
-                logger, 40, "audio_transcoder_start_failed", session_id=session_id, error=str(exc)
+                logger, 40, "audio_transcoder_start_failed", session_id=stream_id, error=str(exc)
             )
             return
-        if session_id not in self._hubs:
-            # The session was torn down while ffmpeg was still spawning - don't leak the
-            # process; `_on_session_removed` already ran and found nothing to stop.
+        if stream_id not in self._stream_hubs:
             await transcoder.stop()
             return
-        self._audio_transcode_sessions[session_id] = _AudioTranscodeSession(transcoder)
+        self._audio_transcode_sessions[stream_id] = _AudioTranscodeSession(transcoder)
 
-    async def _on_transcoded_aac_frame(self, session_id: str, aac_payload: bytes) -> None:
-        hub = self._hubs.get(session_id)
-        audio_state = self._audio_transcode_sessions.get(session_id)
+    async def _on_transcoded_aac_frame(self, stream_id: str, aac_payload: bytes) -> None:
+        hub = self._stream_hubs.get(stream_id)
+        audio_state = self._audio_transcode_sessions.get(stream_id)
         if hub is None or audio_state is None:
             return
         backpressured = await hub.broadcast_audio_aac(
@@ -326,30 +334,20 @@ class Jt1078Relay:
             audio_specific_config=AAC_LC_8KHZ_MONO_AUDIO_SPECIFIC_CONFIG,
             timestamp_ms=audio_state.next_output_timestamp_ms(),
         )
-        self._drop_tracker.record(session_id, dropped=len(backpressured), kind="audio")
-        await self._close_stuck_viewers(session_id, hub)
+        self._drop_tracker.record(stream_id, dropped=len(backpressured), kind="audio")
+        await self._close_stuck_viewers(stream_id, hub)
 
-    async def _on_reassembled_frame(self, session_id: str, frame: ReassembledFrame) -> None:
-        hub = self._hubs.get(session_id)
+    async def _on_reassembled_frame(self, stream_id: str, frame: ReassembledFrame) -> None:
+        hub = self._stream_hubs.get(stream_id)
         if hub is None:
             return
         if frame.is_video:
-            is_keyframe = frame.data_type == 0  # DATA_TYPE_I_FRAME
+            # JT/T 1078 Table 6.3 data type 0000 = I frame: the keyframe signal the hub's
+            # keyframe-aware delivery keys on (ADR-0046 §5).
+            is_keyframe = frame.data_type == 0
             if is_keyframe:
-                # Diagnostic-only (2026-09-02, Problem 1 investigation: 20-30s live-video
-                # startup latency). `last_i_frame_interval_ms` is the device's *own* reported
-                # GOP interval (spec §6.2.1.1's video-frame trailer field, already decoded by
-                # `ingest/extended_rtp.py`/`frame_reassembly.py` on every video frame, but never
-                # previously read anywhere downstream) - an authoritative, device-stated number,
-                # not something this relay has to infer from wall-clock gaps between keyframes
-                # itself. Logged only on a keyframe (at most once per GOP, not once per frame) so
-                # this stays low-volume in production. If this value is large, the dominant
-                # startup-latency cost is the MDVR's own encoder configuration (how long a fresh
-                # viewer must wait for the *next* keyframe after connecting) - a device-side
-                # fact this relay cannot change, only report; see the ADR-0024 §16 gap this
-                # investigation also names for what remains open on the RAAD-code side instead.
                 log_with_fields(
-                    logger, 20, "keyframe_received", session_id=session_id,
+                    logger, 20, "keyframe_received", session_id=stream_id,
                     last_i_frame_interval_ms=frame.last_i_frame_interval_ms,
                     timestamp_ms=frame.timestamp_ms,
                 )
@@ -358,18 +356,15 @@ class Jt1078Relay:
                 is_keyframe=is_keyframe,
                 timestamp_ms=frame.timestamp_ms,
             )
-            self._drop_tracker.record(session_id, dropped=len(backpressured), kind="video")
-            await self._close_stuck_viewers(session_id, hub)
+            self._drop_tracker.record(stream_id, dropped=len(backpressured), kind="video")
+            await self._close_stuck_viewers(stream_id, hub)
         elif frame.is_audio:
-            session = self._session_manager.resolve(session_id)
-            audio_codec = session.audio_codec if session is not None else None
+            stream = self._session_manager.resolve_stream(stream_id)
+            audio_codec = stream.audio_codec if stream is not None else None
             if audio_codec not in _TRANSCODABLE_AUDIO_CODECS:
                 return  # no transcoder for this device's real (or unknown) codec - no audio tag
-            audio_state = self._audio_transcode_sessions.get(session_id)
+            audio_state = self._audio_transcode_sessions.get(stream_id)
             if audio_state is None:
-                # ffmpeg is still spawning (`_start_audio_transcoder` hasn't finished) - this
-                # frame is dropped, not queued; audio resumes once the transcoder is ready,
-                # video for this same frame is unaffected either way.
                 return
             audio_state.note_input_frame(frame.timestamp_ms)
             await audio_state.transcoder.feed(frame.body)

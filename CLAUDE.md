@@ -1593,3 +1593,39 @@ green. Frontend: 708 tests, `tsc -b` clean, production build clean.
 **Not verified:** browser/UI interaction — the Chrome extension was not connected in this
 environment for this pass, the same disclosed limitation this file already carries for several
 earlier phases; every workflow above was instead verified directly against the running API.
+
+## Live Video Stream Ownership, Camera Presence and Fallback (ADR-0046, 2026-09-26)
+
+Production (2026-09-18 → 09-25) showed live video failing for reasons that were RAAD's own, on top
+of a fragile device uplink. `docs/architecture/adr/0046-live-video-stream-ownership-and-camera-presence.md`
+has the evidence and the design; what a future change must not undo:
+
+- **The relay owns the physical stream, not the viewer's session.** A JT/T 1078 terminal keeps one
+  transmission per channel and `0x9102` names only the channel. One session per viewer owning the
+  channel let one user's timed-out session stop another user's video. Device streams are keyed by
+  `(terminal, channel, kind)` and shared by every session watching them; `0x9102` goes out only when
+  the last one has left (after a linger). Never reintroduce a per-session start/stop.
+- **One publisher, in order.** The relay publishes every start and stop for a stream, stamped with a
+  generation; the Business API only asks (`relay_signals_device`). Two publishers (backend starts,
+  relay stops) let a stale stop land after a new start on every focus change.
+- **Live and intercom on one channel are separate streams**, and a live stop while an intercom is open
+  uses `0x9102` close type 2 ("video only"). Close type 0 closes all audio of the channel and killed
+  a running intercom in production.
+- **Camera presence is the terminal's own report** (`0x0200` item `0x15`, video signal loss per
+  channel), stored in Redis with a TTL (`fleet_device.CameraSignalStatePort`, the ADR-0044 pattern),
+  exposed as `CameraDTO.video_signal`. The channel count from `0x1003` says how many inputs exist,
+  not how many cameras: this terminal has cameras on ch1 and ch3 only. `POST /video/live` refuses an
+  `absent` camera (409 `CAMERA_NOT_CONNECTED`); intercom and playback are not gated.
+- **Keyframe-aware delivery.** A viewer never receives an inter frame without its keyframe; a viewer
+  that falls behind is resynchronised on the next keyframe, never fed single dropped chunks.
+- **Main → sub fallback is per viewer and lives in the browser** (`features/video/mainStreamFallback.ts`),
+  because only the player can see a frozen or lagging picture. The relay runs a channel on main while
+  any session wants main, so one viewer's fallback never downgrades another's.
+
+**Permanent lesson.** When the terminal's own state is shared by several platform requests, model the
+terminal's resource and reference-count it; a request-shaped model silently turns every concurrent
+user into a way to break the others.
+
+**Not verified here:** the terminal's behaviour for close type 2 and a mid-session resolution change
+in the browser; the terminal was offline for this work.
+

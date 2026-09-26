@@ -40,6 +40,25 @@ class SessionEventPublisher(ABC):
         raise NotImplementedError
 
 
+    async def publish_device_command(
+        self,
+        *,
+        terminal_id: str,
+        correlation_id: str,
+        command: str,
+        fields: dict[str, object],
+    ) -> None:
+        """Any device command the relay issues - start or stop (ADR-0046 §3: the relay is the
+        single publisher of a stream's commands, so they reach the terminal in decision order).
+        Same `Jt1078SignalCommandRequested` envelope as a stop, so it delegates to it."""
+        await self.publish_stop_command(
+            terminal_id=terminal_id,
+            correlation_id=correlation_id,
+            command=command,
+            fields=fields,
+        )
+
+
 class LoggingSessionEventPublisher(SessionEventPublisher):
     async def publish(self, event: SessionEvent) -> None:
         log_with_fields(

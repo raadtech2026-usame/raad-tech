@@ -15,7 +15,7 @@ from src.ingest.extended_rtp import (
 from src.ingest.ingest_server import IngestServer
 from src.session.session_manager import SessionManager
 from src.session.uplink_registry import IngestConnectionRegistry
-from src.session.video_session import VideoSessionKind, VideoSessionState
+from src.session.video_session import StreamType, VideoSessionKind, VideoSessionState
 
 
 def _build_frame(
@@ -91,7 +91,7 @@ class IngestServerTests(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         await asyncio.sleep(0.1)
 
-        self.assertEqual(self.received, [(session.session_id, b"VIDEO-DATA")])
+        self.assertEqual(self.received, [(session.stream_id, b"VIDEO-DATA")])
         self.assertEqual(session.state, VideoSessionState.ACTIVE)
         writer.close()
 
@@ -120,7 +120,7 @@ class IngestServerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.1)
 
         self.assertEqual(
-            self.received, [(session.session_id, b"F1"), (session.session_id, b"F2")]
+            self.received, [(session.stream_id, b"F1"), (session.stream_id, b"F2")]
         )
         writer.close()
 
@@ -155,8 +155,8 @@ class IngestServerTests(unittest.IsolatedAsyncioTestCase):
         await writer1.drain()
         await asyncio.sleep(0.1)
 
-        self.assertIn((session_ch1.session_id, b"CH1-DATA"), self.received)
-        self.assertIn((session_ch2.session_id, b"CH2-DATA"), self.received)
+        self.assertIn((session_ch1.stream_id, b"CH1-DATA"), self.received)
+        self.assertIn((session_ch2.stream_id, b"CH2-DATA"), self.received)
         self.assertEqual(session_ch1.state, VideoSessionState.ACTIVE)
         self.assertEqual(session_ch2.state, VideoSessionState.ACTIVE)
         writer1.close()
@@ -202,8 +202,8 @@ class IngestServerTests(unittest.IsolatedAsyncioTestCase):
         await audio_writer.drain()
         await asyncio.sleep(0.1)
 
-        self.assertIn((live_session.session_id, b"VIDEO-DATA"), self.received)
-        self.assertIn((intercom_session.session_id, b"AUDIO-DATA"), self.received)
+        self.assertIn((live_session.stream_id, b"VIDEO-DATA"), self.received)
+        self.assertIn((intercom_session.stream_id, b"AUDIO-DATA"), self.received)
         self.assertEqual(live_session.state, VideoSessionState.ACTIVE)
         self.assertEqual(intercom_session.state, VideoSessionState.ACTIVE)
         video_writer.close()
@@ -253,7 +253,7 @@ class OrphanedDeviceStreamTests(unittest.IsolatedAsyncioTestCase):
         writer.write(_build_frame(sim_card="138001380000", body=b"F0", packet_sequence=0))
         await writer.drain()
         await asyncio.sleep(0.1)
-        self.assertEqual(self.received, [(session.session_id, b"F0")])
+        self.assertEqual(self.received, [(session.stream_id, b"F0")])
         return reader, writer
 
     def _live_session(self):
@@ -268,12 +268,12 @@ class OrphanedDeviceStreamTests(unittest.IsolatedAsyncioTestCase):
         session = self._live_session()
         reader, writer = await self._streaming_device(session)
 
-        closed = self.ingest.close_session_connections(session.session_id)
+        closed = self.ingest.close_session_connections(session.stream_id)
 
         self.assertEqual(closed, 1)
         self.assertEqual(await asyncio.wait_for(reader.read(1), timeout=2.0), b"")
         # Idempotent: nothing left to close for this session.
-        self.assertEqual(self.ingest.close_session_connections(session.session_id), 0)
+        self.assertEqual(self.ingest.close_session_connections(session.stream_id), 0)
         writer.close()
 
     async def test_a_frame_after_the_session_ended_closes_the_connection_unprocessed(self) -> None:
@@ -287,7 +287,7 @@ class OrphanedDeviceStreamTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await asyncio.wait_for(reader.read(1), timeout=2.0), b"")
 
         self.assertIn("ingest_connection_closed_session_ended", [r.getMessage() for r in logs.records])
-        self.assertEqual(self.received, [(session.session_id, b"F0")])  # the orphan frame was never processed
+        self.assertEqual(self.received, [(session.stream_id, b"F0")])  # the orphan frame was never processed
         writer.close()
 
     async def test_closing_one_sessions_connections_leaves_another_channels_stream_alone(self) -> None:
@@ -304,13 +304,13 @@ class OrphanedDeviceStreamTests(unittest.IsolatedAsyncioTestCase):
         await writer_2.drain()
         await asyncio.sleep(0.1)
 
-        self.ingest.close_session_connections(live.session_id)
+        self.ingest.close_session_connections(live.stream_id)
         self.assertEqual(await asyncio.wait_for(reader_1.read(1), timeout=2.0), b"")
 
         writer_2.write(_build_frame(sim_card="138001380000", body=b"C2-AGAIN", logical_channel=2, packet_sequence=1))
         await writer_2.drain()
         await asyncio.sleep(0.1)
-        self.assertIn((other.session_id, b"C2-AGAIN"), self.received)
+        self.assertIn((other.stream_id, b"C2-AGAIN"), self.received)
         writer_1.close()
         writer_2.close()
 
@@ -395,7 +395,7 @@ class UplinkRegistryWiringTests(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         await asyncio.sleep(0.1)
 
-        ok = await self.uplink_registry.send_audio(session.session_id, b"\xd7\xd4" * 160)
+        ok = await self.uplink_registry.send_audio(session.stream_id, b"\xd7\xd4" * 160)
         self.assertTrue(ok)
         writer.close()
 
@@ -414,7 +414,7 @@ class UplinkRegistryWiringTests(unittest.IsolatedAsyncioTestCase):
         writer.close()
         await asyncio.sleep(0.1)
 
-        ok = await self.uplink_registry.send_audio(session.session_id, b"x")
+        ok = await self.uplink_registry.send_audio(session.stream_id, b"x")
         self.assertFalse(ok)
 
     async def test_unsolicited_connection_never_registers(self) -> None:
@@ -430,3 +430,68 @@ class UplinkRegistryWiringTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StreamGenerationTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0046 §3: a connection belongs to the stream generation it was matched in."""
+
+    async def asyncSetUp(self) -> None:
+        self.session_manager = SessionManager(
+            event_publisher=LoggingSessionEventPublisher(), ingest_target=("127.0.0.1", 7910)
+        )
+        self.received: list[tuple[str, bytes]] = []
+
+        async def on_frame(stream_id, reassembled):
+            self.received.append((stream_id, reassembled.body))
+
+        self.ingest = IngestServer(
+            host="127.0.0.1",
+            port=0,
+            session_manager=self.session_manager,
+            on_reassembled_frame=on_frame,
+        )
+        await self.ingest.start()
+
+    async def asyncTearDown(self) -> None:
+        await self.ingest.stop()
+
+    def _open(self, session_id: str, stream_type: StreamType):
+        return self.session_manager.create_session(
+            session_id=session_id,
+            terminal_id="138001380000",
+            kind=VideoSessionKind.LIVE,
+            correlation_id=session_id,
+            logical_channel=1,
+            stream_type=stream_type,
+            relay_signals_device=True,
+        )
+
+    async def test_an_old_generations_connection_is_closed_not_fed_to_the_new_one(self) -> None:
+        sub = self._open("A", StreamType.SUB)
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.ingest.bound_port)
+        writer.write(_build_frame(sim_card="138001380000", body=b"G1"))
+        await writer.drain()
+        await asyncio.sleep(0.1)
+        self._open("B", StreamType.MAIN)  # upgrade: the stream restarts as generation 2
+        await self.session_manager.flush()
+        writer.write(_build_frame(sim_card="138001380000", body=b"LATE", packet_sequence=1))
+        await writer.drain()
+        self.assertEqual(await asyncio.wait_for(reader.read(1), timeout=2.0), b"")
+        self.assertEqual(self.received, [(sub.stream_id, b"G1")])
+        self.assertIsNotNone(self.session_manager.resolve_stream(sub.stream_id))
+        writer.close()
+
+    async def test_a_newer_connection_supersedes_the_older_one(self) -> None:
+        session = self._open("A", StreamType.MAIN)
+        old_reader, old_writer = await asyncio.open_connection("127.0.0.1", self.ingest.bound_port)
+        old_writer.write(_build_frame(sim_card="138001380000", body=b"OLD"))
+        await old_writer.drain()
+        await asyncio.sleep(0.1)
+        new_reader, new_writer = await asyncio.open_connection("127.0.0.1", self.ingest.bound_port)
+        new_writer.write(_build_frame(sim_card="138001380000", body=b"NEW"))
+        await new_writer.drain()
+        self.assertEqual(await asyncio.wait_for(old_reader.read(1), timeout=2.0), b"")
+        await asyncio.sleep(0.1)
+        self.assertIsNotNone(self.session_manager.resolve(session.session_id), "stream survives")
+        self.assertEqual(self.ingest.open_connection_count(session.stream_id), 1)
+        new_writer.close()

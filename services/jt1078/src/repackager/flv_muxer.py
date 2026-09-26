@@ -296,6 +296,24 @@ class FlvMuxer:
         self._latest_sps_list: list[bytes] = []
         self._latest_pps_list: list[bytes] = []
         self._sent_aac_config: bytes | None = None
+        #: Set by `resync`: the next keyframe re-emits the sequence header even if it carries no
+        #: SPS/PPS of its own, because the one sent earlier may have been discarded undelivered.
+        self._needs_config = False
+
+    def seed_parameter_sets(self, *, sps_list: list[bytes], pps_list: list[bytes]) -> None:
+        """Gives a viewer that joins mid-stream the parameter sets seen so far (ADR-0046 §5), so
+        its first keyframe gets a sequence header even when that keyframe carries none in-band."""
+        self._latest_sps_list = list(sps_list)
+        self._latest_pps_list = list(pps_list)
+        self._needs_config = True
+
+    def resync(self) -> None:
+        """Called when bytes this muxer produced were discarded before reaching the viewer (queue
+        overflow) or the device stream restarted: the next keyframe must carry a fresh sequence
+        header, and the next AAC frame a fresh AudioSpecificConfig."""
+        self._sent_avc_decoder_config = None
+        self._sent_aac_config = None
+        self._needs_config = True
 
     def _relative_timestamp(self, timestamp_ms: int | None) -> int:
         if timestamp_ms is None:
@@ -367,7 +385,10 @@ class FlvMuxer:
             self._latest_pps_list = pps_list
 
         chunks: list[bytes] = []
-        if (sps_list or pps_list) and self._latest_sps_list:
+        wants_config = sps_list or pps_list or (self._needs_config and is_keyframe)
+        if wants_config and self._latest_sps_list:
+            if is_keyframe:
+                self._needs_config = False
             avc_decoder_config = build_avc_decoder_config(
                 sps_list=self._latest_sps_list, pps_list=self._latest_pps_list
             )
@@ -378,13 +399,9 @@ class FlvMuxer:
                 )
                 chunks.append(header_tag + len(header_tag).to_bytes(4, "big"))
 
-        # Delivered unconditionally, whether or not a sequence header has been sent yet on
-        # *this* muxer (e.g. a viewer joining mid-GOP, before the next keyframe's own
-        # parameter-set refresh): a real player buffers/discards NALUs it cannot yet decode
-        # rather than erroring, and never delivering stream data at all until the next SPS/PPS
-        # refresh would silently stall a legitimately-connected viewer for longer than
-        # necessary - the same "never drop real bytes" posture `split_annex_b_nalus`'s own
-        # docstring already commits to.
+        # The muxer itself never withholds a frame; whether a viewer may receive an inter frame
+        # yet is the hub's decision (`SessionBroadcastHub`, ADR-0046 §5: a viewer starts at a
+        # keyframe and resynchronises on one after falling behind).
         if other_nalus:
             nalu_tag = build_avc_nalu_tag(
                 avcc_payload=_avcc_from_nalus(other_nalus),

@@ -170,7 +170,7 @@ class ViewerServer:
                 return
 
             try:
-                await hub.add_viewer(connection)
+                await hub.add_viewer(connection, owner=session_id)
                 is_broadcast_viewer = True
                 self._session_manager.add_viewer(session_id)
                 log_with_fields(logger, 20, "viewer_connected", session_id=session_id)
@@ -249,7 +249,9 @@ class ViewerServer:
         looked up and closed the same way. Both are best-effort — a connection that already
         disconnected on its own is a normal, expected no-op, never an error here."""
         if hub is not None:
-            await hub.close_all(code=code, reason=reason)
+            # Only this session's viewers: the device stream, and every other session watching
+            # it, carry on (ADR-0046).
+            await hub.close_owner(session_id, code=code, reason=reason)
         uplink_connection = self._uplink_connections.pop(session_id, None)
         if uplink_connection is not None:
             try:
@@ -342,4 +344,8 @@ class ViewerServer:
                 await connection.send_pong()
                 continue
             if opcode == OPCODE_BINARY and payload:
-                await self._uplink_registry.send_audio(session_id, payload)
+                # The device's intercom connection belongs to the session's device stream
+                # (ADR-0046); resolved per frame so a stream restart is followed.
+                stream = self._session_manager.stream_for_session(session_id)
+                key = stream.stream_id if stream is not None else session_id
+                await self._uplink_registry.send_audio(key, payload)

@@ -1,134 +1,148 @@
-"""`SessionBroadcastHub` — fans reassembled frames out to every viewer currently watching one
-session. **Each viewer gets its own `FlvMuxer` instance** (a fresh FLV header + a 0-rebased
-timestamp timeline), not a shared muxer's output — a viewer joining mid-stream must start its own
-FLV container from a header, not from wherever an earlier viewer's timeline happened to be
-(ADR-0024 §6 point 6: "viewer connects... with the signed token" is per-viewer, independent of
-whether other viewers are already watching). All viewers still consume the *same* underlying
-reassembled frames from the ingest pipeline — no per-viewer re-ingestion, no per-viewer buffering
-beyond what `FlvMuxer` itself needs to build one tag (ADR-0024 §4's own "small repackaging
-buffer... not a growing cache") plus the small, bounded per-viewer send queue below.
+"""`SessionBroadcastHub` — fans one device stream's reassembled frames out to every viewer watching
+it (ADR-0046: one hub per device stream, shared by all of that stream's sessions).
 
-**A viewer send failure silently drops that one viewer**, not the whole broadcast — one slow/
-disconnected client must never stall or crash delivery to every other viewer of the same session.
+**Each viewer gets its own `FlvMuxer`** (its own FLV header and 0-rebased timestamp timeline) and
+its own bounded send queue drained by its own task, so one slow socket can never block the ingest
+loop or another viewer (the 2026-09-02 redesign, unchanged in intent).
 
-**Redesigned (2026-09-02) so one slow viewer's socket write can never block ingest processing.**
-Previously `broadcast_video`/`broadcast_audio*` directly `await connection.send_binary(chunk)` for
-each viewer, in a loop, *inside* the same coroutine `ingest/ingest_server.py`'s own per-connection
-read loop calls (`_on_reassembled_frame`) — a single viewer whose TCP send buffer is backed up
-(a slow network, a stalled browser tab) blocks that `await` until it either completes or times
-out, which blocks every *other* viewer of that same camera from receiving the frame currently
-being broadcast, and blocks the ingest loop itself from reading the device's *next* frame at all
-— exactly the "relay video fan-out is sequential and can block" symptom class this fix closes.
+**Keyframe-aware delivery (ADR-0046 §5).** H.264 inter frames are useless without the keyframe
+they reference, so:
 
-**The fix: each viewer gets its own bounded `asyncio.Queue` + a dedicated background sender
-task**, spawned in `add_viewer` (mirrors `relay.py`'s own `_spawn_background` "track it so asyncio
-never garbage-collects it early" discipline, scoped per-viewer here). `broadcast_video`/
-`broadcast_audio*` still build each viewer's own muxed chunk *synchronously* (cheap, pure byte
-work, must stay in ingest-frame order) but only ever `queue.put_nowait` it — never an `await` on
-the network. The actual `connection.send_binary` I/O happens on the viewer's own independent task,
-so one slow socket write only ever delays that one viewer's own queue, never the ingest loop or
-any other viewer. Queues are bounded (`DEFAULT_VIEWER_SEND_QUEUE_MAXSIZE`) and drop the *oldest*
-still-queued chunk to make room for a new one when full — a genuinely slow viewer sees dropped
-(stale) frames rather than an ever-growing backlog of increasingly-late ones (ADR-0024 §4's own
-"not a growing cache" principle, extended to the send path). A viewer whose send fails is removed
-by its own sender task (mirroring the pre-existing per-viewer failure isolation, just detected
-asynchronously now instead of within the triggering `broadcast_*` call).
+- a viewer starts *awaiting a keyframe*. It receives the FLV header, then the hub's cached current
+  GOP (the last keyframe and the frames since, bounded), then live frames. It is never handed a
+  P-frame that has no preceding keyframe on its own timeline;
+- a viewer's queue is bounded by chunk count, bytes and age. When it overflows the whole queue is
+  discarded and the viewer resynchronises on the next keyframe. Dropping single chunks (the previous
+  drop-oldest policy) corrupted the picture until the next keyframe and, in production on
+  2026-09-25, discarded 614 chunks of a main stream in two minutes;
+- a stream restart (stream-type change) calls `begin_new_generation`, which resynchronises every
+  viewer on the new generation's first keyframe.
+
+**Stuck viewers (93ded1b, redefined).** A viewer is flagged when it has had data waiting and has
+completed no delivery for `stuck_timeout_seconds`. A slow viewer that still drains is resynchronised
+instead, never flagged. `None` disables detection (intercom opts out).
+
+**Ownership.** Every viewer belongs to the session whose token admitted it (`owner`), so ending one
+session closes only that session's viewers (`close_owner`) while the stream and its other viewers
+carry on.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from collections.abc import Callable
 
 from src.logging_setup import get_logger, log_with_fields
-from src.repackager.flv_muxer import FlvMuxer
+from src.repackager.flv_muxer import FlvMuxer, extract_sps_pps, split_annex_b_nalus
 from src.viewer.websocket_server import WebSocketConnection
 
 logger = get_logger("jt1078_relay.viewer.broadcast_hub")
 
-#: A slow viewer may fall behind by at most this many queued-but-undelivered chunks before older
-#: ones start being dropped to make room for newer ones — bounded specifically so "one slow
-#: viewer" can never accumulate unlimited stale video in memory, and so its own eventual latency
-#: is capped (roughly this many frames' worth of playback time, not unboundedly growing). Not
-#: tuned to a byte budget (chunks vary in size) — a *count* ceiling on live H.264/AAC frames at
-#: this platform's realistic frame rates (ADR-0033: ~25fps) already keeps worst-case buffered
-#: duration well under a second, matching the "practical live-streaming balance" this relay
-#: targets everywhere else (`enableStashBuffer: false` on the frontend player, no persisted
-#: backlog).
-DEFAULT_VIEWER_SEND_QUEUE_MAXSIZE = 32
+#: Upper bound on queued chunks per viewer (one chunk is roughly one frame).
+DEFAULT_VIEWER_SEND_QUEUE_MAXSIZE = 64
+#: ~5 s of a 2.3 Mbps main stream; a viewer this far behind is resynchronised instead.
+DEFAULT_MAX_QUEUE_BYTES = 1_500_000
+#: A viewer whose oldest undelivered chunk is older than this is behind live by at least this much.
+DEFAULT_MAX_QUEUE_AGE_SECONDS = 2.0
+#: One GOP of main stream at this terminal's 1 s keyframe interval is ~300 KB.
+DEFAULT_GOP_CACHE_MAX_BYTES = 1_000_000
 
 
 class _ViewerState:
-    """One viewer's own muxer + bounded send queue + its dedicated sender task — grouped so
-    `SessionBroadcastHub._viewers` stays a single `dict`, not three dicts kept in lockstep.
-
-    `last_progress_at` is the last time a chunk was queued for this viewer *without* having to
-    drop an older one — the only honest evidence that the browser is still draining its socket
-    (2026-09-22, stuck-viewer detection).
-
-    The counters exist only for diagnosis (2026-09-23): production could see *that* a viewer
-    stopped draining but not how much it had received first, so a browser that never drained
-    looked the same as one that drained for minutes and then stalled."""
+    """One viewer's muxer, queue, sender task and delivery counters (the counters exist for
+    diagnosis, eeba07f: they tell a viewer that never drained apart from one that stalled)."""
 
     __slots__ = (
         "muxer",
-        "queue",
+        "owner",
+        "chunks",
+        "queued_bytes",
+        "wake",
+        "idle",
         "task",
-        "last_progress_at",
+        "awaiting_keyframe",
+        "in_flight",
+        "pending_since",
         "connected_at",
         "last_delivery_at",
         "delivered_chunks",
         "delivered_bytes",
         "dropped_chunks",
+        "resyncs",
+        "skipped_frames",
     )
 
-    def __init__(
-        self,
-        *,
-        muxer: FlvMuxer,
-        queue: "asyncio.Queue[bytes]",
-        task: asyncio.Task,
-        last_progress_at: float,
-    ) -> None:
+    def __init__(self, *, muxer: FlvMuxer, owner: str | None, connected_at: float) -> None:
         self.muxer = muxer
-        self.queue = queue
-        self.task = task
-        self.last_progress_at = last_progress_at
-        self.connected_at = last_progress_at
+        self.owner = owner
+        self.chunks: deque[tuple[bytes, float]] = deque()
+        self.queued_bytes = 0
+        self.wake = asyncio.Event()
+        self.idle = asyncio.Event()
+        self.idle.set()
+        self.task: asyncio.Task | None = None
+        self.awaiting_keyframe = True
+        self.in_flight = False
+        #: When data started waiting with no delivery since; reset only by an actual delivery,
+        #: never by a queue flush (a flush is not progress).
+        self.pending_since: float | None = None
+        self.connected_at = connected_at
         self.last_delivery_at: float | None = None
         self.delivered_chunks = 0
         self.delivered_bytes = 0
         self.dropped_chunks = 0
+        self.resyncs = 0
+        self.skipped_frames = 0
+
+    def clear_queue(self) -> int:
+        dropped = len(self.chunks)
+        self.chunks.clear()
+        self.queued_bytes = 0
+        if not self.in_flight:
+            # Nothing is waiting any more. A send still in flight, though, is a socket that has
+            # not accepted a write: that keeps counting towards "stuck".
+            self.pending_since = None
+            self.idle.set()
+        return dropped
 
 
 class SessionBroadcastHub:
     def __init__(
         self,
-        session_id: str,
+        stream_id: str,
         *,
         has_audio: bool = False,
+        expects_video: bool = True,
         send_queue_maxsize: int = DEFAULT_VIEWER_SEND_QUEUE_MAXSIZE,
+        max_queue_bytes: int = DEFAULT_MAX_QUEUE_BYTES,
+        max_queue_age_seconds: float = DEFAULT_MAX_QUEUE_AGE_SECONDS,
+        gop_cache_max_bytes: int = DEFAULT_GOP_CACHE_MAX_BYTES,
         stuck_timeout_seconds: float | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """`has_audio` must reflect whether this session actually has a working audio decoder
-        (`relay.py`'s own `_AUDIO_DECODERS` dispatch table, the same source of truth
-        `_on_reassembled_frame` uses to decide whether to call `broadcast_audio` at all) - it
-        drives the FLV file header's own `TypeFlags` byte (`FlvMuxer.start`) so a video-only
-        session never falsely claims audio, the real regression this fixes (2026-08-28)."""
-        self.session_id = session_id
+        """`has_audio` must reflect whether this stream actually has a working audio transcoder -
+        it drives the FLV header's `TypeFlags` (2026-08-28 regression)."""
+        self.session_id = stream_id  # historical name, kept for log fields
+        self.stream_id = stream_id
         self._has_audio = has_audio
+        #: `False` for an audio-only stream (the intercom downlink): nothing is gated on a
+        #: keyframe that will never come.
+        self._expects_video = expects_video
         self._send_queue_maxsize = send_queue_maxsize
-        #: `None` disables stuck-viewer detection entirely — how an INTERCOM session opts out
-        #: (`relay.py._on_session_created`): its audio queue holds only a few seconds, and a
-        #: browser that is not playing the downlink must never lose the operator's talk path.
+        self._max_queue_bytes = max_queue_bytes
+        self._max_queue_age_seconds = max_queue_age_seconds
+        self._gop_cache_max_bytes = gop_cache_max_bytes
         self._stuck_timeout_seconds = stuck_timeout_seconds
         self._clock = clock
         self._viewers: dict[WebSocketConnection, _ViewerState] = {}
-        #: Viewers seen to be continuously backpressured past the timeout, awaiting collection
-        #: by `take_stuck_viewers`. A dict (not a set) purely to keep detection order stable.
         self._stuck: dict[WebSocketConnection, None] = {}
+        #: The current GOP: (annex-b payload, is_keyframe, timestamp). Empty until a keyframe.
+        self._gop: list[tuple[bytes, bool, int | None]] = []
+        self._gop_bytes = 0
+        self._latest_sps: list[bytes] = []
+        self._latest_pps: list[bytes] = []
 
     @property
     def viewer_count(self) -> int:
@@ -138,19 +152,16 @@ class SessionBroadcastHub:
     def stuck_timeout_seconds(self) -> float | None:
         return self._stuck_timeout_seconds
 
+    def viewers_of(self, owner: str) -> list[WebSocketConnection]:
+        return [c for c, s in self._viewers.items() if s.owner == owner]
+
     def take_stuck_viewers(self) -> list[WebSocketConnection]:
-        """Viewers that have delivered nothing for `stuck_timeout_seconds` of continuous
-        backpressure — returned once, then forgotten. The caller (`relay.py`) closes them; each
-        one's own re-detection clock is reset when it is reported, so a close that takes a moment
-        to land cannot produce a second report before another full timeout has passed."""
+        """Viewers flagged since the last call - returned once, then forgotten."""
         stuck = list(self._stuck)
         self._stuck.clear()
         return stuck
 
     def viewer_stats(self, connection: WebSocketConnection) -> dict[str, object] | None:
-        """Log fields describing one attached viewer's delivery so far, or `None` once it has
-        left the hub. `transport_buffer_bytes` is what asyncio still holds for the socket on top
-        of the queue - a large value means the peer is not reading, not that RAAD is slow."""
         state = self._viewers.get(connection)
         if state is None:
             return None
@@ -158,209 +169,246 @@ class SessionBroadcastHub:
         return {
             "connected_seconds": round(now - state.connected_at, 1),
             "seconds_since_last_delivery": (
-                None
-                if state.last_delivery_at is None
-                else round(now - state.last_delivery_at, 1)
+                None if state.last_delivery_at is None else round(now - state.last_delivery_at, 1)
             ),
             "delivered_chunks": state.delivered_chunks,
             "delivered_bytes": state.delivered_bytes,
             "dropped_chunks": state.dropped_chunks,
-            "queued_chunks": state.queue.qsize(),
+            "resyncs": state.resyncs,
+            "skipped_frames": state.skipped_frames,
+            "queued_chunks": len(state.chunks),
+            "queued_bytes": state.queued_bytes,
             "transport_buffer_bytes": getattr(connection, "pending_write_bytes", None),
         }
 
-    async def add_viewer(self, connection: WebSocketConnection) -> None:
-        """The FLV header is still sent directly, synchronously, here — not through the new
-        per-viewer queue — so a viewer is guaranteed to have its header before anything else can
-        ever be queued for it (`broadcast_video`/`broadcast_audio*` only ever enqueue for a
-        connection already present in `self._viewers`, i.e. after this method returns)."""
+    # ------------------------------------------------------------------ membership
+
+    async def add_viewer(self, connection: WebSocketConnection, owner: str | None = None) -> None:
+        """Sends the FLV header directly (so nothing can precede it), then queues the cached GOP
+        so the viewer's first picture is a decodable keyframe without waiting for the next one."""
         muxer = FlvMuxer()
-        queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=self._send_queue_maxsize)
-        task = asyncio.ensure_future(self._run_sender(connection, queue))
-        self._viewers[connection] = _ViewerState(
-            muxer=muxer, queue=queue, task=task, last_progress_at=self._clock()
-        )
+        state = _ViewerState(muxer=muxer, owner=owner, connected_at=self._clock())
+        state.task = asyncio.ensure_future(self._run_sender(connection, state))
+        self._viewers[connection] = state
         await connection.send_binary(muxer.start(has_audio=self._has_audio))
+        if self._latest_sps:
+            muxer.seed_parameter_sets(sps_list=self._latest_sps, pps_list=self._latest_pps)
+        for payload, is_keyframe, timestamp_ms in list(self._gop):
+            self._deliver_video(connection, state, payload, is_keyframe, timestamp_ms)
 
     def remove_viewer(self, connection: WebSocketConnection) -> None:
         state = self._viewers.pop(connection, None)
         self._stuck.pop(connection, None)
-        if state is not None:
+        if state is not None and state.task is not None:
             state.task.cancel()
 
+    async def close_owner(self, owner: str, *, code: int, reason: bytes) -> None:
+        """Closes the viewers admitted by one session only; the stream's other viewers stay."""
+        for connection in self.viewers_of(owner):
+            state = self._viewers.pop(connection, None)
+            self._stuck.pop(connection, None)
+            if state is not None and state.task is not None:
+                state.task.cancel()
+            try:
+                await connection.send_close(code=code, reason=reason)
+            except Exception:  # noqa: BLE001 - best-effort; the peer may already be gone
+                pass
+
     async def close_all(self, *, code: int, reason: bytes) -> None:
-        """Bug 1 fix (intercom/live "stuck Connecting..." regression): actively closes every
-        attached viewer connection with a distinguishable close frame. Previously, the owning
-        session's own removal (`relay.py._on_session_removed`) only ever dereferenced this hub
-        from `_hubs` — every browser already connected and waiting on it was left holding an
-        open, silent WebSocket forever, with no signal that the session it was watching had
-        become terminal (FAILED/ENDED). One bad/already-gone viewer must never stop the rest
-        from being closed, mirroring `broadcast_video`/`broadcast_audio`'s own per-viewer
-        failure isolation. Also cancels every viewer's own sender task — nothing should keep
-        trying to deliver queued frames to a session that no longer exists."""
+        """Closes every attached viewer (the stream itself ended)."""
         for connection, state in list(self._viewers.items()):
-            state.task.cancel()
+            if state.task is not None:
+                state.task.cancel()
             try:
                 await connection.send_close(code=code, reason=reason)
             except Exception:  # noqa: BLE001 - best-effort; the peer may already be gone
                 pass
         self._viewers.clear()
+        self._stuck.clear()
 
-    async def _run_sender(
-        self, connection: WebSocketConnection, queue: "asyncio.Queue[bytes]"
-    ) -> None:
-        """One viewer's own dedicated delivery loop — the *only* place this class ever awaits a
-        socket write. Blocking here (a slow/congested client) only ever delays this one viewer's
-        own queue; it can never delay the ingest pipeline or any other viewer, which is the whole
-        point of this redesign. Exits (and removes this viewer from the hub) the moment a send
-        fails, mirroring the pre-existing per-viewer failure-isolation contract exactly — just
-        detected on this task instead of inside the triggering `broadcast_*` call."""
+    def begin_new_generation(self) -> None:
+        """The device stream restarted (new start command, new connection, possibly a different
+        resolution). Frames already queued stay valid to play; everything after waits for the new
+        generation's first keyframe, with a fresh sequence header."""
+        self._gop.clear()
+        self._gop_bytes = 0
+        for state in self._viewers.values():
+            state.awaiting_keyframe = True
+            state.muxer.resync()
+
+    # ------------------------------------------------------------------ delivery
+
+    async def _run_sender(self, connection: WebSocketConnection, state: _ViewerState) -> None:
+        """The only place a viewer's socket is written. Exits, removing the viewer, on the first
+        failed send."""
         try:
             while True:
-                chunk = await queue.get()
+                while not state.chunks:
+                    state.idle.set()
+                    state.wake.clear()
+                    await state.wake.wait()
+                chunk, _queued_at = state.chunks.popleft()
+                state.queued_bytes -= len(chunk)
+                state.in_flight = True
                 try:
                     await connection.send_binary(chunk)
                 except Exception as exc:  # noqa: BLE001 - one bad viewer must not break the hub
-                    queue.task_done()
+                    state.in_flight = False
                     self._viewers.pop(connection, None)
+                    state.idle.set()
                     log_with_fields(
-                        logger, 20, "viewer_send_failed", session_id=self.session_id,
+                        logger, 20, "viewer_send_failed", session_id=self.stream_id,
                         error=type(exc).__name__,
                     )
                     return
-                else:
-                    state = self._viewers.get(connection)
-                    if state is not None:
-                        state.delivered_chunks += 1
-                        state.delivered_bytes += len(chunk)
-                        state.last_delivery_at = self._clock()
-                    queue.task_done()
+                state.in_flight = False
+                state.delivered_chunks += 1
+                state.delivered_bytes += len(chunk)
+                state.last_delivery_at = self._clock()
+                state.pending_since = state.last_delivery_at if state.chunks else None
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - a `run_forever`-shaped loop must never let an
-            # unexpected exception vanish unlogged (this codebase's own established discipline
-            # for every such consumer loop, CLAUDE.md's Permanent Engineering Lessons) - this
-            # task is fire-and-forget from `add_viewer`'s perspective, so nothing else would ever
-            # observe or log this otherwise.
+        except Exception as exc:  # noqa: BLE001 - never let a fire-and-forget task die silently
             log_with_fields(
-                logger, 40, "viewer_sender_task_crashed", session_id=self.session_id,
+                logger, 40, "viewer_sender_task_crashed", session_id=self.stream_id,
                 error=str(exc),
             )
             self._viewers.pop(connection, None)
+            state.idle.set()
 
     def _enqueue(
-        self, connection: WebSocketConnection, state: _ViewerState, chunk: bytes
+        self, connection: WebSocketConnection, state: _ViewerState, chunk: bytes, *, is_keyframe: bool
     ) -> bool:
-        """Non-blocking enqueue for one viewer's own send queue. Returns `True` if an older,
-        not-yet-delivered chunk had to be dropped to make room (backpressure occurred for this
-        viewer — it has fallen behind), `False` if the queue had room outright. Drop-*oldest*
-        (not newest): a viewer that is behind should see the most current frame available next,
-        not keep waiting on stale ones it doesn't need for a *live* view."""
-        dropped = False
-        while True:
-            try:
-                state.queue.put_nowait(chunk)
-                if dropped:
-                    self._note_backpressure(connection, state)
-                else:
-                    # Room without dropping anything: this viewer is still draining its socket.
-                    state.last_progress_at = self._clock()
-                return dropped
-            except asyncio.QueueFull:
-                dropped = True
-                try:
-                    state.queue.get_nowait()
-                    state.queue.task_done()
-                    state.dropped_chunks += 1
-                except asyncio.QueueEmpty:
-                    continue  # raced the sender task draining it - retry the put
+        """Queues one chunk. Returns `True` if the viewer had fallen behind and was resynchronised
+        (its queue discarded). A keyframe chunk that arrives on an overflow is kept: it is exactly
+        where the viewer can restart from."""
+        now = self._clock()
+        overflow = bool(state.chunks) and (
+            len(state.chunks) >= self._send_queue_maxsize
+            or state.queued_bytes + len(chunk) > self._max_queue_bytes
+            or now - state.chunks[0][1] > self._max_queue_age_seconds
+        )
+        if overflow:
+            state.dropped_chunks += state.clear_queue()
+            state.resyncs += 1
+            state.muxer.resync()
+            self._check_stuck(connection, state, now)
+            if not is_keyframe:
+                state.awaiting_keyframe = True
+                return True
+        if state.pending_since is None:
+            state.pending_since = now
+        state.chunks.append((chunk, now))
+        state.queued_bytes += len(chunk)
+        state.idle.clear()
+        state.wake.set()
+        self._check_stuck(connection, state, now)
+        return overflow
 
-    def _note_backpressure(self, connection: WebSocketConnection, state: _ViewerState) -> None:
-        """A chunk had to be dropped for this viewer. Flag it only once it has gone
-        `stuck_timeout_seconds` without a single drop-free delivery — ordinary jitter always
-        produces one long before that, so a viewer that receives *anything* is never flagged."""
+    def _check_stuck(self, connection: WebSocketConnection, state: _ViewerState, now: float) -> None:
         if self._stuck_timeout_seconds is None:
             return
-        now = self._clock()
-        if now - state.last_progress_at < self._stuck_timeout_seconds:
+        # Stuck = data has been waiting this long with no delivery completing in between.
+        if state.pending_since is None:
             return
-        state.last_progress_at = now  # re-detection needs another full timeout
-        self._stuck[connection] = None
+        if now - state.pending_since < self._stuck_timeout_seconds:
+            return
+        if connection not in self._stuck:
+            self._stuck[connection] = None
+            # Re-detection needs another full timeout if the close takes a moment to land.
+            state.pending_since = now
+
+    def _deliver_video(
+        self,
+        connection: WebSocketConnection,
+        state: _ViewerState,
+        payload: bytes,
+        is_keyframe: bool,
+        timestamp_ms: int | None,
+    ) -> bool:
+        if state.awaiting_keyframe:
+            if not is_keyframe:
+                state.skipped_frames += 1
+                self._check_stuck(connection, state, self._clock())
+                return False
+            state.awaiting_keyframe = False
+        chunk = state.muxer.feed_annex_b_video(
+            annex_b_payload=payload, is_keyframe=is_keyframe, timestamp_ms=timestamp_ms
+        )
+        if not chunk:
+            return False
+        return self._enqueue(connection, state, chunk, is_keyframe=is_keyframe)
+
+    def _remember(self, payload: bytes, is_keyframe: bool, timestamp_ms: int | None) -> None:
+        if is_keyframe:
+            sps_list, pps_list = extract_sps_pps(split_annex_b_nalus(payload))
+            if sps_list:
+                self._latest_sps = sps_list
+            if pps_list:
+                self._latest_pps = pps_list
+            self._gop = [(payload, True, timestamp_ms)]
+            self._gop_bytes = len(payload)
+            return
+        if not self._gop:
+            return
+        if self._gop_bytes + len(payload) > self._gop_cache_max_bytes:
+            # Too long to replay usefully; a joining viewer waits for the next keyframe instead.
+            self._gop.clear()
+            self._gop_bytes = 0
+            return
+        self._gop.append((payload, False, timestamp_ms))
+        self._gop_bytes += len(payload)
 
     async def wait_until_idle(self) -> None:
-        """Test/observability helper — awaits until every viewer's currently-queued chunks have
-        been handed to their own sender task's `send_binary` call (delivered, or dropped for
-        backpressure). Production code never needs this (nothing here waits on network delivery
-        completing, only on a frame being handed off) — it exists so tests can deterministically
-        wait for the async, per-viewer fan-out below instead of guessing with `asyncio.sleep`."""
+        """Test helper: waits until every viewer's queue has been handed to its socket."""
         for state in list(self._viewers.values()):
-            await state.queue.join()
+            await state.idle.wait()
 
     async def broadcast_video(
         self, *, annex_b_payload: bytes, is_keyframe: bool, timestamp_ms: int | None
     ) -> list[WebSocketConnection]:
-        """Repackages once per viewer via `FlvMuxer.feed_annex_b_video` — NAL splitting/
-        classification is cheap (pure byte scanning, no re-encoding), and "has *this* viewer's
-        own muxer already sent a sequence header" is genuinely per-viewer state (a viewer
-        joining mid-stream needs its own copy, independent of whether earlier viewers already
-        got theirs — the same reasoning `add_viewer`'s own docstring already gives for the FLV
-        file header itself, now extended to the codec sequence header). Muxing stays fully
-        synchronous/in-order here; only the resulting bytes' actual delivery is queued (module
-        docstring). Returns the viewers whose own send queue was already full and had to drop an
-        older frame to make room for this one — a backpressure signal, not a failure signal (a
-        backpressured viewer is still attached and still being sent to); an already-failed viewer
-        is removed by its own sender task and simply isn't iterated here again."""
+        """Returns the viewers that had to be resynchronised for this frame (a backpressure
+        signal, not a failure: they stay attached)."""
+        self._remember(annex_b_payload, is_keyframe, timestamp_ms)
         backpressured: list[WebSocketConnection] = []
         for connection, state in list(self._viewers.items()):
-            chunk = state.muxer.feed_annex_b_video(
-                annex_b_payload=annex_b_payload,
-                is_keyframe=is_keyframe,
-                timestamp_ms=timestamp_ms,
-            )
-            if not chunk:
-                continue
-            if self._enqueue(connection, state, chunk):
+            if self._deliver_video(connection, state, annex_b_payload, is_keyframe, timestamp_ms):
                 backpressured.append(connection)
         return backpressured
 
     async def broadcast_audio(
         self, *, pcm_payload: bytes, sample_rate_hz: int, timestamp_ms: int | None
     ) -> list[WebSocketConnection]:
-        """`pcm_payload` is already-decoded 16-bit little-endian mono PCM at exactly
-        `sample_rate_hz` (`codec/g711a.py`'s `decode_g711a` + `resample_linear_pcm16`) - this
-        method only fans it out per-viewer via `FlvMuxer.feed_audio_pcm`, mirroring
-        `broadcast_video`'s identical per-viewer-muxer-then-queue shape. **Dead as of ADR-0034**
-        (`relay.py` no longer calls this - the emptied `_AUDIO_DECODERS` table never produces a
-        PCM payload to broadcast) - kept, not deleted, as the Linear-PCM tag-building path stays
-        correct and tested for any future case that genuinely wants raw PCM over
-        `feed_audio_aac_frame`'s transcoded path."""
+        """Linear-PCM path, unused since ADR-0034 but kept tested. Audio waits with video: a
+        viewer awaiting a keyframe receives no audio, so the two never start out of step."""
         backpressured: list[WebSocketConnection] = []
         for connection, state in list(self._viewers.items()):
+            if self._audio_blocked(state):
+                continue
             chunk = state.muxer.feed_audio_pcm(
-                pcm_payload=pcm_payload,
-                sample_rate_hz=sample_rate_hz,
-                timestamp_ms=timestamp_ms,
+                pcm_payload=pcm_payload, sample_rate_hz=sample_rate_hz, timestamp_ms=timestamp_ms
             )
-            if self._enqueue(connection, state, chunk):
+            if self._enqueue(connection, state, chunk, is_keyframe=False):
                 backpressured.append(connection)
         return backpressured
 
     async def broadcast_audio_aac(
         self, *, aac_payload: bytes, audio_specific_config: bytes, timestamp_ms: int | None
     ) -> list[WebSocketConnection]:
-        """`aac_payload` is one already-encoded raw AAC frame (ADTS header already stripped,
-        `codec/aac_transcoder.find_adts_frames`) from this session's own `AacTranscoder`
-        (ADR-0034) - fans it out per-viewer via `FlvMuxer.feed_audio_aac_frame`, which handles
-        sending the AAC sequence-header tag on each viewer's own first frame (or on a config
-        change) before the raw frame, mirroring `broadcast_video`'s identical
-        per-viewer-muxer-then-queue shape."""
+        """One transcoded AAC frame (ADR-0034). Viewers awaiting a keyframe are skipped, as above,
+        except on an audio-only stream (intercom downlink), which has no keyframes at all."""
         backpressured: list[WebSocketConnection] = []
         for connection, state in list(self._viewers.items()):
+            if self._audio_blocked(state):
+                continue
             chunk = state.muxer.feed_audio_aac_frame(
                 aac_payload=aac_payload,
                 audio_specific_config=audio_specific_config,
                 timestamp_ms=timestamp_ms,
             )
-            if self._enqueue(connection, state, chunk):
+            if self._enqueue(connection, state, chunk, is_keyframe=False):
                 backpressured.append(connection)
         return backpressured
+
+    def _audio_blocked(self, state: _ViewerState) -> bool:
+        return self._expects_video and state.awaiting_keyframe

@@ -344,3 +344,91 @@ class CreateIntercomSessionTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RelaySignalledStreamTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0046 §3: the relay owns a stream's device commands when the Business API asks it to."""
+
+    class _Recorder(LoggingSessionEventPublisher):
+        def __init__(self) -> None:
+            self.commands: list[dict] = []
+
+        async def publish_stop_command(self, *, terminal_id, correlation_id, command, fields):
+            self.commands.append({"command": command, "fields": fields})
+
+    def _server(self, redis):
+        publisher = self._Recorder()
+        manager = SessionManager(
+            event_publisher=publisher, ingest_target=("relay.example.com", 7910)
+        )
+        server = SessionRequestServer(
+            redis,
+            session_manager=manager,
+            viewer_token_secret=SECRET,
+            public_ingest_host="relay.example.com",
+            ingest_port=7910,
+        )
+        return server, manager, publisher
+
+    def _request(self, request_id, session_id, *, stream_type="sub", flag=True):
+        payload = {
+            "request_id": request_id,
+            "command": "create_live_session",
+            "session_id": session_id,
+            "correlation_id": session_id,
+            "terminal_id": "00000000014482607571",
+            "logical_channel": 3,
+            "stream_type": stream_type,
+        }
+        if flag:
+            payload["relay_signals_device"] = True
+        return payload
+
+    async def test_the_relay_starts_the_stream_and_says_so(self) -> None:
+        redis = FakeRedis()
+        server, manager, publisher = self._server(redis)
+        _push_request(redis, self._request("r1", "S1"))
+        await server.poll_once()
+        await manager.flush()
+        response = _pop_response(redis, "r1")
+        self.assertTrue(response["device_signaled"])
+        self.assertEqual(response["stream_type"], "sub")
+        self.assertEqual(
+            publisher.commands,
+            [
+                {
+                    "command": "live_video_request",
+                    "fields": {
+                        "server_ip": "relay.example.com",
+                        "tcp_port": 7910,
+                        "udp_port": 0,
+                        "logical_channel": 3,
+                        "data_type": 0,
+                        "stream_type": 1,
+                    },
+                }
+            ],
+        )
+
+    async def test_a_second_viewer_shares_the_stream_and_reports_its_real_stream_type(self) -> None:
+        redis = FakeRedis()
+        server, manager, publisher = self._server(redis)
+        _push_request(redis, self._request("r1", "S1", stream_type="main"))
+        _push_request(redis, self._request("r2", "S2", stream_type="sub"))
+        await server.poll_once()
+        await server.poll_once()
+        await manager.flush()
+        first, second = _pop_response(redis, "r1"), _pop_response(redis, "r2")
+        self.assertEqual(first["stream_id"], second["stream_id"])
+        self.assertEqual(second["stream_type"], "main", "the channel runs main for the other viewer")
+        self.assertEqual(len(publisher.commands), 1)
+
+    async def test_a_request_without_the_flag_is_not_signalled_by_the_relay(self) -> None:
+        redis = FakeRedis()
+        server, manager, publisher = self._server(redis)
+        _push_request(redis, self._request("r1", "S1", flag=False))
+        await server.poll_once()
+        await manager.flush()
+        response = _pop_response(redis, "r1")
+        self.assertNotIn("device_signaled", response)
+        self.assertEqual(publisher.commands, [])

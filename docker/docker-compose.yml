@@ -433,12 +433,18 @@ services:
       # live as the 30-35s "the viewer socket died while I was watching" symptom, which is this
       # relay's own deliberate teardown, not a network fault.
       JT1078_RELAY_INGEST_TIMEOUT_SECONDS: ${JT1078_RELAY_INGEST_TIMEOUT_SECONDS:-30}
-      JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS: ${JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS:-5}
+      JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS: ${JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS:-1}
+      # ADR-0046: a device stream keeps running this long after its last viewer session left
+      # (and a main-to-sub downgrade waits this long), so a focus swap or reconnect reuses it.
+      JT1078_RELAY_STREAM_LINGER_SECONDS: ${JT1078_RELAY_STREAM_LINGER_SECONDS:-5}
+      # ADR-0046: how long one stream's start holds its channel's start slot while waiting for
+      # its media connection, so the next connection on that channel is attributable.
+      JT1078_RELAY_START_SERIALIZATION_WINDOW_SECONDS: ${JT1078_RELAY_START_SERIALIZATION_WINDOW_SECONDS:-10}
       JT1078_RELAY_ABSOLUTE_IDLE_SECONDS: ${JT1078_RELAY_ABSOLUTE_IDLE_SECONDS:-60}
       JT1078_RELAY_VIEWER_GRACE_SECONDS: ${JT1078_RELAY_VIEWER_GRACE_SECONDS:-15}
-      # How long a viewer may be continuously backpressured (every chunk dropped, nothing
-      # delivered) before the relay closes it, so the session can end and the device stop
-      # streaming. 0 disables. Never applied to intercom sessions.
+      # How long a viewer may have data waiting while delivering nothing at all before the relay
+      # closes it (a merely slow viewer is resynchronised on a keyframe instead, ADR-0046).
+      # 0 disables. Never applied to intercom.
       JT1078_RELAY_VIEWER_STUCK_TIMEOUT_SECONDS: ${JT1078_RELAY_VIEWER_STUCK_TIMEOUT_SECONDS:-30}
       # Audit finding B18 — concurrency ceilings. The global default of 50 comes from Phase 2
       # §13.1's own "e.g. start 50 global"; it is an illustrative figure from a design document,

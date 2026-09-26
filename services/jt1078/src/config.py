@@ -60,15 +60,22 @@ class RelayConfig:
     viewer_grace_seconds: float = 15.0
     absolute_idle_seconds: float = 60.0
     ingest_timeout_seconds: float = 30.0
-    idle_sweep_interval_seconds: float = 5.0
-    #: How long a viewer may be *continuously* backpressured — every chunk dropped, nothing
-    #: delivered — before the relay closes it (2026-09-22). Production showed browsers that
-    #: stopped consuming for 40 s to 4 minutes while the MDVR kept streaming over cellular, with
-    #: nothing to end the session. `30` sits above the player's own 3 s freeze threshold and
-    #: matches `ingest_timeout_seconds`, while the send queue holds only ~1-3 s, so reaching it
-    #: means ~10-30 queue lengths of total failure. A viewer that receives *anything* resets its
-    #: own clock, so ordinary jitter or a slow link never trips it. `<= 0` disables the check.
-    #: Never applied to INTERCOM sessions - see `relay.py._on_session_created`.
+    #: 1 s since ADR-0046: the sweep also runs stream lingers, deferred starts and downgrades, so
+    #: its cadence is part of how quickly those happen.
+    idle_sweep_interval_seconds: float = 1.0
+    #: ADR-0046 §2: how long a device stream keeps running after its last session left (and how
+    #: long a stream-type downgrade waits). Long enough for a focus swap or a reconnect to reuse
+    #: the running stream; short enough not to pay for video nobody watches. `0` stops at once.
+    stream_linger_seconds: float = 5.0
+    #: ADR-0046 §3: how long one stream's start may hold its channel's start slot while waiting
+    #: for its media connection.
+    start_serialization_window_seconds: float = 10.0
+    #: How long a viewer may have data waiting while completing no delivery at all before the
+    #: relay closes it (2026-09-22; redefined by ADR-0046 §5). Production showed browsers that
+    #: stopped consuming for 40 s to 4 minutes while the MDVR kept streaming. A viewer that is
+    #: merely slow is resynchronised on a keyframe instead and never reaches this. The browser's
+    #: own main-to-sub fallback reacts in ~10 s, so this is the backstop. `<= 0` disables it.
+    #: Never applied to intercom - see `relay.py._on_stream_created`.
     viewer_stuck_timeout_seconds: float = 30.0
     #: ADR-0026 §8. `50` cites `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md`
     #: §13.1's own "e.g., start 50 global" - the one concrete number an approved document names.
@@ -111,7 +118,13 @@ class RelayConfig:
             # 30s. Wiring it closes this codebase's own "docker-compose.yml must wire every
             # value `from_env()` reads" rule (CLAUDE.md, Permanent Engineering Lessons).
             idle_sweep_interval_seconds=float(
-                os.environ.get("JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS", "5")
+                os.environ.get("JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS", "1")
+            ),
+            stream_linger_seconds=float(
+                os.environ.get("JT1078_RELAY_STREAM_LINGER_SECONDS", "5")
+            ),
+            start_serialization_window_seconds=float(
+                os.environ.get("JT1078_RELAY_START_SERIALIZATION_WINDOW_SECONDS", "10")
             ),
             viewer_grace_seconds=float(
                 os.environ.get("JT1078_RELAY_VIEWER_GRACE_SECONDS", "15")

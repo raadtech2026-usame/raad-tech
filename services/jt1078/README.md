@@ -50,6 +50,17 @@ See `.claude/rules/jt1078.md` and `.claude/rules/security.md`.
 
 ## Status
 
+**Device stream ownership (ADR-0046, 2026-09-26).** The relay owns *device streams* keyed by
+terminal, channel and kind (live A/V, intercom; playback is per session); a Business API session
+is a viewer attached to one. Several viewers share one device connection, and `0x9102` is sent
+only when the last one has been gone for `JT1078_RELAY_STREAM_LINGER_SECONDS`. Every device command
+(start and stop) is published by the relay, in order, stamped with the stream's generation, and
+starts on one channel are serialised so each new media connection is attributable. Live stop uses
+close type 2 while an intercom is open on the channel. Delivery is keyframe-aware: a viewer starts
+at a keyframe (the hub caches the current GOP) and resynchronises on one when it falls behind.
+See `docs/architecture/adr/0046-live-video-stream-ownership-and-camera-presence.md`. Tested
+against synthetic frames and loopback sockets only, not the physical MDVR.
+
 **Implemented and unit/integration-tested (no hardware), per the JT1078 implementation phase
 (2026-08-11):**
 

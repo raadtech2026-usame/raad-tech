@@ -1,17 +1,24 @@
-"""`SessionManager` tests (`session/session_manager.py`) — lifecycle, viewer counting, idle
-teardown, and the device stop-signal publish, all against a recording fake publisher."""
+"""`SessionManager` tests (`session/session_manager.py`, ADR-0046): device stream ownership shared by
+viewer sessions, one ordered command path stamped with a generation, the per-channel start slot,
+live/intercom independence, idle teardown - all against a recording fake publisher and a fake
+clock."""
 
+import time
 import unittest
 
 from src.events.session_events import VideoSessionActivated, VideoSessionEnded, VideoSessionFailed
+from src.session.device_stream import DeviceStreamState
 from src.session.session_manager import SessionCapacityExceededError, SessionManager
-from src.session.video_session import VideoSessionKind, VideoSessionState
+from src.session.video_session import StreamType, VideoSessionKind, VideoSessionState
+
+TERMINAL = "00000000014482607571"
+SIM = "014482607571"  # the BCD[6] form a JT/T 1078 ingest frame carries
 
 
 class RecordingPublisher:
     def __init__(self) -> None:
         self.published: list[object] = []
-        self.stop_commands: list[dict] = []
+        self.stop_commands: list[dict] = []  # every device command, starts included
 
     async def publish(self, event) -> None:
         self.published.append(event)
@@ -26,451 +33,562 @@ class RecordingPublisher:
             }
         )
 
+    @property
+    def commands(self) -> list[dict]:
+        return self.stop_commands
+
+    def kinds(self) -> list[str]:
+        """Compact command log: `start:<ch>:<stream type or data type>` / `stop:<ch>:...`."""
+        out = []
+        for c in self.stop_commands:
+            f = c["fields"]
+            if c["command"] == "live_video_request":
+                label = "intercom" if f["data_type"] == 2 else ("main" if f["stream_type"] == 0 else "sub")
+                out.append(f"start:{f['logical_channel']}:{label}")
+            elif c["command"] == "live_video_control":
+                if f["control"] == 4:
+                    out.append(f"stop:{f['logical_channel']}:intercom")
+                else:
+                    out.append(f"stop:{f['logical_channel']}:av{f.get('close_av_type', 0)}")
+            elif c["command"] == "playback_request":
+                out.append(f"start:{f['logical_channel']}:playback")
+            elif c["command"] == "playback_control":
+                out.append(f"stop:{f['av_channel']}:playback")
+        return out
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
 
 def _manager(**kwargs) -> tuple[SessionManager, RecordingPublisher]:
     publisher = RecordingPublisher()
+    kwargs.setdefault("ingest_target", ("203.0.113.5", 7910))
     manager = SessionManager(event_publisher=publisher, **kwargs)
     return manager, publisher
 
 
-class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_create_session_starts_requested(self) -> None:
-        manager, _ = _manager()
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        self.assertEqual(session.state, VideoSessionState.REQUESTED)
-        self.assertEqual(manager.resolve(session.session_id), session)
+def _live(manager, session_id, *, channel=1, stream_type=StreamType.MAIN, relay=True, org="O1"):
+    return manager.create_session(
+        session_id=session_id,
+        terminal_id=TERMINAL,
+        kind=VideoSessionKind.LIVE,
+        correlation_id=session_id,
+        logical_channel=channel,
+        organization_id=org,
+        stream_type=stream_type,
+        relay_signals_device=relay,
+    )
 
-    async def test_create_session_defaults_audio_codec_to_none(self) -> None:
-        manager, _ = _manager()
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        self.assertIsNone(session.audio_codec)
 
-    async def test_create_session_stores_the_given_audio_codec(self) -> None:
-        manager, _ = _manager()
-        session = manager.create_session(
-            terminal_id="T1",
-            kind=VideoSessionKind.LIVE,
-            correlation_id="corr-1",
-            logical_channel=1,
-            audio_codec=6,
-        )
-        self.assertEqual(session.audio_codec, 6)
+def _intercom(manager, session_id, *, channel=1, relay=True):
+    return manager.create_session(
+        session_id=session_id,
+        terminal_id=TERMINAL,
+        kind=VideoSessionKind.INTERCOM,
+        correlation_id=session_id,
+        logical_channel=channel,
+        relay_signals_device=relay,
+    )
 
-    async def test_resolve_ingest_by_terminal_id_finds_a_requested_session(self) -> None:
-        manager, _ = _manager()
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        found = manager.resolve_ingest_by_terminal_id("T1", 1)
-        self.assertEqual(found.session_id, session.session_id)
 
-    async def test_resolve_ingest_by_terminal_id_returns_none_for_unsolicited_terminal(
-        self,
-    ) -> None:
-        manager, _ = _manager()
-        manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        self.assertIsNone(manager.resolve_ingest_by_terminal_id("some-other-terminal", 1))
+async def _connect(manager, *, channel=1, is_audio=False):
+    """What `IngestServer` does for a new media connection's first frame."""
+    stream = manager.resolve_ingest_stream(SIM, channel, is_audio=is_audio)
+    assert stream is not None, "no stream accepted the connection"
+    manager.note_ingest_connected(stream.stream_id)
+    await manager.mark_stream_active(stream.stream_id)
+    return stream
 
-    async def test_resolve_ingest_by_terminal_id_disambiguates_a_devices_own_concurrent_sessions(
-        self,
-    ) -> None:
-        """Regression test for a real, live-found bug (2026-08-22, physical bench unit,
-        multi-camera grid): four cameras on one device are live-requested simultaneously, giving
-        four `REQUESTED` sessions that share the same `terminal_id` and differ only by
-        `logical_channel`. Matching by `terminal_id` alone (the previous behavior) returned
-        whichever same-device session happened to be first in iteration order, regardless of
-        which channel a given ingest connection's own frames were actually for — confirmed live:
-        the device opened four independent, simultaneous ingest connections, but every one of
-        them resolved to the same one session."""
-        manager, _ = _manager()
-        sessions = [
-            manager.create_session(
-                terminal_id="T1",
-                kind=VideoSessionKind.LIVE,
-                correlation_id=f"corr-{channel}",
-                logical_channel=channel,
-            )
-            for channel in (1, 2, 3, 4)
-        ]
 
-        for channel, session in zip((1, 2, 3, 4), sessions):
-            found = manager.resolve_ingest_by_terminal_id("T1", channel)
-            self.assertEqual(
-                found.session_id,
-                session.session_id,
-                f"channel {channel}'s ingest frame resolved to the wrong session",
-            )
+class StreamOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    """The production bug of 2026-09-23: two users on one channel, one user's stop killed the
+    other's video. One device stream per channel, stopped only by its last session."""
 
-    async def test_resolve_ingest_by_terminal_id_prefers_intercom_for_an_audio_frame_on_a_shared_channel(
-        self,
-    ) -> None:
-        """Bug 2 regression test — a real, live-reproduced production scenario: an operator is
-        viewing a device's live multi-camera grid (LIVE session already `ACTIVE` on channel 1)
-        while another operator starts "Talk to Driver" against that same device's first camera
-        (INTERCOM session `REQUESTED` on the identical channel 1, ADR-0036 §6's own default). Both
-        share `(terminal_id, logical_channel)`, so the pre-fix first-match-wins behavior would
-        always resolve a genuine intercom audio connection to the *already-inserted* LIVE session
-        instead — silently starving the intercom session until it hit `ingest_timeout`, exactly
-        the symptom production session `01M1EQZE1D1831D74MHXCTDGQP` exhibited (a concurrently
-        `ACTIVE` LIVE session on the identical camera/channel was confirmed in the DB at the exact
-        moment that intercom session failed)."""
-        manager, _ = _manager()
-        live_session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-live", logical_channel=1
-        )
-        await manager.mark_ingest_active(live_session.session_id)
-        intercom_session = manager.create_session(
-            terminal_id="T1",
-            kind=VideoSessionKind.INTERCOM,
-            correlation_id="corr-intercom",
-            logical_channel=1,
-        )
-
-        found = manager.resolve_ingest_by_terminal_id("T1", 1, is_audio=True)
-
-        self.assertEqual(found.session_id, intercom_session.session_id)
-
-    async def test_resolve_ingest_by_terminal_id_prefers_live_for_a_video_frame_on_a_shared_channel(
-        self,
-    ) -> None:
-        """The reverse direction of the fix above — a video frame on a channel that has both a
-        pending LIVE and a pending INTERCOM session must still resolve to the LIVE session, never
-        get mis-attributed to the audio-only intercom call."""
-        manager, _ = _manager()
-        intercom_session = manager.create_session(
-            terminal_id="T1",
-            kind=VideoSessionKind.INTERCOM,
-            correlation_id="corr-intercom",
-            logical_channel=1,
-        )
-        await manager.mark_ingest_active(intercom_session.session_id)
-        live_session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-live", logical_channel=1
-        )
-
-        found = manager.resolve_ingest_by_terminal_id("T1", 1, is_audio=False)
-
-        self.assertEqual(found.session_id, live_session.session_id)
-
-    async def test_resolve_ingest_by_terminal_id_without_is_audio_keeps_first_match_behavior(
-        self,
-    ) -> None:
-        """A caller that doesn't pass `is_audio` (none exists today besides `ingest_server.py`
-        itself, which always does — this proves the parameter is genuinely optional, not a
-        required migration) gets the exact pre-fix behavior: first `(terminal_id,
-        logical_channel)` match, no kind preference."""
-        manager, _ = _manager()
-        live_session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-live", logical_channel=1
-        )
-        manager.create_session(
-            terminal_id="T1",
-            kind=VideoSessionKind.INTERCOM,
-            correlation_id="corr-intercom",
-            logical_channel=1,
-        )
-
-        found = manager.resolve_ingest_by_terminal_id("T1", 1)
-
-        self.assertEqual(found.session_id, live_session.session_id)
-
-    async def test_resolve_ingest_by_terminal_id_returns_none_for_a_channel_with_no_pending_session(
-        self,
-    ) -> None:
-        manager, _ = _manager()
-        manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        self.assertIsNone(manager.resolve_ingest_by_terminal_id("T1", 2))
-
-    async def test_resolve_ingest_by_terminal_id_matches_the_narrower_bcd6_sim_card_number(
-        self,
-    ) -> None:
-        """Regression test for a real, live-found bug (2026-08-19, physical bench unit): the
-        ingest frame's own SIM card number is `BCD[6]` (12 hex digits), narrower than the
-        `BCD[10]` (20 hex digits) `terminal_id` a `VideoSession` is keyed by - the device's real
-        terminal_id `00000000014482607571` and its ingest frame's own `014482607571` are the
-        same identity, right-justified/zero-padded to the wider field. An exact `==` comparison
-        rejected every real ingest connection regardless of correctness."""
-        manager, _ = _manager()
-        session = manager.create_session(
-            terminal_id="00000000014482607571",
-            kind=VideoSessionKind.LIVE,
-            correlation_id="corr-1",
-            logical_channel=1,
-        )
-
-        found = manager.resolve_ingest_by_terminal_id("014482607571", 1)
-
-        self.assertIsNotNone(found)
-        self.assertEqual(found.session_id, session.session_id)
-
-    async def test_resolve_ingest_by_terminal_id_does_not_match_a_coincidental_short_suffix(
-        self,
-    ) -> None:
-        manager, _ = _manager()
-        manager.create_session(
-            terminal_id="00000000014482607571",
-            kind=VideoSessionKind.LIVE,
-            correlation_id="corr-1",
-            logical_channel=1,
-        )
-        self.assertIsNone(manager.resolve_ingest_by_terminal_id("999999999999", 1))
-
-    async def test_mark_ingest_active_transitions_and_publishes_once(self) -> None:
+    async def test_two_viewers_of_one_channel_share_one_device_stream(self) -> None:
         manager, publisher = _manager()
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
+        a = _live(manager, "A")
+        b = _live(manager, "B")
+        await manager.flush()
+        self.assertEqual(a.stream_id, b.stream_id)
+        self.assertEqual(publisher.kinds(), ["start:1:main"], "one start for two viewers")
 
-        await manager.mark_ingest_active(session.session_id)
-        self.assertEqual(session.state, VideoSessionState.ACTIVE)
-        self.assertEqual(len(publisher.published), 1)
-        self.assertIsInstance(publisher.published[0], VideoSessionActivated)
-
-        # a second frame arriving must not re-publish activation
-        await manager.mark_ingest_active(session.session_id)
-        self.assertEqual(len(publisher.published), 1)
-
-    async def test_end_session_publishes_ended_and_signals_live_stop(self) -> None:
+    async def test_b_stops_and_a_continues(self) -> None:
         manager, publisher = _manager()
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=2
-        )
-        await manager.mark_ingest_active(session.session_id)
+        a = _live(manager, "A")
+        _live(manager, "B")
+        await _connect(manager)
+        await manager.end_session("B", reason="business_api_requested")
+        self.assertEqual(publisher.kinds(), ["start:1:main"], "no stop while A still watches")
+        self.assertEqual(manager.resolve("A").state, VideoSessionState.ACTIVE)
+        self.assertIsNotNone(manager.resolve_stream(a.stream_id))
 
-        await manager.end_session(session.session_id, reason="explicit_stop")
-
-        self.assertIsNone(manager.resolve(session.session_id))
-        ended = [e for e in publisher.published if isinstance(e, VideoSessionEnded)]
-        self.assertEqual(len(ended), 1)
-        self.assertEqual(ended[0].reason, "explicit_stop")
-        self.assertEqual(len(publisher.stop_commands), 1)
-        self.assertEqual(publisher.stop_commands[0]["command"], "live_video_control")
-        self.assertEqual(publisher.stop_commands[0]["fields"]["control"], 0)
-        self.assertEqual(publisher.stop_commands[0]["fields"]["logical_channel"], 2)
-
-    async def test_end_session_for_intercom_signals_close_intercom_not_close_av(self) -> None:
-        """ADR-0036 — `control=4` (close intercom, Table 6.4), distinct from LIVE's `control=0`
-        (close A/V)."""
+    async def test_a_stops_and_b_continues(self) -> None:
         manager, publisher = _manager()
-        session = manager.create_session(
-            terminal_id="T1",
-            kind=VideoSessionKind.INTERCOM,
-            correlation_id="corr-3",
-            logical_channel=1,
-        )
-        await manager.end_session(session.session_id, reason="explicit_stop")
-        self.assertEqual(publisher.stop_commands[0]["command"], "live_video_control")
-        self.assertEqual(publisher.stop_commands[0]["fields"]["control"], 4)
-        self.assertEqual(publisher.stop_commands[0]["fields"]["logical_channel"], 1)
+        _live(manager, "A")
+        b = _live(manager, "B")
+        await _connect(manager)
+        await manager.end_session("A", reason="business_api_requested")
+        self.assertEqual(publisher.kinds(), ["start:1:main"])
+        self.assertEqual(manager.resolve("B").state, VideoSessionState.ACTIVE)
+        self.assertIsNotNone(manager.resolve_stream(b.stream_id))
 
-    async def test_end_session_for_playback_signals_playback_stop(self) -> None:
+    async def test_the_last_viewer_leaving_stops_the_stream_once(self) -> None:
         manager, publisher = _manager()
-        session = manager.create_session(
-            terminal_id="T1",
-            kind=VideoSessionKind.PLAYBACK,
-            correlation_id="corr-2",
-            logical_channel=1,
-        )
-        await manager.end_session(session.session_id, reason="window_exhausted")
-        self.assertEqual(publisher.stop_commands[0]["command"], "playback_control")
-        self.assertEqual(publisher.stop_commands[0]["fields"]["control"], 2)
+        _live(manager, "A")
+        _live(manager, "B")
+        await _connect(manager)
+        await manager.end_session("A", reason="business_api_requested")
+        await manager.end_session("B", reason="business_api_requested")
+        self.assertEqual(publisher.kinds(), ["start:1:main", "stop:1:av0"])
+        self.assertEqual(manager.active_stream_count, 0)
 
-    async def test_fail_session_publishes_failed_and_DOES_signal_stop(self) -> None:
-        """**Deliberate reversal of this test's own earlier assertion (2026-09-02).** It
-        previously asserted `stop_commands == []`, on the reasoning "device never connected -
-        nothing to stop." Live measurement against the physical `LSZ-C5804DG-Q-F` bench unit
-        disproved that premise: on a session that later times out, the device *does* accept the
-        `0x9101` (acknowledging it with `result: 0`) and *does* open the media TCP connection to
-        the ingest port - it simply never sends a media byte on it (13 of 15 such connections in
-        one observed window). So the device demonstrably holds per-channel state for a request
-        RAAD then abandoned, and `ingest_timeout` - the single most common session outcome
-        measured here - was the one teardown path that never told it to release that state, while
-        the frontend immediately requested the same channel again. A `0x9102` for a stream the
-        device isn't actually running is a harmless no-op; never sending it is not."""
+    async def test_viewers_of_different_channels_are_independent(self) -> None:
         manager, publisher = _manager()
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        await manager.fail_session(session.session_id, reason="ingest_timeout")
-        self.assertIsNone(manager.resolve(session.session_id))
-        failed = [e for e in publisher.published if isinstance(e, VideoSessionFailed)]
-        self.assertEqual(len(failed), 1)
+        a = _live(manager, "A", channel=1)
+        b = _live(manager, "B", channel=3)
+        await _connect(manager, channel=1)
+        await _connect(manager, channel=3)
+        self.assertNotEqual(a.stream_id, b.stream_id)
+        await manager.end_session("A", reason="business_api_requested")
+        self.assertEqual(publisher.kinds(), ["start:1:main", "start:3:main", "stop:1:av0"])
+        self.assertEqual(manager.resolve("B").state, VideoSessionState.ACTIVE)
+
+    async def test_a_second_viewer_joining_a_running_stream_is_active_at_once(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "A")
+        await _connect(manager)
+        _live(manager, "B")
+        await manager.flush()
+        self.assertEqual(manager.resolve("B").state, VideoSessionState.ACTIVE)
+        activated = [e.session_id for e in publisher.published if isinstance(e, VideoSessionActivated)]
+        self.assertEqual(activated, ["A", "B"])
+
+    async def test_a_timed_out_second_viewer_cannot_kill_the_first(self) -> None:
+        """Exactly the 2026-09-23 sequence: B's session used to wait for a connection that never
+        came, fail on ingest_timeout and send 0x9102. Now B shares A's running stream."""
+        clock = FakeClock()
+        manager, publisher = _manager(clock=clock)
+        _live(manager, "A")
+        await _connect(manager)
+        _live(manager, "B")
+        clock.now += 60  # well past ingest_timeout; A's stream keeps delivering
+        manager.touch_stream(manager.resolve("A").stream_id)
+        await manager.sweep_idle_sessions()
+        self.assertEqual(manager.resolve("A").state, VideoSessionState.ACTIVE)
+        self.assertEqual(manager.resolve("B").state, VideoSessionState.ACTIVE)
+        self.assertEqual(publisher.kinds(), ["start:1:main"])
+
+
+class StopStartOrderingTests(unittest.IsolatedAsyncioTestCase):
+    """A late stop must never be able to kill a newer start."""
+
+    async def test_restart_after_release_orders_stop_before_the_new_start(self) -> None:
+        manager, publisher = _manager()  # linger 0
+        first = _live(manager, "A")
+        await _connect(manager)
+        await manager.end_session("A", reason="business_api_requested")
+        second = _live(manager, "B")
+        await manager.flush()
+        self.assertEqual(publisher.kinds(), ["start:1:main", "stop:1:av0", "start:1:main"])
+        self.assertNotEqual(first.stream_id, second.stream_id)
+
+    async def test_a_new_viewer_within_the_linger_reuses_the_stream_with_no_stop(self) -> None:
+        clock = FakeClock()
+        manager, publisher = _manager(clock=clock, stream_linger_seconds=5)
+        a = _live(manager, "A")
+        await _connect(manager)
+        await manager.end_session("A", reason="business_api_requested")  # reconnect: old session
+        clock.now += 1
+        b = _live(manager, "B")  # ...and its replacement
+        clock.now += 10
+        await manager.sweep_idle_sessions()
+        self.assertEqual(a.stream_id, b.stream_id)
+        self.assertEqual(publisher.kinds(), ["start:1:main"], "no stop/start churn")
+
+    async def test_released_stream_stops_after_the_linger(self) -> None:
+        clock = FakeClock()
+        manager, publisher = _manager(clock=clock, stream_linger_seconds=5)
+        _live(manager, "A")
+        await _connect(manager)
+        await manager.end_session("A", reason="business_api_requested")
+        clock.now += 4
+        await manager.sweep_idle_sessions()
+        self.assertEqual(publisher.kinds(), ["start:1:main"])
+        clock.now += 2
+        await manager.sweep_idle_sessions()
+        self.assertEqual(publisher.kinds(), ["start:1:main", "stop:1:av0"])
+
+    async def test_commands_carry_their_stream_generation(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "A", stream_type=StreamType.SUB)
+        await _connect(manager)
+        _live(manager, "B", stream_type=StreamType.MAIN)  # upgrade: restart as generation 2
+        await manager.flush()
+        ids = [c["correlation_id"] for c in publisher.commands]
+        self.assertTrue(ids[0].endswith("-g1"))
+        self.assertTrue(ids[1].endswith("-g1-stop"))
+        self.assertTrue(ids[2].endswith("-g2"))
+
+    async def test_an_old_generations_connection_closing_does_not_end_the_restarted_stream(self) -> None:
+        manager, publisher = _manager()
+        a = _live(manager, "A", stream_type=StreamType.SUB)
+        await _connect(manager)
+        _live(manager, "B", stream_type=StreamType.MAIN)
+        await manager.flush()
+        stream = manager.resolve_stream(a.stream_id)
+        self.assertEqual(stream.generation, 2)
+        await manager.handle_ingest_disconnected(a.stream_id, generation=1, remaining_connections=0)
+        self.assertIsNotNone(manager.resolve_stream(a.stream_id))
+        self.assertEqual(manager.resolve("A").state, VideoSessionState.ACTIVE)
+
+    async def test_a_legacy_request_is_never_started_by_the_relay_but_is_still_stopped(self) -> None:
+        """Rolling-deploy compatibility: a Business API without `relay_signals_device` still
+        publishes its own start; the relay must not add a second one."""
+        manager, publisher = _manager()
+        _live(manager, "A", relay=False)
+        await _connect(manager)
+        await manager.end_session("A", reason="business_api_requested")
+        self.assertEqual(publisher.kinds(), ["stop:1:av0"])
+
+
+class StreamTypeTests(unittest.IsolatedAsyncioTestCase):
+    """One live stream per channel; it runs main if any session wants main (ADR-0046 §2)."""
+
+    async def test_sub_only_viewers_get_a_sub_stream(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "A", stream_type=StreamType.SUB)
+        await manager.flush()
+        self.assertEqual(publisher.kinds(), ["start:1:sub"])
+
+    async def test_a_main_viewer_upgrades_a_running_sub_stream_immediately(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "A", stream_type=StreamType.SUB)
+        await _connect(manager)
+        _live(manager, "B", stream_type=StreamType.MAIN)
+        await manager.flush()
+        self.assertEqual(publisher.kinds(), ["start:1:sub", "stop:1:av0", "start:1:main"])
+
+    async def test_one_viewer_falling_back_to_sub_does_not_downgrade_a_main_viewer(self) -> None:
+        clock = FakeClock()
+        manager, publisher = _manager(clock=clock, stream_linger_seconds=5)
+        _live(manager, "A", stream_type=StreamType.MAIN)
+        _live(manager, "B", stream_type=StreamType.MAIN)
+        await _connect(manager)
+        await manager.end_session("B", reason="business_api_requested")
+        _live(manager, "B2", stream_type=StreamType.SUB)  # B's fallback session
+        clock.now += 60
+        manager.touch_stream(manager.resolve("A").stream_id)
+        await manager.sweep_idle_sessions()
+        self.assertEqual(publisher.kinds(), ["start:1:main"], "A still wants main")
+
+    async def test_downgrade_waits_for_the_linger(self) -> None:
+        clock = FakeClock()
+        manager, publisher = _manager(clock=clock, stream_linger_seconds=5)
+        _live(manager, "A", stream_type=StreamType.MAIN)
+        await _connect(manager)
+        await manager.end_session("A", reason="business_api_requested")  # unfocus...
+        _live(manager, "A2", stream_type=StreamType.SUB)  # ...same tile now wants sub
+        await manager.sweep_idle_sessions()
+        self.assertEqual(publisher.kinds(), ["start:1:main"])
+        clock.now += 6
+        manager.touch_stream(manager.resolve("A2").stream_id)
+        await manager.sweep_idle_sessions()
+        self.assertEqual(publisher.kinds(), ["start:1:main", "stop:1:av0", "start:1:sub"])
+
+
+class IntercomIndependenceTests(unittest.IsolatedAsyncioTestCase):
+    """Live A/V and intercom on channel 1 are separate device streams (ADR-0046 §4)."""
+
+    async def test_intercom_and_live_on_one_channel_are_separate_streams(self) -> None:
+        manager, _ = _manager()
+        live = _live(manager, "V")
+        await _connect(manager)
+        talk = _intercom(manager, "I")
+        await manager.flush()
+        self.assertNotEqual(live.stream_id, talk.stream_id)
+
+    async def test_intercom_start_waits_for_the_live_streams_connection(self) -> None:
+        """Both pending on one channel would make the next connection ambiguous."""
+        manager, publisher = _manager()
+        _live(manager, "V")
+        _intercom(manager, "I")
+        await manager.flush()
+        self.assertEqual(publisher.kinds(), ["start:1:main"], "intercom start held")
+        live_stream = await _connect(manager)
+        await manager.flush()
+        self.assertEqual(live_stream.kind, VideoSessionKind.LIVE)
+        self.assertEqual(publisher.kinds(), ["start:1:main", "start:1:intercom"])
+        talk_stream = await _connect(manager, is_audio=True)
+        self.assertEqual(talk_stream.kind, VideoSessionKind.INTERCOM)
+
+    async def test_the_start_slot_is_released_after_the_window_even_without_a_connection(self) -> None:
+        clock = FakeClock()
+        manager, publisher = _manager(clock=clock, start_serialization_window_seconds=10)
+        _live(manager, "V")
+        _intercom(manager, "I")
+        clock.now += 11
+        await manager.sweep_idle_sessions()
+        self.assertEqual(publisher.kinds(), ["start:1:main", "start:1:intercom"])
+
+    async def test_stopping_live_while_talking_closes_video_only(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "V")
+        await _connect(manager)
+        _intercom(manager, "I")
+        await _connect(manager, is_audio=True)
+        await manager.end_session("V", reason="business_api_requested")
+        self.assertEqual(publisher.kinds()[-1], "stop:1:av2", "close type 2 keeps the intercom audio")
+        self.assertEqual(manager.resolve("I").state, VideoSessionState.ACTIVE)
+
+    async def test_stopping_intercom_keeps_live_video(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "V")
+        await _connect(manager)
+        _intercom(manager, "I")
+        await _connect(manager, is_audio=True)
+        await manager.end_session("I", reason="business_api_requested")
+        self.assertEqual(publisher.kinds()[-1], "stop:1:intercom")
+        self.assertEqual(manager.resolve("V").state, VideoSessionState.ACTIVE)
+
+    async def test_another_live_viewer_never_takes_the_intercom_connection(self) -> None:
+        manager, _ = _manager()
+        _intercom(manager, "I")
+        talk_stream = await _connect(manager, is_audio=True)
+        viewer = _live(manager, "V")
+        await manager.flush()
+        live_stream = await _connect(manager, is_audio=False)
+        self.assertEqual(live_stream.stream_id, viewer.stream_id)
+        self.assertNotEqual(live_stream.stream_id, talk_stream.stream_id)
+
+    async def test_a_live_ac_connection_opening_with_audio_still_goes_to_the_pending_live_stream(self) -> None:
+        """A live A/V connection may deliver an audio frame first; the stream waiting for its
+        connection wins over an already-connected intercom."""
+        manager, _ = _manager()
+        _intercom(manager, "I")
+        await _connect(manager, is_audio=True)
+        viewer = _live(manager, "V")
+        await manager.flush()
+        stream = await _connect(manager, is_audio=True)
+        self.assertEqual(stream.stream_id, viewer.stream_id)
+
+    async def test_live_stop_with_no_intercom_closes_everything_as_before(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "V")
+        await _connect(manager)
+        await manager.end_session("V", reason="business_api_requested")
+        self.assertEqual(publisher.kinds()[-1], "stop:1:av0")
+
+
+class RestartSlotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_restart_waits_while_an_intercom_on_the_channel_awaits_its_connection(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "V", stream_type=StreamType.SUB)
+        await _connect(manager)
+        _intercom(manager, "I")  # started, waiting for its connection
+        await manager.flush()
+        _live(manager, "V2", stream_type=StreamType.MAIN)  # upgrade -> restart
+        await manager.flush()
         self.assertEqual(
-            publisher.stop_commands,
-            [
-                {
-                    "terminal_id": "T1",
-                    "correlation_id": "corr-1",
-                    "command": "live_video_control",
-                    "fields": {"logical_channel": 1, "control": 0},
-                }
-            ],
+            publisher.kinds(), ["start:1:sub", "start:1:intercom", "stop:1:av2"],
+            "the restart's start is held until the intercom has its connection",
         )
+        await _connect(manager, is_audio=True)
+        await manager.flush()
+        self.assertEqual(publisher.kinds()[-1], "start:1:main")
 
-    async def test_fail_session_signals_the_intercom_specific_stop_for_an_intercom_session(self) -> None:
-        """The stop must stay purpose-correct on the failure path too: `control: 4` (close
-        two-way intercom, Table 6.4) for an INTERCOM session, never LIVE's own `control: 0`."""
-        manager, publisher = _manager()
-        session = manager.create_session(
-            terminal_id="T1",
-            kind=VideoSessionKind.INTERCOM,
-            correlation_id="corr-1",
-            logical_channel=1,
-        )
-        await manager.fail_session(session.session_id, reason="ingest_timeout")
-        self.assertEqual(publisher.stop_commands[0]["fields"], {"logical_channel": 1, "control": 4})
 
-    async def test_fail_session_calls_on_session_removed_with_outcome_and_reason(self) -> None:
-        """Bug 1 fix: `OnSessionRemoved` widened from `Callable[[str], None]` to
-        `Callable[[str, str, str], None]` — `relay.py._on_session_removed` needs both to pick the
-        right WS close code and tell an already-connected browser *why*."""
-        calls: list[tuple[str, str, str]] = []
-        manager, _ = _manager(on_session_removed=lambda sid, outcome, reason: calls.append((sid, outcome, reason)))
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        await manager.fail_session(session.session_id, reason="ingest_timeout")
-        self.assertEqual(calls, [(session.session_id, "failed", "ingest_timeout")])
-
-    async def test_end_session_calls_on_session_removed_with_outcome_and_reason(self) -> None:
-        calls: list[tuple[str, str, str]] = []
-        manager, _ = _manager(on_session_removed=lambda sid, outcome, reason: calls.append((sid, outcome, reason)))
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        await manager.end_session(session.session_id, reason="explicit_stop")
-        self.assertEqual(calls, [(session.session_id, "ended", "explicit_stop")])
-
-    async def test_viewer_count_tracks_join_and_leave(self) -> None:
+class IngestResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_matches_the_narrower_bcd6_sim_card_number(self) -> None:
         manager, _ = _manager()
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
+        _live(manager, "A")
+        await manager.flush()
+        self.assertIsNotNone(manager.resolve_ingest_stream("014482607571", 1))
+
+    async def test_does_not_match_a_coincidental_short_suffix(self) -> None:
+        manager, _ = _manager()
+        _live(manager, "A")
+        self.assertIsNone(manager.resolve_ingest_stream("999999999999", 1))
+
+    async def test_unsolicited_channel_resolves_to_nothing(self) -> None:
+        manager, _ = _manager()
+        _live(manager, "A", channel=1)
+        self.assertIsNone(manager.resolve_ingest_stream(SIM, 2))
+
+    async def test_a_stream_waiting_for_its_start_slot_accepts_no_connection(self) -> None:
+        manager, _ = _manager()
+        _live(manager, "V")
+        _intercom(manager, "I")  # deferred: generation 0
+        stream = manager.resolve_ingest_stream(SIM, 1, is_audio=True)
+        self.assertEqual(stream.kind, VideoSessionKind.LIVE)
+
+    async def test_video_prefers_the_live_stream_over_a_running_intercom(self) -> None:
+        manager, _ = _manager()
+        _intercom(manager, "I")
+        await _connect(manager, is_audio=True)
+        viewer = _live(manager, "V")
+        await manager.flush()
+        await _connect(manager, is_audio=False)
+        # A reconnect of the running live stream (not waiting any more) still prefers live.
+        stream = manager.resolve_ingest_stream(SIM, 1, is_audio=False)
+        self.assertEqual(stream.stream_id, viewer.stream_id)
+
+    async def test_playback_on_a_live_channel_is_its_own_stream(self) -> None:
+        manager, publisher = _manager()
+        live = _live(manager, "V")
+        await _connect(manager)
+        playback = manager.create_session(
+            session_id="P",
+            terminal_id=TERMINAL,
+            kind=VideoSessionKind.PLAYBACK,
+            correlation_id="P",
+            logical_channel=1,
+            relay_signals_device=True,
+            window_start="2026-09-25T10:00:00+00:00",
+            window_end="2026-09-25T10:05:00+00:00",
         )
-        manager.add_viewer(session.session_id)
-        manager.add_viewer(session.session_id)
-        self.assertEqual(session.viewer_count, 2)
-        manager.remove_viewer(session.session_id)
-        self.assertEqual(session.viewer_count, 1)
-        manager.remove_viewer(session.session_id)
-        self.assertEqual(session.viewer_count, 0)
-        manager.remove_viewer(session.session_id)  # never goes negative
-        self.assertEqual(session.viewer_count, 0)
+        await manager.flush()
+        self.assertNotEqual(live.stream_id, playback.stream_id)
+        self.assertEqual(publisher.kinds(), ["start:1:main", "start:1:playback"])
+        start = publisher.commands[-1]["fields"]
+        self.assertEqual(start["start_time"], "2026-09-25T10:00:00+00:00")
+        await manager.end_session("P", reason="business_api_requested")
+        self.assertEqual(publisher.kinds()[-1], "stop:1:playback")
+        self.assertEqual(manager.resolve("V").state, VideoSessionState.ACTIVE)
 
-    async def test_sweep_idle_sessions_ends_a_session_past_viewer_grace(self) -> None:
-        manager, publisher = _manager(viewer_grace_seconds=0.01, absolute_idle_seconds=999)
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        await manager.mark_ingest_active(session.session_id)
-        manager.add_viewer(session.session_id)
-        manager.remove_viewer(session.session_id)
-
-        import asyncio
-
-        await asyncio.sleep(0.05)
-        acted_on = await manager.sweep_idle_sessions()
-
-        self.assertEqual(acted_on, [session.session_id])
-        self.assertIsNone(manager.resolve(session.session_id))
-        ended = [e for e in publisher.published if isinstance(e, VideoSessionEnded)]
-        self.assertEqual(ended[0].reason, "viewer_idle_timeout")
-
-    async def test_sweep_idle_sessions_fails_a_session_stuck_requested_past_ingest_timeout(
-        self,
-    ) -> None:
-        manager, publisher = _manager(ingest_timeout_seconds=0.01)
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
+    async def test_start_command_names_this_relays_ingest_target(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "A", stream_type=StreamType.SUB)
+        await manager.flush()
+        fields = publisher.commands[0]["fields"]
+        self.assertEqual(
+            fields,
+            {
+                "server_ip": "203.0.113.5",
+                "tcp_port": 7910,
+                "udp_port": 0,
+                "logical_channel": 1,
+                "data_type": 0,
+                "stream_type": 1,
+            },
         )
 
-        import asyncio
 
-        await asyncio.sleep(0.05)
-        acted_on = await manager.sweep_idle_sessions()
+class LifecycleEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_activation_is_published_once_per_session(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "A")
+        stream = await _connect(manager)
+        await manager.mark_stream_active(stream.stream_id)
+        activated = [e for e in publisher.published if isinstance(e, VideoSessionActivated)]
+        self.assertEqual(len(activated), 1)
 
-        self.assertEqual(acted_on, [session.session_id])
+    async def test_ending_a_session_publishes_ended_and_calls_the_removal_hook(self) -> None:
+        removed = []
+        manager, publisher = _manager(on_session_removed=lambda *a: removed.append(a))
+        _live(manager, "A")
+        await manager.end_session("A", reason="explicit_stop")
+        self.assertEqual(removed, [("A", "ended", "explicit_stop")])
+        self.assertIsInstance(publisher.published[-1], VideoSessionEnded)
+
+    async def test_ingest_timeout_fails_every_session_of_the_stream_and_stops_it(self) -> None:
+        clock = FakeClock()
+        removed = []
+        manager, publisher = _manager(clock=clock, on_session_removed=lambda *a: removed.append(a))
+        _live(manager, "A")
+        _live(manager, "B")
+        clock.now += 31
+        acted = await manager.sweep_idle_sessions()
+        self.assertCountEqual(acted, ["A", "B"])
+        self.assertCountEqual(removed, [("A", "failed", "ingest_timeout"), ("B", "failed", "ingest_timeout")])
         failed = [e for e in publisher.published if isinstance(e, VideoSessionFailed)]
-        self.assertEqual(failed[0].reason, "ingest_timeout")
+        self.assertEqual(len(failed), 2)
+        # A stream that never connected is still cancelled on the terminal (2026-09-02).
+        self.assertEqual(publisher.kinds(), ["start:1:main", "stop:1:av0"])
 
-    async def test_sweep_idle_sessions_leaves_an_active_recently_viewed_session_alone(
-        self,
-    ) -> None:
-        manager, publisher = _manager(viewer_grace_seconds=999, absolute_idle_seconds=999)
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        await manager.mark_ingest_active(session.session_id)
-        manager.add_viewer(session.session_id)
+    async def test_a_stalled_stream_ends_its_sessions(self) -> None:
+        clock = FakeClock()
+        manager, publisher = _manager(clock=clock)
+        _live(manager, "A")
+        await _connect(manager)
+        clock.now += 61
+        await manager.sweep_idle_sessions()
+        ended = [e for e in publisher.published if isinstance(e, VideoSessionEnded)]
+        self.assertEqual([e.reason for e in ended], ["ingest_stalled_timeout"])
+        self.assertEqual(manager.active_stream_count, 0)
 
-        acted_on = await manager.sweep_idle_sessions()
-
-        self.assertEqual(acted_on, [])
-        self.assertIsNotNone(manager.resolve(session.session_id))
-
-
-class IngestDisconnectTests(unittest.IsolatedAsyncioTestCase):
-    """The device's own FIN on its JT/T 1078 connection is an explicit end-of-stream signal and
-    is acted on immediately, instead of being inferred ~60s later by the idle sweep. Packet-
-    captured live 2026-09-02: after a radio-link outage the physical MDVR sends FIN on every
-    video connection rather than resuming."""
-
-    async def test_active_session_ends_when_its_ingest_connection_closes(self) -> None:
+    async def test_device_closing_the_current_connection_ends_active_sessions(self) -> None:
         manager, publisher = _manager()
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        await manager.mark_ingest_active(session.session_id)
-        self.assertEqual(session.state, VideoSessionState.ACTIVE)
+        a = _live(manager, "A")
+        await _connect(manager)
+        await manager.handle_ingest_disconnected(a.stream_id, generation=1, remaining_connections=0)
+        self.assertIsNone(manager.resolve("A"))
+        ended = [e for e in publisher.published if isinstance(e, VideoSessionEnded)]
+        self.assertEqual([e.reason for e in ended], ["ingest_disconnected"])
 
-        await manager.handle_ingest_disconnected(session.session_id)
-
-        self.assertIsNone(manager.resolve(session.session_id))
-        ended = [e for e in publisher.published if type(e).__name__ == "VideoSessionEnded"]
-        self.assertEqual(len(ended), 1)
-        self.assertEqual(ended[0].reason, "ingest_disconnected")
-
-    async def test_requested_session_fails_when_its_ingest_connection_closes(self) -> None:
-        """The device connected and hung up without ever streaming - a genuine failure to
-        establish, not an ordinary end, so it must surface as Failed (WS close 4010)."""
+    async def test_device_closing_before_any_frame_fails_the_session(self) -> None:
         manager, publisher = _manager()
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
+        a = _live(manager, "A")
+        await manager.flush()
+        await manager.handle_ingest_disconnected(a.stream_id, generation=1, remaining_connections=0)
+        failed = [e for e in publisher.published if isinstance(e, VideoSessionFailed)]
+        self.assertEqual([e.reason for e in failed], ["ingest_disconnected"])
 
-        await manager.handle_ingest_disconnected(session.session_id)
+    async def test_a_superseded_connection_closing_is_not_news(self) -> None:
+        manager, _ = _manager()
+        a = _live(manager, "A")
+        await _connect(manager)
+        await manager.handle_ingest_disconnected(a.stream_id, generation=1, remaining_connections=1)
+        self.assertIsNotNone(manager.resolve("A"))
 
-        self.assertIsNone(manager.resolve(session.session_id))
-        failed = [e for e in publisher.published if type(e).__name__ == "VideoSessionFailed"]
-        self.assertEqual(len(failed), 1)
-        self.assertEqual(failed[0].reason, "ingest_disconnected")
-
-    async def test_is_a_no_op_for_an_already_removed_session(self) -> None:
-        """`IngestServer`'s `finally` also runs when *we* closed the connection during a normal
-        teardown - by then the session is gone, and this must not emit a second event."""
+    async def test_disconnect_for_an_unknown_stream_is_a_no_op(self) -> None:
         manager, publisher = _manager()
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="corr-1", logical_channel=1
-        )
-        await manager.mark_ingest_active(session.session_id)
-        await manager.end_session(session.session_id, reason="business_api_requested")
-        before = len(publisher.published)
-
-        await manager.handle_ingest_disconnected(session.session_id)
-
-        self.assertEqual(len(publisher.published), before)
-
-    async def test_unknown_session_id_is_a_no_op(self) -> None:
-        manager, publisher = _manager()
-        await manager.handle_ingest_disconnected("no-such-session")
+        await manager.handle_ingest_disconnected("nope", generation=1)
         self.assertEqual(publisher.published, [])
+
+    async def test_viewer_idle_ends_only_that_session(self) -> None:
+        manager, publisher = _manager(viewer_grace_seconds=15)
+        _live(manager, "A")
+        _live(manager, "B")
+        stream = await _connect(manager)
+        manager.add_viewer("A")
+        manager.add_viewer("B")
+        manager.remove_viewer("A")
+        manager.resolve("A").last_viewer_disconnected_at = time.monotonic() - 16
+        acted = await manager.sweep_idle_sessions()
+        self.assertEqual(acted, ["A"])
+        self.assertIsNotNone(manager.resolve_stream(stream.stream_id))
+        self.assertEqual(publisher.kinds(), ["start:1:main"])
+
+    async def test_a_viewer_that_never_connects_is_released(self) -> None:
+        """Without this an abandoned request would keep a shared stream alive forever."""
+        manager, _ = _manager(viewer_grace_seconds=15)
+        _live(manager, "A")
+        stream = await _connect(manager)
+        manager.resolve("A").created_at = time.monotonic() - 31
+        acted = await manager.sweep_idle_sessions()
+        self.assertEqual(acted, ["A"])
+        self.assertIsNone(manager.resolve_stream(stream.stream_id))
+
+    async def test_a_watched_delivering_stream_is_never_swept(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "A")
+        await _connect(manager)
+        manager.add_viewer("A")
+        self.assertEqual(await manager.sweep_idle_sessions(), [])
+        self.assertEqual(manager.resolve_stream(manager.resolve("A").stream_id).state, DeviceStreamState.ACTIVE)
+
+    async def test_viewer_count_never_goes_negative(self) -> None:
+        manager, _ = _manager()
+        session = _live(manager, "A")
+        manager.add_viewer("A")
+        manager.remove_viewer("A")
+        manager.remove_viewer("A")
+        self.assertEqual(session.viewer_count, 0)
 
 
 class ConcurrencyCeilingTests(unittest.IsolatedAsyncioTestCase):
@@ -635,55 +753,3 @@ class IntercomExclusivityTests(unittest.IsolatedAsyncioTestCase):
 
 
 
-class IdleReasonTests(unittest.IsolatedAsyncioTestCase):
-    """Distinct idle reasons (2026-09-02). "No viewers attached" and "the device stopped sending"
-    are opposite problems - one points at the browser/network, the other at the device/vendor -
-    and collapsing both into `"viewer_idle_timeout"` sent a real live investigation down the wrong
-    path: every session in a two-cycle bench test against the physical unit was removed 66-70s
-    after its own last keyframe (unambiguously an ingest stall, with the browser still attached),
-    while the log claimed "viewer"."""
-
-    async def test_no_viewers_reports_viewer_idle_timeout(self) -> None:
-        manager, publisher = _manager(viewer_grace_seconds=0.0, absolute_idle_seconds=3600.0)
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="c1", logical_channel=1
-        )
-        await manager.mark_ingest_active(session.session_id)
-        manager.add_viewer(session.session_id)
-        manager.remove_viewer(session.session_id)  # browser detached
-
-        acted = await manager.sweep_idle_sessions()
-
-        self.assertEqual(acted, [session.session_id])
-        ended = [e for e in publisher.published if isinstance(e, VideoSessionEnded)]
-        self.assertEqual(ended[0].reason, "viewer_idle_timeout")
-
-    async def test_device_stopped_sending_reports_ingest_stalled_timeout(self) -> None:
-        """A viewer is still attached the whole time - only the media stopped. This must NOT be
-        reported as a viewer problem."""
-        manager, publisher = _manager(viewer_grace_seconds=3600.0, absolute_idle_seconds=0.0)
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="c1", logical_channel=1
-        )
-        await manager.mark_ingest_active(session.session_id)
-        manager.add_viewer(session.session_id)  # viewer stays attached
-
-        acted = await manager.sweep_idle_sessions()
-
-        self.assertEqual(acted, [session.session_id])
-        ended = [e for e in publisher.published if isinstance(e, VideoSessionEnded)]
-        self.assertEqual(ended[0].reason, "ingest_stalled_timeout")
-
-    async def test_an_actively_ingesting_session_with_a_viewer_is_never_swept(self) -> None:
-        manager, _ = _manager(viewer_grace_seconds=3600.0, absolute_idle_seconds=3600.0)
-        session = manager.create_session(
-            terminal_id="T1", kind=VideoSessionKind.LIVE, correlation_id="c1", logical_channel=1
-        )
-        await manager.mark_ingest_active(session.session_id)
-        manager.add_viewer(session.session_id)
-        manager.touch_ingest(session.session_id)
-
-        self.assertEqual(await manager.sweep_idle_sessions(), [])
-
-if __name__ == "__main__":
-    unittest.main()

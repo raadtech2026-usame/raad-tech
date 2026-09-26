@@ -69,6 +69,7 @@ def _config() -> RelayConfig:
         viewer_host="127.0.0.1",
         viewer_port=0,
         viewer_token_secret=b"secret",
+        stream_linger_seconds=0.0,
     )
 
 

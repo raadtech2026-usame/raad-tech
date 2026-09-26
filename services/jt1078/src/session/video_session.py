@@ -29,6 +29,19 @@ class VideoSessionState(str, Enum):
     FAILED = "failed"  # device never connected / signaling failed / media channel error
 
 
+class StreamType(str, Enum):
+    """The terminal's encoder stream a live request asks for (`0x9101` byte 7+n, supplier spec
+    Table 6.2). Ordered: `MAIN` outranks `SUB` when several sessions share one device stream
+    (ADR-0046 §2)."""
+
+    MAIN = "main"
+    SUB = "sub"
+
+    @property
+    def wire_value(self) -> int:
+        return 0 if self is StreamType.MAIN else 1
+
+
 def new_session_id() -> str:
     return uuid.uuid4().hex
 
@@ -50,12 +63,18 @@ class VideoSession:
     #: audio tags are ever built for that session, matching this codebase's pre-existing
     #: video-only behavior exactly.
     audio_codec: int | None = None
+    #: ADR-0046: what this session asked for. The device stream it attaches to may run a higher
+    #: profile when another session on the same channel wants main.
+    stream_type: StreamType = StreamType.MAIN
+    #: ADR-0046: the relay-owned device stream this session is attached to.
+    stream_id: str | None = None
     state: VideoSessionState = VideoSessionState.REQUESTED
     viewer_count: int = 0
     created_at: float = field(default_factory=time.monotonic)
     activated_at: float | None = None
     last_activity_at: float = field(default_factory=time.monotonic)
     last_viewer_disconnected_at: float | None = None
+    has_had_viewer: bool = False
 
     def touch(self) -> None:
         self.last_activity_at = time.monotonic()
@@ -68,6 +87,7 @@ class VideoSession:
 
     def add_viewer(self) -> None:
         self.viewer_count += 1
+        self.has_had_viewer = True
         self.last_viewer_disconnected_at = None
         self.touch()
 

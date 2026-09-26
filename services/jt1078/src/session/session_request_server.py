@@ -44,7 +44,15 @@ Response, `RPUSH raad:jt1078:session_responses:<request_id> <json>`:
 or `{"ok": false, "error": "<reason>"}`. `end_session` omits `viewer_token`/ingest fields on
 success.
 
-**Does not itself signal the device to start** — mirrors `Jt1078Relay.create_live_session`'s own
+**ADR-0046: the relay signals the device when asked to.** A request carrying
+`"relay_signals_device": true` (every Business API build since ADR-0046) makes the relay the single
+publisher of that stream's `0x9101`/`0x9201` and `0x9102`/`0x9202`, in decision order; the response
+then carries `"device_signaled": true`, plus `"stream_id"` and the stream's current
+`"stream_type"` (`"main"`/`"sub"`, which can be higher than requested when another viewer of the
+channel wants main). `"stream_type"` in the request selects the terminal's encoder stream for live
+video (default `"main"`). A request without the flag keeps the behaviour described next.
+
+**Legacy: without `relay_signals_device`, does not itself signal the device to start** — mirrors `Jt1078Relay.create_live_session`'s own
 already-documented division of responsibility (ADR-0024 §6 step 3/§8: the Business API signals
 the device via `device-gateway`, after this call returns ingest coordinates it needs to build
 that signal). `end_session` *does* trigger the device stop-signal, because that already happens
@@ -61,7 +69,7 @@ from redis.asyncio import Redis
 
 from src.logging_setup import get_logger, log_with_fields
 from src.session.session_manager import SessionManager
-from src.session.video_session import VideoSessionKind
+from src.session.video_session import StreamType, VideoSessionKind
 from src.session.viewer_token import mint_token
 
 logger = get_logger("jt1078_relay.session.request_server")
@@ -138,22 +146,40 @@ class SessionRequestServer:
             return {"ok": True}
         return {"ok": False, "error": f"unknown command: {command!r}"}
 
-    def _create_intercom_session(self, data: dict[str, Any]) -> dict[str, Any]:
-        """ADR-0036. Mints **two** independently-claimable tokens for the same session — a
-        session's token is single-use, so the downlink (hear the bus mic, the existing "viewer"
-        contract, unchanged) and uplink (send operator mic audio) connections each need their
-        own. Everything else mirrors `_create_session` exactly."""
+    def _open(self, kind: VideoSessionKind, data: dict[str, Any]):
+        relay_signals_device = bool(data.get("relay_signals_device"))
+        requested = data.get("stream_type") or StreamType.MAIN.value
         session = self._session_manager.create_session(
             session_id=data["session_id"],
             terminal_id=data["terminal_id"],
-            kind=VideoSessionKind.INTERCOM,
+            kind=kind,
             correlation_id=data.get("correlation_id") or data["session_id"],
             logical_channel=data["logical_channel"],
             device_id=data.get("device_id"),
             vehicle_id=data.get("vehicle_id"),
             organization_id=data.get("organization_id"),
             audio_codec=data.get("audio_codec"),
+            stream_type=StreamType(requested),
+            relay_signals_device=relay_signals_device,
+            window_start=data.get("window_start"),
+            window_end=data.get("window_end"),
         )
+        stream = self._session_manager.stream_for_session(session.session_id)
+        extra: dict[str, Any] = {}
+        if relay_signals_device and stream is not None:
+            extra = {
+                "device_signaled": True,
+                "stream_id": stream.stream_id,
+                "stream_type": stream.stream_type.value,
+            }
+        return session, extra
+
+    def _create_intercom_session(self, data: dict[str, Any]) -> dict[str, Any]:
+        """ADR-0036. Mints **two** independently-claimable tokens for the same session — a
+        session's token is single-use, so the downlink (hear the bus mic, the existing "viewer"
+        contract, unchanged) and uplink (send operator mic audio) connections each need their
+        own. Everything else mirrors `_create_session` exactly."""
+        session, extra = self._open(VideoSessionKind.INTERCOM, data)
         viewer_token = mint_token(
             session_id=session.session_id, secret=self._viewer_token_secret, role="viewer"
         )
@@ -167,20 +193,11 @@ class SessionRequestServer:
             "uplink_token": uplink_token,
             "ingest_host": self._public_ingest_host,
             "ingest_port": self._ingest_port,
+            **extra,
         }
 
     def _create_session(self, kind: VideoSessionKind, data: dict[str, Any]) -> dict[str, Any]:
-        session = self._session_manager.create_session(
-            session_id=data["session_id"],
-            terminal_id=data["terminal_id"],
-            kind=kind,
-            correlation_id=data.get("correlation_id") or data["session_id"],
-            logical_channel=data["logical_channel"],
-            device_id=data.get("device_id"),
-            vehicle_id=data.get("vehicle_id"),
-            organization_id=data.get("organization_id"),
-            audio_codec=data.get("audio_codec"),
-        )
+        session, extra = self._open(kind, data)
         token = mint_token(session_id=session.session_id, secret=self._viewer_token_secret)
         return {
             "ok": True,
@@ -188,6 +205,7 @@ class SessionRequestServer:
             "viewer_token": token,
             "ingest_host": self._public_ingest_host,
             "ingest_port": self._ingest_port,
+            **extra,
         }
 
     async def _respond(self, request_id: str, response: dict[str, Any]) -> None:

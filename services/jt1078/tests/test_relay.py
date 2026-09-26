@@ -126,6 +126,8 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
             viewer_host="127.0.0.1",
             viewer_port=0,
             viewer_token_secret=b"e2e-test-secret",
+            # These tests exercise teardown itself; the ADR-0046 linger is covered separately.
+            stream_linger_seconds=0.0,
         )
         self.relay = Jt1078Relay(config=config)
         await self.relay.start()
@@ -367,7 +369,7 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         async def _record_close(connection, *, code, reason):
             closed.append((connection, code, reason))
 
-        self.relay._hubs[session.session_id] = _StuckHub()
+        self.relay._stream_hubs[session.stream_id] = _StuckHub()
         self.relay.viewer_server.close_viewer = _record_close  # type: ignore[assignment]
         frame = ReassembledFrame(
             logical_channel=1,
@@ -379,7 +381,7 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertLogs("jt1078_relay.relay", level="WARNING") as logs:
-            await self.relay._on_reassembled_frame(session.session_id, frame)
+            await self.relay._on_reassembled_frame(session.stream_id, frame)
 
         self.assertEqual(closed, [(stuck_viewer, 4012, b"viewer_stuck")])
         self.assertIn("viewer_closed_stuck", [r.getMessage() for r in logs.records])
@@ -402,8 +404,8 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
             logical_channel=1,
         )
 
-        self.assertEqual(self.relay._hubs[live.session_id].stuck_timeout_seconds, 30.0)
-        self.assertIsNone(self.relay._hubs[intercom.session_id].stuck_timeout_seconds)
+        self.assertEqual(self.relay._stream_hubs[live.stream_id].stuck_timeout_seconds, 30.0)
+        self.assertIsNone(self.relay._stream_hubs[intercom.stream_id].stuck_timeout_seconds)
 
     async def test_ending_a_session_closes_the_devices_ingest_connection(self) -> None:
         """2026-09-19 production: an MDVR that keeps streaming after an acknowledged stop must
@@ -424,7 +426,8 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
             await self.relay.session_manager.end_session(session.session_id, reason="explicit_stop")
 
         self.assertEqual(await asyncio.wait_for(device_reader.read(1), timeout=2.0), b"")
-        summary = [r.extra_fields for r in removed.records if r.getMessage() == "session_removed"]
+        # ADR-0046: connections belong to the device stream, so the stream's removal reports them.
+        summary = [r.extra_fields for r in removed.records if r.getMessage() == "stream_removed"]
         self.assertEqual(summary[0]["device_connections_closed"], 1)
         device_writer.close()
 
@@ -438,13 +441,15 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
         )
 
         class _BackpressuredHub:
+            viewer_count = 0
+
             async def broadcast_video(self, **_kwargs):
                 return [object()]  # one viewer had to drop an older chunk
 
             def take_stuck_viewers(self):
                 return []  # backpressured, but not yet past the stuck timeout
 
-        self.relay._hubs[session.session_id] = _BackpressuredHub()
+        self.relay._stream_hubs[session.stream_id] = _BackpressuredHub()
         frame = ReassembledFrame(
             logical_channel=3,
             data_type=1,  # P-frame: no keyframe diagnostic line
@@ -454,13 +459,13 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
             body=b"\x00\x00\x00\x01\x41",
         )
         with self.assertLogs("jt1078.viewer.drop_tracker", level="WARNING") as dropped:
-            await self.relay._on_reassembled_frame(session.session_id, frame)
-            await self.relay._on_reassembled_frame(session.session_id, frame)
+            await self.relay._on_reassembled_frame(session.stream_id, frame)
+            await self.relay._on_reassembled_frame(session.stream_id, frame)
         self.assertEqual(dropped.records[0].extra_fields["video_dropped"], 1)
 
         with self.assertLogs("jt1078_relay.relay", level="INFO") as removed:
             await self.relay.session_manager.end_session(session.session_id, reason="explicit_stop")
-        summary = [r.extra_fields for r in removed.records if r.getMessage() == "session_removed"]
+        summary = [r.extra_fields for r in removed.records if r.getMessage() == "stream_removed"]
         self.assertEqual(summary[0]["viewer_chunks_dropped"], 2)
 
     async def test_intercom_session_failing_closes_viewer_and_uplink_sockets(self) -> None:
@@ -579,3 +584,85 @@ class Jt1078RelayEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SharedDeviceStreamEndToEndTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0046 over real loopback sockets: two viewer sessions on one channel share one device
+    connection, and ending one session neither stops the device nor interrupts the other."""
+
+    async def asyncSetUp(self) -> None:
+        config = RelayConfig(
+            ingest_host="127.0.0.1",
+            ingest_port=0,
+            viewer_host="127.0.0.1",
+            viewer_port=0,
+            viewer_token_secret=b"e2e-test-secret",
+            stream_linger_seconds=0.0,
+        )
+        self.relay = Jt1078Relay(config=config)
+        await self.relay.start()
+
+    async def asyncTearDown(self) -> None:
+        await self.relay.stop()
+
+    async def _viewer(self, session_id: str):
+        token = mint_token(session_id=session_id, secret=b"e2e-test-secret")
+        reader, writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.viewer_server.bound_port
+        )
+        await _ws_handshake(reader, writer, token=token)
+        _opcode, header = await asyncio.wait_for(_read_ws_frame(reader), timeout=2.0)
+        self.assertEqual(header[0:3], b"FLV")
+        return reader, writer
+
+    def _open(self, session_id: str):
+        return self.relay.session_manager.create_session(
+            session_id=session_id,
+            terminal_id="138001380000",
+            kind=VideoSessionKind.LIVE,
+            correlation_id=session_id,
+            logical_channel=1,
+            relay_signals_device=True,
+        )
+
+    async def test_one_viewer_leaving_does_not_stop_the_other(self) -> None:
+        session_a = self._open("A")
+        session_b = self._open("B")
+        self.assertEqual(session_a.stream_id, session_b.stream_id)
+        reader_a, writer_a = await self._viewer("A")
+        reader_b, writer_b = await self._viewer("B")
+
+        device_reader, device_writer = await asyncio.open_connection(
+            "127.0.0.1", self.relay.ingest_server.bound_port
+        )
+        device_writer.write(_build_device_frame(sim_card="138001380000", body=b"\x00\x00\x01\x65I1"))
+        await device_writer.drain()
+        for reader in (reader_a, reader_b):
+            _opcode, payload = await asyncio.wait_for(_read_ws_frame(reader), timeout=2.0)
+            self.assertEqual(payload[0], 9)
+
+        with self.assertLogs("jt1078_relay.events.publisher", level="INFO") as logs:
+            await self.relay.session_manager.end_session("A", reason="business_api_requested")
+            opcode, _payload = await asyncio.wait_for(_read_ws_frame(reader_a), timeout=2.0)
+            self.assertEqual(opcode, 0x8, "A is closed")
+            # The only line the logging publisher wrote is A's Ended event: no device command.
+            self.assertNotIn(
+                "stop_command_requested", [r.getMessage() for r in logs.records]
+            )
+
+        device_writer.write(
+            _build_device_frame(sim_card="138001380000", body=b"\x00\x00\x01\x65I2", packet_sequence=1)
+        )
+        await device_writer.drain()
+        _opcode, payload = await asyncio.wait_for(_read_ws_frame(reader_b), timeout=2.0)
+        self.assertEqual(payload[0], 9, "B keeps receiving on the same device connection")
+        self.assertEqual(self.relay.session_manager.resolve("B").state, VideoSessionState.ACTIVE)
+
+        await self.relay.session_manager.end_session("B", reason="business_api_requested")
+        self.assertEqual(
+            await asyncio.wait_for(device_reader.read(1), timeout=2.0),
+            b"",
+            "the last session gone: the device connection is closed",
+        )
+        for writer in (writer_a, writer_b, device_writer):
+            writer.close()

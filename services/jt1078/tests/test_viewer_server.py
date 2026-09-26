@@ -306,8 +306,9 @@ class UplinkRoleTests(unittest.IsolatedAsyncioTestCase):
             correlation_id="c1",
             logical_channel=1,
         )
+        # ADR-0046: the device's intercom connection is registered under the device stream.
         self.uplink_registry.register(
-            session.session_id,
+            session.stream_id,
             writer=_FakeIngestWriter(),
             sim_card_number="014482607571",
             logical_channel=1,
@@ -319,7 +320,7 @@ class UplinkRoleTests(unittest.IsolatedAsyncioTestCase):
         await _send_ws_binary_frame(writer, b"\xd7\xd4" * 160)
         await asyncio.sleep(0.05)
 
-        forwarded = self.uplink_registry._connections[session.session_id]  # test-only inspection
+        forwarded = self.uplink_registry._connections[session.stream_id]  # test-only inspection
         self.assertEqual(len(forwarded._writer.written), 1)
         writer.close()
 
