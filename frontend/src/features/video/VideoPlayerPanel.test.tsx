@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import { createRef } from "react";
 import { VideoPlayerPanel } from "./VideoPlayerPanel";
 
@@ -96,4 +97,31 @@ describe("VideoPlayerPanel", () => {
     render(<VideoPlayerPanel phase="unavailable" requestError={null} player={IDLE_PLAYER} videoRef={ref()} />);
     expect(screen.getByText("Video is unavailable")).toBeInTheDocument();
   });
+
+  describe("Retry (audit 2026-09-26)", () => {
+    it.each(["unavailable", "error"] as const)("offers Retry on %s and calls it without bubbling", async (phase) => {
+      const onRetry = vi.fn();
+      const onTileClick = vi.fn();
+      render(
+        <div onClick={onTileClick}>
+          <VideoPlayerPanel phase={phase} requestError={null} player={IDLE_PLAYER} videoRef={ref()} onRetry={onRetry} />
+        </div>,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(onRetry).toHaveBeenCalledTimes(1);
+      expect(onTileClick).not.toHaveBeenCalled();
+    });
+
+    it("offers no Retry without a handler, or while video is playing", () => {
+      const { rerender } = render(
+        <VideoPlayerPanel phase="unavailable" requestError={null} player={IDLE_PLAYER} videoRef={ref()} />,
+      );
+      expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      rerender(
+        <VideoPlayerPanel phase="connected" requestError={null} player={IDLE_PLAYER} videoRef={ref()} onRetry={() => {}} />,
+      );
+      expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    });
+  });
 });
+

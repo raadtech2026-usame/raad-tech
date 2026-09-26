@@ -469,6 +469,9 @@ export function useVideoSessionController(
 
   function start(): void {
     setWaitingForDevice(false);
+    // A person asking again (Start, or a tile's Retry) earns a fresh automatic-recovery budget:
+    // exhausting it is exactly the state that retry exists to get out of.
+    reconnectAttemptsRef.current = 0;
     startMutation.mutate(streamTypeRef.current);
   }
 

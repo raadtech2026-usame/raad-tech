@@ -158,6 +158,21 @@ entirely; the browser falls back well before it fires.
 - The relay now decides when the device starts streaming, so a relay outage also prevents starts
   (it already prevented viewing).
 
+## Amendments after the production audit (2026-09-26)
+
+- **Offline terminal fails fast.** When the device-gateway cannot deliver a start because the
+  terminal has no connection it publishes `DeviceCommandResult(reason="device_offline")`; the relay
+  now consumes it (`session/command_result_consumer.py`, consumer group
+  `jt1078-relay-command-results`) and fails that stream's sessions at once with `device_offline`,
+  sending no stop. Previously it waited the 30 s ingest timeout. The gateway logs such a command as
+  `video_signal_command_not_delivered`, not `..._forwarded`.
+- **Recovery never strands a tile.** A tile that has used its automatic reconnect attempts offers
+  Retry; a manual start restores the budget.
+- **A session is controlled by its requester.** Stop and playback control return 404 to any other
+  user (the system actor excepted), since the route's tenant/D5 checks admit the whole organization.
+- **Camera report kept 30 days; a joining session is activated only on delivered media** (see §1 and
+  the activation note in `session_manager.create_session`).
+
 ## Not verified here
 
 - Terminal behaviour for `0x9102` close type 2 on this firmware (specification-defined, not

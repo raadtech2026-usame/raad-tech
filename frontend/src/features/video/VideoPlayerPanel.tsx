@@ -1,5 +1,6 @@
 import type { RefObject } from "react";
 import { AlertTriangle, Loader2, Video, VideoOff } from "lucide-react";
+import { Button } from "../../shared/components/Button/Button";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
 import type { UseMpegtsPlayerResult } from "./useMpegtsPlayer";
 import type { VideoRequestError, VideoSessionPhase } from "./useVideoSessionController";
@@ -21,6 +22,10 @@ export interface VideoPlayerPanelProps {
    * compact wall tile collided with the tile's own bottom name/controls bar (a real, observed
    * text-overlap bug) — the wall now surfaces this fact once, in the panel toolbar, instead. */
   showAudioNotice?: boolean;
+  /** Audit 2026-09-26: offered on "unavailable"/"error". Once automatic recovery has used its
+   * attempts, the tile would otherwise stay there until someone stopped and restarted the whole
+   * wall. Clicking it never bubbles to the tile's own focus click. */
+  onRetry?: () => void;
 }
 
 /**
@@ -37,6 +42,7 @@ export function VideoPlayerPanel({
   idleTitle = "Select a device and camera",
   idleDescription = "Choose a device and one of its cameras, then press Start Live.",
   showAudioNotice = true,
+  onRetry,
 }: VideoPlayerPanelProps) {
   return (
     <>
@@ -94,6 +100,20 @@ export function VideoPlayerPanel({
           icon={<VideoOff size={28} />}
           title="Video is unavailable"
           description="This deployment's video relay isn't reachable right now, or the requested camera has no active session. Try again shortly."
+          action={
+            onRetry ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRetry();
+                }}
+              >
+                Retry
+              </Button>
+            ) : undefined
+          }
         />
       )}
       {phase === "error" && (
@@ -101,6 +121,20 @@ export function VideoPlayerPanel({
           icon={<AlertTriangle size={28} />}
           title="Something went wrong"
           description={requestError?.message ?? player.errorMessage ?? "The connection to the video relay failed."}
+          action={
+            onRetry ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRetry();
+                }}
+              >
+                Retry
+              </Button>
+            ) : undefined
+          }
         />
       )}
     </>

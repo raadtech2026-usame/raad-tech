@@ -251,12 +251,28 @@ class RedisVideoSignalingConsumer:
             )
             return 0
 
-        await self._command_sender.send(
+        delivered = await self._command_sender.send(
             terminal_id=terminal_id,
             message_id=message_id,
             body=body,
             correlation_id=correlation_id,
         )
+        if delivered is False:
+            # The terminal has no open connection here (or it closed mid-write). `CommandSender`
+            # has already published `DeviceCommandResult(success=False, reason="device_offline")`,
+            # which the JT1078 relay acts on. Logging this as "forwarded" (as before 2026-09-26)
+            # made an offline terminal look as if it had been sent every video command.
+            log_with_fields(
+                logger,
+                30,
+                "video_signal_command_not_delivered",
+                terminal_id=terminal_id,
+                command=command,
+                correlation_id=correlation_id,
+                message_id=f"0x{message_id:04x}",
+                reason="device_offline",
+            )
+            return 0
         log_with_fields(
             logger,
             # INFO, not DEBUG (2026-09-02): a platform-issued command actually reaching a device

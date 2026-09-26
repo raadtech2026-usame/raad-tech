@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from raad.core.di.container import Container
 from raad.core.errors.exceptions import ConflictError, NotFoundError
+from raad.core.tenancy.principal import Principal, Role
 from raad.core.events.base import DomainEvent
 from raad.modules.video.application.commands import (
     ControlPlaybackCommand,
@@ -309,6 +310,18 @@ class ControlPlaybackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["channel_no"], 1)
         self.assertEqual(call["control"], 1)
         self.assertEqual(call["reference"], session_id)
+
+    async def test_another_user_cannot_control_someone_elses_playback(self) -> None:
+        """Audit 2026-09-26: only the session's requester controls it; others get a 404."""
+        provider = FakeVideoProvider()
+        service = make_service(provider, InMemoryRecordingSearchResultPort())
+        uow = make_uow()
+        session_id = await self._make_playback_session(service, uow)
+        colleague = Principal(user_id="admin-2", role=Role.ORG_ADMIN, org_id=VALID_ORG_ULID)
+
+        with self.assertRaises(NotFoundError):
+            await service.control_playback(self._command(session_id, actor=colleague), uow=uow)
+        self.assertEqual(provider.control_playback_calls, [])
 
     async def test_forwards_speed_and_seek_position(self) -> None:
         provider = FakeVideoProvider()

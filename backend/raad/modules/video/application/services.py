@@ -33,6 +33,7 @@ from __future__ import annotations
 from raad.core.errors.exceptions import ConflictError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.logging.setup import get_logger
+from raad.core.tenancy.principal import SYSTEM_PRINCIPAL, Principal
 from raad.core.time.clock import Clock
 from raad.modules.video.application.commands import (
     ControlPlaybackCommand,
@@ -251,6 +252,7 @@ class VideoApplicationService:
         device a second time for a session that no longer needs tearing down."""
         async with uow:
             session = await self._get_session_or_raise(uow, command.video_session_id)
+        self._ensure_owner(session, command.actor)
 
         if session.status in _TERMINAL_STATUSES:
             return video_session_to_dto(session)
@@ -515,6 +517,7 @@ class VideoApplicationService:
         lifecycle, not the position of the tape."""
         async with uow:
             session = await self._get_session_or_raise(uow, command.video_session_id)
+            self._ensure_owner(session, command.actor)
             if session.purpose is not VideoPurpose.PLAYBACK:
                 raise ConflictError(
                     f"VideoSession {command.video_session_id} is a {session.purpose.value} "
@@ -540,6 +543,19 @@ class VideoApplicationService:
             position=command.position,
         )
         return dto
+
+    @staticmethod
+    def _ensure_owner(session: VideoSession, actor: Principal) -> None:
+        """A session is controlled only by the user who requested it (audit 2026-09-26). The
+        route's tenant scope and D5 check let anyone in the same organization reach any session of
+        its devices, so without this, knowing another user's session id was enough to close their
+        viewer or seek their playback. The system actor (revocation cleanup,
+        `events/subscribers.py`) may end any session. A non-owner gets the same 404 as a missing
+        session, never a 403 that would confirm it exists."""
+        if actor.user_id == SYSTEM_PRINCIPAL.user_id:
+            return
+        if str(session.requested_by) != actor.user_id:
+            raise NotFoundError(f"VideoSession {session.id} not found.")
 
     @staticmethod
     async def _get_session_or_raise(

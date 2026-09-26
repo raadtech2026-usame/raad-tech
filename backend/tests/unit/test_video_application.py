@@ -766,6 +766,61 @@ class StopVideoSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(provider.stop_calls), 1)
 
 
+class StopOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    """Audit 2026-09-26: a session is stopped only by the user who requested it (or the system
+    actor). Another user of the same organization - who passes the route's tenant and D5 checks -
+    gets a 404, and the session keeps running."""
+
+    async def _live_session(self, service, uow) -> str:
+        dto = await service.request_live_video(
+            RequestLiveVideoCommand(
+                organization_id=VALID_ORG_ULID,
+                device_id="device-ref-9",
+                camera_id="camera-ref-9",
+                terminal_id="00000000013800138000",
+                channel_no=1,
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        return dto.id
+
+    async def test_another_user_of_the_same_organization_gets_404_and_the_session_survives(self) -> None:
+        provider = FakeVideoProvider()
+        service = make_service(provider)
+        uow = make_uow()
+        session_id = await self._live_session(service, uow)
+        colleague = Principal(user_id="admin-2", role=Role.ORG_ADMIN, org_id=VALID_ORG_ULID)
+
+        with self.assertRaises(NotFoundError):
+            await service.stop_video_session(
+                StopVideoSessionCommand(video_session_id=session_id, actor=colleague), uow=uow
+            )
+        still = await service.get_video_session_by_id(
+            GetVideoSessionByIdQuery(video_session_id=session_id), uow=uow
+        )
+        self.assertNotEqual(still.status, "ended")
+        self.assertEqual(provider.stop_calls, [], "the relay is never asked to end it")
+
+    async def test_the_requester_can_stop_it(self) -> None:
+        service = make_service(FakeVideoProvider())
+        uow = make_uow()
+        session_id = await self._live_session(service, uow)
+        stopped = await service.stop_video_session(
+            StopVideoSessionCommand(video_session_id=session_id, actor=make_actor()), uow=uow
+        )
+        self.assertEqual(stopped.status, "ended")
+
+    async def test_the_system_actor_can_stop_any_session(self) -> None:
+        service = make_service(FakeVideoProvider())
+        uow = make_uow()
+        session_id = await self._live_session(service, uow)
+        stopped = await service.stop_video_session(
+            StopVideoSessionCommand(video_session_id=session_id, actor=SYSTEM_ACTOR), uow=uow
+        )
+        self.assertEqual(stopped.status, "ended")
+
+
 class GetVideoSessionByIdTests(unittest.IsolatedAsyncioTestCase):
     async def test_not_found_raises(self) -> None:
         service = make_service()

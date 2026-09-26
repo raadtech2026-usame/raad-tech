@@ -312,3 +312,50 @@ class RedisVideoSignalingConsumerTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OfflineTerminalTests(unittest.IsolatedAsyncioTestCase):
+    """Audit 2026-09-26: a command for a terminal with no open connection is not sent, and must
+    not be logged as forwarded (it was, which made an offline terminal look as if it received
+    every video command)."""
+
+    async def test_a_command_for_an_offline_terminal_is_logged_as_not_delivered(self) -> None:
+        publisher = RecordingEventPublisher()
+        sent_frames: list = []
+
+        async def _send(connection_id: str, frame: bytes) -> None:
+            sent_frames.append(frame)
+
+        command_sender = CommandSender(
+            device_sessions=DeviceSessionManager(
+                registry=DeviceSessionRegistry(), close_connection=_noop_close
+            ),
+            send=_send,
+            serial_counter=OutboundSerialCounter(),
+            pending=PendingCommandTracker(),
+            event_publisher=publisher,
+        )
+        redis = FakeRedisConsumerGroupStream()
+        redis.add_event(
+            event_type="Jt1078SignalCommandRequested",
+            payload={
+                "terminal_id": _PHONE,
+                "correlation_id": "stream-g1",
+                "command": "live_video_control",
+                "fields": {"logical_channel": 1, "control": 0},
+            },
+        )
+        consumer = RedisVideoSignalingConsumer(redis, command_sender=command_sender)
+
+        with self.assertLogs(level="WARNING") as logs:
+            forwarded = await consumer.poll_once()
+
+        self.assertEqual(forwarded, 0)
+        self.assertEqual(redis.acked, ["1"])
+        self.assertEqual(sent_frames, [])
+        messages = " ".join(logs.output)
+        self.assertIn("video_signal_command_not_delivered", messages)
+        self.assertNotIn("video_signal_command_forwarded", messages)
+        [result] = publisher.published
+        self.assertEqual((result.success, result.reason, result.correlation_id), (False, "device_offline", "stream-g1"))
+

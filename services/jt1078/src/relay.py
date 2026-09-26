@@ -36,6 +36,7 @@ from src.ingest.ingest_server import IngestServer
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.session.device_stream import DeviceStream
 from src.session.session_manager import SessionManager
+from src.session.command_result_consumer import CommandResultConsumer
 from src.session.session_request_server import SessionRequestServer
 from src.session.uplink_registry import IngestConnectionRegistry
 from src.session.video_session import VideoSession, VideoSessionKind
@@ -189,6 +190,14 @@ class Jt1078Relay:
                 ingest_port=self._config.ingest_port,
             )
         self._session_request_task: asyncio.Task | None = None
+        #: Ends a stream at once when the gateway reports its start could not reach an offline
+        #: terminal (audit 2026-09-26), instead of after the 30 s ingest timeout.
+        self._command_result_consumer: CommandResultConsumer | None = (
+            CommandResultConsumer(self._redis_client, session_manager=self._session_manager)
+            if self._redis_client is not None
+            else None
+        )
+        self._command_result_task: asyncio.Task | None = None
         self._idle_sweep_task: asyncio.Task | None = None
 
     def _build_redis_client(self) -> Redis | None:
@@ -453,6 +462,10 @@ class Jt1078Relay:
             self._session_request_task = asyncio.create_task(
                 self._session_request_server.run_forever()
             )
+        if self._command_result_consumer is not None:
+            self._command_result_task = asyncio.create_task(
+                self._command_result_consumer.run_forever()
+            )
         log_with_fields(
             logger,
             20,
@@ -470,6 +483,13 @@ class Jt1078Relay:
             except asyncio.CancelledError:
                 pass
             self._session_request_task = None
+        if self._command_result_task is not None:
+            self._command_result_task.cancel()
+            try:
+                await self._command_result_task
+            except asyncio.CancelledError:
+                pass
+            self._command_result_task = None
         if self._idle_sweep_task is not None:
             self._idle_sweep_task.cancel()
             try:

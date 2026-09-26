@@ -210,6 +210,7 @@ export function CameraTile({
           idleTitle="Starting…"
           idleDescription=""
           showAudioNotice={false}
+          onRetry={session.start}
         />
         {isPaused && session.phase === "connected" && (
           <div className={styles.pausedOverlay} aria-hidden="true">

@@ -605,4 +605,57 @@ describe("useVideoSessionController", () => {
       expect(result.current.effectiveStreamType).toBe("sub");
     });
   });
+
+  describe("manual retry after recovery gave up (audit 2026-09-26)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("a manual start restores the automatic-recovery budget", async () => {
+      vi.mocked(requestLiveVideo).mockResolvedValue(SESSION);
+      playerReturn.state = "connected";
+      const { result, rerender } = renderHook(() => useVideoSessionController("device-1", "camera-1"), {
+        wrapper,
+      });
+      act(() => result.current.start());
+      await waitFor(() => expect(result.current.phase).toBe("connected"));
+      vi.useFakeTimers();
+      Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+
+      for (const delay of [5000, 10000, 20000]) {
+        playerReturn.state = "closed";
+        act(() => rerender());
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(delay);
+        });
+        playerReturn.state = "connecting";
+        act(() => rerender());
+      }
+      playerReturn.state = "closed";
+      act(() => rerender());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(requestLiveVideo).toHaveBeenCalledTimes(4); // gave up: stuck on "unavailable"
+      expect(result.current.phase).toBe("unavailable");
+      expect(result.current.canStart).toBe(true);
+
+      act(() => result.current.start()); // the tile's Retry
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(requestLiveVideo).toHaveBeenCalledTimes(5);
+
+      // ...and automatic recovery works again after that retry.
+      playerReturn.state = "connecting";
+      act(() => rerender());
+      playerReturn.state = "closed";
+      act(() => rerender());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(requestLiveVideo).toHaveBeenCalledTimes(6);
+    });
+  });
 });
+

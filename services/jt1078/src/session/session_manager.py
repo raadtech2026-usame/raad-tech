@@ -546,11 +546,14 @@ class SessionManager:
         # waiting for its connection (e.g. an intercom just requested) must not become ambiguous.
         self._request_start(stream)
 
-    def _stop_stream(self, stream: DeviceStream, *, reason: str) -> None:
+    def _stop_stream(
+        self, stream: DeviceStream, *, reason: str, signal_device: bool = True
+    ) -> None:
         if self._streams.pop(stream.stream_id, None) is None:
             return
         self._stream_by_key.pop(stream.key, None)
-        self._queue_stop(stream)
+        if signal_device:
+            self._queue_stop(stream)
         self._on_stream_removed(stream.stream_id, reason)
         log_with_fields(
             logger,
@@ -564,7 +567,9 @@ class SessionManager:
         )
         self._release_channel_slot(stream.key.channel)
 
-    def _terminate_stream(self, stream: DeviceStream, *, reason: str) -> None:
+    def _terminate_stream(
+        self, stream: DeviceStream, *, reason: str, signal_device: bool = True
+    ) -> None:
         """The device stopped delivering (never connected, stalled, or closed the connection):
         every session on the stream ends with that reason, then the stream stops."""
         for session_id in list(stream.session_ids):
@@ -573,7 +578,7 @@ class SessionManager:
                 continue
             outcome = "failed" if session.state == VideoSessionState.REQUESTED else "ended"
             self._remove_session(session_id, outcome=outcome, reason=reason, reconcile=False)
-        self._stop_stream(stream, reason=reason)
+        self._stop_stream(stream, reason=reason, signal_device=signal_device)
 
     def _release_channel_slot(self, channel: tuple[str, int]) -> None:
         for other in list(self._streams.values()):
@@ -665,6 +670,28 @@ class SessionManager:
             return
         self._terminate_stream(stream, reason="ingest_disconnected")
         await self.flush()
+
+    async def handle_start_not_delivered(self, correlation_id: str) -> bool:
+        """The device-gateway could not deliver one of this relay's start commands because the
+        terminal has no open connection (`DeviceCommandResult`, reason `device_offline`). The
+        stream it started can never receive media, so its sessions fail now instead of after the
+        30 s ingest timeout (audit 2026-09-26). Only acts on the start of the stream's *current*
+        generation that is still waiting for its connection; a stale or stop correlation id, or a
+        stream that already connected, is ignored. No stop is sent: nothing reached the device.
+        Returns whether a stream was ended."""
+        stream_id, _, generation_text = correlation_id.rpartition("-g")
+        if not stream_id or not generation_text.isdigit():
+            return False  # a stop ("...-gN-stop") or a correlation id this relay did not issue
+        stream = self._streams.get(stream_id)
+        if (
+            stream is None
+            or stream.generation != int(generation_text)
+            or not stream.awaiting_connection
+        ):
+            return False
+        self._terminate_stream(stream, reason="device_offline", signal_device=False)
+        await self.flush()
+        return True
 
     # ------------------------------------------------------------------ sweep
 
