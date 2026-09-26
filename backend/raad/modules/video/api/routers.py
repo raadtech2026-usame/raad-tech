@@ -57,7 +57,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request, status
 
 from raad.core.di.container import Container
-from raad.core.errors.exceptions import NotFoundError, ValidationError
+from raad.core.errors.exceptions import (
+    CameraNotConnectedError,
+    NotFoundError,
+    ValidationError,
+)
 from raad.core.security.permissions import Permission
 from raad.core.tenancy.principal import Principal
 from raad.interfaces.http.deps import get_container, require_permission
@@ -65,6 +69,7 @@ from raad.interfaces.http.policy_guards import enforce_d5
 from raad.modules.fleet_device.api.deps import get_device_service, get_fleet_device_uow
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import (
+    VIDEO_SIGNAL_ABSENT,
     CameraDTO,
     DeviceDTO,
     GetDeviceByIdQuery,
@@ -156,6 +161,17 @@ async def _resolve_device_or_raise(
     )
 
 
+def ensure_camera_connected(camera: CameraDTO) -> None:
+    """ADR-0046 §1: refuse live video for a camera the terminal reports as having no video
+    signal, before any relay or device command. `unknown` (no report yet) is allowed, exactly as
+    before. Only live video is gated: intercom audio does not depend on the video input, and
+    recordings predate the loss."""
+    if camera.video_signal == VIDEO_SIGNAL_ABSENT:
+        raise CameraNotConnectedError(
+            f"No camera is connected on channel {camera.channel_no} of this recorder."
+        )
+
+
 def _resolve_camera_or_raise(device: DeviceDTO, camera_id: str) -> CameraDTO:
     for camera in device.cameras:
         if camera.id == camera_id:
@@ -198,6 +214,9 @@ async def request_live_video(
         camera_position=camera.position,
         container=container,
     )
+    # ADR-0046 §1: checked after authorization, so an unauthorised caller learns nothing about
+    # the camera.
+    ensure_camera_connected(camera)
 
     command = RequestLiveVideoCommand(
         organization_id=device.organization_id,

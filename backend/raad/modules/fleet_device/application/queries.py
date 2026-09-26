@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
+from raad.modules.fleet_device.application.ports import CameraSignalReport
 from raad.modules.fleet_device.domain.entities import (
     Camera,
     Device,
@@ -112,12 +113,24 @@ class OnlineDeviceAssignmentDTO:
     vehicle_id: str
 
 
+#: ADR-0046 §1 - whether the terminal currently reports a video signal on a camera's channel.
+VIDEO_SIGNAL_PRESENT = "present"
+VIDEO_SIGNAL_ABSENT = "absent"
+#: No report yet, or the last one expired: behave exactly as before ADR-0046.
+VIDEO_SIGNAL_UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class CameraDTO:
     id: str
     channel_no: int
     position: str
     label: str | None
+    #: `present`/`absent`/`unknown` (ADR-0046 §1). `absent` means the terminal reports video
+    #: signal loss on this channel: no camera is connected (or its cable is cut - the terminal
+    #: cannot tell the two apart).
+    video_signal: str = VIDEO_SIGNAL_UNKNOWN
+    video_signal_reported_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -175,16 +188,24 @@ def vehicle_to_dto(vehicle: Vehicle) -> VehicleDTO:
     )
 
 
-def camera_to_dto(camera: Camera) -> CameraDTO:
+def camera_video_signal(channel_no: int, report: CameraSignalReport | None) -> str:
+    if report is None or not 1 <= channel_no <= 32:
+        return VIDEO_SIGNAL_UNKNOWN
+    return VIDEO_SIGNAL_ABSENT if report.loss_mask & (1 << (channel_no - 1)) else VIDEO_SIGNAL_PRESENT
+
+
+def camera_to_dto(camera: Camera, signal: CameraSignalReport | None = None) -> CameraDTO:
     return CameraDTO(
         id=str(camera.id),
         channel_no=camera.channel_no,
         position=camera.position.value,
         label=camera.label,
+        video_signal=camera_video_signal(camera.channel_no, signal),
+        video_signal_reported_at=signal.reported_at if signal is not None else None,
     )
 
 
-def device_to_dto(device: Device) -> DeviceDTO:
+def device_to_dto(device: Device, signal: CameraSignalReport | None = None) -> DeviceDTO:
     """Shared mapper — the only place a `Device` aggregate is projected into its DTO."""
     return DeviceDTO(
         id=str(device.id),
@@ -203,7 +224,7 @@ def device_to_dto(device: Device) -> DeviceDTO:
         is_online=device.is_online,
         created_at=device.created_at,
         updated_at=device.updated_at,
-        cameras=tuple(camera_to_dto(camera) for camera in device.cameras),
+        cameras=tuple(camera_to_dto(camera, signal) for camera in device.cameras),
         inventory_id=str(device.inventory_id) if device.inventory_id is not None else None,
         audio_codec=(
             device.audio_capability.codec if device.audio_capability is not None else None

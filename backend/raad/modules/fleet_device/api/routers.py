@@ -173,6 +173,8 @@ def _device_dto_to_response(device: DeviceDTO) -> DeviceResponse:
                 channel_no=camera.channel_no,
                 position=camera.position,
                 label=camera.label,
+                video_signal=camera.video_signal,
+                video_signal_reported_at=camera.video_signal_reported_at,
             )
             for camera in device.cameras
         ],

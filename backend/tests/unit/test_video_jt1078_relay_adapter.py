@@ -355,3 +355,71 @@ class StopTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RelaySignalledStartTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0046 §3: the relay is the single publisher of a stream's device commands. This adapter
+    asks it to be (`relay_signals_device`) and publishes a start itself only for a relay that
+    does not confirm it did (rolling-deploy compatibility)."""
+
+    _SIGNALLED = {
+        "ok": True,
+        "session_id": "vs-1",
+        "viewer_token": "tok-1",
+        "uplink_token": "up-1",
+        "ingest_host": "relay.example.com",
+        "ingest_port": 7910,
+        "device_signaled": True,
+        "stream_id": "s-1",
+        "stream_type": "sub",
+    }
+
+    async def test_live_asks_the_relay_to_signal_and_passes_the_stream_type(self) -> None:
+        adapter, rpc, broker = _make_adapter(self._SIGNALLED)
+        await adapter.start_live(
+            device_id="device-1",
+            camera_id="camera-1",
+            terminal_id="00000000013800138000",
+            channel_no=3,
+            reference="vs-1",
+            stream_type=LiveStreamType.SUB,
+        )
+        _command, payload = rpc.calls[0]
+        self.assertTrue(payload["relay_signals_device"])
+        self.assertEqual(payload["stream_type"], "sub")
+        self.assertEqual(broker.published, [], "the relay already started the device")
+
+    async def test_intercom_and_playback_publish_nothing_when_the_relay_signalled(self) -> None:
+        adapter, rpc, broker = _make_adapter(self._SIGNALLED)
+        await adapter.start_intercom(
+            device_id="device-1",
+            camera_id="camera-1",
+            terminal_id="00000000013800138000",
+            channel_no=1,
+            reference="vs-2",
+        )
+        await adapter.start_playback(
+            device_id="device-1",
+            camera_id="camera-1",
+            terminal_id="00000000013800138000",
+            channel_no=1,
+            window_start=datetime(2026, 9, 25, 10, 0, tzinfo=timezone.utc),
+            window_end=datetime(2026, 9, 25, 10, 5, tzinfo=timezone.utc),
+            reference="vs-3",
+        )
+        self.assertTrue(all(payload["relay_signals_device"] for _c, payload in rpc.calls))
+        self.assertEqual(broker.published, [])
+
+    async def test_an_older_relay_still_gets_the_start_published_here(self) -> None:
+        legacy = {k: v for k, v in self._SIGNALLED.items() if k not in ("device_signaled", "stream_id", "stream_type")}
+        adapter, _rpc, broker = _make_adapter(legacy)
+        await adapter.start_live(
+            device_id="device-1",
+            camera_id="camera-1",
+            terminal_id="00000000013800138000",
+            channel_no=3,
+            reference="vs-1",
+            stream_type=LiveStreamType.SUB,
+        )
+        self.assertEqual(len(broker.published), 1)
+        self.assertEqual(broker.published[0].payload["fields"]["stream_type"], 1)

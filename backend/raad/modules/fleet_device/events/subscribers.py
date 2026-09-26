@@ -269,6 +269,33 @@ class DeviceAvAttributesReportedProcessor(EventProcessor):
             )
 
 
+class DeviceVideoSignalStatusProcessor(EventProcessor):
+    """ADR-0046 §1 - handles `DeviceVideoSignalStatusReported`, device-gateway's reading of the
+    terminal's own `0x0200` video-signal-loss item (`0x15`). This is the only source of a camera's
+    `present`/`absent` state: RAAD never infers an installed camera from the channel count."""
+
+    event_type = "DeviceVideoSignalStatusReported"
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def process(self, event: DomainEvent) -> None:
+        device_id = event.payload.get("device_id")
+        loss_mask = event.payload.get("video_signal_loss_mask")
+        if not device_id or loss_mask is None:
+            return
+        occlusion_mask = event.payload.get("video_signal_occlusion_mask")
+        raw_time = event.payload.get("event_time")
+        reported_at = datetime.fromisoformat(raw_time) if raw_time else event.occurred_at
+        service = self._container.resolve(DeviceApplicationService)
+        await service.record_video_signal_status(
+            device_id=device_id,
+            loss_mask=int(loss_mask),
+            occlusion_mask=int(occlusion_mask) if occlusion_mask is not None else None,
+            reported_at=reported_at,
+        )
+
+
 def register_fleet_device_processors(
     registry: EventProcessorRegistry, container: Container
 ) -> None:
@@ -278,3 +305,4 @@ def register_fleet_device_processors(
     registry.register(DeviceConnectivityProcessor("DeviceOffline", container))
     registry.register(DeviceAuthCodeProcessor(container))
     registry.register(DeviceAvAttributesReportedProcessor(container))
+    registry.register(DeviceVideoSignalStatusProcessor(container))

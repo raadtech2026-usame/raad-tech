@@ -139,6 +139,14 @@ class VideoForbiddenError(AuthorizationError):
     code = "VIDEO_FORBIDDEN"
 
 
+class CameraNotConnectedError(ConflictError):
+    """ADR-0046 §1: the terminal reports video signal loss on this camera's channel, so there is
+    no picture to stream. Refused before any relay or device command is issued. 409 through
+    `ConflictError`'s row in `core/errors/handlers._STATUS_TABLE`."""
+
+    code = "CAMERA_NOT_CONNECTED"
+
+
 class RateLimitedError(AppError):
     """Priority 1 Item 3 (PROJECT_STATUS.md) — `interfaces.http.middleware.RateLimitMiddleware`
     raises this directly from within middleware (not a route/application-layer error) rather

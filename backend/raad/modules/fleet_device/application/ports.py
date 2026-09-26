@@ -22,6 +22,11 @@ the LLD's own `application/ports.py` contract skeleton (§4.2) explicitly expect
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
+
 from raad.core.db.unit_of_work import UnitOfWork
 from raad.modules.fleet_device.domain.repositories import (
     DeviceAssignmentRepository,
@@ -45,3 +50,29 @@ class FleetDeviceUnitOfWork(UnitOfWork):
     devices: DeviceRepository
     device_assignments: DeviceAssignmentRepository
     device_inventory: DeviceInventoryRepository
+
+
+@dataclass(frozen=True)
+class CameraSignalReport:
+    """The terminal's own latest per-channel video-signal report (ADR-0046 §1, `0x0200` items
+    `0x15`/`0x16`). Bit n-1 of `loss_mask` set = logical channel n has no video signal."""
+
+    loss_mask: int
+    occlusion_mask: int | None
+    reported_at: datetime
+
+
+class CameraSignalStatePort(ABC):
+    """Where the latest `CameraSignalReport` per device lives. Volatile, device-reported state
+    shared by the worker (writes, from `DeviceVideoSignalStatusReported`) and the API (reads) -
+    the ADR-0044 §2 Redis pattern, deliberately not a PostgreSQL column: it is a momentary fact
+    about the terminal, refreshed every few minutes while it is online, and an expired report must
+    read as "unknown", never as a stale certainty."""
+
+    @abstractmethod
+    async def save(self, device_id: str, report: CameraSignalReport) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_many(self, device_ids: Sequence[str]) -> dict[str, CameraSignalReport]:
+        raise NotImplementedError

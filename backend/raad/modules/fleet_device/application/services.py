@@ -23,8 +23,9 @@ than built.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.ids.generator import IdGenerator
@@ -53,7 +54,11 @@ from raad.modules.fleet_device.application.commands import (
     UpdateCameraCommand,
     UpdateDeviceDetailsCommand,
 )
-from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.fleet_device.application.ports import (
+    CameraSignalReport,
+    CameraSignalStatePort,
+    FleetDeviceUnitOfWork,
+)
 from raad.modules.fleet_device.application.queries import (
     DeviceAssignmentDTO,
     DeviceDTO,
@@ -292,10 +297,51 @@ class DeviceApplicationService:
         clock: Clock,
         id_generator: IdGenerator,
         av_attributes_discovery_retry_after: timedelta = DEFAULT_AV_DISCOVERY_RETRY_AFTER,
+        camera_signal_states: Callable[[], CameraSignalStatePort | None] | None = None,
     ) -> None:
+        """`camera_signal_states` (ADR-0046 §1) is a provider, resolved at call time: the store
+        is Redis-backed and bound later in the composition root than this service. Without one,
+        every camera's `video_signal` reads `unknown` - the behaviour before ADR-0046."""
         self._clock = clock
         self._id_generator = id_generator
         self._av_attributes_discovery_retry_after = av_attributes_discovery_retry_after
+        self._camera_signal_states = camera_signal_states or (lambda: None)
+
+    async def _camera_signal_reports(
+        self, device_ids: Sequence[str]
+    ) -> dict[str, CameraSignalReport]:
+        """Fails open: an unreachable store must never break a device read, it only means the
+        camera list is shown as before ADR-0046 (every camera `unknown`)."""
+        port = self._camera_signal_states()
+        if port is None or not device_ids:
+            return {}
+        try:
+            return await port.get_many(device_ids)
+        except Exception as exc:  # noqa: BLE001 - optional read model, see docstring
+            logger.warning("camera_signal_state_unavailable", extra={"error": str(exc)})
+            return {}
+
+    async def record_video_signal_status(
+        self,
+        *,
+        device_id: str,
+        loss_mask: int,
+        occlusion_mask: int | None,
+        reported_at: datetime,
+    ) -> None:
+        """ADR-0046 §1: stores the terminal's own latest per-channel video-signal report, which is
+        what makes a camera `present` or `absent`. No aggregate changes: this is a live reading of
+        the terminal, not a RAAD record."""
+        port = self._camera_signal_states()
+        if port is None:
+            logger.info("camera_signal_state_not_configured", extra={"device_id": device_id})
+            return
+        await port.save(
+            device_id,
+            CameraSignalReport(
+                loss_mask=loss_mask, occlusion_mask=occlusion_mask, reported_at=reported_at
+            ),
+        )
 
     # --- Device lifecycle -------------------------------------------------------------
 
@@ -596,7 +642,8 @@ class DeviceApplicationService:
     ) -> DeviceDTO:
         async with uow:
             device = await self._get_device_or_raise(uow, query.device_id)
-            return device_to_dto(device)
+        signals = await self._camera_signal_reports([str(device.id)])
+        return device_to_dto(device, signals.get(str(device.id)))
 
     async def get_active_vehicle_assignment_for_device(
         self, device_id: str, *, uow: FleetDeviceUnitOfWork
@@ -625,12 +672,13 @@ class DeviceApplicationService:
                 filters=query.filters,
                 search=query.search,
             )
-            return OffsetPage(
-                data=[device_to_dto(d) for d in page.data],
-                total=page.total,
-                page=page.page,
-                page_size=page.page_size,
-            )
+        signals = await self._camera_signal_reports([str(d.id) for d in page.data])
+        return OffsetPage(
+            data=[device_to_dto(d, signals.get(str(d.id))) for d in page.data],
+            total=page.total,
+            page=page.page,
+            page_size=page.page_size,
+        )
 
     async def list_online_devices_with_vehicle_assignment(
         self, *, uow: FleetDeviceUnitOfWork

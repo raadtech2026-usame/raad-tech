@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 # --- Vehicle ------------------------------------------------------------------------------
@@ -71,6 +73,10 @@ class CameraResponse(BaseModel):
     channel_no: int
     position: str
     label: str | None
+    #: ADR-0046 §1: `present`/`absent`/`unknown`, from the terminal's own video-signal-loss
+    #: report. `absent` = no camera connected on this channel (or its cable is cut).
+    video_signal: Literal["present", "absent", "unknown"] = "unknown"
+    video_signal_reported_at: datetime | None = None
 
 
 class DeviceResponse(BaseModel):

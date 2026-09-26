@@ -7,6 +7,12 @@ backend<->relay transport." Connects the already-built pieces end to end:
 `Jt1078RelayRpcClient`) -> `device-gateway` (device-start signal, over the existing `BrokerPort`/
 `raad:events`, consumed by the already-built `RedisVideoSignalingConsumer`) -> the MDVR.
 
+**ADR-0046: the relay now starts the device itself.** Every session request carries
+`relay_signals_device: true`; a relay that honours it owns all of a stream's device commands (start
+and stop, in order, one publisher) and answers `device_signaled: true`, and this adapter then
+publishes nothing. The start publish below remains only for a relay that predates ADR-0046 (rolling
+deploy), which is also why the historical description that follows is kept.
+
 **Two distinct Redis-mediated calls per `start_live`/`start_playback`, deliberately not one:**
 1. `Jt1078RelayRpcClient.call(...)` — a synchronous-style RPC to the relay (its own dedicated
    Redis list pair, `infra/jt1078_relay_client.py`'s own docstring), returning the relay's ingest
@@ -90,21 +96,25 @@ class Jt1078RelayAdapter(VideoProviderPort):
                 "logical_channel": channel_no,
                 "device_id": device_id,
                 "audio_codec": audio_codec,
+                "stream_type": stream_type.value,
+                "relay_signals_device": True,
             },
         )
-        await self._signal_device_start(
-            command="live_video_request",
-            terminal_id=terminal_id,
-            correlation_id=reference,
-            fields={
-                "server_ip": response["ingest_host"],
-                "tcp_port": response["ingest_port"],
-                "udp_port": 0,
-                "logical_channel": channel_no,
-                "data_type": 0,  # 0 = A/V, spec Table 6.2
-                "stream_type": _JT1078_STREAM_TYPE[stream_type],
-            },
-        )
+        if not response.get("device_signaled"):
+            # A relay without ADR-0046: it expects this adapter to start the device, as before.
+            await self._signal_device_start(
+                command="live_video_request",
+                terminal_id=terminal_id,
+                correlation_id=reference,
+                fields={
+                    "server_ip": response["ingest_host"],
+                    "tcp_port": response["ingest_port"],
+                    "udp_port": 0,
+                    "logical_channel": channel_no,
+                    "data_type": 0,  # 0 = A/V, spec Table 6.2
+                    "stream_type": _JT1078_STREAM_TYPE[stream_type],
+                },
+            )
         return self._viewer_url(response["viewer_token"])
 
     async def start_playback(
@@ -130,8 +140,11 @@ class Jt1078RelayAdapter(VideoProviderPort):
                 "window_start": window_start.isoformat(),
                 "window_end": window_end.isoformat(),
                 "audio_codec": audio_codec,
+                "relay_signals_device": True,
             },
         )
+        if response.get("device_signaled"):
+            return self._viewer_url(response["viewer_token"])
         await self._signal_device_start(
             command="playback_request",
             terminal_id=terminal_id,
@@ -177,21 +190,23 @@ class Jt1078RelayAdapter(VideoProviderPort):
                 "logical_channel": channel_no,
                 "device_id": device_id,
                 "audio_codec": audio_codec,
+                "relay_signals_device": True,
             },
         )
-        await self._signal_device_start(
-            command="live_video_request",
-            terminal_id=terminal_id,
-            correlation_id=reference,
-            fields={
-                "server_ip": response["ingest_host"],
-                "tcp_port": response["ingest_port"],
-                "udp_port": 0,
-                "logical_channel": channel_no,
-                "data_type": 2,  # 2 = two-way intercom, spec Table 6.2 (ADR-0035/0036)
-                "stream_type": 0,
-            },
-        )
+        if not response.get("device_signaled"):
+            await self._signal_device_start(
+                command="live_video_request",
+                terminal_id=terminal_id,
+                correlation_id=reference,
+                fields={
+                    "server_ip": response["ingest_host"],
+                    "tcp_port": response["ingest_port"],
+                    "udp_port": 0,
+                    "logical_channel": channel_no,
+                    "data_type": 2,  # 2 = two-way intercom, spec Table 6.2 (ADR-0035/0036)
+                    "stream_type": 0,
+                },
+            )
         return IntercomStreamUrls(
             downlink_url=self._viewer_url(response["viewer_token"]),
             uplink_url=self._viewer_url(response["uplink_token"]),

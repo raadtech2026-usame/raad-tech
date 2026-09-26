@@ -66,7 +66,9 @@ from raad.modules.fleet_device.application.services import (
     DeviceInventoryApplicationService,
     VehicleApplicationService,
 )
+from raad.modules.fleet_device.application.ports import CameraSignalStatePort
 from raad.modules.fleet_device.events.subscribers import register_fleet_device_processors
+from raad.modules.fleet_device.infra.adapters import RedisCameraSignalStatePort
 from raad.modules.fleet_device.infra.repositories import (
     SqlAlchemyFleetDeviceUnitOfWork,
 )
@@ -279,6 +281,9 @@ def build_container(settings: Settings) -> Container:
             av_attributes_discovery_retry_after=timedelta(
                 seconds=settings.workers.av_attributes_discovery_retry_after_seconds
             ),
+            # ADR-0046 §1: resolved lazily - the Redis-backed store is bound further down, in
+            # the `settings.redis.url` block. Unbound, every camera reads `unknown`.
+            camera_signal_states=lambda: container.try_resolve(CameraSignalStatePort),
         ),
     )
     container.bind_singleton(
@@ -505,6 +510,13 @@ def build_container(settings: Settings) -> Container:
         container.bind_singleton(
             RecordingSearchResultPort,
             RedisRecordingSearchResultPort(latest_position_redis_client),
+        )
+        # CameraSignalStatePort (ADR-0046 §1) - the terminal's own per-channel video-signal
+        # report, the same volatile device-reported kind of state as the recording index above,
+        # kept the same way: Redis with a TTL, never a table.
+        container.bind_singleton(
+            CameraSignalStatePort,
+            RedisCameraSignalStatePort(latest_position_redis_client),
         )
         # LoginRateLimiter (Priority 1 Item 3, PROJECT_STATUS.md) - same "reuse, don't
         # duplicate" reasoning as GeofenceStatePort immediately above. Left unbound without a
