@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { VideoOff } from "lucide-react";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
 import { Card, CardHeader } from "../../shared/components/Card/Card";
 import { FormField } from "../../shared/components/FormField/FormField";
@@ -7,10 +8,12 @@ import { LiveIndicator } from "../../shared/components/LiveIndicator/LiveIndicat
 import { Select } from "../../shared/components/Select/Select";
 import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
 import { Button } from "../../shared/components/Button/Button";
+import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
 import { CameraPicker } from "./CameraPicker";
 import { VideoPlayerPanel } from "./VideoPlayerPanel";
 import { useVideoSessionController } from "./useVideoSessionController";
 import { listDevicesForVideoPicker } from "./api";
+import { isCameraConnected } from "./cameraSignal";
 import styles from "./VideoPage.module.css";
 
 /**
@@ -53,6 +56,9 @@ export function VideoPage() {
   });
 
   const selectedDevice = devicesQuery.data?.find((d) => d.id === selectedDeviceId) ?? null;
+  const selectedCamera = selectedDevice?.cameras.find((c) => c.id === selectedCameraId) ?? null;
+  // ADR-0046: never request a camera the terminal reports as not connected.
+  const cameraNotConnected = selectedCamera !== null && !isCameraConnected(selectedCamera);
 
   const session = useVideoSessionController(selectedDeviceId || null, selectedCameraId || null);
 
@@ -94,7 +100,7 @@ export function VideoPage() {
         <div className={styles.actions}>
           <Button
             onClick={session.start}
-            disabled={!session.canStart}
+            disabled={!session.canStart || cameraNotConnected}
             loading={session.phase === "requesting"}
             fullWidth
           >
@@ -116,12 +122,20 @@ export function VideoPage() {
           }
         />
         <div className={styles.playerArea}>
+          {cameraNotConnected ? (
+            <EmptyState
+              icon={<VideoOff size={28} />}
+              title="Camera not connected"
+              description="The recorder reports no video signal on this channel. It appears here automatically once a camera is connected."
+            />
+          ) : (
           <VideoPlayerPanel
             phase={session.phase}
             requestError={session.requestError}
             player={session.player}
             videoRef={session.videoRef}
           />
+          )}
         </div>
       </Card>
     </div>

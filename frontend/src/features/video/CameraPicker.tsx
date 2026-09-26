@@ -1,6 +1,7 @@
 import { FormField } from "../../shared/components/FormField/FormField";
 import { Select } from "../../shared/components/Select/Select";
 import type { VideoCameraOption } from "./api";
+import { isCameraConnected } from "./cameraSignal";
 
 export interface CameraPickerProps {
   cameras: VideoCameraOption[];
@@ -28,8 +29,9 @@ export function CameraPicker({ cameras, value, onChange, disabled }: CameraPicke
       >
         <option value="">Select a camera</option>
         {cameras.map((camera) => (
-          <option key={camera.id} value={camera.id}>
+          <option key={camera.id} value={camera.id} disabled={!isCameraConnected(camera)}>
             {camera.label ?? `Channel ${camera.channelNo}`} ({camera.position})
+            {isCameraConnected(camera) ? "" : " — camera not connected"}
           </option>
         ))}
       </Select>

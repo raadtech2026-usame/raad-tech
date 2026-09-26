@@ -222,4 +222,70 @@ describe("MultiCameraVideoPanel", () => {
     expect(await screen.findByText("4 cameras ready")).toBeInTheDocument();
     expect(screen.queryByTestId("live-video")).not.toBeInTheDocument();
   });
+
+  describe("installed cameras only (ADR-0046)", () => {
+    const withSignal = (present: number[]) =>
+      CAMERAS_4.map((camera) => ({
+        ...camera,
+        videoSignal: present.includes(camera.channelNo) ? ("present" as const) : ("absent" as const),
+      }));
+
+    async function startLive(): Promise<void> {
+      vi.mocked(requestLiveVideo).mockImplementation((deviceId: string, cameraId: string) =>
+        Promise.resolve(sessionFor(deviceId, cameraId)),
+      );
+      await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
+    }
+
+    it("CH1 + CH3 installed: two tiles, two requests, CH2/CH4 named as not connected", async () => {
+      renderPanel(withSignal([1, 3]));
+      expect(await screen.findByText("2 cameras ready")).toBeInTheDocument();
+      expect(screen.getByTestId("cameras-not-connected")).toHaveTextContent("CH2, CH4 · Camera not connected");
+      await startLive();
+      await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(2));
+      const requested = vi.mocked(requestLiveVideo).mock.calls.map((call) => call[1]).sort();
+      expect(requested).toEqual(["cam-1", "cam-3"]);
+      expect(screen.queryByText("Channel 2")).not.toBeInTheDocument();
+      expect(screen.queryByText("Channel 4")).not.toBeInTheDocument();
+    });
+
+    it("a camera later connected to CH2 is presented without any code change", async () => {
+      const { rerender } = renderPanel(withSignal([1, 3]));
+      expect(await screen.findByText("2 cameras ready")).toBeInTheDocument();
+      const queryClient = new QueryClient();
+      rerender(
+        <QueryClientProvider client={queryClient}>
+          <MultiCameraVideoPanel deviceId="device-1" cameras={withSignal([1, 2, 3])} deviceOnline />
+        </QueryClientProvider>,
+      );
+      expect(await screen.findByText("3 cameras ready")).toBeInTheDocument();
+      expect(screen.getByTestId("cameras-not-connected")).toHaveTextContent("CH4 · Camera not connected");
+    });
+
+    it("all four connected: four tiles and no not-connected note", async () => {
+      renderPanel(withSignal([1, 2, 3, 4]));
+      expect(await screen.findByText("4 cameras ready")).toBeInTheDocument();
+      expect(screen.queryByTestId("cameras-not-connected")).not.toBeInTheDocument();
+    });
+
+    it("a single connected camera gets the main stream (the only-camera rule applies to installed cameras)", async () => {
+      renderPanel(withSignal([3]));
+      expect(await screen.findByText("1 camera ready")).toBeInTheDocument();
+      await startLive();
+      await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(requestLiveVideo).mock.calls[0].slice(1)).toEqual(["cam-3", "main" as LiveStreamType]);
+    });
+
+    it("no camera connected at all: says so and requests nothing", async () => {
+      renderPanel(withSignal([]));
+      expect(await screen.findByText("No camera connected")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Start Live" })).toBeDisabled();
+      expect(requestLiveVideo).not.toHaveBeenCalled();
+    });
+
+    it("an unreported (unknown) camera is still offered, exactly as before", async () => {
+      renderPanel(CAMERAS_4.map((camera) => ({ ...camera, videoSignal: "unknown" as const })));
+      expect(await screen.findByText("4 cameras ready")).toBeInTheDocument();
+    });
+  });
 });

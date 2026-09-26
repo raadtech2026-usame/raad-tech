@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Grid2x2, Maximize2, Minimize2, Video, VideoOff, X } from "lucide-react";
 import { Badge } from "../../shared/components/Badge/Badge";
 import { Button } from "../../shared/components/Button/Button";
@@ -6,6 +6,7 @@ import { Card, CardHeader } from "../../shared/components/Card/Card";
 import { EmptyState } from "../../shared/components/EmptyState/EmptyState";
 import { LiveIndicator } from "../../shared/components/LiveIndicator/LiveIndicator";
 import type { VideoCameraOption } from "./api";
+import { isCameraConnected } from "./cameraSignal";
 import { CameraTile } from "./CameraTile";
 import { IntercomControl } from "./IntercomControl";
 import type { VideoSessionPhase } from "./useVideoSessionController";
@@ -52,13 +53,28 @@ const PENDING_PHASES = new Set<VideoSessionPhase>(["requesting", "connecting", "
  * for no reason. Grid-area placement avoids that failure mode entirely while still giving the
  * focused tile a large, centered slot and the rest a compact filmstrip.
  *
+ * **Only connected cameras (ADR-0046).** A channel the terminal reports as having no video
+ * signal (`videoSignal: "absent"`) gets no tile, no session request and no cellular traffic; it is
+ * listed as "Camera not connected" instead. The terminal refreshes that report every position
+ * update, and the device query refetches, so a camera plugged in later simply appears. The grid,
+ * focus and sub-stream rules below apply to the connected cameras only, for 1 to 4 of them.
+ *
  * **Stream choice (ADR-0043).** Every tile asks for the terminal's low-bitrate sub stream except
  * the focused tile and a device's only camera, which ask for the main stream. Four main streams
  * over one 4G uplink were measured delaying and freezing channels on 2026-09-18. Focusing or
  * unfocusing restarts exactly the one tile whose stream changed — deliberately, and only that
  * tile; every other tile keeps its session.
  */
-export function MultiCameraVideoPanel({ deviceId, cameras, deviceOnline }: MultiCameraVideoPanelProps) {
+export function MultiCameraVideoPanel({
+  deviceId,
+  cameras: allCameras,
+  deviceOnline,
+}: MultiCameraVideoPanelProps) {
+  const cameras = useMemo(() => allCameras.filter(isCameraConnected), [allCameras]);
+  const notConnected = useMemo(
+    () => allCameras.filter((camera) => !isCameraConnected(camera)),
+    [allCameras],
+  );
   const [liveRequested, setLiveRequested] = useState(false);
   const [phaseByCamera, setPhaseByCamera] = useState<Record<string, VideoSessionPhase>>({});
   const [focusedCameraId, setFocusedCameraId] = useState<string | null>(null);
@@ -73,6 +89,13 @@ export function MultiCameraVideoPanel({ deviceId, cameras, deviceOnline }: Multi
     setPhaseByCamera({});
     setFocusedCameraId(null);
   }, [deviceId]);
+
+  // A focused camera the terminal now reports as disconnected has no tile any more.
+  useEffect(() => {
+    if (focusedCameraId !== null && !cameras.some((c) => c.id === focusedCameraId)) {
+      setFocusedCameraId(null);
+    }
+  }, [cameras, focusedCameraId]);
 
   useEffect(() => {
     function handleFullscreenChange(): void {
@@ -158,9 +181,11 @@ export function MultiCameraVideoPanel({ deviceId, cameras, deviceOnline }: Multi
               </Button>
             )}
             <span className={styles.headerDivider} aria-hidden="true" />
+            {/* Intercom talks on the device's first channel whether or not a camera is on it:
+                audio does not depend on the video input (ADR-0046 §4). */}
             <IntercomControl
-              deviceId={hasCameras ? deviceId : null}
-              cameraId={hasCameras ? cameras[0].id : null}
+              deviceId={allCameras.length > 0 ? deviceId : null}
+              cameraId={allCameras.length > 0 ? allCameras[0].id : null}
             />
           </div>
         }
@@ -206,8 +231,22 @@ export function MultiCameraVideoPanel({ deviceId, cameras, deviceOnline }: Multi
       )}
 
       <div className={styles.body}>
-        {!hasCameras && (
+        {!hasCameras && allCameras.length === 0 && (
           <EmptyState icon={<VideoOff size={28} />} title="No camera channels configured" />
+        )}
+
+        {!hasCameras && allCameras.length > 0 && (
+          <EmptyState
+            icon={<VideoOff size={28} />}
+            title="No camera connected"
+            description="The recorder reports no video signal on any channel. Cameras appear here automatically once connected."
+          />
+        )}
+
+        {notConnected.length > 0 && hasCameras && (
+          <p className={styles.notConnected} data-testid="cameras-not-connected">
+            {notConnected.map((camera) => `CH${camera.channelNo}`).join(", ")} · Camera not connected
+          </p>
         )}
 
         {hasCameras && !deviceOnline && (

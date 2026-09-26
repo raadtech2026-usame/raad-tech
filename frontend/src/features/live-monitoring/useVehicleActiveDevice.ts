@@ -34,6 +34,10 @@ export function useVehicleActiveDevice(vehicleId: string): UseVehicleActiveDevic
     queryKey: ["devices", "active-device", deviceId],
     queryFn: () => getActiveDeviceDetails(deviceId as string),
     enabled: deviceId !== null,
+    // ADR-0046: which channels have a camera is the terminal's own live report, so a camera
+    // plugged in later appears (and one unplugged disappears) without a page reload. Unchanged
+    // data keeps its object identity, so the video wall does not remount its tiles.
+    refetchInterval: 60_000,
   });
 
   if (vehicleId === "") {

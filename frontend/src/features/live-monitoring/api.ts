@@ -321,6 +321,8 @@ export interface ActiveDeviceCamera {
   channelNo: number;
   position: ActiveDeviceCameraPosition;
   label: string | null;
+  /** ADR-0046: the terminal's own report for this channel; missing on an older backend. */
+  videoSignal?: "present" | "absent" | "unknown";
 }
 
 /** A vehicle's resolved active device — this feature folder's own minimal copy
@@ -340,6 +342,7 @@ interface ActiveDeviceCameraWire {
   channel_no: number;
   position: string;
   label: string | null;
+  video_signal?: string;
 }
 
 /** Wire shape of `fleet_device.api.schemas.DeviceResponse` — only the fields the unified view
@@ -365,6 +368,10 @@ export async function getActiveDeviceDetails(deviceId: string): Promise<ActiveDe
       channelNo: camera.channel_no,
       position: camera.position as ActiveDeviceCameraPosition,
       label: camera.label,
+      videoSignal:
+        camera.video_signal === "present" || camera.video_signal === "absent"
+          ? camera.video_signal
+          : "unknown",
     })),
   };
 }

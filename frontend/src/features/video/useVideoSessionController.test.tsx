@@ -508,4 +508,101 @@ describe("useVideoSessionController", () => {
       await waitFor(() => expect(result.current.phase).toBe("connected"));
     });
   });
+
+  describe("ADR-0046 §6 — per-viewer main to sub fallback", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function connectedOnMainWithFakeTimers() {
+      vi.mocked(requestLiveVideo).mockImplementation((_d, _c, streamType) =>
+        Promise.resolve({ ...SESSION, id: `session-${streamType}-${Math.random()}` }),
+      );
+      playerReturn.state = "connected";
+      const hook = renderHook(
+        () => useVideoSessionController("device-1", "camera-1", { streamType: "main" }),
+        { wrapper },
+      );
+      act(() => hook.result.current.start());
+      await waitFor(() => expect(hook.result.current.phase).toBe("connected"));
+      vi.useFakeTimers();
+      Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+      // Re-enter "connected" under fake timers so the health sampler runs on them.
+      playerReturn.state = "connecting";
+      act(() => hook.rerender());
+      playerReturn.state = "connected";
+      act(() => hook.rerender());
+      return hook;
+    }
+
+    it("switches this viewer to sub after sustained trouble on main", async () => {
+      const { result, rerender } = await connectedOnMainWithFakeTimers();
+      playerReturn.stalled = true;
+      act(() => rerender());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(19_000); // 10 s warm-up + 8 unhealthy samples
+      });
+      expect(requestLiveVideo).toHaveBeenLastCalledWith("device-1", "camera-1", "sub");
+      expect(result.current.fallbackActive).toBe(true);
+      expect(result.current.effectiveStreamType).toBe("sub");
+    });
+
+    it("never switches for a healthy main stream", async () => {
+      const { result } = await connectedOnMainWithFakeTimers();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120_000);
+      });
+      expect(requestLiveVideo).toHaveBeenCalledTimes(1);
+      expect(result.current.fallbackActive).toBe(false);
+    });
+
+    it("reconnects on sub, not main, when main is lost right after unhealthy samples", async () => {
+      const { result, rerender } = await connectedOnMainWithFakeTimers();
+      playerReturn.stalled = true;
+      act(() => rerender());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(14_000); // warm-up + 4 unhealthy samples
+      });
+      expect(requestLiveVideo).toHaveBeenCalledTimes(1);
+      // The relay closes the stuck viewer (93ded1b); the player reports the close.
+      playerReturn.stalled = false;
+      playerReturn.state = "closed";
+      act(() => rerender());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(requestLiveVideo).toHaveBeenLastCalledWith("device-1", "camera-1", "sub");
+      expect(result.current.fallbackActive).toBe(true);
+    });
+
+    it("probes main again once the hold expires", async () => {
+      const { rerender } = await connectedOnMainWithFakeTimers();
+      playerReturn.stalled = true;
+      act(() => rerender());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(19_000);
+      });
+      expect(requestLiveVideo).toHaveBeenLastCalledWith("device-1", "camera-1", "sub");
+      playerReturn.stalled = false;
+      act(() => rerender());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(130_000); // 2 min hold + the 10 s probe check
+      });
+      expect(requestLiveVideo).toHaveBeenLastCalledWith("device-1", "camera-1", "main");
+    });
+
+    it("a tile that only ever wants sub never falls back or probes", async () => {
+      vi.mocked(requestLiveVideo).mockResolvedValue(SESSION);
+      playerReturn.state = "connected";
+      playerReturn.stalled = true;
+      const { result } = renderHook(
+        () => useVideoSessionController("device-1", "camera-1", { streamType: "sub" }),
+        { wrapper },
+      );
+      act(() => result.current.start());
+      await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(1));
+      expect(result.current.fallbackActive).toBe(false);
+      expect(result.current.effectiveStreamType).toBe("sub");
+    });
+  });
 });

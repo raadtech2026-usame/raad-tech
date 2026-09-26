@@ -199,4 +199,23 @@ describe("VideoPage", () => {
 
     expect(api.stopVideoSession).toHaveBeenCalledTimes(1);
   });
+
+  it("never offers a camera the recorder reports as not connected (ADR-0046)", async () => {
+    vi.mocked(api.listDevicesForVideoPicker).mockResolvedValue([
+      {
+        ...DEVICE,
+        cameras: [
+          { ...DEVICE.cameras[0], videoSignal: "present" as const },
+          { id: "01CAMERA000000000000000B", channelNo: 2, position: "other" as const, label: null, videoSignal: "absent" as const },
+        ],
+      },
+    ]);
+    renderPage();
+    await userEvent.selectOptions(await screen.findByLabelText("Device"), DEVICE.id);
+    const absent = screen.getByRole("option", { name: /Channel 2.*camera not connected/ });
+    expect(absent).toBeDisabled();
+    expect(screen.getByRole("option", { name: /Front/ })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start Live" })).toBeDisabled();
+    expect(api.requestLiveVideo).not.toHaveBeenCalled();
+  });
 });

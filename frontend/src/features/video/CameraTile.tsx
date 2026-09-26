@@ -182,6 +182,17 @@ export function CameraTile({
         <Badge variant={badge.variant} dot pulsing={badge.pulsing} className={styles.liveBadge}>
           {badge.label}
         </Badge>
+        {/* ADR-0046 §6: main fell back to sub for this viewer; it retries main on its own. */}
+        {session.fallbackActive && (
+          <Badge
+            variant="warning"
+            className={styles.liveBadge}
+            data-testid="reduced-quality"
+            title="Reduced quality: the high-resolution stream was not keeping up on this connection. It retries automatically."
+          >
+            SD
+          </Badge>
+        )}
         {/* The one clean channel label for this tile — channel number always, the operator's
             own custom camera name only when one is actually set. */}
         <div className={styles.channelLabel}>

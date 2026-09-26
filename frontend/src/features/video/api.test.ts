@@ -70,9 +70,32 @@ describe("video api", () => {
         model: "LSZ-C5804DG-Q-F",
         vendor: "LSZ",
         lifecycleState: "assigned",
-        cameras: [{ id: "01CAMERA000000000000000A", channelNo: 1, position: "road_facing", label: "Front" }],
+        // ADR-0046: a backend that does not report the signal yet reads as "unknown".
+        cameras: [
+          { id: "01CAMERA000000000000000A", channelNo: 1, position: "road_facing", label: "Front", videoSignal: "unknown" },
+        ],
       },
     ]);
+  });
+
+  it("maps each camera's reported video signal (ADR-0046)", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      data: [
+        {
+          ...DEVICE_WITH_CAMERA_WIRE,
+          cameras: [
+            { id: "C1", channel_no: 1, position: "other", label: null, video_signal: "present" },
+            { id: "C2", channel_no: 2, position: "other", label: null, video_signal: "absent" },
+            { id: "C3", channel_no: 3, position: "other", label: null, video_signal: "bogus" },
+          ],
+        },
+      ],
+      page: { total: 1, page: 1, page_size: 100 },
+    });
+
+    const [device] = await listDevicesForVideoPicker("");
+
+    expect(device.cameras.map((c) => c.videoSignal)).toEqual(["present", "absent", "unknown"]);
   });
 
   it("listDevicesForVideoPicker filters out devices with no cameras — nothing this feature can use", async () => {

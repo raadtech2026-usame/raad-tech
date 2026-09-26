@@ -1,3 +1,4 @@
+import { toCameraVideoSignal, type CameraVideoSignal } from "./cameraSignal";
 import { apiRequest } from "../../shared/api/client";
 import { buildOffsetListQuery } from "../../shared/api/listParams";
 import type { OffsetPageWire } from "../../shared/api/types";
@@ -14,6 +15,8 @@ export interface VideoCameraOption {
   channelNo: number;
   position: CameraPosition;
   label: string | null;
+  /** ADR-0046; missing on an older backend, read as `unknown`. */
+  videoSignal?: CameraVideoSignal;
 }
 
 /** `fleet_device.domain.value_objects.DeviceLifecycleState` — surfaced only as an informational
@@ -47,6 +50,7 @@ interface CameraWire {
   channel_no: number;
   position: string;
   label: string | null;
+  video_signal?: string;
 }
 
 /** Wire shape of `fleet_device.api.schemas.DeviceResponse` — only the fields this picker actually
@@ -73,6 +77,7 @@ function toVideoDeviceOption(wire: DeviceWire): VideoDeviceOption {
       channelNo: camera.channel_no,
       position: camera.position as CameraPosition,
       label: camera.label,
+      videoSignal: toCameraVideoSignal(camera.video_signal),
     })),
   };
 }

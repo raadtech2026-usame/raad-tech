@@ -10,6 +10,7 @@ import {
   type VideoSession,
 } from "./api";
 import { useMpegtsPlayer, type UseMpegtsPlayerResult } from "./useMpegtsPlayer";
+import { MainStreamFallback } from "./mainStreamFallback";
 
 export type VideoSessionPhase =
   | "idle"
@@ -47,6 +48,11 @@ export interface UseVideoSessionControllerResult {
   canStop: boolean;
   start: () => void;
   stop: () => Promise<void>;
+  /** ADR-0046 §6: the stream this tile is actually requesting - `sub` while main has fallen back
+   * for this viewer, even though the caller asked for `main`. */
+  effectiveStreamType: LiveStreamType;
+  /** True while this viewer has fallen back from main to sub. */
+  fallbackActive: boolean;
 }
 
 export interface UseVideoSessionControllerOptions {
@@ -80,6 +86,15 @@ const RECONNECT_STABILITY_MS = 45000;
 // marks a silent terminal offline after its own JT/T 808 idle timeout, so this is not the
 // detection latency - it only bounds how long a recovered device waits for its picture.
 const DEVICE_ONLINE_POLL_MS = 10000;
+// ADR-0046 §6: main-stream health is sampled this often, and a fallen-back tile checks this often
+// whether its hold has expired.
+const HEALTH_SAMPLE_MS = 1000;
+const FALLBACK_PROBE_CHECK_MS = 10000;
+
+function bufferedAheadSeconds(element: HTMLMediaElement | null): number | null {
+  if (!element || element.buffered.length === 0) return null;
+  return element.buffered.end(element.buffered.length - 1) - element.currentTime;
+}
 
 /** `false` only when the backend positively reports the terminal offline. A failed lookup is not
  * evidence the device is down, so it falls back to the ordinary reconnect path. */
@@ -130,7 +145,14 @@ export function useVideoSessionController(
   options: UseVideoSessionControllerOptions = {},
 ): UseVideoSessionControllerResult {
   const toast = useToast();
-  const streamType: LiveStreamType = options.streamType ?? "main";
+  const requestedStreamType: LiveStreamType = options.streamType ?? "main";
+  // ADR-0046 §6: per-viewer main->sub fallback. One policy object per tile, kept across
+  // sessions (the hold and its backoff must survive the reconnects they cause).
+  const fallbackRef = useRef<MainStreamFallback | null>(null);
+  fallbackRef.current ??= new MainStreamFallback();
+  const [fallbackActive, setFallbackActive] = useState(false);
+  const streamType: LiveStreamType =
+    requestedStreamType === "main" && fallbackActive ? "sub" : requestedStreamType;
   // Read by `start()` and the auto-reconnect path, which run from callbacks/timers that may
   // outlive the render they were created in.
   const streamTypeRef = useRef(streamType);
@@ -217,6 +239,8 @@ export function useVideoSessionController(
     setManuallyStopped(false);
     setWaitingForDevice(false);
     setRequestError(null);
+    fallbackRef.current?.reset();
+    setFallbackActive(false);
   }, [deviceId, cameraId]);
 
   const streamUrl = session && !manuallyStopped ? session.streamUrl : null;
@@ -293,6 +317,14 @@ export function useVideoSessionController(
         setWaitingForDevice(true);
         return;
       }
+      if (sessionStreamType === "main" && fallbackRef.current?.onMainSessionLost(Date.now())) {
+        // ADR-0046 §6: main was visibly failing this viewer right before it was lost (e.g. the
+        // relay closed it as stuck): reconnect on sub instead of looping on main.
+        // eslint-disable-next-line no-console
+        console.debug("[video:fallback] main lost while unhealthy - reconnecting on sub");
+        streamTypeRef.current = "sub";
+        setFallbackActive(true);
+      }
       reconnectAttemptsRef.current += 1;
       // eslint-disable-next-line no-console
       console.debug("[video:reconnect] attempting auto-recovery", {
@@ -359,6 +391,49 @@ export function useVideoSessionController(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [waitingForDevice, deviceId, cameraId]);
+
+  // Keeps the health sampler reading the current stall flag without restarting its interval.
+  const stalledRef = useRef(player.stalled);
+  stalledRef.current = player.stalled;
+
+  // ADR-0046 §6 — sample main-stream health once a second while this viewer watches main.
+  useEffect(() => {
+    if (player.state !== "connected" || sessionStreamType !== "main" || fallbackActive) return;
+    const fallback = fallbackRef.current;
+    if (!fallback) return;
+    fallback.onMainConnected(Date.now());
+    const timerId = window.setInterval(() => {
+      const shouldFallBack = fallback.sample(Date.now(), {
+        stalled: stalledRef.current,
+        bufferedAheadSeconds: bufferedAheadSeconds(videoRef.current),
+      });
+      if (shouldFallBack) {
+        // eslint-disable-next-line no-console
+        console.debug("[video:fallback] main unhealthy for this viewer - switching to sub", {
+          holdMs: fallback.currentHoldMs,
+        });
+        setFallbackActive(true);
+      }
+    }, HEALTH_SAMPLE_MS);
+    return () => window.clearInterval(timerId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player.state, sessionStreamType, fallbackActive, session]);
+
+  // ADR-0046 §6 — while fallen back and still wanting main, probe main once the hold expires.
+  useEffect(() => {
+    if (!fallbackActive || requestedStreamType !== "main") return;
+    const fallback = fallbackRef.current;
+    if (!fallback) return;
+    const timerId = window.setInterval(() => {
+      if (fallback.shouldProbeMain(Date.now())) {
+        // eslint-disable-next-line no-console
+        console.debug("[video:fallback] hold expired - probing main again");
+        fallback.onProbe(Date.now());
+        setFallbackActive(false);
+      }
+    }, FALLBACK_PROBE_CHECK_MS);
+    return () => window.clearInterval(timerId);
+  }, [fallbackActive, requestedStreamType]);
 
   // ADR-0043 — the requested stream changed while a session is open (a video-wall tile gained or
   // lost focus): replace that one session with one on the new stream. Same teardown path as
@@ -438,5 +513,16 @@ export function useVideoSessionController(
     phase === "stalled" ||
     phase === "deviceOffline";
 
-  return { phase, requestError, player, videoRef, canStart, canStop, start, stop };
+  return {
+    phase,
+    requestError,
+    player,
+    videoRef,
+    canStart,
+    canStop,
+    start,
+    stop,
+    effectiveStreamType: streamType,
+    fallbackActive: requestedStreamType === "main" && fallbackActive,
+  };
 }
