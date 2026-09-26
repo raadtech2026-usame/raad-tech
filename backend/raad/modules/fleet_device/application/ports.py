@@ -66,8 +66,9 @@ class CameraSignalStatePort(ABC):
     """Where the latest `CameraSignalReport` per device lives. Volatile, device-reported state
     shared by the worker (writes, from `DeviceVideoSignalStatusReported`) and the API (reads) -
     the ADR-0044 §2 Redis pattern, deliberately not a PostgreSQL column: it is a momentary fact
-    about the terminal, refreshed every few minutes while it is online, and an expired report must
-    read as "unknown", never as a stale certainty."""
+    about the terminal, refreshed on every reconnect and every few minutes while it is online. The
+    last report is kept across outages (physical installation rarely changes, and the first report
+    after a reconnect corrects it); only a long-silent terminal reads as "unknown"."""
 
     @abstractmethod
     async def save(self, device_id: str, report: CameraSignalReport) -> None:

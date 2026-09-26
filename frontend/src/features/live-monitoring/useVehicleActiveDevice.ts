@@ -1,6 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { getActiveDeviceDetails, getDeviceAssignmentForVehicle, type ActiveDevice } from "./api";
 
+const CAMERA_REFETCH_MS = 60_000;
+const UNKNOWN_CAMERA_REFETCH_MS = 10_000;
+
 export type VehicleActiveDeviceStatus = "idle" | "loading" | "no-assignment" | "ready" | "error";
 
 export interface UseVehicleActiveDeviceResult {
@@ -36,8 +39,13 @@ export function useVehicleActiveDevice(vehicleId: string): UseVehicleActiveDevic
     enabled: deviceId !== null,
     // ADR-0046: which channels have a camera is the terminal's own live report, so a camera
     // plugged in later appears (and one unplugged disappears) without a page reload. Unchanged
-    // data keeps its object identity, so the video wall does not remount its tiles.
-    refetchInterval: 60_000,
+    // data keeps its object identity, so the video wall does not remount its tiles. While any
+    // camera is still "unknown" (a terminal that has never reported yet) the report arrives
+    // within ~20 s of it connecting, so re-check sooner than the normal minute.
+    refetchInterval: (query) =>
+      query.state.data?.cameras.some((camera) => (camera.videoSignal ?? "unknown") === "unknown")
+        ? UNKNOWN_CAMERA_REFETCH_MS
+        : CAMERA_REFETCH_MS,
   });
 
   if (vehicleId === "") {

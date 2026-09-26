@@ -256,6 +256,44 @@ class StopStartOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(publisher.kinds(), ["stop:1:av0"])
 
 
+class ActivationTests(unittest.IsolatedAsyncioTestCase):
+    """C4 (audit 2026-09-26): a session joining a stream that its own request restarts must not
+    be reported active before the new generation delivers a frame."""
+
+    async def test_joining_a_stream_that_restarts_is_not_active_until_the_new_generation_delivers(self) -> None:
+        manager, publisher = _manager()
+        _live(manager, "SUB", stream_type=StreamType.SUB)
+        await _connect(manager)
+        main = _live(manager, "MAIN", stream_type=StreamType.MAIN)  # upgrade -> restart
+        await manager.flush()
+        self.assertEqual(main.state, VideoSessionState.REQUESTED)
+        activated = [e.session_id for e in publisher.published if isinstance(e, VideoSessionActivated)]
+        self.assertEqual(activated, ["SUB"])
+        await _connect(manager)  # generation 2 delivers
+        self.assertEqual(main.state, VideoSessionState.ACTIVE)
+        activated = [e.session_id for e in publisher.published if isinstance(e, VideoSessionActivated)]
+        self.assertEqual(activated, ["SUB", "MAIN"])
+
+    async def test_a_restart_that_never_delivers_fails_the_joining_session(self) -> None:
+        clock = FakeClock()
+        manager, publisher = _manager(clock=clock)
+        _live(manager, "SUB", stream_type=StreamType.SUB)
+        await _connect(manager)
+        _live(manager, "MAIN", stream_type=StreamType.MAIN)
+        clock.now += 31
+        await manager.sweep_idle_sessions()
+        outcomes = {e.session_id: type(e).__name__ for e in publisher.published if isinstance(e, (VideoSessionEnded, VideoSessionFailed))}
+        self.assertEqual(outcomes, {"SUB": "VideoSessionEnded", "MAIN": "VideoSessionFailed"})
+
+    async def test_joining_a_stream_already_on_the_right_profile_is_active_at_once(self) -> None:
+        manager, _ = _manager()
+        _live(manager, "A", stream_type=StreamType.MAIN)
+        await _connect(manager)
+        b = _live(manager, "B", stream_type=StreamType.SUB)
+        await manager.flush()
+        self.assertEqual(b.state, VideoSessionState.ACTIVE)
+
+
 class StreamTypeTests(unittest.IsolatedAsyncioTestCase):
     """One live stream per channel; it runs main if any session wants main (ADR-0046 §2)."""
 

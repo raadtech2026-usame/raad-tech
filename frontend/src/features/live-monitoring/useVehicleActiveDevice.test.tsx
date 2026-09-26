@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
 vi.mock("./api", () => ({
@@ -66,5 +66,34 @@ describe("useVehicleActiveDevice", () => {
 
     await waitFor(() => expect(result.current.status).toBe("error"));
     expect(result.current.device).toBeNull();
+  });
+
+  describe("camera presence refresh (ADR-0046, audit C3)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function detailCallsAfter(cameras: typeof DEVICE.cameras, ms: number): Promise<number> {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.mocked(getDeviceAssignmentForVehicle).mockResolvedValue({ deviceId: DEVICE.id });
+      vi.mocked(getActiveDeviceDetails).mockResolvedValue({ ...DEVICE, cameras });
+      const { result } = renderHook(() => useVehicleActiveDevice("vehicle-1"), { wrapper });
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      const before = vi.mocked(getActiveDeviceDetails).mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+      return vi.mocked(getActiveDeviceDetails).mock.calls.length - before;
+    }
+
+    it("re-checks within about 10 s while a camera is still unknown (terminal not reported yet)", async () => {
+      const unknown = [{ ...DEVICE.cameras[0], videoSignal: "unknown" as const }];
+      expect(await detailCallsAfter(unknown, 10_500)).toBeGreaterThanOrEqual(1);
+    });
+
+    it("keeps the normal one-minute refresh once every camera is known", async () => {
+      const known = [{ ...DEVICE.cameras[0], videoSignal: "present" as const }];
+      expect(await detailCallsAfter(known, 10_500)).toBe(0);
+    });
   });
 });

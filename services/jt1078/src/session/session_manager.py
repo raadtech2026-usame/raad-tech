@@ -232,10 +232,14 @@ class SessionManager:
         stream.session_ids.add(session.session_id)
         self._sessions[session.session_id] = session
         self._on_session_created(session)
-        if stream.state == DeviceStreamState.ACTIVE:
-            # Joining a stream that is already delivering: this session has media right away.
-            self._activate_session(session)
+        # Reconcile first: this session may change what the stream must run (e.g. it wants main
+        # on a sub stream), which restarts it. Only a stream still delivering after that gives
+        # this session media right away; a restarting one activates it on the new generation's
+        # first frame (`mark_stream_active`). Activating before the reconcile marked a session
+        # active that never received a byte (production, 2026-09-26 14:56:13).
         self._reconcile(stream)
+        if stream.state == DeviceStreamState.ACTIVE:
+            self._activate_session(session)
         self._schedule_flush()
         log_with_fields(
             logger,

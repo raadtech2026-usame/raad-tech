@@ -246,3 +246,13 @@ class RedisAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_ids_no_round_trip(self) -> None:
         self.assertEqual(await RedisCameraSignalStatePort(FakeRedis()).get_many([]), {})
+
+
+class RetentionTests(unittest.TestCase):
+    def test_the_last_report_survives_an_ordinary_outage(self) -> None:
+        """Audit C3 (2026-09-26): a 30-minute TTL turned a terminal back from a longer outage into
+        four "unknown" cameras until its first report. Installation changes are corrected by the
+        report the gateway publishes on every reconnect, so the last one is kept for 30 days."""
+        from raad.modules.fleet_device.infra.adapters import DEFAULT_CAMERA_SIGNAL_TTL_SECONDS
+
+        self.assertEqual(DEFAULT_CAMERA_SIGNAL_TTL_SECONDS, 30 * 24 * 60 * 60)

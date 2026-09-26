@@ -1612,7 +1612,7 @@ has the evidence and the design; what a future change must not undo:
   uses `0x9102` close type 2 ("video only"). Close type 0 closes all audio of the channel and killed
   a running intercom in production.
 - **Camera presence is the terminal's own report** (`0x0200` item `0x15`, video signal loss per
-  channel), stored in Redis with a TTL (`fleet_device.CameraSignalStatePort`, the ADR-0044 pattern),
+  channel), kept in Redis for 30 days so it survives outages (`fleet_device.CameraSignalStatePort`, the ADR-0044 pattern),
   exposed as `CameraDTO.video_signal`. The channel count from `0x1003` says how many inputs exist,
   not how many cameras: this terminal has cameras on ch1 and ch3 only. `POST /video/live` refuses an
   `absent` camera (409 `CAMERA_NOT_CONNECTED`); intercom and playback are not gated.

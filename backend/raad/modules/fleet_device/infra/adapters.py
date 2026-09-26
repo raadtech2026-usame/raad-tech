@@ -3,9 +3,12 @@ Redis with a TTL (ADR-0046 §1).
 
 Mirrors `video.infra.recording_search.RedisRecordingSearchResultPort` (ADR-0044 §2): one JSON
 string per key, the shared `decode_responses=True` cache client, keys namespaced by purpose. The
-TTL is longer than the device-gateway's refresh interval (5 minutes), so the report never lapses
-while the terminal is online, and an offline terminal's report expires to "unknown" instead of
-being shown as current.
+TTL is long (30 days): which channels have a camera is physical installation, so the last report
+is the best answer while the terminal is away, and the gateway publishes a fresh one on the first
+position report of every new connection (~20 s after it comes back), which corrects any change made
+while it was offline. A 30-minute TTL (the first version) meant a terminal back from a longer outage
+showed every channel as "unknown" - all four tiles, streams on the channels with no camera - until
+that first report (production, 2026-09-26 14:45:17). A terminal silent for 30 days reads "unknown".
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from redis.asyncio import Redis
 
 from raad.modules.fleet_device.application.ports import CameraSignalReport, CameraSignalStatePort
 
-DEFAULT_CAMERA_SIGNAL_TTL_SECONDS = 30 * 60
+DEFAULT_CAMERA_SIGNAL_TTL_SECONDS = 30 * 24 * 60 * 60
 
 
 def _key(device_id: str) -> str:

@@ -56,10 +56,12 @@ bit *n−1* is set when logical channel *n* has lost its video signal. Captured 
   `DeviceVideoSignalStatusReported` (loss mask, occlusion mask `0x16`) when the mask changes, on the
   first report of a connection, and at most every 5 minutes otherwise.
 - `fleet_device` stores the latest report per device in Redis (`CameraSignalStatePort`, the
-  ADR-0044 §2 pattern for device-reported, volatile state shared by worker and API), with a 30-minute
-  TTL. **No schema change.**
-- Every `CameraDTO` carries `video_signal`: `present`, `absent` or `unknown` (no report, or the
-  report expired). `unknown` behaves exactly as before this ADR.
+  ADR-0044 §2 pattern for device-reported, volatile state shared by worker and API), kept for 30 days: the
+  last report stays the answer across outages and the first report after a reconnect corrects it
+  (amended 2026-09-26 after a 30-minute TTL showed all four channels as `unknown` when the terminal
+  came back from a long outage). **No schema change.**
+- Every `CameraDTO` carries `video_signal`: `present`, `absent` or `unknown` (no report yet, or
+  none for 30 days). The web view re-checks every 10 s while any camera is `unknown`. `unknown` behaves exactly as before this ADR.
 - `POST /video/live` refuses a camera whose signal is `absent` (409 `CAMERA_NOT_CONNECTED`) before
   any relay or device call, so hiding a tile is never the only protection. Intercom and playback
   are not gated: audio does not depend on the video input, and recordings predate the loss.

@@ -124,8 +124,8 @@ def _general_response(message: InboundMessage, result: int) -> HandlerResult:
     )
 
 
-#: ADR-0046 §1: republish an unchanged video-signal mask at most this often, so the backend's
-#: time-limited copy (30 minutes) never lapses while the terminal is online.
+#: ADR-0046 §1: republish an unchanged video-signal mask at most this often, keeping the backend's
+#: copy (`reported_at`) fresh while the terminal is online.
 VIDEO_SIGNAL_REFRESH_SECONDS = 300.0
 
 
