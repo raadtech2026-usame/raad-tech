@@ -12,6 +12,8 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from raad.core.errors.envelope import ErrorDetail, ErrorEnvelope
@@ -65,6 +67,40 @@ def resolve_status(exc: AppError) -> int:
     return 500
 
 
+# PostgreSQL SQLSTATEs a constraint can raise, and what each one means to the caller. Anything
+# else from `IntegrityError` (a NOT NULL on a column the code should always fill, an exclusion
+# constraint) is a genuine server fault and keeps the 500 path.
+_UNIQUE_VIOLATION = "23505"
+_FOREIGN_KEY_VIOLATION = "23503"
+_CHECK_VIOLATION = "23514"
+
+
+def _sqlstate(exc: IntegrityError) -> str | None:
+    orig = exc.orig
+    state = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    if state is None and orig is not None:
+        state = getattr(orig.__cause__, "sqlstate", None)
+    return state
+
+
+def resolve_integrity_error(exc: IntegrityError) -> tuple[int, str, str] | None:
+    """Maps a constraint violation to `(status, code, message)`, or `None` to keep it a 500.
+
+    The message never echoes the constraint or column name: those are schema internals, and
+    the caller's remedy is the same either way.
+    """
+    state = _sqlstate(exc)
+    if state == _UNIQUE_VIOLATION:
+        return 409, ConflictError.code, (
+            "This conflicts with a record that already exists. Reload and try again."
+        )
+    if state == _FOREIGN_KEY_VIOLATION:
+        return 422, ValidationError.code, "The request refers to a record that does not exist."
+    if state == _CHECK_VIOLATION:
+        return 422, ValidationError.code, "The request breaks a data rule for this record."
+    return None
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Registers the global handlers on the given FastAPI app. Called once from
     `main.create_app`."""
@@ -88,6 +124,55 @@ def register_exception_handlers(app: FastAPI) -> None:
                 reason=getattr(exc, "reason", None),
                 required_action=getattr(exc, "required_action", None),
             )
+        )
+        return JSONResponse(status_code=status_code, content=envelope.model_dump())
+
+    @app.exception_handler(StaleDataError)
+    async def handle_stale_data(request: Request, exc: StaleDataError) -> JSONResponse:
+        """Optimistic-lock loss (`row_version`): another request changed the same row between
+        this request's read and its write, and the write was refused.
+
+        It is the loser of a race, not a fault — the Unit of Work has already rolled the whole
+        transaction back, so nothing this request did was kept. Before this handler it fell
+        through to the 500 default (Known Issue #16), which told the client to retry unchanged
+        and paged an on-call; the canonical case is two payments recorded on one Parent Invoice
+        at the same moment.
+        """
+        correlation_id = correlation_id_var.get()
+        logger.info("concurrent_modification_refused", extra={"correlation_id": correlation_id})
+        envelope = ErrorEnvelope(
+            error=ErrorDetail(
+                code=ConflictError.code,
+                message=(
+                    "This record was changed by another request at the same time. "
+                    "Reload it and try again."
+                ),
+                correlation_id=correlation_id,
+            )
+        )
+        return JSONResponse(status_code=409, content=envelope.model_dump())
+
+    @app.exception_handler(IntegrityError)
+    async def handle_integrity_error(request: Request, exc: IntegrityError) -> JSONResponse:
+        """A database constraint refused the write (Known Issue #16). The constraint did its
+        job and the transaction was rolled back; only the status the caller sees changes."""
+        correlation_id = correlation_id_var.get()
+        mapped = resolve_integrity_error(exc)
+        if mapped is None:
+            logger.error(
+                "unhandled_integrity_error",
+                extra={"correlation_id": correlation_id},
+                exc_info=exc,
+            )
+            status_code, code, message = 500, "INTERNAL_ERROR", "An unexpected error occurred."
+        else:
+            status_code, code, message = mapped
+            logger.info(
+                "constraint_violation_refused",
+                extra={"correlation_id": correlation_id, "sqlstate": _sqlstate(exc)},
+            )
+        envelope = ErrorEnvelope(
+            error=ErrorDetail(code=code, message=message, correlation_id=correlation_id)
         )
         return JSONResponse(status_code=status_code, content=envelope.model_dump())
 
