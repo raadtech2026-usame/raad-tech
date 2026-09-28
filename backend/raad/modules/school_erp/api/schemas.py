@@ -252,6 +252,16 @@ class RecordIncomeRequest(_MoneyValidatingModel):
     occurred_on: date
     description: str | None = Field(default=None, max_length=500)
     reference: str | None = Field(default=None, max_length=120)
+    income_type: str = Field(
+        default="other",
+        pattern="^(daily_vehicle|other)$",
+        description=(
+            "`daily_vehicle` — one bus's collection on one day (`vehicle_id` required). "
+            "`other` — any other income, optionally attributed to a bus. Student fees are never "
+            "recorded here: they come from recorded parent payments."
+        ),
+    )
+    vehicle_id: str | None = Field(default=None, description="The bus this income belongs to.")
 
 
 class RecordExpenseRequest(_MoneyValidatingModel):
@@ -288,6 +298,8 @@ class IncomeResponse(BaseModel):
     is_voided: bool
     voided_reason: str | None
     created_at: datetime
+    income_type: str
+    vehicle_id: str | None
 
 
 class ExpenseResponse(BaseModel):
@@ -322,12 +334,12 @@ class FinanceSummaryResponse(BaseModel):
 class VehicleFinanceResponse(BaseModel):
     vehicle_id: str | None
     student_count: int
-    invoice_count: int
     billed_amount: str
-    collected_amount: str
     outstanding_amount: str
-    paid_student_count: int
-    unpaid_student_count: int
+    student_income: str
+    daily_income: str
+    other_income: str
+    total_income: str
     expense_amount: str
     net_amount: str
     currency: str
@@ -337,6 +349,7 @@ class ProfitAndLossResponse(BaseModel):
     start: date
     end: date
     student_revenue: str
+    daily_vehicle_income: str
     other_income: str
     total_income: str
     total_expenses: str
@@ -420,20 +433,11 @@ class GenerateParentInvoicesRequest(BaseModel):
     period: PeriodStr
 
 
-class SetParentInvoicePaymentStatusRequest(_MoneyValidatingModel):
-    """The entire user-facing payment workflow (the directive's Part 9). `status=paid` resolves
-    `amount_paid` to the full invoice total regardless of what (if anything) is supplied;
-    `status=unpaid` forces it to zero; `status=partial` requires `amount_paid` strictly between
-    zero and the total."""
-
-    MONEY_FIELDS: ClassVar[tuple[str, ...]] = ("amount_paid",)
-
-    status: str = Field(pattern="^(unpaid|partial|paid)$")
-    amount_paid: MoneyStr | None = None
-
-
 class CancelParentInvoiceRequest(BaseModel):
-    reason: str | None = Field(default=None, max_length=255)
+    """Cancelling removes a bill from every total, so the reason is required (the P0.4
+    standard for anything that makes money disappear from the books)."""
+
+    reason: str = Field(min_length=1, max_length=255)
 
 
 class ParentInvoiceLineResponse(BaseModel):
@@ -442,6 +446,9 @@ class ParentInvoiceLineResponse(BaseModel):
     amount: str
     vehicle_id: str | None
     route_id: str | None
+    line_id: str
+    amount_paid: str
+    balance_due: str
 
 
 class ParentInvoiceSummaryResponse(BaseModel):
@@ -476,3 +483,158 @@ class ParentInvoiceDetailResponse(BaseModel):
     due_date: str
     notes: str | None
     lines: list[ParentInvoiceLineResponse]
+
+
+# ---- ParentPayment / student finance / vehicle report (ADR-0047) ---------------------------
+
+
+class PaymentAllocationItem(_MoneyValidatingModel):
+    MONEY_FIELDS: ClassVar[tuple[str, ...]] = ("amount",)
+
+    student_id: str
+    amount: MoneyStr
+
+
+class RecordParentPaymentRequest(_MoneyValidatingModel):
+    """Money received against one Parent Invoice. Omit `allocations` to split it across the
+    students pro-rata to what each still owes; to pay for one student, send only that student.
+    Allocations must add up to `amount`. Resending the same `idempotency_key` returns the first
+    payment instead of recording a second one."""
+
+    MONEY_FIELDS: ClassVar[tuple[str, ...]] = ("amount",)
+
+    amount: MoneyStr
+    currency: CurrencyStr
+    method: str = Field(pattern="^(cash|bank_transfer|mobile_money|cheque|card|other)$")
+    received_on: date
+    reference: str | None = Field(default=None, max_length=120)
+    notes: str | None = Field(default=None, max_length=500)
+    allocations: list[PaymentAllocationItem] | None = None
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=64)
+
+
+class VoidParentPaymentRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=255)
+
+
+class ParentPaymentAllocationResponse(BaseModel):
+    student_id: str
+    full_name: str
+    amount: str
+    vehicle_id: str | None
+
+
+class ParentPaymentResponse(BaseModel):
+    id: str
+    parent_id: str
+    invoice_id: str
+    invoice_number: str
+    period: str
+    amount: str
+    currency: str
+    method: str
+    reference: str | None
+    received_on: date
+    notes: str | None
+    is_voided: bool
+    voided_reason: str | None
+    created_at: datetime
+    allocations: list[ParentPaymentAllocationResponse]
+
+
+class StudentChargeResponse(BaseModel):
+    invoice_id: str
+    invoice_number: str
+    line_id: str
+    period: str
+    parent_id: str
+    parent_name: str
+    amount: str
+    amount_paid: str
+    balance_due: str
+    invoice_status: str
+    due_date: str
+    vehicle_id: str | None
+    currency: str
+
+
+class StudentPaymentEntryResponse(BaseModel):
+    payment_id: str
+    invoice_id: str
+    invoice_number: str
+    period: str
+    received_on: date
+    method: str
+    reference: str | None
+    amount: str
+    payment_total: str
+    currency: str
+    is_voided: bool
+    voided_reason: str | None
+
+
+class StudentParentResponse(BaseModel):
+    parent_id: str
+    full_name: str
+    is_primary: bool
+
+
+class StudentFinanceResponse(BaseModel):
+    student_id: str
+    full_name: str
+    status: str
+    parents: list[StudentParentResponse]
+    currency: str
+    total_charged: str
+    total_paid: str
+    balance_due: str
+    charges: list[StudentChargeResponse]
+    payments: list[StudentPaymentEntryResponse]
+    legacy_invoices: list[StudentInvoiceResponse]
+    legacy_payments: list[StudentPaymentResponse]
+
+
+class VehicleStudentIncomeResponse(BaseModel):
+    student_id: str
+    full_name: str
+    parent_id: str
+    parent_name: str
+    amount: str
+
+
+class VehicleParentIncomeResponse(BaseModel):
+    parent_id: str
+    full_name: str
+    amount: str
+
+
+class VehicleFinanceReportResponse(BaseModel):
+    vehicle_id: str
+    start: date
+    end: date
+    currency: str
+    student_income: str
+    daily_income: str
+    other_income: str
+    total_income: str
+    total_expenses: str
+    net_amount: str
+    billed_amount: str
+    outstanding_amount: str
+    income_by_student: list[VehicleStudentIncomeResponse]
+    income_by_parent: list[VehicleParentIncomeResponse]
+    daily_entries: list[IncomeResponse]
+    other_entries: list[IncomeResponse]
+    #: Keyed by category id; `""` holds uncategorised expenses.
+    expenses_by_category: dict[str, str]
+    expense_entries: list[ExpenseResponse]
+
+
+class MyInvoicesResponse(BaseModel):
+    parent_id: str
+    currency: str
+    total_due: str
+    total_paid: str
+    balance_due: str
+    invoices: list[ParentInvoiceDetailResponse]
+    payments: list[ParentPaymentResponse]

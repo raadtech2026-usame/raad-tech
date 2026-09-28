@@ -8,9 +8,8 @@ real database can prove, and all three carry money:
      `test_school_erp_repository.py` already exists to protect for the other six.
   2. **`NUMERIC(12,2)` round-trips as an exact `Decimal`**, including the child-line amounts an
      equal split produces (`33.34`/`33.33`/`33.33` for a $100 total across three children).
-  3. **`summarise_by_vehicle`'s pro-rata collected-share allocation** — hand-written SQL
-     (`line.amount * invoice.amount_paid / invoice.amount`) that no fake can verify, since it
-     depends on PostgreSQL's own decimal division and `GREATEST`/`NULLIF` clamping.
+  3. **`summarise_lines_by_vehicle_between`** (ADR-0047) — billed and outstanding per line
+     vehicle, from each line's own `amount_paid`, with `GREATEST` clamping only real SQL shows.
 
 Every test cleans up the rows it created (lines before invoices, invoices before profiles),
 leaving the schema exactly as found.
@@ -33,7 +32,12 @@ from raad.core.ids.generator import UlidGenerator
 from raad.core.pagination import OffsetPageRequest
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.core.time.clock import SystemClock
-from raad.modules.school_erp.domain.entities import BilledChild, ParentBillingProfile, ParentInvoice
+from raad.modules.school_erp.domain.entities import (
+    BilledChild,
+    LineAllocation,
+    ParentBillingProfile,
+    ParentInvoice,
+)
 from raad.modules.school_erp.domain.value_objects import (
     BillingPeriod,
     Money,
@@ -76,6 +80,17 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         async with self.engine.begin() as conn:
             if self._invoice_ids:
+                await conn.execute(
+                    text(
+                        "DELETE FROM erp_parent_payment_allocations WHERE parent_payment_id IN "
+                        "(SELECT id FROM erp_parent_payments WHERE parent_invoice_id = ANY(:ids))"
+                    ),
+                    {"ids": self._invoice_ids},
+                )
+                await conn.execute(
+                    text("DELETE FROM erp_parent_payments WHERE parent_invoice_id = ANY(:ids)"),
+                    {"ids": self._invoice_ids},
+                )
                 await conn.execute(
                     text("DELETE FROM erp_parent_invoice_lines WHERE parent_invoice_id = ANY(:ids)"),
                     {"ids": self._invoice_ids},
@@ -222,10 +237,9 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
     # -- Vehicle Financial Overview -------------------------------------------------------------
 
-    async def test_summarise_by_vehicle_prorates_the_collected_share(self) -> None:
-        """One invoice, two lines on the same bus, 60% collected — each line's collected share
-        must be its own 60% (`GREATEST`/`NULLIF`-safe SQL division), not the invoice's raw
-        `amount_paid` double-counted onto both lines."""
+    async def test_lines_by_vehicle_use_each_students_own_paid_amount(self) -> None:
+        """Two students on one bus, one fully paid and one not: the bus's outstanding figure is
+        the unpaid student's balance, read from the lines themselves (ADR-0047 §2)."""
         student_a, student_b = self.id_generator.new_id(), self.id_generator.new_id()
         children = [
             BilledChild(line_id=self.id_generator.new_id(), student_id=student_a, vehicle_id="BUS0000000000000000000009"),
@@ -236,22 +250,32 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         )
         async with self._uow(self.org_a) as uow:
             fetched = await uow.parent_invoices.get(invoice.id)
-            fetched.set_payment_status(
-                status=ParentInvoiceStatus.PARTIAL, amount_paid=Decimal("60.00"), clock=self.clock
+            line_a = next(l for l in fetched.lines if str(l.student_id) == student_a)
+            fetched.apply_payment(
+                payment_id="not-persisted-here",
+                allocations=[LineAllocation(line_id=str(line_a.id), amount=Decimal("50.00"))],
+                currency="USD",
+                clock=self.clock,
             )
             uow.record_events(fetched.pull_domain_events())
             await uow.commit()
 
+        today = self.clock.now().date()
         async with self._uow(self.org_a) as uow:
-            summaries = await uow.parent_invoices.summarise_by_vehicle(
-                period=BillingPeriod("2026-09")
+            summaries = await uow.parent_invoices.summarise_lines_by_vehicle_between(
+                start=today, end=today
             )
+            reloaded = await uow.parent_invoices.get(invoice.id)
 
         row = next(s for s in summaries if s.vehicle_id == "BUS0000000000000000000009")
         self.assertEqual(row.billed_amount, Decimal("100.00"))
-        self.assertEqual(row.collected_amount, Decimal("60.00"))
-        self.assertEqual(row.outstanding_amount, Decimal("40.00"))
+        self.assertEqual(row.outstanding_amount, Decimal("50.00"))
         self.assertEqual(row.student_count, 2)
+        self.assertIs(reloaded.status, ParentInvoiceStatus.PARTIAL)
+        self.assertEqual(
+            {str(l.student_id): l.amount_paid for l in reloaded.lines},
+            {student_a: Decimal("50.00"), student_b: Decimal("0.00")},
+        )
 
     # -- Currency guard (finance P0.5) ----------------------------------------------------------
 

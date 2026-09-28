@@ -210,6 +210,12 @@ class WorkerSettings(BaseModel):
     # "recommend 90 days, configurable"
     vehicle_position_retention_job_interval_seconds: float = 3600.0
     subscription_sweep_interval_seconds: float = 3600.0
+    #: ADR-0047 §9 — whether the worker generates each month's Parent Invoices by itself
+    #: (`RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES`). Off by default: switching it on starts
+    #: billing families without anyone pressing a button, so it is an explicit per-deployment
+    #: decision, never an upgrade side effect. The manual "Generate monthly invoices" action
+    #: works either way, and both share the same idempotency guard.
+    auto_generate_parent_invoices: bool = False
     #: ADR-0039 §1 — how long an organization keeps working after its billing period ends with
     #: an unpaid invoice, before it is suspended. Seven days is a deliberate product choice, not
     #: a number any document supplies: RAAD's customers are schools whose users are tracking

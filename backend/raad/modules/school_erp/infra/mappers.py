@@ -28,6 +28,8 @@ from raad.modules.school_erp.domain.entities import (
     ParentBillingProfile,
     ParentInvoice,
     ParentInvoiceLine,
+    ParentPayment,
+    ParentPaymentAllocation,
     StudentInvoice,
     StudentPayment,
 )
@@ -41,6 +43,7 @@ from raad.modules.school_erp.domain.value_objects import (
     FeePlanStatus,
     FinancialCategoryId,
     IncomeId,
+    IncomeType,
     Money,
     OrganizationId,
     ParentBillingProfileId,
@@ -49,6 +52,8 @@ from raad.modules.school_erp.domain.value_objects import (
     ParentInvoiceId,
     ParentInvoiceLineId,
     ParentInvoiceStatus,
+    ParentPaymentAllocationId,
+    ParentPaymentId,
     RouteId,
     StudentId,
     StudentInvoiceId,
@@ -65,6 +70,8 @@ from raad.modules.school_erp.infra.models import (
     ParentBillingProfileModel,
     ParentInvoiceLineModel,
     ParentInvoiceModel,
+    ParentPaymentAllocationModel,
+    ParentPaymentModel,
     StudentInvoiceModel,
     StudentPaymentModel,
 )
@@ -296,6 +303,8 @@ def income_to_model(income: Income, *, existing: IncomeModel | None = None) -> I
     model.attachment_url = income.attachment_url
     model.is_voided = income.is_voided
     model.voided_reason = income.voided_reason
+    model.income_type = income.income_type.value
+    model.vehicle_id = str(income.vehicle_id) if income.vehicle_id else None
     model.created_at = _to_naive_utc(income.created_at)
     model.updated_at = _to_naive_utc(income.updated_at)
     return model
@@ -315,6 +324,8 @@ def model_to_income(model: IncomeModel) -> Income:
         voided_reason=model.voided_reason,
         created_at=model.created_at,
         updated_at=model.updated_at,
+        income_type=IncomeType(model.income_type or IncomeType.OTHER.value),
+        vehicle_id=VehicleId(_char(model.vehicle_id)) if model.vehicle_id else None,
     )
 
 
@@ -406,6 +417,7 @@ def _parent_invoice_line_to_model(
     model.vehicle_id = str(line.vehicle_id) if line.vehicle_id else None
     model.route_id = str(line.route_id) if line.route_id else None
     model.amount = line.amount.amount
+    model.amount_paid = line.amount_paid
     return model
 
 
@@ -416,6 +428,7 @@ def _model_to_parent_invoice_line(model: ParentInvoiceLineModel, *, currency: st
         amount=Money(amount=_dec(model.amount), currency=currency),
         vehicle_id=VehicleId(_char(model.vehicle_id)) if model.vehicle_id else None,
         route_id=RouteId(_char(model.route_id)) if model.route_id else None,
+        amount_paid=_dec(model.amount_paid),
     )
 
 
@@ -483,4 +496,78 @@ def model_to_parent_invoice(model: ParentInvoiceModel) -> ParentInvoice:
         created_at=model.created_at,
         updated_at=model.updated_at,
         lines=[_model_to_parent_invoice_line(row, currency=currency) for row in model.lines],
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# ParentPayment (ADR-0047)
+# --------------------------------------------------------------------------------------------
+
+
+def parent_payment_to_model(
+    payment: ParentPayment, *, existing: ParentPaymentModel | None = None
+) -> ParentPaymentModel:
+    """Allocations are immutable once recorded — a payment is voided as a whole, never
+    re-split — so only new allocation rows are ever appended here."""
+    model = existing if existing is not None else ParentPaymentModel(id=str(payment.id))
+    model.organization_id = str(payment.organization_id)
+    model.parent_id = str(payment.parent_id)
+    model.parent_invoice_id = str(payment.invoice_id)
+    model.amount = payment.amount.amount
+    model.currency = payment.amount.currency
+    model.method = payment.method.value
+    model.reference = payment.reference
+    model.received_on = payment.received_on
+    model.notes = payment.notes
+    model.is_voided = payment.is_voided
+    model.voided_reason = payment.voided_reason
+    model.idempotency_key = payment.idempotency_key
+    model.created_at = _to_naive_utc(payment.created_at)
+    model.updated_at = _to_naive_utc(payment.updated_at)
+
+    existing_ids = {row.id for row in model.allocations}
+    for allocation in payment.allocations:
+        if str(allocation.id) in existing_ids:
+            continue
+        model.allocations.append(
+            ParentPaymentAllocationModel(
+                id=str(allocation.id),
+                organization_id=str(payment.organization_id),
+                parent_payment_id=str(payment.id),
+                parent_invoice_line_id=str(allocation.line_id),
+                student_id=str(allocation.student_id),
+                vehicle_id=str(allocation.vehicle_id) if allocation.vehicle_id else None,
+                amount=allocation.amount.amount,
+            )
+        )
+    return model
+
+
+def model_to_parent_payment(model: ParentPaymentModel) -> ParentPayment:
+    currency = _char(model.currency)
+    return ParentPayment(
+        id=ParentPaymentId(_char(model.id)),
+        organization_id=OrganizationId(_char(model.organization_id)),
+        parent_id=ParentId(_char(model.parent_id)),
+        invoice_id=ParentInvoiceId(_char(model.parent_invoice_id)),
+        amount=Money(amount=_dec(model.amount), currency=currency),
+        method=StudentPaymentMethod(model.method),
+        reference=model.reference,
+        received_on=model.received_on,
+        notes=model.notes,
+        is_voided=model.is_voided,
+        voided_reason=model.voided_reason,
+        idempotency_key=model.idempotency_key,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        allocations=[
+            ParentPaymentAllocation(
+                id=ParentPaymentAllocationId(_char(row.id)),
+                line_id=ParentInvoiceLineId(_char(row.parent_invoice_line_id)),
+                student_id=StudentId(_char(row.student_id)),
+                amount=Money(amount=_dec(row.amount), currency=currency),
+                vehicle_id=VehicleId(_char(row.vehicle_id)) if row.vehicle_id else None,
+            )
+            for row in model.allocations
+        ],
     )

@@ -45,8 +45,13 @@ from raad.core.workers.base import Worker
 from raad.core.workers.health import WorkerHealthRegistry
 from raad.core.workers.lifecycle import WorkerLifecycle
 from raad.core.workers.scheduler import IntervalScheduler, LockPort, ScheduledJob
+from raad.core.tenancy.principal import SYSTEM_PRINCIPAL
 from raad.modules.school_erp.application.ports import SchoolErpUnitOfWork
-from raad.modules.school_erp.application.services import SchoolErpApplicationService
+from raad.modules.school_erp.application.services import (
+    ParentFinanceApplicationService,
+    SchoolErpApplicationService,
+)
+from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.interfaces.workers.notification_worker import NotificationWorker
 from raad.interfaces.workers.outbox_relay import OutboxRelayWorker
 from raad.interfaces.workers.report_worker import ReportWorker
@@ -197,6 +202,37 @@ def _register_scheduled_jobs(
             _body,
         )
 
+    async def generate_monthly_parent_invoices() -> None:
+        """ADR-0047 §9 — issues the current month's Parent Invoices for every organization with
+        an active Billing Profile due for it. Registered only when
+        `RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES=true`.
+
+        Runs every sweep interval, not once a month: it is idempotent through the same unique
+        index as the manual button (`ux_erp_parent_invoices__org_parent_period`), so every tick
+        after the first in a month issues nothing, and a worker that was down on the 1st still
+        bills the month when it comes back. The period comes from the injected `Clock` (UTC).
+        """
+
+        async def _body() -> None:
+            service = container.resolve(ParentFinanceApplicationService)
+            period = container.resolve(Clock).now().strftime("%Y-%m")
+            issued = await service.generate_parent_invoices_for_all_organizations(
+                period=period,
+                actor=SYSTEM_PRINCIPAL,
+                school_erp_uow=container.resolve(SchoolErpUnitOfWork),
+                transport_ops_uow=container.resolve(TransportOpsUnitOfWork),
+            )
+            if issued:
+                logger.info(
+                    "parent_invoices_generated", extra={"count": issued, "period": period}
+                )
+
+        await _with_lock(
+            "generate_monthly_parent_invoices",
+            int(settings.workers.subscription_sweep_interval_seconds),
+            _body,
+        )
+
     async def reconcile_expired_payments() -> None:
         async def _body() -> None:
             service = container.resolve(BillingApplicationService)
@@ -241,6 +277,14 @@ def _register_scheduled_jobs(
             handler=mark_overdue_student_invoices,
         )
     )
+    if settings.workers.auto_generate_parent_invoices:
+        scheduler.register(
+            ScheduledJob(
+                name="generate_monthly_parent_invoices",
+                interval_seconds=settings.workers.subscription_sweep_interval_seconds,
+                handler=generate_monthly_parent_invoices,
+            )
+        )
     scheduler.register(
         ScheduledJob(
             name="reconcile_expired_payments",

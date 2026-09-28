@@ -12,7 +12,7 @@ fixture-driven stand-ins, not real instances — this service only calls their p
 never a grouping of per-student rows. Tests below prove: one invoice regardless of child count,
 an equal-split allocation that always sums back to the family total, idempotent monthly
 generation, a frozen historical amount that a later fee change cannot rewrite, the exact
-Unpaid/Partial/Paid payment-status contract, and that one family's data never leaks into
+ADR-0047 payment ledger (allocation, over/duplicate-payment guards, void reversal), and that one family's data never leaks into
 another's summary or listing.
 """
 
@@ -24,6 +24,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from raad.core.errors.exceptions import (
+    AuthorizationError,
     ConflictError,
     DomainError,
     NotFoundError,
@@ -38,7 +39,9 @@ from raad.modules.school_erp.application.commands import (
     CreateOrUpdateParentBillingProfileCommand,
     GenerateParentInvoicesCommand,
     SetParentBillingProfileStatusCommand,
-    SetParentInvoicePaymentStatusCommand,
+    PaymentAllocationRequest,
+    RecordParentPaymentCommand,
+    VoidParentPaymentCommand,
 )
 from raad.modules.school_erp.application.ports import (
     StudentTransportContext,
@@ -49,6 +52,11 @@ from raad.modules.school_erp.domain.entities import ParentBillingProfile, Parent
 from raad.modules.school_erp.domain.repositories import (
     ParentBillingProfileRepository,
     ParentInvoiceRepository,
+)
+from _school_erp_ledger_fakes import (
+    InMemoryParentPaymentRepository,
+    invoices_for_student,
+    summarise_lines_by_vehicle,
 )
 from raad.modules.school_erp.domain.value_objects import (
     BillingPeriod,
@@ -194,11 +202,11 @@ class InMemoryParentInvoiceRepository(ParentInvoiceRepository):
     async def summarise_totals(self, *, period=None):
         raise NotImplementedError("not exercised by this test file")
 
-    async def summarise_by_vehicle(self, *, period=None):
-        raise NotImplementedError("not exercised by this test file")
+    async def list_for_student(self, student_id):
+        return invoices_for_student(self.by_id.values(), student_id)
 
-    async def sum_collected_between(self, *, start, end):
-        raise NotImplementedError("not exercised by this test file")
+    async def summarise_lines_by_vehicle_between(self, *, start, end):
+        return summarise_lines_by_vehicle(self.by_id.values(), start=start, end=end)
 
     async def currencies_for_period(self, *, period=None):
         raise NotImplementedError("not exercised by this test file")
@@ -208,13 +216,13 @@ class InMemoryParentInvoiceRepository(ParentInvoiceRepository):
 
 
 class FakeSchoolErpUnitOfWork:
-    """Bundles only the two repositories `ParentFinanceApplicationService` actually reads/
-    writes — the other four `SchoolErpUnitOfWork` repositories are irrelevant to every test here
-    and are deliberately omitted rather than faked unused."""
+    """Bundles only the repositories the parent-level use cases here read/write — billing
+    profiles, invoices and the ADR-0047 payment ledger."""
 
     def __init__(self) -> None:
         self.parent_billing_profiles = InMemoryParentBillingProfileRepository()
         self.parent_invoices = InMemoryParentInvoiceRepository()
+        self.parent_payments = InMemoryParentPaymentRepository()
         self.recorded_events: list = []
         self.commit_count = 0
 
@@ -373,6 +381,51 @@ class _Base(unittest.IsolatedAsyncioTestCase):
             school_erp_uow=self.school_erp_uow,
             transport_ops_uow=self.transport_ops_uow,
         )
+
+    async def _pay(
+        self,
+        invoice_id: str,
+        amount: str,
+        *,
+        allocations: dict[str, str] | None = None,
+        key: str | None = None,
+        actor: Principal | None = None,
+        currency: str = "USD",
+        received_on: date = date(2026, 9, 12),
+    ):
+        return await self.service.record_parent_payment(
+            RecordParentPaymentCommand(
+                invoice_id=invoice_id,
+                amount=amount,
+                currency=currency,
+                method="cash",
+                received_on=received_on,
+                reference="RCPT-1",
+                notes=None,
+                allocations=(
+                    tuple(
+                        PaymentAllocationRequest(student_id=sid, amount=value)
+                        for sid, value in allocations.items()
+                    )
+                    if allocations is not None
+                    else None
+                ),
+                idempotency_key=key,
+                actor=actor or self.actor,
+            ),
+            school_erp_uow=self.school_erp_uow,
+            transport_ops_uow=self.transport_ops_uow,
+        )
+
+    async def _void(self, payment_id: str, reason: str | None = "Bounced cheque"):
+        return await self.service.void_parent_payment(
+            VoidParentPaymentCommand(payment_id=payment_id, reason=reason, actor=self.actor),
+            school_erp_uow=self.school_erp_uow,
+            transport_ops_uow=self.transport_ops_uow,
+        )
+
+    async def _stored(self, invoice_id: str):
+        return await self.school_erp_uow.parent_invoices.get(ParentInvoiceId(invoice_id))
 
 
 # ---- ParentBillingProfile -----------------------------------------------------------------------
@@ -542,103 +595,165 @@ class GenerateParentInvoicesTests(_Base):
         self.assertEqual(by_parent[PARENT_B].amount, "50.00")
 
 
-# ---- Payment status ------------------------------------------------------------------------------
+# ---- Payment ledger (ADR-0047 — replaces ADR-0042 §4's Unpaid/Partial/Paid control) ---------
 
 
-class PaymentStatusTests(_Base):
+class ParentPaymentTests(_Base):
+    """PARENT_A has two children on one $80 invoice ($40 each). Every test here asserts the
+    same two invariants from a different direction: the invoice's paid amount is always the sum
+    of its students' paid amounts, and money is never recorded twice or beyond what is owed."""
+
     async def asyncSetUp(self) -> None:
         super().setUp()
         await self._open_profile(PARENT_A, monthly_fee="80.00")
         (self.invoice,) = await self._generate()
+        self.lines = {line.student_id: line for line in self.invoice.lines}
 
-    async def test_set_partial(self) -> None:
-        updated = await self.service.set_parent_invoice_payment_status(
-            SetParentInvoicePaymentStatusCommand(
-                invoice_id=self.invoice.id, status="partial", amount_paid="30.00",
-                actor=self.actor,
-            ),
-            school_erp_uow=self.school_erp_uow,
-            transport_ops_uow=self.transport_ops_uow,
-        )
-        self.assertEqual(updated.status, "partial")
-        self.assertEqual(updated.amount_paid, "30.00")
-        self.assertEqual(updated.balance_due, "50.00")
+    async def test_a_payment_without_an_allocation_is_split_pro_rata(self) -> None:
+        payment = await self._pay(self.invoice.id, "30.00")
+        split = {a.student_id: a.amount for a in payment.allocations}
+        self.assertEqual(split, {STUDENT_A1: "15.00", STUDENT_A2: "15.00"})
 
-    async def test_set_paid_resolves_the_full_amount_regardless_of_input(self) -> None:
-        updated = await self.service.set_parent_invoice_payment_status(
-            SetParentInvoicePaymentStatusCommand(
-                invoice_id=self.invoice.id, status="paid", amount_paid=None, actor=self.actor
-            ),
-            school_erp_uow=self.school_erp_uow,
-            transport_ops_uow=self.transport_ops_uow,
+        stored = await self._stored(self.invoice.id)
+        self.assertIs(stored.status, ParentInvoiceStatus.PARTIAL)
+        self.assertEqual(stored.amount_paid, Decimal("30.00"))
+        self.assertEqual(
+            sum((line.amount_paid for line in stored.lines), Decimal("0.00")), Decimal("30.00")
         )
-        self.assertEqual(updated.status, "paid")
-        self.assertEqual(updated.amount_paid, "80.00")
-        self.assertEqual(updated.balance_due, "0.00")
 
-    async def test_set_unpaid_forces_zero(self) -> None:
-        await self.service.set_parent_invoice_payment_status(
-            SetParentInvoicePaymentStatusCommand(
-                invoice_id=self.invoice.id, status="paid", amount_paid=None, actor=self.actor
-            ),
-            school_erp_uow=self.school_erp_uow,
-            transport_ops_uow=self.transport_ops_uow,
-        )
-        updated = await self.service.set_parent_invoice_payment_status(
-            SetParentInvoicePaymentStatusCommand(
-                invoice_id=self.invoice.id, status="unpaid", amount_paid=None, actor=self.actor
-            ),
-            school_erp_uow=self.school_erp_uow,
-            transport_ops_uow=self.transport_ops_uow,
-        )
-        self.assertEqual(updated.amount_paid, "0.00")
-        self.assertEqual(updated.balance_due, "80.00")
+    async def test_a_payment_for_one_student_only_touches_that_students_line(self) -> None:
+        await self._pay(self.invoice.id, "40.00", allocations={STUDENT_A2: "40.00"})
+        stored = await self._stored(self.invoice.id)
+        by_student = {str(line.student_id): line for line in stored.lines}
+        self.assertEqual(by_student[STUDENT_A2].balance_due, Decimal("0.00"))
+        self.assertEqual(by_student[STUDENT_A1].balance_due, Decimal("40.00"))
+        self.assertIs(stored.status, ParentInvoiceStatus.PARTIAL)
 
-    async def test_partial_amount_cannot_reach_or_exceed_the_total(self) -> None:
-        """Paid amount can never exceed (or equal) the invoice total under `partial` — that is
-        `paid`, and the domain says so with a clear error rather than silently clamping."""
+    async def test_paying_every_student_settles_the_invoice(self) -> None:
+        await self._pay(self.invoice.id, "40.00", allocations={STUDENT_A1: "40.00"})
+        await self._pay(self.invoice.id, "40.00", allocations={STUDENT_A2: "40.00"})
+        stored = await self._stored(self.invoice.id)
+        self.assertIs(stored.status, ParentInvoiceStatus.PAID)
+        self.assertEqual(stored.balance_due, Decimal("0.00"))
+
+    async def test_an_already_paid_invoice_refuses_another_payment(self) -> None:
+        """The P0.1 duplicate-payment guard, applied to school finance."""
+        await self._pay(self.invoice.id, "80.00")
+        with self.assertRaises(ConflictError):
+            await self._pay(self.invoice.id, "10.00")
+        self.assertEqual(len(self.school_erp_uow.parent_payments.by_id), 1)
+
+    async def test_overpayment_is_refused_and_leaves_nothing_behind(self) -> None:
         with self.assertRaises(DomainError):
-            await self.service.set_parent_invoice_payment_status(
-                SetParentInvoicePaymentStatusCommand(
-                    invoice_id=self.invoice.id, status="partial", amount_paid="80.00",
-                    actor=self.actor,
-                ),
-                school_erp_uow=self.school_erp_uow,
-                transport_ops_uow=self.transport_ops_uow,
-            )
-
-    async def test_partial_requires_an_amount(self) -> None:
+            await self._pay(self.invoice.id, "80.01")
         with self.assertRaises(DomainError):
-            await self.service.set_parent_invoice_payment_status(
-                SetParentInvoicePaymentStatusCommand(
-                    invoice_id=self.invoice.id, status="partial", amount_paid=None,
-                    actor=self.actor,
-                ),
-                school_erp_uow=self.school_erp_uow,
-                transport_ops_uow=self.transport_ops_uow,
-            )
+            await self._pay(self.invoice.id, "41.00", allocations={STUDENT_A1: "41.00"})
+        stored = await self._stored(self.invoice.id)
+        self.assertEqual(stored.amount_paid, Decimal("0.00"))
+        self.assertEqual(self.school_erp_uow.parent_payments.by_id, {})
 
-    async def test_a_zero_partial_amount_is_rejected(self) -> None:
+    async def test_a_currency_mismatch_is_refused(self) -> None:
         with self.assertRaises(DomainError):
-            await self.service.set_parent_invoice_payment_status(
-                SetParentInvoicePaymentStatusCommand(
-                    invoice_id=self.invoice.id, status="partial", amount_paid="0.00",
-                    actor=self.actor,
+            await self._pay(self.invoice.id, "10.00", currency="SOS")
+        self.assertEqual(self.school_erp_uow.parent_payments.by_id, {})
+
+    async def test_allocations_must_add_up_to_the_payment(self) -> None:
+        with self.assertRaises(DomainError):
+            await self._pay(
+                self.invoice.id, "30.00", allocations={STUDENT_A1: "10.00", STUDENT_A2: "10.00"}
+            )
+
+    async def test_a_student_not_on_the_invoice_cannot_be_allocated_to(self) -> None:
+        with self.assertRaises(DomainError):
+            await self._pay(self.invoice.id, "10.00", allocations={STUDENT_B1: "10.00"})
+
+    async def test_a_cancelled_invoice_refuses_payment(self) -> None:
+        await self.service.cancel_parent_invoice(
+            CancelParentInvoiceCommand(invoice_id=self.invoice.id, reason="Error", actor=self.actor),
+            school_erp_uow=self.school_erp_uow,
+            transport_ops_uow=self.transport_ops_uow,
+        )
+        with self.assertRaises(RuleViolationError):
+            await self._pay(self.invoice.id, "10.00")
+
+    async def test_resubmitting_the_same_idempotency_key_records_one_payment(self) -> None:
+        first = await self._pay(self.invoice.id, "20.00", key="form-4f9a2c1e")
+        second = await self._pay(self.invoice.id, "20.00", key="form-4f9a2c1e")
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(len(self.school_erp_uow.parent_payments.by_id), 1)
+        self.assertEqual((await self._stored(self.invoice.id)).amount_paid, Decimal("20.00"))
+
+    async def test_voiding_reverses_exactly_that_payment(self) -> None:
+        first = await self._pay(self.invoice.id, "40.00", allocations={STUDENT_A1: "40.00"})
+        await self._pay(self.invoice.id, "20.00", allocations={STUDENT_A2: "20.00"})
+        voided = await self._void(first.id)
+        self.assertTrue(voided.is_voided)
+        self.assertEqual(voided.voided_reason, "Bounced cheque")
+
+        stored = await self._stored(self.invoice.id)
+        by_student = {str(line.student_id): line for line in stored.lines}
+        self.assertEqual(by_student[STUDENT_A1].amount_paid, Decimal("0.00"))
+        self.assertEqual(by_student[STUDENT_A2].amount_paid, Decimal("20.00"))
+        self.assertIs(stored.status, ParentInvoiceStatus.PARTIAL)
+
+    async def test_voiding_twice_never_reverses_twice(self) -> None:
+        payment = await self._pay(self.invoice.id, "40.00")
+        await self._void(payment.id)
+        await self._void(payment.id)
+        self.assertEqual((await self._stored(self.invoice.id)).amount_paid, Decimal("0.00"))
+
+    async def test_voiding_requires_a_reason(self) -> None:
+        payment = await self._pay(self.invoice.id, "40.00")
+        with self.assertRaises(DomainError):
+            await self._void(payment.id, reason="  ")
+        self.assertEqual((await self._stored(self.invoice.id)).amount_paid, Decimal("40.00"))
+
+    async def test_org_admin_cannot_pay_or_void_another_organizations_invoice(self) -> None:
+        with self.assertRaises(AuthorizationError):
+            await self._pay(self.invoice.id, "10.00", actor=make_actor(org_id=OTHER_ORG))
+        payment = await self._pay(self.invoice.id, "10.00")
+        with self.assertRaises(AuthorizationError):
+            await self.service.void_parent_payment(
+                VoidParentPaymentCommand(
+                    payment_id=payment.id, reason="x", actor=make_actor(org_id=OTHER_ORG)
                 ),
                 school_erp_uow=self.school_erp_uow,
                 transport_ops_uow=self.transport_ops_uow,
             )
 
-    async def test_org_admin_cannot_touch_another_organizations_invoice(self) -> None:
-        with self.assertRaises(Exception):
-            await self.service.set_parent_invoice_payment_status(
-                SetParentInvoicePaymentStatusCommand(
-                    invoice_id=self.invoice.id, status="paid", amount_paid=None,
-                    actor=make_actor(org_id=OTHER_ORG),
-                ),
-                school_erp_uow=self.school_erp_uow,
-                transport_ops_uow=self.transport_ops_uow,
-            )
+    async def test_payment_events_carry_the_per_student_split_for_the_audit_trail(self) -> None:
+        await self._pay(self.invoice.id, "30.00")
+        recorded = [
+            e for e in self.school_erp_uow.recorded_events
+            if e.event_type == "school_erp.ParentPaymentRecorded"
+        ]
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(
+            {a["student_id"] for a in recorded[0].payload["allocations"]},
+            {STUDENT_A1, STUDENT_A2},
+        )
+        self.assertEqual(recorded[0].payload["actor_id"], self.actor.user_id)
+
+    async def test_family_summary_uses_each_childs_real_paid_amount(self) -> None:
+        await self._pay(self.invoice.id, "40.00", allocations={STUDENT_A1: "40.00"})
+        summary = await self.service.get_parent_financial_summary(
+            PARENT_A, school_erp_uow=self.school_erp_uow, transport_ops_uow=self.transport_ops_uow
+        )
+        children = {child.student_id: child for child in summary.children}
+        self.assertEqual(children[STUDENT_A1].total_paid, "40.00")
+        self.assertEqual(children[STUDENT_A1].outstanding, "0.00")
+        self.assertEqual(children[STUDENT_A2].total_paid, "0.00")
+        self.assertEqual(children[STUDENT_A2].outstanding, "40.00")
+        self.assertEqual(summary.total_paid, "40.00")
+
+    async def test_listing_a_familys_payments_names_each_child(self) -> None:
+        await self._pay(self.invoice.id, "30.00")
+        payments = await self.service.list_parent_payments(
+            PARENT_A, school_erp_uow=self.school_erp_uow, transport_ops_uow=self.transport_ops_uow
+        )
+        self.assertEqual(len(payments), 1)
+        self.assertEqual({a.full_name for a in payments[0].allocations}, {"Mohamed", "Aisha"})
+        self.assertEqual(payments[0].period, "2026-09")
 
 
 class CancelInvoiceTests(_Base):
@@ -658,14 +773,7 @@ class CancelInvoiceTests(_Base):
         self.assertEqual(updated.status, "cancelled")
 
     async def test_cannot_cancel_an_invoice_that_has_received_payment(self) -> None:
-        await self.service.set_parent_invoice_payment_status(
-            SetParentInvoicePaymentStatusCommand(
-                invoice_id=self.invoice.id, status="partial", amount_paid="10.00",
-                actor=self.actor,
-            ),
-            school_erp_uow=self.school_erp_uow,
-            transport_ops_uow=self.transport_ops_uow,
-        )
+        await self._pay(self.invoice.id, "10.00")
         with self.assertRaises(RuleViolationError):
             await self.service.cancel_parent_invoice(
                 CancelParentInvoiceCommand(
@@ -674,6 +782,18 @@ class CancelInvoiceTests(_Base):
                 school_erp_uow=self.school_erp_uow,
                 transport_ops_uow=self.transport_ops_uow,
             )
+
+    async def test_voiding_every_payment_makes_the_invoice_cancellable_again(self) -> None:
+        payment = await self._pay(self.invoice.id, "10.00")
+        await self._void(payment.id)
+        updated = await self.service.cancel_parent_invoice(
+            CancelParentInvoiceCommand(
+                invoice_id=self.invoice.id, reason="Family withdrew", actor=self.actor
+            ),
+            school_erp_uow=self.school_erp_uow,
+            transport_ops_uow=self.transport_ops_uow,
+        )
+        self.assertEqual(updated.status, "cancelled")
 
     async def test_a_cancelled_period_can_be_regenerated(self) -> None:
         """Idempotency is keyed off *non-cancelled* invoices only — cancelling one and
@@ -695,13 +815,7 @@ class FinancialSummaryTests(_Base):
     async def test_summary_aggregates_across_periods(self) -> None:
         await self._open_profile(PARENT_A, monthly_fee="80.00")
         (september,) = await self._generate(period="2026-09")
-        await self.service.set_parent_invoice_payment_status(
-            SetParentInvoicePaymentStatusCommand(
-                invoice_id=september.id, status="paid", amount_paid=None, actor=self.actor
-            ),
-            school_erp_uow=self.school_erp_uow,
-            transport_ops_uow=self.transport_ops_uow,
-        )
+        await self._pay(september.id, "80.00")
         await self._generate(period="2026-10")  # left unpaid
 
         summary = await self.service.get_parent_financial_summary(
@@ -897,13 +1011,7 @@ class ListParentInvoicesTests(_Base):
         generated = await self._generate(period="2026-09")
         invoice_a = next(inv for inv in generated if inv.parent_id == PARENT_A)
 
-        await self.service.set_parent_invoice_payment_status(
-            SetParentInvoicePaymentStatusCommand(
-                invoice_id=invoice_a.id, status="paid", amount_paid=None, actor=self.actor
-            ),
-            school_erp_uow=self.school_erp_uow,
-            transport_ops_uow=self.transport_ops_uow,
-        )
+        await self._pay(invoice_a.id, "80.00")
 
         paid_bus_1 = await self.service.list_parent_invoices(
             page=1, page_size=25, period=None, status="paid", parent_id=None, vehicle_id=BUS_1,

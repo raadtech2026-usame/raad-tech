@@ -231,6 +231,28 @@ class ParentInvoiceLineId:
 
 
 @dataclass(frozen=True)
+class ParentPaymentId:
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_ulid(self.value, "ParentPaymentId")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class ParentPaymentAllocationId:
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_ulid(self.value, "ParentPaymentAllocationId")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
 class BillingPeriod:
     """`YYYY-MM`. One month is the only period the ERP charter names, and a formatted string
     makes "already invoiced for this period" a unique constraint rather than a range query."""
@@ -291,11 +313,9 @@ class ParentBillingProfileStatus(str, Enum):
 
 
 class ParentInvoiceStatus(str, Enum):
-    """Exactly the three user-facing states Part 9 of the 2026-09-11 directive specifies, plus
-    `CANCELLED` for a voided/erroneously-generated invoice — the same fourth-state precedent
-    `StudentInvoiceStatus.CANCELLED` already establishes for an identical need. There is no
-    `PARTIALLY_PAID`-vs-`PARTIAL` naming mismatch to reconcile with `StudentInvoiceStatus`
-    deliberately: this is a new, independent status set, not a renamed copy of the old one."""
+    """`UNPAID`/`PARTIAL`/`PAID` are derived from the recorded payments (ADR-0047 §2) — never
+    set directly; `CANCELLED` is the one state an admin chooses. An independent status set, not
+    a renamed copy of `StudentInvoiceStatus`."""
 
     UNPAID = "unpaid"
     PARTIAL = "partial"
@@ -313,6 +333,18 @@ class StudentPaymentMethod(str, Enum):
     MOBILE_MONEY = "mobile_money"
     CHEQUE = "cheque"
     CARD = "card"
+    OTHER = "other"
+
+
+class IncomeType(str, Enum):
+    """What kind of manually recorded income a row is (ADR-0047 §6). Student income is never an
+    `Income` row — it is derived from payment allocations — so it has no member here.
+
+    `DAILY_VEHICLE` is money one bus collected on one day and always names the bus. `OTHER` is
+    everything else (advertising, rental, a donation, a grant), optionally attributed to a bus.
+    Finer classification lives in the configurable `FinancialCategory` tree, not in this enum."""
+
+    DAILY_VEHICLE = "daily_vehicle"
     OTHER = "other"
 
 

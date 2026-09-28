@@ -150,5 +150,52 @@ class VoidReasonSchemaTests(unittest.TestCase):
                 self.assertEqual(model(reason="Duplicate entry").reason, "Duplicate entry")
 
 
+class ParentPaymentLedgerSchemaTests(unittest.TestCase):
+    """ADR-0047's new request models, built the way FastAPI builds them."""
+
+    def test_payment_and_allocation_amounts_round_half_up(self) -> None:
+        from raad.modules.school_erp.api.schemas import RecordParentPaymentRequest
+
+        request = RecordParentPaymentRequest(
+            amount="10.005",
+            currency="USD",
+            method="cash",
+            received_on="2026-09-12",
+            allocations=[{"student_id": "S1", "amount": "10.005"}],
+        )
+        self.assertEqual(request.amount, "10.01")
+        self.assertEqual(request.allocations[0].amount, "10.01")
+
+    def test_payment_requires_a_known_method_and_a_sensible_idempotency_key(self) -> None:
+        from raad.modules.school_erp.api.schemas import RecordParentPaymentRequest
+
+        base = {"amount": "5", "currency": "USD", "received_on": "2026-09-12"}
+        with self.assertRaises(ValidationError):
+            RecordParentPaymentRequest(**base, method="bitcoin")
+        with self.assertRaises(ValidationError):
+            RecordParentPaymentRequest(**base, method="cash", idempotency_key="short")
+        self.assertIsNone(RecordParentPaymentRequest(**base, method="cash").allocations)
+
+    def test_cancelling_an_invoice_and_voiding_a_payment_require_a_reason(self) -> None:
+        from raad.modules.school_erp.api.schemas import (
+            CancelParentInvoiceRequest,
+            VoidParentPaymentRequest,
+        )
+
+        for model in (CancelParentInvoiceRequest, VoidParentPaymentRequest):
+            with self.subTest(model=model.__name__), self.assertRaises(ValidationError):
+                model(reason="")
+
+    def test_income_type_is_a_closed_set_defaulting_to_other(self) -> None:
+        base = {"amount": "5", "currency": "USD", "occurred_on": "2026-09-12"}
+        self.assertEqual(RecordIncomeRequest(**base).income_type, "other")
+        self.assertEqual(
+            RecordIncomeRequest(**base, income_type="daily_vehicle", vehicle_id="V").income_type,
+            "daily_vehicle",
+        )
+        with self.assertRaises(ValidationError):
+            RecordIncomeRequest(**base, income_type="student")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

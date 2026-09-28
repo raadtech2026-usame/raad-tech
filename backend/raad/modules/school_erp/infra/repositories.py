@@ -41,6 +41,7 @@ from raad.modules.school_erp.domain.entities import (
     Income,
     ParentBillingProfile,
     ParentInvoice,
+    ParentPayment,
     StudentInvoice,
     StudentPayment,
 )
@@ -52,8 +53,11 @@ from raad.modules.school_erp.domain.repositories import (
     IncomeRepository,
     ParentBillingProfileRepository,
     ParentInvoiceRepository,
+    ParentPaymentRepository,
+    StudentIncomeRow,
     StudentInvoiceRepository,
     StudentPaymentRepository,
+    VehicleBillingSummary,
     VehicleFinancialSummary,
 )
 from raad.modules.school_erp.domain.value_objects import (
@@ -65,6 +69,7 @@ from raad.modules.school_erp.domain.value_objects import (
     ParentBillingProfileId,
     ParentId,
     ParentInvoiceId,
+    ParentPaymentId,
     StudentId,
     StudentInvoiceId,
     StudentPaymentId,
@@ -81,10 +86,12 @@ from raad.modules.school_erp.infra.mappers import (
     model_to_income,
     model_to_parent_billing_profile,
     model_to_parent_invoice,
+    model_to_parent_payment,
     model_to_student_invoice,
     model_to_student_payment,
     parent_billing_profile_to_model,
     parent_invoice_to_model,
+    parent_payment_to_model,
     student_invoice_to_model,
     student_payment_to_model,
 )
@@ -96,6 +103,8 @@ from raad.modules.school_erp.infra.models import (
     ParentBillingProfileModel,
     ParentInvoiceLineModel,
     ParentInvoiceModel,
+    ParentPaymentAllocationModel,
+    ParentPaymentModel,
     StudentInvoiceModel,
     StudentPaymentModel,
 )
@@ -668,6 +677,8 @@ class SqlAlchemyIncomeRepository(
         "category_id": FilterField(column="category_id"),
         "currency": FilterField(column="currency"),
         "occurred_on": FilterField(column="occurred_on"),
+        "income_type": FilterField(column="income_type"),
+        "vehicle_id": FilterField(column="vehicle_id"),
     }
     sortable_fields = {
         "amount": "amount",
@@ -681,6 +692,52 @@ class SqlAlchemyIncomeRepository(
     ) -> None:
         super().__init__(session, scope=scope)
         self._tracked: dict[str, tuple[Income, IncomeModel]] = {}
+
+    def _live_between(self, start: date, end: date) -> list:
+        return [
+            self.model.occurred_on >= start,
+            self.model.occurred_on <= end,
+            self.model.is_voided.is_(False),
+            self.model.deleted_at.is_(None),
+        ]
+
+    async def sum_by_type_between(self, *, start: date, end: date) -> dict[str, Decimal]:
+        statement = self._apply_scope(
+            select(
+                self.model.income_type,
+                func.coalesce(func.sum(self.model.amount), 0).label("total"),
+            )
+            .where(*self._live_between(start, end))
+            .group_by(self.model.income_type)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return {row.income_type: _dec(row.total) for row in rows}
+
+    async def sum_by_vehicle_and_type_between(
+        self, *, start: date, end: date
+    ) -> dict[tuple[str, str], Decimal]:
+        statement = self._apply_scope(
+            select(
+                self.model.vehicle_id,
+                self.model.income_type,
+                func.coalesce(func.sum(self.model.amount), 0).label("total"),
+            )
+            .where(*self._live_between(start, end), self.model.vehicle_id.is_not(None))
+            .group_by(self.model.vehicle_id, self.model.income_type)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return {(_char(row.vehicle_id), row.income_type): _dec(row.total) for row in rows}
+
+    async def list_for_vehicle_between(
+        self, *, vehicle_id: VehicleId, start: date, end: date
+    ) -> list[Income]:
+        statement = self._apply_scope(
+            select(self.model)
+            .where(*self._live_between(start, end), self.model.vehicle_id == str(vehicle_id))
+            .order_by(self.model.occurred_on, self.model.created_at)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track(row) for row in rows]  # type: ignore[misc]
 
     async def get(self, income_id: IncomeId) -> Income | None:
         return self._track(await self.get_by_id(str(income_id)))
@@ -800,6 +857,23 @@ class SqlAlchemyExpenseRepository(
         )
         rows = (await self._session.execute(statement)).all()
         return {_char(row.vehicle_id): _dec(row.total) for row in rows}
+
+    async def list_for_vehicle_between(
+        self, *, vehicle_id: VehicleId, start: date, end: date
+    ) -> list[Expense]:
+        statement = self._apply_scope(
+            select(self.model)
+            .where(
+                self.model.occurred_on >= start,
+                self.model.occurred_on <= end,
+                self.model.is_voided.is_(False),
+                self.model.deleted_at.is_(None),
+                self.model.vehicle_id == str(vehicle_id),
+            )
+            .order_by(self.model.occurred_on, self.model.created_at)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track(row) for row in rows]  # type: ignore[misc]
 
     def flush_tracked_changes(self) -> None:
         for expense, model in self._tracked.values():
@@ -1033,78 +1107,58 @@ class SqlAlchemyParentInvoiceRepository(
             currency=_char(row.currency) or _DEFAULT_CURRENCY,
         )
 
-    async def summarise_by_vehicle(
-        self, *, period: BillingPeriod | None = None
-    ) -> list[VehicleFinancialSummary]:
-        """Grouped over `erp_parent_invoice_lines.vehicle_id`, joined back to the owning
-        invoice for `amount`/`amount_paid` — the pro-rata collected-share allocation ADR-0042
-        decision 1 documents (`line.amount * invoice.amount_paid / invoice.amount`), since
-        payment is only ever recorded against the whole family invoice, never per child."""
+    async def list_for_student(self, student_id: StudentId) -> list[ParentInvoice]:
+        line = ParentInvoiceLineModel
+        statement = self._apply_scope(
+            select(self.model).where(
+                self.model.deleted_at.is_(None),
+                self.model.id.in_(
+                    select(line.parent_invoice_id).where(
+                        line.student_id == str(student_id), line.deleted_at.is_(None)
+                    )
+                ),
+            )
+        ).order_by(self.model.period.desc())
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track(row) for row in rows]  # type: ignore[misc]
+
+    async def summarise_lines_by_vehicle_between(
+        self, *, start: date, end: date
+    ) -> list[VehicleBillingSummary]:
+        """Grouped over each line's own frozen `vehicle_id` (ADR-0047 §5). The outstanding
+        figure is `GREATEST(amount - amount_paid, 0)` per line, so one overpaid line can never
+        hide another student's real debt inside a bus total."""
         line = ParentInvoiceLineModel
         invoice = self.model
-
-        collected_share = func.coalesce(
-            line.amount * invoice.amount_paid / func.nullif(invoice.amount, 0), 0
-        )
-        outstanding_share = func.greatest(line.amount - collected_share, 0)
-        is_settled = case((invoice.amount_paid >= invoice.amount, 1), else_=0)
-
+        outstanding = func.greatest(line.amount - line.amount_paid, 0)
         statement = self._apply_scope(
             select(
                 line.vehicle_id,
                 func.count(func.distinct(line.student_id)).label("student_count"),
-                func.count(func.distinct(line.parent_invoice_id)).label("invoice_count"),
                 func.coalesce(func.sum(line.amount), 0).label("billed_amount"),
-                func.coalesce(func.sum(collected_share), 0).label("collected_amount"),
-                func.coalesce(func.sum(outstanding_share), 0).label(
-                    "outstanding_amount"
-                ),
-                func.coalesce(
-                    func.sum(case((is_settled == 1, 1), else_=0)), 0
-                ).label("paid_invoice_count"),
-                func.coalesce(
-                    func.sum(case((is_settled == 0, 1), else_=0)), 0
-                ).label("unpaid_invoice_count"),
-                func.min(invoice.currency).label("currency"),
+                func.coalesce(func.sum(outstanding), 0).label("outstanding_amount"),
             )
             .select_from(line)
             .join(invoice, invoice.id == line.parent_invoice_id)
             .where(
                 invoice.deleted_at.is_(None),
                 invoice.status != "cancelled",
+                invoice.invoice_date >= start,
+                invoice.invoice_date <= end,
                 line.deleted_at.is_(None),
             )
             .group_by(line.vehicle_id)
         )
-        if period is not None:
-            statement = statement.where(invoice.period == str(period))
-
         rows = (await self._session.execute(statement)).all()
         return [
-            VehicleFinancialSummary(
+            VehicleBillingSummary(
                 vehicle_id=_char(row.vehicle_id),
                 student_count=int(row.student_count or 0),
-                invoice_count=int(row.invoice_count or 0),
                 billed_amount=_dec(row.billed_amount),
-                collected_amount=_dec(row.collected_amount),
                 outstanding_amount=_dec(row.outstanding_amount),
-                paid_student_count=int(row.paid_invoice_count or 0),
-                unpaid_student_count=int(row.unpaid_invoice_count or 0),
-                currency=_char(row.currency) or _DEFAULT_CURRENCY,
             )
             for row in rows
         ]
-
-    async def sum_collected_between(self, *, start: date, end: date) -> Decimal:
-        statement = self._apply_scope(
-            select(func.coalesce(func.sum(self.model.amount_paid), 0)).where(
-                self.model.invoice_date >= start,
-                self.model.invoice_date <= end,
-                self.model.status != "cancelled",
-                self.model.deleted_at.is_(None),
-            )
-        )
-        return _dec((await self._session.execute(statement)).scalar())
 
     async def currencies_for_period(self, *, period: BillingPeriod | None = None) -> set[str]:
         statement = self._apply_scope(
@@ -1147,6 +1201,164 @@ class SqlAlchemyParentInvoiceRepository(
 
 
 # ============================================================================================
+# ParentPayment (ADR-0047)
+# ============================================================================================
+
+
+class SqlAlchemyParentPaymentRepository(
+    SqlAlchemyRepositoryBase[ParentPaymentModel], ParentPaymentRepository
+):
+    """Every student-income query here joins allocations to their payment and filters on the
+    payment: not voided, not deleted, `received_on` in the window — and applies `_apply_scope`
+    on the payment's own `organization_id` explicitly, because these hand-written aggregates
+    bypass the base class's helpers."""
+
+    model = ParentPaymentModel
+
+    filterable_fields = {
+        "organization_id": FilterField(column="organization_id"),
+        "parent_id": FilterField(column="parent_id"),
+        "parent_invoice_id": FilterField(column="parent_invoice_id"),
+        "method": FilterField(column="method"),
+    }
+    sortable_fields = {
+        "received_on": "received_on",
+        "amount": "amount",
+        "created_at": "created_at",
+    }
+    searchable_fields = ("reference",)
+
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
+        self._tracked: dict[str, tuple[ParentPayment, ParentPaymentModel]] = {}
+
+    async def get(self, payment_id: ParentPaymentId) -> ParentPayment | None:
+        return self._track(await self.get_by_id(str(payment_id)))
+
+    def add(self, payment: ParentPayment) -> None:
+        model = parent_payment_to_model(payment)
+        super().add(model)
+        self._tracked[str(payment.id)] = (payment, model)
+
+    async def get_by_idempotency_key(self, key: str) -> ParentPayment | None:
+        statement = self._apply_scope(
+            select(self.model).where(
+                self.model.idempotency_key == key, self.model.deleted_at.is_(None)
+            )
+        )
+        row = (await self._session.execute(statement)).scalar_one_or_none()
+        return self._track(row)
+
+    async def _list_where(self, *conditions) -> list[ParentPayment]:
+        statement = self._apply_scope(
+            select(self.model).where(self.model.deleted_at.is_(None), *conditions)
+        ).order_by(self.model.received_on.desc(), self.model.created_at.desc())
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track(row) for row in rows]  # type: ignore[misc]
+
+    async def list_for_invoice(self, invoice_id: ParentInvoiceId) -> list[ParentPayment]:
+        return await self._list_where(self.model.parent_invoice_id == str(invoice_id))
+
+    async def list_for_parent(self, parent_id: ParentId) -> list[ParentPayment]:
+        return await self._list_where(self.model.parent_id == str(parent_id))
+
+    async def list_for_student(self, student_id: StudentId) -> list[ParentPayment]:
+        allocation = ParentPaymentAllocationModel
+        return await self._list_where(
+            self.model.id.in_(
+                select(allocation.parent_payment_id).where(
+                    allocation.student_id == str(student_id),
+                    allocation.deleted_at.is_(None),
+                )
+            )
+        )
+
+    def _income_statement(self, columns, *, start: date, end: date):
+        allocation = ParentPaymentAllocationModel
+        payment = self.model
+        return self._apply_scope(
+            select(*columns)
+            .select_from(allocation)
+            .join(payment, payment.id == allocation.parent_payment_id)
+            .where(
+                payment.is_voided.is_(False),
+                payment.deleted_at.is_(None),
+                allocation.deleted_at.is_(None),
+                payment.received_on >= start,
+                payment.received_on <= end,
+            )
+        )
+
+    async def sum_student_income_between(self, *, start: date, end: date) -> Decimal:
+        allocation = ParentPaymentAllocationModel
+        statement = self._income_statement(
+            [func.coalesce(func.sum(allocation.amount), 0)], start=start, end=end
+        )
+        return _dec((await self._session.execute(statement)).scalar())
+
+    async def student_income_by_vehicle_between(
+        self, *, start: date, end: date
+    ) -> dict[str | None, Decimal]:
+        allocation = ParentPaymentAllocationModel
+        statement = self._income_statement(
+            [
+                allocation.vehicle_id,
+                func.coalesce(func.sum(allocation.amount), 0).label("total"),
+            ],
+            start=start,
+            end=end,
+        ).group_by(allocation.vehicle_id)
+        rows = (await self._session.execute(statement)).all()
+        return {_char(row.vehicle_id): _dec(row.total) for row in rows}
+
+    async def student_income_rows_between(
+        self, *, vehicle_id: VehicleId | None, start: date, end: date
+    ) -> list[StudentIncomeRow]:
+        allocation = ParentPaymentAllocationModel
+        statement = self._income_statement(
+            [
+                allocation.student_id,
+                self.model.parent_id,
+                func.coalesce(func.sum(allocation.amount), 0).label("total"),
+            ],
+            start=start,
+            end=end,
+        ).group_by(allocation.student_id, self.model.parent_id)
+        if vehicle_id is None:
+            statement = statement.where(allocation.vehicle_id.is_(None))
+        else:
+            statement = statement.where(allocation.vehicle_id == str(vehicle_id))
+        rows = (await self._session.execute(statement)).all()
+        return [
+            StudentIncomeRow(
+                student_id=_char(row.student_id),
+                parent_id=_char(row.parent_id),
+                amount=_dec(row.total),
+            )
+            for row in rows
+        ]
+
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        statement = self._income_statement([self.model.currency], start=start, end=end).distinct()
+        rows = (await self._session.execute(statement)).scalars().all()
+        return {_char(currency) for currency in rows}
+
+    def flush_tracked_changes(self) -> None:
+        for payment, model in self._tracked.values():
+            parent_payment_to_model(payment, existing=model)
+
+    def _track(self, row: ParentPaymentModel | None) -> ParentPayment | None:
+        if row is None:
+            return None
+        payment = model_to_parent_payment(row)
+        self._tracked[row.id] = (payment, row)
+        return payment
+
+
+
+# ============================================================================================
 # Unit of Work
 # ============================================================================================
 
@@ -1170,6 +1382,7 @@ class SqlAlchemySchoolErpUnitOfWork(SqlAlchemyUnitOfWork, SchoolErpUnitOfWork):
     expenses: SqlAlchemyExpenseRepository
     parent_billing_profiles: SqlAlchemyParentBillingProfileRepository
     parent_invoices: SqlAlchemyParentInvoiceRepository
+    parent_payments: SqlAlchemyParentPaymentRepository
 
     async def __aenter__(self) -> "SqlAlchemySchoolErpUnitOfWork":
         await super().__aenter__()
@@ -1191,6 +1404,9 @@ class SqlAlchemySchoolErpUnitOfWork(SqlAlchemyUnitOfWork, SchoolErpUnitOfWork):
         self.parent_invoices = SqlAlchemyParentInvoiceRepository(
             self.session, scope=self.scope
         )
+        self.parent_payments = SqlAlchemyParentPaymentRepository(
+            self.session, scope=self.scope
+        )
         return self
 
     async def commit(self) -> None:
@@ -1202,4 +1418,5 @@ class SqlAlchemySchoolErpUnitOfWork(SqlAlchemyUnitOfWork, SchoolErpUnitOfWork):
         self.expenses.flush_tracked_changes()
         self.parent_billing_profiles.flush_tracked_changes()
         self.parent_invoices.flush_tracked_changes()
+        self.parent_payments.flush_tracked_changes()
         await super().commit()

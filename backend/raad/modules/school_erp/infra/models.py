@@ -66,6 +66,11 @@ _STUDENT_PAYMENT_METHOD_VALUES = (
 )
 _PARENT_BILLING_PROFILE_STATUS_VALUES = ("active", "inactive")
 _PARENT_INVOICE_STATUS_VALUES = ("unpaid", "partial", "paid", "cancelled")
+#: ADR-0047 §6. Its own PostgreSQL type, not a reuse of another enum.
+_INCOME_TYPE_VALUES = ("daily_vehicle", "other")
+#: Same values as `_STUDENT_PAYMENT_METHOD_VALUES`, but its own type: the two payment tables
+#: belong to different workflows and must be free to diverge.
+_PARENT_PAYMENT_METHOD_VALUES = _STUDENT_PAYMENT_METHOD_VALUES
 
 
 class FinancialCategoryModel(AuditedTableMixin, Base):
@@ -225,9 +230,20 @@ class IncomeModel(AuditedTableMixin, Base):
     attachment_url: Mapped[str | None] = mapped_column(VARCHAR(500), nullable=True)
     is_voided: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     voided_reason: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    #: ADR-0047 §6: `daily_vehicle` (one bus's collection on one day, `vehicle_id` required by the
+    #: domain) or `other`. Existing rows were migrated as `other`.
+    income_type: Mapped[str] = mapped_column(
+        SqlEnum(*_INCOME_TYPE_VALUES, name="erp_income_type"),
+        nullable=False,
+        default="other",
+        server_default="other",
+    )
+    #: Cross-module reference to `fleet_device.Vehicle`, never FK-constrained.
+    vehicle_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
 
     __table_args__ = (
         Index("ix_erp_income__org_occurred", "organization_id", "occurred_on"),
+        Index("ix_erp_income__org_vehicle", "organization_id", "vehicle_id"),
     )
 
 
@@ -363,12 +379,94 @@ class ParentInvoiceLineModel(AuditedTableMixin, Base):
     vehicle_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True, index=True)
     route_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
     amount: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
+    #: ADR-0047 §2: what has been allocated to this student from real payments. Always kept equal
+    #: to the sum of this line's non-voided `erp_parent_payment_allocations`.
+    amount_paid: Mapped[Decimal] = mapped_column(
+        DECIMAL(12, 2), nullable=False, default=Decimal("0.00"), server_default="0"
+    )
 
     invoice: Mapped[ParentInvoiceModel] = relationship(back_populates="lines")
 
     __table_args__ = (
         Index(
             "ix_erp_parent_invoice_lines__org_vehicle_period",
+            "organization_id",
+            "vehicle_id",
+        ),
+    )
+
+
+# ==================================================================================================
+# ParentPayment (ADR-0047 — amends ADR-0042 §4)
+# ==================================================================================================
+
+
+class ParentPaymentModel(AuditedTableMixin, Base):
+    """Money received from a family against one Parent Invoice. `idempotency_key` is a
+    `VARCHAR`, not a `CHAR`, deliberately: `CHAR(n)` blank-pads on read (a Permanent Engineering
+    Lesson), and a padded key would never match the one the client resends."""
+
+    __tablename__ = "erp_parent_payments"
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    parent_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    parent_invoice_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("erp_parent_invoices.id"), nullable=False, index=True
+    )
+    amount: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    method: Mapped[str] = mapped_column(
+        SqlEnum(*_PARENT_PAYMENT_METHOD_VALUES, name="erp_parent_payment_method"),
+        nullable=False,
+    )
+    reference: Mapped[str | None] = mapped_column(VARCHAR(120), nullable=True)
+    received_on: Mapped[date] = mapped_column(DATE, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_voided: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    voided_reason: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+
+    allocations: Mapped[list["ParentPaymentAllocationModel"]] = relationship(
+        back_populates="payment",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        Index("ix_erp_parent_payments__org_received", "organization_id", "received_on"),
+        Index(
+            "ux_erp_parent_payments__org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where="idempotency_key IS NOT NULL",
+        ),
+    )
+
+
+class ParentPaymentAllocationModel(AuditedTableMixin, Base):
+    """The part of one payment that paid one student's invoice line. `student_id`/`vehicle_id`
+    are copied from the line when the payment is recorded (ADR-0047 §5), so per-student and
+    per-bus student income are indexed reads that a later bus change cannot rewrite."""
+
+    __tablename__ = "erp_parent_payment_allocations"
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    parent_payment_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("erp_parent_payments.id"), nullable=False, index=True
+    )
+    parent_invoice_line_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("erp_parent_invoice_lines.id"), nullable=False, index=True
+    )
+    student_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    vehicle_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
+
+    payment: Mapped[ParentPaymentModel] = relationship(back_populates="allocations")
+
+    __table_args__ = (
+        Index(
+            "ix_erp_parent_payment_allocations__org_vehicle",
             "organization_id",
             "vehicle_id",
         ),

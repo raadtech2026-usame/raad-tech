@@ -159,6 +159,9 @@ class RecordIncomeCommand:
     description: str | None
     reference: str | None
     actor: Principal
+    #: ADR-0047 §6: `daily_vehicle` (requires `vehicle_id`) or `other`.
+    income_type: str = "other"
+    vehicle_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -229,27 +232,45 @@ class GenerateParentInvoicesCommand:
 
 
 @dataclass(frozen=True)
-class SetParentInvoicePaymentStatusCommand:
-    """The entire user-facing payment workflow (the directive's Part 9): `status` is one of
-    `unpaid`/`partial`/`paid`; `amount_paid` is required only when `status == "partial"`."""
-
-    invoice_id: str
-    status: str
-    amount_paid: str | None
-    actor: Principal
-
-
-@dataclass(frozen=True)
 class CancelParentInvoiceCommand:
     invoice_id: str
     reason: str | None
     actor: Principal
 
 
-# ---- Parent financial summary (2026-09-10 explicit user directive) -------------------------
-#
-# `RecordParentPaymentCommand` (the allocate-across-many-outstanding-`StudentInvoice`s quick-pay
-# action) is **removed** here — see ADR-0042's own "Correction made during implementation" note.
-# Part 9 of the 2026-09-11 directive sets payment status directly on one `ParentInvoice`
-# (`SetParentInvoicePaymentStatusCommand`, above); there is nothing left to allocate across once
-# `ParentInvoice` is itself the per-family document, and no payment history is exposed at all.
+# ---- ParentPayment (ADR-0047 — amends ADR-0042 §4) -----------------------------------------
+
+
+@dataclass(frozen=True)
+class PaymentAllocationRequest:
+    """How much of a payment pays for one student on the invoice. The student's invoice line is
+    looked up on the invoice itself — the caller never names a line or a vehicle."""
+
+    student_id: str
+    amount: str
+
+
+@dataclass(frozen=True)
+class RecordParentPaymentCommand:
+    """Money received against one Parent Invoice. `allocations=None` splits it pro-rata to each
+    student's remaining balance (ADR-0047 §3); a payment for one student names only that
+    student. `idempotency_key` makes a resubmitted form return the first payment instead of
+    recording a second one."""
+
+    invoice_id: str
+    amount: str
+    currency: str
+    method: str
+    received_on: date
+    reference: str | None
+    notes: str | None
+    allocations: tuple[PaymentAllocationRequest, ...] | None
+    idempotency_key: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class VoidParentPaymentCommand:
+    payment_id: str
+    reason: str | None
+    actor: Principal

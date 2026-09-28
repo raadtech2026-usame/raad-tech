@@ -949,6 +949,8 @@ def build_container(settings: Settings) -> Container:
                 # resolution `SchoolErpApplicationService` already uses, for the identical
                 # "capture vehicle/route on the invoice at issue time" reasoning (ADR-0040 §3).
                 transport_context=container.try_resolve(StudentTransportContextPort),
+                # ADR-0047: student- and vehicle-level finance name students across families.
+                student_service=container.resolve(StudentApplicationService),
             ),
         )
 

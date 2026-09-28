@@ -213,6 +213,7 @@ async def export_report(
     end: date | None = Query(default=None),
     vehicle_id: str | None = Query(default=None),
     parent_id: str | None = Query(default=None),
+    student_id: str | None = Query(default=None),
     payment_method: str | None = Query(default=None),
     status_filter: str | None = Query(
         default=None, alias="status", pattern="^(unpaid|partial|paid|cancelled)$"
@@ -241,6 +242,7 @@ async def export_report(
             period=period,
             vehicle_id=vehicle_id,
             parent_id=parent_id,
+            student_id=student_id,
             payment_method=payment_method,
             status=status_filter,
             organization_filter_id=organization_id,
@@ -277,6 +279,7 @@ async def preview_report(
     end: date | None = Query(default=None),
     vehicle_id: str | None = Query(default=None),
     parent_id: str | None = Query(default=None),
+    student_id: str | None = Query(default=None),
     payment_method: str | None = Query(default=None),
     status_filter: str | None = Query(
         default=None, alias="status", pattern="^(unpaid|partial|paid|cancelled)$"
@@ -304,6 +307,7 @@ async def preview_report(
             period=period,
             vehicle_id=vehicle_id,
             parent_id=parent_id,
+            student_id=student_id,
             payment_method=payment_method,
             status=status_filter,
             organization_filter_id=organization_id,

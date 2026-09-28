@@ -53,6 +53,8 @@ class ReportRequest:
     #: list_parent_invoices` already does). No new query capability, only two report builders
     #: reading fields this codebase already knows how to filter by.
     parent_id: str | None = None
+    #: ADR-0047 §7 — the student a Student Statement (`org.student_statement`) is for.
+    student_id: str | None = None
     payment_method: str | None = None
     #: Report Center re-design (2026-09-11) — `ParentInvoiceStatus` (`unpaid`/`partial`/`paid`/
     #: `cancelled`), already a filterable column on `ParentInvoiceRepository.list_page`
