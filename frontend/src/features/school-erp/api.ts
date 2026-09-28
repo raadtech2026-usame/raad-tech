@@ -663,6 +663,9 @@ export interface StudentFinance {
   /** Pre-2026-09-11 per-student invoices — read-only history, never added to the totals. */
   legacyInvoices: StudentInvoice[];
   legacyPayments: StudentPayment[];
+  /** ADR-0048: the student's own monthly fee, or `null` when it has not been set. */
+  monthlyFee: string | null;
+  monthlyFeeCurrency: string | null;
 }
 
 /** `GET /school-finance/students/{id}/finance` — one student's charges, payments and balance. */
@@ -707,6 +710,8 @@ export async function getStudentFinance(studentId: string): Promise<StudentFinan
     }[];
     legacy_invoices: StudentInvoiceWire[];
     legacy_payments: StudentPaymentWire[];
+    monthly_fee?: string | null;
+    monthly_fee_currency?: string | null;
   }>(`/school-finance/students/${encodeURIComponent(studentId)}/finance`);
   return {
     studentId: w.student_id,
@@ -748,6 +753,8 @@ export async function getStudentFinance(studentId: string): Promise<StudentFinan
     })),
     legacyInvoices: w.legacy_invoices.map(toStudentInvoice),
     legacyPayments: w.legacy_payments.map(toStudentPayment),
+    monthlyFee: w.monthly_fee ?? null,
+    monthlyFeeCurrency: w.monthly_fee_currency ?? null,
   };
 }
 

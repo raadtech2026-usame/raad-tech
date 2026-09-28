@@ -24,6 +24,9 @@ import {
   listInvoicePayments,
   recordParentPayment,
   saveParentBillingProfile,
+  setStudentBillingFee,
+  getFamilyFees,
+  previewParentInvoiceGeneration,
   voidParentPayment,
   unlinkStudentFromParent,
   updateParent,
@@ -321,12 +324,11 @@ describe("parents api", () => {
     expect(result).toBeNull();
   });
 
-  it("saveParentBillingProfile PUTs the billing fields", async () => {
+  it("saveParentBillingProfile PUTs the account terms and never a family fee (ADR-0048)", async () => {
     vi.mocked(apiRequest).mockResolvedValueOnce({
       id: "01ARZ3NDEKTSV4RRFFQ69G5FBP0",
       organization_id: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
       parent_id: "01ARZ3NDEKTSV4RRFFQ69G5FCX",
-      monthly_fee: "80.00",
       currency: "USD",
       billing_start_period: "2026-09",
       due_day: 10,
@@ -336,7 +338,6 @@ describe("parents api", () => {
     });
 
     const result = await saveParentBillingProfile("01ARZ3NDEKTSV4RRFFQ69G5FCX", {
-      monthlyFee: "80.00",
       currency: "USD",
       billingStartPeriod: "2026-09",
       dueDay: 10,
@@ -344,9 +345,61 @@ describe("parents api", () => {
 
     expect(apiRequest).toHaveBeenCalledWith("/school-finance/parents/01ARZ3NDEKTSV4RRFFQ69G5FCX/billing-profile", {
       method: "PUT",
-      body: { monthly_fee: "80.00", currency: "USD", billing_start_period: "2026-09", due_day: 10 },
+      body: { currency: "USD", billing_start_period: "2026-09", due_day: 10 },
     });
-    expect(result.monthlyFee).toBe("80.00");
+    expect(result.currency).toBe("USD");
+    expect(result).not.toHaveProperty("monthlyFee");
+  });
+
+  it("setStudentBillingFee PUTs one student's own fee", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({});
+    await setStudentBillingFee("01ARZ3NDEKTSV4RRFFQ69G5FST1", { monthlyFee: "20.00", currency: "USD" });
+    expect(apiRequest).toHaveBeenCalledWith("/school-finance/students/01ARZ3NDEKTSV4RRFFQ69G5FST1/billing-fee", {
+      method: "PUT",
+      body: { monthly_fee: "20.00", currency: "USD" },
+    });
+  });
+
+  it("getFamilyFees maps each child's fee and the monthly total", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      parent_id: "p1",
+      monthly_total: "30.00",
+      currency: "USD",
+      unpriced_active_students: 1,
+      students: [
+        { student_id: "s1", full_name: "Amina", status: "active", monthly_fee: "10.00", currency: "USD" },
+        { student_id: "s2", full_name: "Yusuf", status: "active", monthly_fee: "20.00", currency: "USD" },
+        { student_id: "s3", full_name: "Hawa", status: "active", monthly_fee: null, currency: null },
+      ],
+    });
+    const fees = await getFamilyFees("p1");
+    expect(apiRequest).toHaveBeenCalledWith("/school-finance/parents/p1/student-fees");
+    expect(fees.monthlyTotal).toBe("30.00");
+    expect(fees.unpricedActiveStudents).toBe(1);
+    expect(fees.students.map((s) => s.monthlyFee)).toEqual(["10.00", "20.00", null]);
+  });
+
+  it("previewParentInvoiceGeneration GETs the plan for a period", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      period: "2026-09",
+      families: [
+        {
+          parent_id: "p1",
+          parent_name: "Fatima",
+          currency: "USD",
+          total: "60.00",
+          lines: [{ student_id: "s1", full_name: "Amina", amount: "10.00", vehicle_id: null }],
+        },
+      ],
+      skipped: [{ parent_id: "p1", parent_name: "Fatima", reason: "no_fee", student_id: "s4", student_name: "Omar" }],
+      totals_by_currency: { USD: "60.00" },
+    });
+    const preview = await previewParentInvoiceGeneration("2026-09");
+    expect(apiRequest).toHaveBeenCalledWith("/school-finance/parent-invoices/generation-preview?period=2026-09");
+    expect(preview.families[0].total).toBe("60.00");
+    expect(preview.skipped[0]).toEqual({
+      parentId: "p1", parentName: "Fatima", reason: "no_fee", studentId: "s4", studentName: "Omar",
+    });
   });
 
   const PAYMENT_WIRE = {

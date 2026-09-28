@@ -389,7 +389,11 @@ export function StudentsPage() {
                 canManage={canManage}
                 onAddGuardian={() => setLinkGuardianOpen(true)}
               />
-              <StudentFinanceSection studentId={selectedStudent.id} canManage={canManage} />
+              <StudentFinanceSection
+                studentId={selectedStudent.id}
+                canManage={canManage}
+                canSetFee={principal?.role === "org_admin"}
+              />
             </>
           )
         }

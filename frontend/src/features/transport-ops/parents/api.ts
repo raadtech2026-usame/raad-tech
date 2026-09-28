@@ -524,12 +524,15 @@ export function formatParentAmount(amount: string, currency: string): string {
 // ---- ParentBillingProfile / ParentInvoice (ADR-0042) and the payment ledger (ADR-0047) --------
 // A Parent Invoice is paid only through recorded payments (`recordParentPayment`), each split
 // across the invoice's students; its status is derived from them, never set directly.
+//
+// ADR-0048: the Billing Profile is the family's billing *account* (start, due day, currency,
+// active). There is no family fee — each student has their own (`setStudentBillingFee`), and a
+// Parent Invoice is one line per child at that child's fee.
 
 export interface ParentBillingProfile {
   id: string;
   organizationId: string;
   parentId: string;
-  monthlyFee: string;
   currency: string;
   billingStartPeriod: string;
   dueDay: number;
@@ -542,7 +545,6 @@ interface ParentBillingProfileWire {
   id: string;
   organization_id: string;
   parent_id: string;
-  monthly_fee: string;
   currency: string;
   billing_start_period: string;
   due_day: number;
@@ -556,7 +558,6 @@ function toParentBillingProfile(wire: ParentBillingProfileWire): ParentBillingPr
     id: wire.id,
     organizationId: wire.organization_id,
     parentId: wire.parent_id,
-    monthlyFee: wire.monthly_fee,
     currency: wire.currency,
     billingStartPeriod: wire.billing_start_period,
     dueDay: wire.due_day,
@@ -566,8 +567,8 @@ function toParentBillingProfile(wire: ParentBillingProfileWire): ParentBillingPr
   };
 }
 
-/** `GET /school-finance/parents/{parent_id}/billing-profile` — the family's actual recurring
- * transportation charge, or `null` if none has been entered yet. */
+/** `GET /school-finance/parents/{parent_id}/billing-profile` — the family's billing account, or
+ * `null` if the family has never been set up for billing. */
 export async function getParentBillingProfile(parentId: string): Promise<ParentBillingProfile | null> {
   const wire = await apiRequest<ParentBillingProfileWire | null>(
     `/school-finance/parents/${parentId}/billing-profile`,
@@ -576,7 +577,6 @@ export async function getParentBillingProfile(parentId: string): Promise<ParentB
 }
 
 export interface SaveParentBillingProfileInput {
-  monthlyFee: string;
   currency: string;
   billingStartPeriod: string;
   dueDay: number;
@@ -594,7 +594,6 @@ export async function saveParentBillingProfile(
     {
       method: "PUT",
       body: {
-        monthly_fee: input.monthlyFee,
         currency: input.currency,
         billing_start_period: input.billingStartPeriod,
         due_day: input.dueDay,
@@ -602,6 +601,71 @@ export async function saveParentBillingProfile(
     },
   );
   return toParentBillingProfile(wire);
+}
+
+/** One child of a family and their own monthly fee (ADR-0048). `monthlyFee` is `null` when
+ * nobody has priced the child yet — the monthly run leaves such a child out and says so. */
+export interface StudentFee {
+  studentId: string;
+  fullName: string;
+  status: string;
+  monthlyFee: string | null;
+  currency: string | null;
+}
+
+/** `GET /school-finance/parents/{parent_id}/student-fees`. `monthlyTotal` is the sum of the
+ * active children's fees — what one month bills this family — or `null` if those fees are in
+ * more than one currency. */
+export interface FamilyFees {
+  parentId: string;
+  monthlyTotal: string | null;
+  currency: string | null;
+  unpricedActiveStudents: number;
+  students: StudentFee[];
+}
+
+interface FamilyFeesWire {
+  parent_id: string;
+  monthly_total: string | null;
+  currency: string | null;
+  unpriced_active_students: number;
+  students: {
+    student_id: string;
+    full_name: string;
+    status: string;
+    monthly_fee: string | null;
+    currency: string | null;
+  }[];
+}
+
+export async function getFamilyFees(parentId: string): Promise<FamilyFees> {
+  const wire = await apiRequest<FamilyFeesWire>(`/school-finance/parents/${parentId}/student-fees`);
+  return {
+    parentId: wire.parent_id,
+    monthlyTotal: wire.monthly_total,
+    currency: wire.currency,
+    unpricedActiveStudents: wire.unpriced_active_students,
+    students: wire.students.map((student) => ({
+      studentId: student.student_id,
+      fullName: student.full_name,
+      status: student.status,
+      monthlyFee: student.monthly_fee,
+      currency: student.currency,
+    })),
+  };
+}
+
+/** `PUT /school-finance/students/{student_id}/billing-fee` — a student's own monthly fee.
+ * `0.00` records that the student rides free. Future invoices only: an invoice already
+ * generated keeps its frozen line amount. */
+export async function setStudentBillingFee(
+  studentId: string,
+  input: { monthlyFee: string; currency: string },
+): Promise<void> {
+  await apiRequest(`/school-finance/students/${studentId}/billing-fee`, {
+    method: "PUT",
+    body: { monthly_fee: input.monthlyFee, currency: input.currency },
+  });
 }
 
 /** `PATCH /school-finance/parent-billing-profiles/{id}/status` — deactivating stops future
@@ -797,9 +861,88 @@ export async function getParentInvoiceDetail(invoiceId: string): Promise<ParentI
   return toParentInvoiceDetail(wire);
 }
 
-/** `POST /school-finance/parent-invoices/generate` — the monthly billing run (Part 18): every
- * `active` Billing Profile whose billing has started is picked up automatically. Idempotent —
- * re-running for a period a parent was already billed for skips that parent, never double-charges. */
+/** Why the monthly run leaves a family or a child out. Only `no_fee` and `currency_mismatch`
+ * need an admin; the rest are expected. */
+export type GenerationSkipReason =
+  | "already_invoiced"
+  | "no_fee"
+  | "free"
+  | "billed_by_another_parent"
+  | "currency_mismatch"
+  | "no_active_children";
+
+export const SKIP_REASONS_NEEDING_ADMIN: ReadonlySet<GenerationSkipReason> = new Set(["no_fee", "currency_mismatch"]);
+
+export interface GenerationPreview {
+  period: string;
+  families: {
+    parentId: string;
+    parentName: string;
+    currency: string;
+    total: string;
+    lines: { studentId: string; fullName: string; amount: string; vehicleId: string | null }[];
+  }[];
+  skipped: {
+    parentId: string;
+    parentName: string;
+    reason: GenerationSkipReason;
+    studentId: string | null;
+    studentName: string | null;
+  }[];
+  totalsByCurrency: Record<string, string>;
+}
+
+/** `GET /school-finance/parent-invoices/generation-preview` — exactly what the monthly run
+ * would issue for `period` (one line per active child at the child's own fee, ADR-0048), and
+ * who it would leave out and why. Writes nothing. */
+export async function previewParentInvoiceGeneration(period: string): Promise<GenerationPreview> {
+  const wire = await apiRequest<{
+    period: string;
+    families: {
+      parent_id: string;
+      parent_name: string;
+      currency: string;
+      total: string;
+      lines: { student_id: string; full_name: string; amount: string; vehicle_id: string | null }[];
+    }[];
+    skipped: {
+      parent_id: string;
+      parent_name: string;
+      reason: GenerationSkipReason;
+      student_id: string | null;
+      student_name: string | null;
+    }[];
+    totals_by_currency: Record<string, string>;
+  }>(`/school-finance/parent-invoices/generation-preview?${new URLSearchParams({ period })}`);
+  return {
+    period: wire.period,
+    families: wire.families.map((family) => ({
+      parentId: family.parent_id,
+      parentName: family.parent_name,
+      currency: family.currency,
+      total: family.total,
+      lines: family.lines.map((line) => ({
+        studentId: line.student_id,
+        fullName: line.full_name,
+        amount: line.amount,
+        vehicleId: line.vehicle_id,
+      })),
+    })),
+    skipped: wire.skipped.map((item) => ({
+      parentId: item.parent_id,
+      parentName: item.parent_name,
+      reason: item.reason,
+      studentId: item.student_id,
+      studentName: item.student_name,
+    })),
+    totalsByCurrency: wire.totals_by_currency,
+  };
+}
+
+/** `POST /school-finance/parent-invoices/generate` — the monthly billing run: every `active`
+ * Billing Profile whose billing has started gets one invoice with one line per active child at
+ * that child's own fee (ADR-0048). Idempotent — re-running for a period a parent was already
+ * billed for skips that parent, never double-charges. */
 export async function generateParentInvoices(period: string): Promise<ParentInvoiceDetail[]> {
   const wire = await apiRequest<ParentInvoiceDetailWire[]>(`/school-finance/parent-invoices/generate`, {
     method: "POST",

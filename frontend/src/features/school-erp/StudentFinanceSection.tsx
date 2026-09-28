@@ -6,10 +6,12 @@ import { Button } from "../../shared/components/Button/Button";
 import { ConfirmDialog } from "../../shared/components/ConfirmDialog/ConfirmDialog";
 import { FormField } from "../../shared/components/FormField/FormField";
 import { Input } from "../../shared/components/Input/Input";
+import { Select } from "../../shared/components/Select/Select";
 import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
 import { RecordParentPaymentForm } from "../transport-ops/parents/RecordParentPaymentForm";
+import { setStudentBillingFee } from "../transport-ops/parents/api";
 import { invoiceStatusLabel, invoiceStatusTone, paymentMethodLabel } from "../transport-ops/parents/labels";
 import { formatAmount, getStudentFinance, voidStudentPayment, type StudentCharge, type StudentPayment } from "./api";
 import styles from "./StudentFinanceSection.module.css";
@@ -24,13 +26,30 @@ import styles from "./StudentFinanceSection.module.css";
  * Invoices from before Parent billing (2026-09-11) are listed read-only under "Earlier
  * per-student invoices". Their money is already inside the Parent Invoices copied from them, so
  * they never add to this student's totals; a mistaken payment on one can still be voided.
+ *
+ * The student's own **monthly fee** (ADR-0048) is shown first: it is what this student's line
+ * on the family's next invoice will charge. `canSetFee` gates changing it — the server grant is
+ * `school_erp.parent_billing_profiles.manage`, which only the Org Admin holds.
  */
-export function StudentFinanceSection({ studentId, canManage }: { studentId: string; canManage: boolean }) {
+const FEE_PATTERN = /^\d{1,13}(\.\d{1,2})?$/;
+
+export function StudentFinanceSection({
+  studentId,
+  canManage,
+  canSetFee = canManage,
+}: {
+  studentId: string;
+  canManage: boolean;
+  canSetFee?: boolean;
+}) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [paying, setPaying] = useState<StudentCharge | null>(null);
   const [voidingLegacy, setVoidingLegacy] = useState<StudentPayment | null>(null);
   const [reason, setReason] = useState("");
+  const [editingFee, setEditingFee] = useState(false);
+  const [feeAmount, setFeeAmount] = useState("");
+  const [feeCurrency, setFeeCurrency] = useState("USD");
 
   const finance = useQuery({
     queryKey: ["school-finance", "student-finance", studentId],
@@ -49,7 +68,25 @@ export function StudentFinanceSection({ studentId, canManage }: { studentId: str
       toast.error("Could not void the payment", error instanceof ApiError ? error.message : "Please try again."),
   });
 
+  const saveFee = useMutation({
+    mutationFn: () => setStudentBillingFee(studentId, { monthlyFee: feeAmount.trim(), currency: feeCurrency }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["school-finance", "student-finance", studentId] });
+      queryClient.invalidateQueries({ queryKey: ["parents", "family-fees"] });
+      toast.success("Monthly fee saved", "The next generated invoice uses it. Invoices already generated are unchanged.");
+      setEditingFee(false);
+    },
+    onError: (error) =>
+      toast.error("Could not save the fee", error instanceof ApiError ? error.message : "Please try again."),
+  });
+
   const data = finance.data;
+
+  function openFeeEditor(): void {
+    setFeeAmount(data?.monthlyFee ?? "");
+    setFeeCurrency(data?.monthlyFeeCurrency ?? data?.currency ?? "USD");
+    setEditingFee(true);
+  }
 
   return (
     <div className={styles.section}>
@@ -81,6 +118,29 @@ export function StudentFinanceSection({ studentId, canManage }: { studentId: str
           {data.parents.length > 0 && (
             <span className={styles.muted}>Billed to {data.parents.map((p) => p.fullName).join(", ")}</span>
           )}
+
+          <div className={styles.feeRow}>
+            <div>
+              <div className={styles.strong}>
+                Monthly fee:{" "}
+                {data.monthlyFee == null
+                  ? "not set"
+                  : formatAmount(data.monthlyFee, data.monthlyFeeCurrency ?? data.currency)}
+              </div>
+              <div className={styles.muted}>
+                {data.monthlyFee == null
+                  ? "Not invoiced until a fee is set."
+                  : data.monthlyFee === "0.00"
+                    ? "Rides free — no line on the family's invoice."
+                    : "This student's own line on each monthly family invoice."}
+              </div>
+            </div>
+            {canSetFee && (
+              <Button size="sm" variant="ghost" onClick={openFeeEditor}>
+                {data.monthlyFee == null ? "Set fee" : "Change fee"}
+              </Button>
+            )}
+          </div>
 
           <span className={styles.subtitle}>Charges</span>
           {data.charges.length === 0 ? (
@@ -188,6 +248,33 @@ export function StudentFinanceSection({ studentId, canManage }: { studentId: str
         invoiceId={paying?.invoiceId ?? null}
         onlyStudentId={studentId}
       />
+      <ConfirmDialog
+        open={editingFee}
+        title={`Monthly fee for ${data?.fullName ?? "this student"}`}
+        description="Applies from the next generated invoice. Invoices already generated keep their amounts."
+        confirmLabel="Save fee"
+        loading={saveFee.isPending}
+        confirmDisabled={!FEE_PATTERN.test(feeAmount.trim())}
+        onConfirm={() => saveFee.mutate()}
+        onCancel={() => setEditingFee(false)}
+      >
+        <FormField label="Monthly fee" hint="0.00 if the student rides free.">
+          <Input
+            value={feeAmount}
+            inputMode="decimal"
+            placeholder="20.00"
+            onChange={(e) => setFeeAmount(e.target.value)}
+            aria-label="Monthly fee amount"
+          />
+        </FormField>
+        <FormField label="Currency" hint="Must match the family's billing currency.">
+          <Select value={feeCurrency} onChange={(e) => setFeeCurrency(e.target.value)} aria-label="Fee currency">
+            <option value="USD">USD</option>
+            <option value="SOS">SOS</option>
+            <option value="KES">KES</option>
+          </Select>
+        </FormField>
+      </ConfirmDialog>
       <ConfirmDialog
         open={voidingLegacy !== null}
         title="Void this earlier payment?"

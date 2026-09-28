@@ -16,6 +16,8 @@ vi.mock("./api", () => ({
   findParentByExactPhone: vi.fn(),
   getParentFinancialSummary: vi.fn(),
   getParentBillingProfile: vi.fn(),
+  getFamilyFees: vi.fn(),
+  setStudentBillingFee: vi.fn(),
   saveParentBillingProfile: vi.fn(),
   setParentBillingProfileStatus: vi.fn(),
   listParentInvoices: vi.fn(),
@@ -106,6 +108,11 @@ describe("ParentsPage", () => {
     vi.mocked(api.findParentByExactPhone).mockReset().mockResolvedValue(null);
     vi.mocked(api.getParentFinancialSummary).mockReset().mockResolvedValue(NO_INVOICES_SUMMARY);
     vi.mocked(api.getParentBillingProfile).mockReset().mockResolvedValue(null);
+    vi.mocked(api.getFamilyFees).mockReset().mockResolvedValue({
+      parentId: PARENT_SUMMARY.id, monthlyTotal: "0.00", currency: null, unpricedActiveStudents: 0, students: [],
+    });
+    vi.mocked(api.setStudentBillingFee).mockReset().mockResolvedValue(undefined);
+    vi.mocked(api.saveParentBillingProfile).mockReset();
     vi.mocked(api.listParentInvoices).mockReset().mockResolvedValue(pageOf([], 0));
     vi.mocked(api.listOrganizationsForPicker)
       .mockReset()
@@ -278,11 +285,21 @@ describe("ParentsPage", () => {
         allocations: [{ studentId: "s-1", fullName: "Mohamed", amount: "30.00", vehicleId: null }],
       },
     ]);
+    vi.mocked(api.getFamilyFees).mockResolvedValue({
+      parentId: PARENT_SUMMARY.id,
+      monthlyTotal: "80.00",
+      currency: "USD",
+      unpricedActiveStudents: 1,
+      students: [
+        { studentId: "s-1", fullName: "Mohamed", status: "active", monthlyFee: "30.00", currency: "USD" },
+        { studentId: "s-2", fullName: "Aisha", status: "active", monthlyFee: "50.00", currency: "USD" },
+        { studentId: "s-3", fullName: "Omar", status: "active", monthlyFee: null, currency: null },
+      ],
+    });
     vi.mocked(api.getParentBillingProfile).mockResolvedValue({
       id: "bp-1",
       organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
       parentId: PARENT_SUMMARY.id,
-      monthlyFee: "80.00",
       currency: "USD",
       billingStartPeriod: "2026-09",
       dueDay: 10,
@@ -319,6 +336,11 @@ describe("ParentsPage", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("USD 80.00 / month")).toBeInTheDocument();
+    // ADR-0048: each child's own fee, and the child nobody priced is called out.
+    expect(within(dialog).getByText("USD 30.00 / month")).toBeInTheDocument();
+    expect(within(dialog).getByText("USD 50.00 / month")).toBeInTheDocument();
+    expect(within(dialog).getByText("No fee set")).toBeInTheDocument();
+    expect(within(dialog).getByRole("status")).toHaveTextContent(/1 active child has no monthly fee/);
     expect(within(dialog).getByText(/2026-09 — USD 80.00/)).toBeInTheDocument();
     expect(await within(dialog).findByText(/Charged USD 80.00 · Paid USD 30.00 · Owes USD 50.00/)).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: /record payment/i })).toBeInTheDocument();

@@ -67,6 +67,9 @@ import {
   formatParentAmount,
   generateParentInvoices,
   getParentInvoiceDetail,
+  previewParentInvoiceGeneration,
+  SKIP_REASONS_NEEDING_ADMIN,
+  type GenerationSkipReason,
   listInvoicePayments,
   listParentInvoices,
   type ParentInvoiceStatus,
@@ -155,6 +158,7 @@ export function OrgFinancePage() {
   const queryClient = useQueryClient();
 
   const [period] = useState(currentPeriod());
+  const [generationPreviewOpen, setGenerationPreviewOpen] = useState(false);
   const [tab, setTab] = useState<LedgerTab>("invoices");
   const window = defaultWindow();
   const periodWindow = currentPeriodWindow(period);
@@ -318,9 +322,17 @@ export function OrgFinancePage() {
   /** The monthly billing run (Part 18): every active Billing Profile whose billing has started
    * is picked up automatically for the current period — idempotent, so re-running it never
    * double-charges a family already invoiced this month. */
+  const generationPreview = useQuery({
+    queryKey: ["school-finance", "generation-preview", period],
+    queryFn: () => previewParentInvoiceGeneration(period),
+    enabled: generationPreviewOpen,
+    staleTime: 0,
+  });
+
   const generateInvoicesMutation = useMutation({
     mutationFn: () => generateParentInvoices(period),
     onSuccess: (created) => {
+      setGenerationPreviewOpen(false);
       queryClient.invalidateQueries({ queryKey: ["school-finance"] });
       toast.success(
         created.length > 0 ? "Invoices generated" : "Already up to date",
@@ -344,8 +356,7 @@ export function OrgFinancePage() {
           <Button
             size="sm"
             leadingIcon={<Plus size={14} />}
-            loading={generateInvoicesMutation.isPending}
-            onClick={() => generateInvoicesMutation.mutate()}
+            onClick={() => setGenerationPreviewOpen(true)}
           >
             Generate monthly invoices
           </Button>
@@ -533,7 +544,7 @@ export function OrgFinancePage() {
                   <EmptyState
                     icon={<ReceiptText size={20} />}
                     title="No parent invoices yet"
-                    description="Set up each Parent's billing profile, then use Generate monthly invoices."
+                    description="Set each child's monthly fee on the Parents page, then use Generate monthly invoices."
                   />
                 )
               ) : (
@@ -1053,6 +1064,26 @@ export function OrgFinancePage() {
       />
 
       <ConfirmDialog
+        open={generationPreviewOpen}
+        title={`Generate invoices for ${period}?`}
+        description="One invoice per family, one line per active child at that child's own monthly fee."
+        confirmLabel={
+          generationPreview.data && generationPreview.data.families.length > 0
+            ? `Generate ${generationPreview.data.families.length} invoice${generationPreview.data.families.length === 1 ? "" : "s"}`
+            : "Generate"
+        }
+        loading={generateInvoicesMutation.isPending}
+        confirmDisabled={!generationPreview.data || generationPreview.data.families.length === 0}
+        onConfirm={() => generateInvoicesMutation.mutate()}
+        onCancel={() => setGenerationPreviewOpen(false)}
+      >
+        <GenerationPreviewBody
+          loading={generationPreview.isLoading}
+          error={generationPreview.error}
+          preview={generationPreview.data ?? null}
+        />
+      </ConfirmDialog>
+      <ConfirmDialog
         open={voidingLedgerEntry !== null}
         title={voidingLedgerEntry?.kind === "income" ? "Void this income entry?" : "Void this expense entry?"}
         description={
@@ -1082,6 +1113,76 @@ export function OrgFinancePage() {
           />
         </FormField>
       </ConfirmDialog>
+    </div>
+  );
+}
+
+
+const SKIP_REASON_LABEL: Record<GenerationSkipReason, string> = {
+  already_invoiced: "already invoiced this month",
+  no_fee: "no monthly fee set",
+  free: "rides free",
+  billed_by_another_parent: "billed to another guardian",
+  currency_mismatch: "fee is in a different currency from the family's billing",
+  no_active_children: "no active children",
+};
+
+/** What `GET /parent-invoices/generation-preview` says the run will do — built by the same plan
+ * the run uses, so this is what the admin gets. Children the run cannot price are listed by
+ * name, since each one is money that will not be billed until an admin sets a fee. */
+function GenerationPreviewBody({
+  loading,
+  error,
+  preview,
+}: {
+  loading: boolean;
+  error: unknown;
+  preview: Awaited<ReturnType<typeof previewParentInvoiceGeneration>> | null;
+}) {
+  if (loading) return <Skeleton height={60} />;
+  if (error || !preview) {
+    return (
+      <p className={styles.muted}>
+        {error instanceof ApiError ? error.message : "Could not work out what this run would bill."}
+      </p>
+    );
+  }
+  const attention = preview.skipped.filter((item) => SKIP_REASONS_NEEDING_ADMIN.has(item.reason));
+  const others = preview.skipped.filter((item) => !SKIP_REASONS_NEEDING_ADMIN.has(item.reason));
+  const otherCounts = others.reduce<Record<string, number>>((counts, item) => {
+    counts[item.reason] = (counts[item.reason] ?? 0) + 1;
+    return counts;
+  }, {});
+  const totals = Object.entries(preview.totalsByCurrency);
+  return (
+    <div className={styles.generationPreview}>
+      <p className={styles.strong}>
+        {preview.families.length === 0
+          ? "Nothing to bill for this month."
+          : `${preview.families.length} famil${preview.families.length === 1 ? "y" : "ies"} · ${totals
+              .map(([currency, total]) => formatParentAmount(total, currency))
+              .join(" + ")}`}
+      </p>
+      {attention.length > 0 && (
+        <div role="alert">
+          <p className={styles.strong}>Not billed until fixed ({attention.length}):</p>
+          <ul className={styles.generationList}>
+            {attention.map((item) => (
+              <li key={`${item.parentId}-${item.studentId}`}>
+                {item.studentName ?? item.parentName} ({item.parentName}) — {SKIP_REASON_LABEL[item.reason]}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {Object.keys(otherCounts).length > 0 && (
+        <p className={styles.muted}>
+          Also left out:{" "}
+          {Object.entries(otherCounts)
+            .map(([reason, count]) => `${count} ${SKIP_REASON_LABEL[reason as GenerationSkipReason]}`)
+            .join(" · ")}
+        </p>
+      )}
     </div>
   );
 }

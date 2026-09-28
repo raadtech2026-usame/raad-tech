@@ -32,6 +32,7 @@ import {
 import {
   formatParentAmount,
   getParent,
+  getFamilyFees,
   getParentBillingProfile,
   getParentFinancialSummary,
   linkStudentToParent,
@@ -295,9 +296,10 @@ function LinkedStudentsSection({
   );
 }
 
-/** "Billing" section (Part 16 of the directive) — the family's own `ParentBillingProfile`:
- * monthly fee, billing start, due day, status. `onEdit` opens `BillingProfileForm`, the same
- * create-or-update surface `CreateParentForm`'s own Billing step uses at registration time. */
+/** "Billing" section — the family's billing account and each child's own monthly fee
+ * (ADR-0048). The total is what the next monthly invoice bills: the sum of the active children's
+ * fees. A child with no fee is called out, because the monthly run leaves them off the invoice.
+ * `onEdit` opens `BillingProfileForm`, which edits the account and every child's fee together. */
 function BillingProfileSection({
   parentId,
   canManage,
@@ -311,18 +313,24 @@ function BillingProfileSection({
     queryKey: ["parents", "billing-profile", parentId],
     queryFn: () => getParentBillingProfile(parentId),
   });
+  const feesQuery = useQuery({
+    queryKey: ["parents", "family-fees", parentId],
+    queryFn: () => getFamilyFees(parentId),
+  });
 
   const profile = profileQuery.data ?? null;
+  const fees = feesQuery.data ?? null;
+  const loading = profileQuery.isLoading || feesQuery.isLoading;
 
   return (
     <div className={styles.linkedStudents}>
       <div>
         <span className={styles.linkedStudentsTitle}>Billing</span>
       </div>
-      {profileQuery.isLoading && <Skeleton height={36} />}
-      {profileQuery.isSuccess && !profile && (
+      {loading && <Skeleton height={36} />}
+      {!loading && !profile && (
         <span className={styles.linkedStudentsEmpty}>
-          No monthly fee configured yet.{" "}
+          Billing is not set up for this family yet.{" "}
           {canManage && (
             <Button variant="ghost" onClick={onEdit}>
               Set up billing
@@ -330,11 +338,13 @@ function BillingProfileSection({
           )}
         </span>
       )}
-      {profile && (
+      {!loading && profile && (
         <div className={styles.linkedStudentRow}>
           <div>
             <div className={styles.linkedStudentName}>
-              {formatParentAmount(profile.monthlyFee, profile.currency)} / month
+              {fees?.monthlyTotal != null
+                ? `${formatParentAmount(fees.monthlyTotal, fees.currency ?? profile.currency)} / month`
+                : "Fees in more than one currency"}
             </div>
             <div className={styles.linkedStudentMeta}>
               Billing start {profile.billingStartPeriod} · Due day {profile.dueDay} ·{" "}
@@ -347,6 +357,29 @@ function BillingProfileSection({
             </Button>
           )}
         </div>
+      )}
+      {!loading &&
+        fees?.students.map((student) => (
+          <div key={student.studentId} className={styles.linkedStudentRow}>
+            <div>
+              <div className={styles.linkedStudentName}>{student.fullName}</div>
+              <div className={styles.linkedStudentMeta}>
+                {student.status === "active" ? "Active" : `Not billed while ${student.status}`}
+              </div>
+            </div>
+            <span className={styles.linkedStudentMeta}>
+              {student.monthlyFee == null
+                ? "No fee set"
+                : `${formatParentAmount(student.monthlyFee, student.currency ?? "")} / month`}
+            </span>
+          </div>
+        ))}
+      {!loading && profile && fees && fees.unpricedActiveStudents > 0 && (
+        <span className={styles.linkedStudentsEmpty} role="status">
+          {fees.unpricedActiveStudents === 1
+            ? "1 active child has no monthly fee and will not be invoiced until one is set."
+            : `${fees.unpricedActiveStudents} active children have no monthly fee and will not be invoiced until one is set.`}
+        </span>
       )}
     </div>
   );

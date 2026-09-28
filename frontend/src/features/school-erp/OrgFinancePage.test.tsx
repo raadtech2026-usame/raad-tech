@@ -32,6 +32,7 @@ vi.mock("../transport-ops/parents/api", async (importOriginal) => ({
   listInvoicePayments: vi.fn(),
   recordParentPayment: vi.fn(),
   generateParentInvoices: vi.fn(),
+  previewParentInvoiceGeneration: vi.fn(),
   listParentsForPicker: vi.fn(),
   getParent: vi.fn(),
   listStudentsForParent: vi.fn(),
@@ -55,6 +56,7 @@ import {
 import { useAuthStore } from "../../shared/stores/authStore";
 import {
   generateParentInvoices,
+  previewParentInvoiceGeneration,
   getParent,
   getParentInvoiceDetail,
   listParentInvoices,
@@ -287,6 +289,42 @@ describe("OrgFinancePage", () => {
       "School income, parent billing and expenses",
     );
     expect(screen.queryByText(/student billing/i)).not.toBeInTheDocument();
+  });
+
+  it("previews the monthly run — per-child fees, totals, unpriced children — before generating (ADR-0048)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(previewParentInvoiceGeneration).mockResolvedValue({
+      period: "2026-09",
+      families: [
+        {
+          parentId: "parent-1",
+          parentName: "Fatima Ali",
+          currency: "USD",
+          total: "60.00",
+          lines: [
+            { studentId: "s1", fullName: "Amina", amount: "10.00", vehicleId: null },
+            { studentId: "s2", fullName: "Yusuf", amount: "20.00", vehicleId: null },
+            { studentId: "s3", fullName: "Hawa", amount: "30.00", vehicleId: null },
+          ],
+        },
+      ],
+      skipped: [
+        { parentId: "parent-2", parentName: "Hassan Ali", reason: "no_fee", studentId: "s4", studentName: "Omar" },
+        { parentId: "parent-3", parentName: "Asha", reason: "already_invoiced", studentId: null, studentName: null },
+      ],
+      totalsByCurrency: { USD: "60.00" },
+    });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Generate monthly invoices" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("1 family · USD 60.00")).toBeInTheDocument();
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("Omar (Hassan Ali) — no monthly fee set");
+    expect(within(dialog).getByText(/1 already invoiced this month/)).toBeInTheDocument();
+    expect(generateParentInvoices).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "Generate 1 invoice" }));
+    await waitFor(() => expect(generateParentInvoices).toHaveBeenCalledTimes(1));
   });
 
   it("shows Parent invoices / Vehicle finance / Income / Expenses / Categories tabs — no Fee plans", async () => {

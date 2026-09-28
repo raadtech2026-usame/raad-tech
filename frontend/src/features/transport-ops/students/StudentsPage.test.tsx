@@ -26,6 +26,7 @@ vi.mock("../parents/api", async (importOriginal) => ({
   listStudentsForParent: vi.fn(),
   getParentInvoiceDetail: vi.fn(),
   recordParentPayment: vi.fn(),
+  setStudentBillingFee: vi.fn(),
 }));
 
 // `StudentAssignmentSection`/`AssignStudentForm` (Phase F6) are rendered inside this page's own
@@ -70,6 +71,8 @@ const EMPTY_FINANCE: schoolErpApi.StudentFinance = {
   payments: [],
   legacyInvoices: [],
   legacyPayments: [],
+  monthlyFee: null,
+  monthlyFeeCurrency: null,
 };
 
 const STUDENT_SUMMARY: api.StudentSummary = {
@@ -143,6 +146,7 @@ describe("StudentsPage", () => {
     vi.mocked(schoolErpApi.getStudentFinance).mockReset().mockResolvedValue(EMPTY_FINANCE);
     vi.mocked(parentsApi.getParentInvoiceDetail).mockReset();
     vi.mocked(parentsApi.recordParentPayment).mockReset();
+    vi.mocked(parentsApi.setStudentBillingFee).mockReset().mockResolvedValue(undefined);
   });
 
   it("renders skeleton state while loading, then the fetched students (name + status only)", async () => {
@@ -240,6 +244,47 @@ describe("StudentsPage", () => {
     expect(screen.getByText("Assign Yusuf Omar to a route")).toBeInTheDocument();
     expect(screen.queryByText(/Issue the first invoice/)).not.toBeInTheDocument();
     expect(api.getStudent).toHaveBeenCalledWith(enrolled.id);
+  });
+
+  it("lets an org admin set the student's own monthly fee; a founder only sees it (ADR-0048)", async () => {
+    vi.mocked(api.listStudents).mockResolvedValue(pageOf([STUDENT_SUMMARY], 1));
+    useAuthStore.setState({
+      principal: { userId: "u2", role: "org_admin", organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW", regionIds: [] },
+      accessToken: "t",
+      refreshToken: "r",
+      status: "authenticated",
+      error: null,
+    });
+    renderPage();
+    await userEvent.click(await screen.findByText("Amina Hassan"));
+    const drawer = await screen.findByRole("dialog");
+    expect(await within(drawer).findByText("Monthly fee: not set")).toBeInTheDocument();
+    expect(within(drawer).getByText("Not invoiced until a fee is set.")).toBeInTheDocument();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Set fee" }));
+    await userEvent.type(await screen.findByLabelText("Monthly fee amount"), "20.00");
+    await userEvent.click(screen.getByRole("button", { name: "Save fee" }));
+
+    await waitFor(() =>
+      expect(parentsApi.setStudentBillingFee).toHaveBeenCalledWith(STUDENT_SUMMARY.id, {
+        monthlyFee: "20.00",
+        currency: "USD",
+      }),
+    );
+  });
+
+  it("shows but does not offer to change the fee for a founder", async () => {
+    vi.mocked(api.listStudents).mockResolvedValue(pageOf([STUDENT_SUMMARY], 1));
+    vi.mocked(schoolErpApi.getStudentFinance).mockResolvedValue({
+      ...EMPTY_FINANCE,
+      monthlyFee: "15.00",
+      monthlyFeeCurrency: "USD",
+    });
+    renderPage();
+    await userEvent.click(await screen.findByText("Amina Hassan"));
+    const drawer = await screen.findByRole("dialog");
+    expect(await within(drawer).findByText(/Monthly fee:/)).toHaveTextContent("15.00");
+    expect(within(drawer).queryByRole("button", { name: /fee/i })).not.toBeInTheDocument();
   });
 
   it("shows the student's own charges and payments and records a payment for that student only", async () => {

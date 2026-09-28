@@ -7,6 +7,8 @@ vi.mock("./api", () => ({
   registerParent: vi.fn(),
   listOrganizationsForPicker: vi.fn(),
   findParentByExactPhone: vi.fn(),
+  saveParentBillingProfile: vi.fn(),
+  setStudentBillingFee: vi.fn(),
 }));
 
 import * as api from "./api";
@@ -122,6 +124,47 @@ describe("CreateParentForm", () => {
         status: "authenticated",
         error: null,
       });
+    });
+
+    it("prices each child on their own and opens the family's billing account (ADR-0048)", async () => {
+      vi.mocked(api.registerParent).mockResolvedValue({
+        ...REGISTERED,
+        children: [
+          { id: "01ARZ3NDEKTSV4RRFFQ69G5ST01", fullName: "Amina", dateOfBirth: null, gender: null, status: "active" },
+          { id: "01ARZ3NDEKTSV4RRFFQ69G5ST02", fullName: "Yusuf", dateOfBirth: null, gender: null, status: "active" },
+        ],
+      });
+      vi.mocked(api.saveParentBillingProfile).mockReset().mockResolvedValue({} as api.ParentBillingProfile);
+      vi.mocked(api.setStudentBillingFee).mockReset().mockResolvedValue(undefined);
+      renderForm();
+
+      await userEvent.type(screen.getByPlaceholderText("e.g. Fatima Ali"), "Fatima Ali");
+      await userEvent.type(screen.getByPlaceholderText("+252612345678"), "+252612345678");
+      await userEvent.click(screen.getByRole("button", { name: "Add student" }));
+      await userEvent.click(screen.getByRole("button", { name: "Add student" }));
+      const names = screen.getAllByPlaceholderText("e.g. Mohamed Ahmed");
+      await userEvent.type(names[0], "Amina");
+      await userEvent.type(names[1], "Yusuf");
+      await userEvent.type(screen.getByLabelText("Monthly fee for student 1"), "10.00");
+      await userEvent.type(screen.getByLabelText("Monthly fee for student 2"), "20.00");
+
+      await userEvent.click(screen.getByRole("button", { name: "Save parent & children" }));
+
+      await waitFor(() => expect(api.setStudentBillingFee).toHaveBeenCalledTimes(2));
+      expect(api.saveParentBillingProfile).toHaveBeenCalledWith(PARENT.id, expect.not.objectContaining({ monthlyFee: expect.anything() }));
+      expect(api.setStudentBillingFee).toHaveBeenCalledWith("01ARZ3NDEKTSV4RRFFQ69G5ST01", { monthlyFee: "10.00", currency: "USD" });
+      expect(api.setStudentBillingFee).toHaveBeenCalledWith("01ARZ3NDEKTSV4RRFFQ69G5ST02", { monthlyFee: "20.00", currency: "USD" });
+    });
+
+    it("opens no billing account when no child was priced", async () => {
+      vi.mocked(api.registerParent).mockResolvedValue(REGISTERED);
+      vi.mocked(api.saveParentBillingProfile).mockReset();
+      renderForm();
+      await userEvent.type(screen.getByPlaceholderText("e.g. Fatima Ali"), "Fatima Ali");
+      await userEvent.type(screen.getByPlaceholderText("+252612345678"), "+252612345678");
+      await userEvent.click(screen.getByRole("button", { name: "Register parent" }));
+      expect(await screen.findByText("Tmp-Pass-123")).toBeInTheDocument();
+      expect(api.saveParentBillingProfile).not.toHaveBeenCalled();
     });
 
     it("hides the organization picker", async () => {
