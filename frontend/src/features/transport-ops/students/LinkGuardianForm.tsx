@@ -24,8 +24,7 @@ export interface LinkGuardianFormProps {
 
 /**
  * The "Add guardian" action on the student detail drawer — also auto-opened once, right after
- * enrollment (`StudentsPage.tsx`'s `onCreated` chain, alongside `AssignStudentForm`/
- * `IssueInvoiceForm`), matching the task's own "search existing parent → select → student
+ * enrollment (`StudentsPage.tsx`'s `onCreated` chain, alongside `AssignStudentForm`), matching the task's own "search existing parent → select → student
  * appears under parent" flow without folding a second aggregate's worth of fields into
  * `CreateStudentForm` itself.
  *

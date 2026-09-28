@@ -22,13 +22,12 @@ from raad.modules.school_erp.domain.entities import (
     Income,
     ParentBillingProfile,
     ParentInvoice,
+    ParentPayment,
+    StudentBillingProfile,
     StudentInvoice,
     StudentPayment,
 )
-from raad.modules.school_erp.domain.repositories import (
-    FinanceTotals,
-    VehicleFinancialSummary,
-)
+from raad.modules.school_erp.domain.repositories import FinanceTotals
 
 
 def _money(value: Decimal) -> str:
@@ -226,6 +225,8 @@ class IncomeDTO:
     is_voided: bool
     voided_reason: str | None
     created_at: datetime
+    income_type: str
+    vehicle_id: str | None
 
 
 def income_to_dto(income: Income) -> IncomeDTO:
@@ -242,6 +243,8 @@ def income_to_dto(income: Income) -> IncomeDTO:
         is_voided=income.is_voided,
         voided_reason=income.voided_reason,
         created_at=income.created_at,
+        income_type=income.income_type.value,
+        vehicle_id=str(income.vehicle_id) if income.vehicle_id else None,
     )
 
 
@@ -282,41 +285,27 @@ def expense_to_dto(expense: Expense) -> ExpenseDTO:
 
 @dataclass(frozen=True)
 class VehicleFinanceDTO:
-    """One bus's financial line. `vehicle_id` is `None` for invoices issued before the student
-    was assigned to a bus — surfaced as its own row rather than dropped, so the rows still add up
-    to the organization total shown beside them."""
+    """One bus's financial line for a date window (ADR-0047 §7).
+
+    Income is three separate figures, never one unexplained total: `student_income` (payment
+    allocations received in the window, attributed by each invoice line's frozen vehicle),
+    `daily_income` and `other_income` (manual `Income` rows naming this bus). `billed_amount`/
+    `outstanding_amount` describe what was invoiced to this bus's students in the window — a
+    billing position, not cash. `vehicle_id` is `None` for the "Unassigned" row: student money
+    from lines generated before the student had a bus, surfaced rather than dropped.
+    """
 
     vehicle_id: str | None
     student_count: int
-    invoice_count: int
     billed_amount: str
-    collected_amount: str
     outstanding_amount: str
-    paid_student_count: int
-    unpaid_student_count: int
+    student_income: str
+    daily_income: str
+    other_income: str
+    total_income: str
     expense_amount: str
     net_amount: str
     currency: str
-
-
-def vehicle_finance_to_dto(
-    summary: VehicleFinancialSummary, *, expense_amount: Decimal
-) -> VehicleFinanceDTO:
-    return VehicleFinanceDTO(
-        vehicle_id=summary.vehicle_id,
-        student_count=summary.student_count,
-        invoice_count=summary.invoice_count,
-        billed_amount=_money(summary.billed_amount),
-        collected_amount=_money(summary.collected_amount),
-        outstanding_amount=_money(summary.outstanding_amount),
-        paid_student_count=summary.paid_student_count,
-        unpaid_student_count=summary.unpaid_student_count,
-        expense_amount=_money(expense_amount),
-        # Cash actually in, minus cost actually attributed to this bus. Deliberately built from
-        # `collected`, not `billed`: an unpaid invoice is not profit.
-        net_amount=_money(summary.collected_amount - expense_amount),
-        currency=summary.currency,
-    )
 
 
 @dataclass(frozen=True)
@@ -357,7 +346,11 @@ class ProfitAndLossDTO:
 
     start: date
     end: date
+    #: Student income: allocations of payments *received* in the window (cash basis).
     student_revenue: str
+    #: `Income` rows of type `daily_vehicle`.
+    daily_vehicle_income: str
+    #: `Income` rows of type `other` only (ADR-0047 §6 — no longer every manual income row).
     other_income: str
     total_income: str
     total_expenses: str
@@ -433,7 +426,6 @@ class ParentBillingProfileDTO:
     id: str
     organization_id: str
     parent_id: str
-    monthly_fee: str
     currency: str
     billing_start_period: str
     due_day: int
@@ -447,8 +439,7 @@ def parent_billing_profile_to_dto(profile: ParentBillingProfile) -> ParentBillin
         id=str(profile.id),
         organization_id=str(profile.organization_id),
         parent_id=str(profile.parent_id),
-        monthly_fee=_money(profile.monthly_fee.amount),
-        currency=profile.monthly_fee.currency,
+        currency=profile.currency,
         billing_start_period=str(profile.billing_start_period),
         due_day=profile.due_day,
         status=profile.status.value,
@@ -472,6 +463,9 @@ class ParentInvoiceLineDTO:
     amount: str
     vehicle_id: str | None
     route_id: str | None
+    line_id: str
+    amount_paid: str
+    balance_due: str
 
 
 @dataclass(frozen=True)
@@ -557,7 +551,282 @@ def parent_invoice_to_detail_dto(
                 amount=_money(line.amount.amount),
                 vehicle_id=str(line.vehicle_id) if line.vehicle_id else None,
                 route_id=str(line.route_id) if line.route_id else None,
+                line_id=str(line.id),
+                amount_paid=_money(line.amount_paid),
+                balance_due=_money(line.balance_due),
             )
             for line in invoice.lines
         ],
     )
+
+
+# ==============================================================================================
+# ParentPayment / student finance / vehicle finance report (ADR-0047)
+# ==============================================================================================
+
+
+@dataclass(frozen=True)
+class ParentPaymentAllocationDTO:
+    student_id: str
+    full_name: str
+    amount: str
+    vehicle_id: str | None
+
+
+@dataclass(frozen=True)
+class ParentPaymentDTO:
+    id: str
+    parent_id: str
+    invoice_id: str
+    invoice_number: str
+    period: str
+    amount: str
+    currency: str
+    method: str
+    reference: str | None
+    received_on: date
+    notes: str | None
+    is_voided: bool
+    voided_reason: str | None
+    created_at: datetime
+    allocations: list[ParentPaymentAllocationDTO]
+
+
+def parent_payment_to_dto(
+    payment: ParentPayment, *, period: str, student_names: dict[str, str]
+) -> ParentPaymentDTO:
+    return ParentPaymentDTO(
+        id=str(payment.id),
+        parent_id=str(payment.parent_id),
+        invoice_id=str(payment.invoice_id),
+        invoice_number=_synthesize_invoice_number(str(payment.invoice_id), period),
+        period=period,
+        amount=_money(payment.amount.amount),
+        currency=payment.amount.currency,
+        method=payment.method.value,
+        reference=payment.reference,
+        received_on=payment.received_on,
+        notes=payment.notes,
+        is_voided=payment.is_voided,
+        voided_reason=payment.voided_reason,
+        created_at=payment.created_at,
+        allocations=[
+            ParentPaymentAllocationDTO(
+                student_id=str(a.student_id),
+                full_name=student_names.get(str(a.student_id), str(a.student_id)),
+                amount=_money(a.amount.amount),
+                vehicle_id=str(a.vehicle_id) if a.vehicle_id else None,
+            )
+            for a in payment.allocations
+        ],
+    )
+
+
+@dataclass(frozen=True)
+class StudentChargeDTO:
+    """One period's charge to one student — the student's own line on a Parent Invoice."""
+
+    invoice_id: str
+    invoice_number: str
+    line_id: str
+    period: str
+    parent_id: str
+    parent_name: str
+    amount: str
+    amount_paid: str
+    balance_due: str
+    invoice_status: str
+    due_date: str
+    vehicle_id: str | None
+    currency: str
+
+
+@dataclass(frozen=True)
+class StudentPaymentEntryDTO:
+    """The part of one family payment that paid for this student."""
+
+    payment_id: str
+    invoice_id: str
+    invoice_number: str
+    period: str
+    received_on: date
+    method: str
+    reference: str | None
+    amount: str
+    payment_total: str
+    currency: str
+    is_voided: bool
+    voided_reason: str | None
+
+
+@dataclass(frozen=True)
+class StudentParentDTO:
+    parent_id: str
+    full_name: str
+    is_primary: bool
+
+
+@dataclass(frozen=True)
+class StudentFinanceDTO:
+    """A student's own financial history (ADR-0047 §2): charges, payments allocated to them, and
+    the resulting balance. `legacy_invoices`/`legacy_payments` are the pre-ADR-0042 per-student
+    records, shown read-only; their money is already represented in the Parent Invoices the
+    ADR-0042 migration copied from them, so they never add to the totals here."""
+
+    student_id: str
+    full_name: str
+    status: str
+    parents: list[StudentParentDTO]
+    currency: str
+    total_charged: str
+    total_paid: str
+    balance_due: str
+    charges: list[StudentChargeDTO]
+    payments: list[StudentPaymentEntryDTO]
+    legacy_invoices: list[StudentInvoiceDTO]
+    legacy_payments: list[StudentPaymentDTO]
+    #: ADR-0048: the student's own recurring fee, or `None` when nobody has priced them yet.
+    monthly_fee: str | None = None
+    monthly_fee_currency: str | None = None
+
+
+# ---- ADR-0048: per-student pricing ------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StudentBillingFeeDTO:
+    student_id: str
+    organization_id: str
+    monthly_fee: str
+    currency: str
+    is_billable: bool
+    updated_at: datetime
+
+
+def student_billing_fee_to_dto(profile: StudentBillingProfile) -> StudentBillingFeeDTO:
+    return StudentBillingFeeDTO(
+        student_id=str(profile.student_id),
+        organization_id=str(profile.organization_id),
+        monthly_fee=_money(profile.monthly_fee.amount),
+        currency=profile.monthly_fee.currency,
+        is_billable=profile.is_billable,
+        updated_at=profile.updated_at,
+    )
+
+
+@dataclass(frozen=True)
+class ParentStudentFeeDTO:
+    student_id: str
+    full_name: str
+    status: str
+    monthly_fee: str | None
+    currency: str | None
+
+
+@dataclass(frozen=True)
+class ParentStudentFeesDTO:
+    """A family's per-student fees and what one month bills them: the sum of the fees of the
+    family's *active* children. `monthly_total` is `None` when those fees are in more than one
+    currency — adding them would not be a number."""
+
+    parent_id: str
+    monthly_total: str | None
+    currency: str | None
+    unpriced_active_students: int
+    students: list[ParentStudentFeeDTO]
+
+
+@dataclass(frozen=True)
+class GenerationLineDTO:
+    student_id: str
+    full_name: str
+    amount: str
+    vehicle_id: str | None
+
+
+@dataclass(frozen=True)
+class GenerationFamilyDTO:
+    parent_id: str
+    parent_name: str
+    currency: str
+    total: str
+    lines: list[GenerationLineDTO]
+
+
+@dataclass(frozen=True)
+class GenerationSkipDTO:
+    """Why a family or a student gets no line this period. `reason` is one of
+    `already_invoiced`, `no_fee`, `free`, `billed_by_another_parent`, `currency_mismatch`,
+    `no_active_children`. Only `no_fee` and `currency_mismatch` need an admin."""
+
+    parent_id: str
+    parent_name: str
+    reason: str
+    student_id: str | None = None
+    student_name: str | None = None
+
+
+@dataclass(frozen=True)
+class ParentInvoiceGenerationPreviewDTO:
+    """Exactly what `generate_parent_invoices` would issue for `period`, computed by the same
+    plan — so the confirmation an admin reads is the run they get."""
+
+    organization_id: str
+    period: str
+    families: list[GenerationFamilyDTO]
+    skipped: list[GenerationSkipDTO]
+    totals_by_currency: dict[str, str]
+
+
+@dataclass(frozen=True)
+class VehicleStudentIncomeDTO:
+    student_id: str
+    full_name: str
+    parent_id: str
+    parent_name: str
+    amount: str
+
+
+@dataclass(frozen=True)
+class VehicleParentIncomeDTO:
+    parent_id: str
+    full_name: str
+    amount: str
+
+
+@dataclass(frozen=True)
+class VehicleFinanceReportDTO:
+    """The per-vehicle financial report (ADR-0047 §7) for one bus and a date window. Every
+    figure is a sum of real rows listed alongside it — no estimate, no projection."""
+
+    vehicle_id: str
+    start: date
+    end: date
+    currency: str
+    student_income: str
+    daily_income: str
+    other_income: str
+    total_income: str
+    total_expenses: str
+    net_amount: str
+    billed_amount: str
+    outstanding_amount: str
+    income_by_student: list[VehicleStudentIncomeDTO]
+    income_by_parent: list[VehicleParentIncomeDTO]
+    daily_entries: list[IncomeDTO]
+    other_entries: list[IncomeDTO]
+    expenses_by_category: dict[str, str]
+    expense_entries: list[ExpenseDTO]
+
+
+@dataclass(frozen=True)
+class MyInvoicesDTO:
+    """`GET /me/invoices` — the calling parent's own invoices and payments, and nothing else."""
+
+    parent_id: str
+    currency: str
+    total_due: str
+    total_paid: str
+    balance_due: str
+    invoices: list[ParentInvoiceDetailDTO]
+    payments: list[ParentPaymentDTO]

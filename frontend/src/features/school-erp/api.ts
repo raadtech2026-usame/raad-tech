@@ -36,17 +36,6 @@ export type StudentPaymentMethod =
 
 export type CategoryKind = "income" | "expense";
 
-export interface FeePlan {
-  id: string;
-  organizationId: string;
-  name: string;
-  amount: string;
-  currency: string;
-  defaultDiscountAmount: string;
-  description: string | null;
-  status: "active" | "inactive";
-}
-
 export interface StudentInvoice {
   id: string;
   organizationId: string;
@@ -95,6 +84,10 @@ export interface FinancialCategory {
   status: "active" | "inactive";
 }
 
+/** ADR-0047 §6 — `daily_vehicle` is one bus's collection on one day; `other` is any other
+ * income. Student income is never a ledger entry: it comes from recorded parent payments. */
+export type IncomeType = "daily_vehicle" | "other";
+
 export interface LedgerEntry {
   id: string;
   organizationId: string;
@@ -105,6 +98,8 @@ export interface LedgerEntry {
   description: string | null;
   reference: string | null;
   vehicleId?: string | null;
+  /** Income entries only. */
+  incomeType?: IncomeType;
   isVoided: boolean;
   /** Why the entry was voided; null for live entries and for voids recorded before reasons were stored. */
   voidedReason: string | null;
@@ -120,26 +115,50 @@ export interface FinanceSummary {
   currency: string;
 }
 
+/** One bus for a date window (ADR-0047 §7). Three income sources, never one unexplained total. */
 export interface VehicleFinance {
-  /** `null` groups invoices issued before the student was assigned to a bus — a real case,
-   * surfaced as its own row rather than dropped so the rows still add up to the total. */
+  /** `null` = student money from invoices generated before the student had a bus. */
   vehicleId: string | null;
   studentCount: number;
-  invoiceCount: number;
   billedAmount: string;
-  collectedAmount: string;
   outstandingAmount: string;
-  paidStudentCount: number;
-  unpaidStudentCount: number;
+  studentIncome: string;
+  dailyIncome: string;
+  otherIncome: string;
+  totalIncome: string;
   expenseAmount: string;
   netAmount: string;
   currency: string;
 }
 
+export interface VehicleFinanceReport {
+  vehicleId: string;
+  start: string;
+  end: string;
+  currency: string;
+  studentIncome: string;
+  dailyIncome: string;
+  otherIncome: string;
+  totalIncome: string;
+  totalExpenses: string;
+  netAmount: string;
+  billedAmount: string;
+  outstandingAmount: string;
+  incomeByStudent: { studentId: string; fullName: string; parentId: string; parentName: string; amount: string }[];
+  incomeByParent: { parentId: string; fullName: string; amount: string }[];
+  dailyEntries: LedgerEntry[];
+  otherEntries: LedgerEntry[];
+  /** Keyed by category id; `""` holds uncategorised expenses. */
+  expensesByCategory: Record<string, string>;
+  expenseEntries: LedgerEntry[];
+}
+
 export interface ProfitAndLoss {
   start: string;
   end: string;
+  /** Student income: allocations of payments received in the window (cash basis). */
   studentRevenue: string;
+  dailyVehicleIncome: string;
   otherIncome: string;
   totalIncome: string;
   totalExpenses: string;
@@ -150,17 +169,6 @@ export interface ProfitAndLoss {
 }
 
 /* ---- Wire shapes (snake_case, exactly as the backend serialises them) --------------------- */
-
-interface FeePlanWire {
-  id: string;
-  organization_id: string;
-  name: string;
-  amount: string;
-  currency: string;
-  default_discount_amount: string;
-  description: string | null;
-  status: string;
-}
 
 interface StudentInvoiceWire {
   id: string;
@@ -219,21 +227,9 @@ interface LedgerWire {
   description: string | null;
   reference: string | null;
   vehicle_id?: string | null;
+  income_type?: string;
   is_voided: boolean;
   voided_reason: string | null;
-}
-
-function toFeePlan(w: FeePlanWire): FeePlan {
-  return {
-    id: w.id,
-    organizationId: w.organization_id,
-    name: w.name,
-    amount: w.amount,
-    currency: w.currency,
-    defaultDiscountAmount: w.default_discount_amount,
-    description: w.description,
-    status: w.status as FeePlan["status"],
-  };
 }
 
 function toStudentInvoice(w: StudentInvoiceWire): StudentInvoice {
@@ -300,6 +296,7 @@ function toLedgerEntry(w: LedgerWire): LedgerEntry {
     description: w.description,
     reference: w.reference,
     vehicleId: w.vehicle_id ?? null,
+    incomeType: w.income_type as IncomeType | undefined,
     isVoided: w.is_voided,
     voidedReason: w.voided_reason ?? null,
   };
@@ -329,36 +326,92 @@ export async function getFinanceSummary(period?: string): Promise<FinanceSummary
   };
 }
 
-export async function listVehicleFinance(period?: string): Promise<VehicleFinance[]> {
-  const qs = period ? `?period=${encodeURIComponent(period)}` : "";
-  const wire = await apiRequest<
-    {
-      vehicle_id: string | null;
-      student_count: number;
-      invoice_count: number;
-      billed_amount: string;
-      collected_amount: string;
-      outstanding_amount: string;
-      paid_student_count: number;
-      unpaid_student_count: number;
-      expense_amount: string;
-      net_amount: string;
-      currency: string;
-    }[]
-  >(`/school-finance/vehicles${qs}`);
+interface VehicleFinanceWire {
+  vehicle_id: string | null;
+  student_count: number;
+  billed_amount: string;
+  outstanding_amount: string;
+  student_income: string;
+  daily_income: string;
+  other_income: string;
+  total_income: string;
+  expense_amount: string;
+  net_amount: string;
+  currency: string;
+}
+
+/** `GET /school-finance/vehicles?start&end` — every bus's income by source, cost and net. */
+export async function listVehicleFinance(start: string, end: string): Promise<VehicleFinance[]> {
+  const wire = await apiRequest<VehicleFinanceWire[]>(
+    `/school-finance/vehicles?start=${start}&end=${end}`,
+  );
   return wire.map((v) => ({
     vehicleId: v.vehicle_id,
     studentCount: v.student_count,
-    invoiceCount: v.invoice_count,
     billedAmount: v.billed_amount,
-    collectedAmount: v.collected_amount,
     outstandingAmount: v.outstanding_amount,
-    paidStudentCount: v.paid_student_count,
-    unpaidStudentCount: v.unpaid_student_count,
+    studentIncome: v.student_income,
+    dailyIncome: v.daily_income,
+    otherIncome: v.other_income,
+    totalIncome: v.total_income,
     expenseAmount: v.expense_amount,
     netAmount: v.net_amount,
     currency: v.currency,
   }));
+}
+
+/** `GET /school-finance/vehicles/{id}/report?start&end` — one bus, with the rows behind each figure. */
+export async function getVehicleFinanceReport(
+  vehicleId: string,
+  start: string,
+  end: string,
+): Promise<VehicleFinanceReport> {
+  const w = await apiRequest<{
+    vehicle_id: string;
+    start: string;
+    end: string;
+    currency: string;
+    student_income: string;
+    daily_income: string;
+    other_income: string;
+    total_income: string;
+    total_expenses: string;
+    net_amount: string;
+    billed_amount: string;
+    outstanding_amount: string;
+    income_by_student: { student_id: string; full_name: string; parent_id: string; parent_name: string; amount: string }[];
+    income_by_parent: { parent_id: string; full_name: string; amount: string }[];
+    daily_entries: LedgerWire[];
+    other_entries: LedgerWire[];
+    expenses_by_category: Record<string, string>;
+    expense_entries: LedgerWire[];
+  }>(`/school-finance/vehicles/${encodeURIComponent(vehicleId)}/report?start=${start}&end=${end}`);
+  return {
+    vehicleId: w.vehicle_id,
+    start: w.start,
+    end: w.end,
+    currency: w.currency,
+    studentIncome: w.student_income,
+    dailyIncome: w.daily_income,
+    otherIncome: w.other_income,
+    totalIncome: w.total_income,
+    totalExpenses: w.total_expenses,
+    netAmount: w.net_amount,
+    billedAmount: w.billed_amount,
+    outstandingAmount: w.outstanding_amount,
+    incomeByStudent: w.income_by_student.map((r) => ({
+      studentId: r.student_id,
+      fullName: r.full_name,
+      parentId: r.parent_id,
+      parentName: r.parent_name,
+      amount: r.amount,
+    })),
+    incomeByParent: w.income_by_parent.map((r) => ({ parentId: r.parent_id, fullName: r.full_name, amount: r.amount })),
+    dailyEntries: w.daily_entries.map(toLedgerEntry),
+    otherEntries: w.other_entries.map(toLedgerEntry),
+    expensesByCategory: w.expenses_by_category,
+    expenseEntries: w.expense_entries.map(toLedgerEntry),
+  };
 }
 
 export async function getProfitAndLoss(start: string, end: string): Promise<ProfitAndLoss> {
@@ -366,6 +419,7 @@ export async function getProfitAndLoss(start: string, end: string): Promise<Prof
     start: string;
     end: string;
     student_revenue: string;
+    daily_vehicle_income: string;
     other_income: string;
     total_income: string;
     total_expenses: string;
@@ -378,6 +432,7 @@ export async function getProfitAndLoss(start: string, end: string): Promise<Prof
     start: wire.start,
     end: wire.end,
     studentRevenue: wire.student_revenue,
+    dailyVehicleIncome: wire.daily_vehicle_income,
     otherIncome: wire.other_income,
     totalIncome: wire.total_income,
     totalExpenses: wire.total_expenses,
@@ -388,6 +443,8 @@ export async function getProfitAndLoss(start: string, end: string): Promise<Prof
   };
 }
 
+/** Legacy per-student invoices (before ADR-0042, 2026-09-11) — read-only history, used by the
+ * platform Organization Details page. New billing is Parent Invoices. */
 export async function listStudentInvoices(
   params: OffsetListParams,
 ): Promise<OffsetPage<StudentInvoice>> {
@@ -397,6 +454,7 @@ export async function listStudentInvoices(
   return toOffsetPage(wire, toStudentInvoice);
 }
 
+/** Legacy per-student payments — read-only history, see `listStudentInvoices`. */
 export async function listStudentPayments(
   params: OffsetListParams,
 ): Promise<OffsetPage<StudentPayment>> {
@@ -404,13 +462,6 @@ export async function listStudentPayments(
     `/school-finance/student-payments?${buildOffsetListQuery(params)}`,
   );
   return toOffsetPage(wire, toStudentPayment);
-}
-
-export async function listFeePlans(params: OffsetListParams): Promise<OffsetPage<FeePlan>> {
-  const wire = await apiRequest<OffsetPageWire<FeePlanWire>>(
-    `/school-finance/fee-plans?${buildOffsetListQuery(params)}`,
-  );
-  return toOffsetPage(wire, toFeePlan);
 }
 
 export async function listCategories(
@@ -436,162 +487,7 @@ export async function listExpenses(params: OffsetListParams): Promise<OffsetPage
   return toOffsetPage(wire, toLedgerEntry);
 }
 
-export async function listInvoicesForVehicle(
-  vehicleId: string,
-  period?: string,
-): Promise<StudentInvoice[]> {
-  const qs = period ? `?period=${encodeURIComponent(period)}` : "";
-  const wire = await apiRequest<StudentInvoiceWire[]>(
-    `/school-finance/vehicles/${encodeURIComponent(vehicleId)}/invoices${qs}`,
-  );
-  return wire.map(toStudentInvoice);
-}
-
 /* ---- Writes ------------------------------------------------------------------------------- */
-
-export interface IssueStudentInvoiceInput {
-  studentId: string;
-  period: string;
-  dueDate: string;
-  feePlanId?: string | null;
-  amount?: string | null;
-  currency?: string | null;
-  discountAmount?: string | null;
-  notes?: string | null;
-}
-
-export async function issueStudentInvoice(
-  input: IssueStudentInvoiceInput,
-): Promise<StudentInvoice> {
-  const wire = await apiRequest<StudentInvoiceWire>("/school-finance/student-invoices", {
-    method: "POST",
-    body: {
-      student_id: input.studentId,
-      period: input.period,
-      due_date: input.dueDate,
-      fee_plan_id: input.feePlanId ?? null,
-      amount: input.amount ?? null,
-      currency: input.currency ?? null,
-      discount_amount: input.discountAmount ?? null,
-      notes: input.notes ?? null,
-    },
-  });
-  return toStudentInvoice(wire);
-}
-
-export async function generateStudentInvoices(input: {
-  period: string;
-  dueDate: string;
-  feePlanId: string;
-  studentIds: string[];
-}): Promise<StudentInvoice[]> {
-  const wire = await apiRequest<StudentInvoiceWire[]>(
-    "/school-finance/student-invoices/generate",
-    {
-      method: "POST",
-      body: {
-        period: input.period,
-        due_date: input.dueDate,
-        fee_plan_id: input.feePlanId,
-        student_ids: input.studentIds,
-      },
-    },
-  );
-  return wire.map(toStudentInvoice);
-}
-
-export async function cancelStudentInvoice(
-  invoiceId: string,
-  reason?: string | null,
-): Promise<StudentInvoice> {
-  const wire = await apiRequest<StudentInvoiceWire>(
-    `/school-finance/student-invoices/${encodeURIComponent(invoiceId)}/cancel`,
-    { method: "POST", body: { reason: reason ?? null } },
-  );
-  return toStudentInvoice(wire);
-}
-
-export async function recordStudentPayment(
-  invoiceId: string,
-  input: {
-    amount: string;
-    currency: string;
-    method: StudentPaymentMethod;
-    receivedOn: string;
-    reference?: string | null;
-    notes?: string | null;
-  },
-): Promise<StudentPayment> {
-  const wire = await apiRequest<StudentPaymentWire>(
-    `/school-finance/student-invoices/${encodeURIComponent(invoiceId)}/payments`,
-    {
-      method: "POST",
-      body: {
-        amount: input.amount,
-        currency: input.currency,
-        method: input.method,
-        received_on: input.receivedOn,
-        reference: input.reference ?? null,
-        notes: input.notes ?? null,
-      },
-    },
-  );
-  return toStudentPayment(wire);
-}
-
-export async function createFeePlan(input: {
-  name: string;
-  amount: string;
-  currency: string;
-  defaultDiscountAmount?: string;
-  description?: string | null;
-}): Promise<FeePlan> {
-  const wire = await apiRequest<FeePlanWire>("/school-finance/fee-plans", {
-    method: "POST",
-    body: {
-      name: input.name,
-      amount: input.amount,
-      currency: input.currency,
-      default_discount_amount: input.defaultDiscountAmount ?? "0.00",
-      description: input.description ?? null,
-    },
-  });
-  return toFeePlan(wire);
-}
-
-export async function updateFeePlan(
-  feePlanId: string,
-  input: {
-    name: string;
-    amount: string;
-    currency: string;
-    defaultDiscountAmount?: string;
-    description?: string | null;
-  },
-): Promise<FeePlan> {
-  const wire = await apiRequest<FeePlanWire>(
-    `/school-finance/fee-plans/${encodeURIComponent(feePlanId)}`,
-    {
-      method: "PATCH",
-      body: {
-        name: input.name,
-        amount: input.amount,
-        currency: input.currency,
-        default_discount_amount: input.defaultDiscountAmount ?? "0.00",
-        description: input.description ?? null,
-      },
-    },
-  );
-  return toFeePlan(wire);
-}
-
-export async function archiveFeePlan(feePlanId: string): Promise<FeePlan> {
-  const wire = await apiRequest<FeePlanWire>(
-    `/school-finance/fee-plans/${encodeURIComponent(feePlanId)}/archive`,
-    { method: "POST" },
-  );
-  return toFeePlan(wire);
-}
 
 export async function createCategory(input: {
   name: string;
@@ -697,6 +593,8 @@ export async function recordIncome(input: {
   amount: string;
   currency: string;
   occurredOn: string;
+  incomeType: IncomeType;
+  vehicleId?: string | null;
   categoryId?: string | null;
   description?: string | null;
   reference?: string | null;
@@ -707,12 +605,157 @@ export async function recordIncome(input: {
       amount: input.amount,
       currency: input.currency,
       occurred_on: input.occurredOn,
+      income_type: input.incomeType,
+      vehicle_id: input.vehicleId ?? null,
       category_id: input.categoryId ?? null,
       description: input.description ?? null,
       reference: input.reference ?? null,
     },
   });
   return toLedgerEntry(wire);
+}
+
+/* ---- Student-level finance (ADR-0047 §2) ------------------------------------------------- */
+
+export interface StudentCharge {
+  invoiceId: string;
+  invoiceNumber: string;
+  lineId: string;
+  period: string;
+  parentId: string;
+  parentName: string;
+  amount: string;
+  amountPaid: string;
+  balanceDue: string;
+  invoiceStatus: "unpaid" | "partial" | "paid" | "cancelled";
+  dueDate: string;
+  vehicleId: string | null;
+  currency: string;
+}
+
+export interface StudentPaymentEntry {
+  paymentId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  period: string;
+  receivedOn: string;
+  method: StudentPaymentMethod;
+  reference: string | null;
+  /** The part of the family payment allocated to this student. */
+  amount: string;
+  paymentTotal: string;
+  currency: string;
+  isVoided: boolean;
+  voidedReason: string | null;
+}
+
+export interface StudentFinance {
+  studentId: string;
+  fullName: string;
+  status: string;
+  parents: { parentId: string; fullName: string; isPrimary: boolean }[];
+  currency: string;
+  totalCharged: string;
+  totalPaid: string;
+  balanceDue: string;
+  charges: StudentCharge[];
+  payments: StudentPaymentEntry[];
+  /** Pre-2026-09-11 per-student invoices — read-only history, never added to the totals. */
+  legacyInvoices: StudentInvoice[];
+  legacyPayments: StudentPayment[];
+  /** ADR-0048: the student's own monthly fee, or `null` when it has not been set. */
+  monthlyFee: string | null;
+  monthlyFeeCurrency: string | null;
+}
+
+/** `GET /school-finance/students/{id}/finance` — one student's charges, payments and balance. */
+export async function getStudentFinance(studentId: string): Promise<StudentFinance> {
+  const w = await apiRequest<{
+    student_id: string;
+    full_name: string;
+    status: string;
+    parents: { parent_id: string; full_name: string; is_primary: boolean }[];
+    currency: string;
+    total_charged: string;
+    total_paid: string;
+    balance_due: string;
+    charges: {
+      invoice_id: string;
+      invoice_number: string;
+      line_id: string;
+      period: string;
+      parent_id: string;
+      parent_name: string;
+      amount: string;
+      amount_paid: string;
+      balance_due: string;
+      invoice_status: string;
+      due_date: string;
+      vehicle_id: string | null;
+      currency: string;
+    }[];
+    payments: {
+      payment_id: string;
+      invoice_id: string;
+      invoice_number: string;
+      period: string;
+      received_on: string;
+      method: string;
+      reference: string | null;
+      amount: string;
+      payment_total: string;
+      currency: string;
+      is_voided: boolean;
+      voided_reason: string | null;
+    }[];
+    legacy_invoices: StudentInvoiceWire[];
+    legacy_payments: StudentPaymentWire[];
+    monthly_fee?: string | null;
+    monthly_fee_currency?: string | null;
+  }>(`/school-finance/students/${encodeURIComponent(studentId)}/finance`);
+  return {
+    studentId: w.student_id,
+    fullName: w.full_name,
+    status: w.status,
+    parents: w.parents.map((p) => ({ parentId: p.parent_id, fullName: p.full_name, isPrimary: p.is_primary })),
+    currency: w.currency,
+    totalCharged: w.total_charged,
+    totalPaid: w.total_paid,
+    balanceDue: w.balance_due,
+    charges: w.charges.map((c) => ({
+      invoiceId: c.invoice_id,
+      invoiceNumber: c.invoice_number,
+      lineId: c.line_id,
+      period: c.period,
+      parentId: c.parent_id,
+      parentName: c.parent_name,
+      amount: c.amount,
+      amountPaid: c.amount_paid,
+      balanceDue: c.balance_due,
+      invoiceStatus: c.invoice_status as StudentCharge["invoiceStatus"],
+      dueDate: c.due_date,
+      vehicleId: c.vehicle_id,
+      currency: c.currency,
+    })),
+    payments: w.payments.map((p) => ({
+      paymentId: p.payment_id,
+      invoiceId: p.invoice_id,
+      invoiceNumber: p.invoice_number,
+      period: p.period,
+      receivedOn: p.received_on,
+      method: p.method as StudentPaymentMethod,
+      reference: p.reference,
+      amount: p.amount,
+      paymentTotal: p.payment_total,
+      currency: p.currency,
+      isVoided: p.is_voided,
+      voidedReason: p.voided_reason,
+    })),
+    legacyInvoices: w.legacy_invoices.map(toStudentInvoice),
+    legacyPayments: w.legacy_payments.map(toStudentPayment),
+    monthlyFee: w.monthly_fee ?? null,
+    monthlyFeeCurrency: w.monthly_fee_currency ?? null,
+  };
 }
 
 /* ---- Cross-context lookups ---------------------------------------------------------------- */
@@ -735,24 +778,6 @@ export async function recordIncome(input: {
 export interface NamedOption {
   id: string;
   label: string;
-}
-
-interface StudentPickerWire {
-  id: string;
-  full_name: string;
-  status: string;
-}
-
-export async function listStudentsForPicker(search = ""): Promise<NamedOption[]> {
-  const query = buildOffsetListQuery({
-    page: 1,
-    pageSize: 100,
-    sort: { field: "full_name", direction: "asc" },
-    filters: { status: "active" },
-    search,
-  });
-  const wire = await apiRequest<OffsetPageWire<StudentPickerWire>>(`/students?${query}`);
-  return wire.data.map((student) => ({ id: student.id, label: student.full_name }));
 }
 
 interface VehiclePickerWire {

@@ -70,6 +70,8 @@ export interface DownloadReportParams {
   /** ADR-0041 §3 — two additive optional filters, both already-filterable columns at the
    * repository layer; no new query capability, only two report builders that read them. */
   parentId?: string;
+  /** ADR-0047 — the student a Student Statement is for. */
+  studentId?: string;
   paymentMethod?: string;
   /** Report Center re-design (2026-09-11) — `ParentInvoiceStatus`, already a filterable column
    * (ADR-0042); no new query capability, only report builders now plumbing it through. */
@@ -89,6 +91,7 @@ function buildReportQuery(params: DownloadReportParams, extra: Record<string, st
   if (params.end) qs.set("end", params.end);
   if (params.vehicleId) qs.set("vehicle_id", params.vehicleId);
   if (params.parentId) qs.set("parent_id", params.parentId);
+  if (params.studentId) qs.set("student_id", params.studentId);
   if (params.paymentMethod) qs.set("payment_method", params.paymentMethod);
   if (params.status) qs.set("status", params.status);
   if (params.organizationId) qs.set("organization_id", params.organizationId);
@@ -233,6 +236,23 @@ export async function listParentsForReportPicker(search: string): Promise<Report
   });
   const wire = await apiRequest<OffsetPageWire<ParentPickerWire>>(`/parents?${query}`);
   return wire.data.map((parent) => ({ id: parent.id, label: parent.full_name }));
+}
+
+interface StudentPickerWire {
+  id: string;
+  full_name: string;
+}
+
+export async function listStudentsForReportPicker(search: string): Promise<ReportPickerOption[]> {
+  const query = buildOffsetListQuery({
+    page: 1,
+    pageSize: 20,
+    sort: { field: "full_name", direction: "asc" },
+    filters: {},
+    search,
+  });
+  const wire = await apiRequest<OffsetPageWire<StudentPickerWire>>(`/students?${query}`);
+  return wire.data.map((student) => ({ id: student.id, label: student.full_name }));
 }
 
 interface VehiclePickerWire {

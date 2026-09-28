@@ -17,14 +17,17 @@ from __future__ import annotations
 
 import unittest
 
+
 from pydantic import ValidationError
 
 from raad.modules.school_erp.api.schemas import (
+    CreateOrUpdateParentBillingProfileRequest,
     CreateFeePlanRequest,
     IssueStudentInvoiceRequest,
     RecordExpenseRequest,
     RecordIncomeRequest,
     RecordStudentPaymentRequest,
+    SetStudentBillingFeeRequest,
     UpdateFeePlanRequest,
     VoidLedgerEntryRequest,
     VoidStudentPaymentRequest,
@@ -148,6 +151,72 @@ class VoidReasonSchemaTests(unittest.TestCase):
         for model in self._VOID_REQUESTS:
             with self.subTest(model=model.__name__):
                 self.assertEqual(model(reason="Duplicate entry").reason, "Duplicate entry")
+
+
+class ParentPaymentLedgerSchemaTests(unittest.TestCase):
+    """ADR-0047's new request models, built the way FastAPI builds them."""
+
+    def test_payment_and_allocation_amounts_round_half_up(self) -> None:
+        from raad.modules.school_erp.api.schemas import RecordParentPaymentRequest
+
+        request = RecordParentPaymentRequest(
+            amount="10.005",
+            currency="USD",
+            method="cash",
+            received_on="2026-09-12",
+            allocations=[{"student_id": "S1", "amount": "10.005"}],
+        )
+        self.assertEqual(request.amount, "10.01")
+        self.assertEqual(request.allocations[0].amount, "10.01")
+
+    def test_payment_requires_a_known_method_and_a_sensible_idempotency_key(self) -> None:
+        from raad.modules.school_erp.api.schemas import RecordParentPaymentRequest
+
+        base = {"amount": "5", "currency": "USD", "received_on": "2026-09-12"}
+        with self.assertRaises(ValidationError):
+            RecordParentPaymentRequest(**base, method="bitcoin")
+        with self.assertRaises(ValidationError):
+            RecordParentPaymentRequest(**base, method="cash", idempotency_key="short")
+        self.assertIsNone(RecordParentPaymentRequest(**base, method="cash").allocations)
+
+    def test_cancelling_an_invoice_and_voiding_a_payment_require_a_reason(self) -> None:
+        from raad.modules.school_erp.api.schemas import (
+            CancelParentInvoiceRequest,
+            VoidParentPaymentRequest,
+        )
+
+        for model in (CancelParentInvoiceRequest, VoidParentPaymentRequest):
+            with self.subTest(model=model.__name__), self.assertRaises(ValidationError):
+                model(reason="")
+
+    def test_income_type_is_a_closed_set_defaulting_to_other(self) -> None:
+        base = {"amount": "5", "currency": "USD", "occurred_on": "2026-09-12"}
+        self.assertEqual(RecordIncomeRequest(**base).income_type, "other")
+        self.assertEqual(
+            RecordIncomeRequest(**base, income_type="daily_vehicle", vehicle_id="V").income_type,
+            "daily_vehicle",
+        )
+        with self.assertRaises(ValidationError):
+            RecordIncomeRequest(**base, income_type="student")
+
+
+class PerStudentPricingSchemaTests(unittest.TestCase):
+    """ADR-0048's request models, built the way FastAPI builds them."""
+
+    def test_a_student_fee_rounds_half_up_and_zero_is_allowed(self) -> None:
+        self.assertEqual(
+            SetStudentBillingFeeRequest(monthly_fee="10.005", currency="usd").monthly_fee, "10.01"
+        )
+        self.assertEqual(
+            SetStudentBillingFeeRequest(monthly_fee="0", currency="USD").monthly_fee, "0.00"
+        )
+
+    def test_the_billing_profile_body_refuses_the_retired_family_fee(self) -> None:
+        """A client still sending a family fee must be told, not have it silently ignored."""
+        body = {"currency": "USD", "billing_start_period": "2026-09", "due_day": 10}
+        self.assertEqual(CreateOrUpdateParentBillingProfileRequest(**body).currency, "USD")
+        with self.assertRaises(ValidationError):
+            CreateOrUpdateParentBillingProfileRequest(**body, monthly_fee="80.00")
 
 
 if __name__ == "__main__":  # pragma: no cover

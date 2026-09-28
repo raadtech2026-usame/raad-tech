@@ -23,6 +23,7 @@ vi.mock("./api", () => ({
   orgInvoices: vi.fn(),
   orgPayments: vi.fn(),
   orgAudit: vi.fn(),
+  orgParentInvoices: vi.fn(),
   orgStudentInvoices: vi.fn(),
   orgStudentPayments: vi.fn(),
   orgIncome: vi.fn(),
@@ -101,7 +102,7 @@ describe("OrganizationDetailsPage", () => {
     for (const key of [
       "orgUsers", "orgVehicles", "orgDevices", "orgDrivers", "orgRoutes",
       "orgSubscriptions", "orgSubscriptionInvoices", "orgPlanCatalog", "orgInvoices", "orgPayments", "orgAudit",
-      "orgStudentInvoices", "orgStudentPayments", "orgIncome", "orgExpenses",
+      "orgParentInvoices", "orgStudentInvoices", "orgStudentPayments", "orgIncome", "orgExpenses",
     ] as const) {
       vi.mocked(detailApi[key]).mockReset().mockResolvedValue(emptyPage() as never);
     }

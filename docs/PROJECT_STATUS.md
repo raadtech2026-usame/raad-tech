@@ -2073,6 +2073,89 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Per-student transport pricing and Known Issue #16 (ADR-0048, 2026-09-28).** Amends
+  ADR-0042 §1 at the user's direction: each student has their own monthly fee
+  (`StudentBillingProfile`); a Parent Invoice is one line per active child at that fee, and the
+  family total is their sum. The Parent Billing Profile keeps only the account terms.
+
+  **What changed**
+  - New aggregate, table and migration `f6c2d9e1b3a8`: fees backfilled from each student's
+    latest real invoice line; never-billed students get no fee and are reported, not guessed.
+    Existing invoices and lines untouched (verified byte-identical, locally and on a
+    production-shaped copy upgraded from production's revision `b3d7e1f94a26`).
+  - Partial unique index on Parent Invoices so a cancelled period can be billed again (it used
+    to fail the whole run).
+  - `GET /parent-invoices/generation-preview`, built from the same plan as the run; the Finance
+    page now confirms the run from it. A child is billed once per period across guardians.
+  - `PUT /students/{id}/billing-fee`, `GET /parents/{id}/student-fees`; the billing-profile body
+    no longer accepts `monthly_fee` (422).
+  - Frontend: per-child fees in the family billing form, in parent registration and on the
+    student's Finance section.
+  - Known Issue #16 closed (see §10).
+
+  **Verified:** backend 2009 unit/architecture/contract + 371 integration (1 pre-existing skip);
+  frontend 907 tests, `tsc` clean, build clean; migrations from empty and from `b3d7e1f94a26`,
+  downgrade/re-upgrade and the downgrade refusal branch; 65/65 end-to-end checks over real HTTP
+  in a fresh test organization. **Not verified:** browser interaction (Chrome extension not
+  connected).
+
+- **Finance completion: parent payment ledger, student-level finance, vehicle income
+  (ADR-0047, 2026-09-28).** Amends ADR-0042 §4. The design forks were approved by the user
+  before implementation.
+
+  **What changed**
+  - A Parent Invoice is paid only through recorded `ParentPayment`s (method, reference, date,
+    void with a reason, optional idempotency key). Each payment is allocated to the students'
+    invoice lines. The default split is pro-rata to each student's remaining balance and is
+    editable per payment. The invoice status is derived from the payments.
+  - `PATCH …/payment-status` is removed. Migration `e4a9c2b7d315` turned every existing paid
+    amount into one "Recorded before payment ledger" payment. It was verified on the local
+    canonical DB: for all 13 invoices, paid = lines = payments = allocations, with no status
+    changed.
+  - Each student now has a financial history (`GET /school-finance/students/{id}/finance`). The
+    parent summary uses each child's real paid amount instead of a pro-rata estimate.
+  - `erp_income` gains `income_type` (`daily_vehicle` requires a bus; `other` optionally has one)
+    and `vehicle_id`.
+  - Vehicle finance (`GET /school-finance/vehicles?start&end`, `/vehicles/{id}/report`) and P&L
+    keep student, daily and other income apart. Student income is now cash-basis, by
+    `received_on`.
+  - Vehicle attribution is the bus frozen on the invoice line at generation, so a bus change
+    never moves historical money. `StudentAssignment` has no effective dates to rebuild history
+    from.
+  - New reports `org.vehicle_finance`, `org.student_statement` and `org.parent_statement`
+    (`ReportRequest.student_id`). `bus_report`'s metadata used to `:.2f`-format DTO strings, a
+    ValueError on every bus with data; that is fixed.
+  - `GET /me/invoices` gives a parent their own invoices, self-scoped with no grant.
+  - The worker job `generate_monthly_parent_invoices` is off unless
+    `RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES=true` (wired in Compose/Coolify).
+  - RBAC `school_erp.parent_payments.{list,manage}` (migration `e5b1c8d2a4f7`).
+  - UI:
+    - the Finance page gains Vehicle finance, an income type filter, per-student lines and
+      payments in the invoice drawer, Record payment, Void payment and Cancel invoice (reason
+      required);
+    - the Parents page gains per-child current invoice, Payments and Record/Cancel;
+    - the Students page gains a Finance section with a per-student Record payment;
+    - the legacy `FeePlanForm`/`RecordPaymentForm`/`GenerateInvoicesForm`/`IssueInvoiceForm` are
+      removed (their money was never in any report). Legacy rows stay readable.
+
+  **Verified**
+  - Backend: unit, architecture and contract suites, plus 365+ integration tests.
+  - Migration: fresh-DB upgrade, downgrade/upgrade round trip, and `alembic check` all clean.
+  - Frontend: 896 tests, `tsc` and production build.
+  - A 44-check end-to-end run over real HTTP (new code, local Postgres): registration →
+    per-student lines → student and consolidated payments → idempotency → overpay, currency and
+    duplicate refusals → void → daily/other income and expenses → per-bus figures and report →
+    P&L equal to bus rows plus organization-wide money → report preview/PDF/XLSX → `/me/invoices`
+    → cross-organization 404s → RBAC → `created_by` and audit rows.
+
+  **Not verified or not built**
+  - Browser interaction.
+  - Expense attachments: deferred; they need `python-multipart` and a file store.
+  - EVC Plus/Zaad.
+  - Per-child pricing.
+  - A concurrent double payment is refused by `row_version`, but surfaces as a 500 (Known Issue
+    #16).
+
 - **Finance P0.1 + P0.3: SaaS payments are checked against their invoice** (2026-09-25,
   finance P0 integrity pass; no migration). Neither payment path looked at the invoice.
   `record_manual_payment` created a second PAID payment for an already-paid invoice.
@@ -2760,7 +2843,15 @@ Reverse-chronological (most recent first):
   live-verified" as not yet true until that checklist has actually been run for real, the same
   posture Known Issue #13 already establishes for TLS.
 
-### 16. Raw database constraint violations (FK, unique, etc.) surface as generic 500s
+### 16. ~~Raw database constraint violations (FK, unique, etc.) surface as generic 500s~~ — RESOLVED 2026-09-28
+- **Resolution:** ADR-0048 §6. `core/errors/handlers.py` maps `StaleDataError` (lost
+  `row_version` race) to 409 CONFLICT and `IntegrityError` by SQLSTATE — unique 23505 → 409,
+  foreign key 23503 and check 23514 → 422, anything else still 500. Live-verified: six
+  simultaneous payments on one Parent Invoice returned one 201 and five 409s (one of them a real
+  optimistic-lock loss), no 500, one payment row. Regression tests:
+  `tests/unit/test_concurrency_error_handlers.py`,
+  `tests/integration/test_school_erp_payment_ledger_repository.py` (deterministic race through
+  the real service and database). The original description is kept below.
 - **Severity:** Low
 - **Description:** Discovered live while testing Priority 1 Item 6's new `POST
   /scope-assignments/support` route with a syntactically-valid but non-existent

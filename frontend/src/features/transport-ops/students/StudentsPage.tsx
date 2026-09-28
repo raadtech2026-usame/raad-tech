@@ -23,7 +23,7 @@ import { EditStudentForm } from "./EditStudentForm";
 import { LinkGuardianForm } from "./LinkGuardianForm";
 import { AssignStudentForm } from "../student-assignments/AssignStudentForm";
 import { StudentAssignmentSection } from "../student-assignments/StudentAssignmentSection";
-import { IssueInvoiceForm } from "../../school-erp/IssueInvoiceForm";
+import { StudentFinanceSection } from "../../school-erp/StudentFinanceSection";
 import {
   getStudent,
   listGuardiansForStudent,
@@ -161,12 +161,12 @@ function GuardiansSection({
  * #1 guards against — flagged here as a deliberate, narrow exception. There is still no dedicated
  * "Student Assignments" nav page — see `router.tsx`'s own Phase F6 note for why.
  *
- * **`IssueInvoiceForm` (below) is the same shape one bounded context further out.** It lives in
- * `features/school-erp/` (module `school_erp`, not `transport_ops`) and is imported as a
- * component, not as a data read — this page never touches `school-erp/api.ts` directly, so
- * ADR-0038 §2's domain separation (never merge `school_erp` and anything else at the data layer)
- * is unbroken; only the *drawer* is composed onto this page, exactly as the requirement asks for
- * (student + guardian + transport assignment + financial setup as one registration flow).
+ * **`StudentFinanceSection` (below) is the same shape one bounded context further out.** It
+ * lives in `features/school-erp/` (module `school_erp`) and is imported as a component — this
+ * page never reads `school-erp/api.ts` itself, so ADR-0038 §2's domain separation is unbroken.
+ * It shows the student's own charges, payments and balance (ADR-0047 §2). Charges come from the
+ * family's Parent Invoice, generated from the parent's Billing Profile — there is no per-student
+ * invoice form any more (the pre-2026-09-11 one issued invoices no report counted).
  *
 
  * **Tenant-scoped server-side** (ADR-0021's `_apply_scope`, verified against the running
@@ -185,7 +185,6 @@ export function StudentsPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [linkGuardianOpen, setLinkGuardianOpen] = useState(false);
   const [assignRouteOpen, setAssignRouteOpen] = useState(false);
-  const [issueInvoiceOpen, setIssueInvoiceOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
 
   const {
@@ -390,6 +389,11 @@ export function StudentsPage() {
                 canManage={canManage}
                 onAddGuardian={() => setLinkGuardianOpen(true)}
               />
+              <StudentFinanceSection
+                studentId={selectedStudent.id}
+                canManage={canManage}
+                canSetFee={principal?.role === "org_admin"}
+              />
             </>
           )
         }
@@ -447,19 +451,13 @@ export function StudentsPage() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={(student) => {
-          // Registration flows straight into every part of the task's own described flow
-          // (2026-09-10): guardian linking (`LinkGuardianForm`, search an existing parent by
-          // name or phone — see "Add Student -> search parent -> assign vehicle -> save" in the
-          // task's own UX section), transport assignment (`AssignStudentForm`), and financial
-          // setup (`IssueInvoiceForm`, school_erp). All three open alongside the student's own
-          // detail drawer, and all three are optional either way: closing any one of them
-          // (Cancel) leaves the student enrolled with no link/no active assignment/no invoice,
-          // exactly the same as an admin who enrolls today and does any step later from the
-          // drawer's own actions.
+          // Registration flows straight into guardian linking (`LinkGuardianForm`) and
+          // transport assignment (`AssignStudentForm`), both optional. Billing follows from the
+          // guardian: the student is charged on their parent's next Parent Invoice (ADR-0042/
+          // ADR-0047), so there is no separate invoice step here.
           setSelectedStudent({ id: student.id, fullName: student.fullName, status: student.status });
           setLinkGuardianOpen(true);
           setAssignRouteOpen(true);
-          setIssueInvoiceOpen(true);
         }}
       />
 
@@ -480,12 +478,6 @@ export function StudentsPage() {
         organizationId={detail?.organizationId ?? null}
       />
 
-      <IssueInvoiceForm
-        open={issueInvoiceOpen}
-        onClose={() => setIssueInvoiceOpen(false)}
-        studentId={selectedStudent?.id ?? null}
-        studentName={selectedStudent?.fullName}
-      />
     </div>
   );
 }

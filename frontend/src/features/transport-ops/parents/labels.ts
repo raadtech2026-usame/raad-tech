@@ -1,5 +1,5 @@
 import type { BadgeVariant } from "../../../shared/components/Badge/Badge";
-import type { ParentInvoiceStatus, ParentPaymentStatus, ParentStatus } from "./api";
+import type { ParentInvoiceStatus, ParentPaymentStatus, ParentStatus, PaymentMethod } from "./api";
 
 /** Display copy for `transport_ops.domain.value_objects.ParentStatus` — kept in one place so the
  * list table, the detail drawer, and the status-transition buttons all render the exact same
@@ -93,4 +93,18 @@ export function invoiceStatusTone(status: ParentInvoiceStatus): BadgeVariant {
     default:
       return "neutral";
   }
+}
+
+/** ADR-0047 — how a school received a payment. Same closed set the backend enforces. */
+export const PAYMENT_METHOD_OPTIONS: { value: PaymentMethod; label: string }[] = [
+  { value: "cash", label: "Cash" },
+  { value: "mobile_money", label: "Mobile money (EVC Plus / Zaad)" },
+  { value: "bank_transfer", label: "Bank transfer" },
+  { value: "cheque", label: "Cheque" },
+  { value: "card", label: "Card" },
+  { value: "other", label: "Other" },
+];
+
+export function paymentMethodLabel(method: string): string {
+  return PAYMENT_METHOD_OPTIONS.find((option) => option.value === method)?.label ?? method;
 }

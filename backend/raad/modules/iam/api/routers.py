@@ -118,6 +118,13 @@ from raad.modules.iam.application.services import (
 # platform_audit.api.routers already imports another module's own api/deps.py function
 # directly (get_billing_uow from billing.api.deps) — an established, legal cross-module
 # api-layer wiring pattern, not a new one invented here.
+# ADR-0047 §9: /me/invoices composes school_erp's own application service and wire shape, the
+# same cross-module api-layer wiring the transport_ops imports below already use.
+from raad.modules.school_erp.api.deps import get_parent_finance_service, get_school_erp_uow
+from raad.modules.school_erp.api.routers import my_invoices_response
+from raad.modules.school_erp.api.schemas import MyInvoicesResponse
+from raad.modules.school_erp.application.ports import SchoolErpUnitOfWork
+from raad.modules.school_erp.application.services import ParentFinanceApplicationService
 from raad.modules.transport_ops.api.deps import get_transport_ops_uow
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 
@@ -707,3 +714,27 @@ async def get_my_driver_profile(
 ) -> MeDriverProfileResponse:
     dto = await me_service.get_my_driver_profile(principal, uow=uow)
     return _me_driver_profile_dto_to_response(dto)
+
+
+@me_router.get(
+    "/invoices",
+    response_model=MyInvoicesResponse,
+    status_code=status.HTTP_200_OK,
+    summary="The current Parent principal's own invoices and payments",
+    description=(
+        "ADR-0047 §9. Resolves the caller's own `Parent` record from `Principal.user_id` and "
+        "returns that family's Parent Invoices (with each child's line, paid amount and balance) "
+        "and non-voided payments. Never accepts a `parent_id`, so it cannot be pointed at another "
+        "family, and needs no `school_erp.*` permission. 404 when no `Parent` links to this user."
+    ),
+)
+async def get_my_invoices(
+    principal: Principal = Depends(get_current_user),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> MyInvoicesResponse:
+    dto = await service.get_my_invoices(
+        principal, school_erp_uow=school_erp_uow, transport_ops_uow=transport_ops_uow
+    )
+    return my_invoices_response(dto)

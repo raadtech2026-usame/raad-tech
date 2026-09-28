@@ -287,10 +287,8 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             [
                 _vehicle_label(names, s.vehicle_id),
                 str(s.student_count),
-                str(s.paid_student_count),
-                str(s.unpaid_student_count),
                 s.billed_amount,
-                s.collected_amount,
+                s.student_income,
                 s.outstanding_amount,
                 s.expense_amount,
                 s.net_amount,
@@ -299,14 +297,13 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
         ]
         return ReportTable(
             title="Vehicle Revenue",
-            subtitle="Expected billing, collections, receivables and attributed cost per bus",
+            subtitle="Expected billing, student income, receivables and attributed cost per bus",
             headers=[
-                "Vehicle", "Students", "Paid", "Unpaid", "Expected", "Collected",
-                "Receivables", "Cost", "Net",
+                "Vehicle", "Students", "Expected", "Student income", "Receivables", "Cost", "Net",
             ],
             rows=rows,
             metadata={"Period": _period_label(request), "Vehicles": str(len(rows))},
-            numeric_columns=[1, 2, 3, 4, 5, 6, 7, 8],
+            numeric_columns=[1, 2, 3, 4, 5, 6],
         )
 
     async def legacy_student_bus_roster(request: ReportRequest) -> ReportTable:
@@ -432,13 +429,17 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             "Families billed": str(len(roster_page.data)),
         }
         if summary is not None:
+            # `VehicleFinanceDTO` amounts are already exact decimal strings; formatting them
+            # again with `:.2f` raised `ValueError` on every bus that had any row at all.
             metadata.update(
                 {
-                    "Expected revenue": f"{summary.billed_amount:.2f}",
-                    "Collected": f"{summary.collected_amount:.2f}",
-                    "Receivables": f"{summary.outstanding_amount:.2f}",
-                    "Attributed cost": f"{summary.expense_amount:.2f}",
-                    "Net": f"{summary.net_amount:.2f}",
+                    "Expected revenue": summary.billed_amount,
+                    "Student income": summary.student_income,
+                    "Daily income": summary.daily_income,
+                    "Other income": summary.other_income,
+                    "Receivables": summary.outstanding_amount,
+                    "Attributed cost": summary.expense_amount,
+                    "Net": summary.net_amount,
                 }
             )
         return ReportTable(
@@ -475,9 +476,9 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             totals = await uow.parent_invoices.summarise_totals(period=BillingPeriod(period))
         return {
             "expected": totals.billed_amount,
-            "collected": totals.collected_amount,
+            "collected": Decimal(pnl.student_revenue),
             "receivables": totals.outstanding_amount,
-            "other_income": Decimal(pnl.other_income),
+            "other_income": Decimal(pnl.daily_vehicle_income) + Decimal(pnl.other_income),
             "expenses": Decimal(pnl.total_expenses),
             "net_result": Decimal(pnl.net_profit),
         }
@@ -553,10 +554,12 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
                     period=period, uow=uow
                 )
                 v = next((s for s in vehicle_summaries if s.vehicle_id == request.vehicle_id), None)
-                expected = v.billed_amount if v else Decimal("0.00")
-                collected = v.collected_amount if v else Decimal("0.00")
-                receivables = v.outstanding_amount if v else Decimal("0.00")
-                other_income = Decimal("0.00")
+                expected = Decimal(v.billed_amount) if v else Decimal("0.00")
+                collected = Decimal(v.student_income) if v else Decimal("0.00")
+                receivables = Decimal(v.outstanding_amount) if v else Decimal("0.00")
+                other_income = (
+                    Decimal(v.daily_income) + Decimal(v.other_income) if v else Decimal("0.00")
+                )
                 async with uow:
                     by_vehicle = await uow.expenses.sum_by_vehicle_between(start=start, end=end)
                 expenses = by_vehicle.get(request.vehicle_id, Decimal("0.00"))
@@ -791,45 +794,58 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
         )
 
     async def income_report(request: ReportRequest) -> ReportTable:
-        """The directive's "Income Report" (Section 13) — separates Parent Transportation
-        Collections from Other Income, never double-counted (`sum_collected_between` and
-        `uow.income` are two disjoint sources by construction — a student payment never becomes
-        an `Income` row, ADR-0040's own automatic-accounting rule). The table itself lists only
-        the `Income` ledger (donations, sponsorships, grants); the Parent collections figure is a
-        summary line, not a fabricated ledger row standing in for real transactions."""
+        """Income in three separate lines (ADR-0047 §6): student income (payment allocations
+        received in the window), daily vehicle income and other income. The table lists the
+        manually recorded rows with their type and bus; student income is a summary line, since
+        it is derived from payments rather than recorded as income rows — never double-counted.
+        """
         uow = _scoped(container, SchoolErpUnitOfWork, request)
         start, end = _window(request)
         async with uow:
-            collections = await uow.parent_invoices.sum_collected_between(start=start, end=end)
+            student_income = await uow.parent_payments.sum_student_income_between(
+                start=start, end=end
+            )
             page = await _collect(uow.income)
             categories = await uow.financial_categories.list_all()
         category_names = {str(c.id): c.name for c in categories}
         live = [i for i in page.data if not i.is_voided and start <= i.occurred_on <= end]
+        names = await _vehicle_names(
+            container, request, {str(i.vehicle_id) for i in live if i.vehicle_id}
+        )
         rows = [
             [
                 i.occurred_on.isoformat(),
+                "Daily vehicle" if i.income_type.value == "daily_vehicle" else "Other",
+                _vehicle_label(names, str(i.vehicle_id)) if i.vehicle_id else "—",
                 category_names.get(str(i.category_id), "Uncategorised") if i.category_id else "Uncategorised",
                 i.description or "—",
                 f"{i.amount.amount:.2f}",
             ]
             for i in live
         ]
-        other_income = sum((i.amount.amount for i in live), Decimal("0.00"))
-        total_income = collections + other_income
+        daily = sum(
+            (i.amount.amount for i in live if i.income_type.value == "daily_vehicle"),
+            Decimal("0.00"),
+        )
+        other = sum(
+            (i.amount.amount for i in live if i.income_type.value != "daily_vehicle"),
+            Decimal("0.00"),
+        )
         return ReportTable(
             title="Income Report",
-            subtitle="Parent transportation collections shown separately from other income",
-            headers=["Date", "Category", "Description", "Amount"],
+            subtitle="Student income, daily vehicle income and other income, kept separate",
+            headers=["Date", "Type", "Vehicle", "Category", "Description", "Amount"],
             rows=rows,
             metadata={
-                "Parent Transportation Collections": f"{collections:.2f}",
-                "Other Income": f"{other_income:.2f}",
-                "Total Income": f"{total_income:.2f}",
+                "Student Income": f"{student_income:.2f}",
+                "Daily Vehicle Income": f"{daily:.2f}",
+                "Other Income": f"{other:.2f}",
+                "Total Income": f"{(student_income + daily + other):.2f}",
                 "From": start.isoformat(),
                 "To": end.isoformat(),
             },
-            numeric_columns=[3],
-            total_row=["TOTAL OTHER INCOME", "", "", f"{other_income:.2f}"],
+            numeric_columns=[5],
+            total_row=["TOTAL RECORDED INCOME", "", "", "", "", f"{(daily + other):.2f}"],
         )
 
     async def expense_report(request: ReportRequest) -> ReportTable:
@@ -891,7 +907,8 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
 
         rows = [
             ["INCOME", ""],
-            ["Parent Transportation Collections", pnl.student_revenue],
+            ["Student Income", pnl.student_revenue],
+            ["Daily Vehicle Income", pnl.daily_vehicle_income],
             ["Other Income", pnl.other_income],
             ["Total Income", pnl.total_income],
             ["", ""],
@@ -1145,6 +1162,230 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             },
             numeric_columns=[2, 3, 4],
             total_row=["TOTAL", "", f"{total_billed:.2f}", f"{total_paid:.2f}", f"{total_outstanding:.2f}", ""],
+        )
+
+    # ==========================================================================================
+    # ADR-0047 — vehicle, student and parent statements
+    # ==========================================================================================
+
+    async def vehicle_finance_report(request: ReportRequest) -> ReportTable:
+        """Every bus's income by source, cost and net for the window; or, with a vehicle
+        selected, that bus's full breakdown. Both come from the same application-service reads
+        the Finance page renders — no second calculation."""
+        start, end = _window(request)
+        finance_service: SchoolErpApplicationService = container.resolve(
+            SchoolErpApplicationService
+        )
+        if not request.vehicle_id:
+            summaries = await finance_service.get_vehicle_financial_overview(
+                start=start, end=end, uow=_scoped(container, SchoolErpUnitOfWork, request)
+            )
+            names = await _vehicle_names(
+                container, request, {s.vehicle_id for s in summaries if s.vehicle_id}
+            )
+            rows = [
+                [
+                    _vehicle_label(names, s.vehicle_id),
+                    s.student_income,
+                    s.daily_income,
+                    s.other_income,
+                    s.total_income,
+                    s.expense_amount,
+                    s.net_amount,
+                ]
+                for s in summaries
+            ]
+            totals = [
+                f"{sum((Decimal(row[i]) for row in rows), Decimal('0.00')):.2f}"
+                for i in range(1, 7)
+            ]
+            currency = summaries[0].currency if summaries else ""
+            return ReportTable(
+                title="Vehicle Financial Report",
+                subtitle="Income by source, attributed cost and net for every bus",
+                headers=[
+                    "Vehicle", "Student income", "Daily income", "Other income",
+                    "Total income", "Expenses", "Net",
+                ],
+                rows=rows,
+                metadata={
+                    "From": start.isoformat(),
+                    "To": end.isoformat(),
+                    "Currency": currency,
+                    "Note": (
+                        "Organization-wide income and expenses (no vehicle) are in Profit & "
+                        "Loss, not here. Unassigned = student payments for invoices generated "
+                        "before the student had a bus."
+                    ),
+                },
+                numeric_columns=[1, 2, 3, 4, 5, 6],
+                total_row=["TOTAL", *totals],
+            )
+
+        parent_service: ParentFinanceApplicationService = container.resolve(
+            ParentFinanceApplicationService
+        )
+        report = await parent_service.get_vehicle_finance_report(
+            request.vehicle_id,
+            start=start,
+            end=end,
+            school_erp_uow=_scoped(container, SchoolErpUnitOfWork, request),
+            transport_ops_uow=_scoped(container, TransportOpsUnitOfWork, request),
+        )
+        uow = _scoped(container, SchoolErpUnitOfWork, request)
+        async with uow:
+            categories = await uow.financial_categories.list_all()
+        category_names = {str(c.id): c.name for c in categories}
+        names = await _vehicle_names(container, request, {request.vehicle_id})
+        vehicle_label = _vehicle_label(names, request.vehicle_id)
+
+        rows: list[list[str]] = [["INCOME", "", ""]]
+        rows.append(["Student income", "", report.student_income])
+        for item in report.income_by_student:
+            rows.append([f"  {item.full_name}", item.parent_name, item.amount])
+        rows.append(["Daily income", "", report.daily_income])
+        for entry in report.daily_entries:
+            rows.append([f"  {entry.occurred_on.isoformat()}", entry.description or "—", entry.amount])
+        rows.append(["Other income", "", report.other_income])
+        for entry in report.other_entries:
+            label = category_names.get(entry.category_id or "", "Uncategorised")
+            rows.append([f"  {entry.occurred_on.isoformat()}", label, entry.amount])
+        rows.append(["Total income", "", report.total_income])
+        rows.append(["", "", ""])
+        rows.append(["EXPENSES", "", ""])
+        for category_id, amount in sorted(
+            report.expenses_by_category.items(), key=lambda item: Decimal(item[1]), reverse=True
+        ):
+            rows.append([category_names.get(category_id, "Uncategorised"), "", amount])
+        rows.append(["Total expenses", "", report.total_expenses])
+        return ReportTable(
+            title="Vehicle Financial Report",
+            subtitle=f"{vehicle_label} — income by source, expenses and net",
+            headers=["Line", "Detail", f"Amount ({report.currency})"],
+            rows=rows,
+            metadata={
+                "Vehicle": vehicle_label,
+                "From": start.isoformat(),
+                "To": end.isoformat(),
+                "Billed to this bus's students": report.billed_amount,
+                "Still owed": report.outstanding_amount,
+            },
+            numeric_columns=[2],
+            total_row=["NET", "", report.net_amount],
+        )
+
+    async def student_statement(request: ReportRequest) -> ReportTable:
+        if not request.student_id:
+            return ReportTable(
+                title="Student Statement",
+                subtitle="Select a student to generate this report",
+                headers=["Student"],
+                rows=[],
+                metadata={},
+            )
+        service: ParentFinanceApplicationService = container.resolve(
+            ParentFinanceApplicationService
+        )
+        finance = await service.get_student_finance(
+            request.student_id,
+            school_erp_uow=_scoped(container, SchoolErpUnitOfWork, request),
+            transport_ops_uow=_scoped(container, TransportOpsUnitOfWork, request),
+        )
+        rows: list[list[str]] = []
+        for charge in finance.charges:
+            status = charge.invoice_status.title()
+            rows.append(
+                [charge.period, "Charge", charge.invoice_number, status, charge.amount, "", charge.balance_due]
+            )
+        for payment in finance.payments:
+            state = f"Voided — {payment.voided_reason}" if payment.is_voided else "Recorded"
+            rows.append(
+                [
+                    payment.received_on.isoformat(),
+                    f"Payment ({payment.method.replace('_', ' ')})",
+                    payment.reference or payment.invoice_number,
+                    state,
+                    "",
+                    payment.amount,
+                    "",
+                ]
+            )
+        return ReportTable(
+            title="Student Statement",
+            subtitle=finance.full_name,
+            headers=["Date / Period", "Entry", "Reference", "Status", "Charged", "Paid", "Balance"],
+            rows=rows,
+            metadata={
+                "Student": finance.full_name,
+                "Parents": ", ".join(p.full_name for p in finance.parents) or "—",
+                "Currency": finance.currency,
+                "Total charged": finance.total_charged,
+                "Total paid": finance.total_paid,
+                "Balance due": finance.balance_due,
+            },
+            numeric_columns=[4, 5, 6],
+            total_row=["TOTAL", "", "", "", finance.total_charged, finance.total_paid, finance.balance_due],
+        )
+
+    async def parent_statement(request: ReportRequest) -> ReportTable:
+        if not request.parent_id:
+            return ReportTable(
+                title="Parent Statement",
+                subtitle="Select a parent to generate this report",
+                headers=["Parent"],
+                rows=[],
+                metadata={},
+            )
+        service: ParentFinanceApplicationService = container.resolve(
+            ParentFinanceApplicationService
+        )
+        school_erp_uow = _scoped(container, SchoolErpUnitOfWork, request)
+        transport_ops_uow = _scoped(container, TransportOpsUnitOfWork, request)
+        summary = await service.get_parent_financial_summary(
+            request.parent_id, school_erp_uow=school_erp_uow, transport_ops_uow=transport_ops_uow
+        )
+        page = await service.list_parent_invoices(
+            page=1,
+            page_size=_MAX_ROWS,
+            period=None,
+            status=None,
+            parent_id=request.parent_id,
+            school_erp_uow=school_erp_uow,
+            transport_ops_uow=transport_ops_uow,
+        )
+        payments = await service.list_parent_payments(
+            request.parent_id, school_erp_uow=school_erp_uow, transport_ops_uow=transport_ops_uow
+        )
+        parent_name = page.data[0].parent_name if page.data else request.parent_id
+        rows: list[list[str]] = [["STUDENTS", "", "", "", ""]]
+        for child in summary.children:
+            rows.append([child.full_name, str(child.invoice_count), child.total_due, child.total_paid, child.outstanding])
+        rows.append(["", "", "", "", ""])
+        rows.append(["INVOICES", "", "", "", ""])
+        for invoice in page.data:
+            rows.append(
+                [f"{invoice.period} · {invoice.invoice_number}", invoice.status.title(), invoice.amount, invoice.amount_paid, invoice.balance_due]
+            )
+        rows.append(["", "", "", "", ""])
+        rows.append(["PAYMENTS", "", "", "", ""])
+        for payment in payments:
+            split = ", ".join(f"{a.full_name} {a.amount}" for a in payment.allocations)
+            state = "Voided" if payment.is_voided else payment.method.replace("_", " ")
+            rows.append([f"{payment.received_on.isoformat()} · {payment.period}", state, "", payment.amount, split])
+        return ReportTable(
+            title="Parent Statement",
+            subtitle=parent_name,
+            headers=["Item", "Count / Status", "Charged", "Paid", "Balance / Split"],
+            rows=rows,
+            metadata={
+                "Parent": parent_name,
+                "Currency": summary.currency,
+                "Total due": summary.total_due,
+                "Total paid": summary.total_paid,
+                "Outstanding": summary.outstanding,
+            },
+            numeric_columns=[2, 3],
+            total_row=["FAMILY TOTAL", "", summary.total_due, summary.total_paid, summary.outstanding],
         )
 
     # ==========================================================================================
@@ -1715,6 +1956,40 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             build=org_profit_and_loss,
             roles=_ORG_ROLES,
             accepts=("start", "end"),
+            category="financial",
+        ),
+        # -- Organization: ADR-0047 statements ------------------------------------------------------
+        ReportDefinition(
+            key="org.vehicle_finance",
+            title="Vehicle Financial Report",
+            description=(
+                "Student, daily and other income, expenses and net — per bus, or in detail for "
+                "one selected bus."
+            ),
+            scope="organization",
+            build=vehicle_finance_report,
+            roles=_ORG_ROLES,
+            accepts=("start", "end", "vehicle_id"),
+            category="financial",
+        ),
+        ReportDefinition(
+            key="org.student_statement",
+            title="Student Statement",
+            description="One student's charges, payments and balance.",
+            scope="organization",
+            build=student_statement,
+            roles=_ORG_ROLES,
+            accepts=("student_id",),
+            category="financial",
+        ),
+        ReportDefinition(
+            key="org.parent_statement",
+            title="Parent Statement",
+            description="One family's invoices, payments and balance, child by child.",
+            scope="organization",
+            build=parent_statement,
+            roles=_ORG_ROLES,
+            accepts=("parent_id",),
             category="financial",
         ),
         # -- Organization: Transportation ---------------------------------------------------------

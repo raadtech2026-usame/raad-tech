@@ -331,6 +331,7 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("GET", "/api/v1/me", "ADR-0023 canonical self-service identity resolution, no API Contracts row"),
     ("GET", "/api/v1/me/students", "ADR-0023 canonical self-service identity resolution, no API Contracts row"),
     ("GET", "/api/v1/me/driver-profile", "ADR-0023 canonical self-service identity resolution, no API Contracts row"),
+    ("GET", "/api/v1/me/invoices", "ADR-0047 SS9 - the calling parent's own invoices and payments, self-scoped"),
 
     # ADR-0019: account-sharing session cap self-service (commit 07cd3e8) — no API Contracts row.
     ("GET", "/api/v1/auth/sessions", "ADR-0019 account-sharing session cap self-service, no API Contracts row"),
@@ -496,10 +497,52 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/school-finance/parent-invoices/{invoice_id}",
         "ADR-0042 - one Parent Invoice's own child line items",
     ),
+    # ADR-0047 (amends ADR-0042 SS4): the payment ledger replaced PATCH .../payment-status.
     (
-        "PATCH",
-        "/api/v1/school-finance/parent-invoices/{invoice_id}/payment-status",
-        "ADR-0042 - the entire payment workflow: Unpaid/Partial/Paid, no separate payment ledger",
+        "POST",
+        "/api/v1/school-finance/parent-invoices/{invoice_id}/payments",
+        "ADR-0047 - record a payment, allocated to the invoice's students",
+    ),
+    (
+        "GET",
+        "/api/v1/school-finance/parent-invoices/{invoice_id}/payments",
+        "ADR-0047 - payments against one invoice, voided ones included",
+    ),
+    (
+        "GET",
+        "/api/v1/school-finance/parents/{parent_id}/payments",
+        "ADR-0047 - every payment a family has made",
+    ),
+    (
+        "POST",
+        "/api/v1/school-finance/parent-payments/{payment_id}/void",
+        "ADR-0047 - void a payment with a reason and reverse it on the invoice",
+    ),
+    (
+        "GET",
+        "/api/v1/school-finance/students/{student_id}/finance",
+        "ADR-0047 - one student's charges, payments and balance",
+    ),
+    (
+        "GET",
+        "/api/v1/school-finance/vehicles/{vehicle_id}/report",
+        "ADR-0047 - one bus's income by source, expenses and net for a date range",
+    ),
+    # ADR-0048: each student's own monthly fee replaces the family fee split equally.
+    (
+        "PUT",
+        "/api/v1/school-finance/students/{student_id}/billing-fee",
+        "ADR-0048 - set a student's own monthly fee; future invoices only",
+    ),
+    (
+        "GET",
+        "/api/v1/school-finance/parents/{parent_id}/student-fees",
+        "ADR-0048 - a family's per-student fees and its monthly total",
+    ),
+    (
+        "GET",
+        "/api/v1/school-finance/parent-invoices/generation-preview",
+        "ADR-0048 - what the monthly run would issue, and who it leaves out and why",
     ),
     (
         "POST",

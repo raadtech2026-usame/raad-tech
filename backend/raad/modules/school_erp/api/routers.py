@@ -47,6 +47,28 @@ from raad.modules.school_erp.api.deps import (
 )
 from raad.modules.school_erp.api.schemas import (
     CancelParentInvoiceRequest,
+    ExpenseResponse as _ExpenseResponse,
+    IncomeResponse as _IncomeResponse,
+    MyInvoicesResponse,
+    ParentPaymentAllocationResponse,
+    ParentPaymentResponse,
+    RecordParentPaymentRequest,
+    StudentChargeResponse,
+    StudentFinanceResponse,
+    GenerationFamilyResponse,
+    GenerationLineResponse,
+    GenerationSkipResponse,
+    ParentInvoiceGenerationPreviewResponse,
+    ParentStudentFeeResponse,
+    ParentStudentFeesResponse,
+    SetStudentBillingFeeRequest,
+    StudentBillingFeeResponse,
+    StudentParentResponse,
+    StudentPaymentEntryResponse,
+    VehicleFinanceReportResponse,
+    VehicleParentIncomeResponse,
+    VehicleStudentIncomeResponse,
+    VoidParentPaymentRequest,
     CancelStudentInvoiceRequest,
     CreateFeePlanRequest,
     CreateFinancialCategoryRequest,
@@ -70,7 +92,6 @@ from raad.modules.school_erp.api.schemas import (
     RecordIncomeRequest,
     RecordStudentPaymentRequest,
     SetParentBillingProfileStatusRequest,
-    SetParentInvoicePaymentStatusRequest,
     StudentInvoiceResponse,
     StudentPaymentResponse,
     UpdateFeePlanRequest,
@@ -91,14 +112,17 @@ from raad.modules.school_erp.application.commands import (
     GenerateStudentInvoicesCommand,
     IssueStudentInvoiceCommand,
     RecordExpenseCommand,
+    PaymentAllocationRequest,
     RecordIncomeCommand,
+    RecordParentPaymentCommand,
     RecordStudentPaymentCommand,
     SetParentBillingProfileStatusCommand,
-    SetParentInvoicePaymentStatusCommand,
+    SetStudentBillingFeeCommand,
     UpdateFeePlanCommand,
     UpdateFinancialCategoryCommand,
     VoidExpenseCommand,
     VoidIncomeCommand,
+    VoidParentPaymentCommand,
     VoidStudentPaymentCommand,
 )
 from raad.modules.school_erp.application.ports import SchoolErpUnitOfWork
@@ -109,15 +133,23 @@ from raad.modules.school_erp.application.queries import (
     IncomeDTO,
     ParentBillingProfileDTO,
     ParentFinancialSummaryDTO,
+    MyInvoicesDTO,
     ParentInvoiceDetailDTO,
     ParentInvoiceSummaryDTO,
+    ParentPaymentDTO,
+    StudentFinanceDTO,
     StudentInvoiceDTO,
     StudentPaymentDTO,
+    VehicleFinanceReportDTO,
 )
 from raad.modules.school_erp.application.services import (
     ParentFinanceApplicationService,
     SchoolErpApplicationService,
 )
+from raad.modules.fleet_device.api.deps import get_fleet_device_uow, get_vehicle_service
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.fleet_device.application.queries import GetVehicleByIdQuery
+from raad.modules.fleet_device.application.services import VehicleApplicationService
 from raad.modules.transport_ops.api.deps import get_transport_ops_uow
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 
@@ -697,8 +729,9 @@ async def list_income(
     status_code=status.HTTP_201_CREATED,
     summary="Record organization income",
     description=(
-        "For income that is *not* a student fee — student fees reach the ledger through student "
-        "invoices and payments, and recording one here as well would double-count it."
+        "Daily bus collections (`income_type=daily_vehicle`, `vehicle_id` required) and any other "
+        "income (`other`). Never student fees: those come from recorded parent payments, and "
+        "recording one here as well would double-count it."
     ),
 )
 async def record_income(
@@ -719,6 +752,8 @@ async def record_income(
             description=body.description,
             reference=body.reference,
             actor=principal,
+            income_type=body.income_type,
+            vehicle_id=body.vehicle_id,
         ),
         uow=uow,
     )
@@ -861,20 +896,26 @@ async def get_finance_summary(
     status_code=status.HTTP_200_OK,
     summary="Vehicle financial overview",
     description=(
-        "Students, revenue, collections, outstanding balance and attributed cost per bus — one "
-        "grouped query, not one per vehicle. A `vehicle_id` of `null` groups invoices issued "
-        "before the student was assigned to a bus."
+        "Per bus, for a window: student income, daily income, other income, total income, "
+        "attributed expenses and net, plus billed/outstanding to the bus's students. Use "
+        "`start`/`end` (inclusive), or `period` for one month; neither means all time. A "
+        "`vehicle_id` of `null` holds student money from invoices generated before the student "
+        "had a bus."
     ),
 )
 async def get_vehicle_financial_overview(
     period: str | None = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    start: date | None = Query(default=None),
+    end: date | None = Query(default=None),
     principal: Principal = Depends(
         require_permission(Permission("school_erp.reports.read"))
     ),
     service: SchoolErpApplicationService = Depends(get_school_erp_service),
     uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
 ) -> list[VehicleFinanceResponse]:
-    dtos = await service.get_vehicle_financial_overview(period=period, uow=uow)
+    dtos = await service.get_vehicle_financial_overview(
+        period=period, start=start, end=end, uow=uow
+    )
     return [VehicleFinanceResponse(**dto.__dict__) for dto in dtos]
 
 
@@ -1025,12 +1066,12 @@ async def get_parent_billing_profile(
     "/parents/{parent_id}/billing-profile",
     response_model=ParentBillingProfileResponse,
     status_code=status.HTTP_200_OK,
-    summary="Create or update a parent's Billing Profile",
+    summary="Create or update a parent's Billing Profile (billing account)",
     description=(
-        "The directive's Part 5 — the school types the family's actual monthly charge directly, "
-        "no Fee Plan required. Creates the profile if the parent has none yet, otherwise edits "
-        "the existing one in place; editing never rewrites an already-generated Parent Invoice, "
-        "which froze its own amount at generation time."
+        "Whether, from which period, on which due day and in which currency the family is "
+        "invoiced (ADR-0048). There is no family fee: each Parent Invoice line is its own "
+        "student's fee, set with `PUT /school-finance/students/{student_id}/billing-fee`. "
+        "Editing never rewrites an already-generated Parent Invoice."
     ),
 )
 async def put_parent_billing_profile(
@@ -1048,7 +1089,6 @@ async def put_parent_billing_profile(
         CreateOrUpdateParentBillingProfileCommand(
             organization_id=organization_id,
             parent_id=parent_id,
-            monthly_fee=body.monthly_fee,
             currency=body.currency,
             billing_start_period=body.billing_start_period,
             due_day=body.due_day,
@@ -1109,15 +1149,61 @@ def _parent_invoice_detail_response(dto: ParentInvoiceDetailDTO) -> ParentInvoic
     )
 
 
+@school_finance_router.get(
+    "/parent-invoices/generation-preview",
+    response_model=ParentInvoiceGenerationPreviewResponse,
+    status_code=status.HTTP_200_OK,
+    summary="What the monthly run would issue for a period, and who it would leave out",
+    description=(
+        "Writes nothing. Built by the same plan `POST /parent-invoices/generate` uses: one line "
+        "per active child at the child's own fee (ADR-0048), and every family or child left out "
+        "with its reason — `no_fee` and `currency_mismatch` need an admin."
+    ),
+)
+async def preview_parent_invoice_generation(
+    period: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    organization_id: str | None = Query(default=None),
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.parent_invoices.list"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> ParentInvoiceGenerationPreviewResponse:
+    dto = await service.preview_parent_invoice_generation(
+        organization_id=_resolve_organization_id(principal, organization_id),
+        period=period,
+        actor=principal,
+        school_erp_uow=school_erp_uow,
+        transport_ops_uow=transport_ops_uow,
+    )
+    return ParentInvoiceGenerationPreviewResponse(
+        organization_id=dto.organization_id,
+        period=dto.period,
+        families=[
+            GenerationFamilyResponse(
+                **{
+                    **family.__dict__,
+                    "lines": [GenerationLineResponse(**line.__dict__) for line in family.lines],
+                }
+            )
+            for family in dto.families
+        ],
+        skipped=[GenerationSkipResponse(**item.__dict__) for item in dto.skipped],
+        totals_by_currency=dto.totals_by_currency,
+    )
+
+
 @school_finance_router.post(
     "/parent-invoices/generate",
     response_model=list[ParentInvoiceDetailResponse],
     status_code=status.HTTP_201_CREATED,
     summary="Generate this period's Parent Invoices for every active Billing Profile",
     description=(
-        "The monthly billing run (the directive's Part 18). Idempotent: a parent already "
-        "invoiced for the period is skipped, not double-charged, so re-running a partially-"
-        "failed batch is safe."
+        "The monthly billing run. One line per active child at the child's own fee; the "
+        "invoice total is their sum (ADR-0048). Idempotent: a parent already invoiced for the "
+        "period is skipped, not double-charged, so re-running a partially-failed batch is safe. "
+        "`GET /parent-invoices/generation-preview` shows the same plan without writing it."
     ),
 )
 async def generate_parent_invoices(
@@ -1155,6 +1241,10 @@ async def list_parent_invoices(
     vehicle_id: str | None = Query(default=None),
     date_from: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     date_to: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    organization_id: str | None = Query(
+        default=None,
+        description="Narrows to one organization within the caller's scope (platform staff).",
+    ),
     principal: Principal = Depends(
         require_permission(Permission("school_erp.parent_invoices.list"))
     ),
@@ -1172,6 +1262,7 @@ async def list_parent_invoices(
         vehicle_id=vehicle_id,
         date_from=date_from,
         date_to=date_to,
+        organization_id=organization_id,
         school_erp_uow=school_erp_uow,
         transport_ops_uow=transport_ops_uow,
     )
@@ -1199,46 +1290,15 @@ async def get_parent_invoice_detail(
     return _parent_invoice_detail_response(dto)
 
 
-@school_finance_router.patch(
-    "/parent-invoices/{invoice_id}/payment-status",
-    response_model=ParentInvoiceSummaryResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Set a Parent Invoice's payment status: Unpaid / Partial / Paid",
-    description=(
-        "The entire user-facing payment workflow (the directive's Part 9) — no separate payment "
-        "record, no payment method/reference/history. Recalculates amount paid, balance, "
-        "Receivables and Collected on save; there is nothing further to reconcile."
-    ),
-)
-async def set_parent_invoice_payment_status(
-    invoice_id: str,
-    body: SetParentInvoicePaymentStatusRequest,
-    principal: Principal = Depends(
-        require_permission(Permission("school_erp.parent_invoices.manage"))
-    ),
-    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
-    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
-    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
-) -> ParentInvoiceSummaryResponse:
-    dto = await service.set_parent_invoice_payment_status(
-        SetParentInvoicePaymentStatusCommand(
-            invoice_id=invoice_id,
-            status=body.status,
-            amount_paid=body.amount_paid,
-            actor=principal,
-        ),
-        school_erp_uow=school_erp_uow,
-        transport_ops_uow=transport_ops_uow,
-    )
-    return _parent_invoice_summary_response(dto)
-
-
 @school_finance_router.post(
     "/parent-invoices/{invoice_id}/cancel",
     response_model=ParentInvoiceSummaryResponse,
     status_code=status.HTTP_200_OK,
     summary="Cancel a Parent Invoice (e.g. issued in error)",
-    description="Cannot cancel an invoice that has received payment — set it back to unpaid first.",
+    description=(
+        "Requires a reason. An invoice that has received payment cannot be cancelled — void its "
+        "payments first."
+    ),
 )
 async def cancel_parent_invoice(
     invoice_id: str,
@@ -1258,3 +1318,312 @@ async def cancel_parent_invoice(
         transport_ops_uow=transport_ops_uow,
     )
     return _parent_invoice_summary_response(dto)
+
+
+# ==============================================================================================
+# ParentPayment — the payment ledger (ADR-0047, amends ADR-0042 §4)
+# ==============================================================================================
+#
+# `school_erp.parent_payments.{list,manage}` (migration `e5b1c8d2a4f7`): `org_admin` list+manage,
+# RAAD staff list only, `parent` nothing — the identical split every other `school_erp.*` pair
+# uses.
+
+
+def parent_payment_response(dto: ParentPaymentDTO) -> ParentPaymentResponse:
+    return ParentPaymentResponse(
+        **{
+            **dto.__dict__,
+            "allocations": [
+                ParentPaymentAllocationResponse(**allocation.__dict__)
+                for allocation in dto.allocations
+            ],
+        }
+    )
+
+
+@school_finance_router.post(
+    "/parent-invoices/{invoice_id}/payments",
+    response_model=ParentPaymentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record a payment against a Parent Invoice",
+    description=(
+        "Records money received (method, reference, date) and allocates it to the invoice's "
+        "students. Omit `allocations` to split it pro-rata to what each student still owes; to "
+        "pay for one student, send only that student. 409 if the invoice is cancelled or already "
+        "fully paid; 400 if the currency differs or an allocation exceeds a student's balance."
+    ),
+)
+async def record_parent_payment(
+    invoice_id: str,
+    body: RecordParentPaymentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.parent_payments.manage"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> ParentPaymentResponse:
+    dto = await service.record_parent_payment(
+        RecordParentPaymentCommand(
+            invoice_id=invoice_id,
+            amount=body.amount,
+            currency=body.currency,
+            method=body.method,
+            received_on=body.received_on,
+            reference=body.reference,
+            notes=body.notes,
+            allocations=(
+                tuple(
+                    PaymentAllocationRequest(student_id=item.student_id, amount=item.amount)
+                    for item in body.allocations
+                )
+                if body.allocations
+                else None
+            ),
+            idempotency_key=body.idempotency_key,
+            actor=principal,
+        ),
+        school_erp_uow=school_erp_uow,
+        transport_ops_uow=transport_ops_uow,
+    )
+    return parent_payment_response(dto)
+
+
+@school_finance_router.get(
+    "/parent-invoices/{invoice_id}/payments",
+    response_model=list[ParentPaymentResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Payments recorded against one Parent Invoice, voided ones included",
+)
+async def list_parent_invoice_payments(
+    invoice_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.parent_payments.list"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[ParentPaymentResponse]:
+    dtos = await service.list_invoice_payments(
+        invoice_id, school_erp_uow=school_erp_uow, transport_ops_uow=transport_ops_uow
+    )
+    return [parent_payment_response(dto) for dto in dtos]
+
+
+@school_finance_router.get(
+    "/parents/{parent_id}/payments",
+    response_model=list[ParentPaymentResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Every payment a family has made, newest first",
+)
+async def list_parent_payments(
+    parent_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.parent_payments.list"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[ParentPaymentResponse]:
+    dtos = await service.list_parent_payments(
+        parent_id, school_erp_uow=school_erp_uow, transport_ops_uow=transport_ops_uow
+    )
+    return [parent_payment_response(dto) for dto in dtos]
+
+
+@school_finance_router.post(
+    "/parent-payments/{payment_id}/void",
+    response_model=ParentPaymentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Void a payment (reason required) and reverse it on the invoice",
+)
+async def void_parent_payment(
+    payment_id: str,
+    body: VoidParentPaymentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.parent_payments.manage"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> ParentPaymentResponse:
+    dto = await service.void_parent_payment(
+        VoidParentPaymentCommand(payment_id=payment_id, reason=body.reason, actor=principal),
+        school_erp_uow=school_erp_uow,
+        transport_ops_uow=transport_ops_uow,
+    )
+    return parent_payment_response(dto)
+
+
+# ==============================================================================================
+# Student-level finance and the per-vehicle report (ADR-0047)
+# ==============================================================================================
+
+
+def student_finance_response(dto: StudentFinanceDTO) -> StudentFinanceResponse:
+    return StudentFinanceResponse(
+        **{
+            **dto.__dict__,
+            "parents": [StudentParentResponse(**item.__dict__) for item in dto.parents],
+            "charges": [StudentChargeResponse(**item.__dict__) for item in dto.charges],
+            "payments": [StudentPaymentEntryResponse(**item.__dict__) for item in dto.payments],
+            "legacy_invoices": [_invoice_response(item) for item in dto.legacy_invoices],
+            "legacy_payments": [_payment_response(item) for item in dto.legacy_payments],
+        }
+    )
+
+
+@school_finance_router.get(
+    "/students/{student_id}/finance",
+    response_model=StudentFinanceResponse,
+    status_code=status.HTTP_200_OK,
+    summary="One student's financial history: charges, payments and balance",
+    description=(
+        "The student's own line on every Parent Invoice, the part of each family payment "
+        "allocated to them, and the resulting balance. Pre-2026-09-11 per-student invoices are "
+        "listed read-only under `legacy_invoices` and never added to the totals."
+    ),
+)
+async def get_student_finance(
+    student_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.parent_invoices.list"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StudentFinanceResponse:
+    dto = await service.get_student_finance(
+        student_id, school_erp_uow=school_erp_uow, transport_ops_uow=transport_ops_uow
+    )
+    return student_finance_response(dto)
+
+
+@school_finance_router.put(
+    "/students/{student_id}/billing-fee",
+    response_model=StudentBillingFeeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Set a student's own monthly fee",
+    description=(
+        "Where this student's line on the family's Parent Invoice comes from (ADR-0048). "
+        "`0.00` means the student rides free. Future invoices only: an invoice already "
+        "generated keeps its frozen line amount."
+    ),
+)
+async def put_student_billing_fee(
+    student_id: str,
+    body: SetStudentBillingFeeRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.parent_billing_profiles.manage"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StudentBillingFeeResponse:
+    dto = await service.set_student_billing_fee(
+        SetStudentBillingFeeCommand(
+            student_id=student_id,
+            monthly_fee=body.monthly_fee,
+            currency=body.currency,
+            actor=principal,
+        ),
+        school_erp_uow=school_erp_uow,
+        transport_ops_uow=transport_ops_uow,
+    )
+    return StudentBillingFeeResponse(**dto.__dict__)
+
+
+@school_finance_router.get(
+    "/parents/{parent_id}/student-fees",
+    response_model=ParentStudentFeesResponse,
+    status_code=status.HTTP_200_OK,
+    summary="A family's per-student fees and its monthly total",
+)
+async def get_parent_student_fees(
+    parent_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.parent_billing_profiles.list"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> ParentStudentFeesResponse:
+    dto = await service.get_parent_student_fees(
+        parent_id, school_erp_uow=school_erp_uow, transport_ops_uow=transport_ops_uow
+    )
+    return ParentStudentFeesResponse(
+        **{
+            **dto.__dict__,
+            "students": [ParentStudentFeeResponse(**item.__dict__) for item in dto.students],
+        }
+    )
+
+
+def vehicle_finance_report_response(dto: VehicleFinanceReportDTO) -> VehicleFinanceReportResponse:
+    return VehicleFinanceReportResponse(
+        **{
+            **dto.__dict__,
+            "income_by_student": [
+                VehicleStudentIncomeResponse(**item.__dict__) for item in dto.income_by_student
+            ],
+            "income_by_parent": [
+                VehicleParentIncomeResponse(**item.__dict__) for item in dto.income_by_parent
+            ],
+            "daily_entries": [_IncomeResponse(**item.__dict__) for item in dto.daily_entries],
+            "other_entries": [_IncomeResponse(**item.__dict__) for item in dto.other_entries],
+            "expense_entries": [
+                _ExpenseResponse(**item.__dict__) for item in dto.expense_entries
+            ],
+        }
+    )
+
+
+@school_finance_router.get(
+    "/vehicles/{vehicle_id}/report",
+    response_model=VehicleFinanceReportResponse,
+    status_code=status.HTTP_200_OK,
+    summary="One bus's financial report for a date range",
+    description=(
+        "Student income (by student and by parent), daily income entries, other income entries, "
+        "expenses by category and entry, and net — every figure the sum of the rows listed. "
+        "Student money stays on the bus the student rode when the invoice was generated."
+    ),
+)
+async def get_vehicle_finance_report(
+    vehicle_id: str,
+    start: date = Query(...),
+    end: date = Query(...),
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.reports.read"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+    vehicle_service: VehicleApplicationService = Depends(get_vehicle_service),
+    fleet_device_uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> VehicleFinanceReportResponse:
+    # 404 for a vehicle outside the caller's scope, rather than an all-zero report that would
+    # confirm nothing and explain nothing (ADR-0021's 404-over-403 posture).
+    await vehicle_service.get_vehicle_by_id(
+        GetVehicleByIdQuery(vehicle_id=vehicle_id), uow=fleet_device_uow
+    )
+    dto = await service.get_vehicle_finance_report(
+        vehicle_id,
+        start=start,
+        end=end,
+        school_erp_uow=school_erp_uow,
+        transport_ops_uow=transport_ops_uow,
+    )
+    return vehicle_finance_report_response(dto)
+
+
+def my_invoices_response(dto: MyInvoicesDTO) -> MyInvoicesResponse:
+    """Used by `iam`'s `GET /me/invoices` — built here so the wire shape stays owned by the
+    module that owns the data."""
+    return MyInvoicesResponse(
+        **{
+            **dto.__dict__,
+            "invoices": [_parent_invoice_detail_response(item) for item in dto.invoices],
+            "payments": [parent_payment_response(item) for item in dto.payments],
+        }
+    )

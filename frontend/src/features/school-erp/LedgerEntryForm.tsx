@@ -16,21 +16,18 @@ import {
   listVehiclesForPicker,
   recordExpense,
   recordIncome,
+  type IncomeType,
 } from "./api";
 import styles from "./forms.module.css";
 
 /**
- * Record a manual income or expense entry. One component, two modes — the two forms differ only
- * in which categories they offer, whether a bus can be attributed, and the notice at the top.
+ * Record a manual income or expense entry. One component, two modes.
  *
- * **The notice on the income mode is the point of this file, not decoration.** School transport
- * revenue must never be entered here: it reaches the ledger automatically through
- * `StudentPayment`, and a manual "Transport fees" income row would be counted a second time
- * against the same money — once in Profit & Loss's `student_revenue` line (derived from
- * payments) and again in `other_income`. The backend keeps those two lines separate precisely so
- * a double entry is *visible*; this notice is what stops one being made in the first place.
- * Manual income is for money that has no invoice behind it: donations, sponsorships, grants,
- * government support.
+ * **Income has two types (ADR-0047 §6), and neither is student fees.** "Daily vehicle income" is
+ * money one bus collected on one day and must name the bus; "Other income" is anything else
+ * (advertising, rental, donations, grants), optionally attributed to a bus. Student income is
+ * derived from recorded parent payments — entering it here too would count the same money twice,
+ * which is what the notice at the top of the income mode exists to prevent.
  */
 
 const AMOUNT_PATTERN = /^\d{1,13}(\.\d{1,2})?$/;
@@ -48,11 +45,17 @@ const schema = z.object({
   occurredOn: z.string().min(1, "Date is required"),
   categoryId: z.string().optional(),
   vehicleId: z.string().optional(),
+  incomeType: z.enum(["daily_vehicle", "other"]),
   description: z.string().max(500).optional(),
   reference: z.string().max(120).optional(),
 });
 
 type FormValues = z.infer<typeof schema>;
+
+const INCOME_TYPES: { value: IncomeType; label: string; hint: string }[] = [
+  { value: "daily_vehicle", label: "Daily vehicle income", hint: "What one bus collected on one day" },
+  { value: "other", label: "Other income", hint: "Advertising, rental, donations, grants…" },
+];
 
 export type LedgerEntryMode = "income" | "expense";
 
@@ -62,13 +65,24 @@ export interface LedgerEntryFormProps {
   mode: LedgerEntryMode;
   /** Organization currency, so the field starts on the one every other figure is shown in. */
   currency: string;
+  /** Which income type the form opens on (income mode only). */
+  defaultIncomeType?: IncomeType;
+  /** Pre-selects the bus — the Vehicle finance drawer's own "record income/expense" actions. */
+  defaultVehicleId?: string | null;
 }
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export function LedgerEntryForm({ open, onClose, mode, currency }: LedgerEntryFormProps) {
+export function LedgerEntryForm({
+  open,
+  onClose,
+  mode,
+  currency,
+  defaultIncomeType = "other",
+  defaultVehicleId = null,
+}: LedgerEntryFormProps) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const isIncome = mode === "income";
@@ -83,7 +97,7 @@ export function LedgerEntryForm({ open, onClose, mode, currency }: LedgerEntryFo
   const vehicles = useQuery({
     queryKey: ["school-finance", "vehicles", "picker"],
     queryFn: () => listVehiclesForPicker(),
-    enabled: open && !isIncome,
+    enabled: open,
     staleTime: 60_000,
   });
 
@@ -95,11 +109,14 @@ export function LedgerEntryForm({ open, onClose, mode, currency }: LedgerEntryFo
     register,
     handleSubmit,
     reset,
+    watch,
+    setError,
     formState: { errors },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { amount: "", currency, occurredOn: today() },
+    defaultValues: { amount: "", currency, occurredOn: today(), incomeType: defaultIncomeType },
   });
+  const incomeType = watch("incomeType");
 
   useEffect(() => {
     if (open) {
@@ -108,12 +125,13 @@ export function LedgerEntryForm({ open, onClose, mode, currency }: LedgerEntryFo
         currency,
         occurredOn: today(),
         categoryId: "",
-        vehicleId: "",
+        vehicleId: defaultVehicleId ?? "",
+        incomeType: defaultIncomeType,
         description: "",
         reference: "",
       });
     }
-  }, [open, mode, currency, reset]);
+  }, [open, mode, currency, reset, defaultIncomeType, defaultVehicleId]);
 
   const mutation = useMutation({
     mutationFn: (values: FormValues) => {
@@ -126,7 +144,7 @@ export function LedgerEntryForm({ open, onClose, mode, currency }: LedgerEntryFo
         reference: values.reference || null,
       };
       return isIncome
-        ? recordIncome(common)
+        ? recordIncome({ ...common, incomeType: values.incomeType, vehicleId: values.vehicleId || null })
         : recordExpense({ ...common, vehicleId: values.vehicleId || null });
     },
     onSuccess: () => {
@@ -134,7 +152,7 @@ export function LedgerEntryForm({ open, onClose, mode, currency }: LedgerEntryFo
       toast.success(
         isIncome ? "Income recorded" : "Expense recorded",
         isIncome
-          ? "Added to other income. Profit & Loss and reports are updated."
+          ? "Added to income. Profit & Loss, the bus's finance and reports are updated."
           : "Added to expenses. Profit & Loss, per-bus cost and reports are updated.",
       );
       onClose();
@@ -159,10 +177,10 @@ export function LedgerEntryForm({ open, onClose, mode, currency }: LedgerEntryFo
       icon={isIncome ? <TrendingUp size={18} /> : <TrendingDown size={18} />}
       iconTint="var(--color-brand-primary-tint)"
       iconColor="var(--color-brand-primary)"
-      title={isIncome ? "Record other income" : "Record an expense"}
+      title={isIncome ? "Record income" : "Record an expense"}
       subtitle={
         isIncome
-          ? "Donations, sponsorships, grants and other non-student income"
+          ? "Daily bus collections and other non-student income"
           : "School and fleet running costs"
       }
       footer={
@@ -179,7 +197,13 @@ export function LedgerEntryForm({ open, onClose, mode, currency }: LedgerEntryFo
       <form
         id="ledger-entry-form"
         className={styles.form}
-        onSubmit={handleSubmit((values) => mutation.mutate(values))}
+        onSubmit={handleSubmit((values) => {
+          if (isIncome && values.incomeType === "daily_vehicle" && !values.vehicleId) {
+            setError("vehicleId", { message: "Daily vehicle income must name the bus that collected it" });
+            return;
+          }
+          mutation.mutate(values);
+        })}
       >
         {isIncome && (
           <div className={styles.notice}>
@@ -187,13 +211,28 @@ export function LedgerEntryForm({ open, onClose, mode, currency }: LedgerEntryFo
             <div className={styles.noticeBody}>
               <span className={styles.noticeTitle}>Not for student transport fees</span>
               <span className={styles.noticeText}>
-                Student revenue is recorded automatically when a family's payment is entered
-                against their invoice — it already appears in Profit &amp; Loss, per-bus revenue
-                and every report. Adding it here as well would count the same money twice. Use
-                this form only for income with no student invoice behind it.
+                Student income is recorded automatically when a family's payment is entered
+                against their invoice — it already appears in Profit &amp; Loss, each bus's
+                finance and every report. Adding it here as well would count the same money twice.
               </span>
             </div>
           </div>
+        )}
+
+        {isIncome && (
+          <FormField label="Income type">
+            <div role="radiogroup" aria-label="Income type" className={styles.radioGroup}>
+              {INCOME_TYPES.map((option) => (
+                <label key={option.value} className={styles.radioOption}>
+                  <input type="radio" value={option.value} {...register("incomeType")} />
+                  <span>
+                    {option.label}
+                    <span className={styles.radioHint}>{option.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </FormField>
         )}
 
         <div className={styles.row}>
@@ -234,22 +273,28 @@ export function LedgerEntryForm({ open, onClose, mode, currency }: LedgerEntryFo
           </Select>
         </FormField>
 
-        {!isIncome && (
-          <FormField
-            label="Attribute to a bus"
-            hint="Optional. Attributed costs appear against that bus in the Vehicle financial overview."
-            error={errors.vehicleId?.message}
-          >
-            <Select {...register("vehicleId")}>
-              <option value="">Not bus-specific</option>
-              {(vehicles.data ?? []).map((vehicle) => (
-                <option key={vehicle.id} value={vehicle.id}>
-                  {vehicle.label}
-                </option>
-              ))}
-            </Select>
-          </FormField>
-        )}
+        <FormField
+          label={isIncome && incomeType === "daily_vehicle" ? "Bus" : "Attribute to a bus"}
+          hint={
+            isIncome && incomeType === "daily_vehicle"
+              ? "Required — the bus that collected this money."
+              : isIncome
+                ? "Optional. Income from a bus (advertising, rental) appears in that bus's finance."
+                : "Optional. Attributed costs appear against that bus in Vehicle finance."
+          }
+          error={errors.vehicleId?.message}
+        >
+          <Select {...register("vehicleId")} aria-label="Bus">
+            <option value="">
+              {isIncome && incomeType === "daily_vehicle" ? "Select a bus" : "Not bus-specific"}
+            </option>
+            {(vehicles.data ?? []).map((vehicle) => (
+              <option key={vehicle.id} value={vehicle.id}>
+                {vehicle.label}
+              </option>
+            ))}
+          </Select>
+        </FormField>
 
         <FormField label="Description" error={errors.description?.message}>
           <Input

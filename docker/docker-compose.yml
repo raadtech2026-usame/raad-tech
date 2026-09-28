@@ -256,6 +256,9 @@ services:
     command: ["python", "-m", "raad.interfaces.workers.bootstrap"]
     environment:
       <<: *backend-env
+      # ADR-0047 §9 — automatic monthly Parent Invoice generation. Off unless a deployment
+      # explicitly turns it on: it starts billing families with nobody pressing a button.
+      RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES: ${RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES:-false}
     depends_on:
       postgres:
         condition: service_healthy

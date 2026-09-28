@@ -320,3 +320,24 @@
 .childLineItemRow:first-of-type {
   border-top: none;
 }
+
+/* Vehicle finance (ADR-0047) — the column-total row under the per-bus table. */
+.table tbody tr.totalRow td {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  border-top: 2px solid var(--color-border-default);
+}
+
+/* The "Generate monthly invoices" confirmation (ADR-0048). */
+.generationPreview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.generationList {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-5);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}

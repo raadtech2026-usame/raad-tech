@@ -19,10 +19,14 @@ vi.mock("./api", () => ({
 // `LinkGuardianForm` now uses `ParentSearchSelect` (`../parents/ParentSearchSelect.tsx`), which
 // reads `../parents/api.ts` directly rather than a `./api.ts` picker — mocked here the same way
 // every other cross-module dependency of this test file already is.
-vi.mock("../parents/api", () => ({
+vi.mock("../parents/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../parents/api")>()),
   listParentsForPicker: vi.fn(),
   getParent: vi.fn(),
   listStudentsForParent: vi.fn(),
+  getParentInvoiceDetail: vi.fn(),
+  recordParentPayment: vi.fn(),
+  setStudentBillingFee: vi.fn(),
 }));
 
 // `StudentAssignmentSection`/`AssignStudentForm` (Phase F6) are rendered inside this page's own
@@ -38,14 +42,13 @@ vi.mock("../student-assignments/api", () => ({
   endStudentAssignment: vi.fn(),
 }));
 
-// `IssueInvoiceForm` (school_erp's financial-setup half of registration, opened alongside
-// `AssignStudentForm`) is a cross-bounded-context component import — mocked here for the same
-// reason `student-assignments/api` is above, via `importOriginal` since only its two functions
-// need a fake, and the rest of `school-erp/api.ts` (types, formatting helpers) stays real.
+// `StudentFinanceSection` (school_erp, ADR-0047) is a cross-bounded-context component in the
+// detail drawer — mocked via `importOriginal` so only its reads are fake and the formatting
+// helpers stay real.
 vi.mock("../../school-erp/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../school-erp/api")>()),
-  listFeePlans: vi.fn(),
-  issueStudentInvoice: vi.fn(),
+  getStudentFinance: vi.fn(),
+  voidStudentPayment: vi.fn(),
 }));
 
 import * as api from "./api";
@@ -54,6 +57,23 @@ import * as assignmentApi from "../student-assignments/api";
 import * as schoolErpApi from "../../school-erp/api";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { StudentsPage } from "./StudentsPage";
+
+const EMPTY_FINANCE: schoolErpApi.StudentFinance = {
+  studentId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  fullName: "Amina Hassan",
+  status: "active",
+  parents: [],
+  currency: "USD",
+  totalCharged: "0.00",
+  totalPaid: "0.00",
+  balanceDue: "0.00",
+  charges: [],
+  payments: [],
+  legacyInvoices: [],
+  legacyPayments: [],
+  monthlyFee: null,
+  monthlyFeeCurrency: null,
+};
 
 const STUDENT_SUMMARY: api.StudentSummary = {
   id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -123,10 +143,10 @@ describe("StudentsPage", () => {
     vi.mocked(assignmentApi.listVehiclesForPicker).mockReset().mockResolvedValue([]);
     vi.mocked(assignmentApi.assignStudentToRoute).mockReset();
     vi.mocked(assignmentApi.endStudentAssignment).mockReset();
-    vi.mocked(schoolErpApi.listFeePlans)
-      .mockReset()
-      .mockResolvedValue(pageOf([], 0));
-    vi.mocked(schoolErpApi.issueStudentInvoice).mockReset();
+    vi.mocked(schoolErpApi.getStudentFinance).mockReset().mockResolvedValue(EMPTY_FINANCE);
+    vi.mocked(parentsApi.getParentInvoiceDetail).mockReset();
+    vi.mocked(parentsApi.recordParentPayment).mockReset();
+    vi.mocked(parentsApi.setStudentBillingFee).mockReset().mockResolvedValue(undefined);
   });
 
   it("renders skeleton state while loading, then the fetched students (name + status only)", async () => {
@@ -179,12 +199,9 @@ describe("StudentsPage", () => {
   });
 
   it("opens the new student's detail drawer with transport assignment ready right after enrollment", async () => {
-    // Registration must flow straight into both transport assignment and financial setup
-    // without a second navigation step (2026-09-10/2026-09-11). Reuses the exact existing
-    // detail-drawer + AssignStudentForm pair an already-enrolled student already uses, plus the
-    // school_erp `IssueInvoiceForm` — this proves `StudentsPage`'s own `onCreated` wiring
-    // actually opens all three, not just that `CreateStudentForm` fires the callback (see
-    // `CreateStudentForm.test.tsx` for that half).
+    // Registration flows straight into guardian linking and transport assignment without a
+    // second navigation step. Billing follows from the guardian's Parent Invoice (ADR-0047), so
+    // there is no invoice drawer here any more.
     vi.mocked(api.listStudents).mockResolvedValue(pageOf([], 0));
     const enrolled: api.Student = {
       id: "01ARZ3NDEKTSV4RRFFQ69G5FDZ",
@@ -221,87 +238,151 @@ describe("StudentsPage", () => {
     // original assertion here got wrong before the transport-assignment-only version of this
     // chain was fixed).
     await waitFor(() =>
-      expect(screen.getAllByText("Yusuf Omar", { exact: false }).length).toBeGreaterThanOrEqual(4),
+      expect(screen.getAllByText("Yusuf Omar", { exact: false }).length).toBeGreaterThanOrEqual(3),
     );
     expect(screen.getByText("Link a parent to Yusuf Omar")).toBeInTheDocument();
     expect(screen.getByText("Assign Yusuf Omar to a route")).toBeInTheDocument();
-    expect(screen.getByText("Issue the first invoice for Yusuf Omar")).toBeInTheDocument();
+    expect(screen.queryByText(/Issue the first invoice/)).not.toBeInTheDocument();
     expect(api.getStudent).toHaveBeenCalledWith(enrolled.id);
   });
 
-  it("issues an invoice against the selected fee plan from the financial-setup drawer", async () => {
-    vi.mocked(api.listStudents).mockResolvedValue(pageOf([], 0));
-    const enrolled: api.Student = {
-      id: "01ARZ3NDEKTSV4RRFFQ69G5FDZ",
-      organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
-      fullName: "Yusuf Omar",
-      externalRef: null,
-      status: "active",
-      createdAt: "2026-01-03T00:00:00Z",
-      updatedAt: "2026-01-03T00:00:00Z",
-      dateOfBirth: null,
-      gender: null,
-      notes: null,
-    };
-    vi.mocked(api.enrollStudent).mockResolvedValue(enrolled);
-    vi.mocked(api.getStudent).mockResolvedValue(enrolled);
-    vi.mocked(schoolErpApi.listFeePlans).mockResolvedValue(
-      pageOf(
-        [
-          {
-            id: "plan-1",
-            organizationId: enrolled.organizationId,
-            name: "Monthly transport",
-            amount: "50.00",
-            currency: "USD",
-            defaultDiscountAmount: "0.00",
-            description: null,
-            status: "active",
-          },
-        ],
-        1,
-      ),
+  it("lets an org admin set the student's own monthly fee; a founder only sees it (ADR-0048)", async () => {
+    vi.mocked(api.listStudents).mockResolvedValue(pageOf([STUDENT_SUMMARY], 1));
+    useAuthStore.setState({
+      principal: { userId: "u2", role: "org_admin", organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW", regionIds: [] },
+      accessToken: "t",
+      refreshToken: "r",
+      status: "authenticated",
+      error: null,
+    });
+    renderPage();
+    await userEvent.click(await screen.findByText("Amina Hassan"));
+    const drawer = await screen.findByRole("dialog");
+    expect(await within(drawer).findByText("Monthly fee: not set")).toBeInTheDocument();
+    expect(within(drawer).getByText("Not invoiced until a fee is set.")).toBeInTheDocument();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Set fee" }));
+    await userEvent.type(await screen.findByLabelText("Monthly fee amount"), "20.00");
+    await userEvent.click(screen.getByRole("button", { name: "Save fee" }));
+
+    await waitFor(() =>
+      expect(parentsApi.setStudentBillingFee).toHaveBeenCalledWith(STUDENT_SUMMARY.id, {
+        monthlyFee: "20.00",
+        currency: "USD",
+      }),
     );
-    vi.mocked(schoolErpApi.issueStudentInvoice).mockResolvedValue({
+  });
+
+  it("shows but does not offer to change the fee for a founder", async () => {
+    vi.mocked(api.listStudents).mockResolvedValue(pageOf([STUDENT_SUMMARY], 1));
+    vi.mocked(schoolErpApi.getStudentFinance).mockResolvedValue({
+      ...EMPTY_FINANCE,
+      monthlyFee: "15.00",
+      monthlyFeeCurrency: "USD",
+    });
+    renderPage();
+    await userEvent.click(await screen.findByText("Amina Hassan"));
+    const drawer = await screen.findByRole("dialog");
+    expect(await within(drawer).findByText(/Monthly fee:/)).toHaveTextContent("15.00");
+    expect(within(drawer).queryByRole("button", { name: /fee/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the student's own charges and payments and records a payment for that student only", async () => {
+    vi.mocked(api.listStudents).mockResolvedValue(pageOf([STUDENT_SUMMARY], 1));
+    vi.mocked(schoolErpApi.getStudentFinance).mockResolvedValue({
+      ...EMPTY_FINANCE,
+      parents: [{ parentId: "p1", fullName: "Fatima Ali", isPrimary: true }],
+      totalCharged: "40.00",
+      totalPaid: "10.00",
+      balanceDue: "30.00",
+      charges: [
+        {
+          invoiceId: "inv-1",
+          invoiceNumber: "2026-09-ABC123",
+          lineId: "line-amina",
+          period: "2026-09",
+          parentId: "p1",
+          parentName: "Fatima Ali",
+          amount: "40.00",
+          amountPaid: "10.00",
+          balanceDue: "30.00",
+          invoiceStatus: "partial",
+          dueDate: "2026-09-10",
+          vehicleId: null,
+          currency: "USD",
+        },
+      ],
+      payments: [
+        {
+          paymentId: "pay-1",
+          invoiceId: "inv-1",
+          invoiceNumber: "2026-09-ABC123",
+          period: "2026-09",
+          receivedOn: "2026-09-05",
+          method: "cash",
+          reference: "R-1",
+          amount: "10.00",
+          paymentTotal: "20.00",
+          currency: "USD",
+          isVoided: false,
+          voidedReason: null,
+        },
+      ],
+    });
+    vi.mocked(parentsApi.getParentInvoiceDetail).mockResolvedValue({
       id: "inv-1",
-      organizationId: enrolled.organizationId,
-      studentId: enrolled.id,
-      feePlanId: "plan-1",
+      parentId: "p1",
+      parentName: "Fatima Ali",
       period: "2026-09",
-      amount: "50.00",
-      discountAmount: "0.00",
-      netAmount: "50.00",
-      amountPaid: "0.00",
-      balanceDue: "50.00",
+      invoiceNumber: "2026-09-ABC123",
+      amount: "80.00",
+      amountPaid: "20.00",
+      balanceDue: "60.00",
+      status: "partial",
       currency: "USD",
-      dueDate: "2026-09-30",
-      status: "issued",
-      routeId: null,
-      vehicleId: null,
-      driverId: null,
+      invoiceDate: "2026-09-01",
+      dueDate: "2026-09-10",
       notes: null,
-      issuedAt: "2026-01-03T00:00:00Z",
-      paidAt: null,
+      lines: [
+        {
+          lineId: "line-amina", studentId: STUDENT_SUMMARY.id, fullName: "Amina Hassan", amount: "40.00",
+          amountPaid: "10.00", balanceDue: "30.00", vehicleId: null, routeId: null,
+        },
+        {
+          lineId: "line-sibling", studentId: "sibling", fullName: "Sibling", amount: "40.00",
+          amountPaid: "10.00", balanceDue: "30.00", vehicleId: null, routeId: null,
+        },
+      ],
+    });
+    vi.mocked(parentsApi.recordParentPayment).mockResolvedValue({
+      id: "pay-2", parentId: "p1", invoiceId: "inv-1", invoiceNumber: "2026-09-ABC123", period: "2026-09",
+      amount: "30.00", currency: "USD", method: "cash", reference: null, receivedOn: "2026-09-12", notes: null,
+      isVoided: false, voidedReason: null, createdAt: "2026-09-12T00:00:00Z",
+      allocations: [{ studentId: STUDENT_SUMMARY.id, fullName: "Amina Hassan", amount: "30.00", vehicleId: null }],
     });
 
     renderPage();
-    await waitFor(() => expect(screen.getByText("No students yet")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Amina Hassan")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Amina Hassan"));
 
-    await userEvent.click(screen.getAllByRole("button", { name: "New Student" })[0]);
-    await screen.findByText("Green Valley School");
-    await userEvent.selectOptions(screen.getByLabelText("Organization"), enrolled.organizationId);
-    await userEvent.type(screen.getByPlaceholderText("e.g. Amina Hassan"), "Yusuf Omar");
-    await userEvent.click(screen.getByRole("button", { name: "Enroll student" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Billed to Fatima Ali")).toBeInTheDocument();
+    expect(within(dialog).getByText(/part of a \$20\.00 family payment/)).toBeInTheDocument();
 
-    await screen.findByText("Issue the first invoice for Yusuf Omar");
-    // With exactly one active fee plan, the form preselects it — the operator is not made to
-    // choose from a list of one.
-    await waitFor(() => expect(screen.getByRole("option", { name: /Monthly transport/ })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole("button", { name: "Issue invoice" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Record payment" }));
+    const amount = await screen.findByLabelText("Amount paid for Amina Hassan");
+    expect(amount).toHaveValue("30.00");
+    await userEvent.click(screen.getByRole("button", { name: "Save payment" }));
+    const confirm = await screen.findByRole("dialog", { name: "Record this payment?" });
+    await userEvent.click(within(confirm).getByRole("button", { name: "Record payment" }));
 
     await waitFor(() =>
-      expect(schoolErpApi.issueStudentInvoice).toHaveBeenCalledWith(
-        expect.objectContaining({ studentId: enrolled.id, feePlanId: "plan-1" }),
+      expect(parentsApi.recordParentPayment).toHaveBeenCalledWith(
+        "inv-1",
+        expect.objectContaining({
+          amount: "30.00",
+          allocations: [{ studentId: STUDENT_SUMMARY.id, amount: "30.00" }],
+        }),
       ),
     );
   });

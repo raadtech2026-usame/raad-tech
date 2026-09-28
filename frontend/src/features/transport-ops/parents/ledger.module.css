@@ -1,0 +1,60 @@
+/* ADR-0047 payment history rows, shared by the Parents page, the Finance page's invoice drawer and
+   the Student finance section (`PaymentLedger.tsx`). */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+}
+
+.list li + li {
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.meta {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.voided .title {
+  text-decoration: line-through;
+  color: var(--color-text-muted);
+}
+
+.empty {
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}

@@ -48,9 +48,8 @@
   color: var(--color-brand-primary) !important;
 }
 
-/* SetInvoicePaymentStatusForm's Unpaid/Partial/Paid control (Part 9 of the 2026-09-11 directive)
-   — a plain radiogroup, not a styled `Select`, since all three options must be visible and
-   selectable at a glance rather than hidden behind a dropdown. */
+/* A plain radiogroup rather than a `Select`, so every option is visible at a glance
+   (`RecordParentPaymentForm`'s "how to split" choice). */
 .statusRadioGroup {
   display: flex;
   gap: var(--space-4);
@@ -68,4 +67,90 @@
 
 .statusRadioOption input {
   accent-color: var(--color-brand-primary);
+}
+
+.twoColumn {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+@media (max-width: 520px) {
+  .twoColumn {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ADR-0047 — one row per student on the invoice: who they are, what they still owe, and the
+   part of this payment that goes to them. */
+.allocationList {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.allocationRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+
+.allocationRow + .allocationRow {
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.allocationName {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.allocationMeta {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.allocationAmount {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+}
+
+.allocationInput {
+  max-width: 120px;
+  text-align: right;
+}
+
+.errorText {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+}
+
+/* `BillingProfileForm`'s per-student fee list (ADR-0048). */
+.fieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-inset);
+}
+
+.groupTitle {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.groupHint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
 }

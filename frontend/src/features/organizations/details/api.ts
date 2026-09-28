@@ -6,7 +6,7 @@ import { listDevices } from "../../fleet-devices/devices/api";
 import { listDrivers } from "../../transport-ops/drivers/api";
 import { listRoutes } from "../../transport-ops/routes/api";
 import { countStudents } from "../../transport-ops/students/api";
-import { countParents } from "../../transport-ops/parents/api";
+import { countParents, listParentInvoices } from "../../transport-ops/parents/api";
 import { listInvoices, listPayments, listPlans, listSubscriptions } from "../../billing/api";
 import {
   listExpenses,
@@ -105,6 +105,9 @@ export const orgPayments = (organizationId: string, params?: Partial<OffsetListP
 
 export const orgAudit = (organizationId: string, params?: Partial<OffsetListParams>) =>
   listAuditEntries(orgScopedParams(organizationId, params));
+
+export const orgParentInvoices = (organizationId: string) =>
+  listParentInvoices({ page: 1, pageSize: 25, organizationId });
 
 export const orgStudentInvoices = (organizationId: string) =>
   listStudentInvoices(orgScopedParams(organizationId));

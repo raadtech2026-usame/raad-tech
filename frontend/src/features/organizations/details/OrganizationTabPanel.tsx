@@ -24,6 +24,7 @@ import {
   orgPayments,
   orgRoutes,
   orgStudentCount,
+  orgParentInvoices,
   orgStudentInvoices,
   orgStudentPayments,
   orgUsers,
@@ -371,7 +372,25 @@ export function OrganizationTabPanel({
             </p>
           </div>
           <section>
-            <h3 className={styles.sectionTitle}>Student invoices</h3>
+            <h3 className={styles.sectionTitle}>Parent invoices</h3>
+            <DataList
+              queryKey={[...base, "parent-invoices"]}
+              queryFn={() => orgParentInvoices(organizationId)}
+              rowKey={(row) => row.id}
+              emptyTitle="No parent invoices"
+              emptyDescription="This school has not billed any families yet."
+              columns={[
+                { header: "Period", cell: (r) => r.period },
+                { header: "Parent", cell: (r) => r.parentName },
+                { header: "Amount", cell: (r) => `${r.amount} ${r.currency}`, align: "right" },
+                { header: "Paid", cell: (r) => r.amountPaid, align: "right" },
+                { header: "Balance", cell: (r) => r.balanceDue, align: "right" },
+                { header: "Status", cell: (r) => r.status },
+              ]}
+            />
+          </section>
+          <section>
+            <h3 className={styles.sectionTitle}>Legacy student invoices (before 2026-09-11)</h3>
             <DataList
               queryKey={[...base, "student-invoices"]}
               queryFn={() => orgStudentInvoices(organizationId)}
@@ -389,7 +408,7 @@ export function OrganizationTabPanel({
             />
           </section>
           <section>
-            <h3 className={styles.sectionTitle}>Student payments</h3>
+            <h3 className={styles.sectionTitle}>Legacy student payments (before 2026-09-11)</h3>
             <DataList
               queryKey={[...base, "student-payments"]}
               queryFn={() => orgStudentPayments(organizationId)}

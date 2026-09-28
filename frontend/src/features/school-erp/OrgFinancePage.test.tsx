@@ -17,6 +17,8 @@ vi.mock("./api", async (importOriginal) => ({
   voidIncome: vi.fn(),
   voidExpense: vi.fn(),
   updateCategory: vi.fn(),
+  listVehicleFinance: vi.fn(),
+  getVehicleFinanceReport: vi.fn(),
 }));
 
 // ADR-0042 — the real Parent Invoice aggregate this page's own invoices tab now uses, owned by
@@ -27,8 +29,10 @@ vi.mock("../transport-ops/parents/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../transport-ops/parents/api")>()),
   listParentInvoices: vi.fn(),
   getParentInvoiceDetail: vi.fn(),
-  setParentInvoicePaymentStatus: vi.fn(),
+  listInvoicePayments: vi.fn(),
+  recordParentPayment: vi.fn(),
   generateParentInvoices: vi.fn(),
+  previewParentInvoiceGeneration: vi.fn(),
   listParentsForPicker: vi.fn(),
   getParent: vi.fn(),
   listStudentsForParent: vi.fn(),
@@ -40,21 +44,26 @@ import {
   listCategories,
   listExpenses,
   listIncome,
+  listVehicleFinance,
   listVehiclesForPicker,
+  getVehicleFinanceReport,
   updateCategory,
   voidExpense,
   voidIncome,
   type FinancialCategory,
   type LedgerEntry,
 } from "./api";
+import { useAuthStore } from "../../shared/stores/authStore";
 import {
   generateParentInvoices,
+  previewParentInvoiceGeneration,
   getParent,
   getParentInvoiceDetail,
   listParentInvoices,
   listParentsForPicker,
   listStudentsForParent,
-  setParentInvoicePaymentStatus,
+  listInvoicePayments,
+  recordParentPayment,
   type ParentInvoiceDetail,
   type ParentInvoiceSummary,
 } from "../transport-ops/parents/api";
@@ -96,9 +105,22 @@ const PARENT_INVOICE_DETAIL: ParentInvoiceDetail = {
   notes: null,
   lines: [
     {
+      lineId: "line-1",
       studentId: "student-1",
       fullName: "Amina Hassan",
       amount: "45.00",
+      amountPaid: "20.00",
+      balanceDue: "25.00",
+      vehicleId: "bus-1",
+      routeId: "route-1",
+    },
+    {
+      lineId: "line-2",
+      studentId: "student-2",
+      fullName: "Yusuf Hassan",
+      amount: "45.00",
+      amountPaid: "20.00",
+      balanceDue: "25.00",
       vehicleId: "bus-1",
       routeId: "route-1",
     },
@@ -142,6 +164,9 @@ function renderPage() {
  */
 describe("OrgFinancePage", () => {
   beforeEach(() => {
+    useAuthStore.setState({
+      principal: { userId: "u1", role: "org_admin", organizationId: "org-1", regionIds: [] },
+    } as never);
     vi.mocked(getFinanceSummary).mockResolvedValue({
       billedAmount: "1200.00",
       collectedAmount: "800.00",
@@ -155,6 +180,7 @@ describe("OrgFinancePage", () => {
       start: "2025-09-05",
       end: "2026-09-05",
       studentRevenue: "800.00",
+      dailyVehicleIncome: "0.00",
       otherIncome: "50.00",
       totalIncome: "850.00",
       totalExpenses: "300.00",
@@ -177,12 +203,18 @@ describe("OrgFinancePage", () => {
     vi.mocked(listParentsForPicker).mockReset().mockResolvedValue([]);
     vi.mocked(getParent).mockReset();
     vi.mocked(listStudentsForParent).mockReset();
-    vi.mocked(setParentInvoicePaymentStatus).mockResolvedValue({
-      ...PARENT_INVOICE,
-      status: "paid",
-      amountPaid: "90.00",
-      balanceDue: "0.00",
+    vi.mocked(listInvoicePayments).mockResolvedValue([]);
+    vi.mocked(recordParentPayment).mockReset().mockResolvedValue({
+      id: "pay-1", parentId: "parent-1", invoiceId: "invoice-1", invoiceNumber: "2026-09-PARENT1",
+      period: "2026-09", amount: "50.00", currency: "USD", method: "cash", reference: null,
+      receivedOn: "2026-09-12", notes: null, isVoided: false, voidedReason: null,
+      createdAt: "2026-09-12T00:00:00Z",
+      allocations: [
+        { studentId: "student-1", fullName: "Amina Hassan", amount: "25.00", vehicleId: "bus-1" },
+        { studentId: "student-2", fullName: "Yusuf Hassan", amount: "25.00", vehicleId: "bus-1" },
+      ],
     });
+    vi.mocked(listVehicleFinance).mockResolvedValue([]);
     vi.mocked(generateParentInvoices).mockResolvedValue([]);
   });
 
@@ -207,15 +239,47 @@ describe("OrgFinancePage", () => {
     // Net Result no longer carries a "12 months" pill next to Overview siblings scoped to one
     // calendar period — it reads as this same period's own figure.
     expect(screen.queryByText("12 months")).not.toBeInTheDocument();
-    expect(screen.getByText(/this period's collected parent revenue/i)).toBeInTheDocument();
+    expect(screen.getByText(/this period's student, daily and other income/i)).toBeInTheDocument();
   });
 
-  it("has no Vehicle Financial Overview / Revenue per bus section anywhere on the page", async () => {
+  it("shows Vehicle finance with student, daily and other income kept apart per bus (ADR-0047)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listVehicleFinance).mockResolvedValue([
+      {
+        vehicleId: "bus-1", studentCount: 2, billedAmount: "90.00", outstandingAmount: "50.00",
+        studentIncome: "40.00", dailyIncome: "55.00", otherIncome: "100.00", totalIncome: "195.00",
+        expenseAmount: "45.00", netAmount: "150.00", currency: "USD",
+      },
+    ]);
+    vi.mocked(getVehicleFinanceReport).mockResolvedValue({
+      vehicleId: "bus-1", start: "2026-09-01", end: "2026-09-30", currency: "USD",
+      studentIncome: "40.00", dailyIncome: "55.00", otherIncome: "100.00", totalIncome: "195.00",
+      totalExpenses: "45.00", netAmount: "150.00", billedAmount: "90.00", outstandingAmount: "50.00",
+      incomeByStudent: [
+        { studentId: "student-1", fullName: "Amina Hassan", parentId: "parent-1", parentName: "Fatima Ali", amount: "20.00" },
+      ],
+      incomeByParent: [{ parentId: "parent-1", fullName: "Fatima Ali", amount: "40.00" }],
+      dailyEntries: [], otherEntries: [], expensesByCategory: { "": "45.00" }, expenseEntries: [],
+    });
     renderPage();
-    await screen.findByText("$1,200.00");
+    await screen.findByText("2026-09-PARENT1");
 
-    expect(screen.queryByText("Vehicle financial overview")).not.toBeInTheDocument();
-    expect(screen.queryByText("Revenue per bus")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Vehicle finance" }));
+    const row = (await screen.findByText("BUS-042 · Route A")).closest("tr")!;
+    for (const [header, value] of [
+      ["Student income", "$40.00"], ["Daily income", "$55.00"], ["Other income", "$100.00"],
+      ["Total income", "$195.00"], ["Expenses", "$45.00"], ["Net", "$150.00"],
+    ]) {
+      expect(screen.getByRole("columnheader", { name: header })).toBeInTheDocument();
+      expect(within(row).getByText(value)).toBeInTheDocument();
+    }
+    const [[start, end]] = vi.mocked(listVehicleFinance).mock.calls;
+    expect(start <= end).toBe(true);
+
+    await user.click(within(row).getByRole("button", { name: "View" }));
+    const drawer = await screen.findByRole("dialog");
+    expect(await within(drawer).findByText("Amina Hassan")).toBeInTheDocument();
+    expect(getVehicleFinanceReport).toHaveBeenCalledWith("bus-1", start, end);
   });
 
   it("no longer describes itself as student billing in the page subtitle", async () => {
@@ -227,11 +291,48 @@ describe("OrgFinancePage", () => {
     expect(screen.queryByText(/student billing/i)).not.toBeInTheDocument();
   });
 
-  it("shows only Parent invoices / Income / Expenses / Categories tabs — Payments and Fee plans are gone", async () => {
+  it("previews the monthly run — per-child fees, totals, unpriced children — before generating (ADR-0048)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(previewParentInvoiceGeneration).mockResolvedValue({
+      period: "2026-09",
+      families: [
+        {
+          parentId: "parent-1",
+          parentName: "Fatima Ali",
+          currency: "USD",
+          total: "60.00",
+          lines: [
+            { studentId: "s1", fullName: "Amina", amount: "10.00", vehicleId: null },
+            { studentId: "s2", fullName: "Yusuf", amount: "20.00", vehicleId: null },
+            { studentId: "s3", fullName: "Hawa", amount: "30.00", vehicleId: null },
+          ],
+        },
+      ],
+      skipped: [
+        { parentId: "parent-2", parentName: "Hassan Ali", reason: "no_fee", studentId: "s4", studentName: "Omar" },
+        { parentId: "parent-3", parentName: "Asha", reason: "already_invoiced", studentId: null, studentName: null },
+      ],
+      totalsByCurrency: { USD: "60.00" },
+    });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Generate monthly invoices" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("1 family · USD 60.00")).toBeInTheDocument();
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("Omar (Hassan Ali) — no monthly fee set");
+    expect(within(dialog).getByText(/1 already invoiced this month/)).toBeInTheDocument();
+    expect(generateParentInvoices).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "Generate 1 invoice" }));
+    await waitFor(() => expect(generateParentInvoices).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows Parent invoices / Vehicle finance / Income / Expenses / Categories tabs — no Fee plans", async () => {
     renderPage();
     await screen.findByText("2026-09-PARENT1");
 
     expect(screen.getByRole("tab", { name: "Parent invoices" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Vehicle finance" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Income" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Expenses" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Categories" })).toBeInTheDocument();
@@ -273,7 +374,7 @@ describe("OrgFinancePage", () => {
       expect(screen.getByRole("columnheader", { name })).toBeInTheDocument();
     }
     expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /payment status/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /record payment/i })).toBeInTheDocument();
   });
 
   it("renders a long Parent name in full — never truncated with an ellipsis (table layout fix, 2026-09-12)", async () => {
@@ -338,9 +439,12 @@ describe("OrgFinancePage", () => {
     await user.click(screen.getByRole("button", { name: "View" }));
 
     const dialog = await screen.findByRole("dialog");
-    // The per-child breakdown ADR-0042 says a real Parent Invoice must never lose.
+    // The per-child breakdown ADR-0042 says a real Parent Invoice must never lose, now with each
+    // child's own paid amount and balance (ADR-0047).
     expect(await within(dialog).findByText("Amina Hassan")).toBeInTheDocument();
+    expect(within(dialog).getAllByText(/Paid USD 20\.00 · Owes USD 25\.00/).length).toBe(2);
     expect(getParentInvoiceDetail).toHaveBeenCalledWith("invoice-1");
+    expect(listInvoicePayments).toHaveBeenCalledWith("invoice-1");
   });
 
   it("only fetches a ledger tab's data once that tab is selected", async () => {
@@ -486,41 +590,60 @@ describe("OrgFinancePage", () => {
 
   // ---- The workflow -----------------------------------------------------------------------
 
-  it("offers Payment status on an unsettled Parent Invoice, confirms, and PATCHes the new status (ADR-0042 Part 9)", async () => {
+  it("records a payment on an unsettled Parent Invoice, split pro-rata, after confirmation (ADR-0047)", async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText("Fatima Ali");
 
-    await user.click(screen.getByRole("button", { name: /payment status/i }));
+    await user.click(screen.getByRole("button", { name: /record payment/i }));
 
-    const drawer = await screen.findByRole("dialog");
-    // The invoice was already `partial` — selecting Paid changes the status, which triggers the
-    // directive's own required confirmation step before saving.
-    await user.click(within(drawer).getByRole("radio", { name: "Paid" }));
-    await user.click(within(drawer).getByRole("button", { name: "Save" }));
+    // The amount starts at what is still owed; the split preview shows each child's share.
+    const amount = await screen.findByLabelText("Amount received");
+    expect(amount).toHaveValue("50.00");
+    const allocation = screen.getByLabelText("Allocation per student");
+    expect(within(allocation).getAllByText("USD 25.00").length).toBe(2);
 
-    const confirmDialog = await screen.findByText(/confirm payment status/i);
-    await user.click(within(confirmDialog.closest('[role="dialog"]') ?? document.body).getByRole("button", {
-      name: /confirm & save/i,
-    }));
+    await user.click(screen.getByRole("button", { name: "Save payment" }));
+    const confirm = await screen.findByRole("dialog", { name: "Record this payment?" });
+    await user.click(within(confirm).getByRole("button", { name: "Record payment" }));
 
     await waitFor(() =>
-      expect(setParentInvoicePaymentStatus).toHaveBeenCalledWith(
+      expect(recordParentPayment).toHaveBeenCalledWith(
         "invoice-1",
-        expect.objectContaining({ status: "paid" }),
+        expect.objectContaining({ amount: "50.00", currency: "USD", allocations: null }),
       ),
     );
+    const [, input] = vi.mocked(recordParentPayment).mock.calls[0];
+    expect(input.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it("does not offer Payment status on a cancelled Parent Invoice", async () => {
+  it("refuses to save an overpayment client-side before anything is sent", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("Fatima Ali");
+
+    await user.click(screen.getByRole("button", { name: /record payment/i }));
+    const amount = await screen.findByLabelText("Amount received");
+    await user.clear(amount);
+    await user.type(amount, "60.00");
+    await user.click(screen.getByRole("button", { name: "Save payment" }));
+
+    expect(await screen.findByText(/Only USD 50\.00 is still owed/)).toBeInTheDocument();
+    expect(recordParentPayment).not.toHaveBeenCalled();
+  });
+
+  it("does not offer Record payment on a cancelled or fully paid Parent Invoice", async () => {
     vi.mocked(listParentInvoices).mockResolvedValue({
-      data: [{ ...PARENT_INVOICE, status: "cancelled", amountPaid: "0.00", balanceDue: "90.00" }],
-      page: { total: 1, page: 1, pageSize: 25 },
+      data: [
+        { ...PARENT_INVOICE, status: "cancelled", amountPaid: "0.00", balanceDue: "90.00" },
+        { ...PARENT_INVOICE, id: "invoice-2", invoiceNumber: "2026-09-PARENT2", status: "paid", amountPaid: "90.00", balanceDue: "0.00" },
+      ],
+      page: { total: 2, page: 1, pageSize: 25 },
     });
     renderPage();
 
-    await screen.findByText("Fatima Ali");
-    expect(screen.queryByRole("button", { name: /payment status/i })).not.toBeInTheDocument();
+    await screen.findByText("2026-09-PARENT2");
+    expect(screen.queryByRole("button", { name: /record payment/i })).not.toBeInTheDocument();
   });
 
   it("tells the operator on the Income tab that student revenue is already counted", async () => {
@@ -536,10 +659,16 @@ describe("OrgFinancePage", () => {
       await screen.findByText(/Student fee revenue is recorded automatically/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/must never be added here/i)).toBeInTheDocument();
-    // The empty-state copy names the same three sources, so scope to the notice itself.
-    expect(
-      screen.getByText(/must never be added here/i).textContent,
-    ).toMatch(/donations,\s+sponsorships, grants/i);
+    expect(screen.getByText(/must never be added here/i).textContent).toMatch(
+      /daily bus\s+collections and other income/i,
+    );
+    // The type filter separates daily vehicle income from other income (ADR-0047 §6).
+    await user.selectOptions(screen.getByLabelText("Filter income by type"), "daily_vehicle");
+    await waitFor(() =>
+      expect(listIncome).toHaveBeenLastCalledWith(
+        expect.objectContaining({ filters: { income_type: "daily_vehicle" } }),
+      ),
+    );
   });
 
   // ---- Void / edit actions (pre-deployment audit §C) --------------------------------------

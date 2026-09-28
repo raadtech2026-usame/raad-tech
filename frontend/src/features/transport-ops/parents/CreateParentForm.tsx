@@ -22,6 +22,7 @@ import {
   listVehiclesForPicker,
   registerParent,
   saveParentBillingProfile,
+  setStudentBillingFee,
   type ParentSummary,
   type RegisterParentResult,
 } from "./api";
@@ -75,6 +76,13 @@ const childSchema = z.object({
     .max(RELATIONSHIP_MAX_LENGTH, `Relationship must be at most ${RELATIONSHIP_MAX_LENGTH} characters`),
   isPrimary: z.boolean(),
   notes: z.string().trim().max(NOTES_MAX_LENGTH, `Notes must be at most ${NOTES_MAX_LENGTH} characters`),
+  // ADR-0048: each child's own monthly transportation fee. Blank = price later; 0.00 = rides free.
+  monthlyFee: z
+    .string()
+    .trim()
+    .refine((value) => value === "" || AMOUNT_PATTERN.test(value), {
+      message: "Use a decimal amount, e.g. 20.00",
+    }),
 });
 
 function buildSchema(requiresOrganizationPicker: boolean) {
@@ -121,19 +129,8 @@ function buildSchema(requiresOrganizationPicker: boolean) {
       pickupStopId: z.string(),
       dropoffStopId: z.string(),
       vehicleId: z.string(),
-      // Parent Billing (the directive's Part 4/5) — optional here: a school can register a
-      // family today and configure billing later from the parent's own page. `monthlyFee` left
-      // empty means "no billing yet"; filling it in commits the other three fields, which are
-      // pre-populated with sensible defaults so typing the fee alone is enough.
-      monthlyFee: z
-        .string()
-        .trim()
-        .refine((value) => value === "" || AMOUNT_PATTERN.test(value), {
-          message: "Use a decimal amount, e.g. 80.00",
-        })
-        .refine((value) => value === "" || Number(value) > 0, {
-          message: "Monthly fee must be greater than zero",
-        }),
+      // Parent Billing (ADR-0048) — the family's billing account. Opened only when at least one
+      // child's fee is entered above; otherwise billing is set up later from the parent's page.
       currency: z.string().trim().length(3, "Use a 3-letter currency code, e.g. USD"),
       billingStartPeriod: z.string().trim().regex(PERIOD_PATTERN, "Use YYYY-MM, e.g. 2026-09"),
       dueDay: z.coerce.number().int().min(1).max(28),
@@ -161,6 +158,7 @@ const EMPTY_CHILD: ChildFormValues = {
   relationship: "",
   isPrimary: false,
   notes: "",
+  monthlyFee: "",
 };
 
 function currentPeriod(): string {
@@ -184,7 +182,6 @@ function defaultValues(): FormValues {
     pickupStopId: "",
     dropoffStopId: "",
     vehicleId: "",
-    monthlyFee: "",
     currency: "USD",
     billingStartPeriod: currentPeriod(),
     dueDay: 10,
@@ -347,15 +344,23 @@ export function CreateParentForm({ open, onClose, onOpenExisting }: CreateParent
       // later from the parent's own page" gap ADR-0003's own IAM-user-provisioning precedent
       // already accepts for this exact reason: `school_erp` and `transport_ops` are separate
       // modules with separate transactions, and there is no cross-module transaction to share.
+      //
+      // ADR-0048: the account is opened only when a child was priced, then each priced child's
+      // own fee is set. `registered.children` comes back in the order the children were sent.
       let configuredBilling = false;
-      if (values.monthlyFee.trim() !== "") {
+      const priced = values.children
+        .map((child, index) => ({ fee: child.monthlyFee.trim(), student: registered.children[index] }))
+        .filter((entry) => entry.fee !== "" && entry.student);
+      if (priced.length > 0) {
         try {
           await saveParentBillingProfile(registered.parent.id, {
-            monthlyFee: values.monthlyFee,
             currency: values.currency,
             billingStartPeriod: values.billingStartPeriod,
             dueDay: values.dueDay,
           });
+          for (const entry of priced) {
+            await setStudentBillingFee(entry.student.id, { monthlyFee: entry.fee, currency: values.currency });
+          }
           configuredBilling = true;
         } catch {
           // Disclosed, not silently swallowed — surfaced via `billingConfigured` below, which
@@ -481,8 +486,8 @@ export function CreateParentForm({ open, onClose, onOpenExisting }: CreateParent
             <span className={styles.childrenSummaryTitle}>Billing</span>
             <p className={styles.childrenSummaryHint}>
               {billingConfigured
-                ? "This family's monthly transportation fee is set up. The first Parent Invoice generates on the next monthly billing run."
-                : "No monthly fee was set — configure it any time from this parent's own page before generating invoices."}
+                ? "Each child's monthly fee is set. The first Parent Invoice — one line per child — generates on the next monthly billing run."
+                : "No fees were saved — set each child's monthly fee from this parent's own page before generating invoices."}
             </p>
           </div>
         </div>
@@ -725,6 +730,20 @@ export function CreateParentForm({ open, onClose, onOpenExisting }: CreateParent
                 <FormField label="Notes" hint="Optional." error={childErrors?.notes?.message}>
                   <Input placeholder="Optional" invalid={!!childErrors?.notes} {...register(`children.${index}.notes` as const)} />
                 </FormField>
+
+                <FormField
+                  label={`Monthly transportation fee (${watch("currency") || "USD"})`}
+                  hint="This child's own fee on the family's monthly invoice. Leave blank to set it later; 0.00 if the child rides free."
+                  error={childErrors?.monthlyFee?.message}
+                >
+                  <Input
+                    placeholder="e.g. 20.00"
+                    inputMode="decimal"
+                    aria-label={`Monthly fee for student ${index + 1}`}
+                    invalid={!!childErrors?.monthlyFee}
+                    {...register(`children.${index}.monthlyFee` as const)}
+                  />
+                </FormField>
               </div>
             );
           })}
@@ -737,17 +756,10 @@ export function CreateParentForm({ open, onClose, onOpenExisting }: CreateParent
             </span>
           </div>
           <p className={styles.childrenEmptyHint}>
-            What this parent is charged for transportation each month. No Fee Plan required —
-            optional here; set it up later from this parent's own page if you prefer.
+            Each child's monthly fee is entered on the child above; the family's invoice is their
+            sum. These terms apply once at least one child has a fee — otherwise set billing up
+            later from this parent's own page.
           </p>
-
-          <FormField
-            label={`Monthly transportation fee (${watch("currency") || "USD"})`}
-            hint="Leave blank to configure billing later."
-            error={errors.monthlyFee?.message}
-          >
-            <Input placeholder="80.00" inputMode="decimal" invalid={!!errors.monthlyFee} {...register("monthlyFee")} />
-          </FormField>
 
           <div className={styles.childRow}>
             <FormField label="Currency" error={errors.currency?.message}>

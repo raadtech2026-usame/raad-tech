@@ -42,6 +42,8 @@ from raad.modules.school_erp.domain.entities import (
     Income,
     ParentBillingProfile,
     ParentInvoice,
+    ParentPayment,
+    StudentBillingProfile,
     StudentInvoice,
     StudentPayment,
 )
@@ -54,6 +56,7 @@ from raad.modules.school_erp.domain.value_objects import (
     ParentBillingProfileId,
     ParentId,
     ParentInvoiceId,
+    ParentPaymentId,
     StudentId,
     StudentInvoiceId,
     StudentPaymentId,
@@ -80,6 +83,33 @@ class VehicleFinancialSummary:
     paid_student_count: int
     unpaid_student_count: int
     currency: str
+
+
+@dataclass(frozen=True)
+class VehicleBillingSummary:
+    """What was billed to one bus's students in a window, and what is still owed on it —
+    grouped over `erp_parent_invoice_lines.vehicle_id`, the vehicle captured on each line at
+    generation time (ADR-0047 §5). `vehicle_id` is `None` for lines generated before the student
+    had a bus: an "Unassigned" row, never re-attributed from today's assignment.
+
+    Collected money is deliberately **not** here: it comes from payment allocations by receipt
+    date (`ParentPaymentRepository.student_income_by_vehicle_between`), not from the invoice.
+    """
+
+    vehicle_id: str | None
+    student_count: int
+    billed_amount: Decimal
+    outstanding_amount: Decimal
+
+
+@dataclass(frozen=True)
+class StudentIncomeRow:
+    """Student income one student/parent pair brought in during a window — the per-student and
+    per-parent breakdown of a vehicle's student income."""
+
+    student_id: str
+    parent_id: str
+    amount: Decimal
 
 
 @dataclass(frozen=True)
@@ -270,6 +300,30 @@ class IncomeRepository(ABC):
         application layer checks this before presenting any total (finance P0.5)."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def sum_by_type_between(self, *, start: date, end: date) -> dict[str, Decimal]:
+        """Live income in the window keyed by `IncomeType` value (`daily_vehicle`/`other`) —
+        the two manual-income lines of Profit & Loss (ADR-0047 §6). Same filters as
+        `sum_between`, so the lines always add up to it."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def sum_by_vehicle_and_type_between(
+        self, *, start: date, end: date
+    ) -> dict[tuple[str, str], Decimal]:
+        """`(vehicle_id, income_type) -> total` for income that names a bus. Income with no
+        `vehicle_id` is organization-wide and is excluded rather than pooled into a pseudo-bus —
+        the NULL-bucket lesson `ExpenseRepository.sum_by_vehicle_between` already paid for."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_vehicle_between(
+        self, *, vehicle_id: VehicleId, start: date, end: date
+    ) -> list[Income]:
+        """Live (non-voided) income entries for one bus in the window, oldest first — the
+        daily/other income lines of the per-vehicle report."""
+        raise NotImplementedError
+
 
 class ExpenseRepository(ABC):
     @abstractmethod
@@ -301,8 +355,16 @@ class ExpenseRepository(ABC):
 
     @abstractmethod
     async def sum_by_vehicle_between(self, *, start: date, end: date) -> dict[str, Decimal]:
-        """Per-bus operating cost, so the Vehicle Financial Overview can show cost against the
-        revenue `StudentInvoiceRepository.summarise_by_vehicle` returns."""
+        """Per-bus operating cost for the Vehicle Financial Overview. Expenses with no
+        `vehicle_id` are organization overhead and are excluded."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_vehicle_between(
+        self, *, vehicle_id: VehicleId, start: date, end: date
+    ) -> list[Expense]:
+        """Live (non-voided) expenses attributed to one bus in the window, oldest first — the
+        expense lines and per-category breakdown of the per-vehicle report."""
         raise NotImplementedError
 
     @abstractmethod
@@ -353,9 +415,35 @@ class ParentBillingProfileRepository(ABC):
         raise NotImplementedError
 
 
+class StudentBillingProfileRepository(ABC):
+    """ADR-0048: each student's own monthly fee, one per `(organization_id, student_id)`."""
+
+    @abstractmethod
+    async def get_by_student(self, student_id: StudentId) -> StudentBillingProfile | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_by_students(
+        self, student_ids: list[str]
+    ) -> dict[str, StudentBillingProfile]:
+        """The fees of these students, keyed by student id; a student with no fee configured is
+        simply absent. One query — the monthly run prices a whole organization at once."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, profile: StudentBillingProfile) -> None:
+        raise NotImplementedError
+
+
 class ParentInvoiceRepository(ABC):
     @abstractmethod
     async def get(self, invoice_id: ParentInvoiceId) -> ParentInvoice | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def billed_student_ids_for_period(self, *, period: BillingPeriod) -> set[str]:
+        """Students already on a live (non-cancelled) invoice for `period`, under any parent.
+        The monthly run skips them, so a child linked to two paying guardians is billed once."""
         raise NotImplementedError
 
     @abstractmethod
@@ -403,27 +491,17 @@ class ParentInvoiceRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def summarise_by_vehicle(
-        self, *, period: BillingPeriod | None = None
-    ) -> list[VehicleFinancialSummary]:
-        """The Vehicle Financial Overview, grouped over `erp_parent_invoice_lines.vehicle_id` —
-        the disclosed pro-rata allocation ADR-0042 decision 1 documents: a line's own collected
-        share is `line.amount * invoice.amount_paid / invoice.amount`, since payment is recorded
-        against the whole family invoice, never per child."""
+    async def list_for_student(self, student_id: StudentId) -> list[ParentInvoice]:
+        """Every invoice carrying a line for this student, newest period first — the student's
+        own charge history (ADR-0047 §2)."""
         raise NotImplementedError
 
     @abstractmethod
-    async def sum_collected_between(self, *, start: date, end: date) -> Decimal:
-        """Parent transportation revenue for Profit & Loss, filtered by each invoice's own
-        `invoice_date` (when it was generated) — a disclosed, deliberate choice, not an
-        approximation of something more precise. This module keeps no per-transaction payment
-        history (ADR-0042 decision 4: the directive explicitly forbids building one), so there is
-        no payment-*date* to filter by; `invoice_date` is the one real, stored date this
-        aggregate has. `amount_paid` is each invoice's *current* collected total, so a payment
-        recorded weeks after the invoice was issued still counts, attributed to the invoice's own
-        billing period rather than to whatever day the payment happened to be recorded — the same
-        "attribute to the bill, not the receipt" basis `Income`/`Expense` already use via their
-        own `occurred_on` filtering, for consistency across every P&L line."""
+    async def summarise_lines_by_vehicle_between(
+        self, *, start: date, end: date
+    ) -> list[VehicleBillingSummary]:
+        """Billed and outstanding per line vehicle, over non-cancelled invoices whose
+        `invoice_date` falls in the window."""
         raise NotImplementedError
 
     @abstractmethod
@@ -435,5 +513,71 @@ class ParentInvoiceRepository(ABC):
 
     @abstractmethod
     async def currencies_invoiced_between(self, *, start: date, end: date) -> set[str]:
-        """The distinct currencies among exactly the invoices `sum_collected_between` adds up."""
+        """The distinct currencies among exactly the invoices
+        `summarise_lines_by_vehicle_between` adds up (non-cancelled, `invoice_date` in the
+        window)."""
+        raise NotImplementedError
+
+
+# ==================================================================================================
+# ParentPayment (ADR-0047 — amends ADR-0042 §4)
+# ==================================================================================================
+
+
+class ParentPaymentRepository(ABC):
+    """Every student-income figure in this module is read here, from allocations of non-voided
+    payments filtered by `received_on` — cash basis, so a payment counts in the window it was
+    actually received (ADR-0047 §7)."""
+
+    @abstractmethod
+    async def get(self, payment_id: ParentPaymentId) -> ParentPayment | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, payment: ParentPayment) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_idempotency_key(self, key: str) -> ParentPayment | None:
+        """The payment an earlier submission with the same key already recorded, if any — what
+        turns a double-clicked "Record payment" into one payment rather than two."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_invoice(self, invoice_id: ParentInvoiceId) -> list[ParentPayment]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_parent(self, parent_id: ParentId) -> list[ParentPayment]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_student(self, student_id: StudentId) -> list[ParentPayment]:
+        """Payments with at least one allocation to this student, voided ones included (the
+        student's history shows them, marked)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def sum_student_income_between(self, *, start: date, end: date) -> Decimal:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def student_income_by_vehicle_between(
+        self, *, start: date, end: date
+    ) -> dict[str | None, Decimal]:
+        """Keyed by each allocation's own `vehicle_id` (copied from its invoice line); `None`
+        holds money for lines generated before the student had a bus."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def student_income_rows_between(
+        self, *, vehicle_id: VehicleId | None, start: date, end: date
+    ) -> list[StudentIncomeRow]:
+        """Per `(student, parent)` student income in the window for one bus — or, with
+        `vehicle_id=None`, for allocations with no bus."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def currencies_between(self, *, start: date, end: date) -> set[str]:
+        """The distinct currencies among exactly the payments the three sums above add up."""
         raise NotImplementedError
