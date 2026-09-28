@@ -16,7 +16,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Annotated, ClassVar
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def _validate_money(value: object) -> str:
@@ -393,15 +393,18 @@ class ParentFinancialSummaryResponse(BaseModel):
 # (`SetParentInvoicePaymentStatusRequest`, below), with no allocation and no payment history.
 
 
-class CreateOrUpdateParentBillingProfileRequest(_MoneyValidatingModel):
-    """One family's actual recurring transportation charge (the directive's Part 5) — entered
-    directly, no Fee Plan required. Creates the profile if the parent has none yet, otherwise
-    edits the existing one in place; editing never rewrites an already-generated invoice."""
+class CreateOrUpdateParentBillingProfileRequest(BaseModel):
+    """One family's billing account (ADR-0048): start period, due day, currency. Creates the
+    profile if the parent has none yet, otherwise edits it in place; editing never rewrites an
+    already-generated invoice.
 
-    MONEY_FIELDS: ClassVar[tuple[str, ...]] = ("monthly_fee",)
+    `extra="forbid"` because `monthly_fee` was removed from this body: a client still sending a
+    family fee must be told it is no longer used, not have it silently dropped. Each student's
+    fee is set with `PUT /school-finance/students/{id}/billing-fee`."""
+
+    model_config = ConfigDict(extra="forbid")
 
     organization_id: str | None = None
-    monthly_fee: MoneyStr
     currency: CurrencyStr
     billing_start_period: PeriodStr
     due_day: int = Field(ge=1, le=28, description="Day of the month the invoice is due.")
@@ -411,11 +414,75 @@ class SetParentBillingProfileStatusRequest(BaseModel):
     is_active: bool
 
 
+class SetStudentBillingFeeRequest(_MoneyValidatingModel):
+    """A student's own monthly fee (ADR-0048). `0.00` records that the student rides free."""
+
+    MONEY_FIELDS: ClassVar[tuple[str, ...]] = ("monthly_fee",)
+
+    monthly_fee: MoneyStr
+    currency: CurrencyStr
+
+
+class StudentBillingFeeResponse(BaseModel):
+    student_id: str
+    organization_id: str
+    monthly_fee: str
+    currency: str
+    is_billable: bool
+    updated_at: datetime
+
+
+class ParentStudentFeeResponse(BaseModel):
+    student_id: str
+    full_name: str
+    status: str
+    monthly_fee: str | None
+    currency: str | None
+
+
+class ParentStudentFeesResponse(BaseModel):
+    parent_id: str
+    monthly_total: str | None
+    currency: str | None
+    unpriced_active_students: int
+    students: list[ParentStudentFeeResponse]
+
+
+class GenerationLineResponse(BaseModel):
+    student_id: str
+    full_name: str
+    amount: str
+    vehicle_id: str | None
+
+
+class GenerationFamilyResponse(BaseModel):
+    parent_id: str
+    parent_name: str
+    currency: str
+    total: str
+    lines: list[GenerationLineResponse]
+
+
+class GenerationSkipResponse(BaseModel):
+    parent_id: str
+    parent_name: str
+    reason: str
+    student_id: str | None
+    student_name: str | None
+
+
+class ParentInvoiceGenerationPreviewResponse(BaseModel):
+    organization_id: str
+    period: str
+    families: list[GenerationFamilyResponse]
+    skipped: list[GenerationSkipResponse]
+    totals_by_currency: dict[str, str]
+
+
 class ParentBillingProfileResponse(BaseModel):
     id: str
     organization_id: str
     parent_id: str
-    monthly_fee: str
     currency: str
     billing_start_period: str
     due_day: int
@@ -592,6 +659,8 @@ class StudentFinanceResponse(BaseModel):
     payments: list[StudentPaymentEntryResponse]
     legacy_invoices: list[StudentInvoiceResponse]
     legacy_payments: list[StudentPaymentResponse]
+    monthly_fee: str | None = None
+    monthly_fee_currency: str | None = None
 
 
 class VehicleStudentIncomeResponse(BaseModel):

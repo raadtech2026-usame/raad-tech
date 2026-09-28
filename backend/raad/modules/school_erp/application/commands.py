@@ -196,15 +196,13 @@ class VoidExpenseCommand:
 
 @dataclass(frozen=True)
 class CreateOrUpdateParentBillingProfileCommand:
-    """One family's actual recurring transportation charge (the directive's Part 5). Creates a
-    new `ParentBillingProfile` if the parent has none yet, otherwise edits the existing one in
-    place (`ParentBillingProfile.update_fee`) — never a second row per parent
-    (`ux_erp_parent_billing_profiles__org_parent`). Editing never rewrites an already-generated
-    `ParentInvoice`, which froze its own amount at generation time."""
+    """One family's billing account (ADR-0048): whether, from when, on which due day and in
+    which currency the family is invoiced. Creates the `ParentBillingProfile` if the parent has
+    none yet, otherwise edits it in place (`update_terms`) — never a second row per parent. The
+    fee itself is each student's own (`SetStudentBillingFeeCommand`)."""
 
     organization_id: str
     parent_id: str
-    monthly_fee: str
     currency: str
     billing_start_period: str
     due_day: int
@@ -215,6 +213,18 @@ class CreateOrUpdateParentBillingProfileCommand:
 class SetParentBillingProfileStatusCommand:
     billing_profile_id: str
     is_active: bool
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class SetStudentBillingFeeCommand:
+    """A student's own recurring monthly fee (ADR-0048). `0.00` records that the student rides
+    free. The organization is the student's own, never client-supplied. Changing it affects
+    future invoices only."""
+
+    student_id: str
+    monthly_fee: str
+    currency: str
     actor: Principal
 
 

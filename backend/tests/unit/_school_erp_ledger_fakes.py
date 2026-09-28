@@ -15,9 +15,11 @@ from raad.modules.school_erp.domain.entities import (
     ParentInvoice,
     ParentPayment,
     PaymentAllocationInput,
+    StudentBillingProfile,
 )
 from raad.modules.school_erp.domain.repositories import (
     ParentPaymentRepository,
+    StudentBillingProfileRepository,
     StudentIncomeRow,
     VehicleBillingSummary,
 )
@@ -94,6 +96,35 @@ class InMemoryParentPaymentRepository(ParentPaymentRepository):
 
     async def currencies_between(self, *, start: date, end: date) -> set[str]:
         return {payment.amount.currency for payment, _ in self._live_allocations(start, end)}
+
+
+class InMemoryStudentBillingProfileRepository(StudentBillingProfileRepository):
+    """ADR-0048: each student's own monthly fee."""
+
+    def __init__(self) -> None:
+        self.by_id: dict[str, StudentBillingProfile] = {}
+
+    async def get_by_student(self, student_id):
+        return next(
+            (p for p in self.by_id.values() if str(p.student_id) == str(student_id)), None
+        )
+
+    async def list_by_students(self, student_ids):
+        wanted = set(student_ids)
+        return {str(p.student_id): p for p in self.by_id.values() if str(p.student_id) in wanted}
+
+    def add(self, profile: StudentBillingProfile) -> None:
+        self.by_id[str(profile.id)] = profile
+
+
+def billed_student_ids(invoices, period) -> set[str]:
+    """Mirrors `billed_student_ids_for_period`: students on a live invoice for the period."""
+    return {
+        str(line.student_id)
+        for invoice in invoices
+        if str(invoice.period) == str(period) and invoice.status is not ParentInvoiceStatus.CANCELLED
+        for line in invoice.lines
+    }
 
 
 def invoices_for_student(invoices, student_id) -> list[ParentInvoice]:

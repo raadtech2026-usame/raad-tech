@@ -42,6 +42,7 @@ from raad.modules.school_erp.domain.entities import (
     ParentBillingProfile,
     ParentInvoice,
     ParentPayment,
+    StudentBillingProfile,
     StudentInvoice,
     StudentPayment,
 )
@@ -54,6 +55,7 @@ from raad.modules.school_erp.domain.repositories import (
     ParentBillingProfileRepository,
     ParentInvoiceRepository,
     ParentPaymentRepository,
+    StudentBillingProfileRepository,
     StudentIncomeRow,
     StudentInvoiceRepository,
     StudentPaymentRepository,
@@ -85,11 +87,13 @@ from raad.modules.school_erp.infra.mappers import (
     model_to_financial_category,
     model_to_income,
     model_to_parent_billing_profile,
+    model_to_student_billing_profile,
     model_to_parent_invoice,
     model_to_parent_payment,
     model_to_student_invoice,
     model_to_student_payment,
     parent_billing_profile_to_model,
+    student_billing_profile_to_model,
     parent_invoice_to_model,
     parent_payment_to_model,
     student_invoice_to_model,
@@ -105,6 +109,7 @@ from raad.modules.school_erp.infra.models import (
     ParentInvoiceModel,
     ParentPaymentAllocationModel,
     ParentPaymentModel,
+    StudentBillingProfileModel,
     StudentInvoiceModel,
     StudentPaymentModel,
 )
@@ -904,7 +909,6 @@ class SqlAlchemyParentBillingProfileRepository(
     }
     sortable_fields = {
         "created_at": "created_at",
-        "monthly_fee": "monthly_fee",
     }
     searchable_fields = ()
 
@@ -977,6 +981,70 @@ class SqlAlchemyParentBillingProfileRepository(
         return profile
 
 
+class SqlAlchemyStudentBillingProfileRepository(
+    SqlAlchemyRepositoryBase[StudentBillingProfileModel], StudentBillingProfileRepository
+):
+    model = StudentBillingProfileModel
+
+    filterable_fields = {
+        "organization_id": FilterField(column="organization_id"),
+        "student_id": FilterField(column="student_id"),
+    }
+    sortable_fields = {"created_at": "created_at"}
+    searchable_fields = ()
+
+    def __init__(
+        self, session: AsyncSession, *, scope: TenantRegionScope | None = None
+    ) -> None:
+        super().__init__(session, scope=scope)
+        self._tracked: dict[str, tuple[StudentBillingProfile, StudentBillingProfileModel]] = {}
+
+    async def get_by_student(self, student_id: StudentId) -> StudentBillingProfile | None:
+        statement = self._apply_scope(
+            select(self.model).where(
+                self.model.student_id == str(student_id),
+                self.model.deleted_at.is_(None),
+            )
+        )
+        return self._track((await self._session.execute(statement)).scalar_one_or_none())
+
+    async def list_by_students(
+        self, student_ids: list[str]
+    ) -> dict[str, StudentBillingProfile]:
+        if not student_ids:
+            return {}
+        statement = self._apply_scope(
+            select(self.model).where(
+                self.model.student_id.in_(sorted(set(student_ids))),
+                self.model.deleted_at.is_(None),
+            )
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        profiles = [self._track(row) for row in rows]
+        return {str(profile.student_id): profile for profile in profiles if profile}
+
+    def add(self, profile: StudentBillingProfile) -> None:
+        model = student_billing_profile_to_model(profile)
+        super().add(model)
+        self._tracked[str(profile.id)] = (profile, model)
+
+    def flush_tracked_changes(self) -> None:
+        for profile, model in self._tracked.values():
+            student_billing_profile_to_model(profile, existing=model)
+
+    def _track(
+        self, row: StudentBillingProfileModel | None
+    ) -> StudentBillingProfile | None:
+        if row is None:
+            return None
+        key = _char(row.id)
+        if key in self._tracked:
+            return self._tracked[key][0]
+        profile = model_to_student_billing_profile(row)
+        self._tracked[key] = (profile, row)
+        return profile
+
+
 class SqlAlchemyParentInvoiceRepository(
     SqlAlchemyRepositoryBase[ParentInvoiceModel], ParentInvoiceRepository
 ):
@@ -1019,6 +1087,20 @@ class SqlAlchemyParentInvoiceRepository(
         )
         row = (await self._session.execute(statement)).scalar_one_or_none()
         return self._track(row)
+
+    async def billed_student_ids_for_period(self, *, period: BillingPeriod) -> set[str]:
+        statement = self._apply_scope(
+            select(ParentInvoiceLineModel.student_id)
+            .join(self.model, self.model.id == ParentInvoiceLineModel.parent_invoice_id)
+            .where(
+                self.model.period == str(period),
+                self.model.status != "cancelled",
+                self.model.deleted_at.is_(None),
+            )
+            .distinct()
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return {_char(student_id) for student_id in rows}
 
     async def exists_for_parent_period(
         self, *, parent_id: ParentId, period: BillingPeriod
@@ -1381,6 +1463,7 @@ class SqlAlchemySchoolErpUnitOfWork(SqlAlchemyUnitOfWork, SchoolErpUnitOfWork):
     income: SqlAlchemyIncomeRepository
     expenses: SqlAlchemyExpenseRepository
     parent_billing_profiles: SqlAlchemyParentBillingProfileRepository
+    student_billing_profiles: SqlAlchemyStudentBillingProfileRepository
     parent_invoices: SqlAlchemyParentInvoiceRepository
     parent_payments: SqlAlchemyParentPaymentRepository
 
@@ -1401,6 +1484,9 @@ class SqlAlchemySchoolErpUnitOfWork(SqlAlchemyUnitOfWork, SchoolErpUnitOfWork):
         self.parent_billing_profiles = SqlAlchemyParentBillingProfileRepository(
             self.session, scope=self.scope
         )
+        self.student_billing_profiles = SqlAlchemyStudentBillingProfileRepository(
+            self.session, scope=self.scope
+        )
         self.parent_invoices = SqlAlchemyParentInvoiceRepository(
             self.session, scope=self.scope
         )
@@ -1417,6 +1503,7 @@ class SqlAlchemySchoolErpUnitOfWork(SqlAlchemyUnitOfWork, SchoolErpUnitOfWork):
         self.income.flush_tracked_changes()
         self.expenses.flush_tracked_changes()
         self.parent_billing_profiles.flush_tracked_changes()
+        self.student_billing_profiles.flush_tracked_changes()
         self.parent_invoices.flush_tracked_changes()
         self.parent_payments.flush_tracked_changes()
         await super().commit()

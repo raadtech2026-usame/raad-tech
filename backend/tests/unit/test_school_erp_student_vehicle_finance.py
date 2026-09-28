@@ -24,6 +24,7 @@ from raad.core.errors.exceptions import DomainError, NotFoundError
 from raad.core.tenancy.principal import SYSTEM_PRINCIPAL, Principal, Role
 from raad.modules.school_erp.application.commands import (
     CreateOrUpdateParentBillingProfileCommand,
+    SetStudentBillingFeeCommand,
     GenerateParentInvoicesCommand,
     PaymentAllocationRequest,
     RecordExpenseCommand,
@@ -85,6 +86,7 @@ class _Child:
     student_id: str
     full_name: str
     status: str = "active"
+    is_primary: bool = True
 
 
 @dataclass
@@ -92,6 +94,7 @@ class _Student:
     id: str
     full_name: str
     status: str = "active"
+    organization_id: str = ORG
 
 
 @dataclass
@@ -174,12 +177,12 @@ class _Base(unittest.IsolatedAsyncioTestCase):
             PARENT_X: [_Child(STUDENT_X1, "Elsewhere")],
         }
         self.students = {
-            sid: _Student(sid, name)
-            for sid, name in (
-                (STUDENT_A1, "Mohamed"),
-                (STUDENT_A2, "Aisha"),
-                (STUDENT_B1, "Yusuf"),
-                (STUDENT_X1, "Elsewhere"),
+            sid: _Student(sid, name, organization_id=org)
+            for sid, name, org in (
+                (STUDENT_A1, "Mohamed", ORG),
+                (STUDENT_A2, "Aisha", ORG),
+                (STUDENT_B1, "Yusuf", ORG),
+                (STUDENT_X1, "Elsewhere", OTHER_ORG),
             )
         }
         self.transport = FakeTransportContextPort(
@@ -206,10 +209,29 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         self.tuow = _TransportUow()
         self.actor = _admin()
 
-    async def _bill(self, parent_id: str, fee: str, period: str = "2026-09", org: str = ORG):
+    async def _price(self, fees: dict[str, str], org: str = ORG) -> None:
+        for student_id, fee in fees.items():
+            await self.parent_finance.set_student_billing_fee(
+                SetStudentBillingFeeCommand(
+                    student_id=student_id, monthly_fee=fee, currency="USD", actor=_admin(org)
+                ),
+                school_erp_uow=self.uow, transport_ops_uow=self.tuow,
+            )
+
+    async def _bill(
+        self, parent_id: str, per_child: str | dict[str, str], period: str = "2026-09", org: str = ORG
+    ):
+        """Prices each of the family's children (ADR-0048), opens its billing account and runs
+        the monthly generation."""
+        fees = (
+            {child.student_id: per_child for child in self.children[parent_id]}
+            if isinstance(per_child, str)
+            else per_child
+        )
+        await self._price(fees, org)
         await self.parent_finance.create_or_update_billing_profile(
             CreateOrUpdateParentBillingProfileCommand(
-                organization_id=org, parent_id=parent_id, monthly_fee=fee, currency="USD",
+                organization_id=org, parent_id=parent_id, currency="USD",
                 billing_start_period="2026-09", due_day=10, actor=_admin(org),
             ),
             school_erp_uow=self.uow, transport_ops_uow=self.tuow,
@@ -265,7 +287,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
 
 class StudentFinanceTests(_Base):
     async def test_each_student_has_their_own_charge_payment_and_balance(self) -> None:
-        invoice = await self._bill(PARENT_A, "80.00")
+        invoice = await self._bill(PARENT_A, "40.00")
         await self._pay(invoice.id, "40.00", on=date(2026, 9, 12), only={STUDENT_A1: "40.00"})
 
         mohamed = await self._student(STUDENT_A1)
@@ -280,7 +302,7 @@ class StudentFinanceTests(_Base):
         self.assertEqual(mohamed.parents[0].full_name, "Ahmed Mohamed")
 
     async def test_a_consolidated_family_payment_is_traceable_to_each_child(self) -> None:
-        invoice = await self._bill(PARENT_A, "80.00")
+        invoice = await self._bill(PARENT_A, "40.00")
         payment = await self._pay(invoice.id, "80.00", on=date(2026, 9, 12))
 
         for student_id in (STUDENT_A1, STUDENT_A2):
@@ -291,7 +313,7 @@ class StudentFinanceTests(_Base):
             self.assertEqual(finance.payments[0].payment_total, "80.00")
 
     async def test_the_family_total_is_exactly_the_sum_of_its_children(self) -> None:
-        invoice = await self._bill(PARENT_A, "80.00")
+        invoice = await self._bill(PARENT_A, "40.00")
         await self._pay(invoice.id, "50.00", on=date(2026, 9, 12))
         summary = await self.parent_finance.get_parent_financial_summary(
             PARENT_A, school_erp_uow=self.uow, transport_ops_uow=self.tuow
@@ -306,7 +328,7 @@ class StudentFinanceTests(_Base):
 
     async def test_legacy_student_invoices_are_listed_but_never_added_to_the_totals(self) -> None:
         """Their money is already inside the Parent Invoices ADR-0042 copied from them."""
-        invoice = await self._bill(PARENT_A, "80.00")
+        invoice = await self._bill(PARENT_A, "40.00")
         legacy = StudentInvoice.issue(
             id=StudentInvoiceId("01J8Z3K9G6X8YV5T4N2R7QGC01"),
             organization_id=OrganizationId(ORG), student_id=StudentId(STUDENT_A1),
@@ -348,7 +370,7 @@ class VehicleIncomeTests(_Base):
             await self._income("25.00", on=date(2026, 9, 3), income_type="student", vehicle=BUS_1)
 
     async def test_three_income_sources_stay_separate_per_bus(self) -> None:
-        invoice = await self._bill(PARENT_A, "80.00")
+        invoice = await self._bill(PARENT_A, "40.00")
         await self._pay(invoice.id, "80.00", on=date(2026, 9, 12))
         await self._income("25.00", on=date(2026, 9, 3), income_type="daily_vehicle", vehicle=BUS_1)
         await self._income("30.00", on=date(2026, 9, 4), income_type="daily_vehicle", vehicle=BUS_1)
@@ -371,7 +393,7 @@ class VehicleIncomeTests(_Base):
     async def test_organization_totals_equal_the_bus_rows_plus_unattributed_money(self) -> None:
         """No double counting across the three levels: every unit of money in P&L is either on
         exactly one bus row or belongs to no bus."""
-        a = await self._bill(PARENT_A, "80.00")
+        a = await self._bill(PARENT_A, "40.00")
         b = await self._bill(PARENT_B, "50.00")
         await self._pay(a.id, "80.00", on=date(2026, 9, 12))
         await self._pay(b.id, "20.00", on=date(2026, 9, 13))
@@ -436,7 +458,7 @@ class VehicleIncomeTests(_Base):
         self.assertEqual(october.student_revenue, "50.00")
 
     async def test_the_vehicle_report_breaks_every_figure_down_and_filters_by_date(self) -> None:
-        a = await self._bill(PARENT_A, "80.00")
+        a = await self._bill(PARENT_A, "40.00")
         await self._pay(a.id, "60.00", on=date(2026, 9, 12))
         await self._income("25.00", on=date(2026, 9, 3), income_type="daily_vehicle", vehicle=BUS_1)
         await self._income("15.00", on=date(2026, 10, 3), income_type="daily_vehicle", vehicle=BUS_1)
@@ -473,7 +495,7 @@ class VehicleIncomeTests(_Base):
 
 class MyInvoicesTests(_Base):
     async def test_a_parent_sees_only_their_own_family(self) -> None:
-        a = await self._bill(PARENT_A, "80.00")
+        a = await self._bill(PARENT_A, "40.00")
         await self._bill(PARENT_B, "50.00")
         await self._pay(a.id, "30.00", on=date(2026, 9, 12))
 
@@ -502,9 +524,10 @@ class MyInvoicesTests(_Base):
 class ScheduledGenerationTests(_Base):
     async def test_every_organization_is_billed_once_per_period(self) -> None:
         for parent_id, org in ((PARENT_A, ORG), (PARENT_X, OTHER_ORG)):
+            await self._price({child.student_id: "30.00" for child in self.children[parent_id]}, org)
             await self.parent_finance.create_or_update_billing_profile(
                 CreateOrUpdateParentBillingProfileCommand(
-                    organization_id=org, parent_id=parent_id, monthly_fee="60.00",
+                    organization_id=org, parent_id=parent_id,
                     currency="USD", billing_start_period="2026-09", due_day=10, actor=_admin(org),
                 ),
                 school_erp_uow=self.uow, transport_ops_uow=self.tuow,
@@ -518,6 +541,28 @@ class ScheduledGenerationTests(_Base):
         self.assertEqual((first, second), (2, 0))
         organizations = {str(inv.organization_id) for inv in self.uow.parent_invoices.by_id.values()}
         self.assertEqual(organizations, {ORG, OTHER_ORG})
+
+    async def test_the_unattended_run_warns_about_every_child_it_could_not_price(self) -> None:
+        """Nobody watches a scheduled run, so an unpriced child must not go unbilled silently.
+        The warning names students by id only."""
+        await self._price({STUDENT_A1: "25.00"})
+        await self.parent_finance.create_or_update_billing_profile(
+            CreateOrUpdateParentBillingProfileCommand(
+                organization_id=ORG, parent_id=PARENT_A, currency="USD",
+                billing_start_period="2026-09", due_day=10, actor=_admin(),
+            ),
+            school_erp_uow=self.uow, transport_ops_uow=self.tuow,
+        )
+        with self.assertLogs("raad.modules.school_erp.application.services", "WARNING") as logs:
+            issued = await self.parent_finance.generate_parent_invoices_for_all_organizations(
+                period="2026-09", actor=SYSTEM_PRINCIPAL, school_erp_uow=self.uow, transport_ops_uow=self.tuow,
+            )
+        self.assertEqual(issued, 1)
+        (record,) = logs.records
+        self.assertEqual(record.getMessage(), "parent_invoice_students_not_billed")
+        self.assertEqual((record.count, record.student_ids, record.reasons), (1, [STUDENT_A2], ["no_fee"]))
+        (invoice,) = self.uow.parent_invoices.by_id.values()
+        self.assertEqual(invoice.amount.amount, Decimal("25.00"))
 
 
 if __name__ == "__main__":

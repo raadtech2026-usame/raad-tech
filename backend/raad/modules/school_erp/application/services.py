@@ -22,6 +22,8 @@ the boundary where they become exact decimals. A `float` never exists anywhere i
 from __future__ import annotations
 
 import calendar
+import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
@@ -57,6 +59,7 @@ from raad.modules.school_erp.application.commands import (
     RecordParentPaymentCommand,
     RecordStudentPaymentCommand,
     SetParentBillingProfileStatusCommand,
+    SetStudentBillingFeeCommand,
     UpdateFeePlanCommand,
     UpdateFinancialCategoryCommand,
     VoidExpenseCommand,
@@ -73,15 +76,22 @@ from raad.modules.school_erp.application.queries import (
     FeePlanDTO,
     FinancialCategoryDTO,
     FinanceSummaryDTO,
+    GenerationFamilyDTO,
+    GenerationLineDTO,
+    GenerationSkipDTO,
     IncomeDTO,
     MyInvoicesDTO,
     ParentBillingProfileDTO,
     ParentChildFinancialDTO,
     ParentFinancialSummaryDTO,
     ParentInvoiceDetailDTO,
+    ParentInvoiceGenerationPreviewDTO,
     ParentInvoiceSummaryDTO,
     ParentPaymentDTO,
+    ParentStudentFeeDTO,
+    ParentStudentFeesDTO,
     ProfitAndLossDTO,
+    StudentBillingFeeDTO,
     StudentChargeDTO,
     StudentFinanceDTO,
     StudentInvoiceDTO,
@@ -101,6 +111,7 @@ from raad.modules.school_erp.application.queries import (
     parent_invoice_to_detail_dto,
     parent_invoice_to_summary_dto,
     parent_payment_to_dto,
+    student_billing_fee_to_dto,
     student_invoice_to_dto,
     student_payment_to_dto,
 )
@@ -130,6 +141,7 @@ from raad.modules.school_erp.domain.entities import (
     ParentInvoice,
     ParentPayment,
     PaymentAllocationInput,
+    StudentBillingProfile,
     StudentInvoice,
     StudentPayment,
 )
@@ -150,6 +162,7 @@ from raad.modules.school_erp.domain.value_objects import (
     ParentInvoiceStatus,
     ParentPaymentId,
     RouteId,
+    StudentBillingProfileId,
     StudentId,
     StudentInvoiceId,
     StudentPaymentId,
@@ -158,6 +171,27 @@ from raad.modules.school_erp.domain.value_objects import (
 )
 
 _ZERO = Decimal("0.00")
+logger = logging.getLogger(__name__)
+#: `_plan_generation` skip reasons an admin must act on; the others are expected outcomes.
+_GENERATION_REASONS_NEEDING_ADMIN = frozenset({"no_fee", "currency_mismatch"})
+
+
+@dataclass(frozen=True)
+class _PlannedLine:
+    """One child the monthly run will bill, at their own fee (ADR-0048)."""
+
+    student_id: str
+    full_name: str
+    amount: Decimal
+    vehicle_id: str | None
+    route_id: str | None
+
+
+@dataclass(frozen=True)
+class _PlannedFamily:
+    profile: ParentBillingProfile
+    parent_name: str
+    lines: list[_PlannedLine]
 
 
 def _decimal(value: str | None, *, field: str, default: Decimal = _ZERO) -> Decimal:
@@ -1144,10 +1178,6 @@ class ParentFinanceApplicationService:
                 f"{command.organization_id}."
             )
 
-        money = Money(
-            amount=_decimal(command.monthly_fee, field="monthly_fee"),
-            currency=command.currency,
-        )
         billing_start = BillingPeriod(command.billing_start_period)
 
         async with school_erp_uow:
@@ -1159,7 +1189,7 @@ class ParentFinanceApplicationService:
                     id=ParentBillingProfileId(self._id_generator.new_id()),
                     organization_id=OrganizationId(command.organization_id),
                     parent_id=ParentId(command.parent_id),
-                    monthly_fee=money,
+                    currency=command.currency,
                     billing_start_period=billing_start,
                     due_day=command.due_day,
                     clock=self._clock,
@@ -1168,8 +1198,9 @@ class ParentFinanceApplicationService:
                 school_erp_uow.parent_billing_profiles.add(profile)
             else:
                 profile = existing
-                profile.update_fee(
-                    monthly_fee=money,
+                profile.update_terms(
+                    currency=command.currency,
+                    billing_start_period=billing_start,
                     due_day=command.due_day,
                     clock=self._clock,
                     actor_id=command.actor.user_id,
@@ -1228,97 +1259,335 @@ class ParentFinanceApplicationService:
         school_erp_uow: SchoolErpUnitOfWork,
         transport_ops_uow: TransportOpsUnitOfWork,
     ) -> list[ParentInvoiceDetailDTO]:
-        """The monthly billing run (Part 18 of the directive): every `active`
-        `ParentBillingProfile` in this organization whose `billing_start_period` has arrived is
-        picked up automatically — no `student_ids`/`fee_plan_id` to supply, unlike the legacy
-        `generate_student_invoices`, because the profile already names its own parent and fee.
+        """The monthly billing run: every `active` `ParentBillingProfile` in this organization
+        whose `billing_start_period` has arrived gets one invoice, with one line per active
+        child at that child's own fee and a total that is their sum (ADR-0048). Who is billed,
+        and at what, is decided by `_plan_generation`, which the preview shares.
 
-        **Idempotent**, backed twice over exactly like `generate_student_invoices` already is: a
-        parent already invoiced for the period is skipped here *and* by
-        `ux_erp_parent_invoices__org_parent_period`, because a check alone loses a race.
-
-        Every candidate parent's active children and every child's transport context are
-        resolved in one batched pass each, before any invoice is written — the same N+1-avoidance
-        `generate_student_invoices` already establishes for its own cohort.
+        **Idempotent**, backed twice over: a parent already invoiced for the period is skipped
+        here *and* by the partial unique index `ux_erp_parent_invoices__org_parent_period`,
+        because a check alone loses a race. A cancelled invoice does not count, so a corrected
+        bill can be generated after cancelling a wrong one.
         """
+        dtos, _skipped = await self._generate_parent_invoices(
+            command, school_erp_uow=school_erp_uow, transport_ops_uow=transport_ops_uow
+        )
+        return dtos
+
+    async def _generate_parent_invoices(
+        self,
+        command: GenerateParentInvoicesCommand,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> tuple[list[ParentInvoiceDetailDTO], list[GenerationSkipDTO]]:
         _enforce_own_organization(
             actor=command.actor, organization_id=command.organization_id
         )
         period = BillingPeriod(command.period)
 
         async with school_erp_uow:
-            profiles = [
-                profile
-                for profile in await school_erp_uow.parent_billing_profiles.list_active_for_billing(
-                    as_of_period=period
-                )
-                if str(profile.organization_id) == command.organization_id
-            ]
-
-            children_by_parent: dict[str, list[StudentForParentDTO]] = {}
-            all_student_ids: list[str] = []
-            for profile in profiles:
-                if await school_erp_uow.parent_invoices.exists_for_parent_period(
-                    parent_id=profile.parent_id, period=period
-                ):
-                    continue
-                children = await self._resolve_active_children(
-                    str(profile.parent_id), transport_ops_uow=transport_ops_uow
-                )
-                if not children:
-                    continue
-                children_by_parent[str(profile.parent_id)] = children
-                all_student_ids.extend(child.student_id for child in children)
-
-            contexts = await self._resolve_transport_contexts(all_student_ids)
-
-            issued: list[ParentInvoice] = []
-            for profile in profiles:
-                children = children_by_parent.get(str(profile.parent_id))
-                if not children:
-                    continue
-                billed_children: list[BilledChild] = []
-                for child in children:
-                    context = contexts.get(child.student_id)
-                    billed_children.append(
-                        BilledChild(
-                            line_id=self._id_generator.new_id(),
-                            student_id=child.student_id,
-                            vehicle_id=context.vehicle_id if context else None,
-                            route_id=context.route_id if context else None,
-                        )
-                    )
+            families, skipped = await self._plan_generation(
+                organization_id=command.organization_id,
+                period=period,
+                school_erp_uow=school_erp_uow,
+                transport_ops_uow=transport_ops_uow,
+            )
+            issued: list[tuple[ParentInvoice, _PlannedFamily]] = []
+            for family in families:
                 invoice = ParentInvoice.generate(
                     id=ParentInvoiceId(self._id_generator.new_id()),
-                    organization_id=profile.organization_id,
-                    parent_id=profile.parent_id,
+                    organization_id=family.profile.organization_id,
+                    parent_id=family.profile.parent_id,
                     period=period,
-                    amount=profile.monthly_fee,
-                    due_date=_due_date_for(period, profile.due_day),
-                    children=billed_children,
+                    currency=family.profile.currency,
+                    due_date=_due_date_for(period, family.profile.due_day),
+                    children=[
+                        BilledChild(
+                            line_id=self._id_generator.new_id(),
+                            student_id=line.student_id,
+                            amount=line.amount,
+                            vehicle_id=line.vehicle_id,
+                            route_id=line.route_id,
+                        )
+                        for line in family.lines
+                    ],
                     clock=self._clock,
                     actor_id=command.actor.user_id,
                 )
                 school_erp_uow.parent_invoices.add(invoice)
                 school_erp_uow.record_events(invoice.pull_domain_events())
-                issued.append(invoice)
+                issued.append((invoice, family))
 
             await school_erp_uow.commit()
 
-        parent_names = await self._resolve_parent_names(
-            [str(invoice.parent_id) for invoice in issued], transport_ops_uow=transport_ops_uow
-        )
         return [
             parent_invoice_to_detail_dto(
                 invoice,
-                parent_name=parent_names.get(str(invoice.parent_id), str(invoice.parent_id)),
-                student_names={
-                    child.student_id: child.full_name
-                    for child in children_by_parent.get(str(invoice.parent_id), [])
-                },
+                parent_name=family.parent_name,
+                student_names={line.student_id: line.full_name for line in family.lines},
             )
-            for invoice in issued
-        ]
+            for invoice, family in issued
+        ], skipped
+
+    async def preview_parent_invoice_generation(
+        self,
+        *,
+        organization_id: str,
+        period: str,
+        actor: Principal,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> ParentInvoiceGenerationPreviewDTO:
+        """What the monthly run would issue for `period`, and why each family or student it
+        leaves out is left out — writes nothing. Built by the same `_plan_generation` the run
+        uses, so the preview cannot disagree with the result."""
+        _enforce_own_organization(actor=actor, organization_id=organization_id)
+        billing_period = BillingPeriod(period)
+        async with school_erp_uow:
+            families, skipped = await self._plan_generation(
+                organization_id=organization_id,
+                period=billing_period,
+                school_erp_uow=school_erp_uow,
+                transport_ops_uow=transport_ops_uow,
+            )
+        totals: dict[str, Decimal] = {}
+        family_dtos: list[GenerationFamilyDTO] = []
+        for family in families:
+            total = sum((line.amount for line in family.lines), _ZERO)
+            currency = family.profile.currency
+            totals[currency] = totals.get(currency, _ZERO) + total
+            family_dtos.append(
+                GenerationFamilyDTO(
+                    parent_id=str(family.profile.parent_id),
+                    parent_name=family.parent_name,
+                    currency=currency,
+                    total=_money(total),
+                    lines=[
+                        GenerationLineDTO(
+                            student_id=line.student_id,
+                            full_name=line.full_name,
+                            amount=_money(line.amount),
+                            vehicle_id=line.vehicle_id,
+                        )
+                        for line in family.lines
+                    ],
+                )
+            )
+        return ParentInvoiceGenerationPreviewDTO(
+            organization_id=organization_id,
+            period=str(billing_period),
+            families=family_dtos,
+            skipped=skipped,
+            totals_by_currency={code: _money(amount) for code, amount in sorted(totals.items())},
+        )
+
+    async def _plan_generation(
+        self,
+        *,
+        organization_id: str,
+        period: BillingPeriod,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> tuple[list["_PlannedFamily"], list[GenerationSkipDTO]]:
+        """Decides, without writing anything, which families are invoiced for `period` and at
+        what amount (ADR-0048). The caller has already entered `school_erp_uow`.
+
+        - A family is billed when its Billing Profile is active and has started, and it has no
+          live invoice for the period yet (the idempotency rule).
+        - Each of its **active** children is billed at the child's own fee. A child with no fee
+          set is skipped and reported (`no_fee`), never priced by guessing; a fee of 0.00 is
+          skipped silently as `free`; a fee in another currency than the family's account is
+          reported (`currency_mismatch`).
+        - **A child is billed once per period**, even when two guardians both have a Billing
+          Profile: the payer is the guardian whose link is primary, else the lowest parent id,
+          and a child already on another family's live invoice for the period is skipped. The
+          per-family unique index alone cannot see this, because the two invoices are for
+          different parents.
+
+        Every child's fee and transport context is fetched in one batched query each.
+        """
+        profiles = sorted(
+            (
+                profile
+                for profile in await school_erp_uow.parent_billing_profiles.list_active_for_billing(
+                    as_of_period=period
+                )
+                if str(profile.organization_id) == organization_id
+            ),
+            key=lambda profile: str(profile.parent_id),
+        )
+        parent_names = await self._resolve_parent_names(
+            [str(profile.parent_id) for profile in profiles], transport_ops_uow=transport_ops_uow
+        )
+        skipped: list[GenerationSkipDTO] = []
+        children_by_parent: dict[str, list[StudentForParentDTO]] = {}
+        for profile in profiles:
+            parent_id = str(profile.parent_id)
+            parent_name = parent_names.get(parent_id, parent_id)
+            if await school_erp_uow.parent_invoices.exists_for_parent_period(
+                parent_id=profile.parent_id, period=period
+            ):
+                skipped.append(GenerationSkipDTO(parent_id, parent_name, "already_invoiced"))
+                continue
+            children = await self._resolve_active_children(
+                parent_id, transport_ops_uow=transport_ops_uow
+            )
+            if not children:
+                skipped.append(GenerationSkipDTO(parent_id, parent_name, "no_active_children"))
+                continue
+            children_by_parent[parent_id] = children
+
+        claims: dict[str, list[tuple[bool, str]]] = {}
+        for parent_id, children in children_by_parent.items():
+            for child in children:
+                claims.setdefault(child.student_id, []).append((child.is_primary, parent_id))
+        payer = {
+            student_id: sorted(candidates, key=lambda c: (not c[0], c[1]))[0][1]
+            for student_id, candidates in claims.items()
+        }
+        student_ids = sorted(claims)
+        already_billed = await school_erp_uow.parent_invoices.billed_student_ids_for_period(
+            period=period
+        )
+        fees = await school_erp_uow.student_billing_profiles.list_by_students(student_ids)
+        contexts = await self._resolve_transport_contexts(student_ids)
+
+        families: list[_PlannedFamily] = []
+        for profile in profiles:
+            parent_id = str(profile.parent_id)
+            children = children_by_parent.get(parent_id)
+            if children is None:
+                continue
+            parent_name = parent_names.get(parent_id, parent_id)
+            lines: list[_PlannedLine] = []
+            for child in children:
+
+                def skip(reason: str) -> None:
+                    skipped.append(
+                        GenerationSkipDTO(
+                            parent_id, parent_name, reason, child.student_id, child.full_name
+                        )
+                    )
+
+                if child.student_id in already_billed or payer[child.student_id] != parent_id:
+                    skip("billed_by_another_parent")
+                    continue
+                fee = fees.get(child.student_id)
+                if fee is None:
+                    skip("no_fee")
+                    continue
+                if not fee.is_billable:
+                    skip("free")
+                    continue
+                if fee.monthly_fee.currency != profile.currency:
+                    skip("currency_mismatch")
+                    continue
+                context = contexts.get(child.student_id)
+                lines.append(
+                    _PlannedLine(
+                        student_id=child.student_id,
+                        full_name=child.full_name,
+                        amount=fee.monthly_fee.amount,
+                        vehicle_id=context.vehicle_id if context else None,
+                        route_id=context.route_id if context else None,
+                    )
+                )
+            if lines:
+                families.append(
+                    _PlannedFamily(profile=profile, parent_name=parent_name, lines=lines)
+                )
+        return families, skipped
+
+    # ==========================================================================================
+    # StudentBillingProfile (ADR-0048) — each student's own monthly fee
+    # ==========================================================================================
+
+    async def set_student_billing_fee(
+        self,
+        command: SetStudentBillingFeeCommand,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> StudentBillingFeeDTO:
+        """Sets or changes one student's monthly fee. The student must be in the caller's scope
+        (`get_student_by_id` 404s otherwise) and, for an Org Admin, in their own organization;
+        the fee row takes the student's organization, never a client-supplied one. Future
+        invoices only — every invoice already generated keeps its own frozen line amount."""
+        student = await self._require_student_service().get_student_by_id(
+            GetStudentByIdQuery(student_id=command.student_id), uow=transport_ops_uow
+        )
+        _enforce_own_organization(actor=command.actor, organization_id=student.organization_id)
+        fee = Money(
+            amount=_decimal(command.monthly_fee, field="monthly_fee"),
+            currency=command.currency,
+        )
+        async with school_erp_uow:
+            profile = await school_erp_uow.student_billing_profiles.get_by_student(
+                StudentId(command.student_id)
+            )
+            if profile is None:
+                profile = StudentBillingProfile.open(
+                    id=StudentBillingProfileId(self._id_generator.new_id()),
+                    organization_id=OrganizationId(student.organization_id),
+                    student_id=StudentId(command.student_id),
+                    monthly_fee=fee,
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                )
+                school_erp_uow.student_billing_profiles.add(profile)
+            else:
+                profile.change_fee(
+                    monthly_fee=fee, clock=self._clock, actor_id=command.actor.user_id
+                )
+            school_erp_uow.record_events(profile.pull_domain_events())
+            await school_erp_uow.commit()
+            return student_billing_fee_to_dto(profile)
+
+    async def get_parent_student_fees(
+        self,
+        parent_id: str,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> ParentStudentFeesDTO:
+        """Every child of this family with their own fee, and what one month bills the family:
+        the sum over its active, priced children. The same arithmetic the monthly run uses."""
+        children = await self._resolve_children(parent_id, transport_ops_uow=transport_ops_uow)
+        async with school_erp_uow:
+            fees = await school_erp_uow.student_billing_profiles.list_by_students(
+                [child.student_id for child in children]
+            )
+        total = _ZERO
+        currencies: set[str] = set()
+        unpriced = 0
+        students: list[ParentStudentFeeDTO] = []
+        for child in children:
+            fee = fees.get(child.student_id)
+            students.append(
+                ParentStudentFeeDTO(
+                    student_id=child.student_id,
+                    full_name=child.full_name,
+                    status=child.status,
+                    monthly_fee=_money(fee.monthly_fee.amount) if fee else None,
+                    currency=fee.monthly_fee.currency if fee else None,
+                )
+            )
+            if child.status != "active":
+                continue
+            if fee is None:
+                unpriced += 1
+                continue
+            total += fee.monthly_fee.amount
+            currencies.add(fee.monthly_fee.currency)
+        single = len(currencies) <= 1
+        return ParentStudentFeesDTO(
+            parent_id=parent_id,
+            monthly_total=_money(total) if single else None,
+            currency=next(iter(currencies)) if len(currencies) == 1 else None,
+            unpriced_active_students=unpriced,
+            students=students,
+        )
 
     async def cancel_parent_invoice(
         self,
@@ -1778,6 +2047,9 @@ class ParentFinanceApplicationService:
             legacy_invoices = await school_erp_uow.student_invoices.list_for_student(
                 StudentId(student_id)
             )
+            fee = await school_erp_uow.student_billing_profiles.get_by_student(
+                StudentId(student_id)
+            )
             legacy_payments: list[StudentPayment] = []
             for legacy in legacy_invoices:
                 legacy_payments.extend(
@@ -1877,6 +2149,8 @@ class ParentFinanceApplicationService:
             payments=entries,
             legacy_invoices=[student_invoice_to_dto(inv) for inv in legacy_invoices],
             legacy_payments=[student_payment_to_dto(pay) for pay in legacy_payments],
+            monthly_fee=_money(fee.monthly_fee.amount) if fee else None,
+            monthly_fee_currency=fee.monthly_fee.currency if fee else None,
         )
 
     # ==========================================================================================
@@ -2068,7 +2342,7 @@ class ParentFinanceApplicationService:
         organization_ids = sorted({str(profile.organization_id) for profile in profiles})
         issued = 0
         for organization_id in organization_ids:
-            results = await self.generate_parent_invoices(
+            results, skipped = await self._generate_parent_invoices(
                 GenerateParentInvoicesCommand(
                     organization_id=organization_id, period=period, actor=actor
                 ),
@@ -2076,6 +2350,22 @@ class ParentFinanceApplicationService:
                 transport_ops_uow=transport_ops_uow,
             )
             issued += len(results)
+            # Nobody is watching an unattended run: a child it could not price would otherwise
+            # go unbilled in silence. Named by id only — no student name reaches the logs.
+            needs_attention = [
+                item for item in skipped if item.reason in _GENERATION_REASONS_NEEDING_ADMIN
+            ]
+            if needs_attention:
+                logger.warning(
+                    "parent_invoice_students_not_billed",
+                    extra={
+                        "organization_id": organization_id,
+                        "period": period,
+                        "count": len(needs_attention),
+                        "student_ids": [item.student_id for item in needs_attention],
+                        "reasons": sorted({item.reason for item in needs_attention}),
+                    },
+                )
         return issued
 
     # ==========================================================================================

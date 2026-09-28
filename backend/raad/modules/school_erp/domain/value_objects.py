@@ -209,6 +209,17 @@ class ParentBillingProfileId:
 
 
 @dataclass(frozen=True)
+class StudentBillingProfileId:
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_ulid(self.value, "StudentBillingProfileId")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
 class ParentInvoiceId:
     value: str
 

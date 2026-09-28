@@ -30,6 +30,7 @@ from raad.modules.school_erp.domain.entities import (
     ParentInvoiceLine,
     ParentPayment,
     ParentPaymentAllocation,
+    StudentBillingProfile,
     StudentInvoice,
     StudentPayment,
 )
@@ -55,6 +56,7 @@ from raad.modules.school_erp.domain.value_objects import (
     ParentPaymentAllocationId,
     ParentPaymentId,
     RouteId,
+    StudentBillingProfileId,
     StudentId,
     StudentInvoiceId,
     StudentInvoiceStatus,
@@ -72,6 +74,7 @@ from raad.modules.school_erp.infra.models import (
     ParentInvoiceModel,
     ParentPaymentAllocationModel,
     ParentPaymentModel,
+    StudentBillingProfileModel,
     StudentInvoiceModel,
     StudentPaymentModel,
 )
@@ -378,8 +381,7 @@ def parent_billing_profile_to_model(
     )
     model.organization_id = str(profile.organization_id)
     model.parent_id = str(profile.parent_id)
-    model.monthly_fee = profile.monthly_fee.amount
-    model.currency = profile.monthly_fee.currency
+    model.currency = profile.currency
     model.billing_start_period = str(profile.billing_start_period)
     model.due_day = profile.due_day
     model.status = profile.status.value
@@ -393,7 +395,7 @@ def model_to_parent_billing_profile(model: ParentBillingProfileModel) -> ParentB
         id=ParentBillingProfileId(_char(model.id)),
         organization_id=OrganizationId(_char(model.organization_id)),
         parent_id=ParentId(_char(model.parent_id)),
-        monthly_fee=Money(amount=_dec(model.monthly_fee), currency=_char(model.currency)),
+        currency=_char(model.currency),
         billing_start_period=BillingPeriod(_char(model.billing_start_period)),
         due_day=model.due_day,
         status=ParentBillingProfileStatus(model.status),
@@ -570,4 +572,35 @@ def model_to_parent_payment(model: ParentPaymentModel) -> ParentPayment:
             )
             for row in model.allocations
         ],
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# StudentBillingProfile (ADR-0048)
+# --------------------------------------------------------------------------------------------
+
+
+def student_billing_profile_to_model(
+    profile: StudentBillingProfile, *, existing: StudentBillingProfileModel | None = None
+) -> StudentBillingProfileModel:
+    model = (
+        existing if existing is not None else StudentBillingProfileModel(id=str(profile.id))
+    )
+    model.organization_id = str(profile.organization_id)
+    model.student_id = str(profile.student_id)
+    model.monthly_fee = profile.monthly_fee.amount
+    model.currency = profile.monthly_fee.currency
+    model.created_at = _to_naive_utc(profile.created_at)
+    model.updated_at = _to_naive_utc(profile.updated_at)
+    return model
+
+
+def model_to_student_billing_profile(model: StudentBillingProfileModel) -> StudentBillingProfile:
+    return StudentBillingProfile(
+        id=StudentBillingProfileId(_char(model.id)),
+        organization_id=OrganizationId(_char(model.organization_id)),
+        student_id=StudentId(_char(model.student_id)),
+        monthly_fee=Money(amount=_dec(model.monthly_fee), currency=_char(model.currency)),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
     )

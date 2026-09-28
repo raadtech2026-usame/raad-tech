@@ -17,14 +17,17 @@ from __future__ import annotations
 
 import unittest
 
+
 from pydantic import ValidationError
 
 from raad.modules.school_erp.api.schemas import (
+    CreateOrUpdateParentBillingProfileRequest,
     CreateFeePlanRequest,
     IssueStudentInvoiceRequest,
     RecordExpenseRequest,
     RecordIncomeRequest,
     RecordStudentPaymentRequest,
+    SetStudentBillingFeeRequest,
     UpdateFeePlanRequest,
     VoidLedgerEntryRequest,
     VoidStudentPaymentRequest,
@@ -195,6 +198,25 @@ class ParentPaymentLedgerSchemaTests(unittest.TestCase):
         )
         with self.assertRaises(ValidationError):
             RecordIncomeRequest(**base, income_type="student")
+
+
+class PerStudentPricingSchemaTests(unittest.TestCase):
+    """ADR-0048's request models, built the way FastAPI builds them."""
+
+    def test_a_student_fee_rounds_half_up_and_zero_is_allowed(self) -> None:
+        self.assertEqual(
+            SetStudentBillingFeeRequest(monthly_fee="10.005", currency="usd").monthly_fee, "10.01"
+        )
+        self.assertEqual(
+            SetStudentBillingFeeRequest(monthly_fee="0", currency="USD").monthly_fee, "0.00"
+        )
+
+    def test_the_billing_profile_body_refuses_the_retired_family_fee(self) -> None:
+        """A client still sending a family fee must be told, not have it silently ignored."""
+        body = {"currency": "USD", "billing_start_period": "2026-09", "due_day": 10}
+        self.assertEqual(CreateOrUpdateParentBillingProfileRequest(**body).currency, "USD")
+        with self.assertRaises(ValidationError):
+            CreateOrUpdateParentBillingProfileRequest(**body, monthly_fee="80.00")
 
 
 if __name__ == "__main__":  # pragma: no cover

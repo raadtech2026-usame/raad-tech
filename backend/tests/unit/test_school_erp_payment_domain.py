@@ -1,5 +1,6 @@
-"""Domain tests for the ADR-0047 payment ledger: the allocation rule, and `ParentInvoice`'s
-apply/reverse invariants. Pure domain — no application service, no fakes."""
+"""Domain tests for the ADR-0047 payment ledger (the allocation rule, and `ParentInvoice`'s
+apply/reverse invariants) and ADR-0048 per-student pricing. Pure domain — no application
+service, no fakes."""
 
 from __future__ import annotations
 
@@ -14,8 +15,10 @@ from raad.modules.school_erp.domain.entities import (
     Income,
     LineAllocation,
     ParentInvoice,
+    ParentBillingProfile,
     ParentPayment,
     PaymentAllocationInput,
+    StudentBillingProfile,
     allocate_pro_rata,
 )
 from raad.modules.school_erp.domain.value_objects import (
@@ -24,10 +27,13 @@ from raad.modules.school_erp.domain.value_objects import (
     IncomeType,
     Money,
     OrganizationId,
+    ParentBillingProfileId,
     ParentId,
     ParentInvoiceId,
     ParentInvoiceStatus,
     ParentPaymentId,
+    StudentBillingProfileId,
+    StudentId,
     StudentPaymentMethod,
     VehicleId,
 )
@@ -46,17 +52,22 @@ def _id(suffix: str) -> str:
     return f"{_PREFIX}{suffix}"
 
 
-def _invoice(total: str = "100.00", children: int = 3) -> ParentInvoice:
+def _invoice(fees: tuple[str, ...] = ("33.34", "33.33", "33.33")) -> ParentInvoice:
     return ParentInvoice.generate(
         id=ParentInvoiceId(_id("NV01")),
         organization_id=OrganizationId(_id("RG01")),
         parent_id=ParentId(_id("PR01")),
         period=BillingPeriod("2026-09"),
-        amount=Money(amount=Decimal(total), currency="USD"),
+        currency="USD",
         due_date=date(2026, 9, 30),
         children=[
-            BilledChild(line_id=_id(f"KN0{i}"), student_id=_id(f"ST0{i}"), vehicle_id=_id("BS01"))
-            for i in range(1, children + 1)
+            BilledChild(
+                line_id=_id(f"KN0{i}"),
+                student_id=_id(f"ST0{i}"),
+                amount=Decimal(fee),
+                vehicle_id=_id("BS01"),
+            )
+            for i, fee in enumerate(fees, start=1)
         ],
         clock=CLOCK,
     )
@@ -86,7 +97,7 @@ class AllocateProRataTests(unittest.TestCase):
 
 class ParentInvoicePaymentTests(unittest.TestCase):
     def test_status_is_derived_from_the_lines(self) -> None:
-        invoice = _invoice("90.00")
+        invoice = _invoice(("30.00", "30.00", "30.00"))
         line = invoice.lines[0]
         invoice.apply_payment(
             payment_id="p1", allocations=[LineAllocation(str(line.id), Decimal("30.00"))],
@@ -110,7 +121,7 @@ class ParentInvoicePaymentTests(unittest.TestCase):
         self.assertEqual(invoice.amount_paid, Decimal("60.00"))
 
     def test_guards(self) -> None:
-        invoice = _invoice("90.00")
+        invoice = _invoice(("30.00", "30.00", "30.00"))
         line_id = str(invoice.lines[0].id)
         with self.assertRaises(DomainError):
             invoice.apply_payment(payment_id="p", allocations=[LineAllocation(line_id, Decimal("30.01"))], currency="USD", clock=CLOCK)
@@ -188,6 +199,109 @@ class IncomeTypeTests(unittest.TestCase):
         self.assertIsNone(other.vehicle_id)
         event = daily.pull_domain_events()[0]
         self.assertEqual(event.payload["income_type"], "daily_vehicle")
+
+
+class PerStudentPricingTests(unittest.TestCase):
+    """ADR-0048: every line is its own student's fee; the family total is their sum."""
+
+    def test_three_children_at_ten_twenty_thirty_make_a_sixty_invoice(self) -> None:
+        invoice = _invoice(("10.00", "20.00", "30.00"))
+        self.assertEqual([line.amount.amount for line in invoice.lines], [Decimal("10.00"), Decimal("20.00"), Decimal("30.00")])
+        self.assertEqual(invoice.amount.amount, Decimal("60.00"))
+        self.assertEqual([line.balance_due for line in invoice.lines], [Decimal("10.00"), Decimal("20.00"), Decimal("30.00")])
+        self.assertEqual(invoice.pull_domain_events()[0].payload["amount"], "60.00")
+
+    def test_a_thirty_dollar_payment_defaults_pro_rata_and_can_be_directed_instead(self) -> None:
+        default = _invoice(("10.00", "20.00", "30.00"))
+        self.assertEqual(
+            [a.amount for a in default.default_allocation(Decimal("30.00"))],
+            [Decimal("5.00"), Decimal("10.00"), Decimal("15.00")],
+        )
+        edited = _invoice(("10.00", "20.00", "30.00"))
+        one, two, three = edited.lines
+        edited.apply_payment(
+            payment_id="p1",
+            allocations=[LineAllocation(str(one.id), Decimal("10.00")), LineAllocation(str(two.id), Decimal("20.00"))],
+            currency="USD",
+            clock=CLOCK,
+        )
+        self.assertEqual([l.balance_due for l in edited.lines], [Decimal("0.00"), Decimal("0.00"), Decimal("30.00")])
+        self.assertIs(edited.status, ParentInvoiceStatus.PARTIAL)
+        self.assertEqual(edited.balance_due, Decimal("30.00"))
+
+    def test_a_student_cannot_be_billed_twice_or_at_zero(self) -> None:
+        def generate(children):
+            return ParentInvoice.generate(
+                id=ParentInvoiceId(_id("NV02")),
+                organization_id=OrganizationId(_id("RG01")),
+                parent_id=ParentId(_id("PR01")),
+                period=BillingPeriod("2026-09"),
+                currency="USD",
+                due_date=date(2026, 9, 30),
+                children=children,
+                clock=CLOCK,
+            )
+
+        with self.assertRaises(DomainError):
+            generate([
+                BilledChild(line_id=_id("KN01"), student_id=_id("ST01"), amount=Decimal("10.00")),
+                BilledChild(line_id=_id("KN02"), student_id=_id("ST01"), amount=Decimal("10.00")),
+            ])
+        with self.assertRaises(DomainError):
+            generate([BilledChild(line_id=_id("KN01"), student_id=_id("ST01"), amount=Decimal("0.00"))])
+        with self.assertRaises(DomainError):
+            generate([])
+
+
+class StudentBillingProfileTests(unittest.TestCase):
+    def _open(self, fee: str = "10.00") -> StudentBillingProfile:
+        return StudentBillingProfile.open(
+            id=StudentBillingProfileId(_id("SB01")),
+            organization_id=OrganizationId(_id("RG01")),
+            student_id=StudentId(_id("ST01")),
+            monthly_fee=Money(amount=Decimal(fee), currency="usd"),
+            clock=CLOCK,
+            actor_id="admin",
+        )
+
+    def test_a_fee_change_records_the_previous_figure_for_the_audit_trail(self) -> None:
+        profile = self._open("10.00")
+        created = profile.pull_domain_events()
+        self.assertEqual(created[0].payload["previous_monthly_fee"], None)
+        self.assertEqual(created[0].payload["monthly_fee"], "10.00")
+
+        profile.change_fee(monthly_fee=Money(amount=Decimal("12.50"), currency="USD"), clock=CLOCK)
+        (changed,) = profile.pull_domain_events()
+        self.assertEqual(changed.event_type, "school_erp.StudentBillingFeeSet")
+        self.assertEqual((changed.payload["previous_monthly_fee"], changed.payload["monthly_fee"]), ("10.00", "12.50"))
+
+        profile.change_fee(monthly_fee=Money(amount=Decimal("12.50"), currency="USD"), clock=CLOCK)
+        self.assertEqual(profile.pull_domain_events(), [], "an unchanged fee records nothing")
+
+    def test_zero_means_free_and_a_negative_fee_is_refused(self) -> None:
+        self.assertFalse(self._open("0.00").is_billable)
+        self.assertTrue(self._open("0.01").is_billable)
+        with self.assertRaises(DomainError):
+            Money(amount=Decimal("-1.00"), currency="USD")
+
+
+class ParentBillingProfileTermsTests(unittest.TestCase):
+    def test_the_account_carries_terms_not_a_fee(self) -> None:
+        profile = ParentBillingProfile.open(
+            id=ParentBillingProfileId(_id("PB01")),
+            organization_id=OrganizationId(_id("RG01")),
+            parent_id=ParentId(_id("PR01")),
+            currency="usd",
+            billing_start_period=BillingPeriod("2026-09"),
+            due_day=10,
+            clock=CLOCK,
+        )
+        self.assertEqual(profile.currency, "USD")
+        self.assertNotIn("monthly_fee", profile.pull_domain_events()[0].payload)
+        profile.update_terms(currency="USD", billing_start_period=BillingPeriod("2026-10"), due_day=5, clock=CLOCK)
+        self.assertEqual((str(profile.billing_start_period), profile.due_day), ("2026-10", 5))
+        with self.assertRaises(DomainError):
+            profile.update_terms(currency="DOLLARS", billing_start_period=BillingPeriod("2026-10"), due_day=5, clock=CLOCK)
 
 
 if __name__ == "__main__":

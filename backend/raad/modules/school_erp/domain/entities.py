@@ -51,6 +51,7 @@ from raad.modules.school_erp.domain.value_objects import (
     ParentPaymentAllocationId,
     ParentPaymentId,
     RouteId,
+    StudentBillingProfileId,
     StudentId,
     StudentInvoiceId,
     StudentInvoiceStatus,
@@ -107,6 +108,13 @@ def _require_void_reason(reason: str | None) -> str:
     if len(cleaned) > _MAX_VOID_REASON:
         raise DomainError(f"reason must be at most {_MAX_VOID_REASON} characters")
     return cleaned
+
+
+def _validate_currency(currency: str) -> str:
+    """The rule `Money` applies, for an aggregate that holds a currency without an amount."""
+    if not isinstance(currency, str) or len(currency.strip()) != 3 or not currency.strip().isalpha():
+        raise DomainError(f"Currency must be a 3-letter ISO 4217 code: {currency!r}")
+    return currency.strip().upper()
 
 
 def _validate_due_day(due_day: int) -> None:
@@ -1041,31 +1049,20 @@ class Expense(_AggregateRoot):
 # workflow that produced them (ADR-0042 decision 2) — nothing here reads or writes them.
 
 
-def _split_amount_evenly(total: Decimal, count: int) -> list[Decimal]:
-    """Equal split of `total` across `count` children, in whole cents, any remainder cent
-    assigned to the first lines — so `sum(result) == total` exactly, never drifting from the
-    frozen invoice amount by a rounding cent (ADR-0042 decision 1's disclosed allocation rule:
-    every child in a family nominally shares one transportation charge equally)."""
-    if count < 1:
-        raise DomainError("Cannot split a Parent Invoice amount across zero children")
-    cents_total = int((total * 100).to_integral_value())
-    base, remainder = divmod(cents_total, count)
-    shares: list[Decimal] = []
-    for index in range(count):
-        share_cents = base + (1 if index < remainder else 0)
-        shares.append((Decimal(share_cents) / 100).quantize(Decimal("0.01")))
-    return shares
-
-
 @dataclass(frozen=True)
 class BilledChild:
     """One child's billing input for `ParentInvoice.generate`. `line_id` is minted by the
     application layer's `IdGenerator` before this factory is called — the domain layer never
     generates ids itself, the same convention every other factory in this module follows for
-    its own `id` parameter."""
+    its own `id` parameter.
+
+    `amount` is this student's own monthly fee, read from their `StudentBillingProfile` at
+    generation time (ADR-0048). It becomes the line's frozen charge: changing the student's fee
+    later never reaches back into an invoice already generated."""
 
     line_id: str
     student_id: str
+    amount: Decimal
     vehicle_id: str | None = None
     route_id: str | None = None
 
@@ -1170,11 +1167,10 @@ class ParentInvoice(_AggregateRoot):
     ADR-0041 §1's read-model grouping of `StudentInvoice`). Owns `ParentInvoiceLine` children,
     one per billed child, the same parent/child-entity shape `Route`/`Stop` already establish.
 
-    **`amount` is frozen at generation time from the `ParentBillingProfile`'s fee at that
-    moment** — never re-read from the profile afterward. Changing a family's monthly fee
-    (`ParentBillingProfile.update_fee`) therefore changes only future invoices, never rewrites a
-    historical one — the directive's own worked example: "September: $80. October onward: $100.
-    September invoice remains $80."
+    **Every line is frozen at generation time from its student's own fee** (ADR-0048), and
+    `amount` is their sum — never re-read afterward. Changing a student's fee
+    (`StudentBillingProfile.change_fee`) therefore changes only future invoices and never
+    rewrites a historical one.
 
     **Payment comes only from recorded `ParentPayment`s** (ADR-0047, amending ADR-0042 §4).
     `apply_payment`/`reverse_payment` move the lines' and the invoice's `amount_paid` together,
@@ -1273,7 +1269,7 @@ class ParentInvoice(_AggregateRoot):
         organization_id: OrganizationId,
         parent_id: ParentId,
         period: BillingPeriod,
-        amount: Money,
+        currency: str,
         due_date: date,
         children: list[BilledChild],
         clock: Clock,
@@ -1281,21 +1277,38 @@ class ParentInvoice(_AggregateRoot):
     ) -> "ParentInvoice":
         """The monthly billing run's own factory — always issued directly, never drafted first,
         the same "no `DRAFT` state exists to be invented" reasoning `StudentInvoice.issue`
-        already gives for an identical enum shape question."""
+        already gives for an identical enum shape question.
+
+        **Per-student pricing (ADR-0048).** Each line carries its own student's fee and the
+        invoice total is their sum — there is no family figure to split. A student appears at
+        most once, and every line must charge something: a student who rides free is not
+        billed at all, rather than billed zero.
+        """
         if not children:
             raise DomainError("Cannot generate a Parent Invoice with no billed children")
-        now = clock.now()
-        shares = _split_amount_evenly(amount.amount, len(children))
-        lines = [
-            ParentInvoiceLine(
-                id=ParentInvoiceLineId(child.line_id),
-                student_id=StudentId(child.student_id),
-                amount=Money(amount=share, currency=amount.currency),
-                vehicle_id=VehicleId(child.vehicle_id) if child.vehicle_id else None,
-                route_id=RouteId(child.route_id) if child.route_id else None,
+        student_ids = [child.student_id for child in children]
+        if len(set(student_ids)) != len(student_ids):
+            raise DomainError("A student can appear only once on a Parent Invoice")
+        lines = []
+        for child in children:
+            line_amount = Money(amount=child.amount, currency=currency)
+            if line_amount.amount <= _ZERO:
+                raise DomainError(
+                    f"Student {child.student_id} has no positive fee to bill for {period}"
+                )
+            lines.append(
+                ParentInvoiceLine(
+                    id=ParentInvoiceLineId(child.line_id),
+                    student_id=StudentId(child.student_id),
+                    amount=line_amount,
+                    vehicle_id=VehicleId(child.vehicle_id) if child.vehicle_id else None,
+                    route_id=RouteId(child.route_id) if child.route_id else None,
+                )
             )
-            for child, share in zip(children, shares)
-        ]
+        amount = Money(
+            amount=sum((line.amount.amount for line in lines), _ZERO), currency=currency
+        )
+        now = clock.now()
         invoice = cls(
             id=id,
             organization_id=organization_id,
@@ -1681,9 +1694,16 @@ class ParentPayment(_AggregateRoot):
 
 
 class ParentBillingProfile(_AggregateRoot):
-    """`erp_parent_billing_profiles` — the actual recurring transportation charge for one
-    Parent (the directive's Part 5), one per `(organization_id, parent_id)`. This is the source
-    `generate_parent_invoices` reads each period; it is never itself an invoice.
+    """`erp_parent_billing_profiles` — one Parent's **billing account** (ADR-0042, narrowed by
+    ADR-0048), one per `(organization_id, parent_id)`: whether the family is billed at all
+    (`status`), from which period, on which due day and in which currency. It is never itself
+    an invoice.
+
+    **It no longer carries a fee.** ADR-0042 stored one family figure here and split it equally
+    across the children; ADR-0048 moved the fee to each student (`StudentBillingProfile`), so a
+    family's total is always the sum of its children's own fees. The retired
+    `erp_parent_billing_profiles.monthly_fee` column keeps its old values as history and is
+    neither read nor written.
 
     **No `FeePlan` reference.** The directive's Part 22 requires Fee Plans to remain optional and
     never gate Parent registration — this aggregate has no foreign key to one, by construction,
@@ -1696,7 +1716,7 @@ class ParentBillingProfile(_AggregateRoot):
         id: ParentBillingProfileId,
         organization_id: OrganizationId,
         parent_id: ParentId,
-        monthly_fee: Money,
+        currency: str,
         billing_start_period: BillingPeriod,
         due_day: int,
         status: ParentBillingProfileStatus,
@@ -1708,7 +1728,7 @@ class ParentBillingProfile(_AggregateRoot):
         self.id = id
         self.organization_id = organization_id
         self.parent_id = parent_id
-        self.monthly_fee = monthly_fee
+        self.currency = _validate_currency(currency)
         self.billing_start_period = billing_start_period
         self.due_day = due_day
         self.status = status
@@ -1728,7 +1748,7 @@ class ParentBillingProfile(_AggregateRoot):
         id: ParentBillingProfileId,
         organization_id: OrganizationId,
         parent_id: ParentId,
-        monthly_fee: Money,
+        currency: str,
         billing_start_period: BillingPeriod,
         due_day: int,
         clock: Clock,
@@ -1739,7 +1759,7 @@ class ParentBillingProfile(_AggregateRoot):
             id=id,
             organization_id=organization_id,
             parent_id=parent_id,
-            monthly_fee=monthly_fee,
+            currency=currency,
             billing_start_period=billing_start_period,
             due_day=due_day,
             status=ParentBillingProfileStatus.ACTIVE,
@@ -1751,8 +1771,7 @@ class ParentBillingProfile(_AggregateRoot):
                 billing_profile_id=str(id),
                 organization_id=str(organization_id),
                 parent_id=str(parent_id),
-                monthly_fee=monthly_fee.amount,
-                currency=monthly_fee.currency,
+                currency=profile.currency,
                 billing_start_period=str(billing_start_period),
                 due_day=due_day,
                 occurred_at=now,
@@ -1761,29 +1780,35 @@ class ParentBillingProfile(_AggregateRoot):
         )
         return profile
 
-    def update_fee(
+    def update_terms(
         self,
         *,
-        monthly_fee: Money,
+        currency: str,
+        billing_start_period: BillingPeriod,
         due_day: int,
         clock: Clock,
         actor_id: str | None = None,
     ) -> None:
-        """Changes what *future* invoices charge. Never rewrites an already-generated
-        `ParentInvoice`, which froze its own amount at generation time (`ParentInvoice.generate`)
-        — this is the mechanism behind the directive's own worked example in Part 17/40."""
+        """Changes the terms *future* invoices are generated on. Never rewrites an
+        already-generated `ParentInvoice`, which froze its own lines at generation time."""
         _validate_due_day(due_day)
-        if monthly_fee == self.monthly_fee and due_day == self.due_day:
+        currency = _validate_currency(currency)
+        if (
+            currency == self.currency
+            and billing_start_period == self.billing_start_period
+            and due_day == self.due_day
+        ):
             return
-        self.monthly_fee = monthly_fee
+        self.currency = currency
+        self.billing_start_period = billing_start_period
         self.due_day = due_day
         self.updated_at = clock.now()
         self._record(
             erp_events.parent_billing_profile_updated(
                 billing_profile_id=str(self.id),
                 organization_id=str(self.organization_id),
-                monthly_fee=monthly_fee.amount,
-                currency=monthly_fee.currency,
+                currency=currency,
+                billing_start_period=str(billing_start_period),
                 due_day=due_day,
                 occurred_at=self.updated_at,
                 actor_id=actor_id,
@@ -1818,6 +1843,104 @@ class ParentBillingProfile(_AggregateRoot):
                 organization_id=str(self.organization_id),
                 status=self.status.value,
                 occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+
+# ============================================================================================
+# StudentBillingProfile (ADR-0048)
+# ============================================================================================
+
+
+class StudentBillingProfile(_AggregateRoot):
+    """`erp_student_billing_profiles` — one student's own recurring monthly transportation fee,
+    one per `(organization_id, student_id)` (ADR-0048).
+
+    A Parent Invoice line's amount comes from here: the monthly run bills each of a family's
+    active children at their own fee, and the family total is the sum. The fee is
+    configuration, not money owed — nothing here is a receivable until an invoice freezes it.
+
+    **Zero is a real answer.** A fee of 0.00 records "this student rides free" (a scholarship,
+    a staff child) and bills no line. That is different from a student nobody has priced yet,
+    which the monthly run reports as needing attention.
+    """
+
+    def __init__(
+        self,
+        *,
+        id: StudentBillingProfileId,
+        organization_id: OrganizationId,
+        student_id: StudentId,
+        monthly_fee: Money,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        self.id = id
+        self.organization_id = organization_id
+        self.student_id = student_id
+        self.monthly_fee = monthly_fee
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, StudentBillingProfile) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @property
+    def is_billable(self) -> bool:
+        return self.monthly_fee.amount > _ZERO
+
+    @classmethod
+    def open(
+        cls,
+        *,
+        id: StudentBillingProfileId,
+        organization_id: OrganizationId,
+        student_id: StudentId,
+        monthly_fee: Money,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "StudentBillingProfile":
+        now = clock.now()
+        profile = cls(
+            id=id,
+            organization_id=organization_id,
+            student_id=student_id,
+            monthly_fee=monthly_fee,
+            created_at=now,
+            updated_at=now,
+        )
+        profile._record_fee_set(previous=None, now=now, actor_id=actor_id)
+        return profile
+
+    def change_fee(
+        self, *, monthly_fee: Money, clock: Clock, actor_id: str | None = None
+    ) -> None:
+        """Changes what *future* invoices charge this student. An invoice already generated
+        keeps its own frozen line amount — the historical record never moves."""
+        if monthly_fee == self.monthly_fee:
+            return
+        previous = self.monthly_fee
+        self.monthly_fee = monthly_fee
+        self.updated_at = clock.now()
+        self._record_fee_set(previous=previous, now=self.updated_at, actor_id=actor_id)
+
+    def _record_fee_set(
+        self, *, previous: Money | None, now: datetime, actor_id: str | None
+    ) -> None:
+        self._record(
+            erp_events.student_billing_fee_set(
+                billing_profile_id=str(self.id),
+                organization_id=str(self.organization_id),
+                student_id=str(self.student_id),
+                monthly_fee=self.monthly_fee.amount,
+                previous_monthly_fee=previous.amount if previous is not None else None,
+                currency=self.monthly_fee.currency,
+                occurred_at=now,
                 actor_id=actor_id,
             )
         )

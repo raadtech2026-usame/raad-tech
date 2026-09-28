@@ -528,6 +528,22 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/school-finance/vehicles/{vehicle_id}/report",
         "ADR-0047 - one bus's income by source, expenses and net for a date range",
     ),
+    # ADR-0048: each student's own monthly fee replaces the family fee split equally.
+    (
+        "PUT",
+        "/api/v1/school-finance/students/{student_id}/billing-fee",
+        "ADR-0048 - set a student's own monthly fee; future invoices only",
+    ),
+    (
+        "GET",
+        "/api/v1/school-finance/parents/{parent_id}/student-fees",
+        "ADR-0048 - a family's per-student fees and its monthly total",
+    ),
+    (
+        "GET",
+        "/api/v1/school-finance/parent-invoices/generation-preview",
+        "ADR-0048 - what the monthly run would issue, and who it leaves out and why",
+    ),
     (
         "POST",
         "/api/v1/school-finance/parent-invoices/{invoice_id}/cancel",

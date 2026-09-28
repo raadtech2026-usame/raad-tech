@@ -39,6 +39,7 @@ from raad.modules.school_erp.application.commands import (
     CreateOrUpdateParentBillingProfileCommand,
     GenerateParentInvoicesCommand,
     SetParentBillingProfileStatusCommand,
+    SetStudentBillingFeeCommand,
     PaymentAllocationRequest,
     RecordParentPaymentCommand,
     VoidParentPaymentCommand,
@@ -54,6 +55,8 @@ from raad.modules.school_erp.domain.repositories import (
     ParentInvoiceRepository,
 )
 from _school_erp_ledger_fakes import (
+    InMemoryStudentBillingProfileRepository,
+    billed_student_ids,
     InMemoryParentPaymentRepository,
     invoices_for_student,
     summarise_lines_by_vehicle,
@@ -74,6 +77,7 @@ PARENT_B = "01J8Z3K9G6X8YV5T4N2R7QPRTB"
 STUDENT_A1 = "01J8Z3K9G6X8YV5T4N2R7QSTA1"
 STUDENT_A2 = "01J8Z3K9G6X8YV5T4N2R7QSTA2"
 STUDENT_B1 = "01J8Z3K9G6X8YV5T4N2R7QSTB1"
+STUDENT_A3 = "01J8Z3K9G6X8YV5T4N2R7QSTA3"
 BUS_1 = "01J8Z3K9G6X8YV5T4N2R7QBS01"
 BUS_2 = "01J8Z3K9G6X8YV5T4N2R7QBS02"
 
@@ -170,6 +174,9 @@ class InMemoryParentInvoiceRepository(ParentInvoiceRepository):
             None,
         )
 
+    async def billed_student_ids_for_period(self, *, period: BillingPeriod) -> set[str]:
+        return billed_student_ids(self.by_id.values(), period)
+
     async def exists_for_parent_period(
         self, *, parent_id: ParentId, period: BillingPeriod
     ) -> bool:
@@ -221,6 +228,7 @@ class FakeSchoolErpUnitOfWork:
 
     def __init__(self) -> None:
         self.parent_billing_profiles = InMemoryParentBillingProfileRepository()
+        self.student_billing_profiles = InMemoryStudentBillingProfileRepository()
         self.parent_invoices = InMemoryParentInvoiceRepository()
         self.parent_payments = InMemoryParentPaymentRepository()
         self.recorded_events: list = []
@@ -266,6 +274,7 @@ class FakeChild:
     student_id: str
     full_name: str
     status: str = "active"
+    is_primary: bool = True
 
 
 class FakeParentApplicationService:
@@ -296,6 +305,28 @@ class FakeStudentParentApplicationService:
         return list(self._children_by_parent.get(query.parent_id, []))
 
 
+@dataclass
+class FakeStudent:
+    id: str
+    organization_id: str
+    full_name: str
+    status: str = "active"
+
+
+class FakeStudentApplicationService:
+    """Stands in for `transport_ops.StudentApplicationService` — `get_student_by_id` is what
+    404s a student outside the caller's scope before a fee is set (ADR-0048)."""
+
+    def __init__(self, students: dict[str, FakeStudent]) -> None:
+        self._students = students
+
+    async def get_student_by_id(self, query, *, uow):
+        student = self._students.get(query.student_id)
+        if student is None:
+            raise NotFoundError(f"Student {query.student_id!r} not found")
+        return student
+
+
 class FakeTransportContextPort(StudentTransportContextPort):
     def __init__(self, mapping: dict[str, StudentTransportContext] | None = None) -> None:
         self.mapping = mapping or {}
@@ -312,6 +343,7 @@ def make_service(
     parents: dict[str, FakeParent],
     children_by_parent: dict[str, list[FakeChild]],
     transport: StudentTransportContextPort | None = None,
+    students: dict[str, FakeStudent] | None = None,
 ) -> ParentFinanceApplicationService:
     return ParentFinanceApplicationService(
         clock=CLOCK,
@@ -319,6 +351,7 @@ def make_service(
         parent_service=FakeParentApplicationService(parents),
         student_parent_service=FakeStudentParentApplicationService(children_by_parent),
         transport_context=transport,
+        student_service=FakeStudentApplicationService(students or {}),
     )
 
 
@@ -342,27 +375,53 @@ class _Base(unittest.IsolatedAsyncioTestCase):
                 STUDENT_B1: StudentTransportContext(vehicle_id=BUS_2),
             }
         )
+        self.students = {
+            child.student_id: FakeStudent(
+                id=child.student_id, organization_id=ORG, full_name=child.full_name
+            )
+            for children in self.children.values()
+            for child in children
+        }
         self.service = make_service(
-            parents=self.parents, children_by_parent=self.children, transport=self.transport
+            parents=self.parents,
+            children_by_parent=self.children,
+            transport=self.transport,
+            students=self.students,
         )
         self.school_erp_uow = FakeSchoolErpUnitOfWork()
         self.transport_ops_uow = FakeTransportOpsUnitOfWork()
         self.actor = make_actor()
 
+    async def _set_fee(self, student_id: str, fee: str, *, currency: str = "USD"):
+        return await self.service.set_student_billing_fee(
+            SetStudentBillingFeeCommand(
+                student_id=student_id, monthly_fee=fee, currency=currency, actor=self.actor
+            ),
+            school_erp_uow=self.school_erp_uow,
+            transport_ops_uow=self.transport_ops_uow,
+        )
+
     async def _open_profile(
         self,
         parent_id: str = PARENT_A,
         *,
-        monthly_fee: str = "80.00",
+        per_child: str | dict[str, str] | None = "40.00",
         billing_start_period: str = "2026-09",
         due_day: int = 10,
         currency: str = "USD",
     ) -> ParentBillingProfile:
+        """Opens the family's billing account and prices each of its children (ADR-0048):
+        `per_child` is one fee for every child, a `{student_id: fee}` map, or `None` to leave
+        the children unpriced."""
+        if per_child is not None:
+            for child in self.children.get(parent_id, []):
+                fee = per_child if isinstance(per_child, str) else per_child.get(child.student_id)
+                if fee is not None:
+                    await self._set_fee(child.student_id, fee, currency=currency)
         dto = await self.service.create_or_update_billing_profile(
             CreateOrUpdateParentBillingProfileCommand(
                 organization_id=ORG,
                 parent_id=parent_id,
-                monthly_fee=monthly_fee,
                 currency=currency,
                 billing_start_period=billing_start_period,
                 due_day=due_day,
@@ -434,20 +493,22 @@ class _Base(unittest.IsolatedAsyncioTestCase):
 class BillingProfileTests(_Base):
     async def test_create_billing_profile(self) -> None:
         profile = await self._open_profile()
-        self.assertEqual(profile.monthly_fee.amount, Decimal("80.00"))
+        self.assertEqual(profile.currency, "USD")
         self.assertEqual(profile.due_day, 10)
         self.assertIs(profile.status, ParentBillingProfileStatus.ACTIVE)
+        self.assertFalse(hasattr(profile, "monthly_fee"), "the account carries no family fee")
 
     async def test_updating_an_existing_profile_edits_in_place_no_duplicate(self) -> None:
-        await self._open_profile(monthly_fee="80.00")
-        await self._open_profile(monthly_fee="100.00", due_day=15)
+        await self._open_profile(per_child="40.00")
+        await self._open_profile(per_child="50.00", due_day=15, billing_start_period="2026-10")
 
         self.assertEqual(len(self.school_erp_uow.parent_billing_profiles.by_id), 1)
         profile = await self.school_erp_uow.parent_billing_profiles.get_by_parent(
             ParentId(PARENT_A)
         )
-        self.assertEqual(profile.monthly_fee.amount, Decimal("100.00"))
         self.assertEqual(profile.due_day, 15)
+        self.assertEqual(str(profile.billing_start_period), "2026-10")
+        self.assertEqual(len(self.school_erp_uow.student_billing_profiles.by_id), 2)
 
     async def test_parent_belonging_to_another_organization_is_rejected(self) -> None:
         with self.assertRaises(DomainError):
@@ -455,7 +516,6 @@ class BillingProfileTests(_Base):
                 CreateOrUpdateParentBillingProfileCommand(
                     organization_id=OTHER_ORG,
                     parent_id=PARENT_A,
-                    monthly_fee="80.00",
                     currency="USD",
                     billing_start_period="2026-09",
                     due_day=10,
@@ -471,7 +531,6 @@ class BillingProfileTests(_Base):
                 CreateOrUpdateParentBillingProfileCommand(
                     organization_id=ORG,
                     parent_id="01J8Z3K9G6X8YV5T4N2R7QUNKN",
-                    monthly_fee="80.00",
                     currency="USD",
                     billing_start_period="2026-09",
                     due_day=10,
@@ -502,14 +561,13 @@ class BillingProfileTests(_Base):
         self.assertIs(stored.status, ParentBillingProfileStatus.ACTIVE)
 
     async def test_editing_the_fee_never_rewrites_an_already_generated_invoice(self) -> None:
-        """The directive's own worked example: "September: $80. October onward: $100. September
-        invoice remains $80." — the entire reason `ParentInvoice.amount` is frozen at generation
-        time rather than re-read from the profile."""
-        await self._open_profile(monthly_fee="80.00")
+        """September at $40 a child, October onward at $50: September's invoice stays $80. The
+        line amounts are frozen at generation, never re-read from the student's fee."""
+        await self._open_profile(per_child="40.00")
         (september,) = await self._generate(period="2026-09")
         self.assertEqual(september.amount, "80.00")
 
-        await self._open_profile(monthly_fee="100.00")
+        await self._open_profile(per_child="50.00")
 
         stored_september = await self.school_erp_uow.parent_invoices.get(
             ParentInvoiceId(september.id)
@@ -526,25 +584,28 @@ class BillingProfileTests(_Base):
 class GenerateParentInvoicesTests(_Base):
     async def test_one_invoice_per_parent_regardless_of_child_count(self) -> None:
         """PARENT_A has two children — must produce exactly one ParentInvoice, never two."""
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         invoices = await self._generate()
 
         self.assertEqual(len(invoices), 1)
         self.assertEqual(invoices[0].amount, "80.00")
         self.assertEqual(len(invoices[0].lines), 2)
 
-    async def test_equal_split_across_children_sums_exactly_to_the_total(self) -> None:
-        """$100 / 2 children does not divide evenly in binary terms a naive split could drift on
-        — asserting the lines sum back to the frozen total is the real invariant, not that each
-        line is a particular number."""
-        await self._open_profile(PARENT_A, monthly_fee="100.00")
+    async def test_each_line_is_its_own_students_fee_and_the_total_is_their_sum(self) -> None:
+        """ADR-0048: no family figure is split. Two children priced differently get different
+        lines, and the invoice total is exactly their sum."""
+        await self._open_profile(PARENT_A, per_child={STUDENT_A1: "10.00", STUDENT_A2: "20.00"})
         (invoice,) = await self._generate()
 
-        line_total = sum(Decimal(line.amount) for line in invoice.lines)
-        self.assertEqual(line_total, Decimal("100.00"))
+        self.assertEqual(
+            {line.student_id: line.amount for line in invoice.lines},
+            {STUDENT_A1: "10.00", STUDENT_A2: "20.00"},
+        )
+        self.assertEqual(invoice.amount, "30.00")
+        self.assertEqual({line.balance_due for line in invoice.lines}, {"10.00", "20.00"})
 
     async def test_transport_context_is_captured_on_each_line(self) -> None:
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         (invoice,) = await self._generate()
 
         by_student = {line.student_id: line for line in invoice.lines}
@@ -552,7 +613,7 @@ class GenerateParentInvoicesTests(_Base):
         self.assertEqual(by_student[STUDENT_A2].vehicle_id, BUS_1)
 
     async def test_rerunning_the_same_period_is_idempotent(self) -> None:
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         first = await self._generate()
         second = await self._generate()
 
@@ -585,8 +646,8 @@ class GenerateParentInvoicesTests(_Base):
         self.assertEqual(invoices, [])
 
     async def test_two_families_each_get_their_own_invoice_in_one_run(self) -> None:
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
-        await self._open_profile(PARENT_B, monthly_fee="50.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
+        await self._open_profile(PARENT_B, per_child="50.00")
 
         invoices = await self._generate()
         by_parent = {inv.parent_id: inv for inv in invoices}
@@ -605,7 +666,7 @@ class ParentPaymentTests(_Base):
 
     async def asyncSetUp(self) -> None:
         super().setUp()
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         (self.invoice,) = await self._generate()
         self.lines = {line.student_id: line for line in self.invoice.lines}
 
@@ -759,7 +820,7 @@ class ParentPaymentTests(_Base):
 class CancelInvoiceTests(_Base):
     async def asyncSetUp(self) -> None:
         super().setUp()
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         (self.invoice,) = await self._generate()
 
     async def test_cancel_an_unpaid_invoice(self) -> None:
@@ -813,7 +874,7 @@ class CancelInvoiceTests(_Base):
 
 class FinancialSummaryTests(_Base):
     async def test_summary_aggregates_across_periods(self) -> None:
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         (september,) = await self._generate(period="2026-09")
         await self._pay(september.id, "80.00")
         await self._generate(period="2026-10")  # left unpaid
@@ -838,8 +899,8 @@ class FinancialSummaryTests(_Base):
         self.assertEqual(summary.total_due, "0.00")
 
     async def test_family_isolation_another_parents_invoice_is_invisible(self) -> None:
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
-        await self._open_profile(PARENT_B, monthly_fee="999.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
+        await self._open_profile(PARENT_B, per_child="999.00")
         await self._generate()
 
         summary = await self.service.get_parent_financial_summary(
@@ -852,9 +913,9 @@ class FinancialSummaryTests(_Base):
 
     async def test_a_family_billed_in_two_currencies_is_refused_not_summed(self) -> None:
         """Finance P0.5: USD 80 + SOS 9000 must not be reported as one "9080.00" total."""
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         await self._generate(period="2026-09")
-        await self._open_profile(PARENT_A, monthly_fee="9000.00", currency="SOS")
+        await self._open_profile(PARENT_A, per_child="4500.00", currency="SOS")
         await self._generate(period="2026-10")
 
         with self.assertRaises(ConflictError):
@@ -867,8 +928,8 @@ class FinancialSummaryTests(_Base):
 
 class ListParentInvoicesTests(_Base):
     async def test_filters_by_period_and_parent(self) -> None:
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
-        await self._open_profile(PARENT_B, monthly_fee="50.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
+        await self._open_profile(PARENT_B, per_child="50.00")
         await self._generate(period="2026-09")
 
         page = await self.service.list_parent_invoices(
@@ -883,8 +944,8 @@ class ListParentInvoicesTests(_Base):
     async def test_filters_by_vehicle_id(self) -> None:
         """`vehicle_id` lives on the invoice's own lines, not the invoice — PARENT_A's children
         ride BUS_1, PARENT_B's rides BUS_2 (see `setUp`)."""
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
-        await self._open_profile(PARENT_B, monthly_fee="50.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
+        await self._open_profile(PARENT_B, per_child="50.00")
         await self._generate(period="2026-09")
 
         bus_1_page = await self.service.list_parent_invoices(
@@ -911,7 +972,7 @@ class ListParentInvoicesTests(_Base):
         # STUDENT_A2 has no entry in `self.transport.mapping` at all - an ordinary "not assigned
         # yet" child, distinct from a stale/removed assignment.
         del self.transport.mapping[STUDENT_A2]
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         await self._generate(period="2026-09")
 
         page = await self.service.list_parent_invoices(
@@ -930,7 +991,7 @@ class ListParentInvoicesTests(_Base):
         different bus post-issuance. Simulates that move by mutating the transport-context fake
         after generation (mirroring `set_family_transportation`'s own real-world effect on what
         `TransportOpsStudentContextAdapter.resolve_many` next returns)."""
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         (generated,) = await self._generate(period="2026-09")
         self.assertEqual(generated.lines[0].vehicle_id, BUS_1)  # frozen at issue time
 
@@ -962,8 +1023,8 @@ class ListParentInvoicesTests(_Base):
     async def test_all_vehicles_returns_every_family(self) -> None:
         """`vehicle_id=None` ("All Vehicles") — every family's invoice is visible, regardless of
         which vehicle their children ride."""
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
-        await self._open_profile(PARENT_B, monthly_fee="50.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
+        await self._open_profile(PARENT_B, per_child="50.00")
         await self._generate(period="2026-09")
 
         page = await self.service.list_parent_invoices(
@@ -976,7 +1037,7 @@ class ListParentInvoicesTests(_Base):
     async def test_vehicle_with_no_matching_family_returns_an_empty_page(self) -> None:
         """A vehicle no family is currently assigned to — an honest empty result, never someone
         else's invoices."""
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         await self._generate(period="2026-09")
 
         page = await self.service.list_parent_invoices(
@@ -990,7 +1051,7 @@ class ListParentInvoicesTests(_Base):
     async def test_vehicle_filter_never_changes_the_invoice_amount(self) -> None:
         """Filtering by Vehicle is discovery only — it must never split, allocate, or otherwise
         touch a family's own frozen invoice amount/paid/balance."""
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         (unfiltered,) = await self._generate(period="2026-09")
 
         page = await self.service.list_parent_invoices(
@@ -1006,8 +1067,8 @@ class ListParentInvoicesTests(_Base):
 
     async def test_combines_vehicle_with_status_filter(self) -> None:
         """Vehicle AND Status apply together — never Vehicle overriding Status or vice versa."""
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
-        await self._open_profile(PARENT_B, monthly_fee="50.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
+        await self._open_profile(PARENT_B, per_child="50.00")
         generated = await self._generate(period="2026-09")
         invoice_a = next(inv for inv in generated if inv.parent_id == PARENT_A)
 
@@ -1030,8 +1091,8 @@ class ListParentInvoicesTests(_Base):
 
     async def test_combines_vehicle_with_parent_filter(self) -> None:
         """Vehicle AND Parent search apply together."""
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
-        await self._open_profile(PARENT_B, monthly_fee="50.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
+        await self._open_profile(PARENT_B, per_child="50.00")
         await self._generate(period="2026-09")
 
         # The right parent on the right vehicle: one match.
@@ -1053,7 +1114,7 @@ class ListParentInvoicesTests(_Base):
     async def test_combines_vehicle_with_date_range(self) -> None:
         """Vehicle AND From/To apply together."""
         self.addCleanup(CLOCK.advance, datetime(2026, 9, 10, 8, 0, 0, tzinfo=timezone.utc))
-        await self._open_profile(PARENT_A, monthly_fee="80.00", billing_start_period="2026-09")
+        await self._open_profile(PARENT_A, per_child="40.00", billing_start_period="2026-09")
         (september_invoice,) = await self._generate(period="2026-09")
 
         CLOCK.advance(datetime(2026, 10, 10, 8, 0, 0, tzinfo=timezone.utc))
@@ -1082,7 +1143,7 @@ class ListParentInvoicesTests(_Base):
         # regardless of outcome so advancing it here can never leak into a later test.
         self.addCleanup(CLOCK.advance, datetime(2026, 9, 10, 8, 0, 0, tzinfo=timezone.utc))
 
-        await self._open_profile(PARENT_A, monthly_fee="80.00", billing_start_period="2026-09")
+        await self._open_profile(PARENT_A, per_child="40.00", billing_start_period="2026-09")
         (september_invoice,) = await self._generate(period="2026-09")  # invoice_date 2026-09-10
 
         CLOCK.advance(datetime(2026, 10, 10, 8, 0, 0, tzinfo=timezone.utc))
@@ -1107,7 +1168,7 @@ class ListParentInvoicesTests(_Base):
         self.assertNotIn(september_invoice.id, october_ids)
 
     async def test_detail_includes_every_child_line_with_a_resolved_name(self) -> None:
-        await self._open_profile(PARENT_A, monthly_fee="80.00")
+        await self._open_profile(PARENT_A, per_child="40.00")
         (invoice,) = await self._generate()
 
         detail = await self.service.get_parent_invoice_detail(
@@ -1118,6 +1179,166 @@ class ListParentInvoicesTests(_Base):
         names = {line.student_id: line.full_name for line in detail.lines}
         self.assertEqual(names[STUDENT_A1], "Mohamed")
         self.assertEqual(names[STUDENT_A2], "Aisha")
+
+
+# ---- Per-student pricing (ADR-0048) ------------------------------------------------------------
+
+
+class PerStudentPricingTests(_Base):
+    """The worked example from the directive: three children at $10, $20 and $30 on one $60
+    family invoice, each child's line their own fee, payments allocated per child."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.children[PARENT_A].append(FakeChild(student_id=STUDENT_A3, full_name="Hawa"))
+        self.students[STUDENT_A3] = FakeStudent(id=STUDENT_A3, organization_id=ORG, full_name="Hawa")
+        self.transport.mapping[STUDENT_A2] = StudentTransportContext(vehicle_id=BUS_2)
+        self.fees = {STUDENT_A1: "10.00", STUDENT_A2: "20.00", STUDENT_A3: "30.00"}
+
+    async def _family_invoice(self, period: str = "2026-09"):
+        await self._open_profile(PARENT_A, per_child=self.fees)
+        (invoice,) = await self._generate(period)
+        return invoice
+
+    async def _preview(self, actor: Principal | None = None, organization_id: str = ORG):
+        return await self.service.preview_parent_invoice_generation(
+            organization_id=organization_id, period="2026-09", actor=actor or self.actor,
+            school_erp_uow=self.school_erp_uow, transport_ops_uow=self.transport_ops_uow,
+        )
+
+    async def test_ten_twenty_thirty_bill_sixty_with_one_line_per_child(self) -> None:
+        invoice = await self._family_invoice()
+        self.assertEqual(invoice.amount, "60.00")
+        lines = {line.student_id: line for line in invoice.lines}
+        self.assertEqual({sid: line.amount for sid, line in lines.items()}, self.fees)
+        self.assertEqual({sid: line.balance_due for sid, line in lines.items()}, self.fees)
+        # Each line keeps the bus its own child rode at generation time.
+        self.assertEqual(lines[STUDENT_A1].vehicle_id, BUS_1)
+        self.assertEqual(lines[STUDENT_A2].vehicle_id, BUS_2)
+
+    async def test_a_thirty_dollar_payment_defaults_pro_rata_and_can_be_directed(self) -> None:
+        invoice = await self._family_invoice()
+        default = await self._pay(invoice.id, "30.00")
+        self.assertEqual(
+            {a.student_id: a.amount for a in default.allocations},
+            {STUDENT_A1: "5.00", STUDENT_A2: "10.00", STUDENT_A3: "15.00"},
+        )
+        await self._void(default.id)
+
+        await self._pay(invoice.id, "30.00", allocations={STUDENT_A1: "10.00", STUDENT_A2: "20.00"})
+        stored = await self._stored(invoice.id)
+        self.assertEqual(
+            {str(line.student_id): line.balance_due for line in stored.lines},
+            {STUDENT_A1: Decimal("0.00"), STUDENT_A2: Decimal("0.00"), STUDENT_A3: Decimal("30.00")},
+        )
+        self.assertEqual((stored.amount_paid, stored.balance_due), (Decimal("30.00"), Decimal("30.00")))
+        self.assertIs(stored.status, ParentInvoiceStatus.PARTIAL)
+
+    async def test_changing_a_students_fee_affects_only_future_invoices(self) -> None:
+        september = await self._family_invoice("2026-09")
+        await self._set_fee(STUDENT_A3, "35.00")
+        (october,) = await self._generate("2026-10")
+
+        stored_september = await self._stored(september.id)
+        self.assertEqual(stored_september.amount.amount, Decimal("60.00"))
+        self.assertEqual(
+            {str(line.student_id): line.amount.amount for line in stored_september.lines}[STUDENT_A3],
+            Decimal("30.00"),
+        )
+        self.assertEqual(october.amount, "65.00")
+
+    async def test_an_unpriced_child_is_left_out_and_reported_never_guessed(self) -> None:
+        await self._open_profile(PARENT_A, per_child={STUDENT_A1: "10.00", STUDENT_A3: "0.00"})
+        preview = await self._preview()
+        self.assertEqual(
+            {item.student_id: item.reason for item in preview.skipped},
+            {STUDENT_A2: "no_fee", STUDENT_A3: "free"},
+        )
+        self.assertEqual(preview.totals_by_currency, {"USD": "10.00"})
+
+        (invoice,) = await self._generate()
+        self.assertEqual([line.student_id for line in invoice.lines], [STUDENT_A1])
+        self.assertEqual(invoice.amount, "10.00")
+
+    async def test_the_preview_is_exactly_what_the_run_issues_and_writes_nothing(self) -> None:
+        await self._open_profile(PARENT_A, per_child=self.fees)
+        await self._open_profile(PARENT_B, per_child="15.00")
+        preview = await self._preview()
+        self.assertEqual(self.school_erp_uow.parent_invoices.by_id, {})
+
+        issued = await self._generate()
+        self.assertEqual(
+            {f.parent_id: (f.total, {l.student_id: l.amount for l in f.lines}) for f in preview.families},
+            {i.parent_id: (i.amount, {l.student_id: l.amount for l in i.lines}) for i in issued},
+        )
+        self.assertEqual(preview.totals_by_currency, {"USD": "75.00"})
+
+        again = await self._preview()
+        self.assertEqual(again.families, [])
+        self.assertEqual({item.reason for item in again.skipped}, {"already_invoiced"})
+
+    async def test_a_child_with_two_billed_guardians_is_billed_once_by_the_primary(self) -> None:
+        self.children[PARENT_B].append(
+            FakeChild(student_id=STUDENT_A1, full_name="Mohamed", is_primary=False)
+        )
+        await self._open_profile(PARENT_A, per_child=self.fees)
+        await self._open_profile(PARENT_B, per_child={STUDENT_B1: "15.00"})
+        issued = {inv.parent_id: inv for inv in await self._generate()}
+
+        billed = [line.student_id for inv in issued.values() for line in inv.lines]
+        self.assertEqual(billed.count(STUDENT_A1), 1)
+        self.assertIn(STUDENT_A1, [line.student_id for line in issued[PARENT_A].lines])
+        self.assertEqual(issued[PARENT_B].amount, "15.00")
+
+    async def test_a_fee_in_another_currency_is_reported_not_converted(self) -> None:
+        await self._open_profile(PARENT_A, per_child={STUDENT_A1: "10.00", STUDENT_A2: "20.00"})
+        await self._set_fee(STUDENT_A3, "5000.00", currency="SOS")
+        preview = await self._preview()
+        self.assertEqual(
+            [(item.student_id, item.reason) for item in preview.skipped],
+            [(STUDENT_A3, "currency_mismatch")],
+        )
+        self.assertEqual(preview.families[0].total, "30.00")
+
+    async def test_the_family_fee_view_sums_active_priced_children(self) -> None:
+        await self._open_profile(PARENT_A, per_child={STUDENT_A1: "10.00", STUDENT_A2: "20.00"})
+        fees = await self.service.get_parent_student_fees(
+            PARENT_A, school_erp_uow=self.school_erp_uow, transport_ops_uow=self.transport_ops_uow
+        )
+        self.assertEqual(
+            (fees.monthly_total, fees.currency, fees.unpriced_active_students), ("30.00", "USD", 1)
+        )
+        self.assertEqual(
+            {item.student_id: item.monthly_fee for item in fees.students},
+            {STUDENT_A1: "10.00", STUDENT_A2: "20.00", STUDENT_A3: None},
+        )
+
+    async def test_a_fee_can_only_be_set_on_a_student_in_the_callers_organization(self) -> None:
+        with self.assertRaises(AuthorizationError):
+            await self.service.set_student_billing_fee(
+                SetStudentBillingFeeCommand(
+                    student_id=STUDENT_A1, monthly_fee="10.00", currency="USD",
+                    actor=make_actor(org_id=OTHER_ORG),
+                ),
+                school_erp_uow=self.school_erp_uow, transport_ops_uow=self.transport_ops_uow,
+            )
+        with self.assertRaises(NotFoundError):
+            await self._set_fee("01J8Z3K9G6X8YV5T4N2R7QUNKN", "10.00")
+        with self.assertRaises(DomainError):
+            await self._set_fee(STUDENT_A1, "-1.00")
+        self.assertEqual(self.school_erp_uow.student_billing_profiles.by_id, {})
+
+    async def test_another_organization_cannot_preview_or_generate_this_one(self) -> None:
+        await self._open_profile(PARENT_A, per_child=self.fees)
+        with self.assertRaises(AuthorizationError):
+            await self._preview(actor=make_actor(org_id=OTHER_ORG))
+        other = await self.service.generate_parent_invoices(
+            GenerateParentInvoicesCommand(
+                organization_id=OTHER_ORG, period="2026-09", actor=make_actor(org_id=OTHER_ORG)
+            ),
+            school_erp_uow=self.school_erp_uow, transport_ops_uow=self.transport_ops_uow,
+        )
+        self.assertEqual(other, [])
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ from raad.modules.school_erp.domain.repositories import (
     ParentBillingProfileRepository,
     ParentInvoiceRepository,
     ParentPaymentRepository,
+    StudentBillingProfileRepository,
     StudentInvoiceRepository,
     StudentPaymentRepository,
 )
@@ -84,6 +85,8 @@ class SchoolErpUnitOfWork(UnitOfWork):
     #: ADR-0042: the real Parent-facing billing aggregates. `student_invoices`/`student_payments`
     #: above are unmodified and remain the historical record (ADR-0042 decision 2).
     parent_billing_profiles: ParentBillingProfileRepository
+    #: ADR-0048: each student's own monthly fee — where a Parent Invoice line's amount comes from.
+    student_billing_profiles: StudentBillingProfileRepository
     parent_invoices: ParentInvoiceRepository
     #: ADR-0047: the payment ledger. Recording or voiding a payment changes a `ParentPayment`
     #: and its `ParentInvoice` in this one transaction — both or neither.

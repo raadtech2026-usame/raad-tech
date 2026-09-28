@@ -43,6 +43,7 @@ from raad.modules.school_erp.domain.entities import (
     ParentBillingProfile,
     ParentInvoice,
     ParentPayment,
+    StudentBillingProfile,
     StudentInvoice,
     StudentPayment,
 )
@@ -414,9 +415,35 @@ class ParentBillingProfileRepository(ABC):
         raise NotImplementedError
 
 
+class StudentBillingProfileRepository(ABC):
+    """ADR-0048: each student's own monthly fee, one per `(organization_id, student_id)`."""
+
+    @abstractmethod
+    async def get_by_student(self, student_id: StudentId) -> StudentBillingProfile | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_by_students(
+        self, student_ids: list[str]
+    ) -> dict[str, StudentBillingProfile]:
+        """The fees of these students, keyed by student id; a student with no fee configured is
+        simply absent. One query — the monthly run prices a whole organization at once."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, profile: StudentBillingProfile) -> None:
+        raise NotImplementedError
+
+
 class ParentInvoiceRepository(ABC):
     @abstractmethod
     async def get(self, invoice_id: ParentInvoiceId) -> ParentInvoice | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def billed_student_ids_for_period(self, *, period: BillingPeriod) -> set[str]:
+        """Students already on a live (non-cancelled) invoice for `period`, under any parent.
+        The monthly run skips them, so a child linked to two paying guardians is billed once."""
         raise NotImplementedError
 
     @abstractmethod

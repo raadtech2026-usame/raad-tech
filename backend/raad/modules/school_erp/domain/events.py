@@ -510,7 +510,6 @@ def parent_billing_profile_created(
     billing_profile_id: str,
     organization_id: str,
     parent_id: str,
-    monthly_fee: Decimal,
     currency: str,
     billing_start_period: str,
     due_day: int,
@@ -527,7 +526,6 @@ def parent_billing_profile_created(
             "billing_profile_id": billing_profile_id,
             "organization_id": organization_id,
             "parent_id": parent_id,
-            "monthly_fee": _money(monthly_fee),
             "currency": currency,
             "billing_start_period": billing_start_period,
             "due_day": due_day,
@@ -540,8 +538,8 @@ def parent_billing_profile_updated(
     *,
     billing_profile_id: str,
     organization_id: str,
-    monthly_fee: Decimal,
     currency: str,
+    billing_start_period: str,
     due_day: int,
     occurred_at: datetime,
     actor_id: str | None = None,
@@ -554,9 +552,42 @@ def parent_billing_profile_updated(
         occurred_at=occurred_at,
         payload={
             "billing_profile_id": billing_profile_id,
-            "monthly_fee": _money(monthly_fee),
             "currency": currency,
+            "billing_start_period": billing_start_period,
             "due_day": due_day,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def student_billing_fee_set(
+    *,
+    billing_profile_id: str,
+    organization_id: str,
+    student_id: str,
+    monthly_fee: Decimal,
+    previous_monthly_fee: Decimal | None,
+    currency: str,
+    occurred_at: datetime,
+    actor_id: str | None = None,
+) -> DomainEvent:
+    """ADR-0048: a student's own recurring monthly fee was set or changed. The previous figure
+    rides along so the audit trail answers "what was this student charged before" on its own."""
+    return _new_event(
+        event_type="school_erp.StudentBillingFeeSet",
+        aggregate_type="StudentBillingProfile",
+        aggregate_id=billing_profile_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "billing_profile_id": billing_profile_id,
+            "organization_id": organization_id,
+            "student_id": student_id,
+            "monthly_fee": _money(monthly_fee),
+            "previous_monthly_fee": (
+                _money(previous_monthly_fee) if previous_monthly_fee is not None else None
+            ),
+            "currency": currency,
             "actor_id": actor_id,
         },
     )

@@ -6,10 +6,13 @@ real database can prove, and all three carry money:
 
   1. **Tenant isolation** across the two new tables, the identical highest-risk property
      `test_school_erp_repository.py` already exists to protect for the other six.
-  2. **`NUMERIC(12,2)` round-trips as an exact `Decimal`**, including the child-line amounts an
-     equal split produces (`33.34`/`33.33`/`33.33` for a $100 total across three children).
+  2. **`NUMERIC(12,2)` round-trips as an exact `Decimal`**, on every per-student line amount
+     (ADR-0048) and on the invoice total that is their sum.
   3. **`summarise_lines_by_vehicle_between`** (ADR-0047) — billed and outstanding per line
      vehicle, from each line's own `amount_paid`, with `GREATEST` clamping only real SQL shows.
+  4. **ADR-0048's constraints**: the per-student fee table's tenant scope, uniqueness and
+     non-negative check; the partial unique index that lets a cancelled invoice's period be
+     billed again; and the "already billed this period" lookup that keeps a child on one bill.
 
 Every test cleans up the rows it created (lines before invoices, invoices before profiles),
 leaving the schema exactly as found.
@@ -19,10 +22,11 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from raad.core.audit.writer import AuditWriter
 from raad.core.config.settings import get_settings
@@ -37,6 +41,7 @@ from raad.modules.school_erp.domain.entities import (
     LineAllocation,
     ParentBillingProfile,
     ParentInvoice,
+    StudentBillingProfile,
 )
 from raad.modules.school_erp.domain.value_objects import (
     BillingPeriod,
@@ -46,6 +51,8 @@ from raad.modules.school_erp.domain.value_objects import (
     ParentId,
     ParentInvoiceId,
     ParentInvoiceStatus,
+    StudentBillingProfileId,
+    StudentId,
 )
 from raad.modules.school_erp.infra.repositories import SqlAlchemySchoolErpUnitOfWork
 
@@ -104,6 +111,10 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     text("DELETE FROM erp_parent_billing_profiles WHERE id = ANY(:ids)"),
                     {"ids": self._profile_ids},
                 )
+            await conn.execute(
+                text("DELETE FROM erp_student_billing_profiles WHERE organization_id IN (:a, :b)"),
+                {"a": self.org_a, "b": self.org_b},
+            )
 
     def _uow(self, organization_id: str | None) -> SqlAlchemySchoolErpUnitOfWork:
         uow = SqlAlchemySchoolErpUnitOfWork(
@@ -129,13 +140,14 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
             organization_id=OrganizationId(organization_id),
             parent_id=ParentId(parent_id or self.id_generator.new_id()),
             period=BillingPeriod(period),
-            amount=Money(amount=Decimal(amount), currency=currency),
+            currency=currency,
             due_date=date(2026, 9, 30),
             children=children
             or [
                 BilledChild(
                     line_id=self.id_generator.new_id(),
                     student_id=self.id_generator.new_id(),
+                    amount=Decimal(amount),
                     vehicle_id="BUS0000000000000000000001",
                 )
             ],
@@ -151,15 +163,14 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
     # -- Round-trip ---------------------------------------------------------------------------
 
     async def test_parent_invoice_round_trips_with_exact_decimal_line_amounts(self) -> None:
-        """A $100 total split across three children ($33.34/$33.33/$33.33) must round-trip
-        through `NUMERIC(12,2)` exactly, on both the invoice total and every line."""
-        student_ids = [self.id_generator.new_id() for _ in range(3)]
+        """Three children at their own fees ($10.00/$20.05/$69.95, ADR-0048) must round-trip
+        through `NUMERIC(12,2)` exactly, on every line and on the $100 total."""
+        fees = {self.id_generator.new_id(): Decimal(fee) for fee in ("10.00", "20.05", "69.95")}
         children = [
-            BilledChild(line_id=self.id_generator.new_id(), student_id=sid) for sid in student_ids
+            BilledChild(line_id=self.id_generator.new_id(), student_id=sid, amount=fee)
+            for sid, fee in fees.items()
         ]
-        invoice = await self._generate_invoice(
-            organization_id=self.org_a, amount="100.00", children=children
-        )
+        invoice = await self._generate_invoice(organization_id=self.org_a, children=children)
 
         async with self._uow(self.org_a) as uow:
             fetched = await uow.parent_invoices.get(invoice.id)
@@ -168,8 +179,7 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched.amount.amount, Decimal("100.00"))
         self.assertEqual(len(fetched.lines), 3)
         self.assertEqual(
-            sum((line.amount.amount for line in fetched.lines), Decimal("0.00")),
-            Decimal("100.00"),
+            {str(line.student_id): line.amount.amount for line in fetched.lines}, fees
         )
 
     async def test_parent_billing_profile_round_trips(self) -> None:
@@ -177,7 +187,7 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
             id=ParentBillingProfileId(self.id_generator.new_id()),
             organization_id=OrganizationId(self.org_a),
             parent_id=ParentId(self.id_generator.new_id()),
-            monthly_fee=Money(amount=Decimal("80.00"), currency="USD"),
+            currency="USD",
             billing_start_period=BillingPeriod("2026-09"),
             due_day=10,
             clock=self.clock,
@@ -192,8 +202,16 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
             fetched = await uow.parent_billing_profiles.get_by_parent(profile.parent_id)
 
         self.assertIsNotNone(fetched)
-        self.assertEqual(fetched.monthly_fee.amount, Decimal("80.00"))
+        self.assertEqual(fetched.currency, "USD")
         self.assertEqual(fetched.due_day, 10)
+        async with self.engine.connect() as conn:
+            stored_fee = (
+                await conn.execute(
+                    text("SELECT monthly_fee FROM erp_parent_billing_profiles WHERE id = :id"),
+                    {"id": str(profile.id)},
+                )
+            ).scalar()
+        self.assertIsNone(stored_fee, "the retired family fee is never written")
 
     # -- Tenant isolation ---------------------------------------------------------------------
 
@@ -242,11 +260,11 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         the unpaid student's balance, read from the lines themselves (ADR-0047 §2)."""
         student_a, student_b = self.id_generator.new_id(), self.id_generator.new_id()
         children = [
-            BilledChild(line_id=self.id_generator.new_id(), student_id=student_a, vehicle_id="BUS0000000000000000000009"),
-            BilledChild(line_id=self.id_generator.new_id(), student_id=student_b, vehicle_id="BUS0000000000000000000009"),
+            BilledChild(line_id=self.id_generator.new_id(), student_id=student_a, amount=Decimal("50.00"), vehicle_id="BUS0000000000000000000009"),
+            BilledChild(line_id=self.id_generator.new_id(), student_id=student_b, amount=Decimal("50.00"), vehicle_id="BUS0000000000000000000009"),
         ]
         invoice = await self._generate_invoice(
-            organization_id=self.org_a, amount="100.00", period="2026-09", children=children
+            organization_id=self.org_a, period="2026-09", children=children
         )
         async with self._uow(self.org_a) as uow:
             fetched = await uow.parent_invoices.get(invoice.id)
@@ -307,6 +325,134 @@ class ParentInvoiceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(september, {"USD"})
         self.assertEqual(all_periods, {"USD", "SOS"})
         self.assertEqual(invoiced_today, {"USD", "SOS"})
+
+
+    # -- ADR-0048: per-student fees ---------------------------------------------------------------
+
+    async def _fee(self, org: str, student_id: str, fee: str, currency: str = "USD"):
+        profile = StudentBillingProfile.open(
+            id=StudentBillingProfileId(self.id_generator.new_id()),
+            organization_id=OrganizationId(org),
+            student_id=StudentId(student_id),
+            monthly_fee=Money(amount=Decimal(fee), currency=currency),
+            clock=self.clock,
+        )
+        async with self._uow(org) as uow:
+            uow.student_billing_profiles.add(profile)
+            uow.record_events(profile.pull_domain_events())
+            await uow.commit()
+        return profile
+
+    async def test_student_fees_round_trip_exactly_and_stay_inside_their_organization(self) -> None:
+        student_a, student_b = self.id_generator.new_id(), self.id_generator.new_id()
+        await self._fee(self.org_a, student_a, "10.00")
+        await self._fee(self.org_b, student_b, "30.00")
+
+        async with self._uow(self.org_a) as uow:
+            mine = await uow.student_billing_profiles.list_by_students([student_a, student_b])
+            other = await uow.student_billing_profiles.get_by_student(StudentId(student_b))
+        # CHAR(26) padding stripped: the key matches the unpadded id exactly.
+        self.assertEqual(set(mine), {student_a})
+        self.assertEqual(mine[student_a].monthly_fee, Money(amount=Decimal("10.00"), currency="USD"))
+        self.assertIsNone(other)
+
+    async def test_a_changed_fee_is_updated_in_place_and_audited(self) -> None:
+        student = self.id_generator.new_id()
+        profile = await self._fee(self.org_a, student, "10.00")
+        async with self._uow(self.org_a) as uow:
+            loaded = await uow.student_billing_profiles.get_by_student(StudentId(student))
+            loaded.change_fee(monthly_fee=Money(amount=Decimal("12.50"), currency="USD"), clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+        async with self.engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT monthly_fee, row_version FROM erp_student_billing_profiles "
+                        "WHERE student_id = :s"
+                    ),
+                    {"s": student},
+                )
+            ).all()
+            audited = (
+                await conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM audit_entries WHERE entity_id = :id "
+                        "AND action = 'school_erp.StudentBillingFeeSet'"
+                    ),
+                    {"id": str(profile.id)},
+                )
+            ).scalar()
+        self.assertEqual([(r.monthly_fee, r.row_version) for r in rows], [(Decimal("12.50"), 2)])
+        self.assertEqual(audited, 2)
+
+    async def test_one_fee_per_student_and_never_negative(self) -> None:
+        student = self.id_generator.new_id()
+        await self._fee(self.org_a, student, "10.00")
+        with self.assertRaises(IntegrityError):
+            await self._fee(self.org_a, student, "20.00")
+        now = datetime(2026, 9, 1)
+        with self.assertRaises(IntegrityError):
+            async with self.engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO erp_student_billing_profiles (id, created_at, updated_at, "
+                        "row_version, organization_id, student_id, monthly_fee, currency) VALUES "
+                        "(:id, :now, :now, 1, :org, :student, -1, 'USD')"
+                    ),
+                    {"id": self.id_generator.new_id(), "now": now, "org": self.org_a,
+                     "student": self.id_generator.new_id()},
+                )
+
+    async def test_a_cancelled_invoice_frees_its_period_for_a_corrected_one(self) -> None:
+        """The index used to be unconditional, so cancelling a wrong invoice made its period
+        impossible to bill again — and made every later run for that period fail."""
+        parent_id = self.id_generator.new_id()
+        wrong = await self._generate_invoice(
+            organization_id=self.org_a, period="2026-09", parent_id=parent_id
+        )
+        async with self._uow(self.org_a) as uow:
+            loaded = await uow.parent_invoices.get(wrong.id)
+            loaded.cancel(reason="Wrong fee", clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+
+        corrected = await self._generate_invoice(
+            organization_id=self.org_a, period="2026-09", parent_id=parent_id, amount="60.00"
+        )
+        self.assertNotEqual(corrected.id, wrong.id)
+        with self.assertRaises(IntegrityError):
+            await self._generate_invoice(
+                organization_id=self.org_a, period="2026-09", parent_id=parent_id
+            )
+
+    async def test_billed_students_for_a_period_ignore_cancelled_and_other_tenants(self) -> None:
+        live, cancelled, elsewhere = (self.id_generator.new_id() for _ in range(3))
+        await self._generate_invoice(
+            organization_id=self.org_a,
+            children=[BilledChild(line_id=self.id_generator.new_id(), student_id=live, amount=Decimal("10.00"))],
+        )
+        voided = await self._generate_invoice(
+            organization_id=self.org_a,
+            children=[BilledChild(line_id=self.id_generator.new_id(), student_id=cancelled, amount=Decimal("10.00"))],
+        )
+        async with self._uow(self.org_a) as uow:
+            loaded = await uow.parent_invoices.get(voided.id)
+            loaded.cancel(reason="Issued in error", clock=self.clock)
+            uow.record_events(loaded.pull_domain_events())
+            await uow.commit()
+        await self._generate_invoice(
+            organization_id=self.org_b,
+            children=[BilledChild(line_id=self.id_generator.new_id(), student_id=elsewhere, amount=Decimal("10.00"))],
+        )
+
+        async with self._uow(self.org_a) as uow:
+            billed = await uow.parent_invoices.billed_student_ids_for_period(
+                period=BillingPeriod("2026-09")
+            )
+        self.assertIn(live, billed)
+        self.assertNotIn(cancelled, billed)
+        self.assertNotIn(elsewhere, billed)
 
 
 if __name__ == "__main__":

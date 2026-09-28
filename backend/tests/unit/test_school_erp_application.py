@@ -103,6 +103,8 @@ from raad.modules.school_erp.domain.value_objects import (
 )
 
 from _school_erp_ledger_fakes import (
+    InMemoryStudentBillingProfileRepository,
+    billed_student_ids,
     InMemoryParentPaymentRepository,
     invoices_for_student,
     pay_invoice,
@@ -567,6 +569,9 @@ class InMemoryParentInvoiceRepository(ParentInvoiceRepository):
             None,
         )
 
+    async def billed_student_ids_for_period(self, *, period: BillingPeriod) -> set[str]:
+        return billed_student_ids(self.by_id.values(), period)
+
     async def exists_for_parent_period(
         self, *, parent_id: ParentId, period: BillingPeriod
     ) -> bool:
@@ -641,6 +646,7 @@ class FakeSchoolErpUnitOfWork(SchoolErpUnitOfWork):
         self.income = InMemoryIncomeRepository()
         self.expenses = InMemoryExpenseRepository()
         self.parent_billing_profiles = InMemoryParentBillingProfileRepository()
+        self.student_billing_profiles = InMemoryStudentBillingProfileRepository()
         self.parent_invoices = InMemoryParentInvoiceRepository()
         self.parent_payments = InMemoryParentPaymentRepository()
         self.recorded_events: list = []
@@ -793,11 +799,14 @@ class _Base(unittest.IsolatedAsyncioTestCase):
             organization_id=OrganizationId(ORG),
             parent_id=ParentId(parent_id),
             period=BillingPeriod(period),
-            amount=Money(amount=Decimal(amount), currency=currency),
+            currency=currency,
             due_date=date(2026, 9, 30),
             children=[
                 BilledChild(
-                    line_id=self.ids.new_id(), student_id=student_id, vehicle_id=vehicle_id
+                    line_id=self.ids.new_id(),
+                    student_id=student_id,
+                    amount=Decimal(amount),
+                    vehicle_id=vehicle_id,
                 )
             ],
             clock=CLOCK,

@@ -32,12 +32,14 @@ from sqlalchemy import (
     DECIMAL,
     VARCHAR,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     SmallInteger,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -291,7 +293,10 @@ class ParentBillingProfileModel(AuditedTableMixin, Base):
 
     organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
     parent_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
-    monthly_fee: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
+    #: Retired by ADR-0048: the fee moved to each student (`erp_student_billing_profiles`).
+    #: Kept, nullable, so rows written under ADR-0042 still show what the family was charged;
+    #: never read, and never written by new code.
+    monthly_fee: Mapped[Decimal | None] = mapped_column(DECIMAL(12, 2), nullable=True)
     currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
     billing_start_period: Mapped[str] = mapped_column(CHAR(7), nullable=False)
     due_day: Mapped[int] = mapped_column(SmallInteger, nullable=False)
@@ -345,11 +350,16 @@ class ParentInvoiceModel(AuditedTableMixin, Base):
     )
 
     __table_args__ = (
-        UniqueConstraint(
+        # One *live* invoice per family per period. Partial (ADR-0048): a cancelled invoice no
+        # longer blocks the period, so an admin can cancel a wrong bill and generate a corrected
+        # one. Unconditional, it made every later run for that period fail on this index.
+        Index(
+            "ux_erp_parent_invoices__org_parent_period",
             "organization_id",
             "parent_id",
             "period",
-            name="ux_erp_parent_invoices__org_parent_period",
+            unique=True,
+            postgresql_where=text("status <> 'cancelled'"),
         ),
         # Backs "who has not paid" and the Receivables report.
         Index(
@@ -470,4 +480,27 @@ class ParentPaymentAllocationModel(AuditedTableMixin, Base):
             "organization_id",
             "vehicle_id",
         ),
+    )
+
+
+class StudentBillingProfileModel(AuditedTableMixin, Base):
+    """One student's own recurring monthly fee (ADR-0048) — where a Parent Invoice line's
+    amount comes from. One row per `(organization_id, student_id)`, edited in place; the fee
+    history lives in `audit_entries` (`StudentBillingFeeSet` carries the previous figure), and
+    every invoice already generated keeps its own frozen line amount."""
+
+    __tablename__ = "erp_student_billing_profiles"
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    student_id: Mapped[str] = mapped_column(CHAR(26), nullable=False)
+    monthly_fee: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "student_id",
+            name="ux_erp_student_billing_profiles__org_student",
+        ),
+        CheckConstraint("monthly_fee >= 0", name="ck_erp_student_billing_profiles__fee"),
     )

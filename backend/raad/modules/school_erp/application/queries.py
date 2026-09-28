@@ -23,6 +23,7 @@ from raad.modules.school_erp.domain.entities import (
     ParentBillingProfile,
     ParentInvoice,
     ParentPayment,
+    StudentBillingProfile,
     StudentInvoice,
     StudentPayment,
 )
@@ -425,7 +426,6 @@ class ParentBillingProfileDTO:
     id: str
     organization_id: str
     parent_id: str
-    monthly_fee: str
     currency: str
     billing_start_period: str
     due_day: int
@@ -439,8 +439,7 @@ def parent_billing_profile_to_dto(profile: ParentBillingProfile) -> ParentBillin
         id=str(profile.id),
         organization_id=str(profile.organization_id),
         parent_id=str(profile.parent_id),
-        monthly_fee=_money(profile.monthly_fee.amount),
-        currency=profile.monthly_fee.currency,
+        currency=profile.currency,
         billing_start_period=str(profile.billing_start_period),
         due_day=profile.due_day,
         status=profile.status.value,
@@ -686,6 +685,97 @@ class StudentFinanceDTO:
     payments: list[StudentPaymentEntryDTO]
     legacy_invoices: list[StudentInvoiceDTO]
     legacy_payments: list[StudentPaymentDTO]
+    #: ADR-0048: the student's own recurring fee, or `None` when nobody has priced them yet.
+    monthly_fee: str | None = None
+    monthly_fee_currency: str | None = None
+
+
+# ---- ADR-0048: per-student pricing ------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StudentBillingFeeDTO:
+    student_id: str
+    organization_id: str
+    monthly_fee: str
+    currency: str
+    is_billable: bool
+    updated_at: datetime
+
+
+def student_billing_fee_to_dto(profile: StudentBillingProfile) -> StudentBillingFeeDTO:
+    return StudentBillingFeeDTO(
+        student_id=str(profile.student_id),
+        organization_id=str(profile.organization_id),
+        monthly_fee=_money(profile.monthly_fee.amount),
+        currency=profile.monthly_fee.currency,
+        is_billable=profile.is_billable,
+        updated_at=profile.updated_at,
+    )
+
+
+@dataclass(frozen=True)
+class ParentStudentFeeDTO:
+    student_id: str
+    full_name: str
+    status: str
+    monthly_fee: str | None
+    currency: str | None
+
+
+@dataclass(frozen=True)
+class ParentStudentFeesDTO:
+    """A family's per-student fees and what one month bills them: the sum of the fees of the
+    family's *active* children. `monthly_total` is `None` when those fees are in more than one
+    currency — adding them would not be a number."""
+
+    parent_id: str
+    monthly_total: str | None
+    currency: str | None
+    unpriced_active_students: int
+    students: list[ParentStudentFeeDTO]
+
+
+@dataclass(frozen=True)
+class GenerationLineDTO:
+    student_id: str
+    full_name: str
+    amount: str
+    vehicle_id: str | None
+
+
+@dataclass(frozen=True)
+class GenerationFamilyDTO:
+    parent_id: str
+    parent_name: str
+    currency: str
+    total: str
+    lines: list[GenerationLineDTO]
+
+
+@dataclass(frozen=True)
+class GenerationSkipDTO:
+    """Why a family or a student gets no line this period. `reason` is one of
+    `already_invoiced`, `no_fee`, `free`, `billed_by_another_parent`, `currency_mismatch`,
+    `no_active_children`. Only `no_fee` and `currency_mismatch` need an admin."""
+
+    parent_id: str
+    parent_name: str
+    reason: str
+    student_id: str | None = None
+    student_name: str | None = None
+
+
+@dataclass(frozen=True)
+class ParentInvoiceGenerationPreviewDTO:
+    """Exactly what `generate_parent_invoices` would issue for `period`, computed by the same
+    plan — so the confirmation an admin reads is the run they get."""
+
+    organization_id: str
+    period: str
+    families: list[GenerationFamilyDTO]
+    skipped: list[GenerationSkipDTO]
+    totals_by_currency: dict[str, str]
 
 
 @dataclass(frozen=True)
