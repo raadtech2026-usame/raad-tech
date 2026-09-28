@@ -2073,6 +2073,32 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Per-student transport pricing and Known Issue #16 (ADR-0048, 2026-09-28).** Amends
+  ADR-0042 §1 at the user's direction: each student has their own monthly fee
+  (`StudentBillingProfile`); a Parent Invoice is one line per active child at that fee, and the
+  family total is their sum. The Parent Billing Profile keeps only the account terms.
+
+  **What changed**
+  - New aggregate, table and migration `f6c2d9e1b3a8`: fees backfilled from each student's
+    latest real invoice line; never-billed students get no fee and are reported, not guessed.
+    Existing invoices and lines untouched (verified byte-identical, locally and on a
+    production-shaped copy upgraded from production's revision `b3d7e1f94a26`).
+  - Partial unique index on Parent Invoices so a cancelled period can be billed again (it used
+    to fail the whole run).
+  - `GET /parent-invoices/generation-preview`, built from the same plan as the run; the Finance
+    page now confirms the run from it. A child is billed once per period across guardians.
+  - `PUT /students/{id}/billing-fee`, `GET /parents/{id}/student-fees`; the billing-profile body
+    no longer accepts `monthly_fee` (422).
+  - Frontend: per-child fees in the family billing form, in parent registration and on the
+    student's Finance section.
+  - Known Issue #16 closed (see §10).
+
+  **Verified:** backend 2009 unit/architecture/contract + 371 integration (1 pre-existing skip);
+  frontend 907 tests, `tsc` clean, build clean; migrations from empty and from `b3d7e1f94a26`,
+  downgrade/re-upgrade and the downgrade refusal branch; 65/65 end-to-end checks over real HTTP
+  in a fresh test organization. **Not verified:** browser interaction (Chrome extension not
+  connected).
+
 - **Finance completion: parent payment ledger, student-level finance, vehicle income
   (ADR-0047, 2026-09-28).** Amends ADR-0042 §4. The design forks were approved by the user
   before implementation.
@@ -2817,7 +2843,15 @@ Reverse-chronological (most recent first):
   live-verified" as not yet true until that checklist has actually been run for real, the same
   posture Known Issue #13 already establishes for TLS.
 
-### 16. Raw database constraint violations (FK, unique, etc.) surface as generic 500s
+### 16. ~~Raw database constraint violations (FK, unique, etc.) surface as generic 500s~~ — RESOLVED 2026-09-28
+- **Resolution:** ADR-0048 §6. `core/errors/handlers.py` maps `StaleDataError` (lost
+  `row_version` race) to 409 CONFLICT and `IntegrityError` by SQLSTATE — unique 23505 → 409,
+  foreign key 23503 and check 23514 → 422, anything else still 500. Live-verified: six
+  simultaneous payments on one Parent Invoice returned one 201 and five 409s (one of them a real
+  optimistic-lock loss), no 500, one payment row. Regression tests:
+  `tests/unit/test_concurrency_error_handlers.py`,
+  `tests/integration/test_school_erp_payment_ledger_repository.py` (deterministic race through
+  the real service and database). The original description is kept below.
 - **Severity:** Low
 - **Description:** Discovered live while testing Priority 1 Item 6's new `POST
   /scope-assignments/support` route with a syntactically-valid but non-existent

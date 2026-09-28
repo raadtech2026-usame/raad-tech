@@ -899,6 +899,12 @@ Bugs found during implementation that represent a durable rule for future code, 
   aggregate has a sibling `currencies_*` query with the *same* filters, and the service refuses
   (409) when the set has more than one element. Keep the two filter sets identical when either
   changes.
+- **A lost race and a refused constraint are 409/422, not 500 (Known Issue #16, closed by
+  ADR-0048 §6).** `StaleDataError` and `IntegrityError` are SQLAlchemy exceptions, outside the
+  `AppError` hierarchy, so they bypassed the status table and answered 500 — the loser of two
+  simultaneous payments on one invoice was told the server crashed. They are mapped once, at the
+  edge (`core/errors/handlers.py`), by SQLSTATE; the transaction is already rolled back when they
+  arrive, so only the status changes. Never catch them per call site to "fix" a 500.
 - **Every `AppError` subclass needs an explicit row in `core/errors/handlers._STATUS_TABLE`.**
   The fallback is 500, so a plain `DomainError` — a business rule correctly refusing input —
   answered as a server fault, logged as `unhandled_app_error` and paged an on-call. Base classes
@@ -1666,4 +1672,28 @@ design; what a future change must not undo:
 **Not built:**
 - Expense attachments (needs `python-multipart` and a file store with a backup).
 - EVC Plus/Zaad.
-- Per-child pricing inside a family.
+- ~~Per-child pricing inside a family~~ — built by ADR-0048, below.
+
+## Per-Student Transport Pricing (ADR-0048, 2026-09-28)
+
+Amends ADR-0042 §1 at the user's direction ("the fee must be assigned individually to each
+student"). `docs/architecture/adr/0048-per-student-transport-pricing.md` has the design; what a
+future change must not undo:
+
+- **Each student's fee is their own row, `StudentBillingProfile`** (`erp_student_billing_profiles`,
+  one per organization + student). A Parent Invoice line is that fee, frozen at generation; the
+  invoice total is the sum of its lines. There is no family fee to split. The
+  `ParentBillingProfile` is only the billing *account* (active, start period, due day, currency);
+  its old `monthly_fee` column is kept as history and must not be read again.
+- **Never price a child by guessing.** No fee means `no_fee`: the child is left off the invoice
+  and named in the generation preview and in the scheduled run's WARNING log. 0.00 means "rides
+  free". The migration took each student's fee from their latest real invoice line and invented
+  none for never-billed students.
+- **One plan decides the run and its preview** (`_plan_generation`). Change billing rules there
+  and nowhere else, or the confirmation screen will stop matching what is issued.
+- **A child is billed once per period** even with two paying guardians: primary link wins, then
+  the lowest parent id; a child already on another live invoice for the period is skipped.
+- **The per-family unique index is partial (`status <> 'cancelled'`)**, so cancel-and-regenerate
+  is the correction path for a wrong fee.
+- **Siblings share one bus** (the transport family/vehicle rule), so per-line vehicle snapshots
+  differ only across families or across a family's bus change today.
