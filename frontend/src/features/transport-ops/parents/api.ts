@@ -521,11 +521,9 @@ export function formatParentAmount(amount: string, currency: string): string {
   return `${currency} ${amount}`;
 }
 
-// ---- ParentBillingProfile / ParentInvoice — real aggregates (ADR-0042, 2026-09-11) -----------
-// Supersedes ADR-0041 §1's grouped-read-model bindings below. The old family-payment quick-action
-// (`recordParentPayment`/`listParentPayments`) is removed outright, not kept alongside the real
-// thing — payment status now lives directly on one Parent Invoice
-// (`setParentInvoicePaymentStatus`), with no allocation and no payment history in the UI.
+// ---- ParentBillingProfile / ParentInvoice (ADR-0042) and the payment ledger (ADR-0047) --------
+// A Parent Invoice is paid only through recorded payments (`recordParentPayment`), each split
+// across the invoice's students; its status is derived from them, never set directly.
 
 export interface ParentBillingProfile {
   id: string;
@@ -619,7 +617,7 @@ export async function setParentBillingProfileStatus(
   return toParentBillingProfile(wire);
 }
 
-/** The three, and only three, user-facing payment states a Parent Invoice can be in. */
+/** Derived from recorded payments (ADR-0047) — never set directly — plus `cancelled`. */
 export type ParentInvoiceStatus = "unpaid" | "partial" | "paid" | "cancelled";
 
 export interface ParentInvoiceSummary {
@@ -684,6 +682,8 @@ export interface ListParentInvoicesParams {
    * either, both, or neither. */
   dateFrom?: string | null;
   dateTo?: string | null;
+  /** Platform staff: narrow to one organization within their scope. */
+  organizationId?: string | null;
 }
 
 /** `GET /school-finance/parent-invoices` — the Finance page's primary listing (ADR-0042): every
@@ -698,24 +698,33 @@ export async function listParentInvoices(
   if (params.vehicleId) qs.set("vehicle_id", params.vehicleId);
   if (params.dateFrom) qs.set("date_from", params.dateFrom);
   if (params.dateTo) qs.set("date_to", params.dateTo);
+  if (params.organizationId) qs.set("organization_id", params.organizationId);
   const wire = await apiRequest<OffsetPageWire<ParentInvoiceSummaryWire>>(
     `/school-finance/parent-invoices?${qs}`,
   );
   return toOffsetPage(wire, toParentInvoiceSummary);
 }
 
+/** One child's line on a family invoice — that student's own charge, paid amount and balance
+ * for the period (ADR-0047 §2). `vehicleId` is the bus captured when the invoice was generated. */
 export interface ParentInvoiceLine {
+  lineId: string;
   studentId: string;
   fullName: string;
   amount: string;
+  amountPaid: string;
+  balanceDue: string;
   vehicleId: string | null;
   routeId: string | null;
 }
 
 interface ParentInvoiceLineWire {
+  line_id: string;
   student_id: string;
   full_name: string;
   amount: string;
+  amount_paid: string;
+  balance_due: string;
   vehicle_id: string | null;
   route_id: string | null;
 }
@@ -770,9 +779,12 @@ function toParentInvoiceDetail(wire: ParentInvoiceDetailWire): ParentInvoiceDeta
     dueDate: wire.due_date,
     notes: wire.notes,
     lines: wire.lines.map((line) => ({
+      lineId: line.line_id,
       studentId: line.student_id,
       fullName: line.full_name,
       amount: line.amount,
+      amountPaid: line.amount_paid,
+      balanceDue: line.balance_due,
       vehicleId: line.vehicle_id,
       routeId: line.route_id,
     })),
@@ -796,39 +808,149 @@ export async function generateParentInvoices(period: string): Promise<ParentInvo
   return wire.map(toParentInvoiceDetail);
 }
 
-export interface SetParentInvoicePaymentStatusInput {
-  status: ParentInvoiceStatus;
-  /** Required only when `status === "partial"`; ignored (resolved server-side) for `paid`/`unpaid`. */
-  amountPaid?: string | null;
+export type PaymentMethod = "cash" | "bank_transfer" | "mobile_money" | "cheque" | "card" | "other";
+
+export interface ParentPaymentAllocation {
+  studentId: string;
+  fullName: string;
+  amount: string;
+  vehicleId: string | null;
 }
 
-/** `PATCH /school-finance/parent-invoices/{id}/payment-status` — the entire user-facing payment
- * workflow (Part 9): Unpaid/Partial/Paid, set directly on the invoice. No payment method,
- * reference or history — the database recalculates amount paid, balance, Receivables and
- * Collected on save. */
-export async function setParentInvoicePaymentStatus(
+export interface ParentPayment {
+  id: string;
+  parentId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  period: string;
+  amount: string;
+  currency: string;
+  method: PaymentMethod;
+  reference: string | null;
+  receivedOn: string;
+  notes: string | null;
+  isVoided: boolean;
+  voidedReason: string | null;
+  createdAt: string;
+  allocations: ParentPaymentAllocation[];
+}
+
+interface ParentPaymentWire {
+  id: string;
+  parent_id: string;
+  invoice_id: string;
+  invoice_number: string;
+  period: string;
+  amount: string;
+  currency: string;
+  method: string;
+  reference: string | null;
+  received_on: string;
+  notes: string | null;
+  is_voided: boolean;
+  voided_reason: string | null;
+  created_at: string;
+  allocations: { student_id: string; full_name: string; amount: string; vehicle_id: string | null }[];
+}
+
+export function toParentPayment(wire: ParentPaymentWire): ParentPayment {
+  return {
+    id: wire.id,
+    parentId: wire.parent_id,
+    invoiceId: wire.invoice_id,
+    invoiceNumber: wire.invoice_number,
+    period: wire.period,
+    amount: wire.amount,
+    currency: wire.currency,
+    method: wire.method as PaymentMethod,
+    reference: wire.reference,
+    receivedOn: wire.received_on,
+    notes: wire.notes,
+    isVoided: wire.is_voided,
+    voidedReason: wire.voided_reason,
+    createdAt: wire.created_at,
+    allocations: wire.allocations.map((a) => ({
+      studentId: a.student_id,
+      fullName: a.full_name,
+      amount: a.amount,
+      vehicleId: a.vehicle_id,
+    })),
+  };
+}
+
+export interface RecordParentPaymentInput {
+  amount: string;
+  currency: string;
+  method: PaymentMethod;
+  receivedOn: string;
+  reference?: string | null;
+  notes?: string | null;
+  /** Omit to split pro-rata to each student's remaining balance; name one student to pay for
+   * that student only. Must add up to `amount` (the server re-checks). */
+  allocations?: { studentId: string; amount: string }[] | null;
+  /** One per opened form, so a double-submitted form records one payment, not two. */
+  idempotencyKey: string;
+}
+
+/** `POST /school-finance/parent-invoices/{id}/payments` (ADR-0047) — records money received and
+ * allocates it to the invoice's students. Refused (409) on a cancelled or fully paid invoice;
+ * refused (400) on a currency mismatch or an allocation above a student's balance. */
+export async function recordParentPayment(
   invoiceId: string,
-  input: SetParentInvoicePaymentStatusInput,
-): Promise<ParentInvoiceSummary> {
-  const wire = await apiRequest<ParentInvoiceSummaryWire>(
-    `/school-finance/parent-invoices/${invoiceId}/payment-status`,
+  input: RecordParentPaymentInput,
+): Promise<ParentPayment> {
+  const wire = await apiRequest<ParentPaymentWire>(
+    `/school-finance/parent-invoices/${invoiceId}/payments`,
     {
-      method: "PATCH",
-      body: { status: input.status, amount_paid: input.amountPaid ?? null },
+      method: "POST",
+      body: {
+        amount: input.amount,
+        currency: input.currency,
+        method: input.method,
+        received_on: input.receivedOn,
+        reference: input.reference ?? null,
+        notes: input.notes ?? null,
+        allocations: input.allocations
+          ? input.allocations.map((a) => ({ student_id: a.studentId, amount: a.amount }))
+          : null,
+        idempotency_key: input.idempotencyKey,
+      },
     },
   );
-  return toParentInvoiceSummary(wire);
+  return toParentPayment(wire);
 }
 
-/** `POST /school-finance/parent-invoices/{id}/cancel` — voids an invoice issued in error.
- * Rejected server-side if the invoice has already received any payment. */
+/** `GET /school-finance/parent-invoices/{id}/payments` — voided payments included, marked. */
+export async function listInvoicePayments(invoiceId: string): Promise<ParentPayment[]> {
+  const wire = await apiRequest<ParentPaymentWire[]>(`/school-finance/parent-invoices/${invoiceId}/payments`);
+  return wire.map(toParentPayment);
+}
+
+/** `GET /school-finance/parents/{id}/payments` — every payment a family has made, newest first. */
+export async function listParentPayments(parentId: string): Promise<ParentPayment[]> {
+  const wire = await apiRequest<ParentPaymentWire[]>(`/school-finance/parents/${parentId}/payments`);
+  return wire.map(toParentPayment);
+}
+
+/** `POST /school-finance/parent-payments/{id}/void` — reason required; reverses exactly this
+ * payment's allocations on the invoice. */
+export async function voidParentPayment(paymentId: string, reason: string): Promise<ParentPayment> {
+  const wire = await apiRequest<ParentPaymentWire>(`/school-finance/parent-payments/${paymentId}/void`, {
+    method: "POST",
+    body: { reason },
+  });
+  return toParentPayment(wire);
+}
+
+/** `POST /school-finance/parent-invoices/{id}/cancel` — cancels an invoice issued in error. A
+ * reason is required; refused while the invoice still has live payments (void them first). */
 export async function cancelParentInvoice(
   invoiceId: string,
-  reason?: string | null,
+  reason: string,
 ): Promise<ParentInvoiceSummary> {
   const wire = await apiRequest<ParentInvoiceSummaryWire>(
     `/school-finance/parent-invoices/${invoiceId}/cancel`,
-    { method: "POST", body: { reason: reason ?? null } },
+    { method: "POST", body: { reason } },
   );
   return toParentInvoiceSummary(wire);
 }

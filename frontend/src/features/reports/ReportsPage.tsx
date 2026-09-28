@@ -19,6 +19,7 @@ import {
   downloadReport,
   listParentsForReportPicker,
   listReportCatalog,
+  listStudentsForReportPicker,
   listVehiclesForReportPicker,
   previewReport,
   type DownloadReportParams,
@@ -206,6 +207,7 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
   const [end, setEnd] = useState("");
   const [vehicle, setVehicle] = useState<ReportPickerOption | null>(null);
   const [parent, setParent] = useState<ReportPickerOption | null>(null);
+  const [student, setStudent] = useState<ReportPickerOption | null>(null);
   const [status, setStatus] = useState<ReportStatus | "">("");
   const [busy, setBusy] = useState<ReportFormat | null>(null);
   const [preview, setPreview] = useState<ReportTablePreview | null>(null);
@@ -217,6 +219,7 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
       end: end || undefined,
       vehicleId: vehicle?.id,
       parentId: parent?.id,
+      studentId: student?.id,
       status: status || undefined,
     };
   }
@@ -264,6 +267,9 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
   const filterSummaryItems: ReportFilterSummaryItem[] = [];
   if (accepts.has("parent_id")) {
     filterSummaryItems.push({ label: "Parent", value: parent?.label ?? "All parents" });
+  }
+  if (accepts.has("student_id")) {
+    filterSummaryItems.push({ label: "Student", value: student?.label ?? "Not selected" });
   }
   if (accepts.has("vehicle_id")) {
     filterSummaryItems.push({ label: "Vehicle", value: vehicle?.label ?? "All vehicles" });
@@ -319,6 +325,19 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
                 queryKey="report-parent"
                 placeholder="All parents"
                 emptyLabel="No parents found"
+                icon={<UserRound size={14} />}
+              />
+            </FormField>
+          )}
+          {accepts.has("student_id") && (
+            <FormField label="Student" hint="Required — the student this statement is for">
+              <ReportEntitySelect
+                value={student}
+                onChange={setStudent}
+                fetchOptions={listStudentsForReportPicker}
+                queryKey="report-student"
+                placeholder="Search students"
+                emptyLabel="No students found"
                 icon={<UserRound size={14} />}
               />
             </FormField>

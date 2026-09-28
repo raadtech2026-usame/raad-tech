@@ -20,7 +20,10 @@ vi.mock("./api", () => ({
   setParentBillingProfileStatus: vi.fn(),
   listParentInvoices: vi.fn(),
   getParentInvoiceDetail: vi.fn(),
-  setParentInvoicePaymentStatus: vi.fn(),
+  listParentPayments: vi.fn(),
+  listInvoicePayments: vi.fn(),
+  recordParentPayment: vi.fn(),
+  voidParentPayment: vi.fn(),
   cancelParentInvoice: vi.fn(),
   generateParentInvoices: vi.fn(),
   formatParentAmount: (amount: string, currency: string) => `${currency} ${amount}`,
@@ -95,6 +98,7 @@ describe("ParentsPage", () => {
     });
     vi.mocked(api.listParents).mockReset();
     vi.mocked(api.getParent).mockReset().mockResolvedValue(PARENT_DETAIL);
+    vi.mocked(api.listParentPayments).mockReset().mockResolvedValue([]);
     vi.mocked(api.updateParent).mockReset();
     vi.mocked(api.updateParentStatus).mockReset();
     vi.mocked(api.listStudentsForParent).mockReset().mockResolvedValue([]);
@@ -242,8 +246,38 @@ describe("ParentsPage", () => {
     expect(await within(dialog).findByRole("button", { name: "Add student" })).toBeInTheDocument();
   });
 
-  it("shows the family's Billing Profile and current Parent Invoice in the drawer (ADR-0042)", async () => {
+  it("shows the family's Billing Profile, current invoice per child, and payment history (ADR-0042/0047)", async () => {
     vi.mocked(api.listParents).mockResolvedValue(pageOf([PARENT_SUMMARY], 1));
+    vi.mocked(api.getParentInvoiceDetail).mockResolvedValue({
+      id: "inv-1",
+      parentId: PARENT_SUMMARY.id,
+      parentName: "Fatima Ali",
+      period: "2026-09",
+      invoiceNumber: "2026-09-INV1",
+      amount: "80.00",
+      amountPaid: "30.00",
+      balanceDue: "50.00",
+      status: "partial",
+      currency: "USD",
+      invoiceDate: "2026-09-01",
+      dueDate: "2026-09-10",
+      notes: null,
+      lines: [
+        {
+          lineId: "line-1", studentId: "s-1", fullName: "Mohamed", amount: "80.00",
+          amountPaid: "30.00", balanceDue: "50.00", vehicleId: null, routeId: null,
+        },
+      ],
+    });
+    vi.mocked(api.listParentPayments).mockResolvedValue([
+      {
+        id: "pay-1", parentId: PARENT_SUMMARY.id, invoiceId: "inv-1", invoiceNumber: "2026-09-INV1",
+        period: "2026-09", amount: "30.00", currency: "USD", method: "cash", reference: "R-9",
+        receivedOn: "2026-09-05", notes: null, isVoided: false, voidedReason: null,
+        createdAt: "2026-09-05T00:00:00Z",
+        allocations: [{ studentId: "s-1", fullName: "Mohamed", amount: "30.00", vehicleId: null }],
+      },
+    ]);
     vi.mocked(api.getParentBillingProfile).mockResolvedValue({
       id: "bp-1",
       organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
@@ -286,7 +320,12 @@ describe("ParentsPage", () => {
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("USD 80.00 / month")).toBeInTheDocument();
     expect(within(dialog).getByText(/2026-09 — USD 80.00/)).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: /update payment status/i })).toBeInTheDocument();
+    expect(await within(dialog).findByText(/Charged USD 80.00 · Paid USD 30.00 · Owes USD 50.00/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /record payment/i })).toBeInTheDocument();
+    // Partially paid: cancelling is not offered until its payments are voided.
+    expect(within(dialog).queryByRole("button", { name: /cancel invoice/i })).not.toBeInTheDocument();
+    expect(await within(dialog).findByText(/Mohamed 30\.00/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Void" })).toBeInTheDocument();
   });
 
   it("lets a founder deactivate an active parent from the detail drawer", async () => {

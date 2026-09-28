@@ -31,6 +31,7 @@ import { Skeleton } from "../../shared/components/Skeleton/Skeleton";
 import { Tabs } from "../../shared/components/Tabs/Tabs";
 import { useToast } from "../../shared/components/Toast/toastStore";
 import { ApiError } from "../../shared/api/types";
+import { useAuthStore } from "../../shared/stores/authStore";
 import { usePageHeader } from "../../app/layout/PageHeaderContext";
 import {
   currentPeriod,
@@ -45,22 +46,32 @@ import {
   voidExpense,
   voidIncome,
   type FinancialCategory,
+  type IncomeType,
   type LedgerEntry,
 } from "./api";
 import { CategoryForm } from "./CategoryForm";
 import { LedgerEntryForm } from "./LedgerEntryForm";
-// Parent Invoice (ADR-0042) — a real aggregate owned by `transport_ops/parents` (the same
-// cross-bounded-context reuse `ParentFinancialSummary` already established, not a new pattern).
-import { SetInvoicePaymentStatusForm } from "../transport-ops/parents/SetInvoicePaymentStatusForm";
+import { VehicleFinanceSection, type VehicleLedgerAction } from "./VehicleFinanceSection";
+// Parent Invoice (ADR-0042) and its payment ledger (ADR-0047) — owned by `transport_ops/parents`,
+// the same cross-feature-folder reuse `ParentFinancialSummary` already established.
+import { RecordParentPaymentForm } from "../transport-ops/parents/RecordParentPaymentForm";
+import {
+  CancelInvoiceDialog,
+  PaymentHistoryList,
+  VoidPaymentDialog,
+  type CancellableInvoice,
+} from "../transport-ops/parents/PaymentLedger";
 import { ParentSearchSelect, type SelectedParent } from "../transport-ops/parents/ParentSearchSelect";
 import { invoiceStatusLabel, invoiceStatusTone } from "../transport-ops/parents/labels";
 import {
   formatParentAmount,
   generateParentInvoices,
   getParentInvoiceDetail,
+  listInvoicePayments,
   listParentInvoices,
   type ParentInvoiceStatus,
   type ParentInvoiceSummary,
+  type ParentPayment,
 } from "../transport-ops/parents/api";
 import styles from "./OrgFinancePage.module.css";
 
@@ -72,14 +83,12 @@ import styles from "./OrgFinancePage.module.css";
  * tenant-scoped server-side by ADR-0021, so an Org Admin sees their own school's money and
  * nothing else. Nothing here is estimated, projected or placeholder.
  *
- * **The whole workflow lives on this page, in the order a bursar performs it:** set up a Parent's
- * monthly billing profile → run the month's billing → confirm each family's payment status.
- * Everything after that step is derived, never entered: the Collected KPI, Profit & Loss's Parent-
- * revenue line and every report are all computed from real `ParentInvoice` payment state. There is
- * deliberately no "add Parent fee income" action anywhere, because that money is already counted —
- * see the Income tab's own notice and `LedgerEntryForm`. Per-vehicle revenue/cost breakdowns live
- * in Reports, not here (Finance UI cleanup, 2026-09-12) — this page's own KPIs and Parent Invoice
- * list stay organization-wide.
+ * **The whole workflow lives on this page, in the order a bursar performs it:** run the month's
+ * billing (from each Parent's billing profile) → record payments as families pay, split across
+ * their children → record daily bus collections, other income and expenses → read Vehicle finance
+ * and Profit & Loss. Student income is derived from the recorded payments (ADR-0047); there is
+ * deliberately no "add student fee income" action anywhere, because that money is already counted
+ * — see the Income tab's own notice and `LedgerEntryForm`.
  *
  * **This page is not the organization's RAAD subscription.** ADR-0038 §2 keeps
  * Organization→Student finance and RAAD→Organization billing in separate bounded contexts with
@@ -90,10 +99,11 @@ import styles from "./OrgFinancePage.module.css";
  * (see `api.ts`'s own note on why).
  */
 
-type LedgerTab = "invoices" | "income" | "expenses" | "categories";
+type LedgerTab = "invoices" | "vehicles" | "income" | "expenses" | "categories";
 
 const LEDGER_TABS: { id: LedgerTab; label: string }[] = [
   { id: "invoices", label: "Parent invoices" },
+  { id: "vehicles", label: "Vehicle finance" },
   { id: "income", label: "Income" },
   { id: "expenses", label: "Expenses" },
   { id: "categories", label: "Categories" },
@@ -101,6 +111,12 @@ const LEDGER_TABS: { id: LedgerTab; label: string }[] = [
 
 const LIST_PARAMS = { page: 1, pageSize: 25, sort: null, filters: {}, search: "" };
 const PICKER_PARAMS = { page: 1, pageSize: 100, sort: null, filters: {}, search: "" };
+
+const INCOME_TYPE_FILTERS: { id: IncomeType | "all"; label: string }[] = [
+  { id: "all", label: "All income" },
+  { id: "daily_vehicle", label: "Daily vehicle income" },
+  { id: "other", label: "Other income" },
+];
 
 const PARENT_INVOICE_STATUS_FILTERS: { id: ParentInvoiceStatus | "all"; label: string }[] = [
   { id: "all", label: "All" },
@@ -143,8 +159,17 @@ export function OrgFinancePage() {
   const window = defaultWindow();
   const periodWindow = currentPeriodWindow(period);
 
+  const principal = useAuthStore((s) => s.principal);
+  // Presentation only — the server's `school_erp.*.manage` permissions are the real gate.
+  const canManage = principal?.role === "org_admin";
+
   const [categoryOpen, setCategoryOpen] = useState(false);
-  const [ledgerFormMode, setLedgerFormMode] = useState<"income" | "expense" | null>(null);
+  const [ledgerForm, setLedgerForm] = useState<{
+    mode: "income" | "expense";
+    incomeType?: IncomeType;
+    vehicleId?: string | null;
+  } | null>(null);
+  const [incomeTypeFilter, setIncomeTypeFilter] = useState<IncomeType | "all">("all");
   const [voidingLedgerEntry, setVoidingLedgerEntry] = useState<{
     entry: LedgerEntry;
     kind: "income" | "expense";
@@ -162,7 +187,9 @@ export function OrgFinancePage() {
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<ParentInvoiceStatus | "all">("all");
   const [invoicePage, setInvoicePage] = useState(1);
   const [viewingInvoice, setViewingInvoice] = useState<ParentInvoiceSummary | null>(null);
-  const [payingParentInvoice, setPayingParentInvoice] = useState<ParentInvoiceSummary | null>(null);
+  const [payingInvoiceId, setPayingInvoiceId] = useState<string | null>(null);
+  const [cancellingInvoice, setCancellingInvoice] = useState<CancellableInvoice | null>(null);
+  const [voidingPayment, setVoidingPayment] = useState<ParentPayment | null>(null);
 
   const summary = useQuery({
     queryKey: ["school-finance", "summary", period],
@@ -210,9 +237,18 @@ export function OrgFinancePage() {
     queryFn: () => getParentInvoiceDetail(viewingInvoice!.id),
     enabled: viewingInvoice !== null,
   });
+  const invoicePaymentsQuery = useQuery({
+    queryKey: ["school-finance", "parent-invoice-payments", viewingInvoice?.id],
+    queryFn: () => listInvoicePayments(viewingInvoice!.id),
+    enabled: viewingInvoice !== null,
+  });
   const income = useQuery({
-    queryKey: ["school-finance", "income"],
-    queryFn: () => listIncome(LIST_PARAMS),
+    queryKey: ["school-finance", "income", incomeTypeFilter],
+    queryFn: () =>
+      listIncome({
+        ...LIST_PARAMS,
+        filters: incomeTypeFilter === "all" ? {} : { income_type: incomeTypeFilter },
+      }),
     staleTime: 30_000,
     enabled: tab === "income",
   });
@@ -316,13 +352,19 @@ export function OrgFinancePage() {
         );
       case "income":
         return (
-          <Button size="sm" leadingIcon={<Plus size={14} />} onClick={() => setLedgerFormMode("income")}>
+          <Button
+            size="sm"
+            leadingIcon={<Plus size={14} />}
+            onClick={() =>
+              setLedgerForm({ mode: "income", incomeType: incomeTypeFilter === "all" ? "other" : incomeTypeFilter })
+            }
+          >
             Record income
           </Button>
         );
       case "expenses":
         return (
-          <Button size="sm" leadingIcon={<Plus size={14} />} onClick={() => setLedgerFormMode("expense")}>
+          <Button size="sm" leadingIcon={<Plus size={14} />} onClick={() => setLedgerForm({ mode: "expense" })}>
             Record expense
           </Button>
         );
@@ -377,7 +419,7 @@ export function OrgFinancePage() {
             label="Net Result"
             isLoading={periodPnl.isLoading}
             value={periodPnl.data ? formatAmount(periodPnl.data.netProfit, periodPnl.data.currency) : "—"}
-            footnote="This period's collected Parent revenue + other income − expenses"
+            footnote="This period's student, daily and other income − expenses"
           />
         </div>
       </PageSection>
@@ -491,7 +533,7 @@ export function OrgFinancePage() {
                   <EmptyState
                     icon={<ReceiptText size={20} />}
                     title="No parent invoices yet"
-                    description="Run a monthly billing batch against a fee plan to issue this period's invoices."
+                    description="Set up each Parent's billing profile, then use Generate monthly invoices."
                   />
                 )
               ) : (
@@ -536,14 +578,14 @@ export function OrgFinancePage() {
                               <Button size="sm" variant="ghost" onClick={() => setViewingInvoice(row)}>
                                 View
                               </Button>
-                              {row.status !== "cancelled" && (
+                              {canManage && row.status !== "cancelled" && row.status !== "paid" && (
                                 <Button
                                   size="sm"
                                   variant="secondary"
                                   leadingIcon={<Wallet size={13} />}
-                                  onClick={() => setPayingParentInvoice(row)}
+                                  onClick={() => setPayingInvoiceId(row.id)}
                                 >
-                                  Payment status
+                                  Record payment
                                 </Button>
                               )}
                             </div>
@@ -557,19 +599,47 @@ export function OrgFinancePage() {
             </>
           )}
 
+          {tab === "vehicles" && (
+            <VehicleFinanceSection
+              vehicleNames={vehicleNames}
+              categoryNames={categoryNames}
+              canManage={canManage}
+              onRecord={(action: VehicleLedgerAction) =>
+                setLedgerForm({ mode: action.mode, incomeType: action.incomeType, vehicleId: action.vehicleId })
+              }
+            />
+          )}
+
           {(tab === "income" || tab === "expenses") && (
             <>
               <CardHeader
                 icon={
                   tab === "income" ? <TrendingUp size={18} /> : <TrendingDown size={18} />
                 }
-                title={tab === "income" ? "Other income" : "Expenses"}
+                title={tab === "income" ? "Income" : "Expenses"}
                 subtitle={
                   tab === "income"
-                    ? "Income that is not a student fee — student fees reach the ledger through invoices"
+                    ? "Daily bus collections and other income — student fees come from recorded payments"
                     : "School expenditure, optionally attributed to a bus"
                 }
               />
+              {tab === "income" && (
+                <CardBody className={styles.filterRow}>
+                  <FormField label="Income type">
+                    <Select
+                      value={incomeTypeFilter}
+                      onChange={(e) => setIncomeTypeFilter(e.target.value as IncomeType | "all")}
+                      aria-label="Filter income by type"
+                    >
+                      {INCOME_TYPE_FILTERS.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormField>
+                </CardBody>
+              )}
               {tab === "income" && (
                 <CardBody>
                   <div className={styles.autoNotice}>
@@ -584,19 +654,17 @@ export function OrgFinancePage() {
                             <strong>
                               {formatAmount(pnl.data.studentRevenue, pnl.data.currency)}
                             </strong>{" "}
-                            of student fee revenue has already been counted for the last 12
-                            months, derived from payments recorded against invoices. It is not
+                            of student income has already been counted for the last 12 months,
+                            derived from payments recorded against Parent Invoices. It is not
                             listed below and must never be added here — an entry for the same
-                            money would be counted twice. This ledger is for donations,
-                            sponsorships, grants, government support and other income with no
-                            student invoice behind it.
+                            money would be counted twice. This ledger is for daily bus
+                            collections and other income with no student invoice behind it.
                           </>
                         ) : (
                           <>
-                            Student fee revenue is derived from payments recorded against
-                            invoices and is never listed below. This ledger is for donations,
-                            sponsorships, grants, government support and other income with no
-                            student invoice behind it.
+                            Student income is derived from payments recorded against Parent
+                            Invoices and is never listed below. This ledger is for daily bus
+                            collections and other income with no student invoice behind it.
                           </>
                         )}
                       </p>
@@ -614,10 +682,10 @@ export function OrgFinancePage() {
                   icon={
                     tab === "income" ? <TrendingUp size={20} /> : <TrendingDown size={20} />
                   }
-                  title={tab === "income" ? "No other income recorded" : "No expenses recorded"}
+                  title={tab === "income" ? "No income recorded" : "No expenses recorded"}
                   description={
                     tab === "income"
-                      ? "Donations, sponsorships, grants and government support appear here."
+                      ? "Daily bus collections, advertising, rental, donations and grants appear here."
                       : "Fuel, maintenance, salaries and other costs appear here."
                   }
                 />
@@ -627,10 +695,11 @@ export function OrgFinancePage() {
                     <thead>
                       <tr>
                         <th>Date</th>
+                        {tab === "income" && <th>Type</th>}
                         <th className={styles.alignRight}>Amount</th>
                         <th>Category</th>
                         <th>Description</th>
-                        {tab === "expenses" && <th>Vehicle</th>}
+                        <th>Vehicle</th>
                         <th>Reference</th>
                         <th>State</th>
                         <th aria-label="Actions" />
@@ -640,6 +709,9 @@ export function OrgFinancePage() {
                       {(tab === "income" ? income : expenses).data?.data.map((e) => (
                         <tr key={e.id} className={e.isVoided ? styles.voidedRow : undefined}>
                           <td>{e.occurredOn}</td>
+                          {tab === "income" && (
+                            <td>{e.incomeType === "daily_vehicle" ? "Daily vehicle" : "Other"}</td>
+                          )}
                           <td className={styles.alignRight}>
                             {formatAmount(e.amount, e.currency)}
                           </td>
@@ -653,13 +725,11 @@ export function OrgFinancePage() {
                             )}
                           </td>
                           <td>{e.description ?? <span className={styles.muted}>—</span>}</td>
-                          {tab === "expenses" && (
-                            <td>
-                              {vehicleName(e.vehicleId) ?? (
-                                <span className={styles.muted}>—</span>
-                              )}
-                            </td>
-                          )}
+                          <td>
+                            {vehicleName(e.vehicleId) ?? (
+                              <span className={styles.muted}>—</span>
+                            )}
+                          </td>
                           <td>{e.reference ?? <span className={styles.muted}>—</span>}</td>
                           <td>
                             <Badge variant={e.isVoided ? "danger" : "success"} dot>
@@ -670,7 +740,7 @@ export function OrgFinancePage() {
                             )}
                           </td>
                           <td className={styles.rowAction}>
-                            {!e.isVoided && (
+                            {canManage && !e.isVoided && (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -788,18 +858,25 @@ export function OrgFinancePage() {
               <dl className={styles.pnl}>
                 <div className={styles.pnlRow}>
                   <dt>
-                    Parent transportation collections
+                    Student income
                     <span className={styles.pnlHint}>
-                      Derived from recorded payments — never entered by hand
+                      Payments received from families — never entered by hand
                     </span>
                   </dt>
                   <dd>{formatAmount(pnl.data.studentRevenue, pnl.data.currency)}</dd>
                 </div>
                 <div className={styles.pnlRow}>
                   <dt>
+                    Daily vehicle income
+                    <span className={styles.pnlHint}>Money buses collected day by day</span>
+                  </dt>
+                  <dd>{formatAmount(pnl.data.dailyVehicleIncome, pnl.data.currency)}</dd>
+                </div>
+                <div className={styles.pnlRow}>
+                  <dt>
                     Other income
                     <span className={styles.pnlHint}>
-                      Donations, sponsorships, grants and government support
+                      Advertising, rental, donations, grants and other income
                     </span>
                   </dt>
                   <dd>{formatAmount(pnl.data.otherIncome, pnl.data.currency)}</dd>
@@ -902,33 +979,60 @@ export function OrgFinancePage() {
             <span className={styles.childLineItemsTitle}>Children on this invoice</span>
             {invoiceDetailQuery.isLoading && <Skeleton height={36} />}
             {invoiceDetailQuery.data?.lines.map((line) => (
-              <div key={line.studentId} className={styles.childLineItemRow}>
+              <div key={line.lineId} className={styles.childLineItemRow}>
                 <div>
                   <div className={styles.strong}>{line.fullName}</div>
-                  <div className={styles.muted}>{vehicleName(line.vehicleId) ?? "No vehicle assigned"}</div>
+                  <div className={styles.muted}>
+                    {vehicleName(line.vehicleId) ?? "No vehicle when billed"} · Paid{" "}
+                    {formatParentAmount(line.amountPaid, invoiceDetailQuery.data!.currency)} · Owes{" "}
+                    {formatParentAmount(line.balanceDue, invoiceDetailQuery.data!.currency)}
+                  </div>
                 </div>
                 <span className={styles.muted}>
                   {formatParentAmount(line.amount, invoiceDetailQuery.data!.currency)}
                 </span>
               </div>
             ))}
+            <span className={styles.childLineItemsTitle}>Payments</span>
+            {invoicePaymentsQuery.isLoading ? (
+              <Skeleton height={36} />
+            ) : (
+              <PaymentHistoryList
+                payments={invoicePaymentsQuery.data ?? []}
+                canManage={canManage}
+                onVoid={setVoidingPayment}
+                showInvoice={false}
+              />
+            )}
           </div>
         }
         footer={
+          canManage &&
           viewingInvoice &&
           invoiceDetailQuery.data &&
           invoiceDetailQuery.data.status !== "cancelled" && (
-            <Button leadingIcon={<Wallet size={14} />} onClick={() => setPayingParentInvoice(viewingInvoice)}>
-              Payment status
-            </Button>
+            <div className={styles.rowActions}>
+              {invoiceDetailQuery.data.status !== "paid" && (
+                <Button leadingIcon={<Wallet size={14} />} onClick={() => setPayingInvoiceId(viewingInvoice.id)}>
+                  Record payment
+                </Button>
+              )}
+              {invoiceDetailQuery.data.status === "unpaid" && (
+                <Button variant="ghost" onClick={() => setCancellingInvoice(viewingInvoice)}>
+                  Cancel invoice
+                </Button>
+              )}
+            </div>
           )
         }
       />
-      <SetInvoicePaymentStatusForm
-        open={payingParentInvoice !== null}
-        onClose={() => setPayingParentInvoice(null)}
-        invoice={payingParentInvoice}
+      <RecordParentPaymentForm
+        open={payingInvoiceId !== null}
+        onClose={() => setPayingInvoiceId(null)}
+        invoiceId={payingInvoiceId}
       />
+      <CancelInvoiceDialog invoice={cancellingInvoice} onClose={() => setCancellingInvoice(null)} />
+      <VoidPaymentDialog payment={voidingPayment} onClose={() => setVoidingPayment(null)} />
       <CategoryForm
         open={categoryOpen || editingCategory !== null}
         onClose={() => {
@@ -940,10 +1044,12 @@ export function OrgFinancePage() {
         editing={editingCategory}
       />
       <LedgerEntryForm
-        open={ledgerFormMode !== null}
-        onClose={() => setLedgerFormMode(null)}
-        mode={ledgerFormMode ?? "expense"}
+        open={ledgerForm !== null}
+        onClose={() => setLedgerForm(null)}
+        mode={ledgerForm?.mode ?? "expense"}
         currency={currency}
+        defaultIncomeType={ledgerForm?.incomeType ?? "other"}
+        defaultVehicleId={ledgerForm?.vehicleId ?? null}
       />
 
       <ConfirmDialog

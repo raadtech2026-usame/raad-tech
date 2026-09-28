@@ -22,7 +22,13 @@ import { BillingProfileForm } from "./BillingProfileForm";
 import { CreateParentForm } from "./CreateParentForm";
 import { EditParentForm } from "./EditParentForm";
 import { FamilyTransportationForm } from "./FamilyTransportationForm";
-import { SetInvoicePaymentStatusForm } from "./SetInvoicePaymentStatusForm";
+import { RecordParentPaymentForm } from "./RecordParentPaymentForm";
+import {
+  CancelInvoiceDialog,
+  PaymentHistoryList,
+  VoidPaymentDialog,
+  type CancellableInvoice,
+} from "./PaymentLedger";
 import {
   formatParentAmount,
   getParent,
@@ -30,7 +36,9 @@ import {
   getParentFinancialSummary,
   linkStudentToParent,
   listOrganizationsForPicker,
+  getParentInvoiceDetail,
   listParentInvoices,
+  listParentPayments,
   listParents,
   listStudentsForParent,
   unlinkStudentFromParent,
@@ -38,6 +46,7 @@ import {
   type LinkedStudent,
   type ParentFinancialSummary,
   type ParentInvoiceSummary,
+  type ParentPayment,
   type ParentPaymentStatus,
   type ParentStatus,
   type ParentSummary,
@@ -343,18 +352,19 @@ function BillingProfileSection({
   );
 }
 
-/** "Current invoice" section (Part 16 of the directive) — this family's most recent Parent
- * Invoice, with the "[Update Payment Status]" action right beside it, exactly where the
- * directive's own mockup places it (not a generic drawer-footer button, since the action applies
- * to one specific invoice). */
+/** "Current invoice" section — this family's most recent Parent Invoice with each child's own
+ * charge, paid amount and balance (ADR-0047 §2), and the actions that apply to that one invoice:
+ * Record payment and Cancel invoice. */
 function CurrentInvoiceSection({
   parentId,
   canManage,
-  onUpdateStatus,
+  onRecordPayment,
+  onCancel,
 }: {
   parentId: string;
   canManage: boolean;
-  onUpdateStatus: (invoice: ParentInvoiceSummary) => void;
+  onRecordPayment: (invoice: ParentInvoiceSummary) => void;
+  onCancel: (invoice: CancellableInvoice) => void;
 }) {
   const invoiceQuery = useQuery({
     queryKey: ["parents", "current-invoice", parentId],
@@ -363,8 +373,12 @@ function CurrentInvoiceSection({
       return page.data[0] ?? null;
     },
   });
-
   const invoice = invoiceQuery.data ?? null;
+  const detailQuery = useQuery({
+    queryKey: ["school-finance", "parent-invoice-detail", invoice?.id],
+    queryFn: () => getParentInvoiceDetail(invoice!.id),
+    enabled: invoice !== null,
+  });
 
   return (
     <div className={styles.linkedStudents}>
@@ -376,25 +390,77 @@ function CurrentInvoiceSection({
         <span className={styles.linkedStudentsEmpty}>No Parent Invoice generated yet.</span>
       )}
       {invoice && (
-        <div className={styles.linkedStudentRow}>
-          <div>
-            <div className={styles.linkedStudentName}>
-              {invoice.period} — {formatParentAmount(invoice.amount, invoice.currency)}
+        <>
+          <div className={styles.linkedStudentRow}>
+            <div>
+              <div className={styles.linkedStudentName}>
+                {invoice.period} — {formatParentAmount(invoice.amount, invoice.currency)}
+              </div>
+              <div className={styles.linkedStudentMeta}>
+                Paid {formatParentAmount(invoice.amountPaid, invoice.currency)} · Receivable{" "}
+                {formatParentAmount(invoice.balanceDue, invoice.currency)}
+              </div>
             </div>
-            <div className={styles.linkedStudentMeta}>
-              Paid {formatParentAmount(invoice.amountPaid, invoice.currency)} · Receivable{" "}
-              {formatParentAmount(invoice.balanceDue, invoice.currency)}
-            </div>
+            <Badge variant={invoiceStatusTone(invoice.status)} dot>
+              {invoiceStatusLabel(invoice.status)}
+            </Badge>
           </div>
-          <Badge variant={invoiceStatusTone(invoice.status)} dot>
-            {invoiceStatusLabel(invoice.status)}
-          </Badge>
+          {detailQuery.data?.lines.map((line) => (
+            <div key={line.lineId} className={styles.linkedStudentRow}>
+              <div>
+                <div className={styles.linkedStudentName}>{line.fullName}</div>
+                <div className={styles.linkedStudentMeta}>
+                  Charged {formatParentAmount(line.amount, invoice.currency)} · Paid{" "}
+                  {formatParentAmount(line.amountPaid, invoice.currency)} · Owes{" "}
+                  {formatParentAmount(line.balanceDue, invoice.currency)}
+                </div>
+              </div>
+            </div>
+          ))}
           {canManage && invoice.status !== "cancelled" && (
-            <Button variant="ghost" leadingIcon={<Wallet size={13} />} onClick={() => onUpdateStatus(invoice)}>
-              Update Payment Status
-            </Button>
+            <div className={styles.drawerActions}>
+              {invoice.status !== "paid" && (
+                <Button size="sm" leadingIcon={<Wallet size={13} />} onClick={() => onRecordPayment(invoice)}>
+                  Record payment
+                </Button>
+              )}
+              {invoice.status === "unpaid" && (
+                <Button size="sm" variant="ghost" onClick={() => onCancel(invoice)}>
+                  Cancel invoice
+                </Button>
+              )}
+            </div>
           )}
-        </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** "Payments" section — every payment this family has made (ADR-0047), newest first, with how
+ * each was split across the children. Voided payments stay listed, marked, with their reason. */
+function FamilyPaymentsSection({
+  parentId,
+  canManage,
+  onVoid,
+}: {
+  parentId: string;
+  canManage: boolean;
+  onVoid: (payment: ParentPayment) => void;
+}) {
+  const paymentsQuery = useQuery({
+    queryKey: ["parents", "payments", parentId],
+    queryFn: () => listParentPayments(parentId),
+  });
+  return (
+    <div className={styles.linkedStudents}>
+      <div>
+        <span className={styles.linkedStudentsTitle}>Payments</span>
+      </div>
+      {paymentsQuery.isLoading ? (
+        <Skeleton height={36} />
+      ) : (
+        <PaymentHistoryList payments={paymentsQuery.data ?? []} canManage={canManage} onVoid={onVoid} />
       )}
     </div>
   );
@@ -437,7 +503,9 @@ export function ParentsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [billingOpen, setBillingOpen] = useState(false);
-  const [invoiceForPaymentStatus, setInvoiceForPaymentStatus] = useState<ParentInvoiceSummary | null>(null);
+  const [payingInvoice, setPayingInvoice] = useState<ParentInvoiceSummary | null>(null);
+  const [cancellingInvoice, setCancellingInvoice] = useState<CancellableInvoice | null>(null);
+  const [voidingPayment, setVoidingPayment] = useState<ParentPayment | null>(null);
   const [searchInput, setSearchInput] = useState("");
   const [paymentFilter, setPaymentFilter] = useState<ParentPaymentStatus | "all">("all");
 
@@ -738,7 +806,13 @@ export function ParentsPage() {
               <CurrentInvoiceSection
                 parentId={selectedParent.id}
                 canManage={canManage}
-                onUpdateStatus={setInvoiceForPaymentStatus}
+                onRecordPayment={setPayingInvoice}
+                onCancel={setCancellingInvoice}
+              />
+              <FamilyPaymentsSection
+                parentId={selectedParent.id}
+                canManage={canManage}
+                onVoid={setVoidingPayment}
               />
             </>
           )
@@ -803,11 +877,13 @@ export function ParentsPage() {
         parentName={selectedParent?.fullName}
         existing={billingProfileQuery.data ?? null}
       />
-      <SetInvoicePaymentStatusForm
-        open={invoiceForPaymentStatus !== null}
-        onClose={() => setInvoiceForPaymentStatus(null)}
-        invoice={invoiceForPaymentStatus}
+      <RecordParentPaymentForm
+        open={payingInvoice !== null}
+        onClose={() => setPayingInvoice(null)}
+        invoiceId={payingInvoice?.id ?? null}
       />
+      <CancelInvoiceDialog invoice={cancellingInvoice} onClose={() => setCancellingInvoice(null)} />
+      <VoidPaymentDialog payment={voidingPayment} onClose={() => setVoidingPayment(null)} />
     </div>
   );
 }

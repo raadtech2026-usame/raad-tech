@@ -20,8 +20,11 @@ import {
   listParentsForPicker,
   listStudentsForParent,
   registerParent,
+  cancelParentInvoice,
+  listInvoicePayments,
+  recordParentPayment,
   saveParentBillingProfile,
-  setParentInvoicePaymentStatus,
+  voidParentPayment,
   unlinkStudentFromParent,
   updateParent,
   updateParentStatus,
@@ -346,34 +349,95 @@ describe("parents api", () => {
     expect(result.monthlyFee).toBe("80.00");
   });
 
-  it("setParentInvoicePaymentStatus PATCHes status and amount", async () => {
-    vi.mocked(apiRequest).mockResolvedValueOnce({
-      id: "01ARZ3NDEKTSV4RRFFQ69G5FIV0",
-      parent_id: "01ARZ3NDEKTSV4RRFFQ69G5FCX",
-      parent_name: "Fatima Ali",
-      period: "2026-09",
-      invoice_number: "2026-09-G5FIV0",
-      children_count: 1,
-      amount: "80.00",
-      amount_paid: "30.00",
-      balance_due: "50.00",
-      status: "partial",
-      invoice_date: "2026-09-01",
-      due_date: "2026-09-30",
+  const PAYMENT_WIRE = {
+    id: "01ARZ3NDEKTSV4RRFFQ69G5FPY0",
+    parent_id: "01ARZ3NDEKTSV4RRFFQ69G5FCX",
+    invoice_id: "01ARZ3NDEKTSV4RRFFQ69G5FIV0",
+    invoice_number: "2026-09-G5FIV0",
+    period: "2026-09",
+    amount: "30.00",
+    currency: "USD",
+    method: "mobile_money",
+    reference: "EVC-77",
+    received_on: "2026-09-12",
+    notes: null,
+    is_voided: false,
+    voided_reason: null,
+    created_at: "2026-09-12T08:00:00Z",
+    allocations: [
+      { student_id: "01ARZ3NDEKTSV4RRFFQ69G5FSA1", full_name: "Mohamed", amount: "15.00", vehicle_id: null },
+      { student_id: "01ARZ3NDEKTSV4RRFFQ69G5FSA2", full_name: "Aisha", amount: "15.00", vehicle_id: null },
+    ],
+  };
+
+  it("recordParentPayment POSTs the payment, allocation and idempotency key", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce(PAYMENT_WIRE);
+
+    const result = await recordParentPayment("01ARZ3NDEKTSV4RRFFQ69G5FIV0", {
+      amount: "30.00",
       currency: "USD",
+      method: "mobile_money",
+      receivedOn: "2026-09-12",
+      reference: "EVC-77",
+      allocations: [{ studentId: "01ARZ3NDEKTSV4RRFFQ69G5FSA1", amount: "30.00" }],
+      idempotencyKey: "key-1234567890",
     });
 
-    const result = await setParentInvoicePaymentStatus("01ARZ3NDEKTSV4RRFFQ69G5FIV0", {
-      status: "partial",
-      amountPaid: "30.00",
+    expect(apiRequest).toHaveBeenCalledWith("/school-finance/parent-invoices/01ARZ3NDEKTSV4RRFFQ69G5FIV0/payments", {
+      method: "POST",
+      body: {
+        amount: "30.00",
+        currency: "USD",
+        method: "mobile_money",
+        received_on: "2026-09-12",
+        reference: "EVC-77",
+        notes: null,
+        allocations: [{ student_id: "01ARZ3NDEKTSV4RRFFQ69G5FSA1", amount: "30.00" }],
+        idempotency_key: "key-1234567890",
+      },
     });
+    expect(result.allocations.map((a) => a.fullName)).toEqual(["Mohamed", "Aisha"]);
+    expect(result.receivedOn).toBe("2026-09-12");
+  });
 
-    expect(apiRequest).toHaveBeenCalledWith(
-      "/school-finance/parent-invoices/01ARZ3NDEKTSV4RRFFQ69G5FIV0/payment-status",
-      { method: "PATCH", body: { status: "partial", amount_paid: "30.00" } },
-    );
-    expect(result.status).toBe("partial");
-    expect(result.balanceDue).toBe("50.00");
+  it("recordParentPayment sends a null allocation to split pro-rata", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce(PAYMENT_WIRE);
+    await recordParentPayment("01ARZ3NDEKTSV4RRFFQ69G5FIV0", {
+      amount: "30.00",
+      currency: "USD",
+      method: "cash",
+      receivedOn: "2026-09-12",
+      idempotencyKey: "key-1234567890",
+    });
+    const [, options] = vi.mocked(apiRequest).mock.calls[0] as [string, { body: { allocations: unknown } }];
+    expect(options.body.allocations).toBeNull();
+  });
+
+  it("voidParentPayment and cancelParentInvoice both send the required reason", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({ ...PAYMENT_WIRE, is_voided: true, voided_reason: "Bounced" });
+    const voided = await voidParentPayment("01ARZ3NDEKTSV4RRFFQ69G5FPY0", "Bounced");
+    expect(apiRequest).toHaveBeenCalledWith("/school-finance/parent-payments/01ARZ3NDEKTSV4RRFFQ69G5FPY0/void", {
+      method: "POST",
+      body: { reason: "Bounced" },
+    });
+    expect(voided.isVoided).toBe(true);
+
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      id: "01ARZ3NDEKTSV4RRFFQ69G5FIV0", parent_id: "p", parent_name: "Fatima Ali", period: "2026-09",
+      invoice_number: "n", children_count: 1, amount: "80.00", amount_paid: "0.00", balance_due: "80.00",
+      status: "cancelled", invoice_date: "2026-09-01", due_date: "2026-09-30", currency: "USD",
+    });
+    await cancelParentInvoice("01ARZ3NDEKTSV4RRFFQ69G5FIV0", "Issued in error");
+    expect(apiRequest).toHaveBeenLastCalledWith("/school-finance/parent-invoices/01ARZ3NDEKTSV4RRFFQ69G5FIV0/cancel", {
+      method: "POST",
+      body: { reason: "Issued in error" },
+    });
+  });
+
+  it("listInvoicePayments maps every payment, voided ones included", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce([PAYMENT_WIRE, { ...PAYMENT_WIRE, id: "x", is_voided: true }]);
+    const payments = await listInvoicePayments("01ARZ3NDEKTSV4RRFFQ69G5FIV0");
+    expect(payments.map((p) => p.isVoided)).toEqual([false, true]);
   });
 
   it("generateParentInvoices posts the period and maps the created invoices", async () => {
@@ -471,9 +535,12 @@ describe("parents api", () => {
       notes: null,
       lines: [
         {
+          line_id: "01ARZ3NDEKTSV4RRFFQ69G5FLN0",
           student_id: "01ARZ3NDEKTSV4RRFFQ69G5FSTU",
           full_name: "Mohamed Ahmed",
           amount: "30.00",
+          amount_paid: "30.00",
+          balance_due: "0.00",
           vehicle_id: null,
           route_id: null,
         },
@@ -483,6 +550,12 @@ describe("parents api", () => {
     const detail = await getParentInvoiceDetail("01ARZ3NDEKTSV4RRFFQ69G5FIV0");
 
     expect(apiRequest).toHaveBeenCalledWith("/school-finance/parent-invoices/01ARZ3NDEKTSV4RRFFQ69G5FIV0");
-    expect(detail.lines[0]).toMatchObject({ studentId: "01ARZ3NDEKTSV4RRFFQ69G5FSTU", amount: "30.00" });
+    expect(detail.lines[0]).toMatchObject({
+      lineId: "01ARZ3NDEKTSV4RRFFQ69G5FLN0",
+      studentId: "01ARZ3NDEKTSV4RRFFQ69G5FSTU",
+      amount: "30.00",
+      amountPaid: "30.00",
+      balanceDue: "0.00",
+    });
   });
 });
