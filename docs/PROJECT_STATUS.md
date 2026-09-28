@@ -2073,6 +2073,63 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Finance completion: parent payment ledger, student-level finance, vehicle income
+  (ADR-0047, 2026-09-28).** Amends ADR-0042 §4. The design forks were approved by the user
+  before implementation.
+
+  **What changed**
+  - A Parent Invoice is paid only through recorded `ParentPayment`s (method, reference, date,
+    void with a reason, optional idempotency key). Each payment is allocated to the students'
+    invoice lines. The default split is pro-rata to each student's remaining balance and is
+    editable per payment. The invoice status is derived from the payments.
+  - `PATCH …/payment-status` is removed. Migration `e4a9c2b7d315` turned every existing paid
+    amount into one "Recorded before payment ledger" payment. It was verified on the local
+    canonical DB: for all 13 invoices, paid = lines = payments = allocations, with no status
+    changed.
+  - Each student now has a financial history (`GET /school-finance/students/{id}/finance`). The
+    parent summary uses each child's real paid amount instead of a pro-rata estimate.
+  - `erp_income` gains `income_type` (`daily_vehicle` requires a bus; `other` optionally has one)
+    and `vehicle_id`.
+  - Vehicle finance (`GET /school-finance/vehicles?start&end`, `/vehicles/{id}/report`) and P&L
+    keep student, daily and other income apart. Student income is now cash-basis, by
+    `received_on`.
+  - Vehicle attribution is the bus frozen on the invoice line at generation, so a bus change
+    never moves historical money. `StudentAssignment` has no effective dates to rebuild history
+    from.
+  - New reports `org.vehicle_finance`, `org.student_statement` and `org.parent_statement`
+    (`ReportRequest.student_id`). `bus_report`'s metadata used to `:.2f`-format DTO strings, a
+    ValueError on every bus with data; that is fixed.
+  - `GET /me/invoices` gives a parent their own invoices, self-scoped with no grant.
+  - The worker job `generate_monthly_parent_invoices` is off unless
+    `RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES=true` (wired in Compose/Coolify).
+  - RBAC `school_erp.parent_payments.{list,manage}` (migration `e5b1c8d2a4f7`).
+  - UI:
+    - the Finance page gains Vehicle finance, an income type filter, per-student lines and
+      payments in the invoice drawer, Record payment, Void payment and Cancel invoice (reason
+      required);
+    - the Parents page gains per-child current invoice, Payments and Record/Cancel;
+    - the Students page gains a Finance section with a per-student Record payment;
+    - the legacy `FeePlanForm`/`RecordPaymentForm`/`GenerateInvoicesForm`/`IssueInvoiceForm` are
+      removed (their money was never in any report). Legacy rows stay readable.
+
+  **Verified**
+  - Backend: unit, architecture and contract suites, plus 365+ integration tests.
+  - Migration: fresh-DB upgrade, downgrade/upgrade round trip, and `alembic check` all clean.
+  - Frontend: 896 tests, `tsc` and production build.
+  - A 44-check end-to-end run over real HTTP (new code, local Postgres): registration →
+    per-student lines → student and consolidated payments → idempotency → overpay, currency and
+    duplicate refusals → void → daily/other income and expenses → per-bus figures and report →
+    P&L equal to bus rows plus organization-wide money → report preview/PDF/XLSX → `/me/invoices`
+    → cross-organization 404s → RBAC → `created_by` and audit rows.
+
+  **Not verified or not built**
+  - Browser interaction.
+  - Expense attachments: deferred; they need `python-multipart` and a file store.
+  - EVC Plus/Zaad.
+  - Per-child pricing.
+  - A concurrent double payment is refused by `row_version`, but surfaces as a 500 (Known Issue
+    #16).
+
 - **Finance P0.1 + P0.3: SaaS payments are checked against their invoice** (2026-09-25,
   finance P0 integrity pass; no migration). Neither payment path looked at the invoice.
   `record_manual_payment` created a second PAID payment for an already-paid invoice.

@@ -1629,3 +1629,41 @@ user into a way to break the others.
 **Not verified here:** the terminal's behaviour for close type 2 and a mid-session resolution change
 in the browser; the terminal was offline for this work.
 
+## Parent Payment Ledger, Student & Vehicle Finance (ADR-0047, 2026-09-28)
+
+Amends ADR-0042 §4 at the user's direction.
+`docs/architecture/adr/0047-parent-payment-ledger-student-and-vehicle-finance.md` has the
+design; what a future change must not undo:
+
+- **Money reaches a Parent Invoice only through a `ParentPayment`.** Each payment is allocated to
+  the invoice's lines (one per student), and the invoice's status and `amount_paid` are derived
+  from the lines. Never reintroduce a way to set a paid amount directly: two paths disagree.
+  - Guards live in the domain: cancelled (409), fully paid (409), currency (400), and allocation
+    above a line's balance (400).
+  - `row_version` refuses concurrent double payment.
+  - `idempotency_key` (a partial unique per organization) makes a resubmitted form one payment.
+- **Student and parent figures are the same rows at two grains.** A student's balance is their
+  lines; a parent's is the sum. Legacy `StudentInvoice`/`StudentPayment` stay readable but never
+  add to any total: ADR-0042 already copied their money into Parent Invoices.
+- **Every figure has one source, so nothing is counted twice.**
+
+  | Figure | Source |
+  |---|---|
+  | Student income | Payment allocations, by `received_on` |
+  | Daily vehicle income | `erp_income.income_type = daily_vehicle` (requires a bus) |
+  | Other income | `erp_income.income_type = other` |
+  | Expenses | `erp_expenses` |
+
+  Student income is never an `Income` row.
+- **Vehicle attribution is the bus frozen on the invoice line at generation, copied onto each
+  allocation.** `StudentAssignment` has no effective dates, so live assignment must never be used
+  to re-attribute past money.
+- **Parents read their own invoices only through `GET /me/invoices`**, self-scoped. `parent`
+  still holds no `school_erp.*` permission.
+- **Automatic monthly billing is opt-in per deployment**
+  (`RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES`, default false).
+
+**Not built:**
+- Expense attachments (needs `python-multipart` and a file store with a backup).
+- EVC Plus/Zaad.
+- Per-child pricing inside a family.
