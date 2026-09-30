@@ -1,0 +1,349 @@
+/*
+ * Sign-in backdrop. Motion rules for this file:
+ *   - only `opacity`/`transform` are animated, apart from one short route dash;
+ *   - no animated `filter`, and nothing above it uses `backdrop-filter` (the card is solid), so
+ *     the moving map never forces a per-frame re-blur;
+ *   - every keyframe *ends* on a sensible still pose, because `global.css`'s reduced-motion rule
+ *     jumps each animation straight to its final frame.
+ */
+
+.scene {
+  --bus-width: clamp(360px, 40vw, 600px);
+  --scene-signal: #60a5fa;
+
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
+.scene[data-phase="error"],
+.scene[data-phase="locked"] {
+  --scene-signal: #f59e0b;
+}
+
+.scene[data-phase="success"],
+.scene[data-phase="done"] {
+  --scene-signal: #34d399;
+}
+
+.scene[data-paused] * {
+  animation-play-state: paused !important;
+}
+
+/* ---- Map ------------------------------------------------------------------------------- */
+
+.map {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.roads path {
+  fill: none;
+  stroke: rgba(148, 163, 184, 0.07);
+  stroke-width: 10;
+  stroke-linecap: round;
+}
+
+.route {
+  fill: none;
+  stroke: rgba(30, 99, 255, 0.28);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.routeActivity {
+  fill: none;
+  stroke: var(--scene-signal);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0;
+  transition: opacity var(--transition-slow);
+}
+
+/* Submitting: a train of dots runs along the route — "connecting". */
+.scene[data-phase="submitting"] .routeActivity {
+  opacity: 0.8;
+  stroke-dasharray: 0.006 0.018;
+  animation: raad-login-route-flow 1.4s linear infinite;
+}
+
+/* Success: the route is drawn in green from the first stop onward. */
+.scene[data-phase="success"] .routeActivity,
+.scene[data-phase="done"] .routeActivity {
+  opacity: 0.9;
+  stroke-dasharray: 1 1;
+  animation: raad-login-route-draw 0.7s var(--ease-emphasized) forwards;
+}
+
+.stops circle {
+  fill: var(--color-bg-ink);
+  stroke: rgba(96, 165, 250, 0.55);
+  stroke-width: 2;
+}
+
+.markerBody {
+  fill: #1e63ff;
+  stroke: #dbe7ff;
+  stroke-width: 1.5;
+}
+
+.markerPulse {
+  fill: none;
+  stroke: rgba(96, 165, 250, 0.6);
+  stroke-width: 2;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: raad-login-gps-pulse 3.2s var(--ease-standard) infinite;
+}
+
+/* ---- Road and bus ---------------------------------------------------------------------- */
+
+.horizon {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(3vh + var(--bus-width) * 0.0375);
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(148, 163, 184, 0.18) 20%,
+    rgba(148, 163, 184, 0.18) 80%,
+    transparent
+  );
+}
+
+.bus {
+  position: absolute;
+  bottom: 3vh;
+  left: 50%;
+  width: var(--bus-width);
+  height: auto;
+  transform: translateX(-50%);
+  overflow: visible;
+}
+
+.vehicle {
+  transition:
+    transform 450ms var(--ease-emphasized) 350ms,
+    opacity 450ms var(--ease-standard) 350ms;
+}
+
+/* The bus pulls away from the stop once the door has opened. */
+.scene[data-phase="success"] .vehicle,
+.scene[data-phase="done"] .vehicle {
+  transform: translateX(36px);
+  opacity: 0.85;
+}
+
+.body {
+  fill: rgba(11, 15, 25, 0.82);
+  stroke: rgba(148, 163, 184, 0.45);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.rail {
+  stroke: rgba(245, 158, 11, 0.35);
+  stroke-width: 2;
+}
+
+.windows rect,
+.windows path {
+  fill: rgba(30, 99, 255, 0.07);
+  stroke: rgba(148, 163, 184, 0.3);
+  stroke-width: 1.5;
+}
+
+.doorFrame {
+  fill: rgba(11, 15, 25, 0.9);
+  stroke: rgba(148, 163, 184, 0.35);
+  stroke-width: 1.5;
+}
+
+.doorLeafLeft,
+.doorLeafRight {
+  fill: rgba(30, 99, 255, 0.08);
+  stroke: rgba(148, 163, 184, 0.4);
+  stroke-width: 1.5;
+  transform-box: fill-box;
+  transition: transform 260ms var(--ease-emphasized);
+}
+
+.doorLeafLeft {
+  transform-origin: left center;
+}
+
+.doorLeafRight {
+  transform-origin: right center;
+}
+
+/* The door folds open — the one moment the bus says "you're in". Warm light shows through. */
+.scene[data-phase="success"] .doorLeafLeft,
+.scene[data-phase="done"] .doorLeafLeft,
+.scene[data-phase="success"] .doorLeafRight,
+.scene[data-phase="done"] .doorLeafRight {
+  transform: scaleX(0.3);
+}
+
+.scene[data-phase="success"] .doorFrame,
+.scene[data-phase="done"] .doorFrame {
+  fill: rgba(52, 211, 153, 0.22);
+}
+
+/* Destination sign above the windscreen: the bus's own status light, mirroring the card strip. */
+.sign {
+  fill: var(--scene-signal);
+  opacity: 0.85;
+  transition: fill var(--transition-base);
+}
+
+.cameraBody {
+  fill: rgba(30, 41, 59, 0.95);
+  stroke: rgba(148, 163, 184, 0.55);
+  stroke-width: 1;
+}
+
+.rec {
+  fill: #ef4444;
+  animation: raad-blink 3s ease-in-out infinite;
+}
+
+.scan {
+  fill: url(#raad-login-scan);
+  opacity: 0;
+}
+
+/* The camera "wakes" once when the user starts on the form. */
+.scene[data-phase="engaged"] .scan {
+  animation: raad-login-scan 1.4s var(--ease-standard) 1;
+}
+
+.beam {
+  fill: url(#raad-login-beam);
+  opacity: 0.35;
+  transition: opacity var(--transition-slow);
+}
+
+.scene[data-phase="engaged"] .beam {
+  opacity: 0.45;
+}
+
+.scene[data-phase="submitting"] .beam,
+.scene[data-phase="success"] .beam,
+.scene[data-phase="done"] .beam {
+  opacity: 0.75;
+}
+
+.scene[data-phase="error"] .beam,
+.scene[data-phase="locked"] .beam {
+  opacity: 0.12;
+}
+
+.headlight {
+  fill: #dbe7ff;
+}
+
+.taillight {
+  fill: rgba(239, 68, 68, 0.55);
+}
+
+.hazard {
+  fill: #f59e0b;
+  opacity: 0.12;
+  transition: opacity var(--transition-fast);
+}
+
+/* Two blinks at 2 Hz — well under WCAG 2.3.1's three-flashes-per-second limit — then the
+   settle timer in `useLoginPhase` returns the scene to rest. */
+.scene[data-phase="error"] .hazard {
+  opacity: 1;
+  animation: raad-login-hazard 0.5s steps(1, end) 2;
+}
+
+/* Locked is a standing condition, not an event: lamps stay on, no blinking. */
+.scene[data-phase="locked"] .hazard {
+  opacity: 1;
+}
+
+.wheels circle {
+  fill: rgba(11, 15, 25, 0.95);
+  stroke: rgba(148, 163, 184, 0.45);
+  stroke-width: 2;
+}
+
+/* ---- Keyframes ------------------------------------------------------------------------- */
+
+@keyframes raad-login-route-flow {
+  to {
+    stroke-dashoffset: -0.024;
+  }
+}
+
+@keyframes raad-login-route-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes raad-login-gps-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  70%,
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+@keyframes raad-login-scan {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+@keyframes raad-login-hazard {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.12;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* ---- Smaller screens ------------------------------------------------------------------- */
+
+/* Phones and short landscape screens: no hero bus and no moving marker. The static map stays
+   for atmosphere; the card's own status strip carries every state. */
+@media (max-width: 599px), (max-height: 639px) {
+  .bus,
+  .horizon {
+    display: none;
+  }
+}
+
+@media (max-width: 599px) {
+  .marker {
+    display: none;
+  }
+
+  .map {
+    opacity: 0.7;
+  }
+}

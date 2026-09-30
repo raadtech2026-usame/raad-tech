@@ -1,0 +1,215 @@
+/* RAAD sign-in: one centred card over the animated map (`LoginScene`). */
+
+.page {
+  --login-signal: #1e63ff;
+
+  position: relative;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+  background-color: var(--color-bg-ink);
+  background-image:
+    radial-gradient(ellipse 70% 50% at 50% -10%, rgba(30, 99, 255, 0.22), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 85% 85%, rgba(16, 185, 129, 0.1), transparent 60%),
+    repeating-linear-gradient(to right, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 64px);
+}
+
+.page[data-phase="error"],
+.page[data-phase="locked"] {
+  --login-signal: #f59e0b;
+}
+
+.page[data-phase="success"],
+.page[data-phase="done"] {
+  --login-signal: #10b981;
+}
+
+.stage {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+  /* On the stage, not the card: the card's own animation slot is reused by the error shake,
+     and an entrance animation there would replay every time the shake ends. */
+  animation: raad-fade-in 0.4s var(--ease-emphasized);
+}
+
+/* Where the bus is shown, lift the card so the two never overlap. Mirrors `LoginScene`'s own
+   `--bus-width` and its media query. */
+@media (min-width: 600px) and (min-height: 640px) {
+  .stage {
+    padding-bottom: calc(3vh + clamp(360px, 40vw, 600px) * 0.3);
+  }
+}
+
+/* ---- Card ------------------------------------------------------------------------------ */
+
+.card {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  /* Solid, not frosted: a backdrop-filter over a moving background is re-blurred every frame. */
+  background: rgba(13, 19, 34, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-3xl);
+  box-shadow:
+    0 25px 50px -12px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(30, 99, 255, 0.06);
+  padding: var(--space-8) var(--space-7) var(--space-7);
+  overflow: hidden;
+  transition: box-shadow var(--transition-slow);
+}
+
+.page[data-phase="error"] .card {
+  animation: login-shake 0.36s var(--ease-standard);
+}
+
+.page[data-phase="success"] .card,
+.page[data-phase="done"] .card {
+  box-shadow:
+    0 25px 50px -12px rgba(0, 0, 0, 0.6),
+    0 0 36px -8px rgba(16, 185, 129, 0.45);
+}
+
+/* The card's own status light — the same signal as the bus's destination sign, so the state
+   reads on phones (no bus) and with reduced motion (no movement), not just on desktop. */
+.statusStrip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(to right, transparent, var(--login-signal) 25%, var(--login-signal) 75%, transparent);
+  opacity: 0.85;
+  transition: background var(--transition-base);
+}
+
+.page[data-phase="engaged"] .statusStrip,
+.page[data-phase="submitting"] .statusStrip {
+  opacity: 1;
+}
+
+.brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--space-7);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.form input {
+  min-height: 44px;
+}
+
+.passwordWrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.passwordWrapper > * {
+  flex: 1;
+}
+
+.passwordInput {
+  width: 100%;
+  padding-right: 44px !important;
+}
+
+.passwordToggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast);
+}
+
+.passwordToggle:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.passwordToggle:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.alert {
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-snug);
+  color: var(--color-danger-text);
+  background: var(--color-danger-tint);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin: 0;
+}
+
+.submitButton {
+  margin-top: var(--space-2);
+  min-height: 44px;
+}
+
+/* The primary button takes its label colour from `--color-text-inverse`, which the dark token
+   set turns near-black; on RAAD blue that fails contrast, so the (always-dark) card pins white. */
+.submitButton,
+.submitButton:disabled {
+  color: #ffffff;
+}
+
+.submitButton[data-state="success"],
+.submitButton[data-state="success"]:disabled {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: #ffffff;
+  opacity: 1;
+}
+
+@keyframes login-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  50% {
+    transform: translateX(4px);
+  }
+  75% {
+    transform: translateX(-2px);
+  }
+}
+
+@media (max-width: 599px) {
+  .stage {
+    align-items: flex-start;
+    padding-top: max(var(--space-9), 10vh);
+  }
+
+  .card {
+    padding: var(--space-7) var(--space-5) var(--space-6);
+    border-radius: var(--radius-2xl);
+  }
+}
