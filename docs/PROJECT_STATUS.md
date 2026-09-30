@@ -100,6 +100,20 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** No.
 - **Dependencies:** Transport staff (Phase 1), Routes, Trips, Notifications, IAM.
 
+#### Safety alerts & incident log — 🟡 Built, not hardware-verified (Phase 3, ADR-0055/0056/0057)
+- **Implemented:** rising-edge device alarms → `SafetyAlert` (one open alert per bus and type,
+  repeats counted, late alarms flagged); critical alarms notify Org Admins; acknowledge /
+  resolve / false alarm; SOS acknowledgement sends `0x8203` to the terminal (best effort,
+  recorded as requested/unavailable); incident log with timeline, status flow, parent notices,
+  and incidents opened from alerts. `/org/safety`, `/platform/safety` (read-only, without
+  incident text or people); alert and incident counts on the Daily Operations board; a link
+  from an alert to the recorder's footage at that time.
+- **Missing (by design):** driver scoring, disciplinary records, insurance claims, legal case
+  management, attachments (no file store). **Not verified:** a real alarm or `0x8203` against
+  the physical terminal.
+- **Production blocker?** No.
+- **Dependencies:** Device gateway (JT/T 808), Trips, Transport staff, Notifications.
+
 #### Routes — ✅ Complete
 - **Implemented:** Create/update/activate/disable, add-stop wired end-to-end.
 - **Missing:** Nothing blocking.
@@ -160,7 +174,7 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 
 #### GPS (ingestion) — ✅ Complete
 - **Implemented:** Proven end-to-end: LSZ position frame → `DevicePositionReported` → Redis Streams → backend processor → `vehicle_positions` row; real writer for the `vehicle:{id}:last` Redis key.
-- **Missing:** Alarm-flag taxonomy mapping, boarding/alighting modeling (tracked separately — see Known Issues).
+- **Missing:** Boarding/alighting modeling (tracked separately — see Known Issues). Alarm taxonomy: built by Phase 3 (ADR-0055), not hardware-verified.
 - **Production blocker?** No.
 - **Dependencies:** Devices, Redis.
 
@@ -2099,6 +2113,37 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
+- **Safety & incidents — Phase 3 (ADR-0055/0056/0057, 2026-09-30).** Branch
+  `feat/safety-and-incidents`, not pushed or deployed.
+
+  **What changed**
+  - Device gateway: alarm taxonomy, rising-edge `DeviceAlarmRaised` with position/speed/time
+    (previous alarm word in Redis, 30-day TTL), and a `0x8203` builder reached through the
+    existing `Jt1078SignalCommandRequested` contract (`command: "confirm_alarm"`).
+  - `tracking`: `SafetyAlert` and `safety_alerts` (partial unique: one open alert per bus and
+    type), `DeviceAlarmRaisedProcessor`, `SafetyAlertApplicationService`, `/safety-alerts`.
+  - `transport_ops`: `Incident` + `IncidentNote` (append-only timeline), `/incidents` including
+    `from-alert` and `notify-parents`. Text, people and notes are Org Admin only; events carry
+    none of them.
+  - Notifications: `SafetyAlertRaisedNotifier` (critical, not late) and
+    `IncidentParentNoticeNotifier`, neither subscription-gated.
+  - Migration `c9f2a4e6b1d7` (from `b8e4f1a2c6d3`): three tables, five enums, grants.
+  - Frontend: Safety & Incidents page, board badges, recording deep link.
+
+  **Defects found by verification:** client times with an offset were stored as if UTC (the
+  mappers only strip tzinfo) — now converted in the services; the board's day total dropped
+  incidents with no bus.
+
+  **Verified:** backend 2110 unit/architecture/contract + integration on a migrated copy of dev
+  data (new real-Postgres tests for the open-alert index, scope, `CHAR(26)[]` and timeline);
+  device gateway 562; frontend 942, `tsc` and build clean; migration from empty, round trip and
+  on the dev copy; 33/33 HTTP end-to-end checks; the alarm processor and both notifiers run live
+  (one SOS notification, none for the late collision, one parent notice). **Not verified:** a
+  real alarm or `0x8203` on the physical terminal; browser interaction. One unrelated,
+  time-of-day-dependent failure in the Phase 1 test
+  `test_leaving_persists_ended_crew_and_disabled_driver`: it compares the service's UTC date
+  with the local `date.today()`, so it fails between 21:00 and 24:00 UTC; the code is correct.
+
 - **Daily transport operations — Phase 2 (ADR-0052/0053/0054, 2026-09-30).** Branch
   `feat/daily-transport-operations`, not pushed or deployed.
 
@@ -2813,23 +2858,24 @@ Reverse-chronological (most recent first):
 - **Recommended fix:** Update the docstring.
 - **Blocking production?** No.
 
-### 7. `DeviceAlarmRaised` event defined but never constructed
-- **Severity:** Medium
-- **Description:** The event type and publisher branch exist in
-  `services/device-gateway/src/events/redis_event_publisher.py`, but no handler (LSZ or dormant
-  JT808) ever builds one — dead code path.
-- **Recommended fix:** Either wire a real alarm handler or remove the unused event type until one
-  exists.
+### 7. ~~`DeviceAlarmRaised` event defined but never constructed~~ — RESOLVED IN CODE 2026-09-30 (not hardware-verified)
+- **Resolution:** Phase 3, ADR-0055. The live JT/T 808 adapter's `LocationHandler` publishes
+  `DeviceAlarmRaised` on the rising edge of each mapped alarm bit (previous alarm word kept in
+  Redis per terminal), and `tracking`'s `DeviceAlarmRaisedProcessor` turns it into a
+  `SafetyAlert`. The dormant LSZ adapter still builds none. Proven against synthetic `0x0200`
+  frames only: the bench terminal has never raised an alarm for us.
+- **Severity:** ~~Medium~~ Low until the first real alarm is observed.
 - **Blocking production?** No.
 
-### 8. `alarm_flags` has no per-bit taxonomy mapping
-- **Severity:** Medium
-- **Description:** LSZ's `alarm_flags` is parsed as an opaque, range-clamped integer and passed
-  through with no ACL/taxonomy mapping. `0` means "unmapped/unknown," not "verified no alarms" —
-  a real ambiguity if this is ever surfaced to an end user.
-- **Recommended fix:** Design and implement the alarm-bit → taxonomy mapping (SOS, overspeed,
-  etc.) before marketing any alarm-based safety feature.
-- **Blocking production?** No, unless alarms are marketed as working.
+### 8. ~~`alarm_flags` has no per-bit taxonomy mapping~~ — RESOLVED IN CODE 2026-09-30 (not hardware-verified)
+- **Resolution:** Phase 3, ADR-0055 §1. `vendors/jt808/alarm_taxonomy.py` maps eight JT/T
+  808-2019 Table 24 bits (SOS, overspeed, fatigue, power cut, camera fault, collision, rollover,
+  illegal door opening); other bits are ignored, never guessed. SOS, collision and rollover are
+  critical and notify the Org Admins. The UI says alarms are not yet hardware-verified. The LSZ
+  adapter's opaque `alarm_flags` remains unmapped (dormant adapter).
+- **Severity:** ~~Medium~~ Low.
+- **Blocking production?** No; do not market alarms as verified until a real alarm is seen end
+  to end.
 
 ### 9. ~~ADR-0020's Context section conflates two different consumers~~ — RESOLVED 2026-08-05
 - **Resolution:** Confirmed accurate during ADR-0020 implementation, not just filed and left:
