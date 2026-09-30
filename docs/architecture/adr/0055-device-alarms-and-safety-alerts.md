@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** (2026-09-30), Phase 3 of the transport-management roadmap ("Safety & Incidents"),
+**Accepted** (2026-09-30), Phase 3 of the transport-management roadmap ("Safety & Incidents"),
 with ADR-0056 and ADR-0057. Product decisions taken by the user on 2026-09-30 ("use your
 recommended answers"). Closes Known Issues #7 and #8.
 
@@ -40,9 +40,11 @@ names in its own adapter; the backend never sees a vendor bit.
 ### 2. Only a rising edge is published
 
 `DeviceAlarmRaised` (one event per newly set bit) is published when a recognised bit is set in a
-report and was not set in the previous report from that terminal. The previous word is read from
-the terminal's latest-position snapshot in Redis, the one `0x0200` already writes, so a gateway
-restart does not re-raise alarms still set. A backfilled report (`0x0704`, or late) carries
+report and was not set in the previous report from that terminal. The previous word is kept per
+terminal in the gateway's cache Redis (`device-gateway:alarm-flags:{terminal_id}`, 30-day TTL,
+swapped atomically with `SET … GET`), so a gateway restart does not re-raise alarms still set.
+It is a key of its own rather than a read of the latest-position snapshot, because the snapshot
+is keyed by vehicle and written after the report, so it cannot give the previous word atomically. A backfilled report (`0x0704`, or late) carries
 `backfill=true`, never raises an alarm on its own, and is handled at the backend (§4).
 
 The event carries `terminal_id`, `organization_id`, `vehicle_id`, `device_id`, `alarm_type`,

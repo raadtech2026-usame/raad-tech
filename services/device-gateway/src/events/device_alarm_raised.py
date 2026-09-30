@@ -28,3 +28,7 @@ class DeviceAlarmRaised:
     alarm_flags: int
     event_time: datetime
     received_at: datetime
+    #: ADR-0055 §2: where and how fast the bus was when the alarm started.
+    latitude: float | None = None
+    longitude: float | None = None
+    speed_kph: float | None = None
