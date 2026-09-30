@@ -22,6 +22,9 @@ from raad.modules.transport_ops.application.services import (
     StudentParentApplicationService,
     TripApplicationService,
 )
+from raad.modules.transport_ops.application.staff_services import (
+    TransportStaffApplicationService,
+)
 
 
 def get_transport_ops_uow(
@@ -83,3 +86,9 @@ def get_student_assignment_service(
     container: Container = Depends(get_container),
 ) -> StudentAssignmentApplicationService:
     return container.resolve(StudentAssignmentApplicationService)
+
+
+def get_transport_staff_service(
+    container: Container = Depends(get_container),
+) -> TransportStaffApplicationService:
+    return container.resolve(TransportStaffApplicationService)

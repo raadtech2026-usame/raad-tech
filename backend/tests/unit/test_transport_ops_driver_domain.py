@@ -19,9 +19,11 @@ from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     DriverStatus,
     OrganizationId,
+    TransportStaffId,
     UserId,
 )
 
+VALID_STAFF_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MS"
 VALID_DRIVER_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MG"
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
 VALID_USER_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3ME"
@@ -44,6 +46,7 @@ def make_driver(**overrides) -> Driver:
         status=DriverStatus.ACTIVE,
         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        staff_id=TransportStaffId(VALID_STAFF_ULID),
     )
     defaults.update(overrides)
     return Driver(**defaults)
@@ -115,6 +118,7 @@ class DriverRegisterTests(unittest.TestCase):
             id=DriverId(VALID_DRIVER_ULID),
             organization_id=OrganizationId(VALID_ORG_ULID),
             user_id=UserId(VALID_USER_ULID),
+            staff_id=TransportStaffId(VALID_STAFF_ULID),
             license_no="DL-123456",
             clock=clock,
         )
@@ -126,6 +130,7 @@ class DriverRegisterTests(unittest.TestCase):
             id=DriverId(VALID_DRIVER_ULID),
             organization_id=OrganizationId(VALID_ORG_ULID),
             user_id=UserId(VALID_USER_ULID),
+            staff_id=TransportStaffId(VALID_STAFF_ULID),
             license_no="DL-123456",
             clock=clock,
             actor_id="actor-1",
@@ -142,6 +147,7 @@ class DriverRegisterTests(unittest.TestCase):
             event.payload,
             {
                 "user_id": VALID_USER_ULID,
+                "staff_id": VALID_STAFF_ULID,
                 "license_no": "DL-123456",
                 "actor_id": "actor-1",
             },
@@ -156,6 +162,7 @@ class DriverRegisterTests(unittest.TestCase):
                 id=DriverId(VALID_DRIVER_ULID),
                 organization_id=OrganizationId(VALID_ORG_ULID),
                 user_id=UserId(VALID_USER_ULID),
+                staff_id=TransportStaffId(VALID_STAFF_ULID),
                 license_no="",
                 clock=clock,
             )
@@ -246,6 +253,7 @@ class DomainEventBufferingTests(unittest.TestCase):
             id=DriverId(VALID_DRIVER_ULID),
             organization_id=OrganizationId(VALID_ORG_ULID),
             user_id=UserId(VALID_USER_ULID),
+            staff_id=TransportStaffId(VALID_STAFF_ULID),
             license_no="DL-123456",
             clock=clock,
         )
@@ -279,6 +287,12 @@ class DriverRepositoryInterfaceTests(unittest.TestCase):
 
             async def get(self, driver_id: DriverId) -> Driver | None:
                 return self._drivers.get(str(driver_id))
+
+            async def get_by_staff_id(self, staff_id) -> Driver | None:
+                return None
+
+            async def list_by_staff_ids(self, staff_ids) -> list[Driver]:
+                return []
 
             async def get_by_user_id(self, user_id) -> Driver | None:
                 return next(

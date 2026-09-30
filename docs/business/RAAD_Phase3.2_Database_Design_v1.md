@@ -226,6 +226,8 @@ Unique: `ux_cameras__device_channel (device_id, channel_no)`.
 ### 6.1 `drivers`
 Profile for users with `role=driver`. `drivers(id, organization_id, user_id FK→users, license_no, status, +audit)`. Vehicle↔driver is per-trip (see `trips.driver_id`), not stored here.
 
+> **Amended 2026-09-30 (ADR-0049, ADR-0050).** `drivers` gains `staff_id` → `transport_staff`, the person record every bus crew member has (with or without a login); `Driver` is that person's driving extension. Per-trip `trips.driver_id` remains the record of **who actually drove**; the standing bus crew and its history are `vehicle_staff_assignments` (staff, vehicle, title, optional route, `starts_on`/`ends_on`).
+
 ### 6.2 `students`
 | Column | Type | Null | Key | Notes |
 |--------|------|------|-----|-------|

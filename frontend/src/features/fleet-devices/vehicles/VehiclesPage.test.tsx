@@ -13,6 +13,18 @@ vi.mock("./api", () => ({
   registerVehicle: vi.fn(),
 }));
 
+// The drawer's Crew section (ADR-0050) reads through the staff feature's own client.
+vi.mock("../../transport-ops/staff/api", () => ({
+  listCrew: vi.fn().mockResolvedValue([]),
+  listVehiclesForPicker: vi.fn().mockResolvedValue([]),
+  listStaff: vi.fn().mockResolvedValue({ data: [], page: { total: 0, page: 1, pageSize: 100 } }),
+  listStaffRoles: vi.fn().mockResolvedValue([]),
+  listRoutesForPicker: vi.fn().mockResolvedValue([]),
+  endCrewAssignment: vi.fn(),
+  assignToBus: vi.fn(),
+  listStaffDocuments: vi.fn().mockResolvedValue([]),
+}));
+
 import * as api from "./api";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { VehiclesPage } from "./VehiclesPage";

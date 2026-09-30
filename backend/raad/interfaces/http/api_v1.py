@@ -56,8 +56,13 @@ from raad.modules.transport_ops.api.routers import (
     drivers_router,
     parents_router,
     routes_router,
+    staff_assignments_router,
+    staff_document_types_router,
+    staff_documents_router,
     student_assignments_router,
     students_router,
+    transport_staff_roles_router,
+    transport_staff_router,
     trips_router,
 )
 from raad.modules.video.api.routers import video_router
@@ -129,6 +134,22 @@ api_router.include_router(
     prefix="/student-assignments",
     tags=["transport-ops"],
 )  # transport_ops (C4) — Phase 13
+# ADR-0049/0050/0051 — transport staff, bus crew history, staff documents.
+api_router.include_router(
+    transport_staff_router, prefix="/transport-staff", tags=["transport-ops"]
+)
+api_router.include_router(
+    transport_staff_roles_router, prefix="/transport-staff-roles", tags=["transport-ops"]
+)
+api_router.include_router(
+    staff_assignments_router, prefix="/staff-assignments", tags=["transport-ops"]
+)
+api_router.include_router(
+    staff_document_types_router, prefix="/staff-document-types", tags=["transport-ops"]
+)
+api_router.include_router(
+    staff_documents_router, prefix="/staff-documents", tags=["transport-ops"]
+)
 
 api_router.include_router(
     tracking_router, prefix="/tracking", tags=["tracking"]

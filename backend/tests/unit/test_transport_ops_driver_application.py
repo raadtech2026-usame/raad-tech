@@ -20,6 +20,7 @@ from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
+from _transport_staff_fakes import attach_staff_repositories
 from raad.modules.transport_ops.application.commands import (
     ActivateDriverCommand,
     DisableDriverCommand,
@@ -45,6 +46,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     DriverStatus,
     OrganizationId,
+    TransportStaffId,
     UserId,
 )
 
@@ -146,6 +148,15 @@ class InMemoryDriverRepository(DriverRepository):
     async def get(self, driver_id: DriverId) -> Driver | None:
         return self.by_id.get(str(driver_id))
 
+    async def get_by_staff_id(self, staff_id) -> Driver | None:
+        return next(
+            (d for d in self.by_id.values() if str(d.staff_id) == str(staff_id)), None
+        )
+
+    async def list_by_staff_ids(self, staff_ids: list[str]) -> list[Driver]:
+        wanted = {str(s) for s in staff_ids}
+        return [d for d in self.by_id.values() if str(d.staff_id) in wanted]
+
     async def get_by_user_id(self, user_id) -> Driver | None:
         return next(
             (d for d in self.by_id.values() if str(d.user_id) == str(user_id)), None
@@ -177,6 +188,7 @@ class InMemoryDriverRepository(DriverRepository):
 class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
     def __init__(self, drivers: InMemoryDriverRepository) -> None:
         self.drivers = drivers
+        attach_staff_repositories(self)
         self.recorded_events = []
         self.commit_count = 0
         self.rollback_count = 0
@@ -288,6 +300,7 @@ class DTOMappingTests(unittest.TestCase):
             status=DriverStatus.ACTIVE,
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            staff_id=TransportStaffId("01J8Z3K9G6X8YV5T4N2R7QW3SF"),
         )
 
     def test_driver_to_dto_maps_all_fields_as_primitives(self) -> None:
@@ -347,8 +360,48 @@ class DriverApplicationServiceRegisterTests(unittest.IsolatedAsyncioTestCase):
         service, uow, _provisioning = make_service()
         await service.register_driver(_register_command(), uow=uow)
 
-        self.assertEqual(len(uow.recorded_events), 1)
-        self.assertEqual(uow.recorded_events[0].event_type, "DriverRegistered")
+        self.assertEqual(
+            [e.event_type for e in uow.recorded_events],
+            ["TransportStaffRegistered", "DriverRegistered"],
+        )
+
+    async def test_register_driver_creates_the_staff_record_in_the_same_transaction(
+        self,
+    ) -> None:
+        """ADR-0049 §3: `POST /drivers` keeps its contract and also creates the person."""
+        service, uow, _provisioning = make_service()
+        dto, _ = await service.register_driver(
+            RegisterDriverCommand(
+                organization_id=VALID_ORG_ULID,
+                full_name="Ahmed Yusuf",
+                email=None,
+                phone="+252611234567",
+                license_no="DL-123456",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        staff = uow.staff.by_id[dto.staff_id]
+        self.assertEqual(staff.full_name, "Ahmed Yusuf")
+        self.assertEqual(str(staff.phone), "+252611234567")
+        self.assertIsNone(staff.role_id)  # the organization has no titles set up
+        self.assertEqual(uow.commit_count, 1)
+
+    async def test_register_driver_uses_the_organizations_driver_title(self) -> None:
+        from raad.modules.transport_ops.domain.entities import TransportStaffRole
+        from raad.modules.transport_ops.domain.value_objects import TransportStaffRoleId
+
+        service, uow, _provisioning = make_service()
+        title = TransportStaffRole.create(
+            id=TransportStaffRoleId("01J8Z3K9G6X8YV5T4N2R7QW3RT"),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            name="Driver",
+            sort_order=10,
+            clock=FixedClock(datetime(2026, 7, 18, tzinfo=timezone.utc)),
+        )
+        uow.staff_roles.add(title)
+        dto, _ = await service.register_driver(_register_command(), uow=uow)
+        self.assertEqual(uow.staff.by_id[dto.staff_id].role_id, title.id)
 
     async def test_register_driver_generates_a_fresh_id_per_call(self) -> None:
         service, uow, _provisioning = make_service()

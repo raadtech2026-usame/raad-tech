@@ -1674,6 +1674,45 @@ design; what a future change must not undo:
 - EVC Plus/Zaad.
 - ~~Per-child pricing inside a family~~ — built by ADR-0048, below.
 
+## Transport People Foundation (ADR-0049/0050/0051, 2026-09-30)
+
+Phase 1 of the transport-management roadmap. RAAD tracks the people who work on buses; it is
+**not an HR system** — no payroll, recruitment, generic attendance, timesheets, appraisal,
+benefits or leave. What a future change must not undo:
+
+- **Every driver is a staff member first.** `TransportStaff` holds the person (name, phones,
+  title, status); `Driver` is the driving extension (licence + login), linked by
+  `drivers.staff_id` (NOT NULL, unique). Never record a person twice: "Give driver access"
+  creates a login and a `Driver` for an existing staff member, and `POST /drivers` creates the
+  staff record in the same transaction. Only drivers log in; other staff have no login.
+- **A job title is a label and grants nothing.** Titles are each organization's own
+  (`transport_staff_roles`), archived, never deleted. Driving is the `Driver` extension, never
+  the word "Driver"; the UI only flags a mismatch.
+- **Crew history is never overwritten.** A `VehicleStaffAssignment` is ended (`ends_on`
+  inclusive), never edited or deleted; each records the title held at the time. One open
+  assignment per person per bus (partial unique index); overlapping dated rows are refused by
+  the service. A bus is checked against the staff member's organization through `fleet_device`'s
+  application service (`core/di/transport_staff_adapters.py`); a bus elsewhere is a 404. The
+  crew lives at `/staff-assignments?vehicle_id=`, because `/vehicles` belongs to `fleet_device`.
+- **"Left" is one transaction:** it ends every current or planned assignment today and disables
+  the linked driver.
+- **Personal data stays out of events and audit.** Payloads carry ids, statuses, dates and the
+  names of changed fields only. Emergency contacts and document numbers are Org Admin only: the
+  router nulls them for every other role and sets `private_fields_visible`.
+- **Documents are metadata only** — no files. A renewal is a new row; the old one points at it
+  (`replaced_by_id`, a `DEFERRABLE INITIALLY DEFERRED` FK, because a flush emits a table's
+  UPDATEs before its INSERTs) and stops alerting. Each alert threshold is sent once, to every
+  active Org Admin, in-app (`system` type); a document is marked only after its notifications
+  are written. `RAAD_WORKERS__STAFF_DOCUMENT_EXPIRY_ALERTS=false` disables the job.
+
+**Permanent lesson.** A self-referencing foreign key updated in the same flush that inserts its
+target fails with an immediate constraint, whatever the domain order: make it deferrable.
+`tests/architecture/test_permissions_are_granted.py` now enforces "a permission string is not a
+grant" for every route.
+
+**Later phases, not built:** absence and substitutes (2), incidents (3), compliance (4), a staff
+mobile role (5), dashboards (6).
+
 ## Per-Student Transport Pricing (ADR-0048, 2026-09-28)
 
 Amends ADR-0042 §1 at the user's direction ("the fee must be assigned individually to each

@@ -34,7 +34,12 @@ from raad.modules.transport_ops.domain.repositories import (
     StudentAssignmentRepository,
     StudentParentRepository,
     StudentRepository,
+    StaffDocumentRepository,
+    StaffDocumentTypeRepository,
+    TransportStaffRepository,
+    TransportStaffRoleRepository,
     TripRepository,
+    VehicleStaffAssignmentRepository,
 )
 
 
@@ -59,6 +64,12 @@ class TransportOpsUnitOfWork(UnitOfWork):
     routes: RouteRepository
     trips: TripRepository
     student_assignments: StudentAssignmentRepository
+    #: ADR-0049/0050/0051: bus crew people, their titles, assignments and documents.
+    staff_roles: TransportStaffRoleRepository
+    staff: TransportStaffRepository
+    staff_assignments: VehicleStaffAssignmentRepository
+    staff_document_types: StaffDocumentTypeRepository
+    staff_documents: StaffDocumentRepository
 
 
 class UserProvisioningPort(ABC):
@@ -84,4 +95,16 @@ class UserProvisioningPort(ABC):
         full_name: str,
         actor: Principal,
     ) -> tuple[str, str]:
+        raise NotImplementedError
+
+
+
+class VehicleDirectoryPort(ABC):
+    """ADR-0050 §1: which organization owns a bus. Buses belong to `fleet_device`, which this
+    module may not read directly (`.claude/rules/backend.md` #3), so crew assignment asks
+    through this port; the adapter lives in the composition root (`core/di/`)."""
+
+    @abstractmethod
+    async def organization_of_vehicle(self, vehicle_id: str) -> str | None:
+        """The owning organization's id, or `None` when no such bus exists."""
         raise NotImplementedError

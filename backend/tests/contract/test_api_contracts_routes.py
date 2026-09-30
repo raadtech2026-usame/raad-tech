@@ -549,6 +549,33 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/school-finance/parent-invoices/{invoice_id}/cancel",
         "ADR-0042 - cancel an issued-in-error invoice; blocked once it has received payment",
     ),
+    # ADR-0049/0050/0051: transport staff, bus crew history, staff documents (transport_ops).
+    # Crew is /staff-assignments?vehicle_id=, not /vehicles/{id}/crew: /vehicles is fleet_device.
+    ("GET", "/api/v1/transport-staff", "ADR-0049 - bus crew people, tenant-scoped"),
+    ("POST", "/api/v1/transport-staff", "ADR-0049 - add a staff member; no login"),
+    ("GET", "/api/v1/transport-staff/{staff_id}", "ADR-0049 - private fields org_admin only"),
+    ("PATCH", "/api/v1/transport-staff/{staff_id}", "ADR-0049 - partial profile edit"),
+    ("POST", "/api/v1/transport-staff/{staff_id}/status", "ADR-0049 SS4 - left ends crew and driver"),
+    (
+        "POST",
+        "/api/v1/transport-staff/{staff_id}/driver-access",
+        "ADR-0049 SS3 - login plus driver profile for an existing staff member",
+    ),
+    ("GET", "/api/v1/transport-staff/{staff_id}/documents", "ADR-0051 - metadata only"),
+    ("POST", "/api/v1/transport-staff/{staff_id}/documents", "ADR-0051 - record or renew"),
+    ("GET", "/api/v1/transport-staff-roles", "ADR-0049 SS2 - per-organization job titles"),
+    ("POST", "/api/v1/transport-staff-roles", "ADR-0049 SS2"),
+    ("POST", "/api/v1/transport-staff-roles/defaults", "ADR-0049 SS2 - idempotent defaults"),
+    ("PATCH", "/api/v1/transport-staff-roles/{role_id}", "ADR-0049 SS2 - archived, never deleted"),
+    ("GET", "/api/v1/staff-assignments", "ADR-0050 - crew by vehicle_id or staff_id, with history"),
+    ("POST", "/api/v1/staff-assignments", "ADR-0050 - snapshot of the job title held"),
+    ("POST", "/api/v1/staff-assignments/{assignment_id}/end", "ADR-0050 - ended, never deleted"),
+    ("GET", "/api/v1/staff-document-types", "ADR-0051 SS1 - per-organization document types"),
+    ("POST", "/api/v1/staff-document-types", "ADR-0051 SS1"),
+    ("POST", "/api/v1/staff-document-types/defaults", "ADR-0051 SS1 - idempotent defaults"),
+    ("PATCH", "/api/v1/staff-document-types/{type_id}", "ADR-0051 SS1 - alert lead days"),
+    ("GET", "/api/v1/staff-documents/expiring", "ADR-0051 SS3 - expiring or expired, soonest first"),
+    ("PATCH", "/api/v1/staff-documents/{document_id}", "ADR-0051 - correct details"),
     # platform_finance (C12) - Vendor -> RAAD. founder/finance_staff only; no org_admin grant
     # exists in this namespace at all, and these tables carry no organization_id to scope by.
     ("GET", "/api/v1/platform-finance/categories", "ADR-0040 SS1 - platform_finance C12"),

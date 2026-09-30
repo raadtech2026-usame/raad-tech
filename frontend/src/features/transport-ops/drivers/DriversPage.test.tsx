@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +21,8 @@ const DRIVER_SUMMARY: api.DriverSummary = {
   id: "01ARZ3NDEKTSV4RRFFQ69G5FDR",
   licenseNo: "DL-00231",
   status: "active",
+  staffId: "01ARZ3NDEKTSV4RRFFQ69G5FST",
+  fullName: "Ahmed Yusuf",
 };
 
 const DRIVER_DETAIL: api.Driver = {
@@ -30,6 +33,7 @@ const DRIVER_DETAIL: api.Driver = {
   status: "active",
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-02T00:00:00Z",
+  staffId: "01ARZ3NDEKTSV4RRFFQ69G5FST",
 };
 
 function pageOf<T>(data: T[], total: number): OffsetPage<T> {
@@ -40,7 +44,9 @@ function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <DriversPage />
+      <MemoryRouter>
+        <DriversPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }

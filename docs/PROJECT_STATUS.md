@@ -80,6 +80,17 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** No.
 - **Dependencies:** Organizations.
 
+#### Transport staff, bus crew and staff documents — ✅ Complete (Phase 1, ADR-0049/0050/0051)
+- **Implemented:** `TransportStaff` person record for everyone on a bus (a Driver is now an
+  extension of one, `drivers.staff_id`); per-organization job titles; bus crew assignments with
+  history (permanent/temporary, title snapshot, optional route); staff documents (metadata only)
+  with renewal and hourly in-app expiry alerts to Org Admins; `/org/staff` + `/platform/staff`,
+  Crew section on the vehicle drawer, names on the Drivers page, dashboard card.
+- **Missing (later phases, by design):** absence and substitutes (Phase 2); incidents (Phase 3);
+  a login for non-driver staff (Phase 5); document files/scans (no file store).
+- **Production blocker?** No.
+- **Dependencies:** Organizations, Vehicles, Drivers, Notifications, IAM.
+
 #### Routes — ✅ Complete
 - **Implemented:** Create/update/activate/disable, add-stop wired end-to-end.
 - **Missing:** Nothing blocking.
@@ -415,6 +426,9 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0029 | Platform Admin Live-Video Access (Founder/Regional Manager/Support Staff) | ✅ Complete (commit `857d68b`) |
 | 0030 | Automatic Camera/Channel Discovery | ✅ Complete — device-gateway (`0x9003`/`0x1003`) and backend (discovery-trigger processor, camera-creation processor) implemented and tested (backend unit/architecture/integration + device-gateway unit, all passing; migration `7d3a9c1e5b42` live-Postgres round-tripped), live-verified against the physical `LSZ-C5804DG-Q-F` bench unit per the ADR's own verification transcript |
 | 0044 | MDVR Recording Playback — Search, Start, Control | ✅ Backend + frontend complete, **not hardware-verified** — three new routes (`POST /video/recordings/search`, `GET /video/recordings/search/{id}`, `POST /video/sessions/{id}/playback-control`), Redis-cached asynchronous search result (no new table, no migration), `/org/recordings` page. The MDVR stays the sole recording store; nothing is stored on the VPS. Reuses `video.playback.start` — no new permission. The device plane needed no change at all. The physical unit has been offline since 2026-09-20, so every layer is covered by unit tests against fakes only |
+| 0049 | Transport Staff Model | ✅ Complete (Phase 1, 2026-09-30) — `TransportStaff`, per-organization job titles, driver as an extension (`drivers.staff_id`), "Give driver access", status `left` ends crew and disables the driver in one transaction; migration `a7d3e9c1f4b2` backfills one staff record per driver from its login. Not deployed |
+| 0050 | Bus Crew Assignment History | ✅ Complete (Phase 1) — `vehicle_staff_assignments`, `/staff-assignments?vehicle_id=` (not `/vehicles/{id}/crew`: `/vehicles` is `fleet_device`). Not deployed |
+| 0051 | Staff Documents and Expiry | ✅ Complete (Phase 1) — metadata-only documents, renewal via `replaced_by_id`, `notify_expiring_staff_documents` job (on by default, `RAAD_WORKERS__STAFF_DOCUMENT_EXPIRY_ALERTS=false` to disable). Not deployed |
 | 0031 | Fleet Overview Online-Vehicles Read Model | ✅ Complete — new `GET /tracking/vehicles/online` (`FleetOverviewApplicationService`), two additive `fleet_device` repository methods, `LatestPositionPort.get_latest_many`; a real per-vehicle-ownership authorization gap found and fixed while wiring the route (bulk fleet visibility could otherwise leak to a Parent's own mobile JWT), closed with an explicit role-set gate; `position` is `null` for every vehicle today (the pre-existing, disclosed JT808 `LatestPositionWriter` wiring gap, unaffected by this ADR) |
 
 **A real doc-staleness gap found 2026-08-19, since corrected throughout this file and
@@ -2072,6 +2086,44 @@ confirmation.
 ## 9. Recent Completed Work
 
 Reverse-chronological (most recent first):
+
+- **Transport people foundation — Phase 1 (ADR-0049/0050/0051, 2026-09-30).** Branch
+  `feat/transport-people-foundation`, not pushed or deployed. Not an HR system: no payroll,
+  recruitment, attendance, leave or appraisal.
+
+  **What changed**
+  - `transport_ops` gains five aggregates (`TransportStaffRole`, `TransportStaff`,
+    `VehicleStaffAssignment`, `StaffDocumentType`, `StaffDocument`); `Driver` requires a
+    `staff_id`. `POST /drivers` keeps its contract and creates the staff record in the same
+    transaction.
+  - Migration `a7d3e9c1f4b2`: five tables, `drivers.staff_id` (NOT NULL, unique, FK), default
+    titles and document types seeded for existing organizations, one staff record per existing
+    driver from its login's name and phone, and the new RBAC grants (manage: `org_admin`;
+    list/read: founder, regional_manager, support_staff; none for finance_staff/driver/parent).
+  - 23 routes under `/transport-staff`, `/transport-staff-roles`, `/staff-assignments`,
+    `/staff-document-types`, `/staff-documents`. Emergency contacts and document numbers are
+    nulled for everyone but the Org Admin, and the response says so.
+  - Worker job `notify_expiring_staff_documents` (hourly; each threshold once; an organization with no active
+    Org Admin keeps its alerts pending).
+  - New gate `tests/architecture/test_permissions_are_granted.py`.
+  - Frontend: Transport Staff page (Staff / Documents due / Setup), crew on the vehicle drawer,
+    staff names on the Drivers page, dashboard card.
+
+  **Defects found by verification, not by the fake-backed tests**
+  - A renewal failed on the self-referencing `staff_documents.replaced_by_id` FK because a
+    flush emits a table's UPDATEs before its INSERTs; the FK is now `DEFERRABLE INITIALLY
+    DEFERRED` (found by the PostgreSQL integration test).
+  - A temporary assignment with no end date was answered 409 "already on this bus" instead of
+    400 (found by the end-to-end run); input is now validated before the overlap check.
+
+  **Verified:** backend 2070 unit/architecture/contract + 377 integration (1 pre-existing
+  Redis skip); frontend 923 tests, `tsc` clean, production build clean; migration from empty
+  and on a copy of the dev data at production's revision `f6c2d9e1b3a8` (backfill checked row
+  by row, `alembic check` clean, downgrade/re-upgrade clean); 30/30 end-to-end checks over real
+  HTTP against a separate API process on that copy (tenant isolation, private-field masking,
+  403 for founder writes and parents, renewal, driver access, "left"); the alert job run twice
+  live — one notification, then none. **Not verified:** browser interaction (Chrome extension
+  not connected); production deployment (awaiting approval).
 
 - **Per-student transport pricing and Known Issue #16 (ADR-0048, 2026-09-28).** Amends
   ADR-0042 §1 at the user's direction: each student has their own monthly fee

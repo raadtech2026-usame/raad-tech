@@ -374,3 +374,91 @@ class StudentAssignmentStatus(str, Enum):
     TRANSFERRED = "transferred"
     GRADUATED = "graduated"
     DISABLED = "disabled"
+
+
+# ---- ADR-0049/0050/0051: transport staff, bus crew, staff documents ----------------------------
+
+
+@dataclass(frozen=True)
+class TransportStaffId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"TransportStaffId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class TransportStaffRoleId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"TransportStaffRoleId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class VehicleStaffAssignmentId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"VehicleStaffAssignmentId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class StaffDocumentTypeId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"StaffDocumentTypeId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class StaffDocumentId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"StaffDocumentId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class TransportStaffStatus(str, Enum):
+    """ADR-0049 §4. `left` ends every open crew assignment and deactivates a linked driver."""
+
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    LEFT = "left"
+
+
+class StaffAssignmentKind(str, Enum):
+    """ADR-0050 §1. A temporary assignment always has an end date."""
+
+    PERMANENT = "permanent"
+    TEMPORARY = "temporary"
+
+
+class StaffDocumentStatus(str, Enum):
+    """ADR-0051 §2 — computed from dates on every read, never stored."""
+
+    VALID = "valid"
+    EXPIRING = "expiring"
+    EXPIRED = "expired"
+    NO_EXPIRY = "no_expiry"
+    SUPERSEDED = "superseded"

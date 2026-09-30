@@ -102,6 +102,8 @@ same way.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from raad.core.errors.exceptions import AuthorizationError, NotFoundError, ValidationError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
@@ -223,6 +225,7 @@ from raad.modules.transport_ops.domain.entities import (
     Student,
     StudentAssignment,
     StudentParent,
+    TransportStaff,
     Trip,
 )
 from raad.modules.transport_ops.domain.value_objects import (
@@ -235,6 +238,8 @@ from raad.modules.transport_ops.domain.value_objects import (
     StopId,
     StudentAssignmentId,
     StudentId,
+    TransportStaffId,
+    TransportStaffRoleId,
     TripId,
     TripType,
     UserId,
@@ -947,11 +952,25 @@ class DriverApplicationService:
             )
         )
         async with uow:
+            # ADR-0049 §3: every driver is a staff member first. The staff record holds the
+            # name and phone RAAD shows; it is created in the same transaction as the driver.
+            staff = TransportStaff.register(
+                id=TransportStaffId(self._id_generator.new_id()),
+                organization_id=OrganizationId(command.organization_id),
+                full_name=command.full_name,
+                phone=PhoneNumber(command.phone) if command.phone else None,
+                role_id=await self._driver_role_id(uow, command.organization_id),
+                clock=self._clock,
+                actor_id=command.actor.user_id,
+            )
+            uow.staff.add(staff)
+            uow.record_events(staff.pull_domain_events())
             driver = Driver.register(
                 id=DriverId(self._id_generator.new_id()),
                 organization_id=OrganizationId(command.organization_id),
                 user_id=UserId(user_id),
                 license_no=command.license_no,
+                staff_id=staff.id,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )
@@ -1024,12 +1043,31 @@ class DriverApplicationService:
                 filters=query.filters,
                 search=query.search,
             )
+            staff = await uow.staff.list_by_ids([str(d.staff_id) for d in page.data])
+            names = {str(s.id): s.full_name for s in staff}
             return OffsetPage(
-                data=[driver_to_summary_dto(driver) for driver in page.data],
+                data=[
+                    replace(
+                        driver_to_summary_dto(driver),
+                        full_name=names.get(str(driver.staff_id)),
+                    )
+                    for driver in page.data
+                ],
                 total=page.total,
                 page=page.page,
                 page_size=page.page_size,
             )
+
+    @staticmethod
+    async def _driver_role_id(
+        uow: TransportOpsUnitOfWork, organization_id: str
+    ) -> TransportStaffRoleId | None:
+        """The organization's own "Driver" title, when it has one that is not archived. An
+        organization that never set up titles simply gets an untitled staff record."""
+        for role in await uow.staff_roles.list_for_organization(organization_id):
+            if role.name.casefold() == "driver" and not role.is_archived:
+                return role.id
+        return None
 
     @staticmethod
     async def _get_driver_or_raise(

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Plus, Search, UserRound } from "lucide-react";
@@ -69,6 +70,7 @@ export function DriversPage() {
   usePageHeader("Drivers", "Drivers registered across the platform");
 
   const principal = useAuthStore((s) => s.principal);
+  const navigate = useNavigate();
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -129,7 +131,7 @@ export function DriversPage() {
     onSuccess: (driver) => {
       queryClient.invalidateQueries({ queryKey: ["drivers", "list"] });
       queryClient.invalidateQueries({ queryKey: ["drivers", "detail", driver.id] });
-      setSelectedDriver({ id: driver.id, licenseNo: driver.licenseNo, status: driver.status });
+      setSelectedDriver((current) => (current ? { ...current, status: driver.status } : current));
       toast.success("Driver updated", `${driver.licenseNo} is now ${statusLabel(driver.status).toLowerCase()}.`);
     },
     onError: (mutationError) => {
@@ -149,6 +151,11 @@ export function DriversPage() {
 
   const columns = useMemo<ColumnDef<DriverSummary, unknown>[]>(
     () => [
+      {
+        id: "fullName",
+        header: "Name",
+        cell: ({ row }) => row.original.fullName ?? "—",
+      },
       {
         id: "licenseNo",
         header: "License No",
@@ -242,7 +249,8 @@ export function DriversPage() {
         icon={<UserRound size={22} />}
         iconTint="var(--color-brand-primary-tint)"
         iconColor="var(--color-brand-primary)"
-        title={selectedDriver?.licenseNo}
+        title={selectedDriver?.fullName ?? selectedDriver?.licenseNo}
+        subtitle={selectedDriver?.fullName ? `Licence ${selectedDriver.licenseNo}` : undefined}
         status={
           selectedDriver && (
             <Badge variant={statusTone(selectedDriver.status)} dot>
@@ -270,9 +278,19 @@ export function DriversPage() {
         }
         footer={
           selectedDriver &&
-          canManage && (
+          (canManage || principal?.role === "regional_manager" || principal?.role === "support_staff") && (
             <div className={styles.drawerActions}>
-              {ALL_STATUSES.filter((status) => status !== selectedDriver.status).map((status) => (
+              {/* ADR-0049: name, phone, buses and documents live on the staff profile. */}
+              <Button
+                  variant="secondary"
+                  onClick={() => {
+                    const staffPath = principal?.role === "org_admin" ? "/org/staff" : "/platform/staff";
+                    navigate(`${staffPath}?staff=${selectedDriver.staffId}`);
+                  }}
+                >
+                  Open staff profile
+                </Button>
+              {canManage && ALL_STATUSES.filter((status) => status !== selectedDriver.status).map((status) => (
                 <Button
                   key={status}
                   variant={status === "inactive" ? "danger" : "secondary"}

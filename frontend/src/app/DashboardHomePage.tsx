@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../shared/stores/authStore";
 import { getRoleDisplay } from "../shared/auth/roleDisplay";
 import { getDashboardType } from "../shared/auth/dashboard";
@@ -15,10 +16,12 @@ import { PeopleSection } from "./dashboard/PeopleSection";
 import { OrganizationOverviewSection } from "./dashboard/OrganizationOverviewSection";
 import { SubscriptionStatusCard, SchoolFinanceSummaryCard } from "./dashboard/OrganizationFinanceSection";
 import { QuickActionsSection } from "./dashboard/QuickActionsSection";
+import { ExpiringDocumentsPanel } from "../features/transport-ops/staff/ExpiringDocumentsPanel";
 import dashboardStyles from "./dashboard/dashboard.module.css";
 import styles from "./DashboardHomePage.module.css";
 
 export function DashboardHomePage() {
+  const navigate = useNavigate();
   const principal = useAuthStore((s) => s.principal);
   const dashboardType = principal ? getDashboardType(principal.role) : "platform";
   const roleDisplay = principal ? getRoleDisplay(principal.role) : null;
@@ -123,6 +126,11 @@ export function DashboardHomePage() {
                 <SchoolFinanceSummaryCard />
               </div>
             </div>
+          </PageSection>
+
+          {/* ADR-0051 §3: staff documents expiring or expired, soonest first. */}
+          <PageSection title="Transport staff">
+            <ExpiringDocumentsPanel limit={5} onOpenStaff={(id) => navigate(`/org/staff?staff=${id}`)} />
           </PageSection>
 
           <PageSection title="Quick actions">

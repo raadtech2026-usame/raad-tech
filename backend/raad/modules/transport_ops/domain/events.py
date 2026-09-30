@@ -446,6 +446,7 @@ def driver_registered(
     license_no: str,
     occurred_at: datetime,
     actor_id: str | None,
+    staff_id: str | None = None,
 ) -> DomainEvent:
     return _new_event(
         event_type="DriverRegistered",
@@ -455,6 +456,7 @@ def driver_registered(
         occurred_at=occurred_at,
         payload={
             "user_id": user_id,
+            "staff_id": staff_id,
             "license_no": license_no,
             "actor_id": actor_id,
         },
@@ -892,4 +894,229 @@ def student_assignment_disabled(
         org_id=organization_id,
         occurred_at=occurred_at,
         payload={"actor_id": actor_id},
+    )
+
+
+# ---- ADR-0049/0050/0051: transport staff, bus crew, staff documents ----------------------------
+#
+# Payloads carry ids, statuses and dates only. Names, phone numbers, emergency contacts and
+# document numbers are personal data: they are never written into an event, so they never reach
+# the outbox or `audit_entries.metadata_json`. The audit row still says who changed what, when.
+
+
+def transport_staff_registered(
+    *,
+    staff_id: str,
+    organization_id: str,
+    role_id: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="TransportStaffRegistered",
+        aggregate_type="TransportStaff",
+        aggregate_id=staff_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"role_id": role_id, "actor_id": actor_id},
+    )
+
+
+def transport_staff_profile_updated(
+    *,
+    staff_id: str,
+    organization_id: str,
+    changed_fields: list[str],
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="TransportStaffProfileUpdated",
+        aggregate_type="TransportStaff",
+        aggregate_id=staff_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"changed_fields": sorted(changed_fields), "actor_id": actor_id},
+    )
+
+
+def transport_staff_status_changed(
+    *,
+    staff_id: str,
+    organization_id: str,
+    status: str,
+    previous_status: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="TransportStaffStatusChanged",
+        aggregate_type="TransportStaff",
+        aggregate_id=staff_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"status": status, "previous_status": previous_status, "actor_id": actor_id},
+    )
+
+
+def transport_staff_role_saved(
+    *,
+    role_id: str,
+    organization_id: str,
+    is_archived: bool,
+    created: bool,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="TransportStaffRoleCreated" if created else "TransportStaffRoleUpdated",
+        aggregate_type="TransportStaffRole",
+        aggregate_id=role_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"is_archived": is_archived, "actor_id": actor_id},
+    )
+
+
+def vehicle_staff_assigned(
+    *,
+    assignment_id: str,
+    organization_id: str,
+    staff_id: str,
+    vehicle_id: str,
+    route_id: str | None,
+    role_id: str | None,
+    kind: str,
+    starts_on: str,
+    ends_on: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="VehicleStaffAssigned",
+        aggregate_type="VehicleStaffAssignment",
+        aggregate_id=assignment_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "staff_id": staff_id,
+            "vehicle_id": vehicle_id,
+            "route_id": route_id,
+            "role_id": role_id,
+            "kind": kind,
+            "starts_on": starts_on,
+            "ends_on": ends_on,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def vehicle_staff_assignment_ended(
+    *,
+    assignment_id: str,
+    organization_id: str,
+    staff_id: str,
+    vehicle_id: str,
+    ends_on: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="VehicleStaffAssignmentEnded",
+        aggregate_type="VehicleStaffAssignment",
+        aggregate_id=assignment_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "staff_id": staff_id,
+            "vehicle_id": vehicle_id,
+            "ends_on": ends_on,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def staff_document_type_saved(
+    *,
+    type_id: str,
+    organization_id: str,
+    alert_lead_days: list[int],
+    is_archived: bool,
+    created: bool,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="StaffDocumentTypeCreated" if created else "StaffDocumentTypeUpdated",
+        aggregate_type="StaffDocumentType",
+        aggregate_id=type_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "alert_lead_days": alert_lead_days,
+            "is_archived": is_archived,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def staff_document_recorded(
+    *,
+    document_id: str,
+    organization_id: str,
+    staff_id: str,
+    type_id: str,
+    expires_on: str | None,
+    replaces_id: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="StaffDocumentRecorded",
+        aggregate_type="StaffDocument",
+        aggregate_id=document_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "staff_id": staff_id,
+            "type_id": type_id,
+            "expires_on": expires_on,
+            "replaces_id": replaces_id,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def staff_document_updated(
+    *,
+    document_id: str,
+    organization_id: str,
+    changed_fields: list[str],
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="StaffDocumentUpdated",
+        aggregate_type="StaffDocument",
+        aggregate_id=document_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"changed_fields": sorted(changed_fields), "actor_id": actor_id},
+    )
+
+
+def staff_document_expiry_alerted(
+    *,
+    document_id: str,
+    organization_id: str,
+    threshold_days: int,
+    occurred_at: datetime,
+) -> DomainEvent:
+    return _new_event(
+        event_type="StaffDocumentExpiryAlerted",
+        aggregate_type="StaffDocument",
+        aggregate_id=document_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"threshold_days": threshold_days, "actor_id": None},
     )

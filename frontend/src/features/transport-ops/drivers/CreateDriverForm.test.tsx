@@ -28,6 +28,7 @@ const REGISTER_RESULT: api.RegisterDriverResult = {
     status: "active",
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
+    staffId: "01ARZ3NDEKTSV4RRFFQ69G5FST",
   },
   temporaryPassword: "Temp#1234",
 };

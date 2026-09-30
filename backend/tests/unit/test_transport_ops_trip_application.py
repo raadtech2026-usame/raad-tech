@@ -25,6 +25,7 @@ from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest, SortSpec
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
+from _transport_staff_fakes import attach_staff_repositories
 from raad.modules.transport_ops.application.commands import (
     ChangeTripDriverCommand,
     EndTripCommand,
@@ -59,6 +60,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     TripId,
     TripStatus,
     TripType,
+    TransportStaffId,
     UserId,
     VehicleId,
 )
@@ -210,6 +212,15 @@ class InMemoryDriverRepository(DriverRepository):
     async def get(self, driver_id: DriverId) -> Driver | None:
         return self.by_id.get(str(driver_id))
 
+    async def get_by_staff_id(self, staff_id) -> Driver | None:
+        return next(
+            (d for d in self.by_id.values() if str(d.staff_id) == str(staff_id)), None
+        )
+
+    async def list_by_staff_ids(self, staff_ids: list[str]) -> list[Driver]:
+        wanted = {str(s) for s in staff_ids}
+        return [d for d in self.by_id.values() if str(d.staff_id) in wanted]
+
     async def get_by_user_id(self, user_id) -> Driver | None:
         return next(
             (d for d in self.by_id.values() if str(d.user_id) == str(user_id)), None
@@ -289,6 +300,7 @@ class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
         self.trips = trips
         self.drivers = drivers
         self.routes = routes
+        attach_staff_repositories(self)
         self.recorded_events = []
         self.commit_count = 0
         self.rollback_count = 0
@@ -318,6 +330,7 @@ def make_driver(
         status=DriverStatus.ACTIVE,
         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        staff_id=TransportStaffId("01J8Z3K9G6X8YV5T4N2R7QW3SF"),
     )
 
 

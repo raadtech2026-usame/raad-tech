@@ -21,6 +21,8 @@ export interface Driver {
   status: DriverStatus;
   createdAt: string;
   updatedAt: string;
+  /** ADR-0049: the staff record holding this driver's name and phone. */
+  staffId: string;
 }
 
 /** `DriverSummaryResponse` (`transport_ops/api/schemas.py`) — the *only* shape `GET /drivers`
@@ -33,6 +35,9 @@ export interface DriverSummary {
   id: string;
   licenseNo: string;
   status: DriverStatus;
+  /** ADR-0049: every driver is a staff member; the name comes from that record. */
+  staffId: string;
+  fullName: string | null;
 }
 
 /** Wire shape of `DriverResponse` — snake_case, exactly as the backend serializes it. */
@@ -44,6 +49,7 @@ interface DriverWire {
   status: string;
   created_at: string;
   updated_at: string;
+  staff_id: string;
 }
 
 /** Wire shape of `DriverSummaryResponse`. */
@@ -51,6 +57,8 @@ interface DriverSummaryWire {
   id: string;
   license_no: string;
   status: string;
+  staff_id: string;
+  full_name: string | null;
 }
 
 function toDriver(wire: DriverWire): Driver {
@@ -62,11 +70,18 @@ function toDriver(wire: DriverWire): Driver {
     status: wire.status as DriverStatus,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    staffId: wire.staff_id,
   };
 }
 
 function toDriverSummary(wire: DriverSummaryWire): DriverSummary {
-  return { id: wire.id, licenseNo: wire.license_no, status: wire.status as DriverStatus };
+  return {
+    id: wire.id,
+    licenseNo: wire.license_no,
+    status: wire.status as DriverStatus,
+    staffId: wire.staff_id,
+    fullName: wire.full_name,
+  };
 }
 
 /** `GET /drivers` (no documented API Contracts row — Phase 10.8's own flagged gap: Database

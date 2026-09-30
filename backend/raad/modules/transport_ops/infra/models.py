@@ -100,8 +100,12 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
+    Text,
     UniqueConstraint,
+    text,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -221,6 +225,13 @@ class DriverModel(AuditedTableMixin, Base):
         SqlEnum(*_DRIVER_STATUS_VALUES, name="driver_status"),
         nullable=False,
         index=True,
+    )
+    #: ADR-0049: the person this driver profile belongs to — one driver profile per person.
+    staff_id: Mapped[str] = mapped_column(
+        CHAR(26),
+        ForeignKey("transport_staff.id"),
+        nullable=False,
+        unique=True,
     )
 
 
@@ -384,3 +395,152 @@ class StudentAssignmentModel(AuditedTableMixin, Base):
     ended_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
     )
+
+
+# ---- ADR-0049/0050/0051: transport staff, bus crew, staff documents ----------------------------
+
+_TRANSPORT_STAFF_STATUS_VALUES = ("active", "inactive", "left")
+_STAFF_ASSIGNMENT_KIND_VALUES = ("permanent", "temporary")
+
+
+class TransportStaffRoleModel(AuditedTableMixin, Base):
+    """An organization's own job titles for bus crew (ADR-0049 §2)."""
+
+    __tablename__ = "transport_staff_roles"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="ux_transport_staff_roles__org_name"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(VARCHAR(80), nullable=False)
+    sort_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class TransportStaffModel(AuditedTableMixin, Base):
+    """The person record for everyone who works on a school bus (ADR-0049 §1). Phone numbers,
+    the emergency contact and notes are personal data and are never copied into events."""
+
+    __tablename__ = "transport_staff"
+    __table_args__ = (
+        # Unique within an organization only when set: many schools will not use references.
+        Index(
+            "ux_transport_staff__org_employee_ref",
+            "organization_id",
+            "employee_ref",
+            unique=True,
+            postgresql_where=text("employee_ref IS NOT NULL"),
+        ),
+        Index("ix_transport_staff__organization_id_status", "organization_id", "status"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    full_name: Mapped[str] = mapped_column(VARCHAR(200), nullable=False)
+    phone: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True)
+    alternate_phone: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True)
+    role_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("transport_staff_roles.id"), nullable=True, index=True
+    )
+    employee_ref: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(
+        SqlEnum(*_TRANSPORT_STAFF_STATUS_VALUES, name="transport_staff_status"),
+        nullable=False,
+    )
+    emergency_contact_name: Mapped[str | None] = mapped_column(VARCHAR(200), nullable=True)
+    emergency_contact_phone: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    left_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+class VehicleStaffAssignmentModel(AuditedTableMixin, Base):
+    """The bus crew and its history (ADR-0050). `vehicle_id` references `fleet_device` by id
+    only, with no foreign key (`.claude/rules/database.md` #3); the application checks the bus
+    belongs to the same organization. Rows are never deleted."""
+
+    __tablename__ = "vehicle_staff_assignments"
+    __table_args__ = (
+        # One open-ended assignment per person per bus. Dated rows (temporary, or already
+        # ended) are kept from overlapping by the application's overlap check.
+        Index(
+            "ux_vehicle_staff_assignments__open_staff_vehicle",
+            "staff_id",
+            "vehicle_id",
+            unique=True,
+            postgresql_where=text("ends_on IS NULL"),
+        ),
+        Index(
+            "ix_vehicle_staff_assignments__vehicle_period",
+            "vehicle_id",
+            "starts_on",
+            "ends_on",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    staff_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("transport_staff.id"), nullable=False, index=True
+    )
+    vehicle_id: Mapped[str] = mapped_column(CHAR(26), nullable=False)
+    role_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("transport_staff_roles.id"), nullable=True
+    )
+    route_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("routes.id"), nullable=True, index=True
+    )
+    starts_on: Mapped[date] = mapped_column(Date, nullable=False)
+    ends_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    kind: Mapped[str] = mapped_column(
+        SqlEnum(*_STAFF_ASSIGNMENT_KIND_VALUES, name="staff_assignment_kind"),
+        nullable=False,
+    )
+    reason: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+
+
+class StaffDocumentTypeModel(AuditedTableMixin, Base):
+    """An organization's own document kinds and their alert lead days (ADR-0051 §1)."""
+
+    __tablename__ = "staff_document_types"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="ux_staff_document_types__org_name"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(VARCHAR(80), nullable=False)
+    alert_lead_days: Mapped[list[int]] = mapped_column(ARRAY(SmallInteger), nullable=False)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class StaffDocumentModel(AuditedTableMixin, Base):
+    """A staff member's credential: metadata only, never a file (ADR-0051 §2). `number` is
+    personal data — Org Admin only, never in an event or a log."""
+
+    __tablename__ = "staff_documents"
+    __table_args__ = (
+        Index(
+            "ix_staff_documents__org_current_expiry",
+            "organization_id",
+            "expires_on",
+            postgresql_where=text("replaced_by_id IS NULL AND deleted_at IS NULL"),
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    staff_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("transport_staff.id"), nullable=False, index=True
+    )
+    type_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("staff_document_types.id"), nullable=False
+    )
+    number: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    issued_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    expires_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Deferred to commit: a renewal inserts the new document and points the old one at it in
+    #: one flush, and the flush emits a table's UPDATEs before its INSERTs.
+    replaced_by_id: Mapped[str | None] = mapped_column(
+        CHAR(26),
+        ForeignKey("staff_documents.id", deferrable=True, initially="DEFERRED"),
+        nullable=True,
+    )
+    alerted_threshold_days: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)

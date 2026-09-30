@@ -25,6 +25,7 @@ from datetime import date
 
 from sqlalchemy import text
 
+from _transport_staff_helpers import DELETE_DRIVERS_AND_STAFF, register_test_driver
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.errors.exceptions import ValidationError
@@ -86,7 +87,7 @@ class TripRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
                 )
             if self._created_driver_ids:
                 await conn.execute(
-                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    text(DELETE_DRIVERS_AND_STAFF),
                     {"ids": self._created_driver_ids},
                 )
             if self._created_route_ids:
@@ -104,7 +105,7 @@ class TripRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
     async def _seed_driver_and_route(
         self, uow: SqlAlchemyTransportOpsUnitOfWork, org_id: str
     ) -> tuple[DriverId, RouteId]:
-        driver = Driver.register(
+        driver = register_test_driver(uow, 
             id=DriverId(self.id_generator.new_id()),
             organization_id=OrganizationId(org_id),
             user_id=UserId(self.id_generator.new_id()),
@@ -290,7 +291,7 @@ class TripPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 )
             if self._created_driver_ids:
                 await conn.execute(
-                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    text(DELETE_DRIVERS_AND_STAFF),
                     {"ids": self._created_driver_ids},
                 )
             if self._created_route_ids:
@@ -307,7 +308,7 @@ class TripPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def _seed_driver_and_route(self, org_id: str) -> tuple[DriverId, RouteId]:
         async with self._new_uow() as uow:
-            driver = Driver.register(
+            driver = register_test_driver(uow, 
                 id=DriverId(self.id_generator.new_id()),
                 organization_id=OrganizationId(org_id),
                 user_id=UserId(self.id_generator.new_id()),
@@ -521,7 +522,7 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 )
             if self._created_driver_ids:
                 await conn.execute(
-                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    text(DELETE_DRIVERS_AND_STAFF),
                     {"ids": self._created_driver_ids},
                 )
             if self._created_route_ids:
@@ -549,7 +550,7 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         # since a second `commit()` reusing the same still-open UoW leaves its session in a
         # state that raises `MissingGreenlet` on the next query.
         async with self._new_uow() as uow:
-            driver = Driver.register(
+            driver = register_test_driver(uow, 
                 id=DriverId(self.id_generator.new_id()),
                 organization_id=OrganizationId(organization_id),
                 user_id=UserId(self.id_generator.new_id()),
