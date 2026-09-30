@@ -1713,6 +1713,43 @@ grant" for every route.
 **Later phases, not built:** absence and substitutes (2), incidents (3), compliance (4), a staff
 mobile role (5), dashboards (6).
 
+## Daily Transport Operations (ADR-0052/0053/0054, 2026-09-30)
+
+Phase 2 of the transport-management roadmap. What a future change must not undo:
+
+- **Trips come from a weekly timetable, through one plan.** `route_timetable_entries` (bus,
+  route, morning/afternoon, weekdays, default driver, validity) and `operating_closures` feed
+  `_plan_generation`, which the opt-in job (`RAAD_WORKERS__AUTO_GENERATE_TRIPS`), the manual
+  "Generate the next 7 days" action and its dry-run preview all use. Change generation rules
+  there only, or the preview stops matching what is created.
+- **One non-cancelled trip per bus, date and period** (`ux_trips__vehicle_date_type`, partial).
+  Generation never recreates a trip that exists **or was cancelled**: a cancellation is a
+  decision. Editing a timetable entry never touches trips already generated.
+- **Unavailability is not leave management.** No requests, approvals, balances or accruals;
+  the Org Admin records a fact, and nothing is reassigned automatically. The note is Org Admin
+  only and never enters an event.
+- **A cover changes crew and trips in one commit**: the substitute's temporary crew row
+  (ADR-0050) plus, for a driver, the switch of that driver's *scheduled* trips on that bus.
+  Withdrawing restores the original driver on days they are available.
+- **One coverage rule** (`_Coverage` in `operations_services.py`): the board, the generation
+  plan and the uncovered-trip alerts all ask it. A trip is uncovered when its driver is
+  inactive, is no longer active staff, or is unavailable that day.
+- **Cancellation is final, from `scheduled` only, with a reason parents read.** Parents of the
+  children on that route and bus are told by `TripCancelledNotifier`, **not subscription-gated**
+  (a child waiting at a stop is a safety matter, `.claude/rules/backend.md` #6).
+- `trip_status` gained `cancelled` through `ALTER TYPE … ADD VALUE` in an autocommit block;
+  PostgreSQL will not use a new enum value in the transaction that added it.
+
+**Permanent lesson.** **Do every read before the first `add()` in a Unit of Work.** A query
+issued after an `add()` autoflushes, and autoflush orders INSERTs by class name, not by
+foreign key — it bypasses `SqlAlchemyUnitOfWork`'s dependency-ordered flush, which runs only
+at commit. Creating a cover wrote `staff_covers` before the crew row it references and failed
+on the foreign key; only the PostgreSQL test saw it.
+
+**Not built:** term calendars, per-stop timings and ETA, recurring unavailability, staff
+requesting time off, automatic substitute suggestions, the `trip_students` roster snapshot.
+The driver app receives `cancelled` and substitutes' trips untested (no Flutter SDK here).
+
 ## Per-Student Transport Pricing (ADR-0048, 2026-09-28)
 
 Amends ADR-0042 §1 at the user's direction ("the fee must be assigned individually to each

@@ -33,13 +33,18 @@ Cancellation is transport information about the child's bus, not staff informati
 are notified (the Phase 1 rule, "parents see nothing about staff", is unaffected).
 - **Recipients:** parents linked (`student_parents`) to students whose **active**
   `StudentAssignment` is on the trip's route **and** bus.
-- **Content:** "Morning bus <plate> on <date> is cancelled: <reason>". The reason is the admin's
-  text, so the form tells them parents will read it.
+- **Content:** "Your child's morning bus on <date> is cancelled", with the admin's reason in
+  the body. The reason is the admin's own text, so the form tells them parents will read it.
+  (The bus plate is not included: it belongs to `fleet_device`, and the notice is complete
+  without it.)
 - **Delivery:** in-app `system` notification with `data.kind = "trip_cancelled"`. No
   `NotificationType` change. Push follows whatever the notification pipeline already does.
-- Sent by a subscriber on the `TripCancelled` event, after the cancellation is committed (the
-  outbox, ADR-0007), in the interfaces layer, composing `transport_ops` (recipients) and
-  `notifications` through their application services.
+- Sent by `TripCancelledNotifier` in the Notification Worker, on the `TripCancelled` event, after
+  the cancellation is committed (the outbox, ADR-0007). Recipients come from `transport_ops`'s
+  application service.
+- **Not subscription-gated**, unlike the trip-lifecycle notifications: a child waiting at a
+  stop for a bus that is not coming is a safety matter, and `.claude/rules/backend.md` #6 keeps
+  safety notifications out of billing's reach.
 
 ### 3. Permission
 
