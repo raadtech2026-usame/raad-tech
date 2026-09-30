@@ -8,7 +8,8 @@
  */
 
 .scene {
-  --bus-width: clamp(360px, 40vw, 600px);
+  /* Set on the page (`LoginPage.module.css`) so the card's reserved space uses the same value. */
+  --bus-width: var(--login-bus-width, clamp(360px, 40vw, 600px));
   --scene-signal: #60a5fa;
 
   position: absolute;
@@ -329,9 +330,11 @@
 
 /* ---- Smaller screens ------------------------------------------------------------------- */
 
-/* Phones and short landscape screens: no hero bus and no moving marker. The static map stays
-   for atmosphere; the card's own status strip carries every state. */
-@media (max-width: 599px), (max-height: 639px) {
+/* Phones and genuinely short screens: no hero bus and no moving marker. The static map stays
+   for atmosphere; the card's own status strip carries every state. The height cut-off sits
+   where the height-capped bus (see `--login-bus-width`) would drop below ~320px wide — not at
+   640px, which hid it on the common 1366x768 laptop (~625px of viewport inside a browser). */
+@media (max-width: 599px), (max-height: 559px) {
   .bus,
   .horizon {
     display: none;
