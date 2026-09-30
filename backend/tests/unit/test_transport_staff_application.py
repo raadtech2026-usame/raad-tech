@@ -391,6 +391,18 @@ class CrewAssignmentTests(StaffServiceTestCase):
                 dto.id, kind="temporary", starts_on=date(2026, 10, 5), ends_on=date(2026, 10, 9)
             )
 
+    async def test_invalid_dates_are_refused_before_any_overlap_check(self) -> None:
+        dto = await self.register()
+        await self.assign(dto.id)
+        for overrides in (
+            {"kind": "temporary"},
+            {"starts_on": date(2026, 10, 5), "ends_on": date(2026, 10, 1)},
+        ):
+            with self.subTest(**{k: str(v) for k, v in overrides.items()}):
+                with self.assertRaises(DomainError) as caught:
+                    await self.assign(dto.id, **overrides)
+                self.assertNotIsInstance(caught.exception, ConflictError)
+
     async def test_one_person_may_be_on_several_buses(self) -> None:
         self.vehicles.owners["01J8Z3K9G6X8YV5T4N2R7QW3VC"] = ORG
         dto = await self.register()

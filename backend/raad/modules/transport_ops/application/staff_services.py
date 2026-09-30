@@ -531,6 +531,12 @@ class TransportStaffApplicationService:
             )
             starts_on = command.starts_on or self._today()
             ends_on = command.ends_on
+            # Malformed input is reported as such before any overlap is looked for; otherwise a
+            # temporary assignment with no end date reads as "already on this bus".
+            if kind is StaffAssignmentKind.TEMPORARY and ends_on is None:
+                raise DomainError("A temporary assignment must have an end date")
+            if ends_on is not None and ends_on < starts_on:
+                raise DomainError("An assignment cannot end before it starts")
             vehicle_id = VehicleId(command.vehicle_id)
             for other in await uow.staff_assignments.list_for(
                 staff_id=staff.id, vehicle_id=vehicle_id
