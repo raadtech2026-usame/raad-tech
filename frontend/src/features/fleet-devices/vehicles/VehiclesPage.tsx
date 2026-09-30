@@ -20,6 +20,8 @@ import { Button } from "../../../shared/components/Button/Button";
 import { Input } from "../../../shared/components/Input/Input";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { CreateVehicleForm } from "./CreateVehicleForm";
+import { AssignToBusForm } from "../../transport-ops/staff/AssignToBusForm";
+import { VehicleCrewSection } from "../../transport-ops/staff/StaffSections";
 import {
   getVehicle,
   listOrganizationsForPicker,
@@ -90,6 +92,7 @@ export function VehiclesPage() {
   const queryClient = useQueryClient();
 
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
+  const [addCrewOpen, setAddCrewOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
 
@@ -342,6 +345,17 @@ export function VehiclesPage() {
             </Badge>
           )
         }
+        mapSlot={
+          // ADR-0050: the bus crew. Finance Staff hold no staff permission, so no section.
+          selectedVehicle &&
+          principal?.role !== "finance_staff" && (
+            <VehicleCrewSection
+              vehicleId={selectedVehicle.id}
+              canManage={principal?.role === "org_admin"}
+              onAddCrew={() => setAddCrewOpen(true)}
+            />
+          )
+        }
         rows={
           selectedVehicle
             ? [
@@ -425,6 +439,15 @@ export function VehiclesPage() {
       />
 
       <CreateVehicleForm open={createOpen} onClose={() => setCreateOpen(false)} />
+      {selectedVehicle && (
+        <AssignToBusForm
+          open={addCrewOpen}
+          onClose={() => setAddCrewOpen(false)}
+          vehicleId={selectedVehicle.id}
+          vehicleLabel={selectedVehicle.plateNo}
+          organizationId={selectedVehicle.organizationId}
+        />
+      )}
     </div>
   );
 }

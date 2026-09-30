@@ -10,6 +10,7 @@ import type { OffsetListParams } from "../shared/api/listParams";
 import type { TripSummary } from "../features/transport-ops/trips/api";
 
 vi.mock("../features/transport-ops/drivers/api", () => ({ listDrivers: vi.fn() }));
+vi.mock("../features/transport-ops/staff/api", () => ({ listExpiringDocuments: vi.fn().mockResolvedValue([]) }));
 vi.mock("../features/transport-ops/students/api", () => ({ countStudents: vi.fn(), listStudents: vi.fn() }));
 vi.mock("../features/transport-ops/parents/api", () => ({ countParents: vi.fn(), listParents: vi.fn() }));
 vi.mock("../features/platform-analytics/api", () => ({ getPlatformStats: vi.fn(), listAuditEntries: vi.fn() }));
