@@ -24,6 +24,7 @@ from datetime import date, datetime, timezone
 import sqlalchemy.exc
 from sqlalchemy.orm.exc import StaleDataError
 
+from _transport_staff_helpers import DELETE_DRIVERS_AND_STAFF, register_test_driver
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.events.outbox import OutboxWriter
@@ -252,7 +253,7 @@ class TripDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
                 )
             if self._created_ids["drivers"]:
                 await conn.execute(
-                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    text(DELETE_DRIVERS_AND_STAFF),
                     {"ids": self._created_ids["drivers"]},
                 )
             if self._created_ids["routes"]:
@@ -267,7 +268,7 @@ class TripDatabaseInvariantTests(unittest.IsolatedAsyncioTestCase):
 
     async def _seed_driver_and_route(self, org_id: str):
         async with self._new_uow() as uow:
-            driver = Driver.register(
+            driver = register_test_driver(uow, 
                 id=DriverId(self.id_generator.new_id()),
                 organization_id=TransportOpsOrganizationId(org_id),
                 user_id=TransportOpsUserId(self.id_generator.new_id()),

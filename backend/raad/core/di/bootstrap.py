@@ -106,6 +106,7 @@ from raad.modules.tracking.infra.repositories import SqlAlchemyTrackingUnitOfWor
 from raad.modules.transport_ops.application.ports import (
     TransportOpsUnitOfWork,
     UserProvisioningPort,
+    VehicleDirectoryPort,
 )
 from raad.modules.transport_ops.application.services import (
     DriverApplicationService,
@@ -115,6 +116,9 @@ from raad.modules.transport_ops.application.services import (
     StudentAssignmentApplicationService,
     StudentParentApplicationService,
     TripApplicationService,
+)
+from raad.modules.transport_ops.application.staff_services import (
+    TransportStaffApplicationService,
 )
 from raad.modules.transport_ops.infra.adapters import IamUserProvisioningAdapter
 from raad.modules.transport_ops.infra.repositories import (
@@ -148,6 +152,7 @@ from raad.modules.reporting.infra.renderers import (
     ExcelReportRenderer,
     PdfReportRenderer,
 )
+from raad.core.di.transport_staff_adapters import FleetVehicleDirectoryAdapter
 from raad.core.di.erp_adapters import (
     BillingOnboardingAdapter,
     BillingSubscriptionRevenueAdapter,
@@ -794,6 +799,18 @@ def build_container(settings: Settings) -> Container:
                 clock=container.resolve(Clock),
                 id_generator=container.resolve(IdGenerator),
                 user_provisioning=container.resolve(UserProvisioningPort),
+            ),
+        )
+        # ADR-0049/0050/0051 — also needs UserProvisioningPort (driver access), and asks
+        # fleet_device which organization owns a bus through the composition-root adapter.
+        container.bind_singleton(VehicleDirectoryPort, FleetVehicleDirectoryAdapter(container))
+        container.bind_singleton(
+            TransportStaffApplicationService,
+            TransportStaffApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
+                user_provisioning=container.resolve(UserProvisioningPort),
+                vehicle_directory=container.resolve(VehicleDirectoryPort),
             ),
         )
         container.bind_factory(

@@ -26,6 +26,7 @@ import uuid
 
 from sqlalchemy import text
 
+from _transport_staff_helpers import DELETE_DRIVERS_AND_STAFF, register_test_driver
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.errors.exceptions import ValidationError
@@ -74,7 +75,7 @@ class DriverRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.begin() as conn:
             if self._created_ids:
                 await conn.execute(
-                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    text(DELETE_DRIVERS_AND_STAFF),
                     {"ids": self._created_ids},
                 )
         await self.engine.dispose()
@@ -92,7 +93,7 @@ class DriverRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         org_id = self.id_generator.new_id()
         user_id = self.id_generator.new_id()
         async with self._new_uow() as uow:
-            driver = Driver.register(
+            driver = register_test_driver(uow, 
                 id=DriverId(self.id_generator.new_id()),
                 organization_id=OrganizationId(org_id),
                 user_id=UserId(user_id),
@@ -123,7 +124,7 @@ class DriverRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         org_id = self.id_generator.new_id()
         user_id = self.id_generator.new_id()
         async with self._new_uow() as uow:
-            driver = Driver.register(
+            driver = register_test_driver(uow, 
                 id=DriverId(self.id_generator.new_id()),
                 organization_id=OrganizationId(org_id),
                 user_id=UserId(user_id),
@@ -151,7 +152,7 @@ class DriverRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         org_id = self.id_generator.new_id()
         user_id = self.id_generator.new_id()
         async with self._new_uow() as uow:
-            driver = Driver.register(
+            driver = register_test_driver(uow, 
                 id=DriverId(self.id_generator.new_id()),
                 organization_id=OrganizationId(org_id),
                 user_id=UserId(user_id),
@@ -180,7 +181,7 @@ class DriverRepositoryRoundTripTests(unittest.IsolatedAsyncioTestCase):
         org_id = self.id_generator.new_id()
         user_id = self.id_generator.new_id()
         async with self._new_uow() as uow:
-            driver = Driver.register(
+            driver = register_test_driver(uow, 
                 id=DriverId(self.id_generator.new_id()),
                 organization_id=OrganizationId(org_id),
                 user_id=UserId(user_id),
@@ -227,7 +228,7 @@ class DriverPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.begin() as conn:
             if self._created_ids:
                 await conn.execute(
-                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    text(DELETE_DRIVERS_AND_STAFF),
                     {"ids": self._created_ids},
                 )
         await self.engine.dispose()
@@ -239,7 +240,7 @@ class DriverPaginationRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def _seed(self, *, license_no: str, organization_id: str) -> Driver:
         async with self._new_uow() as uow:
-            driver = Driver.register(
+            driver = register_test_driver(uow, 
                 id=DriverId(self.id_generator.new_id()),
                 organization_id=OrganizationId(organization_id),
                 user_id=UserId(self.id_generator.new_id()),
@@ -354,7 +355,7 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.begin() as conn:
             if self._created_ids:
                 await conn.execute(
-                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    text(DELETE_DRIVERS_AND_STAFF),
                     {"ids": self._created_ids},
                 )
         await self.engine.dispose()
@@ -371,7 +372,7 @@ class TenantIsolationRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def _seed_driver(self, *, organization_id: str) -> str:
         async with self._new_uow() as uow:
-            driver = Driver.register(
+            driver = register_test_driver(uow, 
                 id=DriverId(self.id_generator.new_id()),
                 organization_id=OrganizationId(organization_id),
                 user_id=UserId(self.id_generator.new_id()),

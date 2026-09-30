@@ -62,7 +62,9 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 class StudentResponse(BaseModel):
@@ -321,12 +323,17 @@ class DriverResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+    #: ADR-0049: the staff record holding this driver's name and phone.
+    staff_id: str
 
 
 class DriverSummaryResponse(BaseModel):
     id: str
     license_no: str
     status: str
+    staff_id: str
+    #: The staff member's name (ADR-0049); `None` only if the staff record is out of scope.
+    full_name: str | None = None
 
 
 class RegisterDriverRequest(BaseModel):
@@ -511,3 +518,198 @@ class SetFamilyTransportationResponse(BaseModel):
     yet (a legal no-op, not an error)."""
 
     assignments: list[StudentAssignmentResponse]
+
+
+# ---- ADR-0049/0050/0051: transport staff, bus crew, staff documents ----------------------------
+
+
+class StaffRoleRequest(BaseModel):
+    """Create a job title (`organization_id` required) or update one (ignored)."""
+
+    organization_id: str | None = None
+    name: str = Field(min_length=1, max_length=80)
+    sort_order: int = Field(default=0, ge=0, le=10000)
+    is_archived: bool = False
+
+
+class StaffRoleResponse(BaseModel):
+    id: str
+    organization_id: str
+    name: str
+    sort_order: int
+    is_archived: bool
+
+
+class StaffSetupDefaultsRequest(BaseModel):
+    organization_id: str | None = None
+
+
+class RegisterTransportStaffRequest(BaseModel):
+    """`organization_id` may be omitted by an Org Admin; it is then their own."""
+
+    organization_id: str | None = None
+    full_name: str = Field(min_length=1, max_length=200)
+    phone: str | None = None
+    alternate_phone: str | None = None
+    role_id: str | None = None
+    employee_ref: str | None = Field(default=None, max_length=64)
+    start_date: date | None = None
+    emergency_contact_name: str | None = Field(default=None, max_length=200)
+    emergency_contact_phone: str | None = None
+    notes: str | None = None
+
+
+class UpdateTransportStaffRequest(BaseModel):
+    """Partial update: only fields present in the body change; `null` clears a field."""
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=200)
+    phone: str | None = None
+    alternate_phone: str | None = None
+    role_id: str | None = None
+    employee_ref: str | None = Field(default=None, max_length=64)
+    start_date: date | None = None
+    emergency_contact_name: str | None = Field(default=None, max_length=200)
+    emergency_contact_phone: str | None = None
+    notes: str | None = None
+
+
+class ChangeTransportStaffStatusRequest(BaseModel):
+    status: Literal["active", "inactive", "left"]
+
+
+class StaffDriverProfileResponse(BaseModel):
+    driver_id: str
+    user_id: str
+    license_no: str
+    status: str
+
+
+class TransportStaffSummaryResponse(BaseModel):
+    id: str
+    organization_id: str
+    full_name: str
+    phone: str | None
+    role_id: str | None
+    role_name: str | None
+    employee_ref: str | None
+    status: str
+    is_driver: bool
+
+
+class TransportStaffResponse(BaseModel):
+    """`emergency_contact_name`/`emergency_contact_phone` are `null` for every caller but the
+    Org Admin (ADR-0049 §6); `private_fields_visible` says which case applies, so a `null` is
+    never mistaken for "not recorded"."""
+
+    id: str
+    organization_id: str
+    full_name: str
+    phone: str | None
+    alternate_phone: str | None
+    role_id: str | None
+    role_name: str | None
+    employee_ref: str | None
+    start_date: date | None
+    status: str
+    emergency_contact_name: str | None
+    emergency_contact_phone: str | None
+    notes: str | None
+    left_on: date | None
+    driver: StaffDriverProfileResponse | None
+    private_fields_visible: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class GrantDriverAccessRequest(BaseModel):
+    """Login details for a staff member becoming a driver. `phone` defaults to the staff
+    record's own phone; the login needs an email or a phone."""
+
+    license_no: str = Field(min_length=1, max_length=64)
+    email: str | None = None
+    phone: str | None = None
+
+
+class AssignStaffToVehicleRequest(BaseModel):
+    staff_id: str
+    vehicle_id: str
+    kind: Literal["permanent", "temporary"] = "permanent"
+    starts_on: date | None = None
+    ends_on: date | None = None
+    route_id: str | None = None
+    role_id: str | None = None
+    reason: str | None = Field(default=None, max_length=255)
+
+
+class EndStaffAssignmentRequest(BaseModel):
+    ends_on: date | None = None
+
+
+class VehicleStaffAssignmentResponse(BaseModel):
+    id: str
+    organization_id: str
+    staff_id: str
+    staff_name: str
+    vehicle_id: str
+    role_id: str | None
+    role_name: str | None
+    route_id: str | None
+    starts_on: date
+    ends_on: date | None
+    kind: str
+    reason: str | None
+    is_current: bool
+    created_at: datetime
+
+
+class StaffDocumentTypeRequest(BaseModel):
+    organization_id: str | None = None
+    name: str = Field(min_length=1, max_length=80)
+    alert_lead_days: list[int] = Field(default_factory=lambda: [30, 7], max_length=5)
+    is_archived: bool = False
+
+
+class StaffDocumentTypeResponse(BaseModel):
+    id: str
+    organization_id: str
+    name: str
+    alert_lead_days: list[int]
+    is_archived: bool
+
+
+class RecordStaffDocumentRequest(BaseModel):
+    type_id: str
+    number: str | None = Field(default=None, max_length=64)
+    issued_on: date | None = None
+    expires_on: date | None = None
+    notes: str | None = None
+    replaces_id: str | None = None
+
+
+class UpdateStaffDocumentRequest(BaseModel):
+    """Partial update: only fields present in the body change."""
+
+    number: str | None = Field(default=None, max_length=64)
+    issued_on: date | None = None
+    expires_on: date | None = None
+    notes: str | None = None
+
+
+class StaffDocumentResponse(BaseModel):
+    """`number` is `null` for every caller but the Org Admin (ADR-0051 §2)."""
+
+    id: str
+    organization_id: str
+    staff_id: str
+    staff_name: str
+    type_id: str
+    type_name: str
+    number: str | None
+    issued_on: date | None
+    expires_on: date | None
+    notes: str | None
+    status: str
+    days_left: int | None
+    replaced_by_id: str | None
+    private_fields_visible: bool
+    created_at: datetime

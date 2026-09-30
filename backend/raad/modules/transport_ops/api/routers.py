@@ -189,6 +189,8 @@ already applies.
 
 from __future__ import annotations
 
+import dataclasses
+
 from fastapi import APIRouter, Depends, Query, status
 
 from raad.core.errors.exceptions import (
@@ -215,10 +217,28 @@ from raad.modules.transport_ops.api.deps import (
     get_student_parent_service,
     get_student_service,
     get_transport_ops_uow,
+    get_transport_staff_service,
     get_trip_service,
 )
 from raad.modules.transport_ops.api.schemas import (
     AddStopToRouteRequest,
+    AssignStaffToVehicleRequest,
+    ChangeTransportStaffStatusRequest,
+    EndStaffAssignmentRequest,
+    GrantDriverAccessRequest,
+    RecordStaffDocumentRequest,
+    RegisterTransportStaffRequest,
+    StaffDocumentResponse,
+    StaffDocumentTypeRequest,
+    StaffDocumentTypeResponse,
+    StaffRoleRequest,
+    StaffRoleResponse,
+    StaffSetupDefaultsRequest,
+    TransportStaffResponse,
+    TransportStaffSummaryResponse,
+    UpdateStaffDocumentRequest,
+    UpdateTransportStaffRequest,
+    VehicleStaffAssignmentResponse,
     AssignStudentToRouteRequest,
     ChangeTripDriverRequest,
     CountResponse,
@@ -257,6 +277,17 @@ from raad.modules.transport_ops.api.schemas import (
     UpdateStudentStatusRequest,
 )
 from raad.modules.transport_ops.application.commands import (
+    AddDefaultStaffSetupCommand,
+    AssignStaffToVehicleCommand,
+    ChangeTransportStaffStatusCommand,
+    EndStaffAssignmentCommand,
+    GrantDriverAccessCommand,
+    RecordStaffDocumentCommand,
+    RegisterTransportStaffCommand,
+    SaveStaffDocumentTypeCommand,
+    SaveStaffRoleCommand,
+    UpdateStaffDocumentCommand,
+    UpdateTransportStaffCommand,
     ActivateDriverCommand,
     ActivateParentCommand,
     ActivateRouteCommand,
@@ -297,6 +328,13 @@ from raad.modules.transport_ops.application.commands import (
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
+    ListTransportStaffQuery,
+    StaffDocumentDTO,
+    StaffDocumentTypeDTO,
+    TransportStaffDTO,
+    TransportStaffRoleDTO,
+    TransportStaffSummaryDTO,
+    VehicleStaffAssignmentDTO,
     DriverDTO,
     DriverSummaryDTO,
     GetDriverByIdQuery,
@@ -328,6 +366,9 @@ from raad.modules.transport_ops.application.queries import (
     StudentSummaryDTO,
     TripDTO,
     TripSummaryDTO,
+)
+from raad.modules.transport_ops.application.staff_services import (
+    TransportStaffApplicationService,
 )
 from raad.modules.transport_ops.application.services import (
     DriverApplicationService,
@@ -444,6 +485,7 @@ def _driver_dto_to_response(driver: DriverDTO) -> DriverResponse:
         status=driver.status,
         created_at=driver.created_at,
         updated_at=driver.updated_at,
+        staff_id=driver.staff_id,
     )
 
 
@@ -451,7 +493,11 @@ def _driver_summary_dto_to_response(
     driver: DriverSummaryDTO,
 ) -> DriverSummaryResponse:
     return DriverSummaryResponse(
-        id=driver.id, license_no=driver.license_no, status=driver.status
+        id=driver.id,
+        license_no=driver.license_no,
+        status=driver.status,
+        staff_id=driver.staff_id,
+        full_name=driver.full_name,
     )
 
 
@@ -2039,3 +2085,585 @@ async def end_student_assignment(
         )
 
     return _student_assignment_dto_to_response(assignment)
+
+
+# ============================================================================================
+# ADR-0049/0050/0051: transport staff, bus crew, staff documents
+# ============================================================================================
+#
+# Five resource prefixes, all `transport_ops`. The bus crew lives at `/staff-assignments`
+# (filtered by `vehicle_id` or `staff_id`), not `/vehicles/{id}/crew`: `/vehicles` belongs to
+# `fleet_device` (`.claude/rules/api.md` #2).
+#
+# Manage permissions are held by `org_admin` alone, so a manage route resolves the organization
+# from the caller. Read routes are also open to founder/regional_manager/support_staff, who see
+# every field except the Org-Admin-only ones (emergency contact, document number: ADR-0049 §6,
+# ADR-0051 §2). Those are nulled here, at the edge, and the response says so.
+
+transport_staff_router = APIRouter()
+transport_staff_roles_router = APIRouter()
+staff_assignments_router = APIRouter()
+staff_document_types_router = APIRouter()
+staff_documents_router = APIRouter()
+
+
+def _private_fields_visible(principal: Principal) -> bool:
+    return principal.role is Role.ORG_ADMIN
+
+
+def _resolve_organization_id(principal: Principal, requested: str | None) -> str:
+    """The organization a staff request is about. An Org Admin's defaults to their own (a
+    different one is refused by the service); RAAD staff must name one."""
+    organization_id = requested or principal.org_id
+    if not organization_id:
+        raise ValidationError(
+            "organization_id is required.", details={"fields": ["organization_id"]}
+        )
+    return organization_id
+
+
+def _staff_role_to_response(role: TransportStaffRoleDTO) -> StaffRoleResponse:
+    return StaffRoleResponse(**dataclasses.asdict(role))
+
+
+def _document_type_to_response(doc_type: StaffDocumentTypeDTO) -> StaffDocumentTypeResponse:
+    return StaffDocumentTypeResponse(**dataclasses.asdict(doc_type))
+
+
+def _staff_summary_to_response(
+    staff: TransportStaffSummaryDTO,
+) -> TransportStaffSummaryResponse:
+    return TransportStaffSummaryResponse(**dataclasses.asdict(staff))
+
+
+def _staff_to_response(staff: TransportStaffDTO, principal: Principal) -> TransportStaffResponse:
+    visible = _private_fields_visible(principal)
+    values = dataclasses.asdict(staff)
+    if not visible:
+        values["emergency_contact_name"] = None
+        values["emergency_contact_phone"] = None
+    return TransportStaffResponse(**values, private_fields_visible=visible)
+
+
+def _assignment_to_response(
+    assignment: VehicleStaffAssignmentDTO,
+) -> VehicleStaffAssignmentResponse:
+    return VehicleStaffAssignmentResponse(**dataclasses.asdict(assignment))
+
+
+def _document_to_response(
+    document: StaffDocumentDTO, principal: Principal
+) -> StaffDocumentResponse:
+    visible = _private_fields_visible(principal)
+    values = dataclasses.asdict(document)
+    if not visible:
+        values["number"] = None
+    return StaffDocumentResponse(**values, private_fields_visible=visible)
+
+
+# ---- job titles ------------------------------------------------------------------------------
+
+
+@transport_staff_roles_router.get(
+    "",
+    response_model=list[StaffRoleResponse],
+    summary="List an organization's job titles",
+)
+async def list_staff_roles(
+    organization_id: str | None = Query(None),
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_roles.list"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[StaffRoleResponse]:
+    roles = await service.list_roles(
+        _resolve_organization_id(principal, organization_id), uow=uow
+    )
+    return [_staff_role_to_response(role) for role in roles]
+
+
+@transport_staff_roles_router.post(
+    "",
+    response_model=StaffRoleResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a job title",
+)
+async def create_staff_role(
+    body: StaffRoleRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_roles.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StaffRoleResponse:
+    role = await service.save_role(
+        SaveStaffRoleCommand(
+            organization_id=_resolve_organization_id(principal, body.organization_id),
+            name=body.name,
+            sort_order=body.sort_order,
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return _staff_role_to_response(role)
+
+
+@transport_staff_roles_router.post(
+    "/defaults",
+    response_model=list[StaffRoleResponse],
+    summary="Add the default job titles the organization does not have yet",
+)
+async def add_default_staff_roles(
+    body: StaffSetupDefaultsRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_roles.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[StaffRoleResponse]:
+    roles = await service.add_default_roles(
+        AddDefaultStaffSetupCommand(
+            organization_id=_resolve_organization_id(principal, body.organization_id),
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return [_staff_role_to_response(role) for role in roles]
+
+
+@transport_staff_roles_router.patch(
+    "/{role_id}",
+    response_model=StaffRoleResponse,
+    summary="Rename, reorder or archive a job title",
+)
+async def update_staff_role(
+    role_id: str,
+    body: StaffRoleRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_roles.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StaffRoleResponse:
+    role = await service.save_role(
+        SaveStaffRoleCommand(
+            organization_id=_resolve_organization_id(principal, body.organization_id),
+            name=body.name,
+            sort_order=body.sort_order,
+            is_archived=body.is_archived,
+            role_id=role_id,
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return _staff_role_to_response(role)
+
+
+# ---- staff records ---------------------------------------------------------------------------
+
+
+@transport_staff_router.get(
+    "",
+    response_model=OffsetPageResponse[TransportStaffSummaryResponse],
+    summary="List transport staff",
+    description=(
+        "Tenant-scoped. Filterable by `organization_id`, `status`, `role_id`; searchable by "
+        "name, employee reference and phone."
+    ),
+)
+async def list_transport_staff(
+    principal: Principal = Depends(require_permission(Permission("transport_ops.staff.list"))),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+    page_request: OffsetPageRequest = Depends(get_offset_page_request),
+    sort: list[SortSpec] = Depends(get_sort_params),
+    filters: list[FilterCondition] = Depends(get_filter_conditions),
+    search: str | None = Depends(get_search_query),
+) -> OffsetPageResponse[TransportStaffSummaryResponse]:
+    page = await service.list_staff(
+        ListTransportStaffQuery(
+            page_request=page_request, sort=sort, filters=filters, search=search
+        ),
+        uow=uow,
+    )
+    return to_offset_page_response(page, _staff_summary_to_response)
+
+
+@transport_staff_router.post(
+    "",
+    response_model=TransportStaffResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a staff member",
+    description="No login is created: only drivers log in (use driver access for that).",
+)
+async def register_transport_staff(
+    body: RegisterTransportStaffRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.staff.manage"))),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TransportStaffResponse:
+    values = body.model_dump(exclude={"organization_id"})
+    staff = await service.register_staff(
+        RegisterTransportStaffCommand(
+            organization_id=_resolve_organization_id(principal, body.organization_id),
+            actor=principal,
+            **values,
+        ),
+        uow=uow,
+    )
+    return _staff_to_response(staff, principal)
+
+
+@transport_staff_router.get(
+    "/{staff_id}",
+    response_model=TransportStaffResponse,
+    summary="Get a staff member",
+)
+async def get_transport_staff(
+    staff_id: str,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.staff.read"))),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TransportStaffResponse:
+    return _staff_to_response(await service.get_staff(staff_id, uow=uow), principal)
+
+
+@transport_staff_router.patch(
+    "/{staff_id}",
+    response_model=TransportStaffResponse,
+    summary="Edit a staff member's profile",
+    description="Only the fields present in the body change; `null` clears a field.",
+)
+async def update_transport_staff(
+    staff_id: str,
+    body: UpdateTransportStaffRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.staff.manage"))),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TransportStaffResponse:
+    changes = body.model_dump(include=body.model_fields_set)
+    if "full_name" in changes and changes["full_name"] is None:
+        raise ValidationError("full_name cannot be cleared.", details={"fields": ["full_name"]})
+    staff = await service.update_staff(
+        UpdateTransportStaffCommand(staff_id=staff_id, changes=changes, actor=principal),
+        uow=uow,
+    )
+    return _staff_to_response(staff, principal)
+
+
+@transport_staff_router.post(
+    "/{staff_id}/status",
+    response_model=TransportStaffResponse,
+    summary="Mark a staff member active, inactive or left",
+    description=(
+        "`left` also ends every current or planned bus assignment and disables their driver "
+        "profile, in one transaction (ADR-0049 §4)."
+    ),
+)
+async def change_transport_staff_status(
+    staff_id: str,
+    body: ChangeTransportStaffStatusRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.staff.manage"))),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TransportStaffResponse:
+    staff = await service.change_status(
+        ChangeTransportStaffStatusCommand(
+            staff_id=staff_id, status=body.status, actor=principal
+        ),
+        uow=uow,
+    )
+    return _staff_to_response(staff, principal)
+
+
+@transport_staff_router.post(
+    "/{staff_id}/driver-access",
+    response_model=DriverCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Give a staff member driver access (a login plus a driver profile)",
+    description=(
+        "Needs both `transport_ops.staff.manage` and `transport_ops.drivers.create`. Returns the "
+        "one-time temporary password exactly once, like `POST /drivers`."
+    ),
+)
+async def grant_driver_access(
+    staff_id: str,
+    body: GrantDriverAccessRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.staff.manage"))),
+    _can_create_drivers: Principal = Depends(
+        require_permission(Permission("transport_ops.drivers.create"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> DriverCreatedResponse:
+    driver, temporary_password = await service.grant_driver_access(
+        GrantDriverAccessCommand(
+            staff_id=staff_id,
+            license_no=body.license_no,
+            email=body.email,
+            phone=body.phone,
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return DriverCreatedResponse(
+        driver=_driver_dto_to_response(driver), temporary_password=temporary_password
+    )
+
+
+@transport_staff_router.get(
+    "/{staff_id}/documents",
+    response_model=list[StaffDocumentResponse],
+    summary="A staff member's documents, including superseded ones",
+)
+async def list_staff_documents(
+    staff_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.list"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[StaffDocumentResponse]:
+    documents = await service.list_documents_for_staff(staff_id, uow=uow)
+    return [_document_to_response(d, principal) for d in documents]
+
+
+@transport_staff_router.post(
+    "/{staff_id}/documents",
+    response_model=StaffDocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record a document (or a renewal, with `replaces_id`)",
+)
+async def record_staff_document(
+    staff_id: str,
+    body: RecordStaffDocumentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StaffDocumentResponse:
+    document = await service.record_document(
+        RecordStaffDocumentCommand(staff_id=staff_id, actor=principal, **body.model_dump()),
+        uow=uow,
+    )
+    return _document_to_response(document, principal)
+
+
+# ---- bus crew --------------------------------------------------------------------------------
+
+
+@staff_assignments_router.get(
+    "",
+    response_model=list[VehicleStaffAssignmentResponse],
+    summary="A bus's crew, or a staff member's buses, with history",
+    description="Give `vehicle_id` or `staff_id`. `current=true` keeps only today's rows.",
+)
+async def list_staff_assignments(
+    vehicle_id: str | None = Query(None),
+    staff_id: str | None = Query(None),
+    current: bool = Query(False),
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_assignments.list"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[VehicleStaffAssignmentResponse]:
+    rows = await service.list_assignments(
+        uow=uow, vehicle_id=vehicle_id, staff_id=staff_id, current_only=current
+    )
+    return [_assignment_to_response(row) for row in rows]
+
+
+@staff_assignments_router.post(
+    "",
+    response_model=VehicleStaffAssignmentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Put a staff member on a bus",
+    description=(
+        "Records the job title held now. A temporary assignment needs `ends_on`. The same "
+        "person cannot be on the same bus twice for overlapping dates (409)."
+    ),
+)
+async def assign_staff_to_vehicle(
+    body: AssignStaffToVehicleRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_assignments.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> VehicleStaffAssignmentResponse:
+    assignment = await service.assign_to_vehicle(
+        AssignStaffToVehicleCommand(actor=principal, **body.model_dump()), uow=uow
+    )
+    return _assignment_to_response(assignment)
+
+
+@staff_assignments_router.post(
+    "/{assignment_id}/end",
+    response_model=VehicleStaffAssignmentResponse,
+    summary="End a crew assignment (kept as history)",
+)
+async def end_staff_assignment(
+    assignment_id: str,
+    body: EndStaffAssignmentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_assignments.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> VehicleStaffAssignmentResponse:
+    assignment = await service.end_assignment(
+        EndStaffAssignmentCommand(
+            assignment_id=assignment_id, ends_on=body.ends_on, actor=principal
+        ),
+        uow=uow,
+    )
+    return _assignment_to_response(assignment)
+
+
+# ---- document types and documents ------------------------------------------------------------
+
+
+@staff_document_types_router.get(
+    "",
+    response_model=list[StaffDocumentTypeResponse],
+    summary="List an organization's staff document types",
+)
+async def list_staff_document_types(
+    organization_id: str | None = Query(None),
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.list"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[StaffDocumentTypeResponse]:
+    types = await service.list_document_types(
+        _resolve_organization_id(principal, organization_id), uow=uow
+    )
+    return [_document_type_to_response(t) for t in types]
+
+
+@staff_document_types_router.post(
+    "",
+    response_model=StaffDocumentTypeResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a staff document type",
+)
+async def create_staff_document_type(
+    body: StaffDocumentTypeRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StaffDocumentTypeResponse:
+    doc_type = await service.save_document_type(
+        SaveStaffDocumentTypeCommand(
+            organization_id=_resolve_organization_id(principal, body.organization_id),
+            name=body.name,
+            alert_lead_days=tuple(body.alert_lead_days),
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return _document_type_to_response(doc_type)
+
+
+@staff_document_types_router.post(
+    "/defaults",
+    response_model=list[StaffDocumentTypeResponse],
+    summary="Add the default document types the organization does not have yet",
+)
+async def add_default_staff_document_types(
+    body: StaffSetupDefaultsRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[StaffDocumentTypeResponse]:
+    types = await service.add_default_document_types(
+        AddDefaultStaffSetupCommand(
+            organization_id=_resolve_organization_id(principal, body.organization_id),
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return [_document_type_to_response(t) for t in types]
+
+
+@staff_document_types_router.patch(
+    "/{type_id}",
+    response_model=StaffDocumentTypeResponse,
+    summary="Rename, change alert days or archive a document type",
+)
+async def update_staff_document_type(
+    type_id: str,
+    body: StaffDocumentTypeRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StaffDocumentTypeResponse:
+    doc_type = await service.save_document_type(
+        SaveStaffDocumentTypeCommand(
+            organization_id=_resolve_organization_id(principal, body.organization_id),
+            name=body.name,
+            alert_lead_days=tuple(body.alert_lead_days),
+            is_archived=body.is_archived,
+            type_id=type_id,
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return _document_type_to_response(doc_type)
+
+
+@staff_documents_router.get(
+    "/expiring",
+    response_model=list[StaffDocumentResponse],
+    summary="Current documents that are expiring or expired, soonest first",
+)
+async def list_expiring_staff_documents(
+    organization_id: str | None = Query(None),
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.list"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[StaffDocumentResponse]:
+    documents = await service.list_expiring_documents(
+        uow=uow, organization_id=organization_id
+    )
+    return [_document_to_response(d, principal) for d in documents]
+
+
+@staff_documents_router.patch(
+    "/{document_id}",
+    response_model=StaffDocumentResponse,
+    summary="Correct a document's details",
+    description=(
+        "Only the fields present in the body change. Changing the expiry restarts its alerts."
+    ),
+)
+async def update_staff_document(
+    document_id: str,
+    body: UpdateStaffDocumentRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> StaffDocumentResponse:
+    document = await service.update_document(
+        UpdateStaffDocumentCommand(
+            document_id=document_id,
+            changes=body.model_dump(include=body.model_fields_set),
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return _document_to_response(document, principal)

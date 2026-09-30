@@ -536,7 +536,11 @@ class StaffDocumentModel(AuditedTableMixin, Base):
     issued_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     expires_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Deferred to commit: a renewal inserts the new document and points the old one at it in
+    #: one flush, and the flush emits a table's UPDATEs before its INSERTs.
     replaced_by_id: Mapped[str | None] = mapped_column(
-        CHAR(26), ForeignKey("staff_documents.id"), nullable=True
+        CHAR(26),
+        ForeignKey("staff_documents.id", deferrable=True, initially="DEFERRED"),
+        nullable=True,
     )
     alerted_threshold_days: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)

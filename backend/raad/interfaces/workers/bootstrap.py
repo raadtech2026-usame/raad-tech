@@ -52,6 +52,16 @@ from raad.modules.school_erp.application.services import (
     SchoolErpApplicationService,
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
+from raad.modules.transport_ops.application.staff_services import (
+    TransportStaffApplicationService,
+)
+from raad.modules.iam.application.ports import IamUnitOfWork
+from raad.modules.iam.application.services import UserApplicationService
+from raad.modules.notifications.application.ports import NotificationsUnitOfWork
+from raad.modules.notifications.application.services import NotificationApplicationService
+from raad.interfaces.workers.staff_document_alerts import (
+    notify_expiring_staff_documents as send_staff_document_alerts,
+)
 from raad.interfaces.workers.notification_worker import NotificationWorker
 from raad.interfaces.workers.outbox_relay import OutboxRelayWorker
 from raad.interfaces.workers.report_worker import ReportWorker
@@ -233,6 +243,29 @@ def _register_scheduled_jobs(
             _body,
         )
 
+    async def notify_expiring_staff_documents() -> None:
+        """ADR-0051 §3 — see `staff_document_alerts.py`. Registered unless
+        `RAAD_WORKERS__STAFF_DOCUMENT_EXPIRY_ALERTS=false`."""
+
+        async def _body() -> None:
+            sent = await send_staff_document_alerts(
+                today=container.resolve(Clock).now().date(),
+                staff_service=container.resolve(TransportStaffApplicationService),
+                user_service=container.resolve(UserApplicationService),
+                notification_service=container.resolve(NotificationApplicationService),
+                transport_ops_uow=lambda: container.resolve(TransportOpsUnitOfWork),
+                iam_uow=lambda: container.resolve(IamUnitOfWork),
+                notifications_uow=lambda: container.resolve(NotificationsUnitOfWork),
+            )
+            if sent:
+                logger.info("staff_document_alerts_sent", extra={"count": sent})
+
+        await _with_lock(
+            "notify_expiring_staff_documents",
+            int(settings.workers.staff_document_expiry_interval_seconds),
+            _body,
+        )
+
     async def reconcile_expired_payments() -> None:
         async def _body() -> None:
             service = container.resolve(BillingApplicationService)
@@ -283,6 +316,14 @@ def _register_scheduled_jobs(
                 name="generate_monthly_parent_invoices",
                 interval_seconds=settings.workers.subscription_sweep_interval_seconds,
                 handler=generate_monthly_parent_invoices,
+            )
+        )
+    if settings.workers.staff_document_expiry_alerts:
+        scheduler.register(
+            ScheduledJob(
+                name="notify_expiring_staff_documents",
+                interval_seconds=settings.workers.staff_document_expiry_interval_seconds,
+                handler=notify_expiring_staff_documents,
             )
         )
     scheduler.register(

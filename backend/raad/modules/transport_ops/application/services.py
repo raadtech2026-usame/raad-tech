@@ -102,6 +102,8 @@ same way.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from raad.core.errors.exceptions import AuthorizationError, NotFoundError, ValidationError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
@@ -1041,8 +1043,16 @@ class DriverApplicationService:
                 filters=query.filters,
                 search=query.search,
             )
+            staff = await uow.staff.list_by_ids([str(d.staff_id) for d in page.data])
+            names = {str(s.id): s.full_name for s in staff}
             return OffsetPage(
-                data=[driver_to_summary_dto(driver) for driver in page.data],
+                data=[
+                    replace(
+                        driver_to_summary_dto(driver),
+                        full_name=names.get(str(driver.staff_id)),
+                    )
+                    for driver in page.data
+                ],
                 total=page.total,
                 page=page.page,
                 page_size=page.page_size,

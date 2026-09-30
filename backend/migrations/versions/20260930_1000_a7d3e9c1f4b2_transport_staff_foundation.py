@@ -277,10 +277,14 @@ def upgrade() -> None:
             ["staff_document_types.id"],
             name=op.f("fk_staff_documents__staff_document_types"),
         ),
+        # Deferred to commit: a renewal inserts the new document and points the old one at it
+        # in one flush, and SQLAlchemy emits a table's UPDATEs before its INSERTs.
         sa.ForeignKeyConstraint(
             ["replaced_by_id"],
             ["staff_documents.id"],
             name=op.f("fk_staff_documents__staff_documents"),
+            deferrable=True,
+            initially="DEFERRED",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_staff_documents")),
     )

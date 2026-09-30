@@ -216,6 +216,13 @@ class WorkerSettings(BaseModel):
     #: decision, never an upgrade side effect. The manual "Generate monthly invoices" action
     #: works either way, and both share the same idempotency guard.
     auto_generate_parent_invoices: bool = False
+    #: ADR-0051 §3 — in-app alerts to Org Admins when a staff document nears or passes its
+    #: expiry. On by default: it only ever writes notifications, never changes a record anyone
+    #: relies on, and an expired driving licence nobody noticed is the risk it exists for.
+    staff_document_expiry_alerts: bool = True
+    #: Hourly. Each threshold is sent once whatever the interval, so this only bounds how late
+    #: in the day an alert can arrive.
+    staff_document_expiry_interval_seconds: float = 3600.0
     #: ADR-0039 §1 — how long an organization keeps working after its billing period ends with
     #: an unpaid invoice, before it is suspended. Seven days is a deliberate product choice, not
     #: a number any document supplies: RAAD's customers are schools whose users are tracking

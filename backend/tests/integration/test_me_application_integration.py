@@ -29,6 +29,7 @@ import uuid
 
 from sqlalchemy import text
 
+from _transport_staff_helpers import DELETE_DRIVERS_AND_STAFF, register_test_driver
 from raad.core.config.settings import get_settings
 from raad.core.db.engine import build_engine, build_session_factory
 from raad.core.errors.exceptions import NotFoundError
@@ -117,7 +118,7 @@ class MeApplicationServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )
             if self._created_driver_ids:
                 await conn.execute(
-                    text("DELETE FROM drivers WHERE id = ANY(:ids)"),
+                    text(DELETE_DRIVERS_AND_STAFF),
                     {"ids": self._created_driver_ids},
                 )
         await self.engine.dispose()
@@ -200,7 +201,7 @@ class MeApplicationServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_driver_profile_resolves_through_the_real_database(self) -> None:
         user_id = self.id_generator.new_id()
         async with self._new_uow() as uow:
-            driver = Driver.register(
+            driver = register_test_driver(uow, 
                 id=DriverId(self.id_generator.new_id()),
                 organization_id=OrganizationId(self.org_id),
                 user_id=UserId(user_id),

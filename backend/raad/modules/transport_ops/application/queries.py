@@ -339,6 +339,8 @@ class DriverSummaryDTO:
     license_no: str
     status: str
     staff_id: str
+    #: ADR-0049: the staff member's name, filled in by `list_drivers`.
+    full_name: str | None = None
 
 
 def driver_to_dto(driver: Driver) -> DriverDTO:
@@ -658,8 +660,8 @@ class TransportStaffSummaryDTO:
 
 @dataclass(frozen=True)
 class TransportStaffDTO:
-    """Every field of a staff record. `emergency_contact_*` and `notes` are private to the
-    Org Admin; the API leaves them out for anyone else (ADR-0049 §6)."""
+    """Every field of a staff record. `emergency_contact_*` are private to the Org Admin; the
+    API leaves them out for anyone else (ADR-0049 §6)."""
 
     id: str
     organization_id: str
