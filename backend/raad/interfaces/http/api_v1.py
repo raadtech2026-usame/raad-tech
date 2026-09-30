@@ -53,13 +53,18 @@ from raad.modules.school_erp.api.routers import school_finance_router
 from raad.modules.reporting.api.routers import reports_router
 from raad.modules.tracking.api.routers import tracking_router
 from raad.modules.transport_ops.api.routers import (
+    daily_operations_router,
     drivers_router,
+    operating_closures_router,
     parents_router,
+    route_timetable_router,
     routes_router,
     staff_assignments_router,
+    staff_covers_router,
     staff_document_types_router,
     staff_documents_router,
     student_assignments_router,
+    staff_unavailability_router,
     students_router,
     transport_staff_roles_router,
     transport_staff_router,
@@ -149,6 +154,20 @@ api_router.include_router(
 )
 api_router.include_router(
     staff_documents_router, prefix="/staff-documents", tags=["transport-ops"]
+)
+# ADR-0052/0053/0054 — daily transport operations.
+api_router.include_router(
+    route_timetable_router, prefix="/route-timetable", tags=["transport-ops"]
+)
+api_router.include_router(
+    operating_closures_router, prefix="/operating-closures", tags=["transport-ops"]
+)
+api_router.include_router(
+    staff_unavailability_router, prefix="/staff-unavailability", tags=["transport-ops"]
+)
+api_router.include_router(staff_covers_router, prefix="/staff-covers", tags=["transport-ops"])
+api_router.include_router(
+    daily_operations_router, prefix="/daily-operations", tags=["transport-ops"]
 )
 
 api_router.include_router(

@@ -104,7 +104,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from raad.core.errors.exceptions import AuthorizationError, NotFoundError, ValidationError
+from raad.core.errors.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+)
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
 from raad.core.tenancy.principal import Principal, Role
@@ -116,6 +121,7 @@ from raad.modules.transport_ops.application.commands import (
     ActivateStudentCommand,
     AddStopToRouteCommand,
     AssignStudentToRouteCommand,
+    CancelTripCommand,
     ChangeTripDriverCommand,
     CreateRouteCommand,
     DisableDriverCommand,
@@ -241,6 +247,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     TransportStaffId,
     TransportStaffRoleId,
     TripId,
+    TripStatus,
     TripType,
     UserId,
     VehicleId,
@@ -1255,6 +1262,19 @@ class TripApplicationService:
         async with uow:
             driver = await ensure_driver_exists(uow, DriverId(command.driver_id))
             route = await ensure_route_exists(uow, RouteId(command.route_id))
+            # ADR-0052 §3: one non-cancelled trip per bus, date and period. The partial unique
+            # index is the backstop; this names the problem instead of a bare constraint 409.
+            for existing in await uow.trips.list_between(
+                command.scheduled_date, command.scheduled_date, vehicle_id=VehicleId(command.vehicle_id)
+            ):
+                if (
+                    existing.trip_type.value == command.trip_type
+                    and existing.status is not TripStatus.CANCELLED
+                ):
+                    raise ConflictError(
+                        f"This bus already has a {command.trip_type} trip on "
+                        f"{command.scheduled_date.isoformat()}."
+                    )
 
             trip = Trip.schedule(
                 id=TripId(self._id_generator.new_id()),
@@ -1270,6 +1290,19 @@ class TripApplicationService:
                 actor_id=command.actor.user_id,
             )
             uow.trips.add(trip)
+            uow.record_events(trip.pull_domain_events())
+            await uow.commit()
+            return trip_to_dto(trip)
+
+    async def cancel_trip(
+        self, command: CancelTripCommand, *, uow: TransportOpsUnitOfWork
+    ) -> TripDTO:
+        """ADR-0054: only a scheduled trip; the reason is shown to the children's parents."""
+        async with uow:
+            trip = await uow.trips.get(TripId(command.trip_id))
+            if trip is None:
+                raise NotFoundError(f"Trip {command.trip_id} not found.")
+            trip.cancel(reason=command.reason, clock=self._clock, actor_id=command.actor.user_id)
             uow.record_events(trip.pull_domain_events())
             await uow.commit()
             return trip_to_dto(trip)

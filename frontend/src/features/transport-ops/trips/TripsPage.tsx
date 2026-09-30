@@ -19,6 +19,7 @@ import { Button } from "../../../shared/components/Button/Button";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { ScheduleTripForm } from "./ScheduleTripForm";
 import { ChangeTripDriverForm } from "./ChangeTripDriverForm";
+import { CancelTripDialog } from "../operations/CancelTripDialog";
 import {
   endTrip,
   getTrip,
@@ -92,6 +93,7 @@ export function TripsPage() {
   const [selectedTrip, setSelectedTrip] = useState<TripSummary | null>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [changeDriverOpen, setChangeDriverOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   const {
     rows,
@@ -410,6 +412,10 @@ export function TripsPage() {
                     { key: "Driver", value: driverLicenseById.get(detail.driverId) ?? detail.driverId },
                     { key: "Route", value: routeNameById.get(detail.routeId) ?? detail.routeId },
                     { key: "Scheduled date", value: formatScheduledDate(detail.scheduledDate) },
+                    ...(detail.plannedDeparture
+                      ? [{ key: "Planned departure", value: detail.plannedDeparture.slice(0, 5) }]
+                      : []),
+                    ...(detail.cancelledReason ? [{ key: "Cancelled", value: detail.cancelledReason }] : []),
                     { key: "Started", value: detail.startedAt ? formatDateTime(detail.startedAt) : "Not started" },
                     { key: "Ended", value: detail.endedAt ? formatDateTime(detail.endedAt) : "Not ended" },
                     { key: "Trip ID", value: <MonoText>{detail.id}</MonoText> },
@@ -440,19 +446,34 @@ export function TripsPage() {
                   End trip
                 </Button>
               )}
-              <Button
-                variant="secondary"
-                leadingIcon={<UserRound size={14} />}
-                onClick={() => setChangeDriverOpen(true)}
-              >
-                Change driver
-              </Button>
+              {selectedTrip.status !== "cancelled" && selectedTrip.status !== "completed" && (
+                <Button
+                  variant="secondary"
+                  leadingIcon={<UserRound size={14} />}
+                  onClick={() => setChangeDriverOpen(true)}
+                >
+                  Change driver
+                </Button>
+              )}
+              {/* ADR-0054: `transport_ops.trips.cancel` is the Org Admin's alone. */}
+              {selectedTrip.status === "scheduled" && principal?.role === "org_admin" && (
+                <Button variant="danger" onClick={() => setCancelOpen(true)}>
+                  Cancel trip
+                </Button>
+              )}
             </div>
           )
         }
       />
 
       <ScheduleTripForm open={scheduleOpen} onClose={() => setScheduleOpen(false)} />
+
+      <CancelTripDialog
+        tripId={cancelOpen && selectedTrip ? selectedTrip.id : null}
+        description={selectedTrip ? `Trip on ${formatScheduledDate(selectedTrip.scheduledDate)}` : ""}
+        onClose={() => setCancelOpen(false)}
+        onCancelled={() => setSelectedTrip((t) => (t ? { ...t, status: "cancelled" } : t))}
+      />
 
       <ChangeTripDriverForm
         open={changeDriverOpen}

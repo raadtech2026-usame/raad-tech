@@ -91,6 +91,15 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** No.
 - **Dependencies:** Organizations, Vehicles, Drivers, Notifications, IAM.
 
+#### Daily transport operations — ✅ Complete (Phase 2, ADR-0052/0053/0054)
+- **Implemented:** weekly route timetable and closed days; trip generation 7 days ahead (opt-in
+  job + manual action with preview); staff unavailability and cover (crew + trips in one
+  commit); daily operations board with uncovered trips and crew gaps; uncovered-trip alerts;
+  trip cancellation with parent notices. `/org/operations`, `/platform/operations` (read-only).
+- **Missing (by design):** term calendars, ETA, staff self-service (Phase 5), incidents (Phase 3).
+- **Production blocker?** No.
+- **Dependencies:** Transport staff (Phase 1), Routes, Trips, Notifications, IAM.
+
 #### Routes — ✅ Complete
 - **Implemented:** Create/update/activate/disable, add-stop wired end-to-end.
 - **Missing:** Nothing blocking.
@@ -429,6 +438,9 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0049 | Transport Staff Model | ✅ Complete (Phase 1, 2026-09-30) — `TransportStaff`, per-organization job titles, driver as an extension (`drivers.staff_id`), "Give driver access", status `left` ends crew and disables the driver in one transaction; migration `a7d3e9c1f4b2` backfills one staff record per driver from its login. Not deployed |
 | 0050 | Bus Crew Assignment History | ✅ Complete (Phase 1) — `vehicle_staff_assignments`, `/staff-assignments?vehicle_id=` (not `/vehicles/{id}/crew`: `/vehicles` is `fleet_device`). Not deployed |
 | 0051 | Staff Documents and Expiry | ✅ Complete (Phase 1) — metadata-only documents, renewal via `replaced_by_id`, `notify_expiring_staff_documents` job (on by default, `RAAD_WORKERS__STAFF_DOCUMENT_EXPIRY_ALERTS=false` to disable). Not deployed |
+| 0052 | Route Timetable, Closed Days and Trip Generation | ✅ Complete (Phase 2, 2026-09-30) — closes the "trip generation not registered" gap; migration `b8e4f1a2c6d3`. Not deployed |
+| 0053 | Staff Unavailability, Cover and the Daily Board | ✅ Complete (Phase 2) — not leave management; uncovered-trip alerts on by default. Not deployed |
+| 0054 | Trip Cancellation | ✅ Complete (Phase 2) — `cancelled` status, parent notices not subscription-gated. Not deployed |
 | 0031 | Fleet Overview Online-Vehicles Read Model | ✅ Complete — new `GET /tracking/vehicles/online` (`FleetOverviewApplicationService`), two additive `fleet_device` repository methods, `LatestPositionPort.get_latest_many`; a real per-vehicle-ownership authorization gap found and fixed while wiring the route (bulk fleet visibility could otherwise leak to a Parent's own mobile JWT), closed with an explicit role-set gate; `position` is `null` for every vehicle today (the pre-existing, disclosed JT808 `LatestPositionWriter` wiring gap, unaffected by this ADR) |
 
 **A real doc-staleness gap found 2026-08-19, since corrected throughout this file and
@@ -2086,6 +2098,37 @@ confirmation.
 ## 9. Recent Completed Work
 
 Reverse-chronological (most recent first):
+
+- **Daily transport operations — Phase 2 (ADR-0052/0053/0054, 2026-09-30).** Branch
+  `feat/daily-transport-operations`, not pushed or deployed.
+
+  **What changed**
+  - `transport_ops`: `RouteTimetableEntry`, `OperatingClosure`, `StaffUnavailability`,
+    `StaffCover`; `Trip` gains `cancel()`, its timetable origin, planned departure and an
+    alert key. `DailyOperationsApplicationService` holds the one generation plan and the one
+    coverage rule.
+  - Migration `b8e4f1a2c6d3` (from `a7d3e9c1f4b2`): four tables, five trip columns, the
+    `cancelled` status (autocommit block), the partial unique index and the grants. It refuses
+    existing duplicate trips instead of repairing them; the downgrade refuses while any trip is
+    cancelled.
+  - 14 routes: `/route-timetable`, `/operating-closures`, `/staff-unavailability`,
+    `/staff-covers`, `/daily-operations`, `POST /trips/generate`, `POST /trips/{id}/cancel`.
+  - Jobs: `generate_daily_trips` (opt-in), `notify_uncovered_trips` (on by default); the
+    `TripCancelledNotifier` in the Notification Worker.
+  - Frontend: Daily Operations page (Board / Unavailability / Timetable / Closed days), an
+    Unavailability section on staff profiles, cancellation on the Trips page.
+
+  **Defect found by verification, not the fakes:** creating a cover failed on the
+  `staff_covers → vehicle_staff_assignments` foreign key, because a query after `add()`
+  autoflushed in class-name order. Reads now come first (see CLAUDE.md).
+
+  **Verified:** backend 2096 unit/architecture/contract + 381 integration (1 pre-existing
+  Redis skip); frontend 930 tests, `tsc` clean, build clean; migration from empty, round trip
+  (the original `trip_status` is rebuilt), and on a copy of dev data at production's
+  pre-Phase-1 revision through both Phase 1 and Phase 2 migrations, including the duplicate-trip
+  refusal; 26/26 end-to-end checks over real HTTP; the uncovered-trip job run twice live (one
+  notification, then none) and the cancellation notifier run live. **Not verified:** browser
+  interaction; the driver mobile app with cancelled and reassigned trips.
 
 - **Transport people foundation — Phase 1 (ADR-0049/0050/0051, 2026-09-30).** Branch
   `feat/transport-people-foundation`, not pushed or deployed. Not an HR system: no payroll,

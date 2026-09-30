@@ -13,7 +13,8 @@ export type TripType = "morning" | "afternoon";
  * `InProgress <-> Interrupted` and `Interrupted -> Completed` as the diagram's other edges.
  * Unlike `RouteStatus`/`StudentAssignmentStatus`, illegal transitions are rejected server-side
  * with `RuleViolationError` (409 `RULE_VIOLATION`), not treated as idempotent no-ops. */
-export type TripStatus = "scheduled" | "in_progress" | "interrupted" | "completed";
+/** ADR-0054 adds `cancelled`: final, reachable only from `scheduled`. */
+export type TripStatus = "scheduled" | "in_progress" | "interrupted" | "completed" | "cancelled";
 
 /** Full `TripResponse` shape (`transport_ops.api.schemas`) — returned by `GET /trips/{id}` only.
  * See `TripSummary` below for why `GET /trips` (the list route) cannot return this shape. */
@@ -30,6 +31,9 @@ export interface Trip {
   endedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** ADR-0052/0054. */
+  plannedDeparture: string | null;
+  cancelledReason: string | null;
 }
 
 /** `TripSummaryResponse` (`transport_ops/api/schemas.py`) — the *only* shape `GET /trips`
@@ -63,6 +67,8 @@ interface TripWire {
   ended_at: string | null;
   created_at: string;
   updated_at: string;
+  planned_departure?: string | null;
+  cancelled_reason?: string | null;
 }
 
 interface TripSummaryWire {
@@ -89,6 +95,8 @@ function toTrip(wire: TripWire): Trip {
     endedAt: wire.ended_at,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    plannedDeparture: wire.planned_departure ?? null,
+    cancelledReason: wire.cancelled_reason ?? null,
   };
 }
 

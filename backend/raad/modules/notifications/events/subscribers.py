@@ -79,6 +79,9 @@ from raad.modules.transport_ops.application.queries import (
     GetTripByIdQuery,
     ListParentsForStudentQuery,
 )
+from raad.modules.transport_ops.application.operations_services import (
+    DailyOperationsApplicationService,
+)
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
     StudentParentApplicationService,
@@ -300,6 +303,56 @@ class VehicleArrivedAtOrganizationNotifier(EventProcessor):
         )
 
 
+class TripCancelledNotifier(EventProcessor):
+    """ADR-0054 §2: tells the parents of children who ride a cancelled trip's route on its bus.
+
+    **Not subscription-gated**, unlike the four D1 notifiers above: a child waiting at a stop for
+    a bus that is not coming is a safety matter, and `.claude/rules/backend.md` #6 keeps safety
+    notifications out of billing's reach. Recipients come from `transport_ops`'s own application
+    service (active assignments on that route and bus → linked parents → their logins).
+    """
+
+    event_type = "TripCancelled"
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def process(self, event: DomainEvent) -> None:
+        trip_id = event.aggregate_id
+        if not trip_id:
+            return
+        service = self._container.resolve(DailyOperationsApplicationService)
+        trip, user_ids = await service.parent_user_ids_for_trip(
+            trip_id, uow=self._container.resolve(TransportOpsUnitOfWork)
+        )
+        if trip is None:
+            logger.info("trip_cancelled_notice_skipped_trip_not_found", extra={"trip_id": trip_id})
+            return
+        period = "morning" if trip.trip_type.value == "morning" else "afternoon"
+        day = trip.scheduled_date.isoformat()
+        reason = event.payload.get("reason") or trip.cancelled_reason or ""
+        notification_service = self._container.resolve(NotificationApplicationService)
+        for user_id in user_ids:
+            await notification_service.create_notification(
+                CreateNotificationCommand(
+                    organization_id=str(trip.organization_id),
+                    recipient_user_id=user_id,
+                    type="system",
+                    title=f"Your child's {period} bus on {day} is cancelled",
+                    body=f"The {period} bus on {day} will not run. Reason: {reason}",
+                    data={
+                        "kind": "trip_cancelled",
+                        "trip_id": trip_id,
+                        "scheduled_date": day,
+                        "trip_type": trip.trip_type.value,
+                    },
+                    trip_id=trip_id,
+                    actor=SYSTEM_PRINCIPAL,
+                ),
+                uow=self._container.resolve(NotificationsUnitOfWork),
+            )
+
+
 def register_notification_processors(
     registry: EventProcessorRegistry, container: Container
 ) -> None:
@@ -311,3 +364,4 @@ def register_notification_processors(
     registry.register(TripEndedNotifier(fan_out))
     registry.register(VehicleApproachingStopNotifier(fan_out))
     registry.register(VehicleArrivedAtOrganizationNotifier(fan_out))
+    registry.register(TripCancelledNotifier(container))

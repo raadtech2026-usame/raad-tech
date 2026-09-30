@@ -60,7 +60,7 @@ addition for the flagged, pre-existing, module-wide gap this follows rather than
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from typing import Literal
 
@@ -435,6 +435,11 @@ class TripResponse(BaseModel):
     ended_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    #: ADR-0052/0054.
+    timetable_entry_id: str | None = None
+    planned_departure: time | None = None
+    cancelled_at: datetime | None = None
+    cancelled_reason: str | None = None
 
 
 class TripSummaryResponse(BaseModel):
@@ -445,6 +450,7 @@ class TripSummaryResponse(BaseModel):
     trip_type: str
     status: str
     scheduled_date: date
+    planned_departure: time | None = None
 
 
 class ScheduleTripRequest(BaseModel):
@@ -713,3 +719,172 @@ class StaffDocumentResponse(BaseModel):
     replaced_by_id: str | None
     private_fields_visible: bool
     created_at: datetime
+
+
+# ---- ADR-0052/0053/0054: daily transport operations -----------------------------------------
+
+
+class TimetableEntryRequest(BaseModel):
+    organization_id: str | None = None
+    route_id: str
+    vehicle_id: str
+    trip_type: Literal["morning", "afternoon"]
+    weekdays: list[int] = Field(min_length=1, max_length=7)
+    default_driver_id: str
+    valid_from: date
+    valid_until: date | None = None
+    planned_departure: time | None = None
+    is_active: bool = True
+
+
+class TimetableEntryResponse(BaseModel):
+    id: str
+    organization_id: str
+    route_id: str
+    route_name: str | None
+    vehicle_id: str
+    trip_type: str
+    weekdays: list[int]
+    planned_departure: time | None
+    default_driver_id: str
+    default_driver_name: str | None
+    valid_from: date
+    valid_until: date | None
+    is_active: bool
+
+
+class ClosureRequest(BaseModel):
+    organization_id: str | None = None
+    starts_on: date
+    ends_on: date
+    label: str = Field(min_length=1, max_length=120)
+
+
+class ClosureResponse(BaseModel):
+    id: str
+    organization_id: str
+    starts_on: date
+    ends_on: date
+    label: str
+    withdrawn_at: datetime | None
+
+
+class UnavailabilityRequest(BaseModel):
+    staff_id: str
+    starts_on: date
+    ends_on: date
+    reason: Literal["sick", "personal", "training", "other"]
+    note: str | None = Field(default=None, max_length=500)
+
+
+class CoverRequest(BaseModel):
+    unavailability_id: str
+    substitute_staff_id: str
+    vehicle_id: str
+    starts_on: date | None = None
+    ends_on: date | None = None
+
+
+class CoverResponse(BaseModel):
+    id: str
+    unavailability_id: str
+    absent_staff_id: str
+    absent_staff_name: str
+    substitute_staff_id: str
+    substitute_staff_name: str
+    vehicle_id: str
+    starts_on: date
+    ends_on: date
+    withdrawn_at: datetime | None
+    trips_reassigned: int = 0
+    warnings: list[str] = []
+
+
+class UnavailabilityResponse(BaseModel):
+    """`note` is `null` for everyone but the Org Admin (ADR-0053 §1)."""
+
+    id: str
+    organization_id: str
+    staff_id: str
+    staff_name: str
+    starts_on: date
+    ends_on: date
+    reason: str
+    note: str | None
+    withdrawn_at: datetime | None
+    covers: list[CoverResponse]
+    private_fields_visible: bool
+
+
+class BoardTripResponse(BaseModel):
+    id: str
+    trip_type: str
+    route_id: str
+    route_name: str | None
+    planned_departure: time | None
+    driver_id: str
+    driver_name: str | None
+    status: str
+    cancelled_reason: str | None
+    uncovered_reason: str | None
+
+
+class BoardCrewResponse(BaseModel):
+    staff_id: str
+    staff_name: str
+    role_name: str | None
+    is_substitute: bool
+    is_unavailable: bool
+    covered_by: str | None
+
+
+class BoardVehicleResponse(BaseModel):
+    vehicle_id: str
+    trips: list[BoardTripResponse]
+    crew: list[BoardCrewResponse]
+    crew_gaps: int
+
+
+class DailyBoardResponse(BaseModel):
+    date: date
+    closures: list[str]
+    vehicles: list[BoardVehicleResponse]
+    uncovered_trips: int
+
+
+class GenerateTripsRequest(BaseModel):
+    start: date | None = None
+    days: int = Field(default=7, ge=1, le=31)
+    dry_run: bool = False
+
+
+class PlannedTripResponse(BaseModel):
+    timetable_entry_id: str
+    scheduled_date: date
+    trip_type: str
+    route_id: str
+    vehicle_id: str
+    driver_id: str
+    is_substitute: bool
+
+
+class SkippedTripResponse(BaseModel):
+    timetable_entry_id: str
+    scheduled_date: date | None
+    reason: str
+
+
+class GenerationResultResponse(BaseModel):
+    start: date
+    days: int
+    dry_run: bool
+    to_create: list[PlannedTripResponse]
+    skipped: list[SkippedTripResponse]
+    closed_days: list[date]
+    created: int
+
+
+class CancelTripRequest(BaseModel):
+    """The reason is shown to the parents of the children on this trip (ADR-0054 §2)."""
+
+    reason: str = Field(min_length=1, max_length=255)

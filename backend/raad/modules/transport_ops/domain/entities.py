@@ -181,7 +181,7 @@ this route" business rule — no other route could be checked against regardless
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from raad.core.errors.exceptions import ConflictError, DomainError, RuleViolationError
 from raad.core.events.base import DomainEvent
@@ -191,16 +191,20 @@ from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     DriverStatus,
     Gender,
+    OperatingClosureId,
     OrganizationId,
     ParentId,
     ParentStatus,
     PhoneNumber,
     RouteId,
     RouteStatus,
+    RouteTimetableEntryId,
     StaffAssignmentKind,
+    StaffCoverId,
     StaffDocumentId,
     StaffDocumentStatus,
     StaffDocumentTypeId,
+    StaffUnavailabilityId,
     StopId,
     StudentAssignmentId,
     StudentAssignmentStatus,
@@ -212,6 +216,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     TransportStaffRoleId,
     TransportStaffStatus,
     TripType,
+    UnavailabilityReason,
     UserId,
     VehicleId,
     VehicleStaffAssignmentId,
@@ -1407,6 +1412,11 @@ class Trip(_AggregateRoot):
         ended_at: datetime | None,
         created_at: datetime,
         updated_at: datetime,
+        timetable_entry_id: RouteTimetableEntryId | None = None,
+        planned_departure: time | None = None,
+        cancelled_at: datetime | None = None,
+        cancelled_reason: str | None = None,
+        coverage_alert_key: str | None = None,
     ) -> None:
         super().__init__()
         self.id = id
@@ -1421,6 +1431,14 @@ class Trip(_AggregateRoot):
         self.ended_at = ended_at
         self.created_at = created_at
         self.updated_at = updated_at
+        #: ADR-0052: the timetable entry this trip was generated from, if any.
+        self.timetable_entry_id = timetable_entry_id
+        self.planned_departure = planned_departure
+        #: ADR-0054.
+        self.cancelled_at = cancelled_at
+        self.cancelled_reason = cancelled_reason
+        #: ADR-0053 §5: the last uncovered cause alerted, so a cause is announced once.
+        self.coverage_alert_key = coverage_alert_key
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Trip) and self.id == other.id
@@ -1443,6 +1461,8 @@ class Trip(_AggregateRoot):
         scheduled_date: date,
         clock: Clock,
         actor_id: str | None = None,
+        timetable_entry_id: RouteTimetableEntryId | None = None,
+        planned_departure: time | None = None,
     ) -> "Trip":
         """Factory for a newly-scheduled trip. Starts `SCHEDULED` — the sole entry point of
         the documented state diagram (Phase-2 §6.2: `[*] --> Scheduled`). Rejects
@@ -1478,6 +1498,8 @@ class Trip(_AggregateRoot):
             ended_at=None,
             created_at=now,
             updated_at=now,
+            timetable_entry_id=timetable_entry_id,
+            planned_departure=planned_departure,
         )
         trip._record(
             transport_ops_events.trip_scheduled(
@@ -1493,6 +1515,38 @@ class Trip(_AggregateRoot):
             )
         )
         return trip
+
+    def cancel(self, *, reason: str, clock: Clock, actor_id: str | None = None) -> None:
+        """ADR-0054: `Scheduled -> Cancelled`, final. A trip that has started is ended or
+        interrupted instead; anything else is an illegal transition (409)."""
+        reason = _require_text(reason, field="Cancellation reason", max_length=_CANCEL_REASON_MAX_LENGTH)
+        if self.status is not TripStatus.SCHEDULED:
+            raise RuleViolationError(
+                f"Trip {self.id} cannot be cancelled from status {self.status.value!r}: only a "
+                "scheduled trip can be cancelled."
+            )
+        now = clock.now()
+        self.status = TripStatus.CANCELLED
+        self.cancelled_at = now
+        self.cancelled_reason = reason
+        self.updated_at = now
+        self._record(
+            transport_ops_events.trip_cancelled(
+                trip_id=str(self.id),
+                organization_id=str(self.organization_id),
+                vehicle_id=str(self.vehicle_id),
+                route_id=str(self.route_id),
+                trip_type=self.trip_type.value,
+                scheduled_date=self.scheduled_date.isoformat(),
+                reason=reason,
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+
+    def mark_coverage_alerted(self, key: str | None) -> None:
+        """ADR-0053 §5 bookkeeping only: which uncovered cause was last announced."""
+        self.coverage_alert_key = key
 
     def start(self, *, clock: Clock, actor_id: str | None = None) -> None:
         """`Scheduled -> InProgress` (Phase-2 §6.2: "Driver starts trip"). Any other current
@@ -2531,5 +2585,369 @@ class StaffDocument(_AggregateRoot):
                 organization_id=str(self.organization_id),
                 threshold_days=threshold_days,
                 occurred_at=self.updated_at,
+            )
+        )
+
+
+# ============================================================================================
+# ADR-0052/0053: timetable, closed days, unavailability and cover
+# ============================================================================================
+
+_CANCEL_REASON_MAX_LENGTH = 255
+_CLOSURE_LABEL_MAX_LENGTH = 120
+
+
+def _normalise_weekdays(weekdays: list[int] | tuple[int, ...]) -> tuple[int, ...]:
+    values = tuple(sorted({int(day) for day in weekdays}))
+    if not values:
+        raise DomainError("Choose at least one weekday")
+    if any(day < 1 or day > 7 for day in values):
+        raise DomainError("Weekdays are 1 (Monday) to 7 (Sunday)")
+    return values
+
+
+def _check_period(starts_on: date, ends_on: date | None, *, what: str) -> None:
+    if ends_on is not None and ends_on < starts_on:
+        raise DomainError(f"{what} cannot end before it starts")
+
+
+class RouteTimetableEntry(_AggregateRoot):
+    """ADR-0052 §1: one regular run — this bus, on this route, in this period, on these
+    weekdays, driven by default by this driver. Trips are generated from it; editing it never
+    rewrites a trip already generated."""
+
+    _EDITABLE = (
+        "route_id",
+        "vehicle_id",
+        "trip_type",
+        "weekdays",
+        "planned_departure",
+        "default_driver_id",
+        "valid_from",
+        "valid_until",
+        "is_active",
+    )
+
+    def __init__(
+        self,
+        *,
+        id: RouteTimetableEntryId,
+        organization_id: OrganizationId,
+        route_id: RouteId,
+        vehicle_id: VehicleId,
+        trip_type: TripType,
+        weekdays: tuple[int, ...],
+        planned_departure: time | None,
+        default_driver_id: DriverId,
+        valid_from: date,
+        valid_until: date | None,
+        is_active: bool,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        _check_period(valid_from, valid_until, what="A timetable entry")
+        self.id = id
+        self.organization_id = organization_id
+        self.route_id = route_id
+        self.vehicle_id = vehicle_id
+        self.trip_type = trip_type
+        self.weekdays = _normalise_weekdays(weekdays)
+        self.planned_departure = planned_departure
+        self.default_driver_id = default_driver_id
+        self.valid_from = valid_from
+        self.valid_until = valid_until
+        self.is_active = is_active
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, RouteTimetableEntry) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    def create(cls, *, id: RouteTimetableEntryId, organization_id: OrganizationId, clock: Clock,
+               actor_id: str | None = None, **values: object) -> "RouteTimetableEntry":
+        now = clock.now()
+        entry = cls(id=id, organization_id=organization_id, created_at=now, updated_at=now,
+                    **{"is_active": True, **values})  # type: ignore[arg-type]
+        entry._saved(created=True, actor_id=actor_id)
+        return entry
+
+    def update(self, *, clock: Clock, actor_id: str | None = None, **values: object) -> None:
+        unknown = set(values) - set(self._EDITABLE)
+        if unknown:
+            raise DomainError(f"Unknown timetable field(s): {sorted(unknown)}")
+        merged = {field: values.get(field, getattr(self, field)) for field in self._EDITABLE}
+        candidate = RouteTimetableEntry(
+            id=self.id,
+            organization_id=self.organization_id,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+            **merged,  # type: ignore[arg-type]
+        )
+        changed = [f for f in self._EDITABLE if getattr(candidate, f) != getattr(self, f)]
+        if not changed:
+            return
+        for field in changed:
+            setattr(self, field, getattr(candidate, field))
+        self.updated_at = clock.now()
+        self._saved(created=False, actor_id=actor_id)
+
+    def runs_on(self, day: date) -> bool:
+        return (
+            self.is_active
+            and day.isoweekday() in self.weekdays
+            and self.valid_from <= day
+            and (self.valid_until is None or day <= self.valid_until)
+        )
+
+    def clashes_with(self, other: "RouteTimetableEntry") -> bool:
+        """Same bus, same period, a shared weekday and overlapping validity (ADR-0052 §1)."""
+        if other.id == self.id or not (self.is_active and other.is_active):
+            return False
+        if other.vehicle_id != self.vehicle_id or other.trip_type is not self.trip_type:
+            return False
+        if not set(self.weekdays) & set(other.weekdays):
+            return False
+        mine_end = self.valid_until or date.max
+        theirs_end = other.valid_until or date.max
+        return self.valid_from <= theirs_end and other.valid_from <= mine_end
+
+    def _saved(self, *, created: bool, actor_id: str | None) -> None:
+        self._record(
+            transport_ops_events.route_timetable_entry_saved(
+                entry_id=str(self.id),
+                organization_id=str(self.organization_id),
+                route_id=str(self.route_id),
+                vehicle_id=str(self.vehicle_id),
+                trip_type=self.trip_type.value,
+                weekdays=list(self.weekdays),
+                is_active=self.is_active,
+                created=created,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+
+class OperatingClosure(_AggregateRoot):
+    """ADR-0052 §2: days the organization runs no transport. Withdrawn, never deleted."""
+
+    def __init__(
+        self,
+        *,
+        id: OperatingClosureId,
+        organization_id: OrganizationId,
+        starts_on: date,
+        ends_on: date,
+        label: str,
+        withdrawn_at: datetime | None,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        _check_period(starts_on, ends_on, what="A closure")
+        self.id = id
+        self.organization_id = organization_id
+        self.starts_on = starts_on
+        self.ends_on = ends_on
+        self.label = _require_text(label, field="Closure label", max_length=_CLOSURE_LABEL_MAX_LENGTH)
+        self.withdrawn_at = withdrawn_at
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    @classmethod
+    def record(cls, *, id: OperatingClosureId, organization_id: OrganizationId, starts_on: date,
+               ends_on: date, label: str, clock: Clock, actor_id: str | None = None) -> "OperatingClosure":
+        now = clock.now()
+        closure = cls(id=id, organization_id=organization_id, starts_on=starts_on, ends_on=ends_on,
+                      label=label, withdrawn_at=None, created_at=now, updated_at=now)
+        closure._saved(withdrawn=False, actor_id=actor_id)
+        return closure
+
+    def covers(self, day: date) -> bool:
+        return self.withdrawn_at is None and self.starts_on <= day <= self.ends_on
+
+    def withdraw(self, *, clock: Clock, actor_id: str | None = None) -> bool:
+        if self.withdrawn_at is not None:
+            return False
+        self.withdrawn_at = self.updated_at = clock.now()
+        self._saved(withdrawn=True, actor_id=actor_id)
+        return True
+
+    def _saved(self, *, withdrawn: bool, actor_id: str | None) -> None:
+        self._record(
+            transport_ops_events.operating_closure_saved(
+                closure_id=str(self.id),
+                organization_id=str(self.organization_id),
+                starts_on=self.starts_on.isoformat(),
+                ends_on=self.ends_on.isoformat(),
+                withdrawn=withdrawn,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+
+class StaffUnavailability(_AggregateRoot):
+    """ADR-0053 §1: "this person cannot work from X to Y" — an operational fact entered by the
+    Org Admin. Not leave management: no request, approval or balance. The note is private."""
+
+    def __init__(
+        self,
+        *,
+        id: StaffUnavailabilityId,
+        organization_id: OrganizationId,
+        staff_id: TransportStaffId,
+        starts_on: date,
+        ends_on: date,
+        reason: UnavailabilityReason,
+        note: str | None,
+        withdrawn_at: datetime | None,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        _check_period(starts_on, ends_on, what="An unavailability")
+        _validate_notes(note)
+        self.id = id
+        self.organization_id = organization_id
+        self.staff_id = staff_id
+        self.starts_on = starts_on
+        self.ends_on = ends_on
+        self.reason = reason
+        self.note = note
+        self.withdrawn_at = withdrawn_at
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    @classmethod
+    def record(cls, *, id: StaffUnavailabilityId, organization_id: OrganizationId,
+               staff_id: TransportStaffId, starts_on: date, ends_on: date,
+               reason: UnavailabilityReason, note: str | None, clock: Clock,
+               actor_id: str | None = None) -> "StaffUnavailability":
+        now = clock.now()
+        item = cls(id=id, organization_id=organization_id, staff_id=staff_id, starts_on=starts_on,
+                   ends_on=ends_on, reason=reason, note=note, withdrawn_at=None, created_at=now,
+                   updated_at=now)
+        item._saved(withdrawn=False, actor_id=actor_id)
+        return item
+
+    @property
+    def is_withdrawn(self) -> bool:
+        return self.withdrawn_at is not None
+
+    def covers(self, day: date) -> bool:
+        return not self.is_withdrawn and self.starts_on <= day <= self.ends_on
+
+    def withdraw(self, *, clock: Clock, actor_id: str | None = None) -> bool:
+        if self.is_withdrawn:
+            return False
+        self.withdrawn_at = self.updated_at = clock.now()
+        self._saved(withdrawn=True, actor_id=actor_id)
+        return True
+
+    def _saved(self, *, withdrawn: bool, actor_id: str | None) -> None:
+        self._record(
+            transport_ops_events.staff_unavailability_saved(
+                unavailability_id=str(self.id),
+                organization_id=str(self.organization_id),
+                staff_id=str(self.staff_id),
+                starts_on=self.starts_on.isoformat(),
+                ends_on=self.ends_on.isoformat(),
+                reason=self.reason.value,
+                withdrawn=withdrawn,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+
+class StaffCover(_AggregateRoot):
+    """ADR-0053 §2: who stands in for an unavailable person, on which bus, for which days. The
+    substitute's temporary crew assignment (ADR-0050) is the history row; this links it to the
+    unavailability it answers."""
+
+    def __init__(
+        self,
+        *,
+        id: StaffCoverId,
+        organization_id: OrganizationId,
+        unavailability_id: StaffUnavailabilityId,
+        absent_staff_id: TransportStaffId,
+        substitute_staff_id: TransportStaffId,
+        vehicle_id: VehicleId,
+        starts_on: date,
+        ends_on: date,
+        assignment_id: VehicleStaffAssignmentId | None,
+        withdrawn_at: datetime | None,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        _check_period(starts_on, ends_on, what="A cover")
+        if substitute_staff_id == absent_staff_id:
+            raise DomainError("Someone cannot cover for themselves")
+        self.id = id
+        self.organization_id = organization_id
+        self.unavailability_id = unavailability_id
+        self.absent_staff_id = absent_staff_id
+        self.substitute_staff_id = substitute_staff_id
+        self.vehicle_id = vehicle_id
+        self.starts_on = starts_on
+        self.ends_on = ends_on
+        self.assignment_id = assignment_id
+        self.withdrawn_at = withdrawn_at
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    @classmethod
+    def create(cls, *, id: StaffCoverId, organization_id: OrganizationId,
+               unavailability: StaffUnavailability, substitute_staff_id: TransportStaffId,
+               vehicle_id: VehicleId, starts_on: date, ends_on: date,
+               assignment_id: VehicleStaffAssignmentId | None, clock: Clock,
+               actor_id: str | None = None) -> "StaffCover":
+        if unavailability.is_withdrawn:
+            raise DomainError("This unavailability has been withdrawn")
+        if starts_on < unavailability.starts_on or ends_on > unavailability.ends_on:
+            raise DomainError("A cover must fall within the unavailability it covers")
+        now = clock.now()
+        cover = cls(id=id, organization_id=organization_id, unavailability_id=unavailability.id,
+                    absent_staff_id=unavailability.staff_id, substitute_staff_id=substitute_staff_id,
+                    vehicle_id=vehicle_id, starts_on=starts_on, ends_on=ends_on,
+                    assignment_id=assignment_id, withdrawn_at=None, created_at=now, updated_at=now)
+        cover._saved(withdrawn=False, actor_id=actor_id)
+        return cover
+
+    @property
+    def is_withdrawn(self) -> bool:
+        return self.withdrawn_at is not None
+
+    def covers(self, day: date) -> bool:
+        return not self.is_withdrawn and self.starts_on <= day <= self.ends_on
+
+    def withdraw(self, *, clock: Clock, actor_id: str | None = None) -> bool:
+        if self.is_withdrawn:
+            return False
+        self.withdrawn_at = self.updated_at = clock.now()
+        self._saved(withdrawn=True, actor_id=actor_id)
+        return True
+
+    def _saved(self, *, withdrawn: bool, actor_id: str | None) -> None:
+        self._record(
+            transport_ops_events.staff_cover_saved(
+                cover_id=str(self.id),
+                organization_id=str(self.organization_id),
+                unavailability_id=str(self.unavailability_id),
+                substitute_staff_id=str(self.substitute_staff_id),
+                vehicle_id=str(self.vehicle_id),
+                starts_on=self.starts_on.isoformat(),
+                ends_on=self.ends_on.isoformat(),
+                withdrawn=withdrawn,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
             )
         )

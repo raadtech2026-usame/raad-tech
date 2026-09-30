@@ -77,7 +77,7 @@ transferred/… → CR-1 revocation event"), fanning out by `status` exactly lik
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, time
 
 from raad.core.tenancy.principal import Principal
 
@@ -583,4 +583,71 @@ class RecordStaffDocumentCommand:
 class UpdateStaffDocumentCommand:
     document_id: str
     changes: dict
+    actor: Principal
+
+
+# ---- ADR-0052/0053/0054: daily transport operations -----------------------------------------
+
+
+@dataclass(frozen=True)
+class SaveTimetableEntryCommand:
+    """Create (`entry_id` absent) or replace an entry's fields."""
+
+    organization_id: str
+    route_id: str
+    vehicle_id: str
+    trip_type: str
+    weekdays: tuple[int, ...]
+    default_driver_id: str
+    valid_from: date
+    actor: Principal
+    valid_until: date | None = None
+    planned_departure: time | None = None
+    is_active: bool = True
+    entry_id: str | None = None
+
+
+@dataclass(frozen=True)
+class RecordClosureCommand:
+    organization_id: str
+    starts_on: date
+    ends_on: date
+    label: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RecordUnavailabilityCommand:
+    staff_id: str
+    starts_on: date
+    ends_on: date
+    reason: str
+    actor: Principal
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class CreateCoverCommand:
+    unavailability_id: str
+    substitute_staff_id: str
+    vehicle_id: str
+    actor: Principal
+    starts_on: date | None = None
+    ends_on: date | None = None
+
+
+@dataclass(frozen=True)
+class GenerateTripsCommand:
+    """ADR-0052 §4. `days` from `start`; `dry_run` returns the plan without writing."""
+
+    actor: Principal
+    start: date | None = None
+    days: int = 7
+    dry_run: bool = False
+
+
+@dataclass(frozen=True)
+class CancelTripCommand:
+    trip_id: str
+    reason: str
     actor: Principal

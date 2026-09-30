@@ -43,8 +43,12 @@ from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
     Route,
+    OperatingClosure,
+    RouteTimetableEntry,
+    StaffCover,
     StaffDocument,
     StaffDocumentType,
+    StaffUnavailability,
     Stop,
     Student,
     StudentAssignment,
@@ -64,9 +68,13 @@ from raad.modules.transport_ops.domain.value_objects import (
     PhoneNumber,
     RouteId,
     RouteStatus,
+    OperatingClosureId,
+    RouteTimetableEntryId,
     StaffAssignmentKind,
+    StaffCoverId,
     StaffDocumentId,
     StaffDocumentTypeId,
+    StaffUnavailabilityId,
     StopId,
     StudentAssignmentId,
     StudentAssignmentStatus,
@@ -78,6 +86,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     TransportStaffRoleId,
     TransportStaffStatus,
     TripType,
+    UnavailabilityReason,
     UserId,
     VehicleId,
     VehicleStaffAssignmentId,
@@ -89,8 +98,12 @@ from raad.modules.transport_ops.infra.models import (
     StopModel,
     StudentAssignmentModel,
     StudentModel,
+    OperatingClosureModel,
+    RouteTimetableEntryModel,
+    StaffCoverModel,
     StaffDocumentModel,
     StaffDocumentTypeModel,
+    StaffUnavailabilityModel,
     StudentParentModel,
     TransportStaffModel,
     TransportStaffRoleModel,
@@ -351,6 +364,11 @@ def trip_to_model(trip: Trip, *, existing: TripModel | None = None) -> TripModel
     model.ended_at = _to_naive_utc(trip.ended_at)
     model.created_at = _to_naive_utc(trip.created_at)
     model.updated_at = _to_naive_utc(trip.updated_at)
+    model.timetable_entry_id = _str_or_none(trip.timetable_entry_id)
+    model.planned_departure = trip.planned_departure
+    model.cancelled_at = _to_naive_utc(trip.cancelled_at)
+    model.cancelled_reason = trip.cancelled_reason
+    model.coverage_alert_key = trip.coverage_alert_key
     return model
 
 
@@ -368,6 +386,15 @@ def model_to_trip(model: TripModel) -> Trip:
         ended_at=model.ended_at,
         created_at=model.created_at,
         updated_at=model.updated_at,
+        timetable_entry_id=(
+            RouteTimetableEntryId(model.timetable_entry_id.strip())
+            if model.timetable_entry_id
+            else None
+        ),
+        planned_departure=model.planned_departure,
+        cancelled_at=model.cancelled_at,
+        cancelled_reason=model.cancelled_reason,
+        coverage_alert_key=model.coverage_alert_key,
     )
 
 
@@ -590,6 +617,141 @@ def model_to_staff_document(model: StaffDocumentModel) -> StaffDocument:
         notes=model.notes,
         replaced_by_id=StaffDocumentId(model.replaced_by_id) if model.replaced_by_id else None,
         alerted_threshold_days=model.alerted_threshold_days,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+# ---- ADR-0052/0053 ------------------------------------------------------------------------------
+
+
+def _id_or_none(cls, value: str | None):
+    return cls(value.strip()) if value else None
+
+
+def route_timetable_entry_to_model(
+    entry: RouteTimetableEntry, *, existing: RouteTimetableEntryModel | None = None
+) -> RouteTimetableEntryModel:
+    model = existing if existing is not None else RouteTimetableEntryModel(id=str(entry.id))
+    model.organization_id = str(entry.organization_id)
+    model.route_id = str(entry.route_id)
+    model.vehicle_id = str(entry.vehicle_id)
+    model.trip_type = entry.trip_type.value
+    model.weekdays = list(entry.weekdays)
+    model.planned_departure = entry.planned_departure
+    model.default_driver_id = str(entry.default_driver_id)
+    model.valid_from = entry.valid_from
+    model.valid_until = entry.valid_until
+    model.is_active = entry.is_active
+    model.created_at = _to_naive_utc(entry.created_at)
+    model.updated_at = _to_naive_utc(entry.updated_at)
+    return model
+
+
+def model_to_route_timetable_entry(model: RouteTimetableEntryModel) -> RouteTimetableEntry:
+    return RouteTimetableEntry(
+        id=RouteTimetableEntryId(model.id.strip()),
+        organization_id=OrganizationId(model.organization_id.strip()),
+        route_id=RouteId(model.route_id.strip()),
+        vehicle_id=VehicleId(model.vehicle_id.strip()),
+        trip_type=TripType(model.trip_type),
+        weekdays=tuple(model.weekdays or ()),
+        planned_departure=model.planned_departure,
+        default_driver_id=DriverId(model.default_driver_id.strip()),
+        valid_from=model.valid_from,
+        valid_until=model.valid_until,
+        is_active=model.is_active,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def operating_closure_to_model(
+    closure: OperatingClosure, *, existing: OperatingClosureModel | None = None
+) -> OperatingClosureModel:
+    model = existing if existing is not None else OperatingClosureModel(id=str(closure.id))
+    model.organization_id = str(closure.organization_id)
+    model.starts_on = closure.starts_on
+    model.ends_on = closure.ends_on
+    model.label = closure.label
+    model.withdrawn_at = _to_naive_utc(closure.withdrawn_at)
+    model.created_at = _to_naive_utc(closure.created_at)
+    model.updated_at = _to_naive_utc(closure.updated_at)
+    return model
+
+
+def model_to_operating_closure(model: OperatingClosureModel) -> OperatingClosure:
+    return OperatingClosure(
+        id=OperatingClosureId(model.id.strip()),
+        organization_id=OrganizationId(model.organization_id.strip()),
+        starts_on=model.starts_on,
+        ends_on=model.ends_on,
+        label=model.label,
+        withdrawn_at=model.withdrawn_at,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def staff_unavailability_to_model(
+    item: StaffUnavailability, *, existing: StaffUnavailabilityModel | None = None
+) -> StaffUnavailabilityModel:
+    model = existing if existing is not None else StaffUnavailabilityModel(id=str(item.id))
+    model.organization_id = str(item.organization_id)
+    model.staff_id = str(item.staff_id)
+    model.starts_on = item.starts_on
+    model.ends_on = item.ends_on
+    model.reason = item.reason.value
+    model.note = item.note
+    model.withdrawn_at = _to_naive_utc(item.withdrawn_at)
+    model.created_at = _to_naive_utc(item.created_at)
+    model.updated_at = _to_naive_utc(item.updated_at)
+    return model
+
+
+def model_to_staff_unavailability(model: StaffUnavailabilityModel) -> StaffUnavailability:
+    return StaffUnavailability(
+        id=StaffUnavailabilityId(model.id.strip()),
+        organization_id=OrganizationId(model.organization_id.strip()),
+        staff_id=TransportStaffId(model.staff_id.strip()),
+        starts_on=model.starts_on,
+        ends_on=model.ends_on,
+        reason=UnavailabilityReason(model.reason),
+        note=model.note,
+        withdrawn_at=model.withdrawn_at,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def staff_cover_to_model(cover: StaffCover, *, existing: StaffCoverModel | None = None) -> StaffCoverModel:
+    model = existing if existing is not None else StaffCoverModel(id=str(cover.id))
+    model.organization_id = str(cover.organization_id)
+    model.unavailability_id = str(cover.unavailability_id)
+    model.absent_staff_id = str(cover.absent_staff_id)
+    model.substitute_staff_id = str(cover.substitute_staff_id)
+    model.vehicle_id = str(cover.vehicle_id)
+    model.starts_on = cover.starts_on
+    model.ends_on = cover.ends_on
+    model.assignment_id = _str_or_none(cover.assignment_id)
+    model.withdrawn_at = _to_naive_utc(cover.withdrawn_at)
+    model.created_at = _to_naive_utc(cover.created_at)
+    model.updated_at = _to_naive_utc(cover.updated_at)
+    return model
+
+
+def model_to_staff_cover(model: StaffCoverModel) -> StaffCover:
+    return StaffCover(
+        id=StaffCoverId(model.id.strip()),
+        organization_id=OrganizationId(model.organization_id.strip()),
+        unavailability_id=StaffUnavailabilityId(model.unavailability_id.strip()),
+        absent_staff_id=TransportStaffId(model.absent_staff_id.strip()),
+        substitute_staff_id=TransportStaffId(model.substitute_staff_id.strip()),
+        vehicle_id=VehicleId(model.vehicle_id.strip()),
+        starts_on=model.starts_on,
+        ends_on=model.ends_on,
+        assignment_id=_id_or_none(VehicleStaffAssignmentId, model.assignment_id),
+        withdrawn_at=model.withdrawn_at,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )

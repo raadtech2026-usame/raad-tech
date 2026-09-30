@@ -25,6 +25,7 @@ import { StudentsPage } from "../features/transport-ops/students/StudentsPage";
 import { ParentsPage } from "../features/transport-ops/parents/ParentsPage";
 import { DriversPage } from "../features/transport-ops/drivers/DriversPage";
 import { TransportStaffPage } from "../features/transport-ops/staff/TransportStaffPage";
+import { DailyOperationsPage } from "../features/transport-ops/operations/DailyOperationsPage";
 import { RoutesPage } from "../features/transport-ops/routes/RoutesPage";
 import { TripsPage } from "../features/transport-ops/trips/TripsPage";
 import { NotificationsPage } from "../features/notifications/NotificationsPage";
@@ -199,6 +200,7 @@ const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/devices": <DevicesPage />,
   "/platform/drivers": <DriversPage />,
   "/platform/staff": <TransportStaffPage />,
+  "/platform/operations": <DailyOperationsPage />,
   "/platform/routes": <RoutesPage />,
   "/platform/trips": <TripsPage />,
   "/platform/tracking": <Lazy><LiveTrackingPage /></Lazy>,
@@ -233,6 +235,7 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/parents": <ParentsPage />,
   "/org/drivers": <DriversPage />,
   "/org/staff": <TransportStaffPage />,
+  "/org/operations": <DailyOperationsPage />,
   "/org/routes": <RoutesPage />,
   "/org/trips": <TripsPage />,
   "/org/tracking": <Lazy><LiveTrackingPage /></Lazy>,

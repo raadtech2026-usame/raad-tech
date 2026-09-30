@@ -76,6 +76,7 @@ phase actually touches, `api/routers.py`'s module docstring).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import date
 
 from raad.core.pagination import (
     FilterCondition,
@@ -85,11 +86,15 @@ from raad.core.pagination import (
 )
 from raad.modules.transport_ops.domain.entities import (
     Driver,
+    OperatingClosure,
     Parent,
     Route,
+    RouteTimetableEntry,
+    StaffCover,
     StaffDocument,
     StaffDocumentType,
     Student,
+    StaffUnavailability,
     StudentAssignment,
     StudentParent,
     TransportStaff,
@@ -99,10 +104,14 @@ from raad.modules.transport_ops.domain.entities import (
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
+    OperatingClosureId,
     ParentId,
     RouteId,
+    RouteTimetableEntryId,
+    StaffCoverId,
     StaffDocumentId,
     StaffDocumentTypeId,
+    StaffUnavailabilityId,
     StudentAssignmentId,
     StudentId,
     TransportStaffId,
@@ -266,6 +275,10 @@ class DriverRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_by_ids(self, driver_ids: list[str]) -> list[Driver]:
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_by_staff_id(self, staff_id: TransportStaffId) -> Driver | None:
         """ADR-0049: the driving extension of one staff member, if they have one."""
         raise NotImplementedError
@@ -369,6 +382,14 @@ class TripRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_between(
+        self, start: date, end: date, *, vehicle_id: VehicleId | None = None
+    ) -> list[Trip]:
+        """ADR-0052/0053: every trip dated `start..end` inclusive, cancelled ones included,
+        within the caller's scope."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def active_trip_for_vehicle(self, vehicle_id: VehicleId) -> Trip | None:
         """LLD §7.2 verbatim — the currently `IN_PROGRESS` trip for a vehicle, or None. Backs
         the one-active-trip-per-vehicle guard (safety-critical invariant,
@@ -415,6 +436,13 @@ class StudentAssignmentRepository(ABC):
     async def list_all(self) -> list[StudentAssignment]:
         """Backs `ListStudentAssignmentsQuery` (Phase 13). Already implicitly scoped to the
         caller's tenant — see module docstring."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_active_for_route_vehicle(
+        self, route_id: RouteId, vehicle_id: VehicleId
+    ) -> list[StudentAssignment]:
+        """ADR-0054 §2: the active assignments whose children ride this route on this bus."""
         raise NotImplementedError
 
     @abstractmethod
@@ -501,6 +529,13 @@ class VehicleStaffAssignmentRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_between(
+        self, start: date, end: date, *, vehicle_id: VehicleId | None = None
+    ) -> list[VehicleStaffAssignment]:
+        """ADR-0053: assignments in force on any day of `start..end`."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def list_for(
         self,
         *,
@@ -549,4 +584,79 @@ class StaffDocumentRepository(ABC):
         """Documents that are not superseded and have an expiry date — the only ones that can
         be expiring or due an alert. Scoped like every other read (ADR-0021); the scheduled
         job reads with an unrestricted scope across organizations."""
+        raise NotImplementedError
+
+
+# ---- ADR-0052/0053: timetable, closures, unavailability, cover ------------------------------
+
+
+class RouteTimetableEntryRepository(ABC):
+    @abstractmethod
+    async def get(self, entry_id: RouteTimetableEntryId) -> RouteTimetableEntry | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, entry: RouteTimetableEntry) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_all(self, *, route_id: RouteId | None = None) -> list[RouteTimetableEntry]:
+        raise NotImplementedError
+
+
+class OperatingClosureRepository(ABC):
+    @abstractmethod
+    async def get(self, closure_id: OperatingClosureId) -> OperatingClosure | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, closure: OperatingClosure) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_overlapping(self, start: date, end: date) -> list[OperatingClosure]:
+        """Closures touching `start..end`, withdrawn ones excluded."""
+        raise NotImplementedError
+
+
+class StaffUnavailabilityRepository(ABC):
+    @abstractmethod
+    async def get(self, unavailability_id: StaffUnavailabilityId) -> StaffUnavailability | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, item: StaffUnavailability) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_overlapping(
+        self, start: date, end: date, *, staff_id: TransportStaffId | None = None
+    ) -> list[StaffUnavailability]:
+        """Unavailabilities touching `start..end`, withdrawn ones excluded."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_staff(self, staff_id: TransportStaffId) -> list[StaffUnavailability]:
+        """Every unavailability of one person, withdrawn ones included, newest first."""
+        raise NotImplementedError
+
+
+class StaffCoverRepository(ABC):
+    @abstractmethod
+    async def get(self, cover_id: StaffCoverId) -> StaffCover | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, cover: StaffCover) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_overlapping(self, start: date, end: date) -> list[StaffCover]:
+        """Covers touching `start..end`, withdrawn ones excluded."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_unavailability(
+        self, unavailability_id: StaffUnavailabilityId
+    ) -> list[StaffCover]:
         raise NotImplementedError

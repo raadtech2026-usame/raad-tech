@@ -576,6 +576,21 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("PATCH", "/api/v1/staff-document-types/{type_id}", "ADR-0051 SS1 - alert lead days"),
     ("GET", "/api/v1/staff-documents/expiring", "ADR-0051 SS3 - expiring or expired, soonest first"),
     ("PATCH", "/api/v1/staff-documents/{document_id}", "ADR-0051 - correct details"),
+    # ADR-0052/0053/0054: daily transport operations (transport_ops).
+    ("GET", "/api/v1/route-timetable", "ADR-0052 SS1 - the weekly plan"),
+    ("POST", "/api/v1/route-timetable", "ADR-0052 SS1 - one regular run; 409 on a clash"),
+    ("PUT", "/api/v1/route-timetable/{entry_id}", "ADR-0052 SS1 - generated trips unchanged"),
+    ("GET", "/api/v1/operating-closures", "ADR-0052 SS2 - closed days in a range"),
+    ("POST", "/api/v1/operating-closures", "ADR-0052 SS2 - record closed days"),
+    ("POST", "/api/v1/operating-closures/{closure_id}/withdraw", "ADR-0052 SS2 - kept as history"),
+    ("GET", "/api/v1/staff-unavailability", "ADR-0053 SS1 - note Org Admin only"),
+    ("POST", "/api/v1/staff-unavailability", "ADR-0053 SS1 - not leave management"),
+    ("POST", "/api/v1/staff-unavailability/{unavailability_id}/withdraw", "ADR-0053 SS2 - withdraws its covers"),
+    ("POST", "/api/v1/staff-covers", "ADR-0053 SS2 - crew row + trips in one commit"),
+    ("POST", "/api/v1/staff-covers/{cover_id}/withdraw", "ADR-0053 SS2 - original driver restored"),
+    ("GET", "/api/v1/daily-operations", "ADR-0053 SS4 - the daily board"),
+    ("POST", "/api/v1/trips/generate", "ADR-0052 SS4 - idempotent generation, dry_run preview"),
+    ("POST", "/api/v1/trips/{trip_id}/cancel", "ADR-0054 - scheduled only; parents told"),
     # platform_finance (C12) - Vendor -> RAAD. founder/finance_staff only; no org_admin grant
     # exists in this namespace at all, and these tables carry no organization_id to scope by.
     ("GET", "/api/v1/platform-finance/categories", "ADR-0040 SS1 - platform_finance C12"),

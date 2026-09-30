@@ -18,6 +18,10 @@ from raad.modules.transport_ops.domain.entities import (
     VehicleStaffAssignment,
 )
 from raad.modules.transport_ops.domain.repositories import (
+    OperatingClosureRepository,
+    RouteTimetableEntryRepository,
+    StaffCoverRepository,
+    StaffUnavailabilityRepository,
     StaffDocumentRepository,
     StaffDocumentTypeRepository,
     TransportStaffRepository,
@@ -103,6 +107,15 @@ class InMemoryVehicleStaffAssignmentRepository(VehicleStaffAssignmentRepository)
     def add(self, assignment: VehicleStaffAssignment) -> None:
         self.by_id[str(assignment.id)] = assignment
 
+    async def list_between(self, start, end, *, vehicle_id=None) -> list[VehicleStaffAssignment]:
+        return [
+            a
+            for a in self.by_id.values()
+            if a.starts_on <= end
+            and (a.ends_on is None or a.ends_on >= start)
+            and (vehicle_id is None or a.vehicle_id == vehicle_id)
+        ]
+
     async def list_for(self, *, staff_id=None, vehicle_id=None) -> list[VehicleStaffAssignment]:
         rows = [
             a
@@ -161,6 +174,66 @@ class InMemoryStaffDocumentRepository(StaffDocumentRepository):
         )
 
 
+class InMemoryRouteTimetableEntryRepository(RouteTimetableEntryRepository):
+    def __init__(self) -> None:
+        self.by_id: dict = {}
+
+    async def get(self, entry_id):
+        return self.by_id.get(str(entry_id))
+
+    def add(self, entry) -> None:
+        self.by_id[str(entry.id)] = entry
+
+    async def list_all(self, *, route_id=None):
+        return [e for e in self.by_id.values() if route_id is None or e.route_id == route_id]
+
+
+class _Dated:
+    def __init__(self) -> None:
+        self.by_id: dict = {}
+
+    async def get(self, item_id):
+        return self.by_id.get(str(item_id))
+
+    def add(self, item) -> None:
+        self.by_id[str(item.id)] = item
+
+    def _overlapping(self, start, end):
+        return sorted(
+            (
+                i
+                for i in self.by_id.values()
+                if i.withdrawn_at is None and i.starts_on <= end and i.ends_on >= start
+            ),
+            key=lambda i: i.starts_on,
+        )
+
+
+class InMemoryOperatingClosureRepository(_Dated, OperatingClosureRepository):
+    async def list_overlapping(self, start, end):
+        return self._overlapping(start, end)
+
+
+class InMemoryStaffUnavailabilityRepository(_Dated, StaffUnavailabilityRepository):
+    async def list_overlapping(self, start, end, *, staff_id=None):
+        return [i for i in self._overlapping(start, end) if staff_id is None or i.staff_id == staff_id]
+
+    async def list_for_staff(self, staff_id):
+        return sorted(
+            (i for i in self.by_id.values() if i.staff_id == staff_id),
+            key=lambda i: i.starts_on,
+            reverse=True,
+        )
+
+
+class InMemoryStaffCoverRepository(_Dated, StaffCoverRepository):
+    async def list_overlapping(self, start, end):
+        return self._overlapping(start, end)
+
+    async def list_for_unavailability(self, unavailability_id):
+        return [c for c in self.by_id.values() if c.unavailability_id == unavailability_id]
+
+
 def attach_staff_repositories(uow) -> None:
     """Gives a fake `TransportOpsUnitOfWork` empty staff repositories."""
     uow.staff_roles = InMemoryTransportStaffRoleRepository()
@@ -168,3 +241,7 @@ def attach_staff_repositories(uow) -> None:
     uow.staff_assignments = InMemoryVehicleStaffAssignmentRepository()
     uow.staff_document_types = InMemoryStaffDocumentTypeRepository()
     uow.staff_documents = InMemoryStaffDocumentRepository()
+    uow.timetable = InMemoryRouteTimetableEntryRepository()
+    uow.closures = InMemoryOperatingClosureRepository()
+    uow.unavailability = InMemoryStaffUnavailabilityRepository()
+    uow.covers = InMemoryStaffCoverRepository()

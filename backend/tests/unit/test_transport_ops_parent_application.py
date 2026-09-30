@@ -311,6 +311,15 @@ class InMemoryStudentAssignmentRepository(StudentAssignmentRepository):
     async def get(self, student_assignment_id: StudentAssignmentId) -> StudentAssignment | None:
         return self.by_id.get(str(student_assignment_id))
 
+    async def list_active_for_route_vehicle(self, route_id, vehicle_id):
+        return [
+            a
+            for a in self.by_id.values()
+            if a.route_id == route_id
+            and a.vehicle_id == vehicle_id
+            and a.status.value == "active"
+        ]
+
     def add(self, assignment: StudentAssignment) -> None:
         self.by_id[str(assignment.id)] = assignment
 

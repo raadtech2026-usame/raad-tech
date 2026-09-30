@@ -117,6 +117,9 @@ from raad.modules.transport_ops.application.services import (
     StudentParentApplicationService,
     TripApplicationService,
 )
+from raad.modules.transport_ops.application.operations_services import (
+    DailyOperationsApplicationService,
+)
 from raad.modules.transport_ops.application.staff_services import (
     TransportStaffApplicationService,
 )
@@ -810,6 +813,15 @@ def build_container(settings: Settings) -> Container:
                 clock=container.resolve(Clock),
                 id_generator=container.resolve(IdGenerator),
                 user_provisioning=container.resolve(UserProvisioningPort),
+                vehicle_directory=container.resolve(VehicleDirectoryPort),
+            ),
+        )
+        # ADR-0052/0053/0054 — timetable, cover and the daily board.
+        container.bind_singleton(
+            DailyOperationsApplicationService,
+            DailyOperationsApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
                 vehicle_directory=container.resolve(VehicleDirectoryPort),
             ),
         )
