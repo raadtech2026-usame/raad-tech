@@ -40,18 +40,23 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from raad.core.errors.exceptions import DomainError
+from raad.core.errors.exceptions import DomainError, RuleViolationError
 from raad.core.events.base import DomainEvent
 from raad.core.time.clock import Clock
 from raad.modules.tracking.domain import events as tracking_events
 from raad.modules.tracking.domain.value_objects import (
+    ALARM_TYPES,
+    CRITICAL_ALARM_TYPES,
     AlarmFlags,
+    DeviceConfirmation,
     DeviceId,
     GeofenceCrossingId,
     GeofenceEventType,
     GeoPoint,
     HeadingDegrees,
     OrganizationId,
+    SafetyAlertId,
+    SafetyAlertStatus,
     SpeedKph,
     StopId,
     TripId,
@@ -331,3 +336,191 @@ class GeofenceCrossing(_AggregateRoot):
             )
         )
         return crossing
+
+
+# ---- ADR-0055: safety alerts --------------------------------------------------------------------
+
+#: An alarm received this long after it happened is recorded but not announced as live.
+LATE_ALARM_SECONDS = 600
+_OPEN_STATUSES = (SafetyAlertStatus.OPEN, SafetyAlertStatus.ACKNOWLEDGED)
+
+
+class SafetyAlert(_AggregateRoot):
+    """A device alarm on a bus (ADR-0055 §3). One alert per bus and type stays open at a time: a
+    repeat while it is open adds to `occurrences` instead of creating another, so a flapping bit
+    is one alert. `trip_id`/`driver_id` are what was running on that bus when it started,
+    resolved once and never re-derived."""
+
+    def __init__(
+        self,
+        *,
+        id: SafetyAlertId,
+        organization_id: OrganizationId,
+        vehicle_id: VehicleId,
+        device_id: str | None,
+        terminal_id: str,
+        alarm_type: str,
+        status: SafetyAlertStatus,
+        raised_at: datetime,
+        last_raised_at: datetime,
+        received_at: datetime,
+        occurrences: int,
+        latitude: float | None,
+        longitude: float | None,
+        speed_kph: float | None,
+        trip_id: str | None,
+        driver_id: str | None,
+        incident_id: str | None,
+        device_confirmation: DeviceConfirmation | None,
+        acknowledged_at: datetime | None,
+        closed_at: datetime | None,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        if alarm_type not in ALARM_TYPES:
+            raise DomainError(f"Unknown alarm type {alarm_type!r}")
+        self.id = id
+        self.organization_id = organization_id
+        self.vehicle_id = vehicle_id
+        self.device_id = device_id
+        self.terminal_id = terminal_id
+        self.alarm_type = alarm_type
+        self.status = status
+        self.raised_at = raised_at
+        self.last_raised_at = last_raised_at
+        self.received_at = received_at
+        self.occurrences = occurrences
+        self.latitude = latitude
+        self.longitude = longitude
+        self.speed_kph = speed_kph
+        self.trip_id = trip_id
+        self.driver_id = driver_id
+        self.incident_id = incident_id
+        self.device_confirmation = device_confirmation
+        self.acknowledged_at = acknowledged_at
+        self.closed_at = closed_at
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, SafetyAlert) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @property
+    def is_critical(self) -> bool:
+        return self.alarm_type in CRITICAL_ALARM_TYPES
+
+    @property
+    def is_open(self) -> bool:
+        return self.status in _OPEN_STATUSES
+
+    @property
+    def is_late(self) -> bool:
+        return (self.received_at - self.raised_at).total_seconds() > LATE_ALARM_SECONDS
+
+    @classmethod
+    def raise_alarm(
+        cls,
+        *,
+        id: SafetyAlertId,
+        organization_id: OrganizationId,
+        vehicle_id: VehicleId,
+        device_id: str | None,
+        terminal_id: str,
+        alarm_type: str,
+        raised_at: datetime,
+        received_at: datetime,
+        latitude: float | None,
+        longitude: float | None,
+        speed_kph: float | None,
+        trip_id: str | None,
+        driver_id: str | None,
+        clock: Clock,
+    ) -> "SafetyAlert":
+        now = clock.now()
+        alert = cls(
+            id=id,
+            organization_id=organization_id,
+            vehicle_id=vehicle_id,
+            device_id=device_id,
+            terminal_id=terminal_id,
+            alarm_type=alarm_type,
+            status=SafetyAlertStatus.OPEN,
+            raised_at=raised_at,
+            last_raised_at=raised_at,
+            received_at=received_at,
+            occurrences=1,
+            latitude=latitude,
+            longitude=longitude,
+            speed_kph=speed_kph,
+            trip_id=trip_id,
+            driver_id=driver_id,
+            incident_id=None,
+            device_confirmation=None,
+            acknowledged_at=None,
+            closed_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        alert._record(
+            tracking_events.safety_alert_raised(
+                alert_id=str(id),
+                organization_id=str(organization_id),
+                vehicle_id=str(vehicle_id),
+                alarm_type=alarm_type,
+                is_critical=alert.is_critical,
+                is_late=alert.is_late,
+                trip_id=trip_id,
+                raised_at=raised_at,
+            )
+        )
+        return alert
+
+    def repeat(self, *, raised_at: datetime, clock: Clock) -> None:
+        """The same alarm started again while this alert is still open. No event: a repeat is
+        not news, and must not re-notify anyone."""
+        self.occurrences += 1
+        self.last_raised_at = max(self.last_raised_at, raised_at)
+        self.updated_at = clock.now()
+
+    def acknowledge(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        if self.status is not SafetyAlertStatus.OPEN:
+            raise RuleViolationError(f"Only an open alert can be acknowledged; this one is {self.status.value}.")
+        now = clock.now()
+        self.status = SafetyAlertStatus.ACKNOWLEDGED
+        self.acknowledged_at = self.updated_at = now
+        self._status_changed(actor_id)
+
+    def resolve(self, *, clock: Clock, actor_id: str | None = None, incident_id: str | None = None) -> None:
+        self._close(SafetyAlertStatus.RESOLVED, clock=clock, actor_id=actor_id, incident_id=incident_id)
+
+    def mark_false_alarm(self, *, clock: Clock, actor_id: str | None = None) -> None:
+        self._close(SafetyAlertStatus.FALSE_ALARM, clock=clock, actor_id=actor_id, incident_id=None)
+
+    def record_device_confirmation(self, confirmation: DeviceConfirmation, *, clock: Clock) -> None:
+        self.device_confirmation = confirmation
+        self.updated_at = clock.now()
+
+    def _close(self, status: SafetyAlertStatus, *, clock: Clock, actor_id: str | None, incident_id: str | None) -> None:
+        if not self.is_open:
+            raise RuleViolationError(f"This alert is already {self.status.value}.")
+        now = clock.now()
+        self.status = status
+        self.incident_id = incident_id
+        self.closed_at = self.updated_at = now
+        self._status_changed(actor_id)
+
+    def _status_changed(self, actor_id: str | None) -> None:
+        self._record(
+            tracking_events.safety_alert_status_changed(
+                alert_id=str(self.id),
+                organization_id=str(self.organization_id),
+                status=self.status.value,
+                incident_id=self.incident_id,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )

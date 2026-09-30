@@ -191,6 +191,12 @@ from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     DriverStatus,
     Gender,
+    IncidentCategory,
+    IncidentId,
+    IncidentNoteId,
+    IncidentNoteKind,
+    IncidentSeverity,
+    IncidentStatus,
     OperatingClosureId,
     OrganizationId,
     ParentId,
@@ -2951,3 +2957,249 @@ class StaffCover(_AggregateRoot):
                 actor_id=actor_id,
             )
         )
+
+
+
+# ============================================================================================
+# ADR-0056: the incident log
+# ============================================================================================
+
+_INCIDENT_TITLE_MAX_LENGTH = 200
+_INCIDENT_TEXT_MAX_LENGTH = 4000
+
+#: Allowed status moves. `closed` is final; a resolved incident can be reopened for more work.
+_INCIDENT_TRANSITIONS: dict[IncidentStatus, frozenset[IncidentStatus]] = {
+    IncidentStatus.OPEN: frozenset({IncidentStatus.INVESTIGATING, IncidentStatus.RESOLVED, IncidentStatus.CLOSED}),
+    IncidentStatus.INVESTIGATING: frozenset({IncidentStatus.RESOLVED, IncidentStatus.CLOSED}),
+    IncidentStatus.RESOLVED: frozenset({IncidentStatus.INVESTIGATING, IncidentStatus.CLOSED}),
+    IncidentStatus.CLOSED: frozenset(),
+}
+
+
+def _incident_text(value: str | None, field: str) -> str | None:
+    value = (value or "").strip() or None
+    if value is not None and len(value) > _INCIDENT_TEXT_MAX_LENGTH:
+        raise DomainError(f"{field} must be at most {_INCIDENT_TEXT_MAX_LENGTH} characters")
+    return value
+
+
+class Incident(_AggregateRoot):
+    """An operational incident (ADR-0056): what happened, where, to whom, and how it was handled.
+    Closed, never deleted; an entry made by mistake is closed as `recorded_in_error`. The people
+    involved are id lists checked by the service to be in the same organization."""
+
+    _EDITABLE = (
+        "category",
+        "severity",
+        "occurred_at",
+        "vehicle_id",
+        "trip_id",
+        "route_id",
+        "title",
+        "description",
+        "actions_taken",
+        "staff_ids",
+        "student_ids",
+    )
+
+    def __init__(
+        self,
+        *,
+        id: IncidentId,
+        organization_id: OrganizationId,
+        category: IncidentCategory,
+        severity: IncidentSeverity,
+        occurred_at: datetime,
+        vehicle_id: VehicleId | None,
+        trip_id: TripId | None,
+        route_id: RouteId | None,
+        title: str,
+        description: str | None,
+        actions_taken: str | None,
+        staff_ids: tuple[str, ...],
+        student_ids: tuple[str, ...],
+        status: IncidentStatus,
+        resolution: str | None,
+        recorded_in_error: bool,
+        source_alert_id: str | None,
+        closed_at: datetime | None,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        self.id = id
+        self.organization_id = organization_id
+        self.category = category
+        self.severity = severity
+        self.occurred_at = occurred_at
+        self.vehicle_id = vehicle_id
+        self.trip_id = trip_id
+        self.route_id = route_id
+        self.title = _require_text(title, field="Title", max_length=_INCIDENT_TITLE_MAX_LENGTH)
+        self.description = _incident_text(description, "Description")
+        self.actions_taken = _incident_text(actions_taken, "Actions taken")
+        self.staff_ids = tuple(dict.fromkeys(staff_ids))
+        self.student_ids = tuple(dict.fromkeys(student_ids))
+        self.status = status
+        self.resolution = _incident_text(resolution, "Resolution")
+        self.recorded_in_error = recorded_in_error
+        self.source_alert_id = source_alert_id
+        self.closed_at = closed_at
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Incident) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    def record(cls, *, id: IncidentId, organization_id: OrganizationId, clock: Clock,
+               actor_id: str | None = None, source_alert_id: str | None = None,
+               **values: object) -> "Incident":
+        now = clock.now()
+        incident = cls(
+            id=id,
+            organization_id=organization_id,
+            status=IncidentStatus.OPEN,
+            resolution=None,
+            recorded_in_error=False,
+            source_alert_id=source_alert_id,
+            closed_at=None,
+            created_at=now,
+            updated_at=now,
+            **values,  # type: ignore[arg-type]
+        )
+        incident._record(
+            transport_ops_events.incident_recorded(
+                incident_id=str(id),
+                organization_id=str(organization_id),
+                category=incident.category.value,
+                severity=incident.severity.value,
+                vehicle_id=str(incident.vehicle_id) if incident.vehicle_id else None,
+                trip_id=str(incident.trip_id) if incident.trip_id else None,
+                source_alert_id=source_alert_id,
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+        return incident
+
+    def update(self, *, clock: Clock, actor_id: str | None = None, **values: object) -> None:
+        if self.status is IncidentStatus.CLOSED:
+            raise RuleViolationError("A closed incident cannot be edited; add a note instead.")
+        unknown = set(values) - set(self._EDITABLE)
+        if unknown:
+            raise DomainError(f"Unknown incident field(s): {sorted(unknown)}")
+        candidate = Incident(
+            id=self.id,
+            organization_id=self.organization_id,
+            status=self.status,
+            resolution=self.resolution,
+            recorded_in_error=self.recorded_in_error,
+            source_alert_id=self.source_alert_id,
+            closed_at=self.closed_at,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+            **{f: values.get(f, getattr(self, f)) for f in self._EDITABLE},  # type: ignore[arg-type]
+        )
+        changed = [f for f in self._EDITABLE if getattr(candidate, f) != getattr(self, f)]
+        if not changed:
+            return
+        for field in changed:
+            setattr(self, field, getattr(candidate, field))
+        self.updated_at = clock.now()
+        self._record(
+            transport_ops_events.incident_updated(
+                incident_id=str(self.id),
+                organization_id=str(self.organization_id),
+                changed_fields=changed,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+    def change_status(
+        self,
+        status: IncidentStatus,
+        *,
+        resolution: str | None = None,
+        recorded_in_error: bool = False,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        if status is self.status:
+            return
+        if status not in _INCIDENT_TRANSITIONS[self.status]:
+            raise RuleViolationError(f"An incident cannot go from {self.status.value} to {status.value}.")
+        resolution = _incident_text(resolution, "Resolution")
+        if status is IncidentStatus.CLOSED and resolution is None and self.resolution is None:
+            raise DomainError("Closing an incident needs a resolution note.")
+        if recorded_in_error and status is not IncidentStatus.CLOSED:
+            raise DomainError("Only a closed incident can be marked as recorded in error.")
+        previous = self.status
+        now = clock.now()
+        self.status = status
+        if resolution is not None:
+            self.resolution = resolution
+        self.recorded_in_error = recorded_in_error
+        self.closed_at = now if status is IncidentStatus.CLOSED else None
+        self.updated_at = now
+        self._record(
+            transport_ops_events.incident_status_changed(
+                incident_id=str(self.id),
+                organization_id=str(self.organization_id),
+                status=status.value,
+                previous_status=previous.value,
+                recorded_in_error=recorded_in_error,
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+
+
+class IncidentNote(_AggregateRoot):
+    """One timeline entry on an incident (ADR-0056 §2): append-only, never edited."""
+
+    def __init__(
+        self,
+        *,
+        id: IncidentNoteId,
+        organization_id: OrganizationId,
+        incident_id: IncidentId,
+        kind: IncidentNoteKind,
+        body: str,
+        author_id: str | None,
+        created_at: datetime,
+    ) -> None:
+        super().__init__()
+        body = (body or "").strip()
+        if not body:
+            raise DomainError("A note needs some text")
+        if len(body) > _INCIDENT_TEXT_MAX_LENGTH:
+            raise DomainError(f"A note must be at most {_INCIDENT_TEXT_MAX_LENGTH} characters")
+        self.id = id
+        self.organization_id = organization_id
+        self.incident_id = incident_id
+        self.kind = kind
+        self.body = body
+        self.author_id = author_id
+        self.created_at = created_at
+
+    @classmethod
+    def add(cls, *, id: IncidentNoteId, incident: Incident, kind: IncidentNoteKind, body: str,
+            clock: Clock, actor_id: str | None = None) -> "IncidentNote":
+        note = cls(id=id, organization_id=incident.organization_id, incident_id=incident.id,
+                   kind=kind, body=body, author_id=actor_id, created_at=clock.now())
+        note._record(
+            transport_ops_events.incident_note_added(
+                note_id=str(id),
+                organization_id=str(incident.organization_id),
+                incident_id=str(incident.id),
+                kind=kind.value,
+                occurred_at=note.created_at,
+                actor_id=actor_id,
+            )
+        )
+        return note

@@ -29,8 +29,10 @@ lives there.
 - `title`, `description`, `actions_taken`.
 - `status`: `open → investigating → resolved → closed`. Closing needs a resolution note; an entry
   made by mistake is closed as `recorded_in_error`. **Never deleted.**
-- Links: staff involved (`incident_staff`) and, optionally, students involved
-  (`incident_students`), both in the same organization.
+- Links: staff involved and, optionally, students involved, held as id arrays on the incident
+  (`staff_ids`, `student_ids`), each checked by the service to be in the same organization. An
+  incident names a handful of people and is never queried by person, so link tables would add
+  joins without a use.
 - `source_alert_id` when created from a safety alert (ADR-0055).
 
 Picking a trip fills in its bus, route and driver as defaults the admin can change.

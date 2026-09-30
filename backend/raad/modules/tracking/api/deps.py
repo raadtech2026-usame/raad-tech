@@ -12,6 +12,9 @@ from fastapi import Depends
 from raad.core.di.container import Container
 from raad.interfaces.http.deps import get_container
 from raad.modules.tracking.application.ports import TrackingUnitOfWork
+from raad.core.tenancy.scope import TenantRegionScope
+from raad.interfaces.http.deps import get_scope
+from raad.modules.tracking.application.safety_services import SafetyAlertApplicationService
 from raad.modules.tracking.application.services import (
     FleetOverviewApplicationService,
     TrackingApplicationService,
@@ -46,3 +49,32 @@ def get_fleet_overview_service(
     `PlatformStatsApplicationService`/`MeApplicationService` guard their own binding on in
     `core/di/bootstrap.py`)."""
     return container.resolve(FleetOverviewApplicationService)
+
+
+def get_scoped_tracking_uow(
+    container: Container = Depends(get_container),
+    scope: TenantRegionScope = Depends(get_scope),
+) -> TrackingUnitOfWork:
+    """ADR-0055: safety alerts are tenant-owned, so their routes get the caller's scope
+    (ADR-0021). Position and geofence routes keep their own policy-guarded, unscoped UoW."""
+    uow = container.resolve(TrackingUnitOfWork)
+    uow.scope = scope
+    return uow
+
+
+def get_safety_alert_service(
+    container: Container = Depends(get_container),
+) -> SafetyAlertApplicationService:
+    return container.resolve(SafetyAlertApplicationService)
+
+
+def get_scoped_tracking_uow_fresh(
+    container: Container = Depends(get_container),
+    scope: TenantRegionScope = Depends(get_scope),
+) -> TrackingUnitOfWork:
+    """A second, independent scoped UoW for routes that need two tracking transactions (a UoW
+    cannot be re-entered once exited). FastAPI caches a dependency per request, so the same
+    function cannot provide both."""
+    uow = container.resolve(TrackingUnitOfWork)
+    uow.scope = scope
+    return uow

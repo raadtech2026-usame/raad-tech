@@ -51,10 +51,11 @@ from raad.modules.platform_audit.api.routers import admin_router
 from raad.modules.platform_finance.api.routers import platform_finance_router
 from raad.modules.school_erp.api.routers import school_finance_router
 from raad.modules.reporting.api.routers import reports_router
-from raad.modules.tracking.api.routers import tracking_router
+from raad.modules.tracking.api.routers import safety_alerts_router, tracking_router
 from raad.modules.transport_ops.api.routers import (
     daily_operations_router,
     drivers_router,
+    incidents_router,
     operating_closures_router,
     parents_router,
     route_timetable_router,
@@ -169,10 +170,14 @@ api_router.include_router(staff_covers_router, prefix="/staff-covers", tags=["tr
 api_router.include_router(
     daily_operations_router, prefix="/daily-operations", tags=["transport-ops"]
 )
+# ADR-0056 — the incident log.
+api_router.include_router(incidents_router, prefix="/incidents", tags=["transport-ops"])
 
 api_router.include_router(
     tracking_router, prefix="/tracking", tags=["tracking"]
 )  # tracking (C5)
+# ADR-0055 — safety alerts from device alarms.
+api_router.include_router(safety_alerts_router, prefix="/safety-alerts", tags=["tracking"])
 
 api_router.include_router(video_router, prefix="/video", tags=["video"])  # video (C6)
 

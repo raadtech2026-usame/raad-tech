@@ -283,3 +283,41 @@ class GeofenceTransition(str, Enum):
     ENTERED = "entered"
     EXITED = "exited"
     NONE = "none"
+
+
+# ---- ADR-0055: safety alerts --------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SafetyAlertId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"SafetyAlertId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+#: The canonical alarm types the device plane publishes (ADR-0055 §1). A type the backend does
+#: not know is refused rather than stored as free text.
+ALARM_TYPES = frozenset(
+    {"sos", "overspeed", "fatigue", "power_cut", "camera_fault", "collision", "rollover", "illegal_door_open"}
+)
+#: Alarm types that alert Org Admins immediately (ADR-0055 §4).
+CRITICAL_ALARM_TYPES = frozenset({"sos", "collision", "rollover"})
+
+
+class SafetyAlertStatus(str, Enum):
+    OPEN = "open"
+    ACKNOWLEDGED = "acknowledged"
+    RESOLVED = "resolved"
+    FALSE_ALARM = "false_alarm"
+
+
+class DeviceConfirmation(str, Enum):
+    """ADR-0057: whether an SOS acknowledgement was sent to the terminal."""
+
+    REQUESTED = "requested"
+    UNAVAILABLE = "unavailable"

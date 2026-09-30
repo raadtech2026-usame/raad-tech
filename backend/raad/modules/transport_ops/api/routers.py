@@ -191,11 +191,12 @@ from __future__ import annotations
 
 import dataclasses
 
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, Query, status
 
 from raad.core.errors.exceptions import (
+    ConflictError,
     AuthorizationError,
     NotFoundError,
     ValidationError,
@@ -220,6 +221,7 @@ from raad.modules.transport_ops.api.deps import (
     get_student_service,
     get_transport_ops_uow,
     get_daily_operations_service,
+    get_incident_service,
     get_transport_staff_service,
     get_trip_service,
 )
@@ -227,6 +229,12 @@ from raad.modules.transport_ops.api.schemas import (
     AddStopToRouteRequest,
     AssignStaffToVehicleRequest,
     CancelTripRequest,
+    IncidentNoteRequest,
+    IncidentParentNoticeRequest,
+    IncidentResponse,
+    IncidentStatusRequest,
+    RecordIncidentRequest,
+    UpdateIncidentRequest,
     ClosureRequest,
     ClosureResponse,
     CoverRequest,
@@ -389,6 +397,18 @@ from raad.modules.transport_ops.application.queries import (
     StudentSummaryDTO,
     TripDTO,
     TripSummaryDTO,
+)
+from raad.modules.tracking.api.deps import (
+    get_safety_alert_service,
+    get_scoped_tracking_uow,
+    get_scoped_tracking_uow_fresh,
+)
+from raad.modules.tracking.application.ports import TrackingUnitOfWork
+from raad.modules.tracking.application.safety_services import SafetyAlertApplicationService
+from raad.modules.transport_ops.application.incident_services import (
+    IncidentApplicationService,
+    IncidentDTO,
+    RecordIncidentCommand,
 )
 from raad.modules.transport_ops.application.operations_services import (
     DailyOperationsApplicationService,
@@ -3000,3 +3020,169 @@ async def cancel_trip(
         CancelTripCommand(trip_id=trip_id, reason=body.reason, actor=principal), uow=uow
     )
     return _trip_dto_to_response(trip)
+
+
+# ============================================================================================
+# ADR-0056: the incident log
+# ============================================================================================
+
+incidents_router = APIRouter()
+
+_INCIDENT_PRIVATE_TEXT = ("title", "description", "actions_taken", "resolution")
+_INCIDENT_PRIVATE_LISTS = ("staff_ids", "staff_names", "student_ids", "student_names", "notes")
+
+
+def _incident_to_response(incident: IncidentDTO, principal: Principal) -> IncidentResponse:
+    visible = _private_fields_visible(principal)
+    values = dataclasses.asdict(incident)
+    if not visible:
+        for key in _INCIDENT_PRIVATE_TEXT:
+            values[key] = None
+        for key in _INCIDENT_PRIVATE_LISTS:
+            values[key] = []
+    return IncidentResponse(**values, private_fields_visible=visible)
+
+
+@incidents_router.get("", response_model=list[IncidentResponse], summary="Incidents, newest first")
+async def list_incidents(
+    status_filter: list[str] = Query(default=[], alias="status"),
+    category: str | None = Query(None),
+    vehicle_id: str | None = Query(None),
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
+    principal: Principal = Depends(require_permission(Permission("transport_ops.incidents.list"))),
+    service: IncidentApplicationService = Depends(get_incident_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[IncidentResponse]:
+    incidents = await service.list_incidents(
+        uow=uow, statuses=status_filter, category=category, vehicle_id=vehicle_id, start=start, end=end
+    )
+    return [_incident_to_response(i, principal) for i in incidents]
+
+
+@incidents_router.post(
+    "",
+    response_model=IncidentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record an incident",
+    description="Picking a trip fills in its bus, route and driver unless given.",
+)
+async def record_incident(
+    body: RecordIncidentRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.incidents.manage"))),
+    service: IncidentApplicationService = Depends(get_incident_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> IncidentResponse:
+    values = body.model_dump(exclude={"organization_id"})
+    values["staff_ids"] = tuple(values["staff_ids"])
+    values["student_ids"] = tuple(values["student_ids"])
+    incident = await service.record(
+        RecordIncidentCommand(
+            organization_id=_resolve_organization_id(principal, body.organization_id), actor=principal, **values
+        ),
+        uow=uow,
+    )
+    return _incident_to_response(incident, principal)
+
+
+@incidents_router.post(
+    "/from-alert/{alert_id}",
+    response_model=IncidentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Turn a safety alert into an incident and resolve the alert",
+    description=(
+        "Two modules, two transactions: the incident is recorded, then the alert is resolved "
+        "with its id. If the second step fails the incident stands and the alert stays open."
+    ),
+)
+async def record_incident_from_alert(
+    alert_id: str,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.incidents.manage"))),
+    _alerts_permission: Principal = Depends(require_permission(Permission("tracking.safety_alerts.manage"))),
+    service: IncidentApplicationService = Depends(get_incident_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+    alert_service: SafetyAlertApplicationService = Depends(get_safety_alert_service),
+    tracking_uow: TrackingUnitOfWork = Depends(get_scoped_tracking_uow),
+    tracking_uow_for_resolve: TrackingUnitOfWork = Depends(get_scoped_tracking_uow_fresh),
+) -> IncidentResponse:
+    alert = await alert_service.get_alert(alert_id, uow=tracking_uow)
+    if alert.incident_id:
+        raise ConflictError("This alert already has an incident.")
+    incident = await service.record_from_alert(alert, actor=principal, uow=uow)
+    await alert_service.resolve(alert_id, actor=principal, uow=tracking_uow_for_resolve, incident_id=incident.id)
+    return _incident_to_response(incident, principal)
+
+
+@incidents_router.get("/{incident_id}", response_model=IncidentResponse, summary="One incident with its timeline")
+async def get_incident(
+    incident_id: str,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.incidents.read"))),
+    service: IncidentApplicationService = Depends(get_incident_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> IncidentResponse:
+    return _incident_to_response(await service.get(incident_id, uow=uow), principal)
+
+
+@incidents_router.patch("/{incident_id}", response_model=IncidentResponse, summary="Edit an incident")
+async def update_incident(
+    incident_id: str,
+    body: UpdateIncidentRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.incidents.manage"))),
+    service: IncidentApplicationService = Depends(get_incident_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> IncidentResponse:
+    changes = body.model_dump(include=body.model_fields_set)
+    for key in ("category", "severity", "occurred_at", "title"):
+        if key in changes and changes[key] is None:
+            raise ValidationError(f"{key} cannot be cleared.", details={"fields": [key]})
+    for key in ("staff_ids", "student_ids"):
+        if key in changes:
+            changes[key] = tuple(changes[key] or ())
+    return _incident_to_response(await service.update(incident_id, changes, actor=principal, uow=uow), principal)
+
+
+@incidents_router.post("/{incident_id}/status", response_model=IncidentResponse, summary="Move an incident on")
+async def change_incident_status(
+    incident_id: str,
+    body: IncidentStatusRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.incidents.manage"))),
+    service: IncidentApplicationService = Depends(get_incident_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> IncidentResponse:
+    incident = await service.change_status(
+        incident_id,
+        body.status,
+        resolution=body.resolution,
+        recorded_in_error=body.recorded_in_error,
+        actor=principal,
+        uow=uow,
+    )
+    return _incident_to_response(incident, principal)
+
+
+@incidents_router.post("/{incident_id}/notes", response_model=IncidentResponse, summary="Add a timeline note")
+async def add_incident_note(
+    incident_id: str,
+    body: IncidentNoteRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.incidents.manage"))),
+    service: IncidentApplicationService = Depends(get_incident_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> IncidentResponse:
+    return _incident_to_response(await service.add_note(incident_id, body.body, actor=principal, uow=uow), principal)
+
+
+@incidents_router.post(
+    "/{incident_id}/notify-parents",
+    response_model=IncidentResponse,
+    summary="Send a notice to the parents of the students linked to the incident",
+)
+async def notify_incident_parents(
+    incident_id: str,
+    body: IncidentParentNoticeRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.incidents.manage"))),
+    service: IncidentApplicationService = Depends(get_incident_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> IncidentResponse:
+    return _incident_to_response(
+        await service.notify_parents(incident_id, body.message, actor=principal, uow=uow), principal
+    )

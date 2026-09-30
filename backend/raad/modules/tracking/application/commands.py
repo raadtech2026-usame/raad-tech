@@ -111,3 +111,22 @@ class RecordGeofenceCrossingCommand:
     trip_id: str
     event_type: GeofenceEventType
     stop_id: str | None = None
+
+
+# ---- ADR-0055: safety alerts --------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RecordDeviceAlarmCommand:
+    """A `DeviceAlarmRaised` event from the device plane, as the processor received it."""
+
+    organization_id: str
+    vehicle_id: str
+    device_id: str | None
+    terminal_id: str
+    alarm_type: str
+    event_time: datetime
+    received_at: datetime
+    latitude: float | None = None
+    longitude: float | None = None
+    speed_kph: float | None = None

@@ -1263,3 +1263,100 @@ def staff_cover_saved(
             "actor_id": actor_id,
         },
     )
+
+
+# ---- ADR-0056: incident log ------------------------------------------------------------------
+# Ids, category, severity and status only: never the text or the people.
+
+
+def incident_recorded(
+    *,
+    incident_id: str,
+    organization_id: str,
+    category: str,
+    severity: str,
+    vehicle_id: str | None,
+    trip_id: str | None,
+    source_alert_id: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="IncidentRecorded",
+        aggregate_type="Incident",
+        aggregate_id=incident_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "category": category,
+            "severity": severity,
+            "vehicle_id": vehicle_id,
+            "trip_id": trip_id,
+            "source_alert_id": source_alert_id,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def incident_updated(
+    *,
+    incident_id: str,
+    organization_id: str,
+    changed_fields: list[str],
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="IncidentUpdated",
+        aggregate_type="Incident",
+        aggregate_id=incident_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"changed_fields": changed_fields, "actor_id": actor_id},
+    )
+
+
+def incident_status_changed(
+    *,
+    incident_id: str,
+    organization_id: str,
+    status: str,
+    previous_status: str,
+    recorded_in_error: bool,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="IncidentStatusChanged",
+        aggregate_type="Incident",
+        aggregate_id=incident_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "status": status,
+            "previous_status": previous_status,
+            "recorded_in_error": recorded_in_error,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def incident_note_added(
+    *,
+    note_id: str,
+    organization_id: str,
+    incident_id: str,
+    kind: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """`IncidentParentNoticeSent` for a parent notice (the Notification Worker sends it, reading
+    the message through `transport_ops`, never from this payload); `IncidentNoteAdded` otherwise."""
+    return _new_event(
+        event_type="IncidentParentNoticeSent" if kind == "parent_notice" else "IncidentNoteAdded",
+        aggregate_type="IncidentNote",
+        aggregate_id=note_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"incident_id": incident_id, "kind": kind, "actor_id": actor_id},
+    )

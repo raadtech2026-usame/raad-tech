@@ -55,7 +55,10 @@ camera-registration route takes.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, status
+import dataclasses
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Query, Request, status
 
 from raad.core.di.container import Container
 from raad.core.errors.exceptions import AuthorizationError, NotFoundError
@@ -72,12 +75,17 @@ from raad.interfaces.http.pagination import CursorPageResponse, to_cursor_page_r
 from raad.interfaces.http.policy_guards import resolve_tracking_decision
 from raad.modules.fleet_device.api.deps import get_fleet_device_uow
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.tracking.application.queries import ListSafetyAlertsQuery
+from raad.modules.tracking.application.safety_services import SafetyAlertApplicationService
 from raad.modules.tracking.api.deps import (
+    get_safety_alert_service,
+    get_scoped_tracking_uow,
     get_fleet_overview_service,
     get_tracking_service,
     get_tracking_uow,
 )
 from raad.modules.tracking.api.schemas import (
+    SafetyAlertResponse,
     FleetOnlineVehiclesResponse,
     OnlineVehiclePositionResponse,
     OnlineVehicleResponse,
@@ -301,3 +309,88 @@ async def list_online_vehicles(
         vehicles=[_online_vehicle_dto_to_response(v) for v in result.vehicles],
         total_online=result.total_online,
     )
+
+
+# ============================================================================================
+# ADR-0055/0057: safety alerts
+# ============================================================================================
+#
+# Tenant-scoped through `get_scoped_tracking_uow` (ADR-0021). `.manage` is the Org Admin's alone;
+# founder, regional_manager and support_staff list. Alarms are not hardware-verified yet.
+
+safety_alerts_router = APIRouter()
+
+
+def _alert_response(alert) -> SafetyAlertResponse:
+    return SafetyAlertResponse(**dataclasses.asdict(alert))
+
+
+@safety_alerts_router.get(
+    "",
+    response_model=list[SafetyAlertResponse],
+    summary="Safety alerts from device alarms, newest first",
+    description="Filter by `status` (repeatable), `vehicle_id`, `alarm_type` and a time window.",
+)
+async def list_safety_alerts(
+    status_filter: list[str] = Query(default=[], alias="status"),
+    vehicle_id: str | None = Query(None),
+    alarm_type: str | None = Query(None),
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
+    principal: Principal = Depends(require_permission(Permission("tracking.safety_alerts.list"))),
+    service: SafetyAlertApplicationService = Depends(get_safety_alert_service),
+    uow: TrackingUnitOfWork = Depends(get_scoped_tracking_uow),
+) -> list[SafetyAlertResponse]:
+    alerts = await service.list_alerts(
+        ListSafetyAlertsQuery(
+            statuses=status_filter, vehicle_id=vehicle_id, alarm_type=alarm_type, start=start, end=end
+        ),
+        uow=uow,
+    )
+    return [_alert_response(a) for a in alerts]
+
+
+@safety_alerts_router.get("/{alert_id}", response_model=SafetyAlertResponse, summary="One safety alert")
+async def get_safety_alert(
+    alert_id: str,
+    principal: Principal = Depends(require_permission(Permission("tracking.safety_alerts.list"))),
+    service: SafetyAlertApplicationService = Depends(get_safety_alert_service),
+    uow: TrackingUnitOfWork = Depends(get_scoped_tracking_uow),
+) -> SafetyAlertResponse:
+    return _alert_response(await service.get_alert(alert_id, uow=uow))
+
+
+@safety_alerts_router.post(
+    "/{alert_id}/acknowledge",
+    response_model=SafetyAlertResponse,
+    summary="Acknowledge an open alert (an SOS is also confirmed on the terminal)",
+)
+async def acknowledge_safety_alert(
+    alert_id: str,
+    principal: Principal = Depends(require_permission(Permission("tracking.safety_alerts.manage"))),
+    service: SafetyAlertApplicationService = Depends(get_safety_alert_service),
+    uow: TrackingUnitOfWork = Depends(get_scoped_tracking_uow),
+) -> SafetyAlertResponse:
+    return _alert_response(await service.acknowledge(alert_id, actor=principal, uow=uow))
+
+
+@safety_alerts_router.post("/{alert_id}/resolve", response_model=SafetyAlertResponse, summary="Resolve an alert")
+async def resolve_safety_alert(
+    alert_id: str,
+    principal: Principal = Depends(require_permission(Permission("tracking.safety_alerts.manage"))),
+    service: SafetyAlertApplicationService = Depends(get_safety_alert_service),
+    uow: TrackingUnitOfWork = Depends(get_scoped_tracking_uow),
+) -> SafetyAlertResponse:
+    return _alert_response(await service.resolve(alert_id, actor=principal, uow=uow))
+
+
+@safety_alerts_router.post(
+    "/{alert_id}/false-alarm", response_model=SafetyAlertResponse, summary="Close an alert as a false alarm"
+)
+async def false_alarm_safety_alert(
+    alert_id: str,
+    principal: Principal = Depends(require_permission(Permission("tracking.safety_alerts.manage"))),
+    service: SafetyAlertApplicationService = Depends(get_safety_alert_service),
+    uow: TrackingUnitOfWork = Depends(get_scoped_tracking_uow),
+) -> SafetyAlertResponse:
+    return _alert_response(await service.mark_false_alarm(alert_id, actor=principal, uow=uow))

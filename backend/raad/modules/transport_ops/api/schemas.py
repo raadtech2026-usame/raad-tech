@@ -888,3 +888,93 @@ class CancelTripRequest(BaseModel):
     """The reason is shown to the parents of the children on this trip (ADR-0054 §2)."""
 
     reason: str = Field(min_length=1, max_length=255)
+
+
+# ---- ADR-0056: incident log --------------------------------------------------------------------
+
+_CATEGORIES = Literal["accident", "breakdown", "medical", "behaviour", "near_miss", "delay", "student_left_behind", "other"]
+_SEVERITIES = Literal["low", "medium", "high", "critical"]
+
+
+class RecordIncidentRequest(BaseModel):
+    organization_id: str | None = None
+    category: _CATEGORIES
+    severity: _SEVERITIES
+    occurred_at: datetime
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    actions_taken: str | None = Field(default=None, max_length=4000)
+    vehicle_id: str | None = None
+    trip_id: str | None = None
+    route_id: str | None = None
+    staff_ids: list[str] = Field(default_factory=list, max_length=50)
+    student_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+class UpdateIncidentRequest(BaseModel):
+    """Only the fields present change."""
+
+    category: _CATEGORIES | None = None
+    severity: _SEVERITIES | None = None
+    occurred_at: datetime | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    actions_taken: str | None = Field(default=None, max_length=4000)
+    vehicle_id: str | None = None
+    trip_id: str | None = None
+    route_id: str | None = None
+    staff_ids: list[str] | None = Field(default=None, max_length=50)
+    student_ids: list[str] | None = Field(default=None, max_length=100)
+
+
+class IncidentStatusRequest(BaseModel):
+    status: Literal["open", "investigating", "resolved", "closed"]
+    resolution: str | None = Field(default=None, max_length=4000)
+    recorded_in_error: bool = False
+
+
+class IncidentNoteRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class IncidentParentNoticeRequest(BaseModel):
+    """Sent as written to the parents of the students linked to the incident."""
+
+    message: str = Field(min_length=1, max_length=1000)
+
+
+class IncidentNoteResponse(BaseModel):
+    id: str
+    kind: str
+    body: str
+    author_id: str | None
+    created_at: datetime
+
+
+class IncidentResponse(BaseModel):
+    """Org-Admin-only fields are `null`/empty for other readers; `private_fields_visible` says
+    which case applies (ADR-0056 §5)."""
+
+    id: str
+    organization_id: str
+    category: str
+    severity: str
+    status: str
+    occurred_at: datetime
+    vehicle_id: str | None
+    trip_id: str | None
+    route_id: str | None
+    title: str | None
+    description: str | None
+    actions_taken: str | None
+    resolution: str | None
+    recorded_in_error: bool
+    staff_ids: list[str]
+    staff_names: list[str]
+    student_ids: list[str]
+    student_names: list[str]
+    source_alert_id: str | None
+    closed_at: datetime | None
+    created_at: datetime
+    notes: list[IncidentNoteResponse]
+    private_fields_visible: bool

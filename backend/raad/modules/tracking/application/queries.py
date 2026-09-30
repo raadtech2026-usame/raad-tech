@@ -163,3 +163,39 @@ def geofence_crossing_to_dto(crossing: GeofenceCrossing) -> GeofenceCrossingDTO:
         event_type=crossing.event_type.value,
         occurred_at=crossing.occurred_at,
     )
+
+
+# ---- ADR-0055: safety alerts --------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SafetyAlertDTO:
+    id: str
+    organization_id: str
+    vehicle_id: str
+    alarm_type: str
+    is_critical: bool
+    status: str
+    raised_at: datetime
+    last_raised_at: datetime
+    received_at: datetime
+    is_late: bool
+    occurrences: int
+    latitude: float | None
+    longitude: float | None
+    speed_kph: float | None
+    trip_id: str | None
+    driver_id: str | None
+    incident_id: str | None
+    device_confirmation: str | None
+    acknowledged_at: datetime | None
+    closed_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ListSafetyAlertsQuery:
+    statuses: list[str] = field(default_factory=list)
+    vehicle_id: str | None = None
+    alarm_type: str | None = None
+    start: datetime | None = None
+    end: datetime | None = None
