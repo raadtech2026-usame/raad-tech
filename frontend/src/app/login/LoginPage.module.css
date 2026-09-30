@@ -2,6 +2,12 @@
 
 .page {
   --login-signal: #1e63ff;
+  /* The one source of the bus size, read by both `.stage` below and `LoginScene`. Width-driven
+     on tall screens (unchanged there: 360-600px), and capped by the height left under the card
+     on shorter ones, so the bus shrinks into the space it has instead of being switched off.
+     460px is the card's footprint (~380px) plus the stage's top padding and a clear gap; 3.2 is
+     the bus artwork's width/height ratio (640/200). */
+  --login-bus-width: min(clamp(360px, 40vw, 600px), calc((100vh - 460px) * 3.2));
 
   position: relative;
   min-height: 100vh;
@@ -39,11 +45,32 @@
   animation: raad-fade-in 0.4s var(--ease-emphasized);
 }
 
-/* Where the bus is shown, lift the card so the two never overlap. Mirrors `LoginScene`'s own
-   `--bus-width` and its media query. */
-@media (min-width: 600px) and (min-height: 640px) {
+@supports (height: 100dvh) {
+  .page {
+    --login-bus-width: min(clamp(360px, 40vw, 600px), calc((100dvh - 460px) * 3.2));
+  }
+}
+
+/* Where the bus is shown, keep the card clear of it. Must match the query that shows the bus
+   in `LoginScene.module.css`.
+   The bus's space is a spacer that is allowed to shrink, not fixed padding: when the card grows
+   (an error message adds ~40px) on a short screen, the card slides over the top of the bus
+   instead of stretching the page into a scroll. A fixed height is safe here: this query only
+   applies from 560px tall, and the tallest card (with an error) plus padding is under 500px. */
+@media (min-width: 600px) and (min-height: 560px) {
   .stage {
-    padding-bottom: calc(3vh + clamp(360px, 40vw, 600px) * 0.3);
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .stage::after {
+    content: "";
+    flex: 0 1 calc(3vh + var(--login-bus-width) * 0.3 - var(--space-6));
+  }
+
+  .card {
+    margin-block: auto;
   }
 }
 
