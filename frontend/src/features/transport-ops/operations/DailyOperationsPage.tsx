@@ -18,6 +18,7 @@ import { CoverForm, TimetableForm, UnavailabilityForm } from "./OperationsForms"
 import {
   generateTrips,
   getDailyBoard,
+  getDaySafety,
   listClosures,
   listTimetable,
   listUnavailability,
@@ -63,6 +64,12 @@ function BoardPanel({ canManage }: { canManage: boolean }) {
   const [preview, setPreview] = useState<GenerationResult | null>(null);
   const vehicleLabel = useVehicleLabels();
   const board = useQuery({ queryKey: ["daily-operations", day], queryFn: () => getDailyBoard(day) });
+  // A failure here leaves the board as it was: safety counts are a pointer to /safety, not the record.
+  const safety = useQuery({ queryKey: ["daily-operations", day, "safety"], queryFn: () => getDaySafety(day) });
+  const alertCount = (id: string) => safety.data?.alerts.get(id) ?? 0;
+  const incidentCount = (id: string) => safety.data?.incidents.get(id) ?? 0;
+  const dayAlerts = safety.data?.alertTotal ?? 0;
+  const dayIncidents = safety.data?.incidentTotal ?? 0;
 
   const previewMutation = useMutation({
     mutationFn: () => generateTrips(7, true),
@@ -120,6 +127,16 @@ function BoardPanel({ canManage }: { canManage: boolean }) {
                 Every trip covered
               </Badge>
             )}
+            {dayAlerts > 0 && (
+              <Badge variant="danger">
+                {dayAlerts} safety alert{dayAlerts === 1 ? "" : "s"}
+              </Badge>
+            )}
+            {dayIncidents > 0 && (
+              <Badge variant="warning">
+                {dayIncidents} incident{dayIncidents === 1 ? "" : "s"}
+              </Badge>
+            )}
             {data.closures.map((label) => (
               <Badge key={label} variant="warning">
                 Closed: {label}
@@ -138,7 +155,19 @@ function BoardPanel({ canManage }: { canManage: boolean }) {
                 <section key={vehicle.vehicleId} className={styles.section} aria-label={vehicleLabel.get(vehicle.vehicleId) ?? "Bus"}>
                   <div className={styles.sectionHeader}>
                     <span className={styles.itemTitle}>{vehicleLabel.get(vehicle.vehicleId) ?? vehicle.vehicleId}</span>
-                    {vehicle.crewGaps > 0 && <Badge variant="warning">{vehicle.crewGaps} crew gap{vehicle.crewGaps === 1 ? "" : "s"}</Badge>}
+                    <span className={styles.itemActions}>
+                      {alertCount(vehicle.vehicleId) > 0 && (
+                        <Badge variant="danger">
+                          {alertCount(vehicle.vehicleId)} alert{alertCount(vehicle.vehicleId) === 1 ? "" : "s"}
+                        </Badge>
+                      )}
+                      {incidentCount(vehicle.vehicleId) > 0 && (
+                        <Badge variant="warning">
+                          {incidentCount(vehicle.vehicleId)} incident{incidentCount(vehicle.vehicleId) === 1 ? "" : "s"}
+                        </Badge>
+                      )}
+                      {vehicle.crewGaps > 0 && <Badge variant="warning">{vehicle.crewGaps} crew gap{vehicle.crewGaps === 1 ? "" : "s"}</Badge>}
+                    </span>
                   </div>
                   <span className={styles.sectionTitle}>Trips</span>
                   {vehicle.trips.length === 0 ? (

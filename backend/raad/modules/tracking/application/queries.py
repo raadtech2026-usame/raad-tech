@@ -190,6 +190,7 @@ class SafetyAlertDTO:
     device_confirmation: str | None
     acknowledged_at: datetime | None
     closed_at: datetime | None
+    device_id: str | None = None
 
 
 @dataclass(frozen=True)

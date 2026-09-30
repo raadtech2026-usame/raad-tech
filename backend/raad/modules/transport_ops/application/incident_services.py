@@ -9,7 +9,7 @@ link to something elsewhere answers 404, as if it did not exist.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from raad.core.errors.exceptions import DomainError, NotFoundError, ValidationError
 from raad.core.ids.generator import IdGenerator
@@ -112,6 +112,12 @@ class ParentNotice:
     incident_id: str
     message: str
     parent_user_ids: list[str]
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    """Client times may carry any offset; storage is naive UTC and the mappers only strip tzinfo,
+    so convert here or a `+03:00` time is stored three hours off."""
+    return value.astimezone(timezone.utc) if value is not None and value.tzinfo else value
 
 
 def _enum(cls, value: str, what: str):
@@ -303,8 +309,8 @@ class IncidentApplicationService:
                 statuses=statuses or None,
                 category=category,
                 vehicle_id=VehicleId(vehicle_id) if vehicle_id else None,
-                start=start,
-                end=end,
+                start=_utc(start),
+                end=_utc(end),
             )
             return [await self._dto(uow, i, notes=[]) for i in incidents]
 
@@ -333,6 +339,8 @@ class IncidentApplicationService:
         self, uow: TransportOpsUnitOfWork, organization_id: str, values: dict, *, fill_from_trip: bool
     ) -> dict:
         out = dict(values)
+        if out.get("occurred_at") is not None:
+            out["occurred_at"] = _utc(out["occurred_at"])
         trip = None
         if values.get("trip_id"):
             trip = await uow.trips.get(TripId(values["trip_id"]))

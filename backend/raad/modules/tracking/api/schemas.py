@@ -95,3 +95,4 @@ class SafetyAlertResponse(BaseModel):
     device_confirmation: str | None
     acknowledged_at: datetime | None
     closed_at: datetime | None
+    device_id: str | None = None

@@ -7,6 +7,8 @@ that alert instead of creating another, so a flapping bit is one alert and one n
 
 from __future__ import annotations
 
+from datetime import timezone
+
 from raad.core.errors.exceptions import NotFoundError, ValidationError
 from raad.core.ids.generator import IdGenerator
 from raad.core.logging.setup import get_logger
@@ -40,6 +42,7 @@ def safety_alert_to_dto(alert: SafetyAlert) -> SafetyAlertDTO:
         id=str(alert.id),
         organization_id=str(alert.organization_id),
         vehicle_id=str(alert.vehicle_id),
+        device_id=str(alert.device_id) if alert.device_id else None,
         alarm_type=alert.alarm_type,
         is_critical=alert.is_critical,
         status=alert.status.value,
@@ -121,8 +124,8 @@ class SafetyAlertApplicationService:
                 statuses=query.statuses or None,
                 vehicle_id=VehicleId(query.vehicle_id) if query.vehicle_id else None,
                 alarm_type=query.alarm_type,
-                start=query.start,
-                end=query.end,
+                start=query.start.astimezone(timezone.utc) if query.start and query.start.tzinfo else query.start,
+                end=query.end.astimezone(timezone.utc) if query.end and query.end.tzinfo else query.end,
             )
             return [safety_alert_to_dto(a) for a in alerts]
 

@@ -268,6 +268,11 @@ class IncidentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Private", repr(event.payload))
         self.assertNotIn("fainted", repr(event.payload))
 
+    async def test_a_local_time_is_kept_as_the_same_instant(self) -> None:
+        local = datetime(2026, 10, 1, 9, 0, tzinfo=timezone(timedelta(hours=3)))
+        incident = await self.record(occurred_at=local)
+        self.assertEqual(incident.occurred_at, datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc))
+
     async def test_links_elsewhere_are_not_found(self) -> None:
         for overrides in ({"vehicle_id": "01J8Z3K9G6X8YV5T4N2R7QW3VZ"}, {"student_ids": ("01J8Z3K9G6X8YV5T4N2R7QW3ZZ",)}):
             with self.subTest(**{k: str(v) for k, v in overrides.items()}), self.assertRaises(NotFoundError):
