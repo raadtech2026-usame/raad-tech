@@ -5,7 +5,7 @@ import { OrganizationDetailsPage } from "../features/organizations/details/Organ
 import { SubscriptionDetailsPage } from "../features/billing/subscription-details/SubscriptionDetailsPage";
 import { SubscriptionGate } from "../shared/subscription/SubscriptionGate";
 import { SubscriptionRequiredPage } from "../features/billing/SubscriptionRequiredPage";
-import { LoginPage } from "./LoginPage";
+import { LoginPage } from "./login/LoginPage";
 import { ChangePasswordRequiredPage } from "./ChangePasswordRequiredPage";
 import { MobileOnlyPage } from "./MobileOnlyPage";
 import { PlaceholderPage } from "./PlaceholderPage";
