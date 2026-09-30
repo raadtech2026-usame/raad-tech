@@ -46,6 +46,9 @@ PLAYBACK_REQUEST = 0x9201  # §6.3.3 — remote recording playback request
 PLAYBACK_CONTROL = 0x9202  # §6.3.4 — playback start/pause/stop/seek control
 QUERY_RESOURCE_LIST = 0x9205  # §6.3.1 — query the terminal's own recording resource list
 
+# Alarm handling (ADR-0057).
+CONFIRM_ALARM = 0x8203  # §6.8.2 — platform -> terminal, manual alarm confirmation (ADR-0057)
+
 # JT/T 1078 A/V attribute query (spec §6.1, ADR-0030) — the channel-*count* discovery pair,
 # distinct from QUERY_RESOURCE_LIST/RESOURCE_LIST_REPORT above (which browse recorded files).
 QUERY_AV_ATTRIBUTES = 0x9003  # §6.1.1 — platform -> terminal, empty body

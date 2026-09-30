@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import struct
 from datetime import datetime
 from typing import Any, Callable
 
@@ -155,6 +156,16 @@ def _build_query_av_attributes(fields: dict[str, Any]) -> tuple[int, bytes]:
     return message_ids.QUERY_AV_ATTRIBUTES, encode_query_av_attributes()
 
 
+def _build_confirm_alarm(fields: dict[str, Any]) -> tuple[int, bytes]:
+    """ADR-0057: `0x8203` (§6.8.2) — WORD alarm serial number (0 = the current alarm of this type),
+    DWORD alarm types to confirm (bit 0 = emergency/SOS)."""
+    serial = int(fields.get("alarm_serial_no", 0))
+    types = int(fields.get("alarm_type_mask", 1))
+    if not 0 <= serial <= 0xFFFF or not 0 < types <= 0xFFFFFFFF:
+        raise ValueError("alarm confirmation fields out of range")
+    return message_ids.CONFIRM_ALARM, struct.pack(">HI", serial, types)
+
+
 _BUILDERS: dict[str, Callable[[dict[str, Any]], tuple[int, bytes]]] = {
     "live_video_request": _build_live_video_request,
     "live_video_control": _build_live_video_control,
@@ -163,6 +174,7 @@ _BUILDERS: dict[str, Callable[[dict[str, Any]], tuple[int, bytes]]] = {
     "playback_request": _build_playback_request,
     "playback_control": _build_playback_control,
     "query_av_attributes": _build_query_av_attributes,
+    "confirm_alarm": _build_confirm_alarm,
 }
 
 
