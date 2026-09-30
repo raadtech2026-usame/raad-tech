@@ -79,6 +79,11 @@ from raad.modules.transport_ops.application.queries import (
     GetTripByIdQuery,
     ListParentsForStudentQuery,
 )
+from raad.core.pagination import MAX_PAGE_SIZE, FilterCondition, OffsetPageRequest
+from raad.modules.iam.application.ports import IamUnitOfWork
+from raad.modules.iam.application.queries import ListUsersQuery
+from raad.modules.iam.application.services import UserApplicationService
+from raad.modules.transport_ops.application.incident_services import IncidentApplicationService
 from raad.modules.transport_ops.application.operations_services import (
     DailyOperationsApplicationService,
 )
@@ -353,6 +358,110 @@ class TripCancelledNotifier(EventProcessor):
             )
 
 
+_ALARM_TITLES = {
+    "sos": "SOS pressed on a bus",
+    "collision": "A bus reported a collision",
+    "rollover": "A bus reported a rollover",
+}
+
+
+async def _active_org_admin_ids(container: Container, organization_id: str) -> list[str]:
+    """Every active Org Admin of an organization, paged within the allowed page size."""
+    service = container.resolve(UserApplicationService)
+    ids: list[str] = []
+    page = 1
+    while True:
+        result = await service.list_users(
+            ListUsersQuery(
+                page_request=OffsetPageRequest(page=page, page_size=MAX_PAGE_SIZE),
+                filters=[
+                    FilterCondition(field="organization_id", op="eq", value=organization_id),
+                    FilterCondition(field="role", op="eq", value="org_admin"),
+                    FilterCondition(field="status", op="eq", value="active"),
+                ],
+            ),
+            uow=container.resolve(IamUnitOfWork),
+        )
+        ids.extend(u.id for u in result.data)
+        if page * MAX_PAGE_SIZE >= result.total:
+            return ids
+        page += 1
+
+
+class SafetyAlertRaisedNotifier(EventProcessor):
+    """ADR-0055 §4: a critical alarm (SOS, collision, rollover) alerts every active Org Admin at
+    once. Late alarms (backfill or delayed) and other types are only shown on the Safety page.
+    Not subscription-gated: a safety notification (`.claude/rules/backend.md` #6). A repeat on an
+    open alert publishes no event, so it never notifies twice."""
+
+    event_type = "SafetyAlertRaised"
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def process(self, event: DomainEvent) -> None:
+        payload = event.payload
+        if not payload.get("is_critical") or payload.get("is_late") or not event.org_id:
+            return
+        alarm_type = payload.get("alarm_type", "")
+        notification_service = self._container.resolve(NotificationApplicationService)
+        for user_id in await _active_org_admin_ids(self._container, event.org_id):
+            await notification_service.create_notification(
+                CreateNotificationCommand(
+                    organization_id=event.org_id,
+                    recipient_user_id=user_id,
+                    type="system",
+                    title=_ALARM_TITLES.get(alarm_type, "Safety alarm on a bus"),
+                    body="Open the Safety page to see the bus, the time and the trip, and acknowledge it.",
+                    data={
+                        "kind": "safety_alert",
+                        "alert_id": event.aggregate_id,
+                        "alarm_type": alarm_type,
+                        "vehicle_id": payload.get("vehicle_id"),
+                    },
+                    trip_id=payload.get("trip_id"),
+                    actor=SYSTEM_PRINCIPAL,
+                ),
+                uow=self._container.resolve(NotificationsUnitOfWork),
+            )
+
+
+class IncidentParentNoticeNotifier(EventProcessor):
+    """ADR-0056 §4: delivers the notice an Org Admin chose to send, to the parents of the
+    students linked to the incident. The message is read through `transport_ops`, never carried
+    in the event."""
+
+    event_type = "IncidentParentNoticeSent"
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def process(self, event: DomainEvent) -> None:
+        if not event.aggregate_id:
+            return
+        service = self._container.resolve(IncidentApplicationService)
+        notice = await service.parent_notice(
+            event.aggregate_id, uow=self._container.resolve(TransportOpsUnitOfWork)
+        )
+        if notice is None:
+            return
+        notification_service = self._container.resolve(NotificationApplicationService)
+        for user_id in notice.parent_user_ids:
+            await notification_service.create_notification(
+                CreateNotificationCommand(
+                    organization_id=notice.organization_id,
+                    recipient_user_id=user_id,
+                    type="system",
+                    title="A message from your child's school about transport",
+                    body=notice.message,
+                    data={"kind": "incident_notice", "incident_id": notice.incident_id},
+                    trip_id=None,
+                    actor=SYSTEM_PRINCIPAL,
+                ),
+                uow=self._container.resolve(NotificationsUnitOfWork),
+            )
+
+
 def register_notification_processors(
     registry: EventProcessorRegistry, container: Container
 ) -> None:
@@ -365,3 +474,5 @@ def register_notification_processors(
     registry.register(VehicleApproachingStopNotifier(fan_out))
     registry.register(VehicleArrivedAtOrganizationNotifier(fan_out))
     registry.register(TripCancelledNotifier(container))
+    registry.register(SafetyAlertRaisedNotifier(container))
+    registry.register(IncidentParentNoticeNotifier(container))

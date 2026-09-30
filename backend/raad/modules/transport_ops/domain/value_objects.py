@@ -524,3 +524,61 @@ class UnavailabilityReason(str, Enum):
     PERSONAL = "personal"
     TRAINING = "training"
     OTHER = "other"
+
+
+# ---- ADR-0056: incident log ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class IncidentId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"IncidentId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class IncidentNoteId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"IncidentNoteId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class IncidentCategory(str, Enum):
+    ACCIDENT = "accident"
+    BREAKDOWN = "breakdown"
+    MEDICAL = "medical"
+    BEHAVIOUR = "behaviour"
+    NEAR_MISS = "near_miss"
+    DELAY = "delay"
+    STUDENT_LEFT_BEHIND = "student_left_behind"
+    OTHER = "other"
+
+
+class IncidentSeverity(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class IncidentStatus(str, Enum):
+    OPEN = "open"
+    INVESTIGATING = "investigating"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
+
+
+class IncidentNoteKind(str, Enum):
+    NOTE = "note"
+    STATUS_CHANGE = "status_change"
+    PARENT_NOTICE = "parent_notice"

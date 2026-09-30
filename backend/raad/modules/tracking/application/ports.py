@@ -49,6 +49,7 @@ from raad.core.db.unit_of_work import UnitOfWork
 from raad.modules.tracking.domain.entities import VehiclePosition
 from raad.modules.tracking.domain.repositories import (
     GeofenceCrossingRepository,
+    SafetyAlertRepository,
     VehiclePositionRepository,
 )
 from raad.modules.tracking.domain.value_objects import TripId, VehicleId
@@ -63,6 +64,8 @@ class TrackingUnitOfWork(UnitOfWork):
 
     vehicle_positions: VehiclePositionRepository
     geofence_crossings: GeofenceCrossingRepository
+    #: ADR-0055. The only tenant-scoped repository here: see `infra/repositories.py`.
+    safety_alerts: SafetyAlertRepository
 
 
 class LatestPositionPort(ABC):
@@ -128,4 +131,31 @@ class GeofenceStatePort(ABC):
 
     @abstractmethod
     async def save_state(self, trip_id: TripId, state: GeofenceHysteresisState) -> None:
+        raise NotImplementedError
+
+
+# ---- ADR-0055/0057: safety alerts ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ActiveTrip:
+    trip_id: str
+    driver_id: str
+
+
+class ActiveTripPort(ABC):
+    """Which trip, and which driver, was running on a bus when an alarm started. Trips belong
+    to `transport_ops`; the adapter lives in the composition root (`core/di/`)."""
+
+    @abstractmethod
+    async def active_trip_for_vehicle(self, vehicle_id: str) -> ActiveTrip | None:
+        raise NotImplementedError
+
+
+class DeviceCommandPort(ABC):
+    """ADR-0057: asks the device plane to send a command to a terminal. Returns whether the
+    request was handed to the broker; the terminal's own answer is not awaited."""
+
+    @abstractmethod
+    async def confirm_alarm(self, *, terminal_id: str, alarm_type_mask: int) -> bool:
         raise NotImplementedError

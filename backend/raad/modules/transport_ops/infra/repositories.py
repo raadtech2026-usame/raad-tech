@@ -106,6 +106,8 @@ from raad.core.pagination import (
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.domain.entities import (
+    Incident,
+    IncidentNote,
     Driver,
     OperatingClosure,
     Parent,
@@ -124,6 +126,8 @@ from raad.modules.transport_ops.domain.entities import (
     VehicleStaffAssignment,
 )
 from raad.modules.transport_ops.domain.repositories import (
+    IncidentNoteRepository,
+    IncidentRepository,
     DriverRepository,
     ParentRepository,
     OperatingClosureRepository,
@@ -142,6 +146,8 @@ from raad.modules.transport_ops.domain.repositories import (
     VehicleStaffAssignmentRepository,
 )
 from raad.modules.transport_ops.domain.value_objects import (
+    IncidentId,
+    IncidentNoteId,
     DriverId,
     ParentId,
     OperatingClosureId,
@@ -161,6 +167,10 @@ from raad.modules.transport_ops.domain.value_objects import (
     VehicleStaffAssignmentId,
 )
 from raad.modules.transport_ops.infra.mappers import (
+    incident_note_to_model,
+    incident_to_model,
+    model_to_incident,
+    model_to_incident_note,
     driver_to_model,
     model_to_driver,
     model_to_operating_closure,
@@ -195,6 +205,8 @@ from raad.modules.transport_ops.infra.mappers import (
     trip_to_model,
 )
 from raad.modules.transport_ops.infra.models import (
+    IncidentModel,
+    IncidentNoteModel,
     DriverModel,
     ParentModel,
     RouteModel,
@@ -1327,6 +1339,83 @@ class SqlAlchemyStaffCoverRepository(
         return [self._track_row(row) for row in rows]
 
 
+# ---- ADR-0056 ----------------------------------------------------------------------------------
+
+
+class SqlAlchemyIncidentRepository(
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[IncidentModel],
+    IncidentRepository,
+):
+    model = IncidentModel
+    _to_model = staticmethod(incident_to_model)
+    _from_model = staticmethod(model_to_incident)
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, incident_id: IncidentId) -> Incident | None:
+        return self._track_row(await self.get_by_id(str(incident_id)))
+
+    def add(self, incident: Incident) -> None:
+        super().add(self._track_new(incident))
+
+    async def list_filtered(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        category: str | None = None,
+        vehicle_id: VehicleId | None = None,
+        start=None,
+        end=None,
+        limit: int = 200,
+    ) -> list[Incident]:
+        statement = select(self.model).where(self.model.deleted_at.is_(None))
+        if statuses:
+            statement = statement.where(self.model.status.in_(statuses))
+        if category:
+            statement = statement.where(self.model.category == category)
+        if vehicle_id is not None:
+            statement = statement.where(self.model.vehicle_id == str(vehicle_id))
+        if start is not None:
+            statement = statement.where(self.model.occurred_at >= start.replace(tzinfo=None))
+        if end is not None:
+            statement = statement.where(self.model.occurred_at <= end.replace(tzinfo=None))
+        statement = self._apply_scope(statement.order_by(self.model.occurred_at.desc()).limit(limit))
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+
+class SqlAlchemyIncidentNoteRepository(
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[IncidentNoteModel],
+    IncidentNoteRepository,
+):
+    model = IncidentNoteModel
+    _to_model = staticmethod(incident_note_to_model)
+    _from_model = staticmethod(model_to_incident_note)
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, note_id: IncidentNoteId) -> IncidentNote | None:
+        return self._track_row(await self.get_by_id(str(note_id)))
+
+    def add(self, note: IncidentNote) -> None:
+        super().add(self._track_new(note))
+
+    async def list_for_incident(self, incident_id: IncidentId) -> list[IncidentNote]:
+        statement = self._apply_scope(
+            select(self.model)
+            .where(self.model.incident_id == str(incident_id), self.model.deleted_at.is_(None))
+            .order_by(self.model.created_at, self.model.id)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+
 class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfWork):
     """Concrete `TransportOpsUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `transport_ops`'s
     repositories once the session is open, and re-syncs every tracked aggregate's in-place
@@ -1359,6 +1448,8 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
     closures: SqlAlchemyOperatingClosureRepository
     unavailability: SqlAlchemyStaffUnavailabilityRepository
     covers: SqlAlchemyStaffCoverRepository
+    incidents: SqlAlchemyIncidentRepository
+    incident_notes: SqlAlchemyIncidentNoteRepository
 
     async def __aenter__(self) -> "SqlAlchemyTransportOpsUnitOfWork":
         await super().__aenter__()
@@ -1386,6 +1477,8 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
             self.session, scope=self.scope
         )
         self.covers = SqlAlchemyStaffCoverRepository(self.session, scope=self.scope)
+        self.incidents = SqlAlchemyIncidentRepository(self.session, scope=self.scope)
+        self.incident_notes = SqlAlchemyIncidentNoteRepository(self.session, scope=self.scope)
         return self
 
     async def commit(self) -> None:
@@ -1404,4 +1497,6 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
         self.closures.flush_tracked_changes()
         self.unavailability.flush_tracked_changes()
         self.covers.flush_tracked_changes()
+        self.incidents.flush_tracked_changes()
+        self.incident_notes.flush_tracked_changes()
         await super().commit()

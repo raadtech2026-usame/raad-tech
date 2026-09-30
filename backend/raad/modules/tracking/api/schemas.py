@@ -65,3 +65,33 @@ class FleetOnlineVehiclesResponse(BaseModel):
 
     vehicles: list[OnlineVehicleResponse]
     total_online: int
+
+
+# ---- ADR-0055: safety alerts --------------------------------------------------------------------
+
+
+class SafetyAlertResponse(BaseModel):
+    """`device_confirmation` (ADR-0057): `requested` when an SOS acknowledgement was sent to the
+    terminal, `unavailable` when it could not be; `null` otherwise. Alarms are not
+    hardware-verified yet."""
+
+    id: str
+    organization_id: str
+    vehicle_id: str
+    alarm_type: str
+    is_critical: bool
+    status: str
+    raised_at: datetime
+    last_raised_at: datetime
+    received_at: datetime
+    is_late: bool
+    occurrences: int
+    latitude: float | None
+    longitude: float | None
+    speed_kph: float | None
+    trip_id: str | None
+    driver_id: str | None
+    incident_id: str | None
+    device_confirmation: str | None
+    acknowledged_at: datetime | None
+    closed_at: datetime | None

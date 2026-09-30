@@ -661,3 +661,65 @@ class StaffCoverModel(AuditedTableMixin, Base):
         CHAR(26), ForeignKey("vehicle_staff_assignments.id"), nullable=True
     )
     withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+
+
+# ---- ADR-0056: incident log --------------------------------------------------------------------
+
+_INCIDENT_CATEGORY_VALUES = (
+    "accident", "breakdown", "medical", "behaviour", "near_miss", "delay", "student_left_behind", "other",
+)
+_INCIDENT_SEVERITY_VALUES = ("low", "medium", "high", "critical")
+_INCIDENT_STATUS_VALUES = ("open", "investigating", "resolved", "closed")
+_INCIDENT_NOTE_KIND_VALUES = ("note", "status_change", "parent_notice")
+
+
+class IncidentModel(AuditedTableMixin, Base):
+    """ADR-0056. `vehicle_id` and `source_alert_id` are cross-module ids with no foreign key;
+    `staff_ids`/`student_ids` are checked by the service to be in the same organization. The
+    text columns are Org Admin only and never enter an event."""
+
+    __tablename__ = "incidents"
+    __table_args__ = (
+        Index("ix_incidents__organization_id_occurred_at", "organization_id", "occurred_at"),
+        Index("ix_incidents__organization_id_status", "organization_id", "status"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    category: Mapped[str] = mapped_column(
+        SqlEnum(*_INCIDENT_CATEGORY_VALUES, name="incident_category"), nullable=False
+    )
+    severity: Mapped[str] = mapped_column(
+        SqlEnum(*_INCIDENT_SEVERITY_VALUES, name="incident_severity"), nullable=False
+    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    vehicle_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True, index=True)
+    trip_id: Mapped[str | None] = mapped_column(CHAR(26), ForeignKey("trips.id"), nullable=True)
+    route_id: Mapped[str | None] = mapped_column(CHAR(26), ForeignKey("routes.id"), nullable=True)
+    title: Mapped[str] = mapped_column(VARCHAR(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actions_taken: Mapped[str | None] = mapped_column(Text, nullable=True)
+    staff_ids: Mapped[list[str]] = mapped_column(ARRAY(CHAR(26)), nullable=False)
+    student_ids: Mapped[list[str]] = mapped_column(ARRAY(CHAR(26)), nullable=False)
+    status: Mapped[str] = mapped_column(
+        SqlEnum(*_INCIDENT_STATUS_VALUES, name="incident_status"), nullable=False
+    )
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recorded_in_error: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    source_alert_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+
+
+class IncidentNoteModel(AuditedTableMixin, Base):
+    """ADR-0056 §2: the append-only timeline."""
+
+    __tablename__ = "incident_notes"
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    incident_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("incidents.id"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(
+        SqlEnum(*_INCIDENT_NOTE_KIND_VALUES, name="incident_note_kind"), nullable=False
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    author_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)

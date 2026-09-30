@@ -117,6 +117,7 @@ from raad.modules.transport_ops.application.services import (
     StudentParentApplicationService,
     TripApplicationService,
 )
+from raad.modules.transport_ops.application.incident_services import IncidentApplicationService
 from raad.modules.transport_ops.application.operations_services import (
     DailyOperationsApplicationService,
 )
@@ -156,6 +157,8 @@ from raad.modules.reporting.infra.renderers import (
     PdfReportRenderer,
 )
 from raad.core.di.transport_staff_adapters import FleetVehicleDirectoryAdapter
+from raad.core.di.safety_adapters import BrokerDeviceCommandAdapter, TransportOpsActiveTripAdapter
+from raad.modules.tracking.application.safety_services import SafetyAlertApplicationService
 from raad.core.di.erp_adapters import (
     BillingOnboardingAdapter,
     BillingSubscriptionRevenueAdapter,
@@ -654,6 +657,20 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
+    # ADR-0055/0057 — safety alerts. After the broker block, like VideoApplicationService, so
+    # `try_resolve(BrokerPort)` sees the broker; without one, an SOS acknowledgement is recorded
+    # as "not confirmed on the device" instead of failing.
+    broker_for_commands = container.try_resolve(BrokerPort)
+    container.bind_singleton(
+        SafetyAlertApplicationService,
+        SafetyAlertApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+            active_trips=TransportOpsActiveTripAdapter(container),
+            device_commands=BrokerDeviceCommandAdapter(broker_for_commands) if broker_for_commands else None,
+        ),
+    )
+
     # TokenService needs a non-empty signing secret. In `dev`/`staging` without one configured
     # (e.g. no .env populated yet) it is left unbound — same "fail loudly, don't fake it"
     # policy as the ports above — rather than signing tokens with an empty key.
@@ -813,6 +830,15 @@ def build_container(settings: Settings) -> Container:
                 clock=container.resolve(Clock),
                 id_generator=container.resolve(IdGenerator),
                 user_provisioning=container.resolve(UserProvisioningPort),
+                vehicle_directory=container.resolve(VehicleDirectoryPort),
+            ),
+        )
+        # ADR-0056 — the incident log.
+        container.bind_singleton(
+            IncidentApplicationService,
+            IncidentApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
                 vehicle_directory=container.resolve(VehicleDirectoryPort),
             ),
         )

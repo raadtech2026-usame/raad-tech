@@ -591,6 +591,20 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("GET", "/api/v1/daily-operations", "ADR-0053 SS4 - the daily board"),
     ("POST", "/api/v1/trips/generate", "ADR-0052 SS4 - idempotent generation, dry_run preview"),
     ("POST", "/api/v1/trips/{trip_id}/cancel", "ADR-0054 - scheduled only; parents told"),
+    # ADR-0055/0056/0057: safety alerts and the incident log.
+    ("GET", "/api/v1/safety-alerts", "ADR-0055 - device alarms, tenant-scoped"),
+    ("GET", "/api/v1/safety-alerts/{alert_id}", "ADR-0055"),
+    ("POST", "/api/v1/safety-alerts/{alert_id}/acknowledge", "ADR-0057 - an SOS is confirmed on the terminal"),
+    ("POST", "/api/v1/safety-alerts/{alert_id}/resolve", "ADR-0055"),
+    ("POST", "/api/v1/safety-alerts/{alert_id}/false-alarm", "ADR-0055"),
+    ("GET", "/api/v1/incidents", "ADR-0056 - text Org Admin only"),
+    ("POST", "/api/v1/incidents", "ADR-0056 - never deleted"),
+    ("POST", "/api/v1/incidents/from-alert/{alert_id}", "ADR-0056 SS3 - alert to incident"),
+    ("GET", "/api/v1/incidents/{incident_id}", "ADR-0056 - with its timeline"),
+    ("PATCH", "/api/v1/incidents/{incident_id}", "ADR-0056"),
+    ("POST", "/api/v1/incidents/{incident_id}/status", "ADR-0056 - closing needs a resolution"),
+    ("POST", "/api/v1/incidents/{incident_id}/notes", "ADR-0056 SS2 - append-only timeline"),
+    ("POST", "/api/v1/incidents/{incident_id}/notify-parents", "ADR-0056 SS4 - admin's choice, linked students only"),
     # platform_finance (C12) - Vendor -> RAAD. founder/finance_staff only; no org_admin grant
     # exists in this namespace at all, and these tables carry no organization_id to scope by.
     ("GET", "/api/v1/platform-finance/categories", "ADR-0040 SS1 - platform_finance C12"),

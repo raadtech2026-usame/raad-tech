@@ -79,11 +79,14 @@ from sqlalchemy import (
     Index,
     Integer,
     SmallInteger,
+    Float,
+    VARCHAR,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from raad.core.db.base import Base
-from raad.core.db.mixins import UlidPrimaryKeyMixin, utcnow
+from raad.core.db.mixins import AuditedTableMixin, UlidPrimaryKeyMixin, utcnow
 
 _GEOFENCE_EVENT_TYPE_VALUES = (
     "approaching_stop",
@@ -158,3 +161,48 @@ class GeofenceCrossingModel(UlidPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), nullable=False, default=utcnow
     )
+
+
+# ---- ADR-0055: safety alerts --------------------------------------------------------------------
+
+_SAFETY_ALERT_STATUS_VALUES = ("open", "acknowledged", "resolved", "false_alarm")
+
+
+class SafetyAlertModel(AuditedTableMixin, Base):
+    """A device alarm on a bus. `vehicle_id`, `trip_id`, `driver_id` and `incident_id` are
+    cross-module ids with no foreign key (`.claude/rules/database.md` #3)."""
+
+    __tablename__ = "safety_alerts"
+    __table_args__ = (
+        # ADR-0055 §3: one open alert per bus and type; a repeat updates it.
+        Index(
+            "ux_safety_alerts__open_vehicle_type",
+            "vehicle_id",
+            "alarm_type",
+            unique=True,
+            postgresql_where=text("status IN ('open', 'acknowledged')"),
+        ),
+        Index("ix_safety_alerts__organization_id_raised_at", "organization_id", "raised_at"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    vehicle_id: Mapped[str] = mapped_column(CHAR(26), nullable=False)
+    device_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    terminal_id: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    alarm_type: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        SqlEnum(*_SAFETY_ALERT_STATUS_VALUES, name="safety_alert_status"), nullable=False
+    )
+    raised_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    last_raised_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    occurrences: Mapped[int] = mapped_column(Integer, nullable=False)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    speed_kph: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trip_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    driver_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    incident_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    device_confirmation: Mapped[str | None] = mapped_column(VARCHAR(16), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)

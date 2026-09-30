@@ -76,7 +76,7 @@ phase actually touches, `api/routers.py`'s module docstring).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import date
+from datetime import date, datetime
 
 from raad.core.pagination import (
     FilterCondition,
@@ -86,6 +86,8 @@ from raad.core.pagination import (
 )
 from raad.modules.transport_ops.domain.entities import (
     Driver,
+    Incident,
+    IncidentNote,
     OperatingClosure,
     Parent,
     Route,
@@ -104,6 +106,8 @@ from raad.modules.transport_ops.domain.entities import (
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
+    IncidentId,
+    IncidentNoteId,
     OperatingClosureId,
     ParentId,
     RouteId,
@@ -659,4 +663,47 @@ class StaffCoverRepository(ABC):
     async def list_for_unavailability(
         self, unavailability_id: StaffUnavailabilityId
     ) -> list[StaffCover]:
+        raise NotImplementedError
+
+
+
+# ---- ADR-0056: incident log --------------------------------------------------------------------
+
+
+class IncidentRepository(ABC):
+    @abstractmethod
+    async def get(self, incident_id: IncidentId) -> Incident | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, incident: Incident) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_filtered(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        category: str | None = None,
+        vehicle_id: VehicleId | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 200,
+    ) -> list[Incident]:
+        """Newest `occurred_at` first, within the caller's scope."""
+        raise NotImplementedError
+
+
+class IncidentNoteRepository(ABC):
+    @abstractmethod
+    async def get(self, note_id: IncidentNoteId) -> IncidentNote | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, note: IncidentNote) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_incident(self, incident_id: IncidentId) -> list[IncidentNote]:
+        """Oldest first: the timeline order."""
         raise NotImplementedError

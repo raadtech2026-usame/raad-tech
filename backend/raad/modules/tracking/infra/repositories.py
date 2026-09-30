@@ -34,12 +34,14 @@ from raad.core.db.unit_of_work import SqlAlchemyUnitOfWork
 from raad.core.pagination import CursorPage, CursorPageRequest, FilterCondition
 from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.tracking.application.ports import TrackingUnitOfWork
-from raad.modules.tracking.domain.entities import GeofenceCrossing, VehiclePosition
+from raad.modules.tracking.domain.entities import GeofenceCrossing, SafetyAlert, VehiclePosition
 from raad.modules.tracking.domain.repositories import (
     GeofenceCrossingRepository,
+    SafetyAlertRepository,
     VehiclePositionRepository,
 )
 from raad.modules.tracking.domain.value_objects import (
+    SafetyAlertId,
     GeofenceCrossingId,
     GeofenceEventType,
     StopId,
@@ -51,11 +53,14 @@ from raad.modules.tracking.infra.mappers import (
     _naive,
     geofence_crossing_to_model,
     model_to_geofence_crossing,
+    model_to_safety_alert,
+    safety_alert_to_model,
     model_to_vehicle_position,
     vehicle_position_to_model,
 )
 from raad.modules.tracking.infra.models import (
     GeofenceCrossingModel,
+    SafetyAlertModel,
     VehiclePositionModel,
 )
 
@@ -287,6 +292,78 @@ class SqlAlchemyGeofenceCrossingRepository(
         return crossing
 
 
+class SqlAlchemySafetyAlertRepository(
+    SqlAlchemyRepositoryBase[SafetyAlertModel], SafetyAlertRepository
+):
+    """ADR-0055. Unlike positions and geofence rows, alerts are read by tenant-scoped callers,
+    so this repository takes the caller's scope (ADR-0021)."""
+
+    model = SafetyAlertModel
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._tracked: dict[str, tuple[SafetyAlert, SafetyAlertModel]] = {}
+
+    async def get(self, alert_id: SafetyAlertId) -> SafetyAlert | None:
+        return self._track(await self.get_by_id(str(alert_id)))
+
+    def add(self, alert: SafetyAlert) -> None:
+        model = safety_alert_to_model(alert)
+        super().add(model)
+        self._tracked[str(alert.id)] = (alert, model)
+
+    async def find_open(self, vehicle_id: VehicleId, alarm_type: str) -> SafetyAlert | None:
+        statement = self._apply_scope(
+            select(SafetyAlertModel).where(
+                SafetyAlertModel.vehicle_id == str(vehicle_id),
+                SafetyAlertModel.alarm_type == alarm_type,
+                SafetyAlertModel.status.in_(("open", "acknowledged")),
+                SafetyAlertModel.deleted_at.is_(None),
+            )
+        )
+        return self._track((await self._session.execute(statement)).scalar_one_or_none())
+
+    async def list_filtered(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        vehicle_id: VehicleId | None = None,
+        alarm_type: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 200,
+    ) -> list[SafetyAlert]:
+        statement = select(SafetyAlertModel).where(SafetyAlertModel.deleted_at.is_(None))
+        if statuses:
+            statement = statement.where(SafetyAlertModel.status.in_(statuses))
+        if vehicle_id is not None:
+            statement = statement.where(SafetyAlertModel.vehicle_id == str(vehicle_id))
+        if alarm_type:
+            statement = statement.where(SafetyAlertModel.alarm_type == alarm_type)
+        if start is not None:
+            statement = statement.where(SafetyAlertModel.last_raised_at >= _naive(start))
+        if end is not None:
+            statement = statement.where(SafetyAlertModel.raised_at <= _naive(end))
+        statement = self._apply_scope(
+            statement.order_by(SafetyAlertModel.raised_at.desc()).limit(limit)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track(row) for row in rows]  # type: ignore[misc]
+
+    def flush_tracked_changes(self) -> None:
+        for alert, model in self._tracked.values():
+            safety_alert_to_model(alert, existing=model)
+
+    def _track(self, row: SafetyAlertModel | None) -> SafetyAlert | None:
+        if row is None:
+            return None
+        if row.id in self._tracked:
+            return self._tracked[row.id][0]
+        alert = model_to_safety_alert(row)
+        self._tracked[row.id] = (alert, row)
+        return alert
+
+
 class SqlAlchemyTrackingUnitOfWork(SqlAlchemyUnitOfWork, TrackingUnitOfWork):
     """Concrete `TrackingUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `tracking`'s two
     repositories once the session is open, and re-syncs every tracked entity's in-place
@@ -300,14 +377,17 @@ class SqlAlchemyTrackingUnitOfWork(SqlAlchemyUnitOfWork, TrackingUnitOfWork):
 
     vehicle_positions: SqlAlchemyVehiclePositionRepository
     geofence_crossings: SqlAlchemyGeofenceCrossingRepository
+    safety_alerts: SqlAlchemySafetyAlertRepository
 
     async def __aenter__(self) -> "SqlAlchemyTrackingUnitOfWork":
         await super().__aenter__()
         self.vehicle_positions = SqlAlchemyVehiclePositionRepository(self.session)
         self.geofence_crossings = SqlAlchemyGeofenceCrossingRepository(self.session)
+        self.safety_alerts = SqlAlchemySafetyAlertRepository(self.session, scope=self.scope)
         return self
 
     async def commit(self) -> None:
         self.vehicle_positions.flush_tracked_changes()
         self.geofence_crossings.flush_tracked_changes()
+        self.safety_alerts.flush_tracked_changes()
         await super().commit()

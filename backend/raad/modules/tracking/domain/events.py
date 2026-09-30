@@ -135,3 +135,53 @@ def vehicle_exited_geofence(
         occurred_at=occurred_at,
         payload={"trip_id": trip_id, "stop_id": stop_id},
     )
+
+
+# ---- ADR-0055: safety alerts --------------------------------------------------------------------
+
+
+def safety_alert_raised(
+    *,
+    alert_id: str,
+    organization_id: str,
+    vehicle_id: str,
+    alarm_type: str,
+    is_critical: bool,
+    is_late: bool,
+    trip_id: str | None,
+    raised_at: datetime,
+) -> DomainEvent:
+    return _new_event(
+        event_type="SafetyAlertRaised",
+        aggregate_type="SafetyAlert",
+        aggregate_id=alert_id,
+        org_id=organization_id,
+        occurred_at=raised_at,
+        payload={
+            "vehicle_id": vehicle_id,
+            "alarm_type": alarm_type,
+            "is_critical": is_critical,
+            "is_late": is_late,
+            "trip_id": trip_id,
+            "raised_at": raised_at.isoformat(),
+        },
+    )
+
+
+def safety_alert_status_changed(
+    *,
+    alert_id: str,
+    organization_id: str,
+    status: str,
+    incident_id: str | None,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="SafetyAlertStatusChanged",
+        aggregate_type="SafetyAlert",
+        aggregate_id=alert_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"status": status, "incident_id": incident_id, "actor_id": actor_id},
+    )
