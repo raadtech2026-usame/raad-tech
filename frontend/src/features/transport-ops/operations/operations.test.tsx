@@ -128,6 +128,20 @@ describe("DailyOperationsPage", () => {
     );
   });
 
+  it("flags the day's alerts and incidents on the bus, leaving false alarms out", async () => {
+    vi.mocked(apiRequest).mockImplementation(async (path: string) => {
+      if (path.startsWith("/safety-alerts")) return [{ vehicle_id: BUS, status: "open" }, { vehicle_id: BUS, status: "false_alarm" }] as never;
+      if (path.startsWith("/incidents")) return [{ vehicle_id: BUS }, { vehicle_id: null }] as never;
+      return route(path) as never;
+    });
+    renderPage();
+    const bus = await screen.findByRole("region", { name: "KB-12" });
+    expect(await within(bus).findByText("1 alert")).toBeInTheDocument();
+    expect(within(bus).getByText("1 incident")).toBeInTheDocument();
+    expect(screen.getByText("1 safety alert")).toBeInTheDocument();
+    expect(screen.getByText("2 incidents")).toBeInTheDocument();
+  });
+
   it("gives read-only roles no actions", async () => {
     useAuthStore.setState({ principal: { userId: "u2", role: "support_staff", organizationId: null, regionIds: [] } });
     renderPage();
