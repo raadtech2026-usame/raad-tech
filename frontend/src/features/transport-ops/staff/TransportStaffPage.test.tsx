@@ -17,6 +17,13 @@ vi.mock("./api", () => ({
   listRoutesForPicker: vi.fn().mockResolvedValue([]),
 }));
 
+// The profile's Unavailability section (ADR-0053) reads through the operations client.
+vi.mock("../operations/api", () => ({
+  listUnavailability: vi.fn().mockResolvedValue([]),
+  listStaffOptions: vi.fn().mockResolvedValue([]),
+  listVehicleOptions: vi.fn().mockResolvedValue([]),
+}));
+
 import * as api from "./api";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { TransportStaffPage } from "./TransportStaffPage";

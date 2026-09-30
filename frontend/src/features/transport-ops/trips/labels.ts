@@ -15,6 +15,8 @@ export function statusLabel(status: TripStatus): string {
       return "Interrupted";
     case "completed":
       return "Completed";
+    case "cancelled":
+      return "Cancelled";
     default:
       return status;
   }

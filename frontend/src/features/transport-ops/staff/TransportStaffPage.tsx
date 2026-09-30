@@ -26,6 +26,7 @@ import { RecordDocumentForm } from "./RecordDocumentForm";
 import { StaffForm } from "./StaffForm";
 import { StaffBusesSection, StaffDocumentsSection } from "./StaffSections";
 import { StaffSetupPanel } from "./StaffSetupPanel";
+import { StaffUnavailabilitySection } from "../operations/StaffUnavailabilitySection";
 import { changeStaffStatus, getStaff, listStaff, type StaffDocument, type StaffStatus, type StaffSummary } from "./api";
 import { formatDay, staffStatusLabel, staffStatusTone } from "./labels";
 import styles from "./Staff.module.css";
@@ -268,6 +269,11 @@ export function TransportStaffPage() {
                 organizationId={staff.organizationId}
                 canManage={canManage && staff.status === "active"}
                 onAssign={() => setAssignOpen(true)}
+              />
+              <StaffUnavailabilitySection
+                staffId={staff.id}
+                staffName={staff.fullName}
+                canManage={canManage && staff.status !== "left"}
               />
               <StaffDocumentsSection
                 staffId={staff.id}
