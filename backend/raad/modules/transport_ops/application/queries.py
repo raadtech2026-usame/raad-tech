@@ -324,6 +324,8 @@ class DriverDTO:
     status: str
     created_at: datetime
     updated_at: datetime
+    #: ADR-0049: the staff record holding this driver's name and phone.
+    staff_id: str
 
 
 @dataclass(frozen=True)
@@ -336,6 +338,7 @@ class DriverSummaryDTO:
     id: str
     license_no: str
     status: str
+    staff_id: str
 
 
 def driver_to_dto(driver: Driver) -> DriverDTO:
@@ -349,6 +352,7 @@ def driver_to_dto(driver: Driver) -> DriverDTO:
         status=driver.status.value,
         created_at=driver.created_at,
         updated_at=driver.updated_at,
+        staff_id=str(driver.staff_id),
     )
 
 
@@ -357,7 +361,10 @@ def driver_to_summary_dto(driver: Driver) -> DriverSummaryDTO:
     (`ListDriversQuery`'s read shape), mirroring `parent_to_summary_dto`'s exact shape.
     """
     return DriverSummaryDTO(
-        id=str(driver.id), license_no=driver.license_no, status=driver.status.value
+        id=str(driver.id),
+        license_no=driver.license_no,
+        status=driver.status.value,
+        staff_id=str(driver.staff_id),
     )
 
 
@@ -612,3 +619,130 @@ def student_assignment_to_summary_dto(
             str(assignment.vehicle_id) if assignment.vehicle_id is not None else None
         ),
     )
+
+
+# ---- ADR-0049/0050/0051: transport staff, bus crew, staff documents ----------------------------
+
+
+@dataclass(frozen=True)
+class TransportStaffRoleDTO:
+    id: str
+    organization_id: str
+    name: str
+    sort_order: int
+    is_archived: bool
+
+
+@dataclass(frozen=True)
+class StaffDriverProfileDTO:
+    """The driving extension of a staff member, if any (ADR-0049 §1)."""
+
+    driver_id: str
+    user_id: str
+    license_no: str
+    status: str
+
+
+@dataclass(frozen=True)
+class TransportStaffSummaryDTO:
+    id: str
+    organization_id: str
+    full_name: str
+    phone: str | None
+    role_id: str | None
+    role_name: str | None
+    employee_ref: str | None
+    status: str
+    is_driver: bool
+
+
+@dataclass(frozen=True)
+class TransportStaffDTO:
+    """Every field of a staff record. `emergency_contact_*` and `notes` are private to the
+    Org Admin; the API leaves them out for anyone else (ADR-0049 §6)."""
+
+    id: str
+    organization_id: str
+    full_name: str
+    phone: str | None
+    alternate_phone: str | None
+    role_id: str | None
+    role_name: str | None
+    employee_ref: str | None
+    start_date: date | None
+    status: str
+    emergency_contact_name: str | None
+    emergency_contact_phone: str | None
+    notes: str | None
+    left_on: date | None
+    driver: StaffDriverProfileDTO | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class VehicleStaffAssignmentDTO:
+    id: str
+    organization_id: str
+    staff_id: str
+    staff_name: str
+    vehicle_id: str
+    role_id: str | None
+    role_name: str | None
+    route_id: str | None
+    starts_on: date
+    ends_on: date | None
+    kind: str
+    reason: str | None
+    is_current: bool
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class StaffDocumentTypeDTO:
+    id: str
+    organization_id: str
+    name: str
+    alert_lead_days: list[int]
+    is_archived: bool
+
+
+@dataclass(frozen=True)
+class StaffDocumentDTO:
+    """`number` is private to the Org Admin (ADR-0051 §2); the API leaves it out otherwise."""
+
+    id: str
+    organization_id: str
+    staff_id: str
+    staff_name: str
+    type_id: str
+    type_name: str
+    number: str | None
+    issued_on: date | None
+    expires_on: date | None
+    notes: str | None
+    status: str
+    days_left: int | None
+    replaced_by_id: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class DueExpiryAlertDTO:
+    """One staff-document alert the scheduled job owes (ADR-0051 §3)."""
+
+    organization_id: str
+    document_id: str
+    staff_id: str
+    staff_name: str
+    type_name: str
+    expires_on: date
+    threshold_days: int
+
+
+@dataclass(frozen=True)
+class ListTransportStaffQuery:
+    page_request: OffsetPageRequest
+    sort: list[SortSpec] = field(default_factory=list)
+    filters: list[FilterCondition] = field(default_factory=list)
+    search: str | None = None

@@ -43,11 +43,16 @@ from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
     Route,
+    StaffDocument,
+    StaffDocumentType,
     Stop,
     Student,
     StudentAssignment,
     StudentParent,
+    TransportStaff,
+    TransportStaffRole,
     Trip,
+    VehicleStaffAssignment,
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
@@ -59,6 +64,9 @@ from raad.modules.transport_ops.domain.value_objects import (
     PhoneNumber,
     RouteId,
     RouteStatus,
+    StaffAssignmentKind,
+    StaffDocumentId,
+    StaffDocumentTypeId,
     StopId,
     StudentAssignmentId,
     StudentAssignmentStatus,
@@ -66,9 +74,13 @@ from raad.modules.transport_ops.domain.value_objects import (
     StudentStatus,
     TripId,
     TripStatus,
+    TransportStaffId,
+    TransportStaffRoleId,
+    TransportStaffStatus,
     TripType,
     UserId,
     VehicleId,
+    VehicleStaffAssignmentId,
 )
 from raad.modules.transport_ops.infra.models import (
     DriverModel,
@@ -77,8 +89,13 @@ from raad.modules.transport_ops.infra.models import (
     StopModel,
     StudentAssignmentModel,
     StudentModel,
+    StaffDocumentModel,
+    StaffDocumentTypeModel,
     StudentParentModel,
+    TransportStaffModel,
+    TransportStaffRoleModel,
     TripModel,
+    VehicleStaffAssignmentModel,
 )
 
 
@@ -207,6 +224,7 @@ def driver_to_model(
     model.user_id = str(driver.user_id)
     model.license_no = driver.license_no
     model.status = driver.status.value
+    model.staff_id = str(driver.staff_id)
     model.created_at = _to_naive_utc(driver.created_at)
     model.updated_at = _to_naive_utc(driver.updated_at)
     return model
@@ -221,6 +239,7 @@ def model_to_driver(model: DriverModel) -> Driver:
         status=DriverStatus(model.status),
         created_at=model.created_at,
         updated_at=model.updated_at,
+        staff_id=TransportStaffId(model.staff_id),
     )
 
 
@@ -391,6 +410,186 @@ def model_to_student_assignment(model: StudentAssignmentModel) -> StudentAssignm
         status=StudentAssignmentStatus(model.status),
         assigned_at=model.assigned_at,
         ended_at=model.ended_at,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+# ---- ADR-0049/0050/0051 --------------------------------------------------------------------------
+
+
+def _phone(value: str | None) -> PhoneNumber | None:
+    return PhoneNumber(value) if value else None
+
+
+def _str_or_none(value: object | None) -> str | None:
+    return str(value) if value is not None else None
+
+
+def transport_staff_role_to_model(
+    role: TransportStaffRole, *, existing: TransportStaffRoleModel | None = None
+) -> TransportStaffRoleModel:
+    model = existing if existing is not None else TransportStaffRoleModel(id=str(role.id))
+    model.organization_id = str(role.organization_id)
+    model.name = role.name
+    model.sort_order = role.sort_order
+    model.is_archived = role.is_archived
+    model.created_at = _to_naive_utc(role.created_at)
+    model.updated_at = _to_naive_utc(role.updated_at)
+    return model
+
+
+def model_to_transport_staff_role(model: TransportStaffRoleModel) -> TransportStaffRole:
+    return TransportStaffRole(
+        id=TransportStaffRoleId(model.id),
+        organization_id=OrganizationId(model.organization_id),
+        name=model.name,
+        sort_order=model.sort_order,
+        is_archived=model.is_archived,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def transport_staff_to_model(
+    staff: TransportStaff, *, existing: TransportStaffModel | None = None
+) -> TransportStaffModel:
+    model = existing if existing is not None else TransportStaffModel(id=str(staff.id))
+    model.organization_id = str(staff.organization_id)
+    model.full_name = staff.full_name
+    model.phone = _str_or_none(staff.phone)
+    model.alternate_phone = _str_or_none(staff.alternate_phone)
+    model.role_id = _str_or_none(staff.role_id)
+    model.employee_ref = staff.employee_ref
+    model.start_date = staff.start_date
+    model.status = staff.status.value
+    model.emergency_contact_name = staff.emergency_contact_name
+    model.emergency_contact_phone = _str_or_none(staff.emergency_contact_phone)
+    model.notes = staff.notes
+    model.left_on = staff.left_on
+    model.created_at = _to_naive_utc(staff.created_at)
+    model.updated_at = _to_naive_utc(staff.updated_at)
+    return model
+
+
+def model_to_transport_staff(model: TransportStaffModel) -> TransportStaff:
+    return TransportStaff(
+        id=TransportStaffId(model.id),
+        organization_id=OrganizationId(model.organization_id),
+        full_name=model.full_name,
+        phone=_phone(model.phone),
+        alternate_phone=_phone(model.alternate_phone),
+        role_id=TransportStaffRoleId(model.role_id) if model.role_id else None,
+        employee_ref=model.employee_ref,
+        start_date=model.start_date,
+        status=TransportStaffStatus(model.status),
+        emergency_contact_name=model.emergency_contact_name,
+        emergency_contact_phone=_phone(model.emergency_contact_phone),
+        notes=model.notes,
+        left_on=model.left_on,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def vehicle_staff_assignment_to_model(
+    assignment: VehicleStaffAssignment,
+    *,
+    existing: VehicleStaffAssignmentModel | None = None,
+) -> VehicleStaffAssignmentModel:
+    model = (
+        existing
+        if existing is not None
+        else VehicleStaffAssignmentModel(id=str(assignment.id))
+    )
+    model.organization_id = str(assignment.organization_id)
+    model.staff_id = str(assignment.staff_id)
+    model.vehicle_id = str(assignment.vehicle_id)
+    model.role_id = _str_or_none(assignment.role_id)
+    model.route_id = _str_or_none(assignment.route_id)
+    model.starts_on = assignment.starts_on
+    model.ends_on = assignment.ends_on
+    model.kind = assignment.kind.value
+    model.reason = assignment.reason
+    model.created_at = _to_naive_utc(assignment.created_at)
+    model.updated_at = _to_naive_utc(assignment.updated_at)
+    return model
+
+
+def model_to_vehicle_staff_assignment(
+    model: VehicleStaffAssignmentModel,
+) -> VehicleStaffAssignment:
+    return VehicleStaffAssignment(
+        id=VehicleStaffAssignmentId(model.id),
+        organization_id=OrganizationId(model.organization_id),
+        staff_id=TransportStaffId(model.staff_id),
+        vehicle_id=VehicleId(model.vehicle_id),
+        role_id=TransportStaffRoleId(model.role_id) if model.role_id else None,
+        route_id=RouteId(model.route_id) if model.route_id else None,
+        starts_on=model.starts_on,
+        ends_on=model.ends_on,
+        kind=StaffAssignmentKind(model.kind),
+        reason=model.reason,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def staff_document_type_to_model(
+    doc_type: StaffDocumentType, *, existing: StaffDocumentTypeModel | None = None
+) -> StaffDocumentTypeModel:
+    model = existing if existing is not None else StaffDocumentTypeModel(id=str(doc_type.id))
+    model.organization_id = str(doc_type.organization_id)
+    model.name = doc_type.name
+    model.alert_lead_days = list(doc_type.alert_lead_days)
+    model.is_archived = doc_type.is_archived
+    model.created_at = _to_naive_utc(doc_type.created_at)
+    model.updated_at = _to_naive_utc(doc_type.updated_at)
+    return model
+
+
+def model_to_staff_document_type(model: StaffDocumentTypeModel) -> StaffDocumentType:
+    return StaffDocumentType(
+        id=StaffDocumentTypeId(model.id),
+        organization_id=OrganizationId(model.organization_id),
+        name=model.name,
+        alert_lead_days=tuple(model.alert_lead_days or ()),
+        is_archived=model.is_archived,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def staff_document_to_model(
+    document: StaffDocument, *, existing: StaffDocumentModel | None = None
+) -> StaffDocumentModel:
+    model = existing if existing is not None else StaffDocumentModel(id=str(document.id))
+    model.organization_id = str(document.organization_id)
+    model.staff_id = str(document.staff_id)
+    model.type_id = str(document.type_id)
+    model.number = document.number
+    model.issued_on = document.issued_on
+    model.expires_on = document.expires_on
+    model.notes = document.notes
+    model.replaced_by_id = _str_or_none(document.replaced_by_id)
+    model.alerted_threshold_days = document.alerted_threshold_days
+    model.created_at = _to_naive_utc(document.created_at)
+    model.updated_at = _to_naive_utc(document.updated_at)
+    return model
+
+
+def model_to_staff_document(model: StaffDocumentModel) -> StaffDocument:
+    return StaffDocument(
+        id=StaffDocumentId(model.id),
+        organization_id=OrganizationId(model.organization_id),
+        staff_id=TransportStaffId(model.staff_id),
+        type_id=StaffDocumentTypeId(model.type_id),
+        number=model.number,
+        issued_on=model.issued_on,
+        expires_on=model.expires_on,
+        notes=model.notes,
+        replaced_by_id=StaffDocumentId(model.replaced_by_id) if model.replaced_by_id else None,
+        alerted_threshold_days=model.alerted_threshold_days,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )

@@ -181,7 +181,7 @@ this route" business rule — no other route could be checked against regardless
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from raad.core.errors.exceptions import ConflictError, DomainError, RuleViolationError
 from raad.core.events.base import DomainEvent
@@ -197,6 +197,10 @@ from raad.modules.transport_ops.domain.value_objects import (
     PhoneNumber,
     RouteId,
     RouteStatus,
+    StaffAssignmentKind,
+    StaffDocumentId,
+    StaffDocumentStatus,
+    StaffDocumentTypeId,
     StopId,
     StudentAssignmentId,
     StudentAssignmentStatus,
@@ -204,9 +208,13 @@ from raad.modules.transport_ops.domain.value_objects import (
     StudentStatus,
     TripId,
     TripStatus,
+    TransportStaffId,
+    TransportStaffRoleId,
+    TransportStaffStatus,
     TripType,
     UserId,
     VehicleId,
+    VehicleStaffAssignmentId,
 )
 
 _FULL_NAME_MAX_LENGTH = 200  # Database Design §6.2: full_name VARCHAR(200)
@@ -980,12 +988,16 @@ class Driver(_AggregateRoot):
         status: DriverStatus,
         created_at: datetime,
         updated_at: datetime,
+        staff_id: TransportStaffId,
     ) -> None:
         super().__init__()
         _validate_license_no(license_no)
         self.id = id
         self.organization_id = organization_id
         self.user_id = user_id
+        #: ADR-0049: the `TransportStaff` person this driver profile belongs to. The person's
+        #: name and contact live there; this aggregate keeps only what driving needs.
+        self.staff_id = staff_id
         self.license_no = license_no
         self.status = status
         self.created_at = created_at
@@ -1005,6 +1017,7 @@ class Driver(_AggregateRoot):
         organization_id: OrganizationId,
         user_id: UserId,
         license_no: str,
+        staff_id: TransportStaffId,
         clock: Clock,
         actor_id: str | None = None,
     ) -> "Driver":
@@ -1021,12 +1034,14 @@ class Driver(_AggregateRoot):
             status=DriverStatus.ACTIVE,
             created_at=now,
             updated_at=now,
+            staff_id=staff_id,
         )
         driver._record(
             transport_ops_events.driver_registered(
                 driver_id=str(id),
                 organization_id=str(organization_id),
                 user_id=str(user_id),
+                staff_id=str(staff_id),
                 license_no=license_no,
                 occurred_at=clock.now(),
                 actor_id=actor_id,
@@ -1808,5 +1823,713 @@ class StudentAssignment(_AggregateRoot):
                 organization_id=str(self.organization_id),
                 occurred_at=clock.now(),
                 actor_id=actor_id,
+            )
+        )
+
+
+
+# ============================================================================================
+# ADR-0049: TransportStaff (the person) and TransportStaffRole (a configurable job title)
+# ============================================================================================
+
+_STAFF_NAME_MAX_LENGTH = 200
+_STAFF_ROLE_NAME_MAX_LENGTH = 80
+_EMPLOYEE_REF_MAX_LENGTH = 64
+_ASSIGNMENT_REASON_MAX_LENGTH = 255
+_DOCUMENT_TYPE_NAME_MAX_LENGTH = 80
+_DOCUMENT_NUMBER_MAX_LENGTH = 64
+_MAX_ALERT_LEAD_DAYS = 365
+_MAX_ALERT_THRESHOLDS = 5
+
+
+def _require_text(value: str, *, field: str, max_length: int) -> str:
+    value = (value or "").strip()
+    if not value:
+        raise DomainError(f"{field} must not be empty")
+    if len(value) > max_length:
+        raise DomainError(f"{field} must be at most {max_length} characters: {len(value)}")
+    return value
+
+
+def _optional_text(value: str | None, *, field: str, max_length: int) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if len(value) > max_length:
+        raise DomainError(f"{field} must be at most {max_length} characters: {len(value)}")
+    return value
+
+
+class TransportStaffRole(_AggregateRoot):
+    """ADR-0049 §2: an organization's own job title for bus crew — Driver, Attendant,
+    Conductor, whatever the school calls them. **A title is a label and grants nothing**: the
+    ability to drive a trip is the `Driver` extension, never the word "Driver". A title in use
+    is archived, never deleted, so history keeps naming it."""
+
+    def __init__(
+        self,
+        *,
+        id: TransportStaffRoleId,
+        organization_id: OrganizationId,
+        name: str,
+        sort_order: int,
+        is_archived: bool,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        self.id = id
+        self.organization_id = organization_id
+        self.name = _require_text(name, field="Job title", max_length=_STAFF_ROLE_NAME_MAX_LENGTH)
+        self.sort_order = sort_order
+        self.is_archived = is_archived
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        id: TransportStaffRoleId,
+        organization_id: OrganizationId,
+        name: str,
+        sort_order: int,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "TransportStaffRole":
+        now = clock.now()
+        role = cls(
+            id=id,
+            organization_id=organization_id,
+            name=name,
+            sort_order=sort_order,
+            is_archived=False,
+            created_at=now,
+            updated_at=now,
+        )
+        role._saved(created=True, actor_id=actor_id)
+        return role
+
+    def update(
+        self,
+        *,
+        name: str,
+        sort_order: int,
+        is_archived: bool,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        name = _require_text(name, field="Job title", max_length=_STAFF_ROLE_NAME_MAX_LENGTH)
+        if (name, sort_order, is_archived) == (self.name, self.sort_order, self.is_archived):
+            return
+        self.name, self.sort_order, self.is_archived = name, sort_order, is_archived
+        self.updated_at = clock.now()
+        self._saved(created=False, actor_id=actor_id)
+
+    def _saved(self, *, created: bool, actor_id: str | None) -> None:
+        self._record(
+            transport_ops_events.transport_staff_role_saved(
+                role_id=str(self.id),
+                organization_id=str(self.organization_id),
+                is_archived=self.is_archived,
+                created=created,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+
+class TransportStaff(_AggregateRoot):
+    """ADR-0049 §1: one person who works on school buses — the operational identity RAAD shows
+    and reaches. A staff member may have no login and no bus. Driving is the separate `Driver`
+    extension (licence + login), linked by `drivers.staff_id`; this record never holds a login
+    itself, so a person is never recorded twice."""
+
+    _PROFILE_FIELDS = (
+        "full_name",
+        "phone",
+        "alternate_phone",
+        "role_id",
+        "employee_ref",
+        "start_date",
+        "emergency_contact_name",
+        "emergency_contact_phone",
+        "notes",
+    )
+
+    def __init__(
+        self,
+        *,
+        id: TransportStaffId,
+        organization_id: OrganizationId,
+        full_name: str,
+        phone: PhoneNumber | None,
+        alternate_phone: PhoneNumber | None,
+        role_id: TransportStaffRoleId | None,
+        employee_ref: str | None,
+        start_date: date | None,
+        status: TransportStaffStatus,
+        emergency_contact_name: str | None,
+        emergency_contact_phone: PhoneNumber | None,
+        notes: str | None,
+        left_on: date | None,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        self.id = id
+        self.organization_id = organization_id
+        self.full_name = _require_text(full_name, field="Full name", max_length=_STAFF_NAME_MAX_LENGTH)
+        self.phone = phone
+        self.alternate_phone = alternate_phone
+        self.role_id = role_id
+        self.employee_ref = _optional_text(
+            employee_ref, field="Employee reference", max_length=_EMPLOYEE_REF_MAX_LENGTH
+        )
+        self.start_date = start_date
+        self.status = status
+        self.emergency_contact_name = _optional_text(
+            emergency_contact_name,
+            field="Emergency contact name",
+            max_length=_EMERGENCY_CONTACT_NAME_MAX_LENGTH,
+        )
+        self.emergency_contact_phone = emergency_contact_phone
+        _validate_notes(notes)
+        self.notes = notes
+        self.left_on = left_on
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, TransportStaff) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    def register(
+        cls,
+        *,
+        id: TransportStaffId,
+        organization_id: OrganizationId,
+        full_name: str,
+        phone: PhoneNumber | None = None,
+        alternate_phone: PhoneNumber | None = None,
+        role_id: TransportStaffRoleId | None = None,
+        employee_ref: str | None = None,
+        start_date: date | None = None,
+        emergency_contact_name: str | None = None,
+        emergency_contact_phone: PhoneNumber | None = None,
+        notes: str | None = None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "TransportStaff":
+        now = clock.now()
+        staff = cls(
+            id=id,
+            organization_id=organization_id,
+            full_name=full_name,
+            phone=phone,
+            alternate_phone=alternate_phone,
+            role_id=role_id,
+            employee_ref=employee_ref,
+            start_date=start_date,
+            status=TransportStaffStatus.ACTIVE,
+            emergency_contact_name=emergency_contact_name,
+            emergency_contact_phone=emergency_contact_phone,
+            notes=notes,
+            left_on=None,
+            created_at=now,
+            updated_at=now,
+        )
+        staff._record(
+            transport_ops_events.transport_staff_registered(
+                staff_id=str(id),
+                organization_id=str(organization_id),
+                role_id=str(role_id) if role_id else None,
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+        return staff
+
+    def update_profile(self, *, clock: Clock, actor_id: str | None = None, **values: object) -> None:
+        """Replaces the editable profile fields given. Only fields that actually changed are
+        named in the event — never their values (personal data stays out of the audit
+        payload)."""
+        unknown = set(values) - set(self._PROFILE_FIELDS)
+        if unknown:
+            raise DomainError(f"Unknown staff profile field(s): {sorted(unknown)}")
+        before = {field: getattr(self, field) for field in values}
+        candidate = TransportStaff(
+            id=self.id,
+            organization_id=self.organization_id,
+            status=self.status,
+            left_on=self.left_on,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+            **{field: values.get(field, getattr(self, field)) for field in self._PROFILE_FIELDS},
+        )
+        changed = [f for f in values if getattr(candidate, f) != before[f]]
+        if not changed:
+            return
+        for field in changed:
+            setattr(self, field, getattr(candidate, field))
+        self.updated_at = clock.now()
+        self._record(
+            transport_ops_events.transport_staff_profile_updated(
+                staff_id=str(self.id),
+                organization_id=str(self.organization_id),
+                changed_fields=changed,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+    def change_status(
+        self,
+        status: TransportStaffStatus,
+        *,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> bool:
+        """Returns whether anything changed. Leaving records `left_on`; coming back from
+        `left` clears it. The caller ends the crew assignments and deactivates a linked driver
+        in the same transaction (ADR-0049 §4)."""
+        if status == self.status:
+            return False
+        previous = self.status
+        self.status = status
+        now = clock.now()
+        self.left_on = now.date() if status is TransportStaffStatus.LEFT else None
+        self.updated_at = now
+        self._record(
+            transport_ops_events.transport_staff_status_changed(
+                staff_id=str(self.id),
+                organization_id=str(self.organization_id),
+                status=status.value,
+                previous_status=previous.value,
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+        return True
+
+
+# ============================================================================================
+# ADR-0050: VehicleStaffAssignment — the bus crew and its history
+# ============================================================================================
+
+
+class VehicleStaffAssignment(_AggregateRoot):
+    """One person on one bus for a period (ADR-0050). Rows are never deleted or overwritten:
+    replacing someone ends their row and starts a new one, so "who was on Bus 12 last term" is
+    always answerable. `ends_on` is inclusive; `None` means open-ended. The job title is the
+    one held *during* this assignment, so a later title change never rewrites history."""
+
+    def __init__(
+        self,
+        *,
+        id: VehicleStaffAssignmentId,
+        organization_id: OrganizationId,
+        staff_id: TransportStaffId,
+        vehicle_id: VehicleId,
+        role_id: TransportStaffRoleId | None,
+        route_id: RouteId | None,
+        starts_on: date,
+        ends_on: date | None,
+        kind: StaffAssignmentKind,
+        reason: str | None,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        if kind is StaffAssignmentKind.TEMPORARY and ends_on is None:
+            raise DomainError("A temporary assignment must have an end date")
+        if ends_on is not None and ends_on < starts_on - timedelta(days=1):
+            raise DomainError("An assignment cannot end before it starts")
+        self.id = id
+        self.organization_id = organization_id
+        self.staff_id = staff_id
+        self.vehicle_id = vehicle_id
+        self.role_id = role_id
+        self.route_id = route_id
+        self.starts_on = starts_on
+        self.ends_on = ends_on
+        self.kind = kind
+        self.reason = _optional_text(reason, field="Reason", max_length=_ASSIGNMENT_REASON_MAX_LENGTH)
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, VehicleStaffAssignment) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    def is_current(self, today: date) -> bool:
+        return self.starts_on <= today and (self.ends_on is None or self.ends_on >= today)
+
+    def overlaps(self, starts_on: date, ends_on: date | None) -> bool:
+        """Whether this assignment shares at least one day with `[starts_on, ends_on]`."""
+        mine_end = self.ends_on if self.ends_on is not None else date.max
+        theirs_end = ends_on if ends_on is not None else date.max
+        return self.starts_on <= theirs_end and starts_on <= mine_end
+
+    @classmethod
+    def assign(
+        cls,
+        *,
+        id: VehicleStaffAssignmentId,
+        organization_id: OrganizationId,
+        staff_id: TransportStaffId,
+        vehicle_id: VehicleId,
+        role_id: TransportStaffRoleId | None,
+        route_id: RouteId | None,
+        starts_on: date,
+        ends_on: date | None,
+        kind: StaffAssignmentKind,
+        reason: str | None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "VehicleStaffAssignment":
+        if ends_on is not None and ends_on < starts_on:
+            raise DomainError("An assignment cannot end before it starts")
+        now = clock.now()
+        assignment = cls(
+            id=id,
+            organization_id=organization_id,
+            staff_id=staff_id,
+            vehicle_id=vehicle_id,
+            role_id=role_id,
+            route_id=route_id,
+            starts_on=starts_on,
+            ends_on=ends_on,
+            kind=kind,
+            reason=reason,
+            created_at=now,
+            updated_at=now,
+        )
+        assignment._record(
+            transport_ops_events.vehicle_staff_assigned(
+                assignment_id=str(id),
+                organization_id=str(organization_id),
+                staff_id=str(staff_id),
+                vehicle_id=str(vehicle_id),
+                route_id=str(route_id) if route_id else None,
+                role_id=str(role_id) if role_id else None,
+                kind=kind.value,
+                starts_on=starts_on.isoformat(),
+                ends_on=ends_on.isoformat() if ends_on else None,
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+        return assignment
+
+    def end(self, on: date, *, clock: Clock, actor_id: str | None = None) -> bool:
+        """Ends the assignment on `on` (inclusive). Ending never extends an assignment, and an
+        assignment that has not started yet is ended the day before it starts — it never took
+        effect, and its row stays as the record that it was planned. Returns whether anything
+        changed."""
+        effective = max(on, self.starts_on - timedelta(days=1))
+        if self.ends_on is not None and self.ends_on <= effective:
+            return False
+        self.ends_on = effective
+        self.updated_at = clock.now()
+        self._record(
+            transport_ops_events.vehicle_staff_assignment_ended(
+                assignment_id=str(self.id),
+                organization_id=str(self.organization_id),
+                staff_id=str(self.staff_id),
+                vehicle_id=str(self.vehicle_id),
+                ends_on=effective.isoformat(),
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+        return True
+
+
+# ============================================================================================
+# ADR-0051: StaffDocumentType and StaffDocument
+# ============================================================================================
+
+
+def _normalise_lead_days(lead_days: list[int] | tuple[int, ...]) -> tuple[int, ...]:
+    values = sorted({int(day) for day in lead_days}, reverse=True)
+    if len(values) > _MAX_ALERT_THRESHOLDS:
+        raise DomainError(f"At most {_MAX_ALERT_THRESHOLDS} alert lead days are allowed")
+    if any(day < 1 or day > _MAX_ALERT_LEAD_DAYS for day in values):
+        raise DomainError(f"Alert lead days must be between 1 and {_MAX_ALERT_LEAD_DAYS}")
+    return tuple(values)
+
+
+class StaffDocumentType(_AggregateRoot):
+    """An organization's own kind of staff document (licence, medical certificate, police
+    clearance…) and how many days before expiry its admins are alerted (ADR-0051 §1)."""
+
+    def __init__(
+        self,
+        *,
+        id: StaffDocumentTypeId,
+        organization_id: OrganizationId,
+        name: str,
+        alert_lead_days: tuple[int, ...],
+        is_archived: bool,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        self.id = id
+        self.organization_id = organization_id
+        self.name = _require_text(
+            name, field="Document type", max_length=_DOCUMENT_TYPE_NAME_MAX_LENGTH
+        )
+        self.alert_lead_days = _normalise_lead_days(alert_lead_days)
+        self.is_archived = is_archived
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        id: StaffDocumentTypeId,
+        organization_id: OrganizationId,
+        name: str,
+        alert_lead_days: tuple[int, ...] = (30, 7),
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "StaffDocumentType":
+        now = clock.now()
+        doc_type = cls(
+            id=id,
+            organization_id=organization_id,
+            name=name,
+            alert_lead_days=alert_lead_days,
+            is_archived=False,
+            created_at=now,
+            updated_at=now,
+        )
+        doc_type._saved(created=True, actor_id=actor_id)
+        return doc_type
+
+    def update(
+        self,
+        *,
+        name: str,
+        alert_lead_days: tuple[int, ...],
+        is_archived: bool,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        name = _require_text(name, field="Document type", max_length=_DOCUMENT_TYPE_NAME_MAX_LENGTH)
+        lead = _normalise_lead_days(alert_lead_days)
+        if (name, lead, is_archived) == (self.name, self.alert_lead_days, self.is_archived):
+            return
+        self.name, self.alert_lead_days, self.is_archived = name, lead, is_archived
+        self.updated_at = clock.now()
+        self._saved(created=False, actor_id=actor_id)
+
+    def _saved(self, *, created: bool, actor_id: str | None) -> None:
+        self._record(
+            transport_ops_events.staff_document_type_saved(
+                type_id=str(self.id),
+                organization_id=str(self.organization_id),
+                alert_lead_days=list(self.alert_lead_days),
+                is_archived=self.is_archived,
+                created=created,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+
+class StaffDocument(_AggregateRoot):
+    """One credential a staff member holds (ADR-0051 §2): metadata only — never a file or a
+    scan. Status is computed from the dates on every read. A renewal is a new document; the old
+    one points at it (`replaced_by_id`) and drops out of every alert."""
+
+    _EDITABLE = ("number", "issued_on", "expires_on", "notes")
+
+    def __init__(
+        self,
+        *,
+        id: StaffDocumentId,
+        organization_id: OrganizationId,
+        staff_id: TransportStaffId,
+        type_id: StaffDocumentTypeId,
+        number: str | None,
+        issued_on: date | None,
+        expires_on: date | None,
+        notes: str | None,
+        replaced_by_id: StaffDocumentId | None,
+        alerted_threshold_days: int | None,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        super().__init__()
+        if issued_on is not None and expires_on is not None and expires_on < issued_on:
+            raise DomainError("A document cannot expire before it was issued")
+        _validate_notes(notes)
+        self.id = id
+        self.organization_id = organization_id
+        self.staff_id = staff_id
+        self.type_id = type_id
+        self.number = _optional_text(number, field="Document number", max_length=_DOCUMENT_NUMBER_MAX_LENGTH)
+        self.issued_on = issued_on
+        self.expires_on = expires_on
+        self.notes = notes
+        self.replaced_by_id = replaced_by_id
+        self.alerted_threshold_days = alerted_threshold_days
+        self.created_at = created_at
+        self.updated_at = updated_at
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, StaffDocument) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    def record(
+        cls,
+        *,
+        id: StaffDocumentId,
+        organization_id: OrganizationId,
+        staff_id: TransportStaffId,
+        type_id: StaffDocumentTypeId,
+        number: str | None,
+        issued_on: date | None,
+        expires_on: date | None,
+        notes: str | None,
+        replaces_id: StaffDocumentId | None,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> "StaffDocument":
+        now = clock.now()
+        document = cls(
+            id=id,
+            organization_id=organization_id,
+            staff_id=staff_id,
+            type_id=type_id,
+            number=number,
+            issued_on=issued_on,
+            expires_on=expires_on,
+            notes=notes,
+            replaced_by_id=None,
+            alerted_threshold_days=None,
+            created_at=now,
+            updated_at=now,
+        )
+        document._record(
+            transport_ops_events.staff_document_recorded(
+                document_id=str(id),
+                organization_id=str(organization_id),
+                staff_id=str(staff_id),
+                type_id=str(type_id),
+                expires_on=expires_on.isoformat() if expires_on else None,
+                replaces_id=str(replaces_id) if replaces_id else None,
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )
+        return document
+
+    def update(self, *, clock: Clock, actor_id: str | None = None, **values: object) -> None:
+        unknown = set(values) - set(self._EDITABLE)
+        if unknown:
+            raise DomainError(f"Unknown document field(s): {sorted(unknown)}")
+        merged = {field: values.get(field, getattr(self, field)) for field in self._EDITABLE}
+        candidate = StaffDocument(
+            id=self.id,
+            organization_id=self.organization_id,
+            staff_id=self.staff_id,
+            type_id=self.type_id,
+            replaced_by_id=self.replaced_by_id,
+            alerted_threshold_days=self.alerted_threshold_days,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+            **merged,
+        )
+        changed = [f for f in self._EDITABLE if getattr(candidate, f) != getattr(self, f)]
+        if not changed:
+            return
+        for field in changed:
+            setattr(self, field, getattr(candidate, field))
+        if "expires_on" in changed:
+            # A corrected expiry date starts its alerts again from scratch.
+            self.alerted_threshold_days = None
+        self.updated_at = clock.now()
+        self._record(
+            transport_ops_events.staff_document_updated(
+                document_id=str(self.id),
+                organization_id=str(self.organization_id),
+                changed_fields=changed,
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+    def mark_replaced(self, by: StaffDocumentId, *, clock: Clock, actor_id: str | None = None) -> None:
+        if self.replaced_by_id is not None:
+            raise ConflictError("This document has already been renewed")
+        self.replaced_by_id = by
+        self.updated_at = clock.now()
+        self._record(
+            transport_ops_events.staff_document_updated(
+                document_id=str(self.id),
+                organization_id=str(self.organization_id),
+                changed_fields=["replaced_by_id"],
+                occurred_at=self.updated_at,
+                actor_id=actor_id,
+            )
+        )
+
+    def days_left(self, today: date) -> int | None:
+        return None if self.expires_on is None else (self.expires_on - today).days
+
+    def status(self, today: date, lead_days: tuple[int, ...]) -> StaffDocumentStatus:
+        if self.replaced_by_id is not None:
+            return StaffDocumentStatus.SUPERSEDED
+        left = self.days_left(today)
+        if left is None:
+            return StaffDocumentStatus.NO_EXPIRY
+        if left < 0:
+            return StaffDocumentStatus.EXPIRED
+        if left <= max(lead_days, default=0):
+            return StaffDocumentStatus.EXPIRING
+        return StaffDocumentStatus.VALID
+
+    def due_alert_threshold(self, today: date, lead_days: tuple[int, ...]) -> int | None:
+        """The alert this document is due, if any (ADR-0051 §3). Thresholds are the type's lead
+        days plus 0 ("expires today or has expired"). The smallest threshold crossed is due
+        when it is smaller than the last one sent, so each is sent exactly once and a document
+        found already expired sends one alert, not a burst."""
+        if self.replaced_by_id is not None:
+            return None
+        left = self.days_left(today)
+        if left is None:
+            return None
+        crossed = [t for t in set(lead_days) | {0} if left <= t]
+        if not crossed:
+            return None
+        smallest = min(crossed)
+        if self.alerted_threshold_days is not None and smallest >= self.alerted_threshold_days:
+            return None
+        return smallest
+
+    def mark_alerted(self, threshold_days: int, *, clock: Clock) -> None:
+        self.alerted_threshold_days = threshold_days
+        self.updated_at = clock.now()
+        self._record(
+            transport_ops_events.staff_document_expiry_alerted(
+                document_id=str(self.id),
+                organization_id=str(self.organization_id),
+                threshold_days=threshold_days,
+                occurred_at=self.updated_at,
             )
         )

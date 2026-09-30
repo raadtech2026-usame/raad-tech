@@ -109,33 +109,58 @@ from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
     Route,
+    StaffDocument,
+    StaffDocumentType,
     Student,
     StudentAssignment,
     StudentParent,
+    TransportStaff,
+    TransportStaffRole,
     Trip,
+    VehicleStaffAssignment,
 )
 from raad.modules.transport_ops.domain.repositories import (
     DriverRepository,
     ParentRepository,
     RouteRepository,
+    StaffDocumentRepository,
+    StaffDocumentTypeRepository,
     StudentAssignmentRepository,
     StudentParentRepository,
     StudentRepository,
+    TransportStaffRepository,
+    TransportStaffRoleRepository,
     TripRepository,
+    VehicleStaffAssignmentRepository,
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     ParentId,
     RouteId,
+    StaffDocumentId,
+    StaffDocumentTypeId,
     StudentAssignmentId,
     StudentId,
+    TransportStaffId,
+    TransportStaffRoleId,
     TripId,
     UserId,
     VehicleId,
+    VehicleStaffAssignmentId,
 )
 from raad.modules.transport_ops.infra.mappers import (
     driver_to_model,
     model_to_driver,
+    model_to_staff_document,
+    model_to_staff_document_type,
+    model_to_transport_staff,
+    model_to_transport_staff_role,
+    model_to_vehicle_staff_assignment,
+    staff_document_to_model,
+    staff_document_type_to_model,
+    transport_staff_role_to_model,
+    transport_staff_to_model,
+    vehicle_staff_assignment_to_model,
     model_to_parent,
     model_to_route,
     model_to_student,
@@ -155,8 +180,13 @@ from raad.modules.transport_ops.infra.models import (
     RouteModel,
     StudentAssignmentModel,
     StudentModel,
+    StaffDocumentModel,
+    StaffDocumentTypeModel,
     StudentParentModel,
+    TransportStaffModel,
+    TransportStaffRoleModel,
     TripModel,
+    VehicleStaffAssignmentModel,
 )
 
 
@@ -469,6 +499,27 @@ class SqlAlchemyDriverRepository(
     async def get(self, driver_id: DriverId) -> Driver | None:
         row = await self.get_by_id(str(driver_id))
         return self._track(row)
+
+    async def get_by_staff_id(self, staff_id: TransportStaffId) -> Driver | None:
+        statement = self._apply_scope(
+            select(DriverModel).where(
+                DriverModel.staff_id == str(staff_id), DriverModel.deleted_at.is_(None)
+            )
+        )
+        result = await self._session.execute(statement)
+        return self._track(result.scalar_one_or_none())
+
+    async def list_by_staff_ids(self, staff_ids: list[str]) -> list[Driver]:
+        if not staff_ids:
+            return []
+        statement = self._apply_scope(
+            select(DriverModel).where(
+                DriverModel.staff_id.in_(sorted(set(staff_ids))),
+                DriverModel.deleted_at.is_(None),
+            )
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track(row) for row in rows]  # type: ignore[misc]
 
     async def get_by_user_id(self, user_id: UserId) -> Driver | None:
         statement = select(DriverModel).where(
@@ -792,6 +843,264 @@ class SqlAlchemyStudentAssignmentRepository(
         return assignment
 
 
+# ---- ADR-0049/0050/0051: transport staff, bus crew, staff documents ----------------------------
+
+
+class _TrackingRepository:
+    """The identity-map shape every repository in this module repeats: track each aggregate
+    with its row so `flush_tracked_changes` can re-project in-place mutations before commit."""
+
+    _to_model = None
+    _from_model = None
+
+    def _init_tracking(self) -> None:
+        self._tracked: dict[str, tuple[object, object]] = {}
+
+    def _track_row(self, row):
+        if row is None:
+            return None
+        key = row.id
+        if key in self._tracked:
+            return self._tracked[key][0]
+        aggregate = type(self)._from_model(row)
+        self._tracked[key] = (aggregate, row)
+        return aggregate
+
+    def _track_new(self, aggregate) -> object:
+        model = type(self)._to_model(aggregate)
+        self._tracked[str(aggregate.id)] = (aggregate, model)
+        return model
+
+    def flush_tracked_changes(self) -> None:
+        for aggregate, model in self._tracked.values():
+            type(self)._to_model(aggregate, existing=model)
+
+
+class SqlAlchemyTransportStaffRoleRepository(
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[TransportStaffRoleModel],
+    TransportStaffRoleRepository,
+):
+    model = TransportStaffRoleModel
+    _to_model = staticmethod(transport_staff_role_to_model)
+    _from_model = staticmethod(model_to_transport_staff_role)
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, role_id: TransportStaffRoleId) -> TransportStaffRole | None:
+        return self._track_row(await self.get_by_id(str(role_id)))
+
+    def add(self, role: TransportStaffRole) -> None:
+        super().add(self._track_new(role))
+
+    async def list_for_organization(self, organization_id: str) -> list[TransportStaffRole]:
+        statement = self._apply_scope(
+            select(self.model)
+            .where(
+                self.model.organization_id == organization_id,
+                self.model.deleted_at.is_(None),
+            )
+            .order_by(self.model.sort_order, self.model.name)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+
+class SqlAlchemyTransportStaffRepository(
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[TransportStaffModel],
+    TransportStaffRepository,
+):
+    model = TransportStaffModel
+    _to_model = staticmethod(transport_staff_to_model)
+    _from_model = staticmethod(model_to_transport_staff)
+
+    #: Filtering stays inside the caller's scope (ADR-0021); `organization_id` only narrows it.
+    filterable_fields = {
+        "organization_id": FilterField(column="organization_id"),
+        "status": FilterField(column="status"),
+        "role_id": FilterField(column="role_id"),
+    }
+    sortable_fields = {
+        "full_name": "full_name",
+        "status": "status",
+        "start_date": "start_date",
+        "created_at": "created_at",
+    }
+    searchable_fields = ("full_name", "employee_ref", "phone")
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, staff_id: TransportStaffId) -> TransportStaff | None:
+        return self._track_row(await self.get_by_id(str(staff_id)))
+
+    def add(self, staff: TransportStaff) -> None:
+        super().add(self._track_new(staff))
+
+    async def get_by_employee_ref(
+        self, *, organization_id: str, employee_ref: str
+    ) -> TransportStaff | None:
+        statement = self._apply_scope(
+            select(self.model).where(
+                self.model.organization_id == organization_id,
+                self.model.employee_ref == employee_ref,
+                self.model.deleted_at.is_(None),
+            )
+        )
+        return self._track_row((await self._session.execute(statement)).scalar_one_or_none())
+
+    async def list_by_ids(self, staff_ids: list[str]) -> list[TransportStaff]:
+        if not staff_ids:
+            return []
+        statement = self._apply_scope(
+            select(self.model).where(
+                self.model.id.in_(sorted(set(staff_ids))), self.model.deleted_at.is_(None)
+            )
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[TransportStaff]:
+        raw = await super().list_page(page_request, sort=sort, filters=filters, search=search)
+        return OffsetPage(
+            data=[self._track_row(row) for row in raw.data],
+            total=raw.total,
+            page=raw.page,
+            page_size=raw.page_size,
+        )
+
+
+class SqlAlchemyVehicleStaffAssignmentRepository(
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[VehicleStaffAssignmentModel],
+    VehicleStaffAssignmentRepository,
+):
+    model = VehicleStaffAssignmentModel
+    _to_model = staticmethod(vehicle_staff_assignment_to_model)
+    _from_model = staticmethod(model_to_vehicle_staff_assignment)
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, assignment_id: VehicleStaffAssignmentId) -> VehicleStaffAssignment | None:
+        return self._track_row(await self.get_by_id(str(assignment_id)))
+
+    def add(self, assignment: VehicleStaffAssignment) -> None:
+        super().add(self._track_new(assignment))
+
+    async def list_for(
+        self,
+        *,
+        staff_id: TransportStaffId | None = None,
+        vehicle_id: VehicleId | None = None,
+    ) -> list[VehicleStaffAssignment]:
+        statement = select(self.model).where(self.model.deleted_at.is_(None))
+        if staff_id is not None:
+            statement = statement.where(self.model.staff_id == str(staff_id))
+        if vehicle_id is not None:
+            statement = statement.where(self.model.vehicle_id == str(vehicle_id))
+        statement = self._apply_scope(
+            statement.order_by(self.model.starts_on.desc(), self.model.created_at.desc())
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+
+class SqlAlchemyStaffDocumentTypeRepository(
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[StaffDocumentTypeModel],
+    StaffDocumentTypeRepository,
+):
+    model = StaffDocumentTypeModel
+    _to_model = staticmethod(staff_document_type_to_model)
+    _from_model = staticmethod(model_to_staff_document_type)
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, type_id: StaffDocumentTypeId) -> StaffDocumentType | None:
+        return self._track_row(await self.get_by_id(str(type_id)))
+
+    def add(self, doc_type: StaffDocumentType) -> None:
+        super().add(self._track_new(doc_type))
+
+    async def list_for_organization(self, organization_id: str) -> list[StaffDocumentType]:
+        statement = self._apply_scope(
+            select(self.model)
+            .where(
+                self.model.organization_id == organization_id,
+                self.model.deleted_at.is_(None),
+            )
+            .order_by(self.model.name)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+    async def list_by_ids(self, type_ids: list[str]) -> list[StaffDocumentType]:
+        if not type_ids:
+            return []
+        statement = self._apply_scope(
+            select(self.model).where(self.model.id.in_(sorted(set(type_ids))))
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+
+class SqlAlchemyStaffDocumentRepository(
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[StaffDocumentModel],
+    StaffDocumentRepository,
+):
+    model = StaffDocumentModel
+    _to_model = staticmethod(staff_document_to_model)
+    _from_model = staticmethod(model_to_staff_document)
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, document_id: StaffDocumentId) -> StaffDocument | None:
+        return self._track_row(await self.get_by_id(str(document_id)))
+
+    def add(self, document: StaffDocument) -> None:
+        super().add(self._track_new(document))
+
+    async def list_for_staff(self, staff_id: TransportStaffId) -> list[StaffDocument]:
+        statement = self._apply_scope(
+            select(self.model)
+            .where(self.model.staff_id == str(staff_id), self.model.deleted_at.is_(None))
+            .order_by(self.model.created_at.desc())
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+    async def list_current_with_expiry(self) -> list[StaffDocument]:
+        statement = self._apply_scope(
+            select(self.model)
+            .where(
+                self.model.replaced_by_id.is_(None),
+                self.model.expires_on.is_not(None),
+                self.model.deleted_at.is_(None),
+            )
+            .order_by(self.model.expires_on)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+
 class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfWork):
     """Concrete `TransportOpsUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `transport_ops`'s
     repositories once the session is open, and re-syncs every tracked aggregate's in-place
@@ -815,6 +1124,11 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
     routes: SqlAlchemyRouteRepository
     trips: SqlAlchemyTripRepository
     student_assignments: SqlAlchemyStudentAssignmentRepository
+    staff_roles: SqlAlchemyTransportStaffRoleRepository
+    staff: SqlAlchemyTransportStaffRepository
+    staff_assignments: SqlAlchemyVehicleStaffAssignmentRepository
+    staff_document_types: SqlAlchemyStaffDocumentTypeRepository
+    staff_documents: SqlAlchemyStaffDocumentRepository
 
     async def __aenter__(self) -> "SqlAlchemyTransportOpsUnitOfWork":
         await super().__aenter__()
@@ -827,6 +1141,15 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
         self.student_assignments = SqlAlchemyStudentAssignmentRepository(
             self.session, scope=self.scope
         )
+        self.staff_roles = SqlAlchemyTransportStaffRoleRepository(self.session, scope=self.scope)
+        self.staff = SqlAlchemyTransportStaffRepository(self.session, scope=self.scope)
+        self.staff_assignments = SqlAlchemyVehicleStaffAssignmentRepository(
+            self.session, scope=self.scope
+        )
+        self.staff_document_types = SqlAlchemyStaffDocumentTypeRepository(
+            self.session, scope=self.scope
+        )
+        self.staff_documents = SqlAlchemyStaffDocumentRepository(self.session, scope=self.scope)
         return self
 
     async def commit(self) -> None:
@@ -836,4 +1159,9 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
         self.routes.flush_tracked_changes()
         self.trips.flush_tracked_changes()
         self.student_assignments.flush_tracked_changes()
+        self.staff_roles.flush_tracked_changes()
+        self.staff.flush_tracked_changes()
+        self.staff_assignments.flush_tracked_changes()
+        self.staff_document_types.flush_tracked_changes()
+        self.staff_documents.flush_tracked_changes()
         await super().commit()

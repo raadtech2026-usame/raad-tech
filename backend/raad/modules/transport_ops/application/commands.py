@@ -468,3 +468,119 @@ class SetFamilyTransportationCommand:
     dropoff_stop_id: str
     actor: Principal
     vehicle_id: str | None = None
+
+
+# ---- ADR-0049/0050/0051: transport staff, bus crew, staff documents ----------------------------
+
+#: A field a partial update may leave out. `None` is a real value there ("clear it"), so absence
+#: needs its own marker.
+UNSET: object = object()
+
+
+@dataclass(frozen=True)
+class SaveStaffRoleCommand:
+    organization_id: str
+    name: str
+    sort_order: int
+    actor: Principal
+    role_id: str | None = None
+    is_archived: bool = False
+
+
+@dataclass(frozen=True)
+class AddDefaultStaffSetupCommand:
+    """Adds the default job titles and document types an organization does not have yet."""
+
+    organization_id: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class RegisterTransportStaffCommand:
+    organization_id: str
+    full_name: str
+    actor: Principal
+    phone: str | None = None
+    alternate_phone: str | None = None
+    role_id: str | None = None
+    employee_ref: str | None = None
+    start_date: date | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
+class UpdateTransportStaffCommand:
+    """Only the fields present in `changes` are touched (`UNSET` never appears there)."""
+
+    staff_id: str
+    changes: dict
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class ChangeTransportStaffStatusCommand:
+    staff_id: str
+    status: str
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class GrantDriverAccessCommand:
+    """ADR-0049 §3: gives an existing staff member a driver profile and a login."""
+
+    staff_id: str
+    license_no: str
+    email: str | None
+    phone: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
+class AssignStaffToVehicleCommand:
+    staff_id: str
+    vehicle_id: str
+    kind: str
+    actor: Principal
+    starts_on: date | None = None
+    ends_on: date | None = None
+    route_id: str | None = None
+    role_id: str | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class EndStaffAssignmentCommand:
+    assignment_id: str
+    actor: Principal
+    ends_on: date | None = None
+
+
+@dataclass(frozen=True)
+class SaveStaffDocumentTypeCommand:
+    organization_id: str
+    name: str
+    alert_lead_days: tuple[int, ...]
+    actor: Principal
+    type_id: str | None = None
+    is_archived: bool = False
+
+
+@dataclass(frozen=True)
+class RecordStaffDocumentCommand:
+    staff_id: str
+    type_id: str
+    actor: Principal
+    number: str | None = None
+    issued_on: date | None = None
+    expires_on: date | None = None
+    notes: str | None = None
+    replaces_id: str | None = None
+
+
+@dataclass(frozen=True)
+class UpdateStaffDocumentCommand:
+    document_id: str
+    changes: dict
+    actor: Principal

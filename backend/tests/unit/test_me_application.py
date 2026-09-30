@@ -56,6 +56,7 @@ def _driver_dto(*, id: str = "driver-1", user_id: str = "user-driver-1") -> Driv
         status="active",
         created_at=None,  # type: ignore[arg-type]
         updated_at=None,  # type: ignore[arg-type]
+        staff_id="staff-1",
     )
 
 

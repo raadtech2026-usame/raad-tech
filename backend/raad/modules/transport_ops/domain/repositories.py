@@ -87,20 +87,30 @@ from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
     Route,
+    StaffDocument,
+    StaffDocumentType,
     Student,
     StudentAssignment,
     StudentParent,
+    TransportStaff,
+    TransportStaffRole,
     Trip,
+    VehicleStaffAssignment,
 )
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     ParentId,
     RouteId,
+    StaffDocumentId,
+    StaffDocumentTypeId,
     StudentAssignmentId,
     StudentId,
+    TransportStaffId,
+    TransportStaffRoleId,
     TripId,
     UserId,
     VehicleId,
+    VehicleStaffAssignmentId,
 )
 
 
@@ -253,6 +263,16 @@ class DriverRepository(ABC):
 
     @abstractmethod
     async def get(self, driver_id: DriverId) -> Driver | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_staff_id(self, staff_id: TransportStaffId) -> Driver | None:
+        """ADR-0049: the driving extension of one staff member, if they have one."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_by_staff_ids(self, staff_ids: list[str]) -> list[Driver]:
+        """Which of these staff members can drive trips — one query for a whole page."""
         raise NotImplementedError
 
     @abstractmethod
@@ -417,4 +437,116 @@ class StudentAssignmentRepository(ABC):
     ) -> OffsetPage[StudentAssignment]:
         """Backs `GET /student-assignments`'s paginated/filtered/sorted contract (API
         Contracts §7/§8) — Tier 2 pagination phase addition, see module docstring."""
+        raise NotImplementedError
+
+
+# ---- ADR-0049/0050/0051 --------------------------------------------------------------------------
+
+
+class TransportStaffRoleRepository(ABC):
+    @abstractmethod
+    async def get(self, role_id: TransportStaffRoleId) -> TransportStaffRole | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, role: TransportStaffRole) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_organization(self, organization_id: str) -> list[TransportStaffRole]:
+        """Every title of one organization, archived included, in display order."""
+        raise NotImplementedError
+
+
+class TransportStaffRepository(ABC):
+    @abstractmethod
+    async def get(self, staff_id: TransportStaffId) -> TransportStaff | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, staff: TransportStaff) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_by_employee_ref(
+        self, *, organization_id: str, employee_ref: str
+    ) -> TransportStaff | None:
+        """Backs the per-organization uniqueness of employee references (a pre-check; the
+        database index is the guarantee)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_by_ids(self, staff_ids: list[str]) -> list[TransportStaff]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_page(
+        self,
+        page_request: OffsetPageRequest,
+        *,
+        sort: list[SortSpec],
+        filters: list[FilterCondition],
+        search: str | None,
+    ) -> OffsetPage[TransportStaff]:
+        raise NotImplementedError
+
+
+class VehicleStaffAssignmentRepository(ABC):
+    @abstractmethod
+    async def get(self, assignment_id: VehicleStaffAssignmentId) -> VehicleStaffAssignment | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, assignment: VehicleStaffAssignment) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for(
+        self,
+        *,
+        staff_id: TransportStaffId | None = None,
+        vehicle_id: VehicleId | None = None,
+    ) -> list[VehicleStaffAssignment]:
+        """Full history for a staff member and/or a bus, newest first. Crews are small, so the
+        history is returned whole rather than paged."""
+        raise NotImplementedError
+
+
+class StaffDocumentTypeRepository(ABC):
+    @abstractmethod
+    async def get(self, type_id: StaffDocumentTypeId) -> StaffDocumentType | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, doc_type: StaffDocumentType) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_organization(self, organization_id: str) -> list[StaffDocumentType]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_by_ids(self, type_ids: list[str]) -> list[StaffDocumentType]:
+        raise NotImplementedError
+
+
+class StaffDocumentRepository(ABC):
+    @abstractmethod
+    async def get(self, document_id: StaffDocumentId) -> StaffDocument | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, document: StaffDocument) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_for_staff(self, staff_id: TransportStaffId) -> list[StaffDocument]:
+        """Every document of one person, superseded ones included, newest first."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_current_with_expiry(self) -> list[StaffDocument]:
+        """Documents that are not superseded and have an expiry date — the only ones that can
+        be expiring or due an alert. Scoped like every other read (ADR-0021); the scheduled
+        job reads with an unrestricted scope across organizations."""
         raise NotImplementedError
