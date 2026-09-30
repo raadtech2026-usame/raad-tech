@@ -88,7 +88,7 @@ applies).
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from sqlalchemy import (
     CHAR,
@@ -101,6 +101,7 @@ from sqlalchemy import (
     Index,
     Integer,
     SmallInteger,
+    Time,
     Text,
     UniqueConstraint,
     text,
@@ -117,7 +118,7 @@ _PARENT_STATUS_VALUES = ("active", "inactive")
 _DRIVER_STATUS_VALUES = ("active", "inactive")
 _ROUTE_STATUS_VALUES = ("active", "inactive")
 _TRIP_TYPE_VALUES = ("morning", "afternoon")
-_TRIP_STATUS_VALUES = ("scheduled", "in_progress", "interrupted", "completed")
+_TRIP_STATUS_VALUES = ("scheduled", "in_progress", "interrupted", "completed", "cancelled")
 _STUDENT_ASSIGNMENT_STATUS_VALUES = (
     "active",
     "removed",
@@ -306,6 +307,15 @@ class TripModel(AuditedTableMixin, Base):
             "scheduled_date",
             "status",
         ),
+        # ADR-0052 §3: one non-cancelled trip per bus, date and period.
+        Index(
+            "ux_trips__vehicle_date_type",
+            "vehicle_id",
+            "scheduled_date",
+            "trip_type",
+            unique=True,
+            postgresql_where=text("status <> 'cancelled'"),
+        ),
     )
 
     organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
@@ -331,6 +341,16 @@ class TripModel(AuditedTableMixin, Base):
     ended_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
     )
+    #: ADR-0052: generated from this timetable entry, if any; departure copied at generation.
+    timetable_entry_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("route_timetable_entries.id"), nullable=True, index=True
+    )
+    planned_departure: Mapped[time | None] = mapped_column(Time, nullable=True)
+    #: ADR-0054.
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    cancelled_reason: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    #: ADR-0053 §5: the last uncovered cause alerted.
+    coverage_alert_key: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
 
 
 class StudentAssignmentModel(AuditedTableMixin, Base):
@@ -544,3 +564,100 @@ class StaffDocumentModel(AuditedTableMixin, Base):
         nullable=True,
     )
     alerted_threshold_days: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+
+
+# ---- ADR-0052/0053: timetable, closures, unavailability, cover ------------------------------
+
+_UNAVAILABILITY_REASON_VALUES = ("sick", "personal", "training", "other")
+
+
+class RouteTimetableEntryModel(AuditedTableMixin, Base):
+    """ADR-0052 §1: one regular run. `vehicle_id` is a cross-module id with no foreign key."""
+
+    __tablename__ = "route_timetable_entries"
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    route_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("routes.id"), nullable=False, index=True
+    )
+    vehicle_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    trip_type: Mapped[str] = mapped_column(
+        SqlEnum(*_TRIP_TYPE_VALUES, name="trip_type", create_type=False), nullable=False
+    )
+    weekdays: Mapped[list[int]] = mapped_column(ARRAY(SmallInteger), nullable=False)
+    planned_departure: Mapped[time | None] = mapped_column(Time, nullable=True)
+    default_driver_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("drivers.id"), nullable=False
+    )
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class OperatingClosureModel(AuditedTableMixin, Base):
+    """ADR-0052 §2: days without transport."""
+
+    __tablename__ = "operating_closures"
+    __table_args__ = (
+        Index("ix_operating_closures__organization_id_period", "organization_id", "starts_on", "ends_on"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    starts_on: Mapped[date] = mapped_column(Date, nullable=False)
+    ends_on: Mapped[date] = mapped_column(Date, nullable=False)
+    label: Mapped[str] = mapped_column(VARCHAR(120), nullable=False)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+
+
+class StaffUnavailabilityModel(AuditedTableMixin, Base):
+    """ADR-0053 §1. `note` is Org Admin only and never enters an event."""
+
+    __tablename__ = "staff_unavailability"
+    __table_args__ = (
+        Index("ix_staff_unavailability__organization_id_period", "organization_id", "starts_on", "ends_on"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    staff_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("transport_staff.id"), nullable=False, index=True
+    )
+    starts_on: Mapped[date] = mapped_column(Date, nullable=False)
+    ends_on: Mapped[date] = mapped_column(Date, nullable=False)
+    reason: Mapped[str] = mapped_column(
+        SqlEnum(*_UNAVAILABILITY_REASON_VALUES, name="unavailability_reason"), nullable=False
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+
+
+class StaffCoverModel(AuditedTableMixin, Base):
+    """ADR-0053 §2: the substitute for one unavailability on one bus."""
+
+    __tablename__ = "staff_covers"
+    __table_args__ = (
+        Index("ix_staff_covers__organization_id_period", "organization_id", "starts_on", "ends_on"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    unavailability_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("staff_unavailability.id"), nullable=False, index=True
+    )
+    # Two foreign keys to one table: the naming convention would give both the same name.
+    absent_staff_id: Mapped[str] = mapped_column(
+        CHAR(26),
+        ForeignKey("transport_staff.id", name="fk_staff_covers__absent_staff"),
+        nullable=False,
+    )
+    substitute_staff_id: Mapped[str] = mapped_column(
+        CHAR(26),
+        ForeignKey("transport_staff.id", name="fk_staff_covers__substitute_staff"),
+        nullable=False,
+        index=True,
+    )
+    vehicle_id: Mapped[str] = mapped_column(CHAR(26), nullable=False)
+    starts_on: Mapped[date] = mapped_column(Date, nullable=False)
+    ends_on: Mapped[date] = mapped_column(Date, nullable=False)
+    assignment_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("vehicle_staff_assignments.id"), nullable=True
+    )
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)

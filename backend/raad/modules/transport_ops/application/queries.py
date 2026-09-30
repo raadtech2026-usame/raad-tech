@@ -64,7 +64,7 @@ one-off here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.modules.transport_ops.domain.entities import (
@@ -489,6 +489,11 @@ class TripDTO:
     ended_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    #: ADR-0052/0054.
+    timetable_entry_id: str | None = None
+    planned_departure: time | None = None
+    cancelled_at: datetime | None = None
+    cancelled_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -502,6 +507,7 @@ class TripSummaryDTO:
     trip_type: str
     status: str
     scheduled_date: date
+    planned_departure: time | None = None
 
 
 def trip_to_dto(trip: Trip) -> TripDTO:
@@ -520,6 +526,10 @@ def trip_to_dto(trip: Trip) -> TripDTO:
         ended_at=trip.ended_at,
         created_at=trip.created_at,
         updated_at=trip.updated_at,
+        timetable_entry_id=str(trip.timetable_entry_id) if trip.timetable_entry_id else None,
+        planned_departure=trip.planned_departure,
+        cancelled_at=trip.cancelled_at,
+        cancelled_reason=trip.cancelled_reason,
     )
 
 
@@ -535,6 +545,7 @@ def trip_to_summary_dto(trip: Trip) -> TripSummaryDTO:
         trip_type=trip.trip_type.value,
         status=trip.status.value,
         scheduled_date=trip.scheduled_date,
+        planned_departure=trip.planned_departure,
     )
 
 
@@ -748,3 +759,149 @@ class ListTransportStaffQuery:
     sort: list[SortSpec] = field(default_factory=list)
     filters: list[FilterCondition] = field(default_factory=list)
     search: str | None = None
+
+
+# ---- ADR-0052/0053/0054: daily transport operations -----------------------------------------
+
+
+@dataclass(frozen=True)
+class TimetableEntryDTO:
+    id: str
+    organization_id: str
+    route_id: str
+    route_name: str | None
+    vehicle_id: str
+    trip_type: str
+    weekdays: list[int]
+    planned_departure: time | None
+    default_driver_id: str
+    default_driver_name: str | None
+    valid_from: date
+    valid_until: date | None
+    is_active: bool
+
+
+@dataclass(frozen=True)
+class ClosureDTO:
+    id: str
+    organization_id: str
+    starts_on: date
+    ends_on: date
+    label: str
+    withdrawn_at: datetime | None
+
+
+@dataclass(frozen=True)
+class UnavailabilityDTO:
+    """`note` is Org Admin only; the API nulls it for everyone else (ADR-0053 §1)."""
+
+    id: str
+    organization_id: str
+    staff_id: str
+    staff_name: str
+    starts_on: date
+    ends_on: date
+    reason: str
+    note: str | None
+    withdrawn_at: datetime | None
+    covers: list["CoverDTO"]
+
+
+@dataclass(frozen=True)
+class CoverDTO:
+    id: str
+    unavailability_id: str
+    absent_staff_id: str
+    absent_staff_name: str
+    substitute_staff_id: str
+    substitute_staff_name: str
+    vehicle_id: str
+    starts_on: date
+    ends_on: date
+    withdrawn_at: datetime | None
+    trips_reassigned: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BoardTripDTO:
+    id: str
+    trip_type: str
+    route_id: str
+    route_name: str | None
+    planned_departure: time | None
+    driver_id: str
+    driver_name: str | None
+    status: str
+    cancelled_reason: str | None
+    #: `None` when covered; else `driver_inactive`, `driver_not_active` or `driver_unavailable`.
+    uncovered_reason: str | None
+
+
+@dataclass(frozen=True)
+class BoardCrewDTO:
+    staff_id: str
+    staff_name: str
+    role_name: str | None
+    is_substitute: bool
+    is_unavailable: bool
+    covered_by: str | None
+
+
+@dataclass(frozen=True)
+class BoardVehicleDTO:
+    vehicle_id: str
+    trips: list[BoardTripDTO]
+    crew: list[BoardCrewDTO]
+    crew_gaps: int
+
+
+@dataclass(frozen=True)
+class DailyBoardDTO:
+    date: date
+    closures: list[str]
+    vehicles: list[BoardVehicleDTO]
+    uncovered_trips: int
+
+
+@dataclass(frozen=True)
+class PlannedTripDTO:
+    timetable_entry_id: str
+    scheduled_date: date
+    trip_type: str
+    route_id: str
+    vehicle_id: str
+    driver_id: str
+    #: The substitute is driving instead of the default driver.
+    is_substitute: bool
+
+
+@dataclass(frozen=True)
+class SkippedTripDTO:
+    timetable_entry_id: str
+    scheduled_date: date | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class GenerationResultDTO:
+    start: date
+    days: int
+    dry_run: bool
+    to_create: list[PlannedTripDTO]
+    skipped: list[SkippedTripDTO]
+    closed_days: list[date]
+    created: int
+
+
+@dataclass(frozen=True)
+class UncoveredTripAlertDTO:
+    organization_id: str
+    trip_id: str
+    scheduled_date: date
+    trip_type: str
+    vehicle_id: str
+    route_name: str | None
+    driver_name: str | None
+    reason: str
+    key: str

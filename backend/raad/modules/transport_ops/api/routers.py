@@ -191,6 +191,8 @@ from __future__ import annotations
 
 import dataclasses
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query, status
 
 from raad.core.errors.exceptions import (
@@ -217,12 +219,25 @@ from raad.modules.transport_ops.api.deps import (
     get_student_parent_service,
     get_student_service,
     get_transport_ops_uow,
+    get_daily_operations_service,
     get_transport_staff_service,
     get_trip_service,
 )
 from raad.modules.transport_ops.api.schemas import (
     AddStopToRouteRequest,
     AssignStaffToVehicleRequest,
+    CancelTripRequest,
+    ClosureRequest,
+    ClosureResponse,
+    CoverRequest,
+    CoverResponse,
+    DailyBoardResponse,
+    GenerateTripsRequest,
+    GenerationResultResponse,
+    TimetableEntryRequest,
+    TimetableEntryResponse,
+    UnavailabilityRequest,
+    UnavailabilityResponse,
     ChangeTransportStaffStatusRequest,
     EndStaffAssignmentRequest,
     GrantDriverAccessRequest,
@@ -278,6 +293,12 @@ from raad.modules.transport_ops.api.schemas import (
 )
 from raad.modules.transport_ops.application.commands import (
     AddDefaultStaffSetupCommand,
+    CancelTripCommand,
+    CreateCoverCommand,
+    GenerateTripsCommand,
+    RecordClosureCommand,
+    RecordUnavailabilityCommand,
+    SaveTimetableEntryCommand,
     AssignStaffToVehicleCommand,
     ChangeTransportStaffStatusCommand,
     EndStaffAssignmentCommand,
@@ -328,7 +349,9 @@ from raad.modules.transport_ops.application.commands import (
 )
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
+    CoverDTO,
     ListTransportStaffQuery,
+    UnavailabilityDTO,
     StaffDocumentDTO,
     StaffDocumentTypeDTO,
     TransportStaffDTO,
@@ -366,6 +389,9 @@ from raad.modules.transport_ops.application.queries import (
     StudentSummaryDTO,
     TripDTO,
     TripSummaryDTO,
+)
+from raad.modules.transport_ops.application.operations_services import (
+    DailyOperationsApplicationService,
 )
 from raad.modules.transport_ops.application.staff_services import (
     TransportStaffApplicationService,
@@ -542,6 +568,10 @@ def _trip_dto_to_response(trip: TripDTO) -> TripResponse:
         ended_at=trip.ended_at,
         created_at=trip.created_at,
         updated_at=trip.updated_at,
+        timetable_entry_id=trip.timetable_entry_id,
+        planned_departure=trip.planned_departure,
+        cancelled_at=trip.cancelled_at,
+        cancelled_reason=trip.cancelled_reason,
     )
 
 
@@ -554,6 +584,7 @@ def _trip_summary_dto_to_response(trip: TripSummaryDTO) -> TripSummaryResponse:
         trip_type=trip.trip_type,
         status=trip.status,
         scheduled_date=trip.scheduled_date,
+        planned_departure=trip.planned_departure,
     )
 
 
@@ -2667,3 +2698,305 @@ async def update_staff_document(
         uow=uow,
     )
     return _document_to_response(document, principal)
+
+
+# ============================================================================================
+# ADR-0052/0053/0054: daily transport operations
+# ============================================================================================
+#
+# Manage permissions are `org_admin` only; list/read also go to founder, regional_manager and
+# support_staff, who never see an unavailability note (nulled here, like the Phase 1 private
+# fields). Trip generation and cancellation hang off `/trips`, which they act on.
+
+route_timetable_router = APIRouter()
+operating_closures_router = APIRouter()
+staff_unavailability_router = APIRouter()
+staff_covers_router = APIRouter()
+daily_operations_router = APIRouter()
+
+
+def _cover_to_response(cover: CoverDTO) -> CoverResponse:
+    return CoverResponse(**dataclasses.asdict(cover))
+
+
+def _unavailability_to_response(item: UnavailabilityDTO, principal: Principal) -> UnavailabilityResponse:
+    visible = _private_fields_visible(principal)
+    values = dataclasses.asdict(item)
+    if not visible:
+        values["note"] = None
+    return UnavailabilityResponse(**values, private_fields_visible=visible)
+
+
+# ---- timetable -------------------------------------------------------------------------------
+
+
+@route_timetable_router.get(
+    "",
+    response_model=list[TimetableEntryResponse],
+    summary="The weekly timetable, optionally for one route",
+)
+async def list_route_timetable(
+    route_id: str | None = Query(None),
+    principal: Principal = Depends(require_permission(Permission("transport_ops.timetable.list"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[TimetableEntryResponse]:
+    entries = await service.list_timetable(uow=uow, route_id=route_id)
+    return [TimetableEntryResponse(**dataclasses.asdict(e)) for e in entries]
+
+
+def _timetable_command(
+    body: TimetableEntryRequest, principal: Principal, entry_id: str | None
+) -> SaveTimetableEntryCommand:
+    return SaveTimetableEntryCommand(
+        organization_id=_resolve_organization_id(principal, body.organization_id),
+        route_id=body.route_id,
+        vehicle_id=body.vehicle_id,
+        trip_type=body.trip_type,
+        weekdays=tuple(body.weekdays),
+        default_driver_id=body.default_driver_id,
+        valid_from=body.valid_from,
+        valid_until=body.valid_until,
+        planned_departure=body.planned_departure,
+        is_active=body.is_active,
+        entry_id=entry_id,
+        actor=principal,
+    )
+
+
+@route_timetable_router.post(
+    "",
+    response_model=TimetableEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a regular run to the weekly timetable",
+    description="409 when the bus already has an entry for that period on one of those weekdays.",
+)
+async def create_route_timetable_entry(
+    body: TimetableEntryRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.timetable.manage"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TimetableEntryResponse:
+    entry = await service.save_timetable_entry(_timetable_command(body, principal, None), uow=uow)
+    return TimetableEntryResponse(**dataclasses.asdict(entry))
+
+
+@route_timetable_router.put(
+    "/{entry_id}",
+    response_model=TimetableEntryResponse,
+    summary="Replace a timetable entry (trips already generated are not changed)",
+)
+async def update_route_timetable_entry(
+    entry_id: str,
+    body: TimetableEntryRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.timetable.manage"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TimetableEntryResponse:
+    entry = await service.save_timetable_entry(_timetable_command(body, principal, entry_id), uow=uow)
+    return TimetableEntryResponse(**dataclasses.asdict(entry))
+
+
+# ---- closures --------------------------------------------------------------------------------
+
+
+@operating_closures_router.get(
+    "",
+    response_model=list[ClosureResponse],
+    summary="Closed days overlapping a date range",
+)
+async def list_operating_closures(
+    start: date = Query(...),
+    end: date = Query(...),
+    principal: Principal = Depends(require_permission(Permission("transport_ops.closures.list"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[ClosureResponse]:
+    closures = await service.list_closures(uow=uow, start=start, end=end)
+    return [ClosureResponse(**dataclasses.asdict(c)) for c in closures]
+
+
+@operating_closures_router.post(
+    "",
+    response_model=ClosureResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record days without transport",
+    description="Trips already generated inside it are not cancelled; the daily board shows them.",
+)
+async def record_operating_closure(
+    body: ClosureRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.closures.manage"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> ClosureResponse:
+    closure = await service.record_closure(
+        RecordClosureCommand(
+            organization_id=_resolve_organization_id(principal, body.organization_id),
+            starts_on=body.starts_on,
+            ends_on=body.ends_on,
+            label=body.label,
+            actor=principal,
+        ),
+        uow=uow,
+    )
+    return ClosureResponse(**dataclasses.asdict(closure))
+
+
+@operating_closures_router.post(
+    "/{closure_id}/withdraw",
+    response_model=ClosureResponse,
+    summary="Withdraw a closure (kept as history)",
+)
+async def withdraw_operating_closure(
+    closure_id: str,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.closures.manage"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> ClosureResponse:
+    closure = await service.withdraw_closure(closure_id, actor=principal, uow=uow)
+    return ClosureResponse(**dataclasses.asdict(closure))
+
+
+# ---- unavailability and cover ----------------------------------------------------------------
+
+
+@staff_unavailability_router.get(
+    "",
+    response_model=list[UnavailabilityResponse],
+    summary="Unavailability of one person, or of everyone over a date range",
+)
+async def list_staff_unavailability(
+    staff_id: str | None = Query(None),
+    start: date | None = Query(None),
+    end: date | None = Query(None),
+    principal: Principal = Depends(require_permission(Permission("transport_ops.unavailability.list"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[UnavailabilityResponse]:
+    items = await service.list_unavailability(uow=uow, staff_id=staff_id, start=start, end=end)
+    return [_unavailability_to_response(i, principal) for i in items]
+
+
+@staff_unavailability_router.post(
+    "",
+    response_model=UnavailabilityResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record that someone cannot work for a period",
+    description="Changes nothing else: affected trips and crew are flagged, never reassigned.",
+)
+async def record_staff_unavailability(
+    body: UnavailabilityRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.unavailability.manage"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> UnavailabilityResponse:
+    item = await service.record_unavailability(
+        RecordUnavailabilityCommand(actor=principal, **body.model_dump()), uow=uow
+    )
+    return _unavailability_to_response(item, principal)
+
+
+@staff_unavailability_router.post(
+    "/{unavailability_id}/withdraw",
+    response_model=UnavailabilityResponse,
+    summary="Withdraw an unavailability and its covers",
+)
+async def withdraw_staff_unavailability(
+    unavailability_id: str,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.unavailability.manage"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> UnavailabilityResponse:
+    item = await service.withdraw_unavailability(unavailability_id, actor=principal, uow=uow)
+    return _unavailability_to_response(item, principal)
+
+
+@staff_covers_router.post(
+    "",
+    response_model=CoverResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Name a substitute for an unavailable person on a bus",
+    description=(
+        "Creates the substitute's temporary crew assignment. When a driver is covered, the "
+        "substitute (who must have active driver access) takes their scheduled trips on that bus."
+    ),
+)
+async def create_staff_cover(
+    body: CoverRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.covers.manage"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> CoverResponse:
+    cover = await service.create_cover(CreateCoverCommand(actor=principal, **body.model_dump()), uow=uow)
+    return _cover_to_response(cover)
+
+
+@staff_covers_router.post(
+    "/{cover_id}/withdraw",
+    response_model=CoverResponse,
+    summary="Withdraw a cover; the original driver gets their scheduled trips back",
+)
+async def withdraw_staff_cover(
+    cover_id: str,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.covers.manage"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> CoverResponse:
+    return _cover_to_response(await service.withdraw_cover(cover_id, actor=principal, uow=uow))
+
+
+# ---- the daily board -------------------------------------------------------------------------
+
+
+@daily_operations_router.get(
+    "",
+    response_model=DailyBoardResponse,
+    summary="Every bus's trips, crew, absences and cover for one date",
+)
+async def get_daily_operations(
+    day: date = Query(..., alias="date"),
+    principal: Principal = Depends(require_permission(Permission("transport_ops.daily_operations.read"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> DailyBoardResponse:
+    return DailyBoardResponse(**dataclasses.asdict(await service.daily_board(day, uow=uow)))
+
+
+# ---- trip generation and cancellation --------------------------------------------------------
+
+
+@trips_router.post(
+    "/generate",
+    response_model=GenerationResultResponse,
+    summary="Generate trips from the timetable (or preview with dry_run)",
+    description="Idempotent: trips that already exist for a bus, date and period are never duplicated.",
+)
+async def generate_trips(
+    body: GenerateTripsRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.trips.generate"))),
+    service: DailyOperationsApplicationService = Depends(get_daily_operations_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> GenerationResultResponse:
+    result = await service.generate_trips(
+        GenerateTripsCommand(actor=principal, start=body.start, days=body.days, dry_run=body.dry_run),
+        uow=uow,
+    )
+    return GenerationResultResponse(**dataclasses.asdict(result))
+
+
+@trips_router.post(
+    "/{trip_id}/cancel",
+    response_model=TripResponse,
+    summary="Cancel a scheduled trip; its children's parents are told",
+)
+async def cancel_trip(
+    trip_id: str,
+    body: CancelTripRequest,
+    principal: Principal = Depends(require_permission(Permission("transport_ops.trips.cancel"))),
+    trip_service: TripApplicationService = Depends(get_trip_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> TripResponse:
+    trip = await trip_service.cancel_trip(
+        CancelTripCommand(trip_id=trip_id, reason=body.reason, actor=principal), uow=uow
+    )
+    return _trip_dto_to_response(trip)

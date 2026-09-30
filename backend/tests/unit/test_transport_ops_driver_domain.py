@@ -291,6 +291,9 @@ class DriverRepositoryInterfaceTests(unittest.TestCase):
             async def get_by_staff_id(self, staff_id) -> Driver | None:
                 return None
 
+            async def list_by_ids(self, driver_ids) -> list[Driver]:
+                return []
+
             async def list_by_staff_ids(self, staff_ids) -> list[Driver]:
                 return []
 

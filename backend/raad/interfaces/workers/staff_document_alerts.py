@@ -60,7 +60,7 @@ def alert_text(alert: DueExpiryAlertDTO, today: date) -> tuple[str, str]:
     return title, body
 
 
-async def _active_org_admin_ids(
+async def active_org_admin_ids(
     organization_id: str,
     *,
     user_service: UserApplicationService,
@@ -104,7 +104,7 @@ async def notify_expiring_staff_documents(
 
     sent = 0
     for organization_id, organization_alerts in by_organization.items():
-        admins = await _active_org_admin_ids(
+        admins = await active_org_admin_ids(
             organization_id, user_service=user_service, iam_uow=iam_uow
         )
         if not admins:

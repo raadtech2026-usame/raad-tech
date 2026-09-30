@@ -92,7 +92,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
@@ -107,10 +107,14 @@ from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.domain.entities import (
     Driver,
+    OperatingClosure,
     Parent,
     Route,
+    RouteTimetableEntry,
+    StaffCover,
     StaffDocument,
     StaffDocumentType,
+    StaffUnavailability,
     Student,
     StudentAssignment,
     StudentParent,
@@ -122,9 +126,13 @@ from raad.modules.transport_ops.domain.entities import (
 from raad.modules.transport_ops.domain.repositories import (
     DriverRepository,
     ParentRepository,
+    OperatingClosureRepository,
     RouteRepository,
+    RouteTimetableEntryRepository,
+    StaffCoverRepository,
     StaffDocumentRepository,
     StaffDocumentTypeRepository,
+    StaffUnavailabilityRepository,
     StudentAssignmentRepository,
     StudentParentRepository,
     StudentRepository,
@@ -136,9 +144,13 @@ from raad.modules.transport_ops.domain.repositories import (
 from raad.modules.transport_ops.domain.value_objects import (
     DriverId,
     ParentId,
+    OperatingClosureId,
     RouteId,
+    RouteTimetableEntryId,
+    StaffCoverId,
     StaffDocumentId,
     StaffDocumentTypeId,
+    StaffUnavailabilityId,
     StudentAssignmentId,
     StudentId,
     TransportStaffId,
@@ -151,8 +163,16 @@ from raad.modules.transport_ops.domain.value_objects import (
 from raad.modules.transport_ops.infra.mappers import (
     driver_to_model,
     model_to_driver,
+    model_to_operating_closure,
+    model_to_route_timetable_entry,
+    model_to_staff_cover,
     model_to_staff_document,
     model_to_staff_document_type,
+    model_to_staff_unavailability,
+    operating_closure_to_model,
+    route_timetable_entry_to_model,
+    staff_cover_to_model,
+    staff_unavailability_to_model,
     model_to_transport_staff,
     model_to_transport_staff_role,
     model_to_vehicle_staff_assignment,
@@ -180,8 +200,12 @@ from raad.modules.transport_ops.infra.models import (
     RouteModel,
     StudentAssignmentModel,
     StudentModel,
+    OperatingClosureModel,
+    RouteTimetableEntryModel,
+    StaffCoverModel,
     StaffDocumentModel,
     StaffDocumentTypeModel,
+    StaffUnavailabilityModel,
     StudentParentModel,
     TransportStaffModel,
     TransportStaffRoleModel,
@@ -521,6 +545,17 @@ class SqlAlchemyDriverRepository(
         rows = (await self._session.execute(statement)).scalars().all()
         return [self._track(row) for row in rows]  # type: ignore[misc]
 
+    async def list_by_ids(self, driver_ids: list[str]) -> list[Driver]:
+        if not driver_ids:
+            return []
+        statement = self._apply_scope(
+            select(DriverModel).where(
+                DriverModel.id.in_(sorted(set(driver_ids))), DriverModel.deleted_at.is_(None)
+            )
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track(row) for row in rows]  # type: ignore[misc]
+
     async def get_by_user_id(self, user_id: UserId) -> Driver | None:
         statement = select(DriverModel).where(
             DriverModel.user_id == str(user_id), DriverModel.deleted_at.is_(None)
@@ -702,6 +737,22 @@ class SqlAlchemyTripRepository(SqlAlchemyRepositoryBase[TripModel], TripReposito
         rows = await self.list_scoped()
         return [model_to_trip(row) for row in rows]
 
+    async def list_between(
+        self, start: date, end: date, *, vehicle_id: VehicleId | None = None
+    ) -> list[Trip]:
+        statement = select(TripModel).where(
+            TripModel.scheduled_date >= start,
+            TripModel.scheduled_date <= end,
+            TripModel.deleted_at.is_(None),
+        )
+        if vehicle_id is not None:
+            statement = statement.where(TripModel.vehicle_id == str(vehicle_id))
+        statement = self._apply_scope(
+            statement.order_by(TripModel.scheduled_date, TripModel.trip_type)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track(row) for row in rows]  # type: ignore[misc]
+
     async def list_page(
         self,
         page_request: OffsetPageRequest,
@@ -793,6 +844,20 @@ class SqlAlchemyStudentAssignmentRepository(
 
     async def list_all(self) -> list[StudentAssignment]:
         rows = await self.list_scoped()
+        return [model_to_student_assignment(row) for row in rows]
+
+    async def list_active_for_route_vehicle(
+        self, route_id: RouteId, vehicle_id: VehicleId
+    ) -> list[StudentAssignment]:
+        statement = self._apply_scope(
+            select(StudentAssignmentModel).where(
+                StudentAssignmentModel.route_id == str(route_id),
+                StudentAssignmentModel.vehicle_id == str(vehicle_id),
+                StudentAssignmentModel.status == "active",
+                StudentAssignmentModel.deleted_at.is_(None),
+            )
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
         return [model_to_student_assignment(row) for row in rows]
 
     async def list_page(
@@ -1000,6 +1065,19 @@ class SqlAlchemyVehicleStaffAssignmentRepository(
     def add(self, assignment: VehicleStaffAssignment) -> None:
         super().add(self._track_new(assignment))
 
+    async def list_between(
+        self, start: date, end: date, *, vehicle_id: VehicleId | None = None
+    ) -> list[VehicleStaffAssignment]:
+        statement = select(self.model).where(
+            self.model.deleted_at.is_(None),
+            self.model.starts_on <= end,
+            or_(self.model.ends_on.is_(None), self.model.ends_on >= start),
+        )
+        if vehicle_id is not None:
+            statement = statement.where(self.model.vehicle_id == str(vehicle_id))
+        rows = (await self._session.execute(self._apply_scope(statement))).scalars().all()
+        return [self._track_row(row) for row in rows]
+
     async def list_for(
         self,
         *,
@@ -1101,6 +1179,154 @@ class SqlAlchemyStaffDocumentRepository(
         return [self._track_row(row) for row in rows]
 
 
+# ---- ADR-0052/0053 ------------------------------------------------------------------------------
+
+
+class _PeriodQueries:
+    """`starts_on`/`ends_on` overlap filter shared by the three dated repositories."""
+
+    def _overlapping(self, start: date, end: date):
+        model = self.model
+        return select(model).where(
+            model.deleted_at.is_(None),
+            model.withdrawn_at.is_(None),
+            model.starts_on <= end,
+            model.ends_on >= start,
+        )
+
+
+class SqlAlchemyRouteTimetableEntryRepository(
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[RouteTimetableEntryModel],
+    RouteTimetableEntryRepository,
+):
+    model = RouteTimetableEntryModel
+    _to_model = staticmethod(route_timetable_entry_to_model)
+    _from_model = staticmethod(model_to_route_timetable_entry)
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, entry_id: RouteTimetableEntryId) -> RouteTimetableEntry | None:
+        return self._track_row(await self.get_by_id(str(entry_id)))
+
+    def add(self, entry: RouteTimetableEntry) -> None:
+        super().add(self._track_new(entry))
+
+    async def list_all(self, *, route_id: RouteId | None = None) -> list[RouteTimetableEntry]:
+        statement = select(self.model).where(self.model.deleted_at.is_(None))
+        if route_id is not None:
+            statement = statement.where(self.model.route_id == str(route_id))
+        statement = self._apply_scope(statement.order_by(self.model.trip_type, self.model.created_at))
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+
+class SqlAlchemyOperatingClosureRepository(
+    _PeriodQueries,
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[OperatingClosureModel],
+    OperatingClosureRepository,
+):
+    model = OperatingClosureModel
+    _to_model = staticmethod(operating_closure_to_model)
+    _from_model = staticmethod(model_to_operating_closure)
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, closure_id: OperatingClosureId) -> OperatingClosure | None:
+        return self._track_row(await self.get_by_id(str(closure_id)))
+
+    def add(self, closure: OperatingClosure) -> None:
+        super().add(self._track_new(closure))
+
+    async def list_overlapping(self, start: date, end: date) -> list[OperatingClosure]:
+        statement = self._apply_scope(self._overlapping(start, end).order_by(self.model.starts_on))
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+
+class SqlAlchemyStaffUnavailabilityRepository(
+    _PeriodQueries,
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[StaffUnavailabilityModel],
+    StaffUnavailabilityRepository,
+):
+    model = StaffUnavailabilityModel
+    _to_model = staticmethod(staff_unavailability_to_model)
+    _from_model = staticmethod(model_to_staff_unavailability)
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, unavailability_id: StaffUnavailabilityId) -> StaffUnavailability | None:
+        return self._track_row(await self.get_by_id(str(unavailability_id)))
+
+    def add(self, item: StaffUnavailability) -> None:
+        super().add(self._track_new(item))
+
+    async def list_overlapping(
+        self, start: date, end: date, *, staff_id: TransportStaffId | None = None
+    ) -> list[StaffUnavailability]:
+        statement = self._overlapping(start, end)
+        if staff_id is not None:
+            statement = statement.where(self.model.staff_id == str(staff_id))
+        statement = self._apply_scope(statement.order_by(self.model.starts_on))
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+    async def list_for_staff(self, staff_id: TransportStaffId) -> list[StaffUnavailability]:
+        statement = self._apply_scope(
+            select(self.model)
+            .where(self.model.staff_id == str(staff_id), self.model.deleted_at.is_(None))
+            .order_by(self.model.starts_on.desc())
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+
+class SqlAlchemyStaffCoverRepository(
+    _PeriodQueries,
+    _TrackingRepository,
+    SqlAlchemyRepositoryBase[StaffCoverModel],
+    StaffCoverRepository,
+):
+    model = StaffCoverModel
+    _to_model = staticmethod(staff_cover_to_model)
+    _from_model = staticmethod(model_to_staff_cover)
+
+    def __init__(self, session: AsyncSession, *, scope: TenantRegionScope | None = None) -> None:
+        super().__init__(session, scope=scope)
+        self._init_tracking()
+
+    async def get(self, cover_id: StaffCoverId) -> StaffCover | None:
+        return self._track_row(await self.get_by_id(str(cover_id)))
+
+    def add(self, cover: StaffCover) -> None:
+        super().add(self._track_new(cover))
+
+    async def list_overlapping(self, start: date, end: date) -> list[StaffCover]:
+        statement = self._apply_scope(self._overlapping(start, end).order_by(self.model.starts_on))
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+    async def list_for_unavailability(
+        self, unavailability_id: StaffUnavailabilityId
+    ) -> list[StaffCover]:
+        statement = self._apply_scope(
+            select(self.model).where(
+                self.model.unavailability_id == str(unavailability_id),
+                self.model.deleted_at.is_(None),
+            )
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+
 class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfWork):
     """Concrete `TransportOpsUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `transport_ops`'s
     repositories once the session is open, and re-syncs every tracked aggregate's in-place
@@ -1129,6 +1355,10 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
     staff_assignments: SqlAlchemyVehicleStaffAssignmentRepository
     staff_document_types: SqlAlchemyStaffDocumentTypeRepository
     staff_documents: SqlAlchemyStaffDocumentRepository
+    timetable: SqlAlchemyRouteTimetableEntryRepository
+    closures: SqlAlchemyOperatingClosureRepository
+    unavailability: SqlAlchemyStaffUnavailabilityRepository
+    covers: SqlAlchemyStaffCoverRepository
 
     async def __aenter__(self) -> "SqlAlchemyTransportOpsUnitOfWork":
         await super().__aenter__()
@@ -1150,6 +1380,12 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
             self.session, scope=self.scope
         )
         self.staff_documents = SqlAlchemyStaffDocumentRepository(self.session, scope=self.scope)
+        self.timetable = SqlAlchemyRouteTimetableEntryRepository(self.session, scope=self.scope)
+        self.closures = SqlAlchemyOperatingClosureRepository(self.session, scope=self.scope)
+        self.unavailability = SqlAlchemyStaffUnavailabilityRepository(
+            self.session, scope=self.scope
+        )
+        self.covers = SqlAlchemyStaffCoverRepository(self.session, scope=self.scope)
         return self
 
     async def commit(self) -> None:
@@ -1164,4 +1400,8 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
         self.staff_assignments.flush_tracked_changes()
         self.staff_document_types.flush_tracked_changes()
         self.staff_documents.flush_tracked_changes()
+        self.timetable.flush_tracked_changes()
+        self.closures.flush_tracked_changes()
+        self.unavailability.flush_tracked_changes()
+        self.covers.flush_tracked_changes()
         await super().commit()

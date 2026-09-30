@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** (2026-09-30), Phase 2, with ADR-0052 and ADR-0053.
+**Accepted** (2026-09-30), Phase 2, with ADR-0052 and ADR-0053.
 
 ## Context
 

@@ -1120,3 +1120,146 @@ def staff_document_expiry_alerted(
         occurred_at=occurred_at,
         payload={"threshold_days": threshold_days, "actor_id": None},
     )
+
+
+# ---- ADR-0052/0053/0054: daily transport operations ------------------------------------------
+# Payloads carry ids, dates and categories only: never an unavailability note.
+
+
+def trip_cancelled(
+    *,
+    trip_id: str,
+    organization_id: str,
+    vehicle_id: str,
+    route_id: str,
+    trip_type: str,
+    scheduled_date: str,
+    reason: str,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    """The reason is the admin's own text and is shown to parents (ADR-0054 §2), so it is not
+    personal data about staff."""
+    return _new_event(
+        event_type="TripCancelled",
+        aggregate_type="Trip",
+        aggregate_id=trip_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "vehicle_id": vehicle_id,
+            "route_id": route_id,
+            "trip_type": trip_type,
+            "scheduled_date": scheduled_date,
+            "reason": reason,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def route_timetable_entry_saved(
+    *,
+    entry_id: str,
+    organization_id: str,
+    route_id: str,
+    vehicle_id: str,
+    trip_type: str,
+    weekdays: list[int],
+    is_active: bool,
+    created: bool,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="RouteTimetableEntryCreated" if created else "RouteTimetableEntryUpdated",
+        aggregate_type="RouteTimetableEntry",
+        aggregate_id=entry_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "route_id": route_id,
+            "vehicle_id": vehicle_id,
+            "trip_type": trip_type,
+            "weekdays": weekdays,
+            "is_active": is_active,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def operating_closure_saved(
+    *,
+    closure_id: str,
+    organization_id: str,
+    starts_on: str,
+    ends_on: str,
+    withdrawn: bool,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="OperatingClosureWithdrawn" if withdrawn else "OperatingClosureRecorded",
+        aggregate_type="OperatingClosure",
+        aggregate_id=closure_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={"starts_on": starts_on, "ends_on": ends_on, "actor_id": actor_id},
+    )
+
+
+def staff_unavailability_saved(
+    *,
+    unavailability_id: str,
+    organization_id: str,
+    staff_id: str,
+    starts_on: str,
+    ends_on: str,
+    reason: str,
+    withdrawn: bool,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="StaffUnavailabilityWithdrawn" if withdrawn else "StaffUnavailabilityRecorded",
+        aggregate_type="StaffUnavailability",
+        aggregate_id=unavailability_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "staff_id": staff_id,
+            "starts_on": starts_on,
+            "ends_on": ends_on,
+            "reason": reason,
+            "actor_id": actor_id,
+        },
+    )
+
+
+def staff_cover_saved(
+    *,
+    cover_id: str,
+    organization_id: str,
+    unavailability_id: str,
+    substitute_staff_id: str,
+    vehicle_id: str,
+    starts_on: str,
+    ends_on: str,
+    withdrawn: bool,
+    occurred_at: datetime,
+    actor_id: str | None,
+) -> DomainEvent:
+    return _new_event(
+        event_type="StaffCoverWithdrawn" if withdrawn else "StaffCoverCreated",
+        aggregate_type="StaffCover",
+        aggregate_id=cover_id,
+        org_id=organization_id,
+        occurred_at=occurred_at,
+        payload={
+            "unavailability_id": unavailability_id,
+            "substitute_staff_id": substitute_staff_id,
+            "vehicle_id": vehicle_id,
+            "starts_on": starts_on,
+            "ends_on": ends_on,
+            "actor_id": actor_id,
+        },
+    )

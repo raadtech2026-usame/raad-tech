@@ -162,6 +162,10 @@ class InMemoryDriverRepository(DriverRepository):
             (d for d in self.by_id.values() if str(d.user_id) == str(user_id)), None
         )
 
+    async def list_by_ids(self, driver_ids):
+        wanted = {str(i) for i in driver_ids}
+        return [d for d in self.by_id.values() if str(d.id) in wanted]
+
     def add(self, driver: Driver) -> None:
         self.by_id[str(driver.id)] = driver
 

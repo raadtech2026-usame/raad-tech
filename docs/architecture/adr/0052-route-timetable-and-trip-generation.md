@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** (2026-09-30), Phase 2 of the transport-management roadmap ("Daily Transport
+**Accepted** (2026-09-30), Phase 2 of the transport-management roadmap ("Daily Transport
 Operations"), with ADR-0053 and ADR-0054. Product decisions taken by the user on 2026-09-30
 ("use your recommended answers").
 

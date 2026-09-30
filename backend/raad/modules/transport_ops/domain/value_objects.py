@@ -345,6 +345,8 @@ class TripStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     INTERRUPTED = "interrupted"
     COMPLETED = "completed"
+    #: ADR-0054: final; allowed only from `scheduled`.
+    CANCELLED = "cancelled"
 
 
 @dataclass(frozen=True)
@@ -462,3 +464,63 @@ class StaffDocumentStatus(str, Enum):
     EXPIRED = "expired"
     NO_EXPIRY = "no_expiry"
     SUPERSEDED = "superseded"
+
+
+# ---- ADR-0052/0053: daily transport operations --------------------------------------------
+
+
+@dataclass(frozen=True)
+class RouteTimetableEntryId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"RouteTimetableEntryId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class OperatingClosureId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"OperatingClosureId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class StaffUnavailabilityId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"StaffUnavailabilityId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class StaffCoverId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ULID_PATTERN.match(self.value):
+            raise DomainError(f"StaffCoverId must be a 26-character ULID: {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class UnavailabilityReason(str, Enum):
+    """ADR-0053 §1: the category every reader may see. The free-text note is Org Admin only."""
+
+    SICK = "sick"
+    PERSONAL = "personal"
+    TRAINING = "training"
+    OTHER = "other"

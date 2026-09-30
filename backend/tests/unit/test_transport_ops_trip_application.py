@@ -166,6 +166,17 @@ class InMemoryTripRepository(TripRepository):
     async def get(self, trip_id: TripId) -> Trip | None:
         return self.by_id.get(str(trip_id))
 
+    async def list_between(self, start, end, *, vehicle_id=None):
+        return sorted(
+            (
+                t
+                for t in self.by_id.values()
+                if start <= t.scheduled_date <= end
+                and (vehicle_id is None or t.vehicle_id == vehicle_id)
+            ),
+            key=lambda t: (t.scheduled_date, t.trip_type.value),
+        )
+
     def add(self, trip: Trip) -> None:
         self.by_id[str(trip.id)] = trip
 
@@ -225,6 +236,10 @@ class InMemoryDriverRepository(DriverRepository):
         return next(
             (d for d in self.by_id.values() if str(d.user_id) == str(user_id)), None
         )
+
+    async def list_by_ids(self, driver_ids):
+        wanted = {str(i) for i in driver_ids}
+        return [d for d in self.by_id.values() if str(d.id) in wanted]
 
     def add(self, driver: Driver) -> None:
         self.by_id[str(driver.id)] = driver

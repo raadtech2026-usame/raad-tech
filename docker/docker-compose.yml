@@ -260,6 +260,8 @@ services:
       # explicitly turns it on: it starts billing families with nobody pressing a button.
       RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES: ${RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES:-false}
       RAAD_WORKERS__STAFF_DOCUMENT_EXPIRY_ALERTS: ${RAAD_WORKERS__STAFF_DOCUMENT_EXPIRY_ALERTS:-true}
+      RAAD_WORKERS__AUTO_GENERATE_TRIPS: ${RAAD_WORKERS__AUTO_GENERATE_TRIPS:-false}
+      RAAD_WORKERS__UNCOVERED_TRIP_ALERTS: ${RAAD_WORKERS__UNCOVERED_TRIP_ALERTS:-true}
     depends_on:
       postgres:
         condition: service_healthy

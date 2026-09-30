@@ -34,6 +34,10 @@ from raad.modules.transport_ops.domain.repositories import (
     StudentAssignmentRepository,
     StudentParentRepository,
     StudentRepository,
+    OperatingClosureRepository,
+    RouteTimetableEntryRepository,
+    StaffCoverRepository,
+    StaffUnavailabilityRepository,
     StaffDocumentRepository,
     StaffDocumentTypeRepository,
     TransportStaffRepository,
@@ -70,6 +74,11 @@ class TransportOpsUnitOfWork(UnitOfWork):
     staff_assignments: VehicleStaffAssignmentRepository
     staff_document_types: StaffDocumentTypeRepository
     staff_documents: StaffDocumentRepository
+    #: ADR-0052/0053: the weekly plan, closed days, unavailability and cover.
+    timetable: RouteTimetableEntryRepository
+    closures: OperatingClosureRepository
+    unavailability: StaffUnavailabilityRepository
+    covers: StaffCoverRepository
 
 
 class UserProvisioningPort(ABC):

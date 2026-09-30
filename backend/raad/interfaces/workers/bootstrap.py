@@ -59,6 +59,13 @@ from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.services import UserApplicationService
 from raad.modules.notifications.application.ports import NotificationsUnitOfWork
 from raad.modules.notifications.application.services import NotificationApplicationService
+from raad.interfaces.workers.daily_operations_jobs import (
+    generate_trips_for_all_organizations,
+    notify_uncovered_trips as send_uncovered_trip_alerts,
+)
+from raad.modules.transport_ops.application.operations_services import (
+    DailyOperationsApplicationService,
+)
 from raad.interfaces.workers.staff_document_alerts import (
     notify_expiring_staff_documents as send_staff_document_alerts,
 )
@@ -266,6 +273,48 @@ def _register_scheduled_jobs(
             _body,
         )
 
+    async def generate_daily_trips() -> None:
+        """ADR-0052 §4 — registered only when `RAAD_WORKERS__AUTO_GENERATE_TRIPS=true`.
+        Idempotent: the plan skips any bus, date and period that already has a trip."""
+
+        async def _body() -> None:
+            result = await generate_trips_for_all_organizations(
+                days=settings.workers.trip_generation_horizon_days,
+                service=container.resolve(DailyOperationsApplicationService),
+                uow=container.resolve(TransportOpsUnitOfWork),
+            )
+            if result.created:
+                logger.info("trips_generated", extra={"count": result.created})
+
+        await _with_lock(
+            "generate_daily_trips",
+            int(settings.workers.trip_generation_interval_seconds),
+            _body,
+        )
+
+    async def notify_uncovered_trips() -> None:
+        """ADR-0053 §5 — unless `RAAD_WORKERS__UNCOVERED_TRIP_ALERTS=false`."""
+
+        async def _body() -> None:
+            announced = await send_uncovered_trip_alerts(
+                now=container.resolve(Clock).now(),
+                summary_hour_utc=settings.workers.uncovered_summary_hour_utc,
+                service=container.resolve(DailyOperationsApplicationService),
+                user_service=container.resolve(UserApplicationService),
+                notification_service=container.resolve(NotificationApplicationService),
+                transport_ops_uow=lambda: container.resolve(TransportOpsUnitOfWork),
+                iam_uow=lambda: container.resolve(IamUnitOfWork),
+                notifications_uow=lambda: container.resolve(NotificationsUnitOfWork),
+            )
+            if announced:
+                logger.info("uncovered_trips_announced", extra={"count": announced})
+
+        await _with_lock(
+            "notify_uncovered_trips",
+            int(settings.workers.uncovered_trip_alert_interval_seconds),
+            _body,
+        )
+
     async def reconcile_expired_payments() -> None:
         async def _body() -> None:
             service = container.resolve(BillingApplicationService)
@@ -316,6 +365,22 @@ def _register_scheduled_jobs(
                 name="generate_monthly_parent_invoices",
                 interval_seconds=settings.workers.subscription_sweep_interval_seconds,
                 handler=generate_monthly_parent_invoices,
+            )
+        )
+    if settings.workers.auto_generate_trips:
+        scheduler.register(
+            ScheduledJob(
+                name="generate_daily_trips",
+                interval_seconds=settings.workers.trip_generation_interval_seconds,
+                handler=generate_daily_trips,
+            )
+        )
+    if settings.workers.uncovered_trip_alerts:
+        scheduler.register(
+            ScheduledJob(
+                name="notify_uncovered_trips",
+                interval_seconds=settings.workers.uncovered_trip_alert_interval_seconds,
+                handler=notify_uncovered_trips,
             )
         )
     if settings.workers.staff_document_expiry_alerts:

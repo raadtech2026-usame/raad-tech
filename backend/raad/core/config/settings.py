@@ -223,6 +223,19 @@ class WorkerSettings(BaseModel):
     #: Hourly. Each threshold is sent once whatever the interval, so this only bounds how late
     #: in the day an alert can arrive.
     staff_document_expiry_interval_seconds: float = 3600.0
+    #: ADR-0052 §4 — create each day's trips from the route timetable. Opt-in per deployment,
+    #: like automatic invoices: it puts trips in front of drivers without anyone pressing a
+    #: button. The manual "Generate the next 7 days" action works either way.
+    auto_generate_trips: bool = False
+    trip_generation_horizon_days: int = 7
+    trip_generation_interval_seconds: float = 3600.0
+    #: ADR-0053 §5 — in-app alerts to Org Admins about trips whose driver cannot drive. On by
+    #: default: it only writes notifications.
+    uncovered_trip_alerts: bool = True
+    uncovered_trip_alert_interval_seconds: float = 3600.0
+    #: The hour (UTC) whose run also sends each organization one summary of today's uncovered
+    #: trips. 4 is 07:00 in UTC+3.
+    uncovered_summary_hour_utc: int = 4
     #: ADR-0039 §1 — how long an organization keeps working after its billing period ends with
     #: an unpaid invoice, before it is suspended. Seven days is a deliberate product choice, not
     #: a number any document supplies: RAAD's customers are schools whose users are tracking
