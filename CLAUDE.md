@@ -1750,6 +1750,38 @@ on the foreign key; only the PostgreSQL test saw it.
 requesting time off, automatic substitute suggestions, the `trip_students` roster snapshot.
 The driver app receives `cancelled` and substitutes' trips untested (no Flutter SDK here).
 
+## Safety Alerts & Incident Log (ADR-0055/0056/0057, 2026-09-30)
+
+Phase 3 of the transport-management roadmap. What a future change must not undo:
+
+- **An alert is an alarm that started.** The device gateway publishes `DeviceAlarmRaised` only
+  on the rising edge of a mapped alarm bit (the previous alarm word lives in Redis per
+  terminal), and `safety_alerts` keeps **one open alert per bus and type** (partial unique
+  index while `open`/`acknowledged`): a repeat bumps `occurrences` and publishes nothing, so a
+  flapping bit is one alert and one notification. Unmapped bits are ignored, never guessed.
+- **Critical (SOS, collision, rollover) and not late → Org Admins are notified.** An alarm
+  received more than 10 minutes after it happened is shown, flagged, and notifies nobody.
+  Neither alerts nor parent notices are subscription-gated (`.claude/rules/backend.md` #6).
+- **Acknowledging an SOS asks the terminal to clear it (`0x8203`), best effort.** The alert is
+  acknowledged in RAAD whatever the device does; `device_confirmation` records only whether the
+  request could be sent. Other types are status bits the terminal clears itself.
+- **Incidents are an operational log, not a case system.** No driver scoring, discipline,
+  insurance or legal fields. Closed is final and needs a resolution; "recorded in error" is set
+  only on close, so nothing is deleted. Text, people and notes are Org Admin only (RAAD staff
+  get category, severity, status, dates and bus), and **no event carries text or people**: the
+  parent-notice notifier reads the message back through `transport_ops`.
+- **Alert → incident is two modules, two transactions**: the incident is recorded, then the
+  alert is resolved with its id. A failure between them leaves the incident and an open alert,
+  never a resolved alert with no incident.
+
+**Permanent lesson.** **Convert client times to UTC before they reach a naive column.** The
+mappers only strip `tzinfo`, so an offset like `+03:00` was stored three hours off while every
+test (all in UTC) passed. Normalise in the application service, where the value enters.
+
+**Not verified:** a real alarm and `0x8203` on the physical terminal (offline); the local
+Docker gateway image predates this phase. **Not built:** attachments (no file store), the LSZ
+adapter's alarms, parent-facing incident history.
+
 ## Per-Student Transport Pricing (ADR-0048, 2026-09-28)
 
 Amends ADR-0042 §1 at the user's direction ("the fee must be assigned individually to each
