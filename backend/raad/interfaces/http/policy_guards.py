@@ -47,12 +47,10 @@ from raad.modules.fleet_device.application.services import (
     VehicleApplicationService,
 )
 from raad.modules.fleet_device.domain.value_objects import CameraPosition
-from raad.modules.tracking.application.queries import GetCurrentVehiclePositionQuery
-from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
+    GetActiveTripForVehicleQuery,
     GetParentByIdQuery,
-    GetTripByIdQuery,
     ListStudentsForParentQuery,
 )
 from raad.modules.transport_ops.application.services import (
@@ -392,16 +390,11 @@ async def resolve_vehicle_tracking_context(
     doesn't exist at all (caller should treat as `NotFoundError`, not `AuthorizationError` —
     this codebase's established 404-over-403 posture).
 
-    `is_trip_active` still uses the same latest-position-derived resolution `GET /tracking/
-    vehicles/{id}/latest` already established (no approved application-service query exposes
-    "the active trip for this vehicle" any more directly — `TripRepository.
-    active_trip_for_vehicle` is a repository-internal method backing a validator, not a public
-    read; adding a new query ahead of an approved use-case would be inventing one,
-    `.claude/rules/workflow.md` #8). If no `LatestPositionPort` is bound at all (no
-    `RAAD_REDIS__URL` configured) or no position has been cached yet, `is_trip_active` degrades
-    to `False` — the conservative direction for a Parent caller (no D4 safety-override, falls
-    through to CR-1's normal subscription gate), never the permissive one, so this degradation
-    is safe, not a hole."""
+    `is_trip_active` is resolved via `TripApplicationService.get_active_trip_for_vehicle`
+    (from `transport_ops`), returning True exactly when an in-progress trip exists for this
+    vehicle. It does not depend on `LatestPositionPort` or the cached position (the device
+    plane writes `trip_id=None` to the latest-position cache, and a client may legitimately
+    subscribe before any position is cached)."""
     fleet_device_uow = container.resolve(FleetDeviceUnitOfWork)
     vehicle_service = container.resolve(VehicleApplicationService)
     try:
@@ -411,21 +404,12 @@ async def resolve_vehicle_tracking_context(
     except NotFoundError:
         return None
 
-    is_trip_active = False
-    tracking_service = container.resolve(TrackingApplicationService)
-    try:
-        position = await tracking_service.get_current_vehicle_position(
-            GetCurrentVehiclePositionQuery(vehicle_id=vehicle_id)
-        )
-    except NotImplementedError:
-        position = None  # No LatestPositionPort bound - degrade to "not on an active trip."
-
-    if position is not None and position.trip_id is not None:
-        trip_service = container.resolve(TripApplicationService)
-        transport_ops_uow = container.resolve(TransportOpsUnitOfWork)
-        trip = await trip_service.get_trip_by_id(
-            GetTripByIdQuery(trip_id=position.trip_id), uow=transport_ops_uow
-        )
-        is_trip_active = trip.status == "in_progress"
+    trip_service = container.resolve(TripApplicationService)
+    transport_ops_uow = container.resolve(TransportOpsUnitOfWork)
+    trip = await trip_service.get_active_trip_for_vehicle(
+        GetActiveTripForVehicleQuery(vehicle_id=vehicle_id), uow=transport_ops_uow
+    )
+    is_trip_active = trip is not None
 
     return vehicle.organization_id, is_trip_active
+

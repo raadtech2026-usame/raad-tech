@@ -104,7 +104,10 @@ from raad.modules.tracking.application.services import (
     TrackingApplicationService,
 )
 from raad.modules.transport_ops.api.deps import get_trip_service, get_transport_ops_uow
-from raad.modules.transport_ops.application.queries import GetTripByIdQuery
+from raad.modules.transport_ops.application.queries import (
+    GetActiveTripForVehicleQuery,
+    GetTripByIdQuery,
+)
 from raad.modules.transport_ops.application.services import TripApplicationService
 
 tracking_router = APIRouter()
@@ -172,12 +175,10 @@ async def get_latest_vehicle_position(
     if position is None:
         raise NotFoundError(f"No known position for vehicle {vehicle_id}.")
 
-    is_trip_active = False
-    if position.trip_id is not None:
-        trip = await trip_service.get_trip_by_id(
-            GetTripByIdQuery(trip_id=position.trip_id), uow=transport_ops_uow
-        )
-        is_trip_active = trip.status == "in_progress"
+    trip = await trip_service.get_active_trip_for_vehicle(
+        GetActiveTripForVehicleQuery(vehicle_id=vehicle_id), uow=transport_ops_uow
+    )
+    is_trip_active = trip is not None
 
     container: Container = get_container(request)
     decision = await resolve_tracking_decision(
