@@ -2139,10 +2139,11 @@ Reverse-chronological (most recent first):
   device gateway 562; frontend 942, `tsc` and build clean; migration from empty, round trip and
   on the dev copy; 33/33 HTTP end-to-end checks; the alarm processor and both notifiers run live
   (one SOS notification, none for the late collision, one parent notice). **Not verified:** a
-  real alarm or `0x8203` on the physical terminal; browser interaction. One unrelated,
-  time-of-day-dependent failure in the Phase 1 test
-  `test_leaving_persists_ended_crew_and_disabled_driver`: it compares the service's UTC date
-  with the local `date.today()`, so it fails between 21:00 and 24:00 UTC; the code is correct.
+  real alarm or `0x8203` on the physical terminal; browser interaction. The Phase 1 test
+  `test_leaving_persists_ended_crew_and_disabled_driver` compared the service's UTC date with
+  the local `date.today()` and failed between 21:00 and 24:00 UTC; it now compares in UTC (the
+  product code was correct). The older `_to_naive_utc` mapper only strips tzinfo, which is safe
+  for every non-incident value it receives: they all come from `SystemClock` (UTC).
 
 - **Daily transport operations — Phase 2 (ADR-0052/0053/0054, 2026-09-30).** Branch
   `feat/daily-transport-operations`, not pushed or deployed.

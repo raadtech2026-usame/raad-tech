@@ -10,7 +10,7 @@ columns, the `SMALLINT[]` lead days, and tenant scope applied by the repositorie
 from __future__ import annotations
 
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -223,7 +223,8 @@ class TransportStaffPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(left.driver.status, "inactive")
         crew = await self.service.list_assignments(uow=self.uow(), vehicle_id=self.bus)
-        self.assertEqual(crew[0].ends_on, date.today())
+        # The service ends crew on its own (UTC) date; the local date differs near midnight.
+        self.assertEqual(crew[0].ends_on, datetime.now(timezone.utc).date())
         current = await self.service.list_assignments(
             uow=self.uow(), vehicle_id=self.bus, current_only=True
         )
