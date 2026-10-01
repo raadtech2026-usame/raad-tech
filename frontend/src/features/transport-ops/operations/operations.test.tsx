@@ -142,6 +142,20 @@ describe("DailyOperationsPage", () => {
     expect(screen.getByText("2 incidents")).toBeInTheDocument();
   });
 
+  it("says when a driver's documents make a trip uncovered, and badges crew without changing coverage", async () => {
+    const board = structuredClone(BOARD_WIRE) as typeof BOARD_WIRE;
+    board.vehicles[0].trips[0].uncovered_reason = "driver_not_compliant";
+    Object.assign(board.vehicles[0].crew[0], { is_unavailable: false, compliance_status: "not_compliant" });
+    vi.mocked(apiRequest).mockImplementation(async (path: string) =>
+      (path.startsWith("/daily-operations") ? board : route(path)) as never,
+    );
+    renderPage();
+    const bus = await screen.findByRole("region", { name: "KB-12" });
+    expect(within(bus).getByText("Driver's documents not compliant")).toBeInTheDocument();
+    expect(within(bus).getByText("Documents")).toBeInTheDocument();
+    expect(screen.getByText("1 uncovered trip")).toBeInTheDocument();
+  });
+
   it("gives read-only roles no actions", async () => {
     useAuthStore.setState({ principal: { userId: "u2", role: "support_staff", organizationId: null, regionIds: [] } });
     renderPage();

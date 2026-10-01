@@ -12,6 +12,8 @@ vi.mock("./api", () => ({
   listStaffDocuments: vi.fn().mockResolvedValue([]),
   listVehiclesForPicker: vi.fn().mockResolvedValue([]),
   listExpiringDocuments: vi.fn().mockResolvedValue([]),
+  listStaffCompliance: vi.fn().mockResolvedValue([]),
+  getDocumentTypeImpact: vi.fn().mockResolvedValue({ appliesTo: 0, notCompliant: 0 }),
   listStaffRoles: vi.fn().mockResolvedValue([]),
   listDocumentTypes: vi.fn().mockResolvedValue([]),
   listRoutesForPicker: vi.fn().mockResolvedValue([]),
@@ -38,6 +40,7 @@ const SUMMARY: api.StaffSummary = {
   employeeRef: "E-7",
   status: "active",
   isDriver: false,
+  complianceStatus: "not_compliant",
 };
 
 const DETAIL: api.Staff = {
@@ -59,6 +62,12 @@ const DETAIL: api.Staff = {
   privateFieldsVisible: true,
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-02T00:00:00Z",
+  compliance: {
+    status: "not_compliant",
+    gaps: [{ typeId: "t1", typeName: "Medical certificate", reason: "missing", expiredOn: null, blocks: true }],
+    expiring: [],
+    isBlocked: true,
+  },
 };
 
 function renderPage(path = "/org/staff") {
@@ -92,6 +101,16 @@ describe("TransportStaffPage", () => {
     expect(within(dialog).getByRole("region", { name: "Buses" })).toBeInTheDocument();
     expect(within(dialog).getByRole("region", { name: "Documents" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Give driver access" })).toBeInTheDocument();
+  });
+
+  it("shows who is not compliant in the list, and why on the profile", async () => {
+    renderPage();
+    const row = (await screen.findByText("Amina Warsame")).closest("tr") as HTMLElement;
+    expect(within(row).getByText("Not compliant")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Amina Warsame"));
+    const section = await screen.findByRole("region", { name: "Document compliance" });
+    expect(within(section).getByText("Medical certificate missing")).toBeInTheDocument();
+    expect(within(section).getByText(/Cannot be newly planned/)).toBeInTheDocument();
   });
 
   it("opens a profile from ?staff= so other pages can link to it", async () => {

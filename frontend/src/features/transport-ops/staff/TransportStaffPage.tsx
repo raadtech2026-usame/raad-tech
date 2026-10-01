@@ -20,6 +20,7 @@ import { Input } from "../../../shared/components/Input/Input";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { Tabs } from "../../../shared/components/Tabs/Tabs";
 import { AssignToBusForm } from "./AssignToBusForm";
+import { CompliancePanel, ComplianceSummary } from "./CompliancePanel";
 import { ExpiringDocumentsPanel } from "./ExpiringDocumentsPanel";
 import { GrantDriverAccessForm } from "./GrantDriverAccessForm";
 import { RecordDocumentForm } from "./RecordDocumentForm";
@@ -28,7 +29,7 @@ import { StaffBusesSection, StaffDocumentsSection } from "./StaffSections";
 import { StaffSetupPanel } from "./StaffSetupPanel";
 import { StaffUnavailabilitySection } from "../operations/StaffUnavailabilitySection";
 import { changeStaffStatus, getStaff, listStaff, type StaffDocument, type StaffStatus, type StaffSummary } from "./api";
-import { formatDay, staffStatusLabel, staffStatusTone } from "./labels";
+import { complianceLabel, complianceTone, formatDay, staffStatusLabel, staffStatusTone } from "./labels";
 import styles from "./Staff.module.css";
 
 const STATUS_FILTERS: FilterChipOption[] = [
@@ -143,6 +144,18 @@ export function TransportStaffPage() {
           </span>
         ),
       },
+      {
+        id: "compliance",
+        header: "Documents",
+        cell: ({ row }) =>
+          row.original.complianceStatus && row.original.complianceStatus !== "compliant" ? (
+            <Badge variant={complianceTone(row.original.complianceStatus)}>
+              {complianceLabel(row.original.complianceStatus)}
+            </Badge>
+          ) : (
+            "—"
+          ),
+      },
       { id: "phone", header: "Phone", cell: ({ row }) => row.original.phone ?? "—" },
       {
         id: "status",
@@ -182,7 +195,12 @@ export function TransportStaffPage() {
     <div className={styles.page}>
       <Tabs options={tabs} activeId={tab} onSelect={setTab} />
 
-      {tab === "documents" && <ExpiringDocumentsPanel onOpenStaff={openStaff} />}
+      {tab === "documents" && (
+        <>
+          <CompliancePanel onOpenStaff={openStaff} />
+          <ExpiringDocumentsPanel onOpenStaff={openStaff} />
+        </>
+      )}
       {tab === "setup" && canManage && <StaffSetupPanel canManage={canManage} />}
 
       {tab === "staff" && (
@@ -264,6 +282,7 @@ export function TransportStaffPage() {
           staff && (
             <>
               {titleMismatch && <p className={styles.warning}>{titleMismatch}</p>}
+              <ComplianceSummary compliance={staff.compliance} />
               <StaffBusesSection
                 staffId={staff.id}
                 organizationId={staff.organizationId}

@@ -141,6 +141,7 @@ export function AssignToBusForm({
     onSuccess: (assignment) => {
       queryClient.invalidateQueries({ queryKey: ["transport-staff", "crew"] });
       toast.success("Assigned to bus", assignment.staffName);
+      for (const warning of assignment.warnings) toast.info("Documents", warning);
       onClose();
     },
     onError: (error) => {

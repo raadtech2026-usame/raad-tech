@@ -34,6 +34,8 @@ export interface Trip {
   /** ADR-0052/0054. */
   plannedDeparture: string | null;
   cancelledReason: string | null;
+  /** ADR-0059 §3: only on the response to scheduling. */
+  warnings: string[];
 }
 
 /** `TripSummaryResponse` (`transport_ops/api/schemas.py`) — the *only* shape `GET /trips`
@@ -69,6 +71,7 @@ interface TripWire {
   updated_at: string;
   planned_departure?: string | null;
   cancelled_reason?: string | null;
+  warnings?: string[];
 }
 
 interface TripSummaryWire {
@@ -97,6 +100,7 @@ function toTrip(wire: TripWire): Trip {
     updatedAt: wire.updated_at,
     plannedDeparture: wire.planned_departure ?? null,
     cancelledReason: wire.cancelled_reason ?? null,
+    warnings: wire.warnings ?? [],
   };
 }
 

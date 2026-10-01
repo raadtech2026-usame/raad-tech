@@ -101,6 +101,7 @@ describe("trips api", () => {
       updatedAt: "2026-01-02T00:00:00Z",
       plannedDeparture: null,
       cancelledReason: null,
+      warnings: [],
     });
   });
 

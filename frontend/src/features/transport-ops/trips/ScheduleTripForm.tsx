@@ -145,9 +145,10 @@ export function ScheduleTripForm({ open, onClose }: ScheduleTripFormProps) {
         tripType: values.tripType,
         scheduledDate: values.scheduledDate,
       }),
-    onSuccess: () => {
+    onSuccess: (trip) => {
       queryClient.invalidateQueries({ queryKey: ["trips", "list"] });
       toast.success("Trip scheduled", "The trip has been added to the schedule.");
+      for (const warning of trip.warnings) toast.info("Documents", warning);
       reset(DEFAULT_VALUES);
       onClose();
     },

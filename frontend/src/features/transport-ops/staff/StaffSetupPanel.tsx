@@ -4,11 +4,13 @@ import { Badge } from "../../../shared/components/Badge/Badge";
 import { Button } from "../../../shared/components/Button/Button";
 import { FormField } from "../../../shared/components/FormField/FormField";
 import { Input } from "../../../shared/components/Input/Input";
+import { Select } from "../../../shared/components/Select/Select";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { useToast } from "../../../shared/components/Toast/toastStore";
 import { ApiError } from "../../../shared/api/types";
 import {
   addDefaultDocumentTypes,
+  getDocumentTypeImpact,
   addDefaultStaffRoles,
   createDocumentType,
   createStaffRole,
@@ -16,9 +18,12 @@ import {
   listStaffRoles,
   updateDocumentType,
   updateStaffRole,
+  type DocumentEnforcement,
+  type DocumentRequirement,
   type DocumentType,
   type StaffRole,
 } from "./api";
+import { REQUIREMENTS, enforcementLabel, requirementLabel } from "./labels";
 import styles from "./Staff.module.css";
 
 /** "30, 7" → [30, 7]; `null` when any entry is not a whole number from 1 to 365. */
@@ -166,12 +171,86 @@ function JobTitlesCard({ canManage }: { canManage: boolean }) {
   );
 }
 
+/**
+ * ADR-0058 §1/§3: who must hold a document of this type, and whether a lapse only warns or also
+ * blocks new planning. Shows how many people the choice affects before it is saved, because
+ * marking a type required before the documents are recorded flags everyone at once.
+ */
+function RequirementEditor({
+  type,
+  saving,
+  onSave,
+  onCancel,
+}: {
+  type: DocumentType;
+  saving: boolean;
+  onSave: (requiredFor: DocumentRequirement, enforcement: DocumentEnforcement) => void;
+  onCancel: () => void;
+}) {
+  const [requiredFor, setRequiredFor] = useState<DocumentRequirement>(type.requiredFor);
+  const [enforcement, setEnforcement] = useState<DocumentEnforcement>(type.enforcement);
+  const impact = useQuery({
+    queryKey: ["transport-staff", "document-type-impact", type.id, requiredFor],
+    queryFn: () => getDocumentTypeImpact(type.id, requiredFor),
+    enabled: requiredFor !== "none",
+  });
+  return (
+    <form
+      className={styles.inlineForm}
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave(requiredFor, enforcement);
+      }}
+    >
+      <FormField label={`Who needs ${type.name}`}>
+        <Select
+          aria-label={`Who needs ${type.name}`}
+          value={requiredFor}
+          onChange={(event) => setRequiredFor(event.target.value as DocumentRequirement)}
+        >
+          {REQUIREMENTS.map((r) => (
+            <option key={r.value} value={r.value}>
+              {r.label}
+            </option>
+          ))}
+        </Select>
+      </FormField>
+      {requiredFor !== "none" && (
+        <FormField label="If missing or expired">
+          <Select
+            aria-label={`If ${type.name} is missing or expired`}
+            value={enforcement}
+            onChange={(event) => setEnforcement(event.target.value as DocumentEnforcement)}
+          >
+            <option value="warn">Warn only</option>
+            <option value="block">Block new planning</option>
+          </Select>
+        </FormField>
+      )}
+      {requiredFor !== "none" && (
+        <p className={impact.data && impact.data.notCompliant > 0 ? styles.warning : styles.itemMeta} role="status">
+          {impact.isLoading || !impact.data
+            ? "Checking who this affects…"
+            : `Applies to ${impact.data.appliesTo} staff; ${impact.data.notCompliant} of them will be not compliant today.`}
+        </p>
+      )}
+      <Button size="sm" type="submit" loading={saving}>
+        Save
+      </Button>
+      <Button size="sm" variant="ghost" type="button" onClick={onCancel}>
+        Cancel
+      </Button>
+    </form>
+  );
+}
+
 function DocumentTypesCard({ canManage }: { canManage: boolean }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [leadDays, setLeadDays] = useState("30, 7");
   const [editing, setEditing] = useState<{ id: string; leadDays: string } | null>(null);
+  const [requiring, setRequiring] = useState<string | null>(null);
   const typesQuery = useQuery({ queryKey: ["transport-staff", "document-types"], queryFn: () => listDocumentTypes() });
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["transport-staff"] });
 
@@ -193,15 +272,25 @@ function DocumentTypesCard({ canManage }: { canManage: boolean }) {
     onError: (error) => toast.error("Could not add the document type", errorMessage(error)),
   });
   const update = useMutation({
-    mutationFn: (input: { type: DocumentType; alertLeadDays?: number[]; isArchived?: boolean }) =>
+    mutationFn: (input: {
+      type: DocumentType;
+      alertLeadDays?: number[];
+      isArchived?: boolean;
+      requiredFor?: DocumentRequirement;
+      enforcement?: DocumentEnforcement;
+    }) =>
       updateDocumentType(input.type.id, {
         name: input.type.name,
         alertLeadDays: input.alertLeadDays ?? input.type.alertLeadDays,
         isArchived: input.isArchived ?? input.type.isArchived,
+        requiredFor: input.requiredFor,
+        enforcement: input.enforcement,
       }),
     onSuccess: () => {
       invalidate();
+      queryClient.invalidateQueries({ queryKey: ["daily-operations"] });
       setEditing(null);
+      setRequiring(null);
     },
     onError: (error) => toast.error("Could not update the document type", errorMessage(error)),
   });
@@ -220,7 +309,8 @@ function DocumentTypesCard({ canManage }: { canManage: boolean }) {
         )}
       </div>
       <p className={styles.itemMeta}>
-        Org Admins get an in-app alert this many days before a document expires, and once more when it does.
+        Org Admins get an in-app alert this many days before a document expires, and once more when it does. A
+        required type also flags anyone who lacks a valid one, on their profile and on the daily board.
       </p>
       {typesQuery.isLoading ? (
         <Skeleton height={48} />
@@ -232,7 +322,14 @@ function DocumentTypesCard({ canManage }: { canManage: boolean }) {
             const parsedEdit = editing?.id === type.id ? parseLeadDays(editing.leadDays) : null;
             return (
               <li key={type.id} className={styles.item}>
-                {editing?.id === type.id ? (
+                {requiring === type.id ? (
+                  <RequirementEditor
+                    type={type}
+                    saving={update.isPending}
+                    onSave={(requiredFor, enforcement) => update.mutate({ type, requiredFor, enforcement })}
+                    onCancel={() => setRequiring(null)}
+                  />
+                ) : editing?.id === type.id ? (
                   <form
                     className={styles.inlineForm}
                     onSubmit={(event) => {
@@ -259,11 +356,22 @@ function DocumentTypesCard({ canManage }: { canManage: boolean }) {
                     <div className={styles.itemMain}>
                       <span className={styles.itemTitle}>{type.name}</span>
                       <span className={styles.itemMeta}>Alerts {type.alertLeadDays.join(", ")} days before expiry</span>
+                      {type.requiredFor !== "none" && type.isArchived && (
+                        <span className={styles.warning}>Archived, so it is not required of anyone.</span>
+                      )}
                     </div>
                     <div className={styles.itemActions}>
+                      {type.requiredFor !== "none" && (
+                        <Badge variant={type.enforcement === "block" ? "danger" : "warning"}>
+                          {requirementLabel(type.requiredFor)} · {enforcementLabel(type.enforcement)}
+                        </Badge>
+                      )}
                       {type.isArchived && <Badge variant="neutral">Archived</Badge>}
                       {canManage && (
                         <>
+                          <Button size="sm" variant="ghost" onClick={() => setRequiring(type.id)}>
+                            Requirement
+                          </Button>
                           <Button
                             size="sm"
                             variant="ghost"

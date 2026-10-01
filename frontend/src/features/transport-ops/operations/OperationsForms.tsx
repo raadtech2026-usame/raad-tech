@@ -301,9 +301,10 @@ export function TimetableForm({ open, onClose, entry }: TimetableFormProps) {
         },
         entry?.id,
       ),
-    onSuccess: () => {
+    onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ["operations", "timetable"] });
       toast.success(entry ? "Timetable updated" : "Added to the timetable", "Trips already generated are unchanged.");
+      for (const warning of saved.warnings) toast.info("Documents", warning);
       onClose();
     },
     onError: (error) => toast.error("Could not save", errorText(error)),
