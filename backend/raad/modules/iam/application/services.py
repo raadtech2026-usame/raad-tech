@@ -61,9 +61,15 @@ from raad.modules.iam.application.queries import (
     GetUserByIdQuery,
     ListSessionsQuery,
     ListUsersQuery,
+    MeChildTransportDTO,
     MeDriverProfileDTO,
     MeIdentityDTO,
     MeStudentDTO,
+    MeTransportAssignmentDTO,
+    MeTransportRouteDTO,
+    MeTransportStopDTO,
+    MeTransportTripDTO,
+    MeTransportVehicleDTO,
     SessionDTO,
     UserDTO,
     UserStatsDTO,
@@ -90,12 +96,24 @@ from raad.modules.iam.domain.value_objects import (
 # platform_audit.PlatformStatsApplicationService (ADR-0020) already established, confirmed by
 # tests/architecture/test_module_boundaries.py Rule 1 (application-layer imports are unflagged;
 # only domain/infra reaches are).
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.fleet_device.application.queries import GetVehicleByIdQuery
+from raad.modules.fleet_device.application.services import VehicleApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
-from raad.modules.transport_ops.application.queries import ListStudentsForParentQuery
+from raad.modules.transport_ops.application.queries import (
+    GetActiveTripForVehicleQuery,
+    GetRouteByIdQuery,
+    ListStudentsForParentQuery,
+    RouteDTO,
+    StudentAssignmentDTO,
+)
 from raad.modules.transport_ops.application.services import (
     DriverApplicationService,
     ParentApplicationService,
+    RouteApplicationService,
+    StudentAssignmentApplicationService,
     StudentParentApplicationService,
+    TripApplicationService,
 )
 
 
@@ -735,10 +753,19 @@ class MeApplicationService:
         parent_service: ParentApplicationService,
         driver_service: DriverApplicationService,
         student_parent_service: StudentParentApplicationService,
+        student_assignment_service: StudentAssignmentApplicationService | None = None,
+        route_service: RouteApplicationService | None = None,
+        trip_service: TripApplicationService | None = None,
+        vehicle_service: VehicleApplicationService | None = None,
     ) -> None:
         self._parent_service = parent_service
         self._driver_service = driver_service
         self._student_parent_service = student_parent_service
+        # ADR-0060 - only `get_my_transport` needs these four.
+        self._student_assignment_service = student_assignment_service
+        self._route_service = route_service
+        self._trip_service = trip_service
+        self._vehicle_service = vehicle_service
 
     async def get_my_identity(
         self, principal: Principal, *, uow: TransportOpsUnitOfWork
@@ -807,6 +834,155 @@ class MeApplicationService:
             )
             for dto in results
         ]
+
+    async def get_my_transport(
+        self,
+        principal: Principal,
+        *,
+        uow: TransportOpsUnitOfWork,
+        fleet_device_uow: FleetDeviceUnitOfWork,
+    ) -> list[MeChildTransportDTO]:
+        """`GET /me/transport` (ADR-0060): for each of the caller's own children, the active
+        assignment (route, bus, the child's own pickup and dropoff stop) and the in-progress
+        trip, if any. The only identity input is `principal`, as everywhere in this class.
+
+        A route, stop or vehicle id that no longer resolves becomes `None`: those are
+        cross-module ids with no foreign key behind them, so a dangling one is an expected
+        shape, not a server fault."""
+        if (
+            self._student_assignment_service is None
+            or self._route_service is None
+            or self._trip_service is None
+            or self._vehicle_service is None
+        ):
+            raise NotImplementedError(
+                "MeApplicationService was built without the transport services "
+                "get_my_transport needs (ADR-0060)."
+            )
+        parent = await self._parent_service.get_parent_by_user_id(
+            principal.user_id, uow=uow
+        )
+        if parent is None:
+            raise NotFoundError("No Parent profile is linked to this account.")
+        children = await self._student_parent_service.list_students_for_parent(
+            ListStudentsForParentQuery(parent_id=parent.id), uow=uow
+        )
+
+        # Siblings normally share one route and one bus, so each is read once per call.
+        routes: dict[str, RouteDTO | None] = {}
+        vehicles: dict[str, MeTransportVehicleDTO | None] = {}
+        trips: dict[str, MeTransportTripDTO | None] = {}
+        trip_routes: dict[str, str] = {}
+
+        result: list[MeChildTransportDTO] = []
+        for child in children:
+            assignment = (
+                await self._student_assignment_service.get_active_assignment_for_student(
+                    child.student_id, uow=uow
+                )
+            )
+            assignment_dto: MeTransportAssignmentDTO | None = None
+            current_trip: MeTransportTripDTO | None = None
+            if assignment is not None:
+                if assignment.route_id not in routes:
+                    routes[assignment.route_id] = await self._load_route(
+                        assignment.route_id, uow=uow
+                    )
+                route = routes[assignment.route_id]
+                vehicle_id = assignment.vehicle_id
+                vehicle: MeTransportVehicleDTO | None = None
+                if vehicle_id is not None:
+                    if vehicle_id not in vehicles:
+                        vehicles[vehicle_id] = await self._load_vehicle(
+                            vehicle_id, fleet_device_uow=fleet_device_uow
+                        )
+                        trip = await self._trip_service.get_active_trip_for_vehicle(
+                            GetActiveTripForVehicleQuery(vehicle_id=vehicle_id), uow=uow
+                        )
+                        trips[vehicle_id] = (
+                            MeTransportTripDTO(
+                                id=trip.id,
+                                trip_type=trip.trip_type,
+                                status=trip.status,
+                                scheduled_date=trip.scheduled_date,
+                                started_at=trip.started_at,
+                            )
+                            if trip is not None
+                            else None
+                        )
+                        if trip is not None:
+                            trip_routes[vehicle_id] = trip.route_id
+                    vehicle = vehicles[vehicle_id]
+                    # A bus can be running another route; that trip is not this child's.
+                    if trip_routes.get(vehicle_id) == assignment.route_id:
+                        current_trip = trips[vehicle_id]
+                assignment_dto = self._assignment_to_dto(assignment, route, vehicle)
+            result.append(
+                MeChildTransportDTO(
+                    student_id=child.student_id,
+                    full_name=child.full_name,
+                    status=child.status,
+                    assignment=assignment_dto,
+                    current_trip=current_trip,
+                )
+            )
+        return result
+
+    async def _load_route(
+        self, route_id: str, *, uow: TransportOpsUnitOfWork
+    ) -> RouteDTO | None:
+        assert self._route_service is not None
+        try:
+            return await self._route_service.get_route_by_id(
+                GetRouteByIdQuery(route_id=route_id), uow=uow
+            )
+        except NotFoundError:
+            return None
+
+    async def _load_vehicle(
+        self, vehicle_id: str, *, fleet_device_uow: FleetDeviceUnitOfWork
+    ) -> MeTransportVehicleDTO | None:
+        assert self._vehicle_service is not None
+        try:
+            vehicle = await self._vehicle_service.get_vehicle_by_id(
+                GetVehicleByIdQuery(vehicle_id=vehicle_id), uow=fleet_device_uow
+            )
+        except NotFoundError:
+            return None
+        return MeTransportVehicleDTO(
+            id=vehicle.id, plate_no=vehicle.plate_no, label=vehicle.label
+        )
+
+    @staticmethod
+    def _assignment_to_dto(
+        assignment: StudentAssignmentDTO,
+        route: RouteDTO | None,
+        vehicle: MeTransportVehicleDTO | None,
+    ) -> MeTransportAssignmentDTO:
+        stops = {stop.id: stop for stop in route.stops} if route is not None else {}
+
+        def own_stop(stop_id: str) -> MeTransportStopDTO | None:
+            stop = stops.get(stop_id)
+            if stop is None:
+                return None
+            return MeTransportStopDTO(
+                id=stop.id,
+                name=stop.name,
+                latitude=stop.latitude,
+                longitude=stop.longitude,
+            )
+
+        return MeTransportAssignmentDTO(
+            assignment_id=assignment.id,
+            route=(
+                MeTransportRouteDTO(id=route.id, name=route.name)
+                if route is not None
+                else None
+            ),
+            pickup_stop=own_stop(assignment.pickup_stop_id),
+            dropoff_stop=own_stop(assignment.dropoff_stop_id),
+            vehicle=vehicle,
+        )
 
     async def get_my_driver_profile(
         self, principal: Principal, *, uow: TransportOpsUnitOfWork

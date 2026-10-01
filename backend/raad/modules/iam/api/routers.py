@@ -37,6 +37,8 @@ Domain/Application is out of scope this phase):
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, Request, status
 
 from raad.core.di.container import Container
@@ -68,6 +70,7 @@ from raad.modules.iam.api.schemas import (
     CreateUserRequest,
     LoginRequest,
     LogoutRequest,
+    MeChildTransportResponse,
     MeDriverProfileResponse,
     MeIdentityResponse,
     MeStudentResponse,
@@ -120,6 +123,10 @@ from raad.modules.iam.application.services import (
 # api-layer wiring pattern, not a new one invented here.
 # ADR-0047 §9: /me/invoices composes school_erp's own application service and wire shape, the
 # same cross-module api-layer wiring the transport_ops imports below already use.
+# ADR-0060: /me/transport reads the child's bus through fleet_device's own application
+# service, wired the same way.
+from raad.modules.fleet_device.api.deps import get_fleet_device_uow
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.school_erp.api.deps import get_parent_finance_service, get_school_erp_uow
 from raad.modules.school_erp.api.routers import my_invoices_response
 from raad.modules.school_erp.api.schemas import MyInvoicesResponse
@@ -692,6 +699,30 @@ async def get_my_students(
 ) -> list[MeStudentResponse]:
     results = await me_service.get_my_students(principal, uow=uow)
     return [_me_student_dto_to_response(dto) for dto in results]
+
+
+@me_router.get(
+    "/transport",
+    response_model=list[MeChildTransportResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List the current Parent principal's children with their bus, route and stops",
+    description=(
+        "ADR-0060. Self-scoped like `GET /me/students`: no permission, and no parameter naming "
+        "a parent, student, vehicle or route. Per child: the active assignment (route, bus, "
+        "and only that child's own pickup and dropoff stop) and the in-progress trip on that "
+        "bus and route, if any. Raises 404 when no `Parent` record links to this user."
+    ),
+)
+async def get_my_transport(
+    principal: Principal = Depends(get_current_user),
+    me_service: MeApplicationService = Depends(get_me_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+    fleet_device_uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+) -> list[MeChildTransportResponse]:
+    results = await me_service.get_my_transport(
+        principal, uow=uow, fleet_device_uow=fleet_device_uow
+    )
+    return [MeChildTransportResponse.model_validate(asdict(dto)) for dto in results]
 
 
 @me_router.get(

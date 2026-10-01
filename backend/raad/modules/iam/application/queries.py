@@ -6,7 +6,7 @@ layer, so neither ever depends on the other's internal shape.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 from raad.core.pagination import FilterCondition, OffsetPageRequest, SortSpec
 from raad.core.security.ip_mask import mask_ip_address
@@ -137,6 +137,59 @@ class MeDriverProfileDTO:
     organization_id: str
     license_no: str
     status: str
+
+
+@dataclass(frozen=True)
+class MeTransportStopDTO:
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+
+
+@dataclass(frozen=True)
+class MeTransportRouteDTO:
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
+class MeTransportVehicleDTO:
+    id: str
+    plate_no: str
+    label: str | None
+
+
+@dataclass(frozen=True)
+class MeTransportAssignmentDTO:
+    """ADR-0060: the child's active assignment. Carries only the child's own two stops, never
+    the route's stop list, so one family cannot read another's pickup point."""
+
+    assignment_id: str
+    route: MeTransportRouteDTO | None
+    pickup_stop: MeTransportStopDTO | None
+    dropoff_stop: MeTransportStopDTO | None
+    vehicle: MeTransportVehicleDTO | None
+
+
+@dataclass(frozen=True)
+class MeTransportTripDTO:
+    id: str
+    trip_type: str
+    status: str
+    scheduled_date: date
+    started_at: datetime | None
+
+
+@dataclass(frozen=True)
+class MeChildTransportDTO:
+    """ADR-0060: one row of `GET /me/transport`."""
+
+    student_id: str
+    full_name: str
+    status: str
+    assignment: MeTransportAssignmentDTO | None
+    current_trip: MeTransportTripDTO | None
 
 
 def user_to_dto(user: User) -> UserDTO:
