@@ -494,6 +494,8 @@ class TripDTO:
     planned_departure: time | None = None
     cancelled_at: datetime | None = None
     cancelled_reason: str | None = None
+    #: ADR-0059 §3: set on the response of the action that produced them, never stored.
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -667,6 +669,8 @@ class TransportStaffSummaryDTO:
     employee_ref: str | None
     status: str
     is_driver: bool
+    #: ADR-0058; `None` for someone who has left.
+    compliance_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -691,6 +695,8 @@ class TransportStaffDTO:
     driver: StaffDriverProfileDTO | None
     created_at: datetime
     updated_at: datetime
+    #: ADR-0058; `None` for someone who has left.
+    compliance: "StaffComplianceDTO | None" = None
 
 
 @dataclass(frozen=True)
@@ -709,6 +715,7 @@ class VehicleStaffAssignmentDTO:
     reason: str | None
     is_current: bool
     created_at: datetime
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -718,6 +725,8 @@ class StaffDocumentTypeDTO:
     name: str
     alert_lead_days: list[int]
     is_archived: bool
+    required_for: str = "none"
+    enforcement: str = "warn"
 
 
 @dataclass(frozen=True)
@@ -779,6 +788,7 @@ class TimetableEntryDTO:
     valid_from: date
     valid_until: date | None
     is_active: bool
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -846,6 +856,8 @@ class BoardCrewDTO:
     is_substitute: bool
     is_unavailable: bool
     covered_by: str | None
+    #: ADR-0059 §2: a badge only; crew never make a trip uncovered.
+    compliance_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -874,6 +886,8 @@ class PlannedTripDTO:
     driver_id: str
     #: The substitute is driving instead of the default driver.
     is_substitute: bool
+    #: Why the trip will be uncovered once created (ADR-0053 §3, ADR-0059 §1), or `None`.
+    uncovered_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -905,3 +919,54 @@ class UncoveredTripAlertDTO:
     driver_name: str | None
     reason: str
     key: str
+
+
+# ---- ADR-0058: document compliance ------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ComplianceGapDTO:
+    type_id: str
+    type_name: str
+    #: `missing` or `expired`.
+    reason: str
+    expired_on: date | None
+    #: The type's enforcement is `block` (ADR-0059 §3).
+    blocks: bool
+
+
+@dataclass(frozen=True)
+class ComplianceExpiringDTO:
+    type_id: str
+    type_name: str
+    expires_on: date
+
+
+@dataclass(frozen=True)
+class StaffComplianceDTO:
+    """Never carries a document number, so every role that may read staff may read it."""
+
+    status: str
+    gaps: list[ComplianceGapDTO] = field(default_factory=list)
+    expiring: list[ComplianceExpiringDTO] = field(default_factory=list)
+    is_blocked: bool = False
+
+
+@dataclass(frozen=True)
+class StaffComplianceRowDTO:
+    staff_id: str
+    organization_id: str
+    staff_name: str
+    role_name: str | None
+    is_driver: bool
+    compliance: StaffComplianceDTO
+
+
+@dataclass(frozen=True)
+class DocumentTypeImpactDTO:
+    """ADR-0058 §3: what making this type required would mean today."""
+
+    type_id: str
+    required_for: str
+    applies_to: int
+    not_compliant: int

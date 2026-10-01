@@ -253,6 +253,8 @@ from raad.modules.transport_ops.api.schemas import (
     RegisterTransportStaffRequest,
     StaffDocumentResponse,
     StaffDocumentTypeRequest,
+    DocumentTypeImpactResponse,
+    StaffComplianceRowResponse,
     StaffDocumentTypeResponse,
     StaffRoleRequest,
     StaffRoleResponse,
@@ -592,6 +594,7 @@ def _trip_dto_to_response(trip: TripDTO) -> TripResponse:
         planned_departure=trip.planned_departure,
         cancelled_at=trip.cancelled_at,
         cancelled_reason=trip.cancelled_reason,
+        warnings=list(trip.warnings),
     )
 
 
@@ -2156,6 +2159,7 @@ transport_staff_roles_router = APIRouter()
 staff_assignments_router = APIRouter()
 staff_document_types_router = APIRouter()
 staff_documents_router = APIRouter()
+staff_compliance_router = APIRouter()
 
 
 def _private_fields_visible(principal: Principal) -> bool:
@@ -2615,6 +2619,8 @@ async def create_staff_document_type(
             organization_id=_resolve_organization_id(principal, body.organization_id),
             name=body.name,
             alert_lead_days=tuple(body.alert_lead_days),
+            required_for=body.required_for,
+            enforcement=body.enforcement,
             actor=principal,
         ),
         uow=uow,
@@ -2665,12 +2671,54 @@ async def update_staff_document_type(
             name=body.name,
             alert_lead_days=tuple(body.alert_lead_days),
             is_archived=body.is_archived,
+            required_for=body.required_for,
+            enforcement=body.enforcement,
             type_id=type_id,
             actor=principal,
         ),
         uow=uow,
     )
     return _document_type_to_response(doc_type)
+
+
+@staff_document_types_router.get(
+    "/{type_id}/impact",
+    response_model=DocumentTypeImpactResponse,
+    summary="How many staff a requirement would apply to, and how many do not meet it today",
+    description="ADR-0058 §3. Reads only; shown before a requirement is saved.",
+)
+async def staff_document_type_impact(
+    type_id: str,
+    required_for: Literal["none", "drivers", "all_staff"] = Query(...),
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.manage"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> DocumentTypeImpactResponse:
+    impact = await service.document_type_impact(type_id, required_for, uow=uow)
+    return DocumentTypeImpactResponse(**dataclasses.asdict(impact))
+
+
+@staff_compliance_router.get(
+    "",
+    response_model=list[StaffComplianceRowResponse],
+    summary="Staff who do not meet a document requirement, or are about to stop meeting one",
+    description=(
+        "ADR-0058 §3. Not compliant first, then expiring. Reasons name the document type and "
+        "say `missing` or `expired`; a document number is never returned."
+    ),
+)
+async def list_staff_compliance(
+    organization_id: str | None = Query(None),
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.list"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[StaffComplianceRowResponse]:
+    rows = await service.list_staff_compliance(uow=uow, organization_id=organization_id)
+    return [StaffComplianceRowResponse(**dataclasses.asdict(r)) for r in rows]
 
 
 @staff_documents_router.get(

@@ -17,7 +17,7 @@ Two rules from the ADRs are enforced here, not in the domain:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from raad.core.errors.exceptions import (
@@ -30,6 +30,11 @@ from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import OffsetPage
 from raad.core.tenancy.principal import Role
 from raad.core.time.clock import Clock
+from raad.modules.transport_ops.application.compliance import (
+    compliance_to_dto,
+    load_compliance_index,
+    planning_compliance_warnings,
+)
 from raad.modules.transport_ops.application.commands import (
     AddDefaultStaffSetupCommand,
     AssignStaffToVehicleCommand,
@@ -49,7 +54,9 @@ from raad.modules.transport_ops.application.ports import (
     VehicleDirectoryPort,
 )
 from raad.modules.transport_ops.application.queries import (
+    DocumentTypeImpactDTO,
     DriverDTO,
+    StaffComplianceRowDTO,
     DueExpiryAlertDTO,
     ListTransportStaffQuery,
     StaffDocumentDTO,
@@ -71,12 +78,15 @@ from raad.modules.transport_ops.domain.entities import (
     VehicleStaffAssignment,
 )
 from raad.modules.transport_ops.domain.value_objects import (
+    ComplianceStatus,
     DriverId,
     OrganizationId,
     PhoneNumber,
     RouteId,
     StaffAssignmentKind,
+    StaffDocumentEnforcement,
     StaffDocumentId,
+    StaffDocumentRequirement,
     StaffDocumentTypeId,
     TransportStaffId,
     TransportStaffRoleId,
@@ -141,7 +151,23 @@ def _type_to_dto(doc_type: StaffDocumentType) -> StaffDocumentTypeDTO:
         name=doc_type.name,
         alert_lead_days=list(doc_type.alert_lead_days),
         is_archived=doc_type.is_archived,
+        required_for=doc_type.required_for.value,
+        enforcement=doc_type.enforcement.value,
     )
+
+
+def _requirement(value: str | None) -> StaffDocumentRequirement | None:
+    try:
+        return None if value is None else StaffDocumentRequirement(value)
+    except ValueError as exc:
+        raise ValidationError(f"Unknown requirement {value!r}.") from exc
+
+
+def _enforcement(value: str | None) -> StaffDocumentEnforcement | None:
+    try:
+        return None if value is None else StaffDocumentEnforcement(value)
+    except ValueError as exc:
+        raise ValidationError(f"Unknown enforcement {value!r}.") from exc
 
 
 def _driver_profile(driver: Driver | None) -> StaffDriverProfileDTO | None:
@@ -271,6 +297,8 @@ class TransportStaffApplicationService:
         self, command: SaveStaffDocumentTypeCommand, *, uow: TransportOpsUnitOfWork
     ) -> StaffDocumentTypeDTO:
         _enforce_own_organization(actor=command.actor, organization_id=command.organization_id)
+        required_for = _requirement(command.required_for)
+        enforcement = _enforcement(command.enforcement)
         async with uow:
             existing = await uow.staff_document_types.list_for_organization(
                 command.organization_id
@@ -287,6 +315,8 @@ class TransportStaffApplicationService:
                     organization_id=OrganizationId(command.organization_id),
                     name=command.name,
                     alert_lead_days=command.alert_lead_days,
+                    required_for=required_for or StaffDocumentRequirement.NONE,
+                    enforcement=enforcement or StaffDocumentEnforcement.WARN,
                     clock=self._clock,
                     actor_id=command.actor.user_id,
                 )
@@ -299,12 +329,85 @@ class TransportStaffApplicationService:
                     name=command.name,
                     alert_lead_days=command.alert_lead_days,
                     is_archived=command.is_archived,
+                    required_for=required_for,
+                    enforcement=enforcement,
                     clock=self._clock,
                     actor_id=command.actor.user_id,
                 )
             uow.record_events(doc_type.pull_domain_events())
             await uow.commit()
             return _type_to_dto(doc_type)
+
+    # ---- compliance (ADR-0058) -------------------------------------------------------------
+
+    async def document_type_impact(
+        self, type_id: str, required_for: str, *, uow: TransportOpsUnitOfWork
+    ) -> DocumentTypeImpactDTO:
+        """ADR-0058 §3: how many people the setting would apply to, and how many of them do
+        not hold a valid document of this type today. Reads only."""
+        requirement = _requirement(required_for) or StaffDocumentRequirement.NONE
+        today = self._today()
+        async with uow:
+            doc_type = await uow.staff_document_types.get(StaffDocumentTypeId(type_id))
+            if doc_type is None:
+                raise NotFoundError(f"Document type {type_id} not found.")
+            people = [
+                s
+                for s in await uow.staff.list_not_left()
+                if s.organization_id == doc_type.organization_id
+            ]
+            if requirement is StaffDocumentRequirement.NONE:
+                people = []
+            elif requirement is StaffDocumentRequirement.DRIVERS:
+                drivers = await uow.drivers.list_by_staff_ids([str(s.id) for s in people])
+                driver_staff = {str(d.staff_id) for d in drivers}
+                people = [s for s in people if str(s.id) in driver_staff]
+            documents = await uow.staff_documents.list_current_of_types(
+                [type_id], staff_ids=[str(s.id) for s in people]
+            )
+            holders = {
+                str(d.staff_id)
+                for d in documents
+                if d.expires_on is None or d.expires_on >= today
+            }
+            return DocumentTypeImpactDTO(
+                type_id=type_id,
+                required_for=requirement.value,
+                applies_to=len(people),
+                not_compliant=sum(1 for s in people if str(s.id) not in holders),
+            )
+
+    async def list_staff_compliance(
+        self, *, uow: TransportOpsUnitOfWork, organization_id: str | None = None
+    ) -> list[StaffComplianceRowDTO]:
+        """Staff who are not compliant or have a required document expiring, worst first
+        (ADR-0058 §3). Scope limits it to the caller's organizations."""
+        today = self._today()
+        async with uow:
+            people = await uow.staff.list_not_left()
+            if organization_id is not None:
+                people = [s for s in people if str(s.organization_id) == organization_id]
+            index = await load_compliance_index(uow, people)
+            if not index.has_requirements:
+                return []
+            role_names = await self._role_names(uow, [s.role_id for s in people])
+            rows: list[StaffComplianceRowDTO] = []
+            for person in people:
+                compliance = index.of(person, today)
+                if compliance is None or compliance.status is ComplianceStatus.COMPLIANT:
+                    continue
+                rows.append(
+                    StaffComplianceRowDTO(
+                        staff_id=str(person.id),
+                        organization_id=str(person.organization_id),
+                        staff_name=person.full_name,
+                        role_name=role_names.get(str(person.role_id)) if person.role_id else None,
+                        is_driver=index.is_driver(person),
+                        compliance=compliance_to_dto(compliance),
+                    )
+                )
+            rows.sort(key=lambda r: (r.compliance.status != "not_compliant", r.staff_name.lower()))
+            return rows
 
     async def add_default_document_types(
         self, command: AddDefaultStaffSetupCommand, *, uow: TransportOpsUnitOfWork
@@ -428,6 +531,12 @@ class TransportStaffApplicationService:
             role_names = await self._role_names(uow, [s.role_id for s in page.data])
             drivers = await uow.drivers.list_by_staff_ids([str(s.id) for s in page.data])
             driver_staff = {str(d.staff_id) for d in drivers}
+            index = await load_compliance_index(uow, list(page.data))
+            today = self._today()
+
+            def status_of(person: TransportStaff) -> str | None:
+                compliance = index.of(person, today)
+                return compliance.status.value if compliance is not None else None
             return OffsetPage(
                 data=[
                     TransportStaffSummaryDTO(
@@ -440,6 +549,7 @@ class TransportStaffApplicationService:
                         employee_ref=s.employee_ref,
                         status=s.status.value,
                         is_driver=str(s.id) in driver_staff,
+                        compliance_status=status_of(s),
                     )
                     for s in page.data
                 ],
@@ -545,6 +655,10 @@ class TransportStaffApplicationService:
                     raise ConflictError(
                         f"{staff.full_name} is already on this bus for part of that period."
                     )
+            # ADR-0059 §3: crew assignment warns and is never refused.
+            warnings = await planning_compliance_warnings(
+                uow, staff.id, starts_on, refuse_blocked=False
+            )
             assignment = VehicleStaffAssignment.assign(
                 id=VehicleStaffAssignmentId(self._id_generator.new_id()),
                 organization_id=OrganizationId(organization_id),
@@ -562,7 +676,7 @@ class TransportStaffApplicationService:
             uow.staff_assignments.add(assignment)
             uow.record_events(assignment.pull_domain_events())
             await uow.commit()
-            return (await self._assignment_dtos(uow, [assignment]))[0]
+            return replace((await self._assignment_dtos(uow, [assignment]))[0], warnings=warnings)
 
     async def end_assignment(
         self, command: EndStaffAssignmentCommand, *, uow: TransportOpsUnitOfWork
@@ -817,6 +931,7 @@ class TransportStaffApplicationService:
     ) -> TransportStaffDTO:
         role_names = await self._role_names(uow, [staff.role_id])
         driver = await uow.drivers.get_by_staff_id(staff.id)
+        compliance = (await load_compliance_index(uow, [staff])).of(staff, self._today())
         return TransportStaffDTO(
             id=str(staff.id),
             organization_id=str(staff.organization_id),
@@ -835,6 +950,7 @@ class TransportStaffApplicationService:
             driver=_driver_profile(driver),
             created_at=staff.created_at,
             updated_at=staff.updated_at,
+            compliance=compliance_to_dto(compliance) if compliance is not None else None,
         )
 
     async def _assignment_dtos(

@@ -565,6 +565,9 @@ class SaveStaffDocumentTypeCommand:
     actor: Principal
     type_id: str | None = None
     is_archived: bool = False
+    #: ADR-0058 §1. `None` keeps the current value (or the default on create).
+    required_for: str | None = None
+    enforcement: str | None = None
 
 
 @dataclass(frozen=True)

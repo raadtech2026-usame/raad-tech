@@ -1,5 +1,13 @@
 import type { BadgeVariant } from "../../../shared/components/Badge/Badge";
-import type { AssignmentKind, DocumentStatus, StaffStatus } from "./api";
+import type {
+  AssignmentKind,
+  Compliance,
+  ComplianceStatus,
+  DocumentEnforcement,
+  DocumentRequirement,
+  DocumentStatus,
+  StaffStatus,
+} from "./api";
 
 const STAFF_STATUS: Record<StaffStatus, { label: string; tone: BadgeVariant }> = {
   active: { label: "Active", tone: "success" },
@@ -58,4 +66,44 @@ export function formatDay(value: string | null): string {
 
 export function assignmentPeriod(startsOn: string, endsOn: string | null): string {
   return endsOn ? `${formatDay(startsOn)} – ${formatDay(endsOn)}` : `Since ${formatDay(startsOn)}`;
+}
+
+// ---- ADR-0058: document compliance ------------------------------------------------------------
+
+const COMPLIANCE: Record<ComplianceStatus, { label: string; tone: BadgeVariant }> = {
+  compliant: { label: "Compliant", tone: "success" },
+  expiring: { label: "Expiring soon", tone: "warning" },
+  not_compliant: { label: "Not compliant", tone: "danger" },
+};
+
+export function complianceLabel(status: ComplianceStatus): string {
+  return COMPLIANCE[status]?.label ?? status;
+}
+
+export function complianceTone(status: ComplianceStatus): BadgeVariant {
+  return COMPLIANCE[status]?.tone ?? "neutral";
+}
+
+/** One line per reason: "Driving licence missing", "Medical certificate expired on 3 Oct 2026". */
+export function complianceReasons(compliance: Compliance): string[] {
+  return [
+    ...compliance.gaps.map((g) =>
+      g.reason === "expired" && g.expiredOn ? `${g.typeName} expired on ${formatDay(g.expiredOn)}` : `${g.typeName} missing`,
+    ),
+    ...compliance.expiring.map((e) => `${e.typeName} expires on ${formatDay(e.expiresOn)}`),
+  ];
+}
+
+export const REQUIREMENTS: { value: DocumentRequirement; label: string }[] = [
+  { value: "none", label: "Not required" },
+  { value: "drivers", label: "Required for drivers" },
+  { value: "all_staff", label: "Required for all staff" },
+];
+
+export function requirementLabel(value: DocumentRequirement): string {
+  return REQUIREMENTS.find((r) => r.value === value)?.label ?? value;
+}
+
+export function enforcementLabel(value: DocumentEnforcement): string {
+  return value === "block" ? "Blocks new planning" : "Warns only";
 }

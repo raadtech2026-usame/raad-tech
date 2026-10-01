@@ -32,6 +32,7 @@ const UNCOVERED: Record<UncoveredReason, string> = {
   driver_unavailable: "Driver unavailable",
   driver_inactive: "Driver access inactive",
   driver_not_active: "Driver no longer active",
+  driver_not_compliant: "Driver's documents not compliant",
 };
 
 export function uncoveredLabel(reason: UncoveredReason): string {

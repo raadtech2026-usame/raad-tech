@@ -27,6 +27,7 @@ const TRIP: Trip = {
   updatedAt: "2026-01-01T00:00:00Z",
   plannedDeparture: null,
   cancelledReason: null,
+  warnings: [],
 };
 
 function renderForm(trip: Trip | null = TRIP) {

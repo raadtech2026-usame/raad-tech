@@ -34,6 +34,42 @@ export interface StaffSummary {
   employeeRef: string | null;
   status: StaffStatus;
   isDriver: boolean;
+  /** ADR-0058; `null` for someone who has left. */
+  complianceStatus: ComplianceStatus | null;
+}
+
+export type ComplianceStatus = "compliant" | "expiring" | "not_compliant";
+export type DocumentRequirement = "none" | "drivers" | "all_staff";
+export type DocumentEnforcement = "warn" | "block";
+
+export interface ComplianceGap {
+  typeId: string;
+  typeName: string;
+  reason: "missing" | "expired";
+  expiredOn: string | null;
+  /** The type blocks new planning (ADR-0059 §3). */
+  blocks: boolean;
+}
+
+/** ADR-0058 §2. Computed by the server on every read; never carries a document number. */
+export interface Compliance {
+  status: ComplianceStatus;
+  gaps: ComplianceGap[];
+  expiring: { typeId: string; typeName: string; expiresOn: string }[];
+  isBlocked: boolean;
+}
+
+export interface StaffComplianceRow {
+  staffId: string;
+  staffName: string;
+  roleName: string | null;
+  isDriver: boolean;
+  compliance: Compliance;
+}
+
+export interface DocumentTypeImpact {
+  appliesTo: number;
+  notCompliant: number;
 }
 
 export interface StaffDriverProfile {
@@ -62,6 +98,7 @@ export interface Staff {
   privateFieldsVisible: boolean;
   createdAt: string;
   updatedAt: string;
+  compliance: Compliance | null;
 }
 
 export interface CrewAssignment {
@@ -79,6 +116,8 @@ export interface CrewAssignment {
   reason: string | null;
   isCurrent: boolean;
   createdAt: string;
+  /** ADR-0059 §3: only on the response to assigning; empty on reads. */
+  warnings: string[];
 }
 
 export interface DocumentType {
@@ -87,6 +126,8 @@ export interface DocumentType {
   name: string;
   alertLeadDays: number[];
   isArchived: boolean;
+  requiredFor: DocumentRequirement;
+  enforcement: DocumentEnforcement;
 }
 
 export interface StaffDocument {
@@ -127,7 +168,26 @@ interface StaffSummaryWire {
   employee_ref: string | null;
   status: string;
   is_driver: boolean;
+  compliance_status?: string | null;
 }
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export function toCompliance(wire: any): Compliance | null {
+  if (!wire) return null;
+  return {
+    status: wire.status,
+    gaps: (wire.gaps ?? []).map((g: any) => ({
+      typeId: g.type_id,
+      typeName: g.type_name,
+      reason: g.reason,
+      expiredOn: g.expired_on,
+      blocks: g.blocks,
+    })),
+    expiring: (wire.expiring ?? []).map((e: any) => ({ typeId: e.type_id, typeName: e.type_name, expiresOn: e.expires_on })),
+    isBlocked: Boolean(wire.is_blocked),
+  };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 interface StaffWire {
   id: string;
@@ -148,6 +208,7 @@ interface StaffWire {
   private_fields_visible: boolean;
   created_at: string;
   updated_at: string;
+  compliance?: unknown;
 }
 
 interface CrewAssignmentWire {
@@ -165,6 +226,7 @@ interface CrewAssignmentWire {
   reason: string | null;
   is_current: boolean;
   created_at: string;
+  warnings?: string[];
 }
 
 interface DocumentTypeWire {
@@ -173,6 +235,8 @@ interface DocumentTypeWire {
   name: string;
   alert_lead_days: number[];
   is_archived: boolean;
+  required_for?: string;
+  enforcement?: string;
 }
 
 interface StaffDocumentWire {
@@ -214,6 +278,7 @@ function toStaffSummary(wire: StaffSummaryWire): StaffSummary {
     employeeRef: wire.employee_ref,
     status: wire.status as StaffStatus,
     isDriver: wire.is_driver,
+    complianceStatus: (wire.compliance_status ?? null) as ComplianceStatus | null,
   };
 }
 
@@ -244,6 +309,7 @@ export function toStaff(wire: StaffWire): Staff {
     privateFieldsVisible: wire.private_fields_visible,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    compliance: toCompliance(wire.compliance),
   };
 }
 
@@ -263,6 +329,7 @@ function toCrewAssignment(wire: CrewAssignmentWire): CrewAssignment {
     reason: wire.reason,
     isCurrent: wire.is_current,
     createdAt: wire.created_at,
+    warnings: wire.warnings ?? [],
   };
 }
 
@@ -273,6 +340,8 @@ function toDocumentType(wire: DocumentTypeWire): DocumentType {
     name: wire.name,
     alertLeadDays: wire.alert_lead_days,
     isArchived: wire.is_archived,
+    requiredFor: (wire.required_for ?? "none") as DocumentRequirement,
+    enforcement: (wire.enforcement ?? "warn") as DocumentEnforcement,
   };
 }
 
@@ -469,6 +538,9 @@ export interface SaveDocumentTypeInput {
   name: string;
   alertLeadDays: number[];
   isArchived?: boolean;
+  /** ADR-0058 §1. Left out, the server keeps the current setting. */
+  requiredFor?: DocumentRequirement;
+  enforcement?: DocumentEnforcement;
 }
 
 export async function createDocumentType(input: SaveDocumentTypeInput): Promise<DocumentType> {
@@ -482,9 +554,35 @@ export async function createDocumentType(input: SaveDocumentTypeInput): Promise<
 export async function updateDocumentType(id: string, input: SaveDocumentTypeInput): Promise<DocumentType> {
   const wire = await apiRequest<DocumentTypeWire>(`/staff-document-types/${id}`, {
     method: "PATCH",
-    body: { name: input.name, alert_lead_days: input.alertLeadDays, is_archived: input.isArchived ?? false },
+    body: {
+      name: input.name,
+      alert_lead_days: input.alertLeadDays,
+      is_archived: input.isArchived ?? false,
+      required_for: input.requiredFor,
+      enforcement: input.enforcement,
+    },
   });
   return toDocumentType(wire);
+}
+
+/** ADR-0058 §3: what the requirement would mean today. Reads only. */
+export async function getDocumentTypeImpact(id: string, requiredFor: DocumentRequirement): Promise<DocumentTypeImpact> {
+  const wire = await apiRequest<{ applies_to: number; not_compliant: number }>(
+    `/staff-document-types/${id}/impact?required_for=${requiredFor}`,
+  );
+  return { appliesTo: wire.applies_to, notCompliant: wire.not_compliant };
+}
+
+export async function listStaffCompliance(): Promise<StaffComplianceRow[]> {
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+  const wire = await apiRequest<any[]>("/staff-compliance");
+  return wire.map((row) => ({
+    staffId: row.staff_id,
+    staffName: row.staff_name,
+    roleName: row.role_name,
+    isDriver: row.is_driver,
+    compliance: toCompliance(row.compliance) as Compliance,
+  }));
 }
 
 export async function addDefaultDocumentTypes(): Promise<DocumentType[]> {

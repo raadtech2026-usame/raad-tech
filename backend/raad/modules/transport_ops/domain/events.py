@@ -1045,6 +1045,8 @@ def staff_document_type_saved(
     created: bool,
     occurred_at: datetime,
     actor_id: str | None,
+    required_for: str = "none",
+    enforcement: str = "warn",
 ) -> DomainEvent:
     return _new_event(
         event_type="StaffDocumentTypeCreated" if created else "StaffDocumentTypeUpdated",
@@ -1055,6 +1057,8 @@ def staff_document_type_saved(
         payload={
             "alert_lead_days": alert_lead_days,
             "is_archived": is_archived,
+            "required_for": required_for,
+            "enforcement": enforcement,
             "actor_id": actor_id,
         },
     )

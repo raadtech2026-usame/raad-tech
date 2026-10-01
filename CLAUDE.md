@@ -1710,7 +1710,7 @@ target fails with an immediate constraint, whatever the domain order: make it de
 `tests/architecture/test_permissions_are_granted.py` now enforces "a permission string is not a
 grant" for every route.
 
-**Later phases, not built:** absence and substitutes (2), incidents (3), compliance (4), a staff
+**Later phases:** absence and substitutes (2, built), incidents (3, built), compliance (4, built), a staff
 mobile role (5), dashboards (6).
 
 ## Daily Transport Operations (ADR-0052/0053/0054, 2026-09-30)
@@ -1781,6 +1781,35 @@ test (all in UTC) passed. Normalise in the application service, where the value 
 **Not verified:** a real alarm and `0x8203` on the physical terminal (offline); the local
 Docker gateway image predates this phase. **Not built:** attachments (no file store), the LSZ
 adapter's alarms, parent-facing incident history.
+
+## Document Requirements & Compliance (ADR-0058/0059, 2026-10-01)
+
+Phase 4 of the transport-management roadmap. Metadata only: no document files, no vehicle
+documents. What a future change must not undo:
+
+- **Nothing is required until an Org Admin says so.** A document type's `required_for`
+  (`none`/`drivers`/`all_staff`) and `enforcement` (`warn`/`block`) default to `none`/`warn`.
+  Never seed or migrate a type to required: production had no documents recorded, and a
+  requirement without them flags everyone at once. The setup screen shows the impact first.
+- **`drivers` means driver access, never a job title** (ADR-0049 §2: a title grants nothing).
+- **Compliance is computed, never stored, by one rule.** `domain.services.staff_compliance`
+  decides; `application/compliance.ComplianceIndex` loads once and answers for any person and
+  day. The staff record, the compliance list, the board, the generation preview and the planning
+  checks all ask it. A second implementation anywhere would let them disagree.
+- **Missing and expired both fail.** A document is valid through its expiry date; no expiry date
+  always passes; a superseded document never counts; an archived type requires nothing.
+- **Compliance is one more reason in the one coverage rule** (`driver_not_compliant`), checked
+  on the trip's date. Generation still creates the trip and flags it. Crew get a badge and
+  never make a trip uncovered.
+- **`block` refuses new planning only**: naming a substitute, setting or changing a timetable
+  driver, scheduling a trip. Crew assignment only warns. **Starting, ending or cancelling a
+  trip is never blocked**, and nothing is reassigned or cancelled automatically: refusing the
+  06:45 trip because a licence lapsed overnight leaves children at their stops. The board and
+  the uncovered-trip alerts are what catch it.
+- **Reasons never include a document number**, so every reader of staff may see compliance.
+
+**Not built:** uploads and scans (would reverse ADR-0051 and needs a file store), vehicle
+documents, requirements per job title, staff self-service (Phase 5), compliance reports (Phase 6).
 
 ## Per-Student Transport Pricing (ADR-0048, 2026-09-28)
 

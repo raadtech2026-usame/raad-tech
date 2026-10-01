@@ -12,7 +12,7 @@ import type { OffsetPageWire } from "../../../shared/api/types";
 
 export type TripPeriod = "morning" | "afternoon";
 export type UnavailabilityReason = "sick" | "personal" | "training" | "other";
-export type UncoveredReason = "driver_inactive" | "driver_not_active" | "driver_unavailable";
+export type UncoveredReason = "driver_inactive" | "driver_not_active" | "driver_unavailable" | "driver_not_compliant";
 
 export interface TimetableEntry {
   id: string;
@@ -27,6 +27,8 @@ export interface TimetableEntry {
   validFrom: string;
   validUntil: string | null;
   isActive: boolean;
+  /** ADR-0059 §3: only on the response to saving. */
+  warnings: string[];
 }
 
 export interface Closure {
@@ -85,6 +87,8 @@ export interface BoardCrew {
   isSubstitute: boolean;
   isUnavailable: boolean;
   coveredBy: string | null;
+  /** ADR-0059 §2: a badge only. */
+  complianceStatus: "compliant" | "expiring" | "not_compliant" | null;
 }
 
 export interface BoardVehicle {
@@ -105,7 +109,14 @@ export interface GenerationResult {
   start: string;
   days: number;
   dryRun: boolean;
-  toCreate: { timetableEntryId: string; scheduledDate: string; tripType: TripPeriod; vehicleId: string; isSubstitute: boolean }[];
+  toCreate: {
+    timetableEntryId: string;
+    scheduledDate: string;
+    tripType: TripPeriod;
+    vehicleId: string;
+    isSubstitute: boolean;
+    uncoveredReason: UncoveredReason | null;
+  }[];
   skipped: { timetableEntryId: string; scheduledDate: string | null; reason: string }[];
   closedDays: string[];
   created: number;
@@ -128,6 +139,7 @@ function toTimetableEntry(w: any): TimetableEntry {
     validFrom: w.valid_from,
     validUntil: w.valid_until,
     isActive: w.is_active,
+    warnings: w.warnings ?? [],
   };
 }
 
@@ -194,6 +206,7 @@ export function toBoard(w: any): DailyBoard {
         isSubstitute: c.is_substitute,
         isUnavailable: c.is_unavailable,
         coveredBy: c.covered_by,
+        complianceStatus: c.compliance_status ?? null,
       })),
     })),
   };
@@ -213,6 +226,7 @@ function toGeneration(w: any): GenerationResult {
       tripType: p.trip_type,
       vehicleId: p.vehicle_id,
       isSubstitute: p.is_substitute,
+      uncoveredReason: p.uncovered_reason ?? null,
     })),
   };
 }

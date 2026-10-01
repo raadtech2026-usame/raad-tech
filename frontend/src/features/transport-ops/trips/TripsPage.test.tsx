@@ -46,6 +46,7 @@ const TRIP_DETAIL: api.Trip = {
   updatedAt: "2026-01-02T00:00:00Z",
   plannedDeparture: null,
   cancelledReason: null,
+  warnings: [],
 };
 
 function pageOf<T>(data: T[], total: number): OffsetPage<T> {

@@ -100,6 +100,19 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** No.
 - **Dependencies:** Transport staff (Phase 1), Routes, Trips, Notifications, IAM.
 
+#### Document requirements & compliance — ✅ Complete, not deployed (Phase 4, ADR-0058/0059)
+- **Implemented:** a document type can be required for drivers or all staff, warn-only or
+  blocking; compliance computed per person and per day (missing or expired fails); compliance on
+  the staff list, profile and a "Required documents" panel; `driver_not_compliant` in the one
+  coverage rule (board, generation preview, uncovered-trip alerts); warnings on naming a
+  substitute, setting a timetable driver, scheduling a trip and assigning crew, refused (409) for
+  a blocking type except crew; an impact count before a requirement is saved.
+- **Missing (by design):** document files or scans (metadata only, ADR-0051), vehicle documents,
+  requirements per job title, blocking trip start, automatic reassignment or cancellation, staff
+  self-service (Phase 5), compliance reports (Phase 6).
+- **Production blocker?** No. Nothing changes for an organization until it marks a type required.
+- **Dependencies:** Transport staff and documents (Phase 1), Daily operations (Phase 2).
+
 #### Safety alerts & incident log — 🟡 Built, not hardware-verified (Phase 3, ADR-0055/0056/0057)
 - **Implemented:** rising-edge device alarms → `SafetyAlert` (one open alert per bus and type,
   repeats counted, late alarms flagged); critical alarms notify Org Admins; acknowledge /
@@ -111,6 +124,8 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Missing (by design):** driver scoring, disciplinary records, insurance claims, legal case
   management, attachments (no file store). **Not verified:** a real alarm or `0x8203` against
   the physical terminal.
+- **Deployed:** 2026-10-01 (commit `da8cf0d`, PR #30). The read-only post-deploy check passed;
+  the terminal has been offline since 2026-09-26, so no real alarm has reached production yet.
 - **Production blocker?** No.
 - **Dependencies:** Device gateway (JT/T 808), Trips, Transport staff, Notifications.
 
@@ -449,12 +464,17 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0029 | Platform Admin Live-Video Access (Founder/Regional Manager/Support Staff) | ✅ Complete (commit `857d68b`) |
 | 0030 | Automatic Camera/Channel Discovery | ✅ Complete — device-gateway (`0x9003`/`0x1003`) and backend (discovery-trigger processor, camera-creation processor) implemented and tested (backend unit/architecture/integration + device-gateway unit, all passing; migration `7d3a9c1e5b42` live-Postgres round-tripped), live-verified against the physical `LSZ-C5804DG-Q-F` bench unit per the ADR's own verification transcript |
 | 0044 | MDVR Recording Playback — Search, Start, Control | ✅ Backend + frontend complete, **not hardware-verified** — three new routes (`POST /video/recordings/search`, `GET /video/recordings/search/{id}`, `POST /video/sessions/{id}/playback-control`), Redis-cached asynchronous search result (no new table, no migration), `/org/recordings` page. The MDVR stays the sole recording store; nothing is stored on the VPS. Reuses `video.playback.start` — no new permission. The device plane needed no change at all. The physical unit has been offline since 2026-09-20, so every layer is covered by unit tests against fakes only |
-| 0049 | Transport Staff Model | ✅ Complete (Phase 1, 2026-09-30) — `TransportStaff`, per-organization job titles, driver as an extension (`drivers.staff_id`), "Give driver access", status `left` ends crew and disables the driver in one transaction; migration `a7d3e9c1f4b2` backfills one staff record per driver from its login. Not deployed |
-| 0050 | Bus Crew Assignment History | ✅ Complete (Phase 1) — `vehicle_staff_assignments`, `/staff-assignments?vehicle_id=` (not `/vehicles/{id}/crew`: `/vehicles` is `fleet_device`). Not deployed |
-| 0051 | Staff Documents and Expiry | ✅ Complete (Phase 1) — metadata-only documents, renewal via `replaced_by_id`, `notify_expiring_staff_documents` job (on by default, `RAAD_WORKERS__STAFF_DOCUMENT_EXPIRY_ALERTS=false` to disable). Not deployed |
-| 0052 | Route Timetable, Closed Days and Trip Generation | ✅ Complete (Phase 2, 2026-09-30) — closes the "trip generation not registered" gap; migration `b8e4f1a2c6d3`. Not deployed |
-| 0053 | Staff Unavailability, Cover and the Daily Board | ✅ Complete (Phase 2) — not leave management; uncovered-trip alerts on by default. Not deployed |
-| 0054 | Trip Cancellation | ✅ Complete (Phase 2) — `cancelled` status, parent notices not subscription-gated. Not deployed |
+| 0049 | Transport Staff Model | ✅ Complete (Phase 1, 2026-09-30) — `TransportStaff`, per-organization job titles, driver as an extension (`drivers.staff_id`), "Give driver access", status `left` ends crew and disables the driver in one transaction; migration `a7d3e9c1f4b2` backfills one staff record per driver from its login. Deployed 2026-09-30 |
+| 0050 | Bus Crew Assignment History | ✅ Complete (Phase 1) — `vehicle_staff_assignments`, `/staff-assignments?vehicle_id=` (not `/vehicles/{id}/crew`: `/vehicles` is `fleet_device`). Deployed 2026-09-30 |
+| 0051 | Staff Documents and Expiry | ✅ Complete (Phase 1) — metadata-only documents, renewal via `replaced_by_id`, `notify_expiring_staff_documents` job (on by default, `RAAD_WORKERS__STAFF_DOCUMENT_EXPIRY_ALERTS=false` to disable). Deployed 2026-09-30 |
+| 0052 | Route Timetable, Closed Days and Trip Generation | ✅ Complete (Phase 2, 2026-09-30) — closes the "trip generation not registered" gap; migration `b8e4f1a2c6d3`. Deployed 2026-09-30 |
+| 0053 | Staff Unavailability, Cover and the Daily Board | ✅ Complete (Phase 2) — not leave management; uncovered-trip alerts on by default. Deployed 2026-09-30 |
+| 0054 | Trip Cancellation | ✅ Complete (Phase 2) — `cancelled` status, parent notices not subscription-gated. Deployed 2026-09-30 |
+| 0055 | Device Alarms and Safety Alerts | ✅ Complete (Phase 3, 2026-09-30) — alarm taxonomy and rising-edge `DeviceAlarmRaised` in the device gateway, `safety_alerts`, `/safety-alerts`; migration `c9f2a4e6b1d7`. **Not hardware-verified.** Deployed 2026-10-01 |
+| 0056 | Incident Log | ✅ Complete (Phase 3) — `incidents` + append-only `incident_notes`, `/incidents`, Org-Admin-only text and people. Deployed 2026-10-01 |
+| 0057 | SOS Alarm Acknowledgement | ✅ Complete (Phase 3) — `0x8203` on acknowledging an SOS, best effort. **Not hardware-verified.** Deployed 2026-10-01 |
+| 0058 | Staff Document Requirements and Compliance Status | ✅ Complete (Phase 4, 2026-10-01) — `required_for`/`enforcement` on document types, compliance computed per person and day, `/staff-compliance`; migration `d1e5b7a3c9f4`. Not deployed |
+| 0059 | Compliance in Daily Operations | ✅ Complete (Phase 4) — `driver_not_compliant` in the coverage rule; planning warns, a blocking type refuses; trip start never blocked. Not deployed |
 | 0031 | Fleet Overview Online-Vehicles Read Model | ✅ Complete — new `GET /tracking/vehicles/online` (`FleetOverviewApplicationService`), two additive `fleet_device` repository methods, `LatestPositionPort.get_latest_many`; a real per-vehicle-ownership authorization gap found and fixed while wiring the route (bulk fleet visibility could otherwise leak to a Parent's own mobile JWT), closed with an explicit role-set gate; `position` is `null` for every vehicle today (the pre-existing, disclosed JT808 `LatestPositionWriter` wiring gap, unaffected by this ADR) |
 
 **A real doc-staleness gap found 2026-08-19, since corrected throughout this file and
@@ -2113,8 +2133,29 @@ confirmation.
 
 Reverse-chronological (most recent first):
 
-- **Safety & incidents — Phase 3 (ADR-0055/0056/0057, 2026-09-30).** Branch
-  `feat/safety-and-incidents`, not pushed or deployed.
+- **Document requirements & compliance — Phase 4 (ADR-0058/0059, 2026-10-01).** Branch
+  `feat/document-compliance`, not pushed or deployed. Metadata only: no uploads, no vehicle
+  documents, no automatic reassignment.
+
+  **What changed**
+  - `staff_document_types` gains `required_for` and `enforcement` (migration `d1e5b7a3c9f4`,
+    from `c9f2a4e6b1d7`; server defaults `none`/`warn`, so no existing type changes meaning).
+  - One domain rule (`domain.services.staff_compliance`) behind one loader
+    (`application/compliance.ComplianceIndex`), used by the staff service, the coverage rule
+    and the four planning checks.
+  - `GET /staff-compliance`, `GET /staff-document-types/{id}/impact`; `warnings` on the trip,
+    timetable and crew-assignment responses; no new permission.
+  - Frontend: requirement setup with an impact count, compliance on the staff list and
+    profile, the Required documents panel, the board reason and crew badge.
+
+  **Verified:** backend 2134 unit/architecture/contract + 388 integration (1 Redis skip);
+  device gateway 562; frontend 964, `tsc` and build clean; migration from empty (upgrade,
+  check, downgrade, re-upgrade) and on a copy of dev data (96 existing types all `none`/`warn`);
+  34/34 end-to-end checks over real HTTP, including a 200 on starting a trip whose driver fails
+  a blocking type. **Not verified:** browser interaction.
+
+- **Safety & incidents — Phase 3 (ADR-0055/0056/0057, 2026-09-30).** Merged as PR #30
+  (`da8cf0d`) and deployed to production 2026-10-01; post-deploy check clean.
 
   **What changed**
   - Device gateway: alarm taxonomy, rising-edge `DeviceAlarmRaised` with position/speed/time
@@ -2145,8 +2186,8 @@ Reverse-chronological (most recent first):
   product code was correct). The older `_to_naive_utc` mapper only strips tzinfo, which is safe
   for every non-incident value it receives: they all come from `SystemClock` (UTC).
 
-- **Daily transport operations — Phase 2 (ADR-0052/0053/0054, 2026-09-30).** Branch
-  `feat/daily-transport-operations`, not pushed or deployed.
+- **Daily transport operations — Phase 2 (ADR-0052/0053/0054, 2026-09-30).** Merged as PR #27
+  (`bca99fa`) and deployed to production 2026-09-30.
 
   **What changed**
   - `transport_ops`: `RouteTimetableEntry`, `OperatingClosure`, `StaffUnavailability`,
@@ -2176,8 +2217,8 @@ Reverse-chronological (most recent first):
   notification, then none) and the cancellation notifier run live. **Not verified:** browser
   interaction; the driver mobile app with cancelled and reassigned trips.
 
-- **Transport people foundation — Phase 1 (ADR-0049/0050/0051, 2026-09-30).** Branch
-  `feat/transport-people-foundation`, not pushed or deployed. Not an HR system: no payroll,
+- **Transport people foundation — Phase 1 (ADR-0049/0050/0051, 2026-09-30).** Merged as PR #26
+  (`475e8ba`) and deployed to production 2026-09-30. Not an HR system: no payroll,
   recruitment, attendance, leave or appraisal.
 
   **What changed**

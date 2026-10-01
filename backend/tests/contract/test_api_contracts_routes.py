@@ -576,6 +576,8 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("PATCH", "/api/v1/staff-document-types/{type_id}", "ADR-0051 SS1 - alert lead days"),
     ("GET", "/api/v1/staff-documents/expiring", "ADR-0051 SS3 - expiring or expired, soonest first"),
     ("PATCH", "/api/v1/staff-documents/{document_id}", "ADR-0051 - correct details"),
+    ("GET", "/api/v1/staff-document-types/{type_id}/impact", "ADR-0058 SS3 - requirement impact"),
+    ("GET", "/api/v1/staff-compliance", "ADR-0058 SS3 - staff not compliant or expiring"),
     # ADR-0052/0053/0054: daily transport operations (transport_ops).
     ("GET", "/api/v1/route-timetable", "ADR-0052 SS1 - the weekly plan"),
     ("POST", "/api/v1/route-timetable", "ADR-0052 SS1 - one regular run; 409 on a clash"),

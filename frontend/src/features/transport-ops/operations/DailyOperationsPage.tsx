@@ -220,6 +220,7 @@ function BoardPanel({ canManage }: { canManage: boolean }) {
                           </div>
                           <div className={styles.itemActions}>
                             {member.isSubstitute && <Badge variant="info">Substitute</Badge>}
+                            {member.complianceStatus === "not_compliant" && <Badge variant="warning">Documents</Badge>}
                             {member.isUnavailable &&
                               (member.coveredBy ? (
                                 <Badge variant="warning">Away · covered by {member.coveredBy}</Badge>
@@ -251,6 +252,9 @@ function BoardPanel({ canManage }: { canManage: boolean }) {
             ? `${preview.toCreate.length} trip(s) will be created` +
               (preview.closedDays.length ? `, ${preview.closedDays.length} closed day(s) skipped` : "") +
               (preview.skipped.length ? `, ${preview.skipped.length} timetable entr(ies) skipped (inactive route, driver or bus)` : "") +
+              (preview.toCreate.some((t) => t.uncoveredReason)
+                ? `, ${preview.toCreate.filter((t) => t.uncoveredReason).length} will start uncovered (driver unavailable or documents not compliant)`
+                : "") +
               ". Existing trips are never duplicated."
             : undefined
         }
