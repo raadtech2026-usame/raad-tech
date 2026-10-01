@@ -985,6 +985,13 @@ def build_container(settings: Settings) -> Container:
                 parent_service=container.resolve(ParentApplicationService),
                 driver_service=container.resolve(DriverApplicationService),
                 student_parent_service=container.resolve(StudentParentApplicationService),
+                # ADR-0060 (`GET /me/transport`).
+                student_assignment_service=container.resolve(
+                    StudentAssignmentApplicationService
+                ),
+                route_service=container.resolve(RouteApplicationService),
+                trip_service=container.resolve(TripApplicationService),
+                vehicle_service=container.resolve(VehicleApplicationService),
             ),
         )
 

@@ -332,6 +332,7 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("GET", "/api/v1/me/students", "ADR-0023 canonical self-service identity resolution, no API Contracts row"),
     ("GET", "/api/v1/me/driver-profile", "ADR-0023 canonical self-service identity resolution, no API Contracts row"),
     ("GET", "/api/v1/me/invoices", "ADR-0047 SS9 - the calling parent's own invoices and payments, self-scoped"),
+    ("GET", "/api/v1/me/transport", "ADR-0060 - the calling parent's own children with bus, route and own stops, self-scoped"),
 
     # ADR-0019: account-sharing session cap self-service (commit 07cd3e8) — no API Contracts row.
     ("GET", "/api/v1/auth/sessions", "ADR-0019 account-sharing session cap self-service, no API Contracts row"),
