@@ -11,7 +11,7 @@ Design §4.3, API Contracts §2.2 example: `"role": "org_admin"`), matching
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -173,6 +173,52 @@ class MeStudentResponse(BaseModel):
     status: str
     relationship: str | None = None
     is_primary: bool
+
+
+class MeTransportStopResponse(BaseModel):
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+
+
+class MeTransportRouteResponse(BaseModel):
+    id: str
+    name: str
+
+
+class MeTransportVehicleResponse(BaseModel):
+    id: str
+    plate_no: str
+    label: str | None = None
+
+
+class MeTransportAssignmentResponse(BaseModel):
+    """ADR-0060: only the child's own pickup and dropoff stop, never the route's stop list."""
+
+    assignment_id: str
+    route: MeTransportRouteResponse | None = None
+    pickup_stop: MeTransportStopResponse | None = None
+    dropoff_stop: MeTransportStopResponse | None = None
+    vehicle: MeTransportVehicleResponse | None = None
+
+
+class MeTransportTripResponse(BaseModel):
+    id: str
+    trip_type: str
+    status: str
+    scheduled_date: date
+    started_at: datetime | None = None
+
+
+class MeChildTransportResponse(BaseModel):
+    """ADR-0060: one row of `GET /me/transport`, the caller's own child."""
+
+    student_id: str
+    full_name: str
+    status: str
+    assignment: MeTransportAssignmentResponse | None = None
+    current_trip: MeTransportTripResponse | None = None
 
 
 class MeDriverProfileResponse(BaseModel):
