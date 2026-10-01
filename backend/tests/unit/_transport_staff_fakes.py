@@ -18,6 +18,8 @@ from raad.modules.transport_ops.domain.entities import (
     VehicleStaffAssignment,
 )
 from raad.modules.transport_ops.domain.repositories import (
+    IncidentNoteRepository,
+    IncidentRepository,
     OperatingClosureRepository,
     RouteTimetableEntryRepository,
     StaffCoverRepository,
@@ -234,6 +236,41 @@ class InMemoryStaffCoverRepository(_Dated, StaffCoverRepository):
         return [c for c in self.by_id.values() if c.unavailability_id == unavailability_id]
 
 
+class InMemoryIncidentRepository(IncidentRepository):
+    def __init__(self) -> None:
+        self.by_id: dict = {}
+
+    async def get(self, incident_id):
+        return self.by_id.get(str(incident_id))
+
+    def add(self, incident) -> None:
+        self.by_id[str(incident.id)] = incident
+
+    async def list_filtered(self, *, statuses=None, category=None, vehicle_id=None, start=None, end=None, limit=200):
+        rows = [
+            i
+            for i in self.by_id.values()
+            if (not statuses or i.status.value in statuses)
+            and (category is None or i.category.value == category)
+            and (vehicle_id is None or i.vehicle_id == vehicle_id)
+        ]
+        return sorted(rows, key=lambda i: i.occurred_at, reverse=True)[:limit]
+
+
+class InMemoryIncidentNoteRepository(IncidentNoteRepository):
+    def __init__(self) -> None:
+        self.by_id: dict = {}
+
+    async def get(self, note_id):
+        return self.by_id.get(str(note_id))
+
+    def add(self, note) -> None:
+        self.by_id[str(note.id)] = note
+
+    async def list_for_incident(self, incident_id):
+        return sorted((n for n in self.by_id.values() if n.incident_id == incident_id), key=lambda n: (n.created_at, str(n.id)))
+
+
 def attach_staff_repositories(uow) -> None:
     """Gives a fake `TransportOpsUnitOfWork` empty staff repositories."""
     uow.staff_roles = InMemoryTransportStaffRoleRepository()
@@ -245,3 +282,5 @@ def attach_staff_repositories(uow) -> None:
     uow.closures = InMemoryOperatingClosureRepository()
     uow.unavailability = InMemoryStaffUnavailabilityRepository()
     uow.covers = InMemoryStaffCoverRepository()
+    uow.incidents = InMemoryIncidentRepository()
+    uow.incident_notes = InMemoryIncidentNoteRepository()

@@ -97,7 +97,10 @@ from src.vendors.jt808.dispatcher.general_response import (
 from src.vendors.jt808.dispatcher.handler import HandlerContext, HandlerResult, MessageHandler
 from src.events.device_position_reported import DevicePositionReported
 from src.events.device_video_signal_status_reported import DeviceVideoSignalStatusReported
+from src.alarms.alarm_state import AlarmStateStore, InMemoryAlarmStateStore
+from src.events.device_alarm_raised import DeviceAlarmRaised
 from src.events.publisher_port import EventPublisher
+from src.vendors.jt808.alarm_taxonomy import raised_alarm_types
 from src.gps_validation import is_plausible_coordinate
 from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
 from src.vendors.jt808.handlers.position_additional_info import (
@@ -167,10 +170,12 @@ class LocationHandler(MessageHandler):
         *,
         latest_position_writer: LatestPositionWriter | None = None,
         video_signal_tracker: VideoSignalStatusTracker | None = None,
+        alarm_state: AlarmStateStore | None = None,
     ) -> None:
         self._event_publisher = event_publisher
         self._latest_position_writer = latest_position_writer or LoggingLatestPositionWriter()
         self._video_signal_tracker = video_signal_tracker or VideoSignalStatusTracker()
+        self._alarm_state = alarm_state or InMemoryAlarmStateStore()
 
     async def handle(
         self, message: InboundMessage, context: HandlerContext
@@ -235,6 +240,7 @@ class LocationHandler(MessageHandler):
         await self._latest_position_writer.write(event)
         await self._event_publisher.publish(event)
         await self._publish_video_signal_status(message, context, session, event)
+        await self._publish_raised_alarms(message, session, event)
 
         log_with_fields(
             logger,
@@ -246,6 +252,37 @@ class LocationHandler(MessageHandler):
             is_gps_valid=is_gps_valid,
         )
         return _general_response(message, RESULT_SUCCESS)
+
+    async def _publish_raised_alarms(self, message: InboundMessage, session, position) -> None:
+        """ADR-0055 §2: one `DeviceAlarmRaised` per recognised alarm bit that is set now and was
+        not set in this terminal's previous report. A failure here is logged and never affects
+        the position report or its acknowledgement."""
+        try:
+            previous = await self._alarm_state.swap(message.terminal_id, position.alarm_flags or 0)
+            for alarm_type in raised_alarm_types(previous, position.alarm_flags or 0):
+                await self._event_publisher.publish(
+                    DeviceAlarmRaised(
+                        terminal_id=message.terminal_id,
+                        organization_id=session.organization_id,
+                        vehicle_id=session.vehicle_id,
+                        device_id=session.device_id,
+                        alarm_type=alarm_type,
+                        alarm_flags=position.alarm_flags,
+                        event_time=position.event_time,
+                        received_at=position.received_at,
+                        latitude=position.latitude if position.is_gps_valid else None,
+                        longitude=position.longitude if position.is_gps_valid else None,
+                        speed_kph=position.speed_kph,
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 - an alarm must never cost a position report
+            log_with_fields(
+                logger,
+                40,
+                "device_alarm_publish_failed",
+                terminal_id=message.terminal_id,
+                error=str(exc),
+            )
 
     async def _publish_video_signal_status(
         self, message: InboundMessage, context: HandlerContext, session, position

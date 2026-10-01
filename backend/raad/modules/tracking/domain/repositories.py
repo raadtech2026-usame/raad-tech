@@ -31,8 +31,9 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 from raad.core.pagination import CursorPage, CursorPageRequest, FilterCondition
-from raad.modules.tracking.domain.entities import GeofenceCrossing, VehiclePosition
+from raad.modules.tracking.domain.entities import GeofenceCrossing, SafetyAlert, VehiclePosition
 from raad.modules.tracking.domain.value_objects import (
+    SafetyAlertId,
     GeofenceCrossingId,
     GeofenceEventType,
     StopId,
@@ -153,4 +154,35 @@ class GeofenceCrossingRepository(ABC):
 
     @abstractmethod
     def add(self, crossing: GeofenceCrossing) -> None:
+        raise NotImplementedError
+
+
+class SafetyAlertRepository(ABC):
+    """ADR-0055 §3. Scoped to the caller's organizations, like every tenant-owned repository."""
+
+    @abstractmethod
+    async def get(self, alert_id: SafetyAlertId) -> SafetyAlert | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(self, alert: SafetyAlert) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_open(self, vehicle_id: VehicleId, alarm_type: str) -> SafetyAlert | None:
+        """The open or acknowledged alert of this type on this bus, if any."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_filtered(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        vehicle_id: VehicleId | None = None,
+        alarm_type: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 200,
+    ) -> list[SafetyAlert]:
+        """Newest first."""
         raise NotImplementedError

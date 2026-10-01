@@ -155,6 +155,11 @@ def _fields_for(event: DeviceEvent) -> dict[str, str]:
                 "terminal_id": event.terminal_id,
                 "alarm_type": event.alarm_type,
                 "alarm_flags": event.alarm_flags,
+                "latitude": event.latitude,
+                "longitude": event.longitude,
+                "speed_kph": event.speed_kph,
+                "event_time": event.event_time.isoformat(),
+                "received_at": event.received_at.isoformat(),
             },
         )
     if isinstance(event, DeviceAuthCodeIssued):

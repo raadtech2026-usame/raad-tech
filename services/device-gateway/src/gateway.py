@@ -73,6 +73,7 @@ from src.cache_config import CacheConfig
 from src.events.publisher_port import EventPublisher, LoggingEventPublisher
 from src.events.redis_event_publisher import RedisEventPublisher
 from src.latest_position.redis_latest_position_writer import RedisLatestPositionWriter
+from src.alarms.alarm_state import AlarmStateStore, InMemoryAlarmStateStore, RedisAlarmStateStore
 from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
 from src.logging_setup import configure_logging, get_logger, log_with_fields
 from src.registry.device_registry_projection import DeviceRegistryProjection
@@ -129,6 +130,7 @@ class DeviceGateway:
             event_publisher=self._event_publisher,
             device_session_registry=self._build_jt808_session_registry(),
             latest_position_writer=self._latest_position_writer,
+            alarm_state=self._build_alarm_state(),
         )
         self._adapters: list[DeviceProtocolAdapter] = [
             self._jt808_server,
@@ -185,6 +187,13 @@ class DeviceGateway:
         if self._cache_redis_client is not None:
             return RedisLatestPositionWriter(self._cache_redis_client)
         return LoggingLatestPositionWriter()
+
+    def _build_alarm_state(self) -> AlarmStateStore:
+        """ADR-0055 §2: the last alarm word per terminal, on the cache connection so a restart
+        does not re-announce an alarm still set; in memory without Redis."""
+        if self._cache_redis_client is not None:
+            return RedisAlarmStateStore(self._cache_redis_client)
+        return InMemoryAlarmStateStore()
 
     def _build_jt808_session_registry(self) -> RedisDeviceSessionRegistry | None:
         """P0 #2 fix (device-gateway session-durability audit, 2026-08-25): the same

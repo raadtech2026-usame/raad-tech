@@ -59,6 +59,17 @@ function toIsoOrNull(localValue: string): string | null {
 }
 
 /** `datetime-local` wants `YYYY-MM-DDTHH:mm` in local time — `toISOString` would shift it. */
+/** Ten minutes either side of the linked moment; `null` when the link is incomplete or bad. */
+export function linkedSearch(search: string): { deviceId: string; start: Date; end: Date } | null {
+  const params = new URLSearchParams(search);
+  const deviceId = params.get("device");
+  const at = params.get("at");
+  const moment = at ? new Date(at) : null;
+  if (!deviceId || !moment || Number.isNaN(moment.getTime())) return null;
+  const margin = 10 * 60 * 1000;
+  return { deviceId, start: new Date(moment.getTime() - margin), end: new Date(moment.getTime() + margin) };
+}
+
 function toLocalInputValue(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return (
@@ -91,13 +102,17 @@ function formatSize(bytes: number): string {
 export function RecordingsPage() {
   usePageHeader("Recordings", "Search and play back video stored on a bus recorder");
 
-  const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  // `?device=&at=` (ADR-0055: "open the recording at that time" from a safety alert) only seeds
+  // the form, so it is read once, without making the page depend on a router.
+  const linked = useMemo(() => linkedSearch(window.location.search), []);
+  const [selectedDeviceId, setSelectedDeviceId] = useState(linked?.deviceId ?? "");
   const [selectedCameraId, setSelectedCameraId] = useState("");
   const defaultWindow = useMemo(() => {
+    if (linked) return { start: toLocalInputValue(linked.start), end: toLocalInputValue(linked.end) };
     const now = new Date();
     const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     return { start: toLocalInputValue(hourAgo), end: toLocalInputValue(now) };
-  }, []);
+  }, [linked]);
   const [windowStart, setWindowStart] = useState(defaultWindow.start);
   const [windowEnd, setWindowEnd] = useState(defaultWindow.end);
   const [searchId, setSearchId] = useState<string | null>(null);

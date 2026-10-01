@@ -28,6 +28,8 @@ from abc import ABC, abstractmethod
 from raad.core.db.unit_of_work import UnitOfWork
 from raad.core.tenancy.principal import Principal, Role
 from raad.modules.transport_ops.domain.repositories import (
+    IncidentNoteRepository,
+    IncidentRepository,
     DriverRepository,
     ParentRepository,
     RouteRepository,
@@ -79,6 +81,9 @@ class TransportOpsUnitOfWork(UnitOfWork):
     closures: OperatingClosureRepository
     unavailability: StaffUnavailabilityRepository
     covers: StaffCoverRepository
+    #: ADR-0056: the incident log and its timeline.
+    incidents: IncidentRepository
+    incident_notes: IncidentNoteRepository
 
 
 class UserProvisioningPort(ABC):

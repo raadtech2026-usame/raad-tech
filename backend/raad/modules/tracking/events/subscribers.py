@@ -151,6 +151,8 @@ from raad.modules.organization.application.queries import (
     OrganizationDTO,
 )
 from raad.modules.organization.application.services import OrganizationApplicationService
+from raad.modules.tracking.application.commands import RecordDeviceAlarmCommand
+from raad.modules.tracking.application.safety_services import SafetyAlertApplicationService
 from raad.modules.tracking.application.commands import (
     RecordBackfillPositionCommand,
     RecordGeofenceCrossingCommand,
@@ -510,9 +512,50 @@ def _evaluate_org_geofence(
     return crossings
 
 
+class DeviceAlarmRaisedProcessor(EventProcessor):
+    """ADR-0055 §3: a device alarm that started becomes (or repeats) a `SafetyAlert`."""
+
+    event_type = "DeviceAlarmRaised"
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def process(self, event: DomainEvent) -> None:
+        payload = event.payload
+        organization_id = event.org_id or payload.get("organization_id")
+        vehicle_id = payload.get("vehicle_id")
+        if not organization_id or not vehicle_id:
+            # An alarm from a terminal with no assigned bus has nowhere to go; nothing a retry
+            # could change.
+            _logger.warning(
+                "device_alarm_without_vehicle_ignored",
+                extra={"terminal_id": payload.get("terminal_id"), "alarm_type": payload.get("alarm_type")},
+            )
+            return
+        event_time = _parse_iso(payload["event_time"]) if payload.get("event_time") else event.occurred_at
+        received_at = _parse_iso(payload["received_at"]) if payload.get("received_at") else event_time
+        service = self._container.resolve(SafetyAlertApplicationService)
+        await service.record_device_alarm(
+            RecordDeviceAlarmCommand(
+                organization_id=organization_id,
+                vehicle_id=vehicle_id,
+                device_id=payload.get("device_id"),
+                terminal_id=payload.get("terminal_id") or "",
+                alarm_type=payload["alarm_type"],
+                event_time=event_time,
+                received_at=received_at,
+                latitude=payload.get("latitude"),
+                longitude=payload.get("longitude"),
+                speed_kph=payload.get("speed_kph"),
+            ),
+            uow=self._container.resolve(TrackingUnitOfWork),
+        )
+
+
 def register_tracking_processors(
     registry: EventProcessorRegistry, container: Container
 ) -> None:
     """Called from `core/di/bootstrap.py` when wiring a broker consumer — mirrors `notifications
     .events.subscribers.register_notification_processors`'s identical shape exactly."""
     registry.register(DevicePositionReportedProcessor(container))
+    registry.register(DeviceAlarmRaisedProcessor(container))

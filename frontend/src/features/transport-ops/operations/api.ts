@@ -374,3 +374,35 @@ export async function listStaffOptions(): Promise<Option[]> {
   const wire = await apiRequest<OffsetPageWire<{ id: string; full_name: string; role_name: string | null }>>(`/transport-staff?${query}`);
   return wire.data.map((s) => ({ id: s.id, label: s.role_name ? `${s.full_name} — ${s.role_name}` : s.full_name }));
 }
+
+// ---- safety on the board (ADR-0055/0056; self-contained, `.claude/rules/frontend.md` #1) -----
+
+export interface DaySafety {
+  /** Alerts raised that day, by bus. */
+  alerts: Map<string, number>;
+  /** Incidents that occurred that day, by bus. */
+  incidents: Map<string, number>;
+  /** Whole-day totals, including incidents with no bus. */
+  alertTotal: number;
+  incidentTotal: number;
+}
+
+function countByVehicle(rows: { vehicle_id: string | null }[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.vehicle_id) counts.set(row.vehicle_id, (counts.get(row.vehicle_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** Local midnight to midnight of `day`; false alarms are left out. */
+export async function getDaySafety(day: string): Promise<DaySafety> {
+  const [y, m, d] = day.split("-").map(Number);
+  const window = `start=${encodeURIComponent(new Date(y, m - 1, d).toISOString())}&end=${encodeURIComponent(new Date(y, m - 1, d + 1).toISOString())}`;
+  const [alerts, incidents] = await Promise.all([
+    apiRequest<{ vehicle_id: string; status: string }[]>(`/safety-alerts?${window}`),
+    apiRequest<{ vehicle_id: string | null }[]>(`/incidents?${window}`),
+  ]);
+  const real = alerts.filter((a) => a.status !== "false_alarm");
+  return { alerts: countByVehicle(real), incidents: countByVehicle(incidents), alertTotal: real.length, incidentTotal: incidents.length };
+}

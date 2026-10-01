@@ -92,6 +92,7 @@ import logging
 import signal
 from datetime import datetime, timezone
 
+from src.alarms.alarm_state import AlarmStateStore
 from src.adapter import DeviceProtocolAdapter
 from src.vendors.jt808.config import ServerConfig
 from src.connection.manager import ConnectionManager
@@ -152,11 +153,13 @@ class Jt808Server(DeviceProtocolAdapter):
         event_publisher: EventPublisher | None = None,
         device_session_registry: DeviceSessionRegistryPort | None = None,
         latest_position_writer: LatestPositionWriter | None = None,
+        alarm_state: AlarmStateStore | None = None,
     ) -> None:
         self._config = config or ServerConfig.from_env()
         self._device_provisioning = device_provisioning or NullDeviceProvisioningPort()
         self._event_publisher = event_publisher or LoggingEventPublisher()
         self._latest_position_writer = latest_position_writer or LoggingLatestPositionWriter()
+        self._alarm_state = alarm_state
         self._sessions = SessionRegistry()
         self._device_session_registry = device_session_registry or DeviceSessionRegistry()
         self._device_sessions = DeviceSessionManager(
@@ -202,6 +205,7 @@ class Jt808Server(DeviceProtocolAdapter):
             LocationHandler(
                 self._event_publisher,
                 latest_position_writer=self._latest_position_writer,
+                alarm_state=self._alarm_state,
             ),
         )
         self._handler_registry.register(

@@ -43,6 +43,8 @@ from raad.modules.transport_ops.domain.entities import (
     Driver,
     Parent,
     Route,
+    Incident,
+    IncidentNote,
     OperatingClosure,
     RouteTimetableEntry,
     StaffCover,
@@ -68,6 +70,12 @@ from raad.modules.transport_ops.domain.value_objects import (
     PhoneNumber,
     RouteId,
     RouteStatus,
+    IncidentCategory,
+    IncidentId,
+    IncidentNoteId,
+    IncidentNoteKind,
+    IncidentSeverity,
+    IncidentStatus,
     OperatingClosureId,
     RouteTimetableEntryId,
     StaffAssignmentKind,
@@ -98,6 +106,8 @@ from raad.modules.transport_ops.infra.models import (
     StopModel,
     StudentAssignmentModel,
     StudentModel,
+    IncidentModel,
+    IncidentNoteModel,
     OperatingClosureModel,
     RouteTimetableEntryModel,
     StaffCoverModel,
@@ -754,4 +764,81 @@ def model_to_staff_cover(model: StaffCoverModel) -> StaffCover:
         withdrawn_at=model.withdrawn_at,
         created_at=model.created_at,
         updated_at=model.updated_at,
+    )
+
+
+
+# ---- ADR-0056 ----------------------------------------------------------------------------------
+
+
+def incident_to_model(incident: Incident, *, existing: IncidentModel | None = None) -> IncidentModel:
+    model = existing if existing is not None else IncidentModel(id=str(incident.id))
+    model.organization_id = str(incident.organization_id)
+    model.category = incident.category.value
+    model.severity = incident.severity.value
+    model.occurred_at = _to_naive_utc(incident.occurred_at)
+    model.vehicle_id = _str_or_none(incident.vehicle_id)
+    model.trip_id = _str_or_none(incident.trip_id)
+    model.route_id = _str_or_none(incident.route_id)
+    model.title = incident.title
+    model.description = incident.description
+    model.actions_taken = incident.actions_taken
+    model.staff_ids = list(incident.staff_ids)
+    model.student_ids = list(incident.student_ids)
+    model.status = incident.status.value
+    model.resolution = incident.resolution
+    model.recorded_in_error = incident.recorded_in_error
+    model.source_alert_id = incident.source_alert_id
+    model.closed_at = _to_naive_utc(incident.closed_at)
+    model.created_at = _to_naive_utc(incident.created_at)
+    model.updated_at = _to_naive_utc(incident.updated_at)
+    return model
+
+
+def model_to_incident(model: IncidentModel) -> Incident:
+    return Incident(
+        id=IncidentId(model.id.strip()),
+        organization_id=OrganizationId(model.organization_id.strip()),
+        category=IncidentCategory(model.category),
+        severity=IncidentSeverity(model.severity),
+        occurred_at=model.occurred_at,
+        vehicle_id=_id_or_none(VehicleId, model.vehicle_id),
+        trip_id=_id_or_none(TripId, model.trip_id),
+        route_id=_id_or_none(RouteId, model.route_id),
+        title=model.title,
+        description=model.description,
+        actions_taken=model.actions_taken,
+        staff_ids=tuple(i.strip() for i in (model.staff_ids or [])),
+        student_ids=tuple(i.strip() for i in (model.student_ids or [])),
+        status=IncidentStatus(model.status),
+        resolution=model.resolution,
+        recorded_in_error=model.recorded_in_error,
+        source_alert_id=model.source_alert_id.strip() if model.source_alert_id else None,
+        closed_at=model.closed_at,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def incident_note_to_model(note: IncidentNote, *, existing: IncidentNoteModel | None = None) -> IncidentNoteModel:
+    model = existing if existing is not None else IncidentNoteModel(id=str(note.id))
+    model.organization_id = str(note.organization_id)
+    model.incident_id = str(note.incident_id)
+    model.kind = note.kind.value
+    model.body = note.body
+    model.author_id = note.author_id
+    model.created_at = _to_naive_utc(note.created_at)
+    model.updated_at = _to_naive_utc(note.created_at)
+    return model
+
+
+def model_to_incident_note(model: IncidentNoteModel) -> IncidentNote:
+    return IncidentNote(
+        id=IncidentNoteId(model.id.strip()),
+        organization_id=OrganizationId(model.organization_id.strip()),
+        incident_id=IncidentId(model.incident_id.strip()),
+        kind=IncidentNoteKind(model.kind),
+        body=model.body,
+        author_id=model.author_id.strip() if model.author_id else None,
+        created_at=model.created_at,
     )

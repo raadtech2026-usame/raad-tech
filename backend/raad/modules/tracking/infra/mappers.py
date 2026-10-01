@@ -15,10 +15,13 @@ against a future phase adding a legitimate mutation (there is precedent for exac
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from raad.modules.tracking.domain.entities import GeofenceCrossing, VehiclePosition
+from raad.modules.tracking.domain.entities import GeofenceCrossing, SafetyAlert, VehiclePosition
 from raad.modules.tracking.domain.value_objects import (
+    DeviceConfirmation,
+    SafetyAlertId,
+    SafetyAlertStatus,
     AlarmFlags,
     DeviceId,
     GeofenceCrossingId,
@@ -33,6 +36,7 @@ from raad.modules.tracking.domain.value_objects import (
     VehiclePositionId,
 )
 from raad.modules.tracking.infra.models import (
+    SafetyAlertModel,
     GeofenceCrossingModel,
     VehiclePositionModel,
 )
@@ -133,4 +137,68 @@ def model_to_geofence_crossing(model: GeofenceCrossingModel) -> GeofenceCrossing
         stop_id=StopId(model.stop_id) if model.stop_id is not None else None,
         event_type=GeofenceEventType(model.event_type),
         occurred_at=model.occurred_at,
+    )
+
+
+# --- SafetyAlert (ADR-0055) -----------------------------------------------------------------------
+
+
+def _strip(value: str | None) -> str | None:
+    return value.strip() if value else None
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    return value.replace(tzinfo=timezone.utc) if value is not None and value.tzinfo is None else value
+
+
+def safety_alert_to_model(alert: SafetyAlert, *, existing: SafetyAlertModel | None = None) -> SafetyAlertModel:
+    model = existing if existing is not None else SafetyAlertModel(id=str(alert.id))
+    model.organization_id = str(alert.organization_id)
+    model.vehicle_id = str(alert.vehicle_id)
+    model.device_id = alert.device_id
+    model.terminal_id = alert.terminal_id
+    model.alarm_type = alert.alarm_type
+    model.status = alert.status.value
+    model.raised_at = _naive(alert.raised_at)
+    model.last_raised_at = _naive(alert.last_raised_at)
+    model.received_at = _naive(alert.received_at)
+    model.occurrences = alert.occurrences
+    model.latitude = alert.latitude
+    model.longitude = alert.longitude
+    model.speed_kph = alert.speed_kph
+    model.trip_id = alert.trip_id
+    model.driver_id = alert.driver_id
+    model.incident_id = alert.incident_id
+    model.device_confirmation = alert.device_confirmation.value if alert.device_confirmation else None
+    model.acknowledged_at = _naive(alert.acknowledged_at)
+    model.closed_at = _naive(alert.closed_at)
+    model.created_at = _naive(alert.created_at)
+    model.updated_at = _naive(alert.updated_at)
+    return model
+
+
+def model_to_safety_alert(model: SafetyAlertModel) -> SafetyAlert:
+    return SafetyAlert(
+        id=SafetyAlertId(model.id.strip()),
+        organization_id=OrganizationId(model.organization_id.strip()),
+        vehicle_id=VehicleId(model.vehicle_id.strip()),
+        device_id=_strip(model.device_id),
+        terminal_id=model.terminal_id,
+        alarm_type=model.alarm_type,
+        status=SafetyAlertStatus(model.status),
+        raised_at=_aware(model.raised_at),
+        last_raised_at=_aware(model.last_raised_at),
+        received_at=_aware(model.received_at),
+        occurrences=model.occurrences,
+        latitude=model.latitude,
+        longitude=model.longitude,
+        speed_kph=model.speed_kph,
+        trip_id=_strip(model.trip_id),
+        driver_id=_strip(model.driver_id),
+        incident_id=_strip(model.incident_id),
+        device_confirmation=DeviceConfirmation(model.device_confirmation) if model.device_confirmation else None,
+        acknowledged_at=_aware(model.acknowledged_at),
+        closed_at=_aware(model.closed_at),
+        created_at=_aware(model.created_at),
+        updated_at=_aware(model.updated_at),
     )
