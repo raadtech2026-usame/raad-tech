@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 from raad.core.config.settings import Settings, WorkerSettings
 from raad.core.di.container import Container
@@ -16,7 +17,12 @@ from raad.interfaces.workers.daily_operations_jobs import (
     notify_uncovered_trips,
     uncovered_alert_text,
 )
-from raad.modules.notifications.events.subscribers import TripCancelledNotifier
+from raad.modules.notifications.events.subscribers import (
+    StaffCoverCreatedNotifier,
+    StaffSelfReportedUnavailabilityNotifier,
+    TripCancelledNotifier,
+)
+from raad.modules.transport_ops.application.self_service import SelfServiceApplicationService
 from raad.modules.transport_ops.application.operations_services import (
     DailyOperationsApplicationService,
 )
@@ -157,10 +163,111 @@ class _OpsForCancel:
         return self.trip, self.users
 
 
+class _SelfService:
+    def __init__(self, driver_user_id: str | None) -> None:
+        self._driver_user_id = driver_user_id
+
+    async def driver_user_id_for_trip(self, trip_id, *, uow):
+        return None, self._driver_user_id
+
+    async def user_id_for_staff(self, staff_id, *, uow):
+        return self._driver_user_id
+
+
+class _Admins:
+    def __init__(self, ids: list[str]) -> None:
+        self._ids = ids
+
+    async def list_users(self, query, *, uow):
+        return SimpleNamespace(data=[SimpleNamespace(id=i) for i in self._ids], total=len(self._ids))
+
+
+def _staff_event(event_type: str, payload: dict) -> DomainEvent:
+    return DomainEvent(
+        event_id="01J8Z3K9G6X8YV5T4N2R7QW3EV",
+        event_type=event_type,
+        aggregate_type="StaffCover",
+        aggregate_id="01J8Z3K9G6X8YV5T4N2R7QW3AG",
+        org_id=ORG,
+        occurred_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        payload=payload,
+        version=1,
+        correlation_id=None,
+    )
+
+
+class DriverNotifierTests(unittest.IsolatedAsyncioTestCase):
+    """ADR-0061: a substitute who can log in is told; the office is told when a driver reports
+    their own unavailability, and only then."""
+
+    def _container(self, notes, *, staff_user_id: str | None, admins: list[str] | None = None):
+        from raad.modules.iam.application.ports import IamUnitOfWork
+        from raad.modules.iam.application.services import UserApplicationService
+        from raad.modules.notifications.application.ports import NotificationsUnitOfWork
+
+        container = Container()
+        container.bind_singleton(SelfServiceApplicationService, _SelfService(staff_user_id))
+        container.bind_singleton(NotificationApplicationService, notes)
+        container.bind_singleton(UserApplicationService, _Admins(admins or []))
+        for uow_type in (TransportOpsUnitOfWork, NotificationsUnitOfWork, IamUnitOfWork):
+            container.bind_factory(uow_type, lambda: object())
+        return container
+
+    async def test_a_substitute_driver_is_told_they_are_covering(self) -> None:
+        notes = _Notes()
+        await StaffCoverCreatedNotifier(self._container(notes, staff_user_id="d2")).process(
+            _staff_event(
+                "StaffCoverCreated",
+                {"substitute_staff_id": "s2", "vehicle_id": "v1",
+                 "starts_on": "2026-10-05", "ends_on": "2026-10-06"},
+            )
+        )
+        (command,) = notes.commands
+        self.assertEqual(command.recipient_user_id, "d2")
+        self.assertEqual(command.data["kind"], "cover_assigned")
+        self.assertIn("2026-10-05 to 2026-10-06", command.body)
+
+    async def test_a_substitute_without_a_login_notifies_nobody(self) -> None:
+        notes = _Notes()
+        await StaffCoverCreatedNotifier(self._container(notes, staff_user_id=None)).process(
+            _staff_event("StaffCoverCreated", {"substitute_staff_id": "s2",
+                                               "starts_on": "2026-10-05", "ends_on": "2026-10-05"})
+        )
+        self.assertEqual(notes.commands, [])
+
+    async def test_self_reported_unavailability_tells_the_office(self) -> None:
+        notes = _Notes()
+        container = self._container(notes, staff_user_id="d1", admins=["admin-1", "admin-2"])
+        await StaffSelfReportedUnavailabilityNotifier(container).process(
+            _staff_event(
+                "StaffUnavailabilityRecorded",
+                {"staff_id": "s1", "actor_id": "d1", "starts_on": "2026-10-05",
+                 "ends_on": "2026-10-05", "reason": "sick"},
+            )
+        )
+        self.assertEqual([c.recipient_user_id for c in notes.commands], ["admin-1", "admin-2"])
+        self.assertEqual(notes.commands[0].data["kind"], "staff_unavailable")
+        # The reason and the note are personal: neither reaches the notification.
+        self.assertNotIn("sick", notes.commands[0].body)
+
+    async def test_unavailability_recorded_by_the_office_notifies_nobody(self) -> None:
+        notes = _Notes()
+        container = self._container(notes, staff_user_id="d1", admins=["admin-1"])
+        await StaffSelfReportedUnavailabilityNotifier(container).process(
+            _staff_event(
+                "StaffUnavailabilityRecorded",
+                {"staff_id": "s1", "actor_id": "admin-1", "starts_on": "2026-10-05",
+                 "ends_on": "2026-10-05", "reason": "sick"},
+            )
+        )
+        self.assertEqual(notes.commands, [])
+
+
 class TripCancelledNotifierTests(unittest.IsolatedAsyncioTestCase):
-    def _container(self, ops, notes) -> Container:
+    def _container(self, ops, notes, driver_user_id: str | None = None) -> Container:
         container = Container()
         container.bind_singleton(DailyOperationsApplicationService, ops)
+        container.bind_singleton(SelfServiceApplicationService, _SelfService(driver_user_id))
         container.bind_singleton(NotificationApplicationService, notes)
         container.bind_factory(TransportOpsUnitOfWork, lambda: object())
         from raad.modules.notifications.application.ports import NotificationsUnitOfWork
@@ -190,6 +297,17 @@ class TripCancelledNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(notes.commands[0].title, "Your child's afternoon bus on 2026-10-02 is cancelled")
         self.assertIn("Reason: Bus broke down", notes.commands[0].body)
         self.assertEqual(notes.commands[0].data["kind"], "trip_cancelled")
+
+    async def test_the_driver_is_told_too(self) -> None:
+        """ADR-0061: the driver's phone is where a cancellation matters first."""
+        notes = _Notes()
+        container = self._container(_OpsForCancel(_Trip(), ["p1"]), notes, driver_user_id="d1")
+        await TripCancelledNotifier(container).process(self._event())
+        self.assertEqual([c.recipient_user_id for c in notes.commands], ["p1", "d1"])
+        driver_note = notes.commands[1]
+        self.assertEqual(driver_note.title, "Your afternoon trip on 2026-10-02 is cancelled")
+        self.assertIn("Reason: Bus broke down", driver_note.body)
+        self.assertEqual(driver_note.data["audience"], "driver")
 
     async def test_a_missing_trip_is_acknowledged_quietly(self) -> None:
         notes = _Notes()

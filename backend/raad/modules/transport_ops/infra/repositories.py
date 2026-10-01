@@ -1422,6 +1422,16 @@ class SqlAlchemyIncidentRepository(
         rows = (await self._session.execute(statement)).scalars().all()
         return [self._track_row(row) for row in rows]
 
+    async def list_reported_by(self, staff_id: str, *, limit: int = 100) -> list[Incident]:
+        statement = (
+            select(self.model)
+            .where(self.model.deleted_at.is_(None), self.model.reported_by_staff_id == staff_id)
+            .order_by(self.model.occurred_at.desc())
+            .limit(limit)
+        )
+        rows = (await self._session.execute(self._apply_scope(statement))).scalars().all()
+        return [self._track_row(row) for row in rows]
+
 
 class SqlAlchemyIncidentNoteRepository(
     _TrackingRepository,

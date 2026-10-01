@@ -52,6 +52,7 @@ from raad.modules.platform_finance.api.routers import platform_finance_router
 from raad.modules.school_erp.api.routers import school_finance_router
 from raad.modules.reporting.api.routers import reports_router
 from raad.modules.tracking.api.routers import safety_alerts_router, tracking_router
+from raad.modules.transport_ops.api.me_routers import me_transport_router
 from raad.modules.transport_ops.api.routers import (
     daily_operations_router,
     drivers_router,
@@ -108,6 +109,9 @@ api_router.include_router(roles_router, prefix="/roles", tags=["users"])
 # ADR-0023 — canonical self-service identity resolution (closes Known Issue #17), no documented
 # API Contracts surface (see me_router's own module-level comment in iam/api/routers.py).
 api_router.include_router(me_router, prefix="/me", tags=["me"])
+# ADR-0061 — mobile self-service (trips, crew, documents, unavailability, incidents). Owned
+# by transport_ops, whose data it is; self-scoped the same way.
+api_router.include_router(me_transport_router, prefix="/me", tags=["me"])
 
 api_router.include_router(
     organizations_router, prefix="/organizations", tags=["organizations"]

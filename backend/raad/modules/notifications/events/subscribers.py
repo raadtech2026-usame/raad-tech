@@ -87,6 +87,7 @@ from raad.modules.transport_ops.application.incident_services import IncidentApp
 from raad.modules.transport_ops.application.operations_services import (
     DailyOperationsApplicationService,
 )
+from raad.modules.transport_ops.application.self_service import SelfServiceApplicationService
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
     StudentParentApplicationService,
@@ -115,6 +116,9 @@ class _NotificationFanOut:
         body: str,
         data: dict[str, Any] | None,
         trip_id: str | None,
+        stop_id: str | None = None,
+        route_id: str | None = None,
+        trip_type: str | None = None,
     ) -> None:
         # Deliberately `uow.student_assignments.list_all()`, not `StudentAssignmentApplicationService.
         # list_student_assignments` — since the Pagination/Filtering/Sorting phase, that method is
@@ -132,6 +136,7 @@ class _NotificationFanOut:
             if a.status == "active"
             and a.vehicle_id is not None
             and str(a.vehicle_id) == vehicle_id
+            and _rides_to_stop(a, stop_id=stop_id, route_id=route_id, trip_type=trip_type)
         }
         if not active_student_ids:
             return
@@ -171,6 +176,17 @@ class _NotificationFanOut:
                     ),
                     uow=self._container.resolve(NotificationsUnitOfWork),
                 )
+
+    async def resolve_trip(self, trip_id: str) -> Any | None:
+        """The trip, or `None` when it no longer exists (see `resolve_vehicle_id_for_trip`)."""
+        trip_service = self._container.resolve(TripApplicationService)
+        try:
+            return await trip_service.get_trip_by_id(
+                GetTripByIdQuery(trip_id=trip_id),
+                uow=self._container.resolve(TransportOpsUnitOfWork),
+            )
+        except NotFoundError:
+            return None
 
     async def resolve_vehicle_id_for_trip(self, trip_id: str) -> str | None:
         """Returns `None` when the referenced trip no longer exists.
@@ -212,6 +228,20 @@ class _NotificationFanOut:
             subscription_state=subscription_state,
         )
         return decision.allowed
+
+
+def _rides_to_stop(
+    assignment: Any, *, stop_id: str | None, route_id: str | None, trip_type: str | None
+) -> bool:
+    """A stop event concerns only the children who use that stop on that trip: the pickup stop
+    in the morning, the dropoff stop in the afternoon. With no stop named (trip started, trip
+    ended, arrived) every child on the bus is concerned."""
+    if stop_id is None:
+        return True
+    if route_id is not None and str(assignment.route_id) != route_id:
+        return False
+    own_stop = assignment.dropoff_stop_id if trip_type == "afternoon" else assignment.pickup_stop_id
+    return str(own_stop) == stop_id
 
 
 class TripStartedNotifier(EventProcessor):
@@ -260,8 +290,8 @@ class VehicleApproachingStopNotifier(EventProcessor):
 
     async def process(self, event: DomainEvent) -> None:
         trip_id = event.payload["trip_id"]
-        vehicle_id = await self._fan_out.resolve_vehicle_id_for_trip(trip_id)
-        if vehicle_id is None:
+        trip = await self._fan_out.resolve_trip(trip_id)
+        if trip is None:
             # The trip is gone; there is nobody to notify, and no later attempt could change that.
             # Acknowledged rather than retried - see resolve_vehicle_id_for_trip.
             logger.info(
@@ -269,14 +299,24 @@ class VehicleApproachingStopNotifier(EventProcessor):
                 extra={"event_type": event.event_type, "trip_id": trip_id},
             )
             return
+        stop_id = event.payload["stop_id"]
         await self._fan_out.notify_vehicle_watchers(
-            vehicle_id=vehicle_id,
+            vehicle_id=trip.vehicle_id,
             organization_id=event.org_id,
             type="approaching_stop",
             title="Approaching stop",
             body="Your child's bus is approaching the stop.",
-            data={"trip_id": trip_id, "stop_id": event.payload["stop_id"]},
+            data={
+                "trip_id": trip_id,
+                "stop_id": stop_id,
+                "vehicle_id": trip.vehicle_id,
+                "trip_type": trip.trip_type,
+            },
             trip_id=trip_id,
+            # Only the families whose child uses this stop on this trip, never the whole bus.
+            stop_id=stop_id,
+            route_id=trip.route_id,
+            trip_type=trip.trip_type,
         )
 
 
@@ -352,6 +392,116 @@ class TripCancelledNotifier(EventProcessor):
                         "trip_type": trip.trip_type.value,
                     },
                     trip_id=trip_id,
+                    actor=SYSTEM_PRINCIPAL,
+                ),
+                uow=self._container.resolve(NotificationsUnitOfWork),
+            )
+        # ADR-0061: the driver's phone is where a cancellation matters first.
+        _trip, driver_user_id = await self._container.resolve(
+            SelfServiceApplicationService
+        ).driver_user_id_for_trip(trip_id, uow=self._container.resolve(TransportOpsUnitOfWork))
+        if driver_user_id is not None:
+            await notification_service.create_notification(
+                CreateNotificationCommand(
+                    organization_id=str(trip.organization_id),
+                    recipient_user_id=driver_user_id,
+                    type="system",
+                    title=f"Your {period} trip on {day} is cancelled",
+                    body=f"The {period} trip on {day} will not run. Reason: {reason}",
+                    data={
+                        "kind": "trip_cancelled",
+                        "audience": "driver",
+                        "trip_id": trip_id,
+                        "scheduled_date": day,
+                        "trip_type": trip.trip_type.value,
+                    },
+                    trip_id=trip_id,
+                    actor=SYSTEM_PRINCIPAL,
+                ),
+                uow=self._container.resolve(NotificationsUnitOfWork),
+            )
+
+
+class StaffCoverCreatedNotifier(EventProcessor):
+    """ADR-0061: tells a substitute who can log in (a driver) that they are covering a bus.
+    Other staff have no login, so there is nobody to tell."""
+
+    event_type = "StaffCoverCreated"
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def process(self, event: DomainEvent) -> None:
+        payload = event.payload
+        staff_id = payload.get("substitute_staff_id")
+        if not staff_id or not event.org_id:
+            return
+        user_id = await self._container.resolve(SelfServiceApplicationService).user_id_for_staff(
+            staff_id, uow=self._container.resolve(TransportOpsUnitOfWork)
+        )
+        if user_id is None:
+            return
+        starts_on, ends_on = payload.get("starts_on"), payload.get("ends_on")
+        days = starts_on if starts_on == ends_on else f"{starts_on} to {ends_on}"
+        await self._container.resolve(NotificationApplicationService).create_notification(
+            CreateNotificationCommand(
+                organization_id=event.org_id,
+                recipient_user_id=user_id,
+                type="system",
+                title="You are covering a bus",
+                body=f"You have been assigned as a substitute on {days}. Open your trips to see them.",
+                data={
+                    "kind": "cover_assigned",
+                    "cover_id": event.aggregate_id,
+                    "vehicle_id": payload.get("vehicle_id"),
+                    "starts_on": starts_on,
+                    "ends_on": ends_on,
+                },
+                trip_id=None,
+                actor=SYSTEM_PRINCIPAL,
+            ),
+            uow=self._container.resolve(NotificationsUnitOfWork),
+        )
+
+
+class StaffSelfReportedUnavailabilityNotifier(EventProcessor):
+    """ADR-0061: when a driver reports their own unavailability from the app, the office is
+    told. One recorded by an Org Admin notifies nobody: they already know."""
+
+    event_type = "StaffUnavailabilityRecorded"
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def process(self, event: DomainEvent) -> None:
+        payload = event.payload
+        staff_id, actor_id = payload.get("staff_id"), payload.get("actor_id")
+        if not staff_id or not actor_id or not event.org_id:
+            return
+        own_user_id = await self._container.resolve(SelfServiceApplicationService).user_id_for_staff(
+            staff_id, uow=self._container.resolve(TransportOpsUnitOfWork)
+        )
+        if own_user_id != actor_id:
+            return
+        starts_on, ends_on = payload.get("starts_on"), payload.get("ends_on")
+        days = starts_on if starts_on == ends_on else f"{starts_on} to {ends_on}"
+        notification_service = self._container.resolve(NotificationApplicationService)
+        for user_id in await _active_org_admin_ids(self._container, event.org_id):
+            await notification_service.create_notification(
+                CreateNotificationCommand(
+                    organization_id=event.org_id,
+                    recipient_user_id=user_id,
+                    type="system",
+                    title="A driver reported they are unavailable",
+                    body=f"Unavailable on {days}. Open Daily Operations to arrange cover.",
+                    data={
+                        "kind": "staff_unavailable",
+                        "unavailability_id": event.aggregate_id,
+                        "staff_id": staff_id,
+                        "starts_on": starts_on,
+                        "ends_on": ends_on,
+                    },
+                    trip_id=None,
                     actor=SYSTEM_PRINCIPAL,
                 ),
                 uow=self._container.resolve(NotificationsUnitOfWork),
@@ -474,5 +624,7 @@ def register_notification_processors(
     registry.register(VehicleApproachingStopNotifier(fan_out))
     registry.register(VehicleArrivedAtOrganizationNotifier(fan_out))
     registry.register(TripCancelledNotifier(container))
+    registry.register(StaffCoverCreatedNotifier(container))
+    registry.register(StaffSelfReportedUnavailabilityNotifier(container))
     registry.register(SafetyAlertRaisedNotifier(container))
     registry.register(IncidentParentNoticeNotifier(container))

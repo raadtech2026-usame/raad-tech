@@ -14,7 +14,11 @@ from raad.core.errors.exceptions import DomainError, NotFoundError
 from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
 from raad.modules.fleet_device.application.queries import GetVehicleByIdQuery
 from raad.modules.fleet_device.application.services import VehicleApplicationService
-from raad.modules.transport_ops.application.ports import VehicleDirectoryPort
+from raad.modules.transport_ops.application.ports import (
+    VehicleDirectoryPort,
+    VehicleSummary,
+    VehicleSummaryPort,
+)
 
 
 class FleetVehicleDirectoryAdapter(VehicleDirectoryPort):
@@ -38,3 +42,30 @@ class FleetVehicleDirectoryAdapter(VehicleDirectoryPort):
         except (NotFoundError, DomainError):
             return None
         return vehicle.organization_id
+
+
+class FleetVehicleSummaryAdapter(VehicleSummaryPort):
+    """ADR-0061. Unscoped read, then filtered to the caller's organization, so a bus elsewhere
+    is simply absent."""
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def summaries(
+        self, vehicle_ids: list[str], *, organization_id: str
+    ) -> dict[str, VehicleSummary]:
+        service: VehicleApplicationService = self._container.resolve(VehicleApplicationService)
+        result: dict[str, VehicleSummary] = {}
+        for vehicle_id in vehicle_ids:
+            uow: FleetDeviceUnitOfWork = self._container.resolve(FleetDeviceUnitOfWork)
+            try:
+                vehicle = await service.get_vehicle_by_id(
+                    GetVehicleByIdQuery(vehicle_id=vehicle_id), uow=uow
+                )
+            except (NotFoundError, DomainError):
+                continue
+            if vehicle.organization_id == organization_id:
+                result[vehicle_id] = VehicleSummary(
+                    id=vehicle.id, plate_no=vehicle.plate_no, label=vehicle.label
+                )
+        return result
