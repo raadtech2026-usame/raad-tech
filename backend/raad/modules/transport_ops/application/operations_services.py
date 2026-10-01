@@ -51,6 +51,11 @@ from raad.modules.transport_ops.application.queries import (
     UncoveredTripAlertDTO,
     UnavailabilityDTO,
 )
+from raad.modules.transport_ops.application.compliance import (
+    ComplianceIndex,
+    load_compliance_index,
+    planning_compliance_warnings,
+)
 from raad.modules.transport_ops.application.services import _enforce_own_organization
 from raad.modules.transport_ops.domain.entities import (
     Driver,
@@ -98,6 +103,8 @@ class _Coverage:
     staff: dict[str, TransportStaff]
     unavailability: list[StaffUnavailability]
     covers: list[StaffCover]
+    #: ADR-0059 §1. `None` only where documents are not loaded; then nothing is flagged for them.
+    compliance: ComplianceIndex | None = None
 
     def unavailable(self, staff_id: TransportStaffId, day: date) -> StaffUnavailability | None:
         return next(
@@ -128,7 +135,18 @@ class _Coverage:
             return "driver_not_active"
         if self.unavailable(driver.staff_id, day) is not None:
             return "driver_unavailable"
+        if self.compliance is not None:
+            compliance = self.compliance.of(person, day)
+            if compliance is not None and not compliance.is_compliant:
+                return "driver_not_compliant"
         return None
+
+    def crew_compliance_status(self, staff_id: TransportStaffId | str, day: date) -> str | None:
+        person = self.staff.get(str(staff_id))
+        if person is None or self.compliance is None:
+            return None
+        compliance = self.compliance.of(person, day)
+        return compliance.status.value if compliance is not None else None
 
     def trip_problem(self, trip: Trip) -> str | None:
         if trip.status not in _OPEN_STATUSES:
@@ -187,6 +205,18 @@ class DailyOperationsApplicationService:
                 raise NotFoundError(f"Driver {command.default_driver_id} not found.")
             if await self._vehicle_directory.organization_of_vehicle(command.vehicle_id) != organization_id:
                 raise NotFoundError(f"Vehicle {command.vehicle_id} not found.")
+            # ADR-0059 §3: refused only when the driver is being set or changed.
+            current = (
+                await uow.timetable.get(RouteTimetableEntryId(command.entry_id))
+                if command.entry_id is not None
+                else None
+            )
+            warnings = await planning_compliance_warnings(
+                uow,
+                driver.staff_id,
+                max(self._today(), command.valid_from),
+                refuse_blocked=current is None or current.default_driver_id != driver.id,
+            )
             values = dict(
                 route_id=route.id,
                 vehicle_id=VehicleId(command.vehicle_id),
@@ -220,7 +250,7 @@ class DailyOperationsApplicationService:
                     )
             uow.record_events(entry.pull_domain_events())
             await uow.commit()
-            return (await self._timetable_dtos(uow, [entry]))[0]
+            return replace((await self._timetable_dtos(uow, [entry]))[0], warnings=warnings)
 
     # ---- closures -----------------------------------------------------------------------------
 
@@ -353,6 +383,10 @@ class DailyOperationsApplicationService:
                 warnings.append("The substitute's job title differs from the absent person's.")
             if await uow.unavailability.list_overlapping(starts_on, ends_on, staff_id=substitute.id):
                 raise DomainError(f"{substitute.full_name} is also unavailable during that period.")
+            # ADR-0059 §3: every day of the cover; the last day finds a lapse on any of them.
+            warnings.extend(
+                await planning_compliance_warnings(uow, substitute.id, ends_on, refuse_blocked=True)
+            )
             # Every read happens before the first new row is added. A query issued after an
             # `add()` autoflushes, and autoflush orders INSERTs by class name, not by foreign
             # key: `staff_covers` would be written before the crew row it references.
@@ -496,6 +530,7 @@ class DailyOperationsApplicationService:
             staff=staff,
             unavailability=await uow.unavailability.list_overlapping(start, end),
             covers=await uow.covers.list_overlapping(start, end),
+            compliance=await load_compliance_index(uow, list(staff.values())),
         )
 
     async def daily_board(self, day: date, *, uow: TransportOpsUnitOfWork) -> DailyBoardDTO:
@@ -522,6 +557,8 @@ class DailyOperationsApplicationService:
                 {str(s.id): s for s in await uow.staff.list_by_ids(sorted(substitute_ids))}
             )
             closures = [c.label for c in await uow.closures.list_overlapping(day, day)]
+            # Reloaded now that crew and substitutes are known: the board badges them too.
+            coverage.compliance = await load_compliance_index(uow, list(coverage.staff.values()))
 
             by_vehicle: dict[str, dict] = defaultdict(lambda: {"trips": [], "crew": []})
             uncovered = 0
@@ -559,6 +596,7 @@ class DailyOperationsApplicationService:
                         is_substitute=str(a.staff_id) in substitute_ids and a.kind is StaffAssignmentKind.TEMPORARY,
                         is_unavailable=away is not None,
                         covered_by=covered_by,
+                        compliance_status=coverage.crew_compliance_status(a.staff_id, day),
                     )
                 )
             vehicles = [
@@ -645,6 +683,9 @@ class DailyOperationsApplicationService:
         }
         drivers = dict(default_drivers)
         drivers.update({str(d.id): d for d in substitutes.values()})
+        coverage.drivers = drivers
+        coverage.staff.update({str(s.id): s for s in await uow.staff.list_by_ids(substitute_staff)})
+        coverage.compliance = await load_compliance_index(uow, list(coverage.staff.values()))
 
         plan: list[PlannedTripDTO] = []
         skipped: list[SkippedTripDTO] = []
@@ -690,6 +731,7 @@ class DailyOperationsApplicationService:
                                 vehicle_id=vehicle,
                                 driver_id=str(driver_id),
                                 is_substitute=is_substitute,
+                                uncovered_reason=coverage.driver_problem(driver_id, day),
                             )
                         )
                         existing.add((vehicle, day, entry.trip_type.value))

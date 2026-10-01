@@ -529,6 +529,19 @@ class StaffDocumentTypeModel(AuditedTableMixin, Base):
     name: Mapped[str] = mapped_column(VARCHAR(80), nullable=False)
     alert_lead_days: Mapped[list[int]] = mapped_column(ARRAY(SmallInteger), nullable=False)
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: ADR-0058 §1. The defaults keep a type exactly as it behaved before Phase 4.
+    required_for: Mapped[str] = mapped_column(
+        SqlEnum("none", "drivers", "all_staff", name="staff_document_requirement"),
+        nullable=False,
+        default="none",
+        server_default="none",
+    )
+    enforcement: Mapped[str] = mapped_column(
+        SqlEnum("warn", "block", name="staff_document_enforcement"),
+        nullable=False,
+        default="warn",
+        server_default="warn",
+    )
 
 
 class StaffDocumentModel(AuditedTableMixin, Base):

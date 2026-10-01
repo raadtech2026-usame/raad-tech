@@ -440,6 +440,8 @@ class TripResponse(BaseModel):
     planned_departure: time | None = None
     cancelled_at: datetime | None = None
     cancelled_reason: str | None = None
+    #: ADR-0059 §3: warnings from the action that returned this; empty on plain reads.
+    warnings: list[str] = Field(default_factory=list)
 
 
 class TripSummaryResponse(BaseModel):
@@ -600,6 +602,8 @@ class TransportStaffSummaryResponse(BaseModel):
     employee_ref: str | None
     status: str
     is_driver: bool
+    #: ADR-0058: `compliant`, `expiring` or `not_compliant`; `null` for someone who has left.
+    compliance_status: str | None = None
 
 
 class TransportStaffResponse(BaseModel):
@@ -625,6 +629,8 @@ class TransportStaffResponse(BaseModel):
     private_fields_visible: bool
     created_at: datetime
     updated_at: datetime
+    #: ADR-0058; `null` for someone who has left.
+    compliance: "StaffComplianceResponse | None" = None
 
 
 class GrantDriverAccessRequest(BaseModel):
@@ -666,6 +672,8 @@ class VehicleStaffAssignmentResponse(BaseModel):
     reason: str | None
     is_current: bool
     created_at: datetime
+    #: ADR-0059 §3: warnings from the action that returned this; empty on plain reads.
+    warnings: list[str] = Field(default_factory=list)
 
 
 class StaffDocumentTypeRequest(BaseModel):
@@ -673,6 +681,9 @@ class StaffDocumentTypeRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     alert_lead_days: list[int] = Field(default_factory=lambda: [30, 7], max_length=5)
     is_archived: bool = False
+    #: ADR-0058 §1. Left out, the type keeps its current setting (`none`/`warn` when new).
+    required_for: Literal["none", "drivers", "all_staff"] | None = None
+    enforcement: Literal["warn", "block"] | None = None
 
 
 class StaffDocumentTypeResponse(BaseModel):
@@ -681,6 +692,51 @@ class StaffDocumentTypeResponse(BaseModel):
     name: str
     alert_lead_days: list[int]
     is_archived: bool
+    required_for: str
+    enforcement: str
+
+
+class DocumentTypeImpactResponse(BaseModel):
+    """ADR-0058 §3: what making this type required would mean today."""
+
+    type_id: str
+    required_for: str
+    applies_to: int
+    not_compliant: int
+
+
+class ComplianceGapResponse(BaseModel):
+    type_id: str
+    type_name: str
+    #: `missing` or `expired`.
+    reason: str
+    expired_on: date | None
+    #: The type's enforcement is `block`.
+    blocks: bool
+
+
+class ComplianceExpiringResponse(BaseModel):
+    type_id: str
+    type_name: str
+    expires_on: date
+
+
+class StaffComplianceResponse(BaseModel):
+    """ADR-0058 §2. Never a document number, so every reader of staff may see it."""
+
+    status: str
+    gaps: list[ComplianceGapResponse]
+    expiring: list[ComplianceExpiringResponse]
+    is_blocked: bool
+
+
+class StaffComplianceRowResponse(BaseModel):
+    staff_id: str
+    organization_id: str
+    staff_name: str
+    role_name: str | None
+    is_driver: bool
+    compliance: StaffComplianceResponse
 
 
 class RecordStaffDocumentRequest(BaseModel):
@@ -751,6 +807,8 @@ class TimetableEntryResponse(BaseModel):
     valid_from: date
     valid_until: date | None
     is_active: bool
+    #: ADR-0059 §3: warnings from the action that returned this; empty on plain reads.
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ClosureRequest(BaseModel):
@@ -836,6 +894,8 @@ class BoardCrewResponse(BaseModel):
     is_substitute: bool
     is_unavailable: bool
     covered_by: str | None
+    #: ADR-0059 §2: a badge; crew never make a trip uncovered.
+    compliance_status: str | None = None
 
 
 class BoardVehicleResponse(BaseModel):
@@ -866,6 +926,8 @@ class PlannedTripResponse(BaseModel):
     vehicle_id: str
     driver_id: str
     is_substitute: bool
+    #: Why the trip will show as uncovered once created, or `null`.
+    uncovered_reason: str | None = None
 
 
 class SkippedTripResponse(BaseModel):

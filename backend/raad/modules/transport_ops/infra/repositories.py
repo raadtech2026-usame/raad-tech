@@ -1041,6 +1041,15 @@ class SqlAlchemyTransportStaffRepository(
         rows = (await self._session.execute(statement)).scalars().all()
         return [self._track_row(row) for row in rows]
 
+    async def list_not_left(self) -> list[TransportStaff]:
+        statement = self._apply_scope(
+            select(self.model)
+            .where(self.model.status != "left", self.model.deleted_at.is_(None))
+            .order_by(self.model.full_name)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
     async def list_page(
         self,
         page_request: OffsetPageRequest,
@@ -1148,6 +1157,17 @@ class SqlAlchemyStaffDocumentTypeRepository(
         rows = (await self._session.execute(statement)).scalars().all()
         return [self._track_row(row) for row in rows]
 
+    async def list_required(self) -> list[StaffDocumentType]:
+        statement = self._apply_scope(
+            select(self.model).where(
+                self.model.required_for != "none",
+                self.model.is_archived.is_(False),
+                self.model.deleted_at.is_(None),
+            )
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
 
 class SqlAlchemyStaffDocumentRepository(
     _TrackingRepository,
@@ -1187,6 +1207,22 @@ class SqlAlchemyStaffDocumentRepository(
             )
             .order_by(self.model.expires_on)
         )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track_row(row) for row in rows]
+
+    async def list_current_of_types(
+        self, type_ids: list[str], *, staff_ids: list[str] | None = None
+    ) -> list[StaffDocument]:
+        if not type_ids or staff_ids == []:
+            return []
+        conditions = [
+            self.model.type_id.in_(sorted(set(type_ids))),
+            self.model.replaced_by_id.is_(None),
+            self.model.deleted_at.is_(None),
+        ]
+        if staff_ids is not None:
+            conditions.append(self.model.staff_id.in_(sorted(set(staff_ids))))
+        statement = self._apply_scope(select(self.model).where(*conditions))
         rows = (await self._session.execute(statement)).scalars().all()
         return [self._track_row(row) for row in rows]
 

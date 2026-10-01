@@ -72,6 +72,11 @@ class InMemoryTransportStaffRepository(TransportStaffRepository):
     async def list_by_ids(self, staff_ids: list[str]) -> list[TransportStaff]:
         return [self.by_id[i] for i in dict.fromkeys(staff_ids) if i in self.by_id]
 
+    async def list_not_left(self) -> list[TransportStaff]:
+        return sorted(
+            (s for s in self.by_id.values() if s.status.value != "left"), key=lambda s: s.full_name
+        )
+
     async def list_page(
         self,
         page_request: OffsetPageRequest,
@@ -147,6 +152,11 @@ class InMemoryStaffDocumentTypeRepository(StaffDocumentTypeRepository):
     async def list_by_ids(self, type_ids: list[str]) -> list[StaffDocumentType]:
         return [self.by_id[i] for i in dict.fromkeys(type_ids) if i in self.by_id]
 
+    async def list_required(self) -> list[StaffDocumentType]:
+        return [
+            t for t in self.by_id.values() if t.required_for.value != "none" and not t.is_archived
+        ]
+
 
 class InMemoryStaffDocumentRepository(StaffDocumentRepository):
     def __init__(self) -> None:
@@ -174,6 +184,15 @@ class InMemoryStaffDocumentRepository(StaffDocumentRepository):
             ),
             key=lambda d: d.expires_on,
         )
+
+    async def list_current_of_types(self, type_ids, *, staff_ids=None) -> list[StaffDocument]:
+        return [
+            d
+            for d in self.by_id.values()
+            if d.replaced_by_id is None
+            and str(d.type_id) in set(type_ids)
+            and (staff_ids is None or str(d.staff_id) in set(staff_ids))
+        ]
 
 
 class InMemoryRouteTimetableEntryRepository(RouteTimetableEntryRepository):

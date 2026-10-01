@@ -512,6 +512,11 @@ class TransportStaffRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_not_left(self) -> list[TransportStaff]:
+        """ADR-0058: everyone in scope who has not left, by name — the people compliance covers."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def list_page(
         self,
         page_request: OffsetPageRequest,
@@ -568,6 +573,11 @@ class StaffDocumentTypeRepository(ABC):
     async def list_by_ids(self, type_ids: list[str]) -> list[StaffDocumentType]:
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_required(self) -> list[StaffDocumentType]:
+        """ADR-0058: types that are required of someone and not archived, in the caller's scope."""
+        raise NotImplementedError
+
 
 class StaffDocumentRepository(ABC):
     @abstractmethod
@@ -588,6 +598,14 @@ class StaffDocumentRepository(ABC):
         """Documents that are not superseded and have an expiry date — the only ones that can
         be expiring or due an alert. Scoped like every other read (ADR-0021); the scheduled
         job reads with an unrestricted scope across organizations."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_current_of_types(
+        self, type_ids: list[str], *, staff_ids: list[str] | None = None
+    ) -> list[StaffDocument]:
+        """ADR-0058: documents that are not superseded, of the given types; narrowed to
+        `staff_ids` when given. With or without an expiry date."""
         raise NotImplementedError
 
 

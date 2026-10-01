@@ -63,6 +63,7 @@ from raad.modules.transport_ops.api.routers import (
     staff_assignments_router,
     staff_covers_router,
     staff_document_types_router,
+    staff_compliance_router,
     staff_documents_router,
     student_assignments_router,
     staff_unavailability_router,
@@ -155,6 +156,10 @@ api_router.include_router(
 )
 api_router.include_router(
     staff_documents_router, prefix="/staff-documents", tags=["transport-ops"]
+)
+# ADR-0058 — who does not meet a document requirement.
+api_router.include_router(
+    staff_compliance_router, prefix="/staff-compliance", tags=["transport-ops"]
 )
 # ADR-0052/0053/0054 — daily transport operations.
 api_router.include_router(

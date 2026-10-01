@@ -466,6 +466,30 @@ class StaffDocumentStatus(str, Enum):
     SUPERSEDED = "superseded"
 
 
+class StaffDocumentRequirement(str, Enum):
+    """ADR-0058 §1: who must hold a document of this type. `drivers` means staff with driver
+    access (a `Driver` record), never a job title."""
+
+    NONE = "none"
+    DRIVERS = "drivers"
+    ALL_STAFF = "all_staff"
+
+
+class StaffDocumentEnforcement(str, Enum):
+    """ADR-0058 §1 / ADR-0059 §3: what an unmet requirement does to new planning decisions."""
+
+    WARN = "warn"
+    BLOCK = "block"
+
+
+class ComplianceStatus(str, Enum):
+    """ADR-0058 §2 — computed per person and per day, never stored."""
+
+    COMPLIANT = "compliant"
+    EXPIRING = "expiring"
+    NOT_COMPLIANT = "not_compliant"
+
+
 # ---- ADR-0052/0053: daily transport operations --------------------------------------------
 
 

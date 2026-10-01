@@ -81,6 +81,8 @@ from raad.modules.transport_ops.domain.value_objects import (
     StaffAssignmentKind,
     StaffCoverId,
     StaffDocumentId,
+    StaffDocumentEnforcement,
+    StaffDocumentRequirement,
     StaffDocumentTypeId,
     StaffUnavailabilityId,
     StopId,
@@ -580,6 +582,8 @@ def staff_document_type_to_model(
     model.name = doc_type.name
     model.alert_lead_days = list(doc_type.alert_lead_days)
     model.is_archived = doc_type.is_archived
+    model.required_for = doc_type.required_for.value
+    model.enforcement = doc_type.enforcement.value
     model.created_at = _to_naive_utc(doc_type.created_at)
     model.updated_at = _to_naive_utc(doc_type.updated_at)
     return model
@@ -592,6 +596,8 @@ def model_to_staff_document_type(model: StaffDocumentTypeModel) -> StaffDocument
         name=model.name,
         alert_lead_days=tuple(model.alert_lead_days or ()),
         is_archived=model.is_archived,
+        required_for=StaffDocumentRequirement(model.required_for),
+        enforcement=StaffDocumentEnforcement(model.enforcement),
         created_at=model.created_at,
         updated_at=model.updated_at,
     )

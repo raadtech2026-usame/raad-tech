@@ -208,6 +208,8 @@ from raad.modules.transport_ops.domain.value_objects import (
     StaffAssignmentKind,
     StaffCoverId,
     StaffDocumentId,
+    StaffDocumentEnforcement,
+    StaffDocumentRequirement,
     StaffDocumentStatus,
     StaffDocumentTypeId,
     StaffUnavailabilityId,
@@ -2341,6 +2343,8 @@ class StaffDocumentType(_AggregateRoot):
         is_archived: bool,
         created_at: datetime,
         updated_at: datetime,
+        required_for: StaffDocumentRequirement = StaffDocumentRequirement.NONE,
+        enforcement: StaffDocumentEnforcement = StaffDocumentEnforcement.WARN,
     ) -> None:
         super().__init__()
         self.id = id
@@ -2350,6 +2354,9 @@ class StaffDocumentType(_AggregateRoot):
         )
         self.alert_lead_days = _normalise_lead_days(alert_lead_days)
         self.is_archived = is_archived
+        #: ADR-0058 §1. Both defaults leave the type exactly as it behaved before Phase 4.
+        self.required_for = required_for
+        self.enforcement = enforcement
         self.created_at = created_at
         self.updated_at = updated_at
 
@@ -2361,6 +2368,8 @@ class StaffDocumentType(_AggregateRoot):
         organization_id: OrganizationId,
         name: str,
         alert_lead_days: tuple[int, ...] = (30, 7),
+        required_for: StaffDocumentRequirement = StaffDocumentRequirement.NONE,
+        enforcement: StaffDocumentEnforcement = StaffDocumentEnforcement.WARN,
         clock: Clock,
         actor_id: str | None = None,
     ) -> "StaffDocumentType":
@@ -2373,6 +2382,8 @@ class StaffDocumentType(_AggregateRoot):
             is_archived=False,
             created_at=now,
             updated_at=now,
+            required_for=required_for,
+            enforcement=enforcement,
         )
         doc_type._saved(created=True, actor_id=actor_id)
         return doc_type
@@ -2385,14 +2396,28 @@ class StaffDocumentType(_AggregateRoot):
         is_archived: bool,
         clock: Clock,
         actor_id: str | None = None,
+        required_for: StaffDocumentRequirement | None = None,
+        enforcement: StaffDocumentEnforcement | None = None,
     ) -> None:
+        """`required_for`/`enforcement` left as `None` keep their current value."""
         name = _require_text(name, field="Document type", max_length=_DOCUMENT_TYPE_NAME_MAX_LENGTH)
         lead = _normalise_lead_days(alert_lead_days)
-        if (name, lead, is_archived) == (self.name, self.alert_lead_days, self.is_archived):
+        required_for = self.required_for if required_for is None else required_for
+        enforcement = self.enforcement if enforcement is None else enforcement
+        new = (name, lead, is_archived, required_for, enforcement)
+        if new == (self.name, self.alert_lead_days, self.is_archived, self.required_for, self.enforcement):
             return
-        self.name, self.alert_lead_days, self.is_archived = name, lead, is_archived
+        self.name, self.alert_lead_days, self.is_archived, self.required_for, self.enforcement = new
         self.updated_at = clock.now()
         self._saved(created=False, actor_id=actor_id)
+
+    def applies_to(self, *, is_driver: bool) -> bool:
+        """ADR-0058 §1: is this type required of that person? An archived type requires nothing."""
+        if self.is_archived:
+            return False
+        if self.required_for is StaffDocumentRequirement.ALL_STAFF:
+            return True
+        return self.required_for is StaffDocumentRequirement.DRIVERS and is_driver
 
     def _saved(self, *, created: bool, actor_id: str | None) -> None:
         self._record(
@@ -2401,6 +2426,8 @@ class StaffDocumentType(_AggregateRoot):
                 organization_id=str(self.organization_id),
                 alert_lead_days=list(self.alert_lead_days),
                 is_archived=self.is_archived,
+                required_for=self.required_for.value,
+                enforcement=self.enforcement.value,
                 created=created,
                 occurred_at=self.updated_at,
                 actor_id=actor_id,

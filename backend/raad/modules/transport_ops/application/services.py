@@ -157,6 +157,7 @@ from raad.modules.transport_ops.application.commands import (
     UpdateRouteCommand,
     UpdateStudentCommand,
 )
+from raad.modules.transport_ops.application.compliance import planning_compliance_warnings
 from raad.modules.transport_ops.application.ports import (
     TransportOpsUnitOfWork,
     UserProvisioningPort,
@@ -1262,6 +1263,10 @@ class TripApplicationService:
         async with uow:
             driver = await ensure_driver_exists(uow, DriverId(command.driver_id))
             route = await ensure_route_exists(uow, RouteId(command.route_id))
+            # ADR-0059 §3.
+            warnings = await planning_compliance_warnings(
+                uow, driver.staff_id, command.scheduled_date, refuse_blocked=True
+            )
             # ADR-0052 §3: one non-cancelled trip per bus, date and period. The partial unique
             # index is the backstop; this names the problem instead of a bare constraint 409.
             for existing in await uow.trips.list_between(
@@ -1292,7 +1297,7 @@ class TripApplicationService:
             uow.trips.add(trip)
             uow.record_events(trip.pull_domain_events())
             await uow.commit()
-            return trip_to_dto(trip)
+            return replace(trip_to_dto(trip), warnings=warnings)
 
     async def cancel_trip(
         self, command: CancelTripCommand, *, uow: TransportOpsUnitOfWork
