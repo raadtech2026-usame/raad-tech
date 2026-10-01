@@ -100,6 +100,19 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 - **Production blocker?** No.
 - **Dependencies:** Transport staff (Phase 1), Routes, Trips, Notifications, IAM.
 
+#### Document requirements & compliance — ✅ Complete, not deployed (Phase 4, ADR-0058/0059)
+- **Implemented:** a document type can be required for drivers or all staff, warn-only or
+  blocking; compliance computed per person and per day (missing or expired fails); compliance on
+  the staff list, profile and a "Required documents" panel; `driver_not_compliant` in the one
+  coverage rule (board, generation preview, uncovered-trip alerts); warnings on naming a
+  substitute, setting a timetable driver, scheduling a trip and assigning crew, refused (409) for
+  a blocking type except crew; an impact count before a requirement is saved.
+- **Missing (by design):** document files or scans (metadata only, ADR-0051), vehicle documents,
+  requirements per job title, blocking trip start, automatic reassignment or cancellation, staff
+  self-service (Phase 5), compliance reports (Phase 6).
+- **Production blocker?** No. Nothing changes for an organization until it marks a type required.
+- **Dependencies:** Transport staff and documents (Phase 1), Daily operations (Phase 2).
+
 #### Safety alerts & incident log — 🟡 Built, not hardware-verified (Phase 3, ADR-0055/0056/0057)
 - **Implemented:** rising-edge device alarms → `SafetyAlert` (one open alert per bus and type,
   repeats counted, late alarms flagged); critical alarms notify Org Admins; acknowledge /
@@ -460,6 +473,8 @@ Legend: ✅ Complete &nbsp;·&nbsp; 🟡 Partial &nbsp;·&nbsp; ❌ Missing &nbs
 | 0055 | Device Alarms and Safety Alerts | ✅ Complete (Phase 3, 2026-09-30) — alarm taxonomy and rising-edge `DeviceAlarmRaised` in the device gateway, `safety_alerts`, `/safety-alerts`; migration `c9f2a4e6b1d7`. **Not hardware-verified.** Deployed 2026-10-01 |
 | 0056 | Incident Log | ✅ Complete (Phase 3) — `incidents` + append-only `incident_notes`, `/incidents`, Org-Admin-only text and people. Deployed 2026-10-01 |
 | 0057 | SOS Alarm Acknowledgement | ✅ Complete (Phase 3) — `0x8203` on acknowledging an SOS, best effort. **Not hardware-verified.** Deployed 2026-10-01 |
+| 0058 | Staff Document Requirements and Compliance Status | ✅ Complete (Phase 4, 2026-10-01) — `required_for`/`enforcement` on document types, compliance computed per person and day, `/staff-compliance`; migration `d1e5b7a3c9f4`. Not deployed |
+| 0059 | Compliance in Daily Operations | ✅ Complete (Phase 4) — `driver_not_compliant` in the coverage rule; planning warns, a blocking type refuses; trip start never blocked. Not deployed |
 | 0031 | Fleet Overview Online-Vehicles Read Model | ✅ Complete — new `GET /tracking/vehicles/online` (`FleetOverviewApplicationService`), two additive `fleet_device` repository methods, `LatestPositionPort.get_latest_many`; a real per-vehicle-ownership authorization gap found and fixed while wiring the route (bulk fleet visibility could otherwise leak to a Parent's own mobile JWT), closed with an explicit role-set gate; `position` is `null` for every vehicle today (the pre-existing, disclosed JT808 `LatestPositionWriter` wiring gap, unaffected by this ADR) |
 
 **A real doc-staleness gap found 2026-08-19, since corrected throughout this file and
@@ -2117,6 +2132,27 @@ confirmation.
 ## 9. Recent Completed Work
 
 Reverse-chronological (most recent first):
+
+- **Document requirements & compliance — Phase 4 (ADR-0058/0059, 2026-10-01).** Branch
+  `feat/document-compliance`, not pushed or deployed. Metadata only: no uploads, no vehicle
+  documents, no automatic reassignment.
+
+  **What changed**
+  - `staff_document_types` gains `required_for` and `enforcement` (migration `d1e5b7a3c9f4`,
+    from `c9f2a4e6b1d7`; server defaults `none`/`warn`, so no existing type changes meaning).
+  - One domain rule (`domain.services.staff_compliance`) behind one loader
+    (`application/compliance.ComplianceIndex`), used by the staff service, the coverage rule
+    and the four planning checks.
+  - `GET /staff-compliance`, `GET /staff-document-types/{id}/impact`; `warnings` on the trip,
+    timetable and crew-assignment responses; no new permission.
+  - Frontend: requirement setup with an impact count, compliance on the staff list and
+    profile, the Required documents panel, the board reason and crew badge.
+
+  **Verified:** backend 2134 unit/architecture/contract + 388 integration (1 Redis skip);
+  device gateway 562; frontend 964, `tsc` and build clean; migration from empty (upgrade,
+  check, downgrade, re-upgrade) and on a copy of dev data (96 existing types all `none`/`warn`);
+  34/34 end-to-end checks over real HTTP, including a 200 on starting a trip whose driver fails
+  a blocking type. **Not verified:** browser interaction.
 
 - **Safety & incidents — Phase 3 (ADR-0055/0056/0057, 2026-09-30).** Merged as PR #30
   (`da8cf0d`) and deployed to production 2026-10-01; post-deploy check clean.
