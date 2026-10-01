@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from raad.core.di.container import Container
 from raad.core.errors.exceptions import (
+    AuthorizationError,
     NotFoundError,
     ParentAccessDeniedError,
     VideoForbiddenError,
@@ -41,6 +43,8 @@ from raad.modules.fleet_device.application.services import (
     DeviceApplicationService,
     VehicleApplicationService,
 )
+from raad.modules.tracking.api.routers import get_latest_vehicle_position
+from raad.modules.tracking.application.queries import VehiclePositionDTO
 from raad.modules.tracking.application.services import TrackingApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.services import (
@@ -185,11 +189,19 @@ class RedisUnboundTrackingService:
 
 
 class FakeTripService:
-    def __init__(self, trip_by_id: dict[str, _TripStatusDTO] | None = None) -> None:
+    def __init__(
+        self,
+        trip_by_id: dict[str, _TripStatusDTO] | None = None,
+        active_trip_by_vehicle: dict[str, _TripStatusDTO | None] | None = None,
+    ) -> None:
         self._by_id = trip_by_id or {}
+        self._active_by_vehicle = active_trip_by_vehicle or {}
 
     async def get_trip_by_id(self, query, *, uow):
         return self._by_id[query.trip_id]
+
+    async def get_active_trip_for_vehicle(self, query, *, uow):
+        return self._active_by_vehicle.get(query.vehicle_id)
 
 
 def make_container(
@@ -206,6 +218,7 @@ def make_container(
     devices: dict[str, _DeviceAssignmentDTO | None] | None = None,
     positions: dict[str, _PositionDTO | None] | None = None,
     trips: dict[str, _TripStatusDTO] | None = None,
+    active_trips: dict[str, _TripStatusDTO | None] | None = None,
     tracking_service: object | None = None,
 ) -> Container:
     container = Container()
@@ -238,7 +251,10 @@ def make_container(
     container.bind_singleton(
         TrackingApplicationService, tracking_service or FakeTrackingService(positions)
     )
-    container.bind_singleton(TripApplicationService, FakeTripService(trips))
+    container.bind_singleton(
+        TripApplicationService,
+        FakeTripService(trip_by_id=trips, active_trip_by_vehicle=active_trips),
+    )
 
     for uow_type in (
         TransportOpsUnitOfWork,
@@ -795,8 +811,8 @@ class ResolveVehicleTrackingContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_position_with_in_progress_trip_resolves_is_trip_active_true(self) -> None:
         container = make_container(
             vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
-            positions={"veh-1": _PositionDTO(trip_id="trip-1")},
-            trips={"trip-1": _TripStatusDTO(status="in_progress")},
+            positions={"veh-1": _PositionDTO(trip_id=None)},
+            active_trips={"veh-1": _TripStatusDTO(status="in_progress")},
         )
         result = await policy_guards.resolve_vehicle_tracking_context(
             vehicle_id="veh-1", container=container
@@ -807,7 +823,7 @@ class ResolveVehicleTrackingContextTests(unittest.IsolatedAsyncioTestCase):
         container = make_container(
             vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
             positions={"veh-1": _PositionDTO(trip_id="trip-1")},
-            trips={"trip-1": _TripStatusDTO(status="completed")},
+            active_trips={},
         )
         result = await policy_guards.resolve_vehicle_tracking_context(
             vehicle_id="veh-1", container=container
@@ -818,12 +834,215 @@ class ResolveVehicleTrackingContextTests(unittest.IsolatedAsyncioTestCase):
         container = make_container(
             vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
             positions={"veh-1": _PositionDTO(trip_id=None)},
+            active_trips={},
         )
         result = await policy_guards.resolve_vehicle_tracking_context(
             vehicle_id="veh-1", container=container
         )
         self.assertEqual(result, (ORG_ID, False))
 
+    async def test_no_in_progress_trip_resolves_is_trip_active_false(self) -> None:
+        """Item 2: No in-progress trip -> is_trip_active False."""
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            positions={"veh-1": _PositionDTO(trip_id=None)},
+            active_trips={},
+        )
+        result = await policy_guards.resolve_vehicle_tracking_context(
+            vehicle_id="veh-1", container=container
+        )
+        self.assertEqual(result, (ORG_ID, False))
+
+    async def test_no_cached_position_with_in_progress_trip_resolves_is_trip_active_true(
+        self,
+    ) -> None:
+        """Item 3a: A client may subscribe before the first GPS position arrives."""
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            positions={},
+            active_trips={"veh-1": _TripStatusDTO(status="in_progress")},
+        )
+        result = await policy_guards.resolve_vehicle_tracking_context(
+            vehicle_id="veh-1", container=container
+        )
+        self.assertEqual(result, (ORG_ID, True))
+
+    async def test_unbound_latest_position_port_with_in_progress_trip_resolves_is_trip_active_true(
+        self,
+    ) -> None:
+        """Item 3b: LatestPositionPort being unbound (no Redis) does not prevent active-trip resolution."""
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            tracking_service=RedisUnboundTrackingService(),
+            active_trips={"veh-1": _TripStatusDTO(status="in_progress")},
+        )
+        result = await policy_guards.resolve_vehicle_tracking_context(
+            vehicle_id="veh-1", container=container
+        )
+        self.assertEqual(result, (ORG_ID, True))
+
+    async def test_in_progress_trip_exists_with_cached_position_trip_id_none_resolves_is_trip_active_true(
+        self,
+    ) -> None:
+        """Item 1: In-progress trip exists + cached position has trip_id=None -> is_trip_active True.
+        (Regression test for Bug P0.1: the device gateway writes trip_id=None to the cached
+        position; is_trip_active must be derived from transport_ops, not the cached position)."""
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            positions={"veh-1": _PositionDTO(trip_id=None)},
+            active_trips={"veh-1": _TripStatusDTO(status="in_progress")},
+        )
+        result = await policy_guards.resolve_vehicle_tracking_context(
+            vehicle_id="veh-1", container=container
+        )
+        self.assertEqual(result, (ORG_ID, True))
+
+
+def _make_vehicle_position_dto(
+    *, vehicle_id: str = "veh-1", trip_id: str | None = None
+) -> VehiclePositionDTO:
+    return VehiclePositionDTO(
+        id="pos-1",
+        organization_id=ORG_ID,
+        vehicle_id=vehicle_id,
+        device_id="dev-1",
+        trip_id=trip_id,
+        latitude=2.0469,
+        longitude=45.3182,
+        speed_kph=34,
+        heading_deg=120,
+        alarm_flags=0,
+        event_time=datetime(2026, 7, 22, 8, 0, 0, tzinfo=timezone.utc),
+        received_at=datetime(2026, 7, 22, 8, 0, 1, tzinfo=timezone.utc),
+        is_backfill=False,
+        is_gps_valid=True,
+    )
+
+
+class _FakeTrackingServiceWithPosition:
+    def __init__(self, position: VehiclePositionDTO | None) -> None:
+        self._position = position
+
+    async def get_current_vehicle_position(self, query):
+        return self._position
+
+
+class GetLatestVehiclePositionRouteTests(unittest.IsolatedAsyncioTestCase):
+    """Item 9: REST GET /tracking/vehicles/{id}/latest route tests."""
+
+    async def test_parent_allowed_when_in_progress_trip_exists_and_cached_position_trip_id_none(
+        self,
+    ) -> None:
+        """Item 9 (Case 1): In-progress trip exists + cached position has trip_id=None ->
+        Parent who owns a child on the vehicle is granted access (200 with position)."""
+        position = _make_vehicle_position_dto(vehicle_id="veh-1", trip_id=None)
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            active_trips={"veh-1": _TripStatusDTO(status="in_progress")},
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
+        )
+        dummy_request = type(
+            "DummyRequest",
+            (),
+            {"app": type("App", (), {"state": type("State", (), {"container": container})()})()},
+        )()
+        tracking_svc = _FakeTrackingServiceWithPosition(position)
+        trip_svc = container.resolve(TripApplicationService)
+        transport_ops_uow = container.resolve(TransportOpsUnitOfWork)
+
+        response = await get_latest_vehicle_position(
+            request=dummy_request,
+            vehicle_id="veh-1",
+            principal=PARENT,
+            tracking_service=tracking_svc,
+            trip_service=trip_svc,
+            transport_ops_uow=transport_ops_uow,
+        )
+
+        self.assertEqual(response.vehicle_id, "veh-1")
+        self.assertIsNone(response.trip_id)
+        self.assertEqual(response.latitude, 2.0469)
+
+    async def test_parent_denied_when_no_in_progress_trip(self) -> None:
+        """Item 9 (Case 6): Same parent, trip NOT in progress -> AuthorizationError."""
+        position = _make_vehicle_position_dto(vehicle_id="veh-1", trip_id=None)
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            active_trips={},
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
+        )
+        dummy_request = type(
+            "DummyRequest",
+            (),
+            {"app": type("App", (), {"state": type("State", (), {"container": container})()})()},
+        )()
+        tracking_svc = _FakeTrackingServiceWithPosition(position)
+        trip_svc = container.resolve(TripApplicationService)
+        transport_ops_uow = container.resolve(TransportOpsUnitOfWork)
+
+        with self.assertRaises(AuthorizationError):
+            await get_latest_vehicle_position(
+                request=dummy_request,
+                vehicle_id="veh-1",
+                principal=PARENT,
+                tracking_service=tracking_svc,
+                trip_service=trip_svc,
+                transport_ops_uow=transport_ops_uow,
+            )
+
+    async def test_org_admin_allowed_without_active_trip(self) -> None:
+        """Item 9 (Case 8): Org Admin within scope is granted 24/7 with no trip."""
+        position = _make_vehicle_position_dto(vehicle_id="veh-1", trip_id=None)
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            active_trips={},
+            scope=TenantRegionScope(organization_ids=frozenset({ORG_ID})),
+        )
+        dummy_request = type(
+            "DummyRequest",
+            (),
+            {"app": type("App", (), {"state": type("State", (), {"container": container})()})()},
+        )()
+        tracking_svc = _FakeTrackingServiceWithPosition(position)
+        trip_svc = container.resolve(TripApplicationService)
+        transport_ops_uow = container.resolve(TransportOpsUnitOfWork)
+
+        response = await get_latest_vehicle_position(
+            request=dummy_request,
+            vehicle_id="veh-1",
+            principal=ORG_ADMIN,
+            tracking_service=tracking_svc,
+            trip_service=trip_svc,
+            transport_ops_uow=transport_ops_uow,
+        )
+
+        self.assertEqual(response.vehicle_id, "veh-1")
+
+    async def test_not_found_raised_when_position_is_none(self) -> None:
+        """Item 9: When vehicle has no cached position -> NotFoundError."""
+        container = make_container(vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)})
+        dummy_request = type(
+            "DummyRequest",
+            (),
+            {"app": type("App", (), {"state": type("State", (), {"container": container})()})()},
+        )()
+        tracking_svc = _FakeTrackingServiceWithPosition(None)
+        trip_svc = container.resolve(TripApplicationService)
+        transport_ops_uow = container.resolve(TransportOpsUnitOfWork)
+
+        with self.assertRaises(NotFoundError):
+            await get_latest_vehicle_position(
+                request=dummy_request,
+                vehicle_id="veh-1",
+                principal=ORG_ADMIN,
+                tracking_service=tracking_svc,
+                trip_service=trip_svc,
+                transport_ops_uow=transport_ops_uow,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
+
