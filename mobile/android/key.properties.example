@@ -1,0 +1,11 @@
+# Copy to key.properties (never committed) and fill in to sign release builds.
+#
+# Create the keystore once and keep it and its passwords somewhere safe: an app published with
+# one key can only ever be updated by builds signed with the same key.
+#
+#   keytool -genkey -v -keystore raad-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias raad
+#
+storeFile=../raad-release.jks
+storePassword=
+keyAlias=raad
+keyPassword=
