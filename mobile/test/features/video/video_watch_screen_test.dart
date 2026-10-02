@@ -23,7 +23,8 @@ void main() {
     },
   );
 
-  testWidgets('The watch button is disabled while not requesting', (tester) async {
+  testWidgets('The watch button is disabled while not requesting',
+      (tester) async {
     await tester.pumpWidget(
       const ProviderScope(
         child: MaterialApp(home: VideoWatchScreen()),

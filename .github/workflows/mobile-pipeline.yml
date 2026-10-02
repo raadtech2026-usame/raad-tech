@@ -43,10 +43,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The Android build needs a JDK; 17 is what the Android Gradle plugin supports.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.19.0"
+          flutter-version: "3.47.5"
           channel: "stable"
+          cache: true
 
       - name: Install dependencies
         run: flutter pub get
@@ -59,3 +66,8 @@ jobs:
 
       - name: Run widget/unit tests
         run: flutter test
+
+      # Proves the Android project itself still builds. A debug build needs no signing key and
+      # no server address; release builds are made by hand with the real `--dart-define`s.
+      - name: Build Android APK (debug)
+        run: flutter build apk --debug

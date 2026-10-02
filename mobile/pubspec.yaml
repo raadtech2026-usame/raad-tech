@@ -42,6 +42,13 @@
 #                       media_kit_libs_video pulls in the actual native libmpv binaries per
 #                       platform (media_kit/media_kit_video alone are pure-Dart wrappers with no
 #                       decoder of their own).
+# Map (mobile app build, user-authorised):
+#
+#   flutter_map / latlong2 - BSD-3 / Apache-2.0. Draws the bus on raster map tiles. The tile
+#                       source is Mapbox, the provider the web dashboard already uses
+#                       (ADR-0011), behind a seam in features/map/bus_map.dart
+#                       (`.claude/rules/flutter.md` #6). Chosen over the Mapbox native SDK
+#                       because it needs no secret download token at build time.
 name: raad_mobile
 description: RAAD Platform mobile app (Parent + Driver roles).
 publish_to: "none"
@@ -61,6 +68,8 @@ dependencies:
   media_kit: ^1.1.11
   media_kit_video: ^1.2.5
   media_kit_libs_video: ^1.0.5
+  flutter_map: ^8.3.2
+  latlong2: ^0.10.1
 
 dev_dependencies:
   flutter_test:

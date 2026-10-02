@@ -1,10 +1,30 @@
 import '../network/api_client.dart';
 import 'auth_session.dart';
 
-/// `POST /auth/login` / `POST /auth/refresh` — mirrors `iam.api.routers.login`/`refresh`
-/// exactly (`identifier` is an email or E.164 phone number, matching `LoginRequest`; refresh
-/// rotates the token, matching the backend's own refresh-token-rotation design, so the caller
-/// must always persist the *new* `refreshToken` this returns, never reuse the one just spent).
+/// The signed-in person's own account, from `GET /auth/me`.
+class UserProfile {
+  final String fullName;
+  final String? email;
+  final String? phone;
+  final String role;
+
+  const UserProfile({
+    required this.fullName,
+    required this.email,
+    required this.phone,
+    required this.role,
+  });
+
+  factory UserProfile.fromJson(Map<String, dynamic> json) {
+    return UserProfile(
+      fullName: json['full_name'] as String? ?? '',
+      email: json['email'] as String?,
+      phone: json['phone'] as String?,
+      role: json['role'] as String? ?? '',
+    );
+  }
+}
+
 class AuthRepository {
   final ApiClient _client;
 
@@ -31,14 +51,18 @@ class AuthRepository {
     return AuthSession.fromJson(json);
   }
 
+  /// `/auth/logout` needs the bearer access token as well as the refresh token in the body,
+  /// so it must be called before the access token is cleared.
   Future<void> logout(String refreshToken) async {
-    // Unlike login/refresh, /auth/logout requires a valid bearer access token
-    // (`Depends(get_current_user)`, `iam/api/routers.py`) in *addition* to the refresh token
-    // in the body — `auth: true` (the default) so `ApiClient`'s currently-set access token is
-    // sent. Must be called before `ApiClient.clearAccessToken()`, or this 401s.
-    await _client.post(
-      '/auth/logout',
-      body: {'refresh_token': refreshToken},
-    );
+    await _client.post('/auth/logout', body: {'refresh_token': refreshToken});
+  }
+
+  Future<void> changePassword(String newPassword) async {
+    await _client
+        .post('/auth/change-password', body: {'new_password': newPassword});
+  }
+
+  Future<UserProfile> profile() async {
+    return UserProfile.fromJson(await _client.get('/auth/me'));
   }
 }

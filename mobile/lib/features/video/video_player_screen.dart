@@ -72,7 +72,10 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
     // Best-effort - a failed stop call must never block leaving the screen (mirrors
     // `AuthController.logout`'s identical "best-effort server call, local cleanup always
     // proceeds" posture).
-    ref.read(videoRepositoryProvider).stop(widget.videoSessionId).catchError((_) {});
+    ref
+        .read(videoRepositoryProvider)
+        .stop(widget.videoSessionId)
+        .then((_) {}, onError: (_) {});
     _bridge.stop();
     _player.dispose();
     super.dispose();
@@ -99,7 +102,8 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
                     children: [
                       CircularProgressIndicator(),
                       SizedBox(height: 16),
-                      Text('Connecting…', style: TextStyle(color: Colors.white)),
+                      Text('Connecting…',
+                          style: TextStyle(color: Colors.white)),
                     ],
                   )
                 : Video(controller: _controller),

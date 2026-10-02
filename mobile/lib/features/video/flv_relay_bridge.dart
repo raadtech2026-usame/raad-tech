@@ -31,8 +31,9 @@ class FlvRelayBridge {
   bool _servedFirstRequest = false;
 
   /// The local URL to hand to the video player once [start] completes.
-  String? get localStreamUrl =>
-      _httpServer == null ? null : 'http://127.0.0.1:${_httpServer!.port}/stream.flv';
+  String? get localStreamUrl => _httpServer == null
+      ? null
+      : 'http://127.0.0.1:${_httpServer!.port}/stream.flv';
 
   /// Connects to the relay's own `ws://.../viewer?token=...` URL and starts the local HTTP
   /// bridge server. Returns [localStreamUrl]. A rejected token (expired/already-used/invalid —
