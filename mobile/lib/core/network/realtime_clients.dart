@@ -148,8 +148,9 @@ class NotificationsSocket {
     channel.sink.add(jsonEncode({'type': 'auth', 'token': _token}));
     _subscription = channel.stream.listen(
       (raw) {
-        if (raw is String && raw.contains('"notification"'))
+        if (raw is String && raw.contains('"notification"')) {
           _arrivals.add(null);
+        }
       },
       onDone: _scheduleReconnect,
       onError: (_) => _scheduleReconnect(),

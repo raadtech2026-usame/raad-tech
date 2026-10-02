@@ -77,8 +77,9 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
         setState(() => _position = latest);
       }
     } on ApiException catch (e) {
-      if (mounted && e.statusCode == 403)
+      if (mounted && e.statusCode == 403) {
         setState(() => _phase = _Phase.denied);
+      }
     } catch (_) {
       // No cached position yet, or offline: the socket state says what is going on.
     }

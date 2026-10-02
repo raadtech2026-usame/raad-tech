@@ -191,8 +191,9 @@ class DriverTripsScreen extends ConsumerWidget {
     void refresh() => ref.invalidate(driverTripsProvider);
 
     Widget list(List<Trip> items) {
-      if (items.isEmpty)
+      if (items.isEmpty) {
         return EmptyView(icon: Icons.route_rounded, message: s.noHistory);
+      }
       return RefreshIndicator(
         onRefresh: () async => refresh(),
         child: ListView.separated(

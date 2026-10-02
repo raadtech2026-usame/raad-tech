@@ -393,8 +393,9 @@ class _VideoEntry extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final s = ref.watch(stringsProvider);
     final identity = ref.watch(myIdentityProvider).valueOrNull;
-    if (identity == null || !identity.hasVideoLiveAccess)
+    if (identity == null || !identity.hasVideoLiveAccess) {
       return const SizedBox.shrink();
+    }
     return Padding(
       padding: const EdgeInsets.only(top: 16),
       child: OutlinedButton.icon(

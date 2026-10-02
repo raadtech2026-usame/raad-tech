@@ -22,8 +22,9 @@ class CrewScreen extends ConsumerWidget {
         value: ref.watch(myCrewProvider),
         onRetry: refresh,
         builder: (crews) {
-          if (crews.isEmpty)
+          if (crews.isEmpty) {
             return EmptyView(icon: Icons.groups_rounded, message: s.noCrew);
+          }
           return ListView(
             padding: const EdgeInsets.all(16),
             children: [
