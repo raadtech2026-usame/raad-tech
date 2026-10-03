@@ -36,6 +36,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
   final _socket = TrackingSocket();
   StreamSubscription<TrackingPosition>? _positions;
   StreamSubscription<TrackingClosed>? _closed;
+  StreamSubscription<void>? _opened;
   Timer? _reconnect;
   Timer? _ticker;
   TrackingPosition? _position;
@@ -54,6 +55,13 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
       });
     });
     _closed = _socket.closed.listen(_onClosed);
+    // Connected again but nothing received yet: no longer "connection lost". An old position
+    // is still marked as old until a new one arrives.
+    _opened = _socket.opened.listen((_) {
+      if (mounted && _phase == _Phase.reconnecting) {
+        setState(() => _phase = _Phase.connecting);
+      }
+    });
     // Redraws the "last updated" line and the stale marker as time passes.
     _ticker = Timer.periodic(const Duration(seconds: 15), (_) {
       if (mounted) setState(() {});
@@ -62,7 +70,9 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
   }
 
   Future<void> _start() async {
-    _loadLatest();
+    // First, so that an expired access token is renewed before the socket uses it.
+    await _loadLatest();
+    if (!mounted || _phase == _Phase.denied) return;
     final token = ref.read(apiClientProvider).accessToken;
     if (token == null) return;
     _socket.connect(accessToken: token, vehicleId: _vehicleId);
@@ -120,6 +130,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
     _ticker?.cancel();
     _positions?.cancel();
     _closed?.cancel();
+    _opened?.cancel();
     _socket.dispose();
     super.dispose();
   }

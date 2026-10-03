@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../config/env.dart';
+import '../util/format.dart';
 
 /// A bus position pushed by `/ws/tracking` (API Contracts §11.2).
 class TrackingPosition {
@@ -34,8 +35,7 @@ class TrackingPosition {
       lng: ((json['lng'] ?? json['longitude']) as num?)?.toDouble(),
       speedKph: json['speed_kph'] as num?,
       headingDeg: json['heading_deg'] as num?,
-      eventTime:
-          DateTime.tryParse(json['event_time'] as String? ?? '')?.toLocal(),
+      eventTime: parseServerTime(json['event_time']),
       isGpsValid: json['is_gps_valid'] as bool? ?? true,
     );
   }
@@ -56,9 +56,13 @@ class TrackingSocket {
   StreamSubscription<dynamic>? _subscription;
   final _positions = StreamController<TrackingPosition>.broadcast();
   final _closed = StreamController<TrackingClosed>.broadcast();
+  final _opened = StreamController<void>.broadcast();
   bool _tripEnded = false;
 
   Stream<TrackingPosition> get positions => _positions.stream;
+
+  /// Fires when the connection is established, before any position has arrived.
+  Stream<void> get opened => _opened.stream;
   Stream<TrackingClosed> get closed => _closed.stream;
 
   void connect({required String accessToken, required String vehicleId}) {
@@ -67,6 +71,11 @@ class TrackingSocket {
     final channel =
         WebSocketChannel.connect(Uri.parse('${Env.wsBaseUrl}/ws/tracking'));
     _channel = channel;
+    channel.ready.then((_) {
+      if (identical(_channel, channel) && !_opened.isClosed) _opened.add(null);
+    }, onError: (_) {
+      // The stream's own error or done event reports the failure.
+    });
     channel.sink.add(jsonEncode({'type': 'auth', 'token': accessToken}));
     channel.sink.add(
       jsonEncode(
@@ -118,6 +127,7 @@ class TrackingSocket {
     disconnect();
     _positions.close();
     _closed.close();
+    _opened.close();
   }
 }
 

@@ -184,6 +184,17 @@ void main() {
   });
 
   group('formatting', () {
+    test('a server time without an offset is read as UTC', () {
+      final bare = parseServerTime('2026-10-03T06:20:00');
+      final zulu = parseServerTime('2026-10-03T06:20:00Z');
+      final offset = parseServerTime('2026-10-03T09:20:00+03:00');
+      expect(bare, zulu);
+      expect(offset, zulu);
+      expect(bare!.isUtc, isFalse);
+      expect(parseServerTime(null), isNull);
+      expect(parseServerTime('not a time'), isNull);
+    });
+
     test('distance', () {
       // About 111 km per degree of latitude.
       expect(distanceMetres(2.0, 45.0, 2.001, 45.0), closeTo(111.2, 1));

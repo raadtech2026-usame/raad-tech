@@ -8,6 +8,16 @@ String isoDate(DateTime day) {
   return '${day.year}-${two(day.month)}-${two(day.day)}';
 }
 
+/// A server timestamp in the phone's time zone.
+///
+/// The API stores UTC and some responses carry no offset (`2026-10-03T06:20:00`); Dart would
+/// read those as local time and show them hours off, so a value without an offset is UTC.
+DateTime? parseServerTime(Object? value) {
+  if (value is! String || value.isEmpty) return null;
+  final hasOffset = RegExp(r'(Z|[+-]\d{2}:?\d{2})$').hasMatch(value);
+  return DateTime.tryParse(hasOffset ? value : '${value}Z')?.toLocal();
+}
+
 DateTime dateOnly(DateTime moment) =>
     DateTime(moment.year, moment.month, moment.day);
 

@@ -2,8 +2,9 @@
 /// Plain classes with `fromJson`; nothing here talks to the network.
 library;
 
-DateTime? _dateTime(Object? value) =>
-    value is String ? DateTime.tryParse(value)?.toLocal() : null;
+import '../util/format.dart';
+
+DateTime? _dateTime(Object? value) => parseServerTime(value);
 
 DateTime _day(Object? value) => DateTime.parse(value as String);
 
