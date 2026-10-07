@@ -41,7 +41,7 @@ jobs:
         working-directory: mobile
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The Android build needs a JDK; 17 is what the Android Gradle plugin supports.
       - uses: actions/setup-java@v4

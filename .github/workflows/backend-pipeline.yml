@@ -78,7 +78,7 @@ jobs:
       RAAD_AUTH__JWT_SECRET_KEY: ci-only-not-a-real-secret
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
