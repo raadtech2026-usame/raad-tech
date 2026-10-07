@@ -68,8 +68,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Icon(Icons.directions_bus_rounded,
-                    size: 64, color: RaadColors.blue),
+                Image.asset('assets/logo-raad.png',
+                    height: 84, semanticLabel: 'RAAD'),
                 const SizedBox(height: 8),
                 const Text(
                   'RAAD',

@@ -52,7 +52,9 @@
 name: raad_mobile
 description: RAAD Platform mobile app (Parent + Driver roles).
 publish_to: "none"
-version: 0.1.0
+# 1.0.0 is the first distributed release. The number after `+` is Android's versionCode and
+# must go up with every APK that is handed out, or Android refuses to install it as an update.
+version: 1.0.0+1
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -78,3 +80,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    # The official RAAD mark, the same file the web dashboard shows.
+    - assets/logo-raad.png
