@@ -1811,6 +1811,47 @@ documents. What a future change must not undo:
 **Not built:** uploads and scans (would reverse ADR-0051 and needs a file store), vehicle
 documents, requirements per job title, staff self-service (Phase 5), compliance reports (Phase 6).
 
+## Mobile App & Self-Service API (ADR-0060/0061, 2026-10-02)
+
+Phase 5 of the transport-management roadmap, and the first time the Flutter app was compiled.
+What a future change must not undo:
+
+- **Parents and drivers reach their data only through self-scoped `/me` routes.** No
+  permission, and no route takes a parent, driver, staff or student id; the two path ids that
+  exist (a trip, an unavailability) answer 404 when they are someone else's. Never grant
+  `parent` or `driver` an organization-wide read to make a screen work.
+- **A parent sees only their own child's two stops.** `/me/transport` never returns the route's
+  stop list: that would give one family another family's pickup point.
+- **"Is a trip active" comes from `transport_ops`, never from the cached position.** The device
+  plane cannot know trips and always writes `trip_id=None`. Deriving the tracking time window
+  from the snapshot denied every parent, during every trip, with a fully green suite whose
+  fakes carried a `trip_id` production never produces.
+- **A stop notification goes to the families at that stop, on that trip**: pickup stop in the
+  morning, dropoff stop in the afternoon. Trip started/ended/arrived still go to the whole bus.
+- **One stop must never silence the stops after it.** The evaluator passes over a stop with no
+  radius, and moves to a later stop once the bus is there (ADR-0061 §7, amending ADR-0014).
+- **The app says only what RAAD knows.** No boarding record exists, so history says a trip ran
+  or was cancelled, never that a child boarded or missed the bus. No ETA: the app shows the
+  straight-line distance to the family's stop from the live position.
+- **A driver's unavailability is a reported fact** (ADR-0053 unchanged): nothing is reassigned,
+  the office is told, and the driver can withdraw only until cover exists.
+- **The phone is never a tracking source.** The Android manifest requests no location.
+- **A release build refuses plain HTTP** (`Env.releaseConfigurationError`, and the Android
+  network security config). Debug builds may use it to reach a development machine.
+- **One Flutter app, role-routed.** Somali by default, English available
+  (`core/l10n/strings.dart`). Known bus events are worded by the app; the office's own
+  messages are shown as written.
+
+**Permanent lessons.**
+- **A fake that carries a value production never produces proves nothing.** Build fakes from
+  what the upstream actually emits; here that was `trip_id=None`.
+- **The first compile is a test nobody had run.** The mobile code had been "complete" for two
+  months with a subscribe frame the server ignored (no `type`), list responses decoded to an
+  empty map, and no token refresh. None was visible until a toolchain and a real server met it.
+
+**Not built:** background push (no Firebase project, no sender; `PushService` is the seam),
+ETA, notification preferences, a boarding record, iOS build, store release signing.
+
 ## Per-Student Transport Pricing (ADR-0048, 2026-09-28)
 
 Amends ADR-0042 §1 at the user's direction ("the fee must be assigned individually to each

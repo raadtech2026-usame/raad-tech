@@ -6,7 +6,8 @@ class VideoSession {
   final String status;
   final String? streamUrl;
 
-  const VideoSession({required this.id, required this.status, required this.streamUrl});
+  const VideoSession(
+      {required this.id, required this.status, required this.streamUrl});
 
   factory VideoSession.fromJson(Map<String, dynamic> json) {
     return VideoSession(

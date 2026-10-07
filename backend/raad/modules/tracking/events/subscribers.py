@@ -403,27 +403,54 @@ def _evaluate_stop_geofence(
         return crossings
 
     if state.stop_target_id is None:
-        target = ordered_stops[0]
+        previous = ordered_stops[0]
     else:
-        target = next(
+        previous = next(
             (stop for stop in ordered_stops if stop.id == state.stop_target_id), None
         )
-        if target is None:
+        if previous is None:
             # The previously-targeted stop no longer exists on this route (edited/removed
             # mid-trip) - fall back to the first stop rather than getting permanently stuck.
-            target = ordered_stops[0]
+            previous = ordered_stops[0]
 
-    if target.geofence_radius_m is None:
-        # ADR-0014: a stop with no configured radius is invisible to the evaluator entirely -
-        # never advanced past, never given a hardcoded fallback radius.
-        state.stop_target_id = target.id
+    # ADR-0014: a stop with no configured radius is invisible to the evaluator - never given a
+    # hardcoded fallback radius. It is passed over, so it cannot hold up the stops after it.
+    remaining = [
+        stop
+        for stop in ordered_stops
+        if stop.sequence_no >= previous.sequence_no and stop.geofence_radius_m is not None
+    ]
+    if not remaining:
+        state.stop_target_id = None
+        state.stops_exhausted = True
         return crossings
+    target = remaining[0]
 
-    center = GeoPoint(latitude=target.latitude, longitude=target.longitude)
     # ADR-0014 amendment: an absolute, organization-configurable distance - no longer derived
     # from the stop's own arrival radius. See module docstring for the future per-stop-override
     # design this is left open for.
     approach_radius_m = organization.approaching_distance_m
+
+    def _near(stop: StopDTO) -> bool:
+        return GeofenceEvaluationService.is_within_radius(
+            position=position,
+            center=GeoPoint(latitude=stop.latitude, longitude=stop.longitude),
+            radius_m=max(approach_radius_m, stop.geofence_radius_m or 0),
+        )
+
+    # A stop the bus never reaches (no child there today, another road taken) must not hold up
+    # the stops after it: once the bus is at a later stop, that stop is the target. Only while
+    # the bus is away from the current target, so two close stops are still taken in order.
+    if not (state.stop_is_inside_approach or state.stop_is_inside_arrival) and not _near(target):
+        later = next((stop for stop in remaining[1:] if _near(stop)), None)
+        if later is not None:
+            target = later
+
+    if target.id != state.stop_target_id:
+        state.stop_is_inside_approach = False
+        state.stop_is_inside_arrival = False
+
+    center = GeoPoint(latitude=target.latitude, longitude=target.longitude)
 
     is_inside_approach = GeofenceEvaluationService.is_within_radius(
         position=position, center=center, radius_m=approach_radius_m

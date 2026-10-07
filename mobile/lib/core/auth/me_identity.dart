@@ -31,7 +31,8 @@ class MeIdentity {
       parentId: json['parent_id'] as String?,
       driverId: json['driver_id'] as String?,
       hasVideoLiveAccess: json['has_video_live_access'] as bool? ?? false,
-      hasVideoPlaybackAccess: json['has_video_playback_access'] as bool? ?? false,
+      hasVideoPlaybackAccess:
+          json['has_video_playback_access'] as bool? ?? false,
     );
   }
 

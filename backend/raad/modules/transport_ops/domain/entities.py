@@ -3052,10 +3052,13 @@ class Incident(_AggregateRoot):
         closed_at: datetime | None,
         created_at: datetime,
         updated_at: datetime,
+        reported_by_staff_id: str | None = None,
     ) -> None:
         super().__init__()
         self.id = id
         self.organization_id = organization_id
+        #: ADR-0061: set when a staff member reported it from the mobile app. Never changes.
+        self.reported_by_staff_id = reported_by_staff_id
         self.category = category
         self.severity = severity
         self.occurred_at = occurred_at
@@ -3084,11 +3087,13 @@ class Incident(_AggregateRoot):
     @classmethod
     def record(cls, *, id: IncidentId, organization_id: OrganizationId, clock: Clock,
                actor_id: str | None = None, source_alert_id: str | None = None,
+               reported_by_staff_id: str | None = None,
                **values: object) -> "Incident":
         now = clock.now()
         incident = cls(
             id=id,
             organization_id=organization_id,
+            reported_by_staff_id=reported_by_staff_id,
             status=IncidentStatus.OPEN,
             resolution=None,
             recorded_in_error=False,

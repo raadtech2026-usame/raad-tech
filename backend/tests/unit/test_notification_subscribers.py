@@ -54,6 +54,9 @@ class _AssignmentDTO:
     student_id: str
     status: str
     vehicle_id: str | None
+    route_id: str = "route-1"
+    pickup_stop_id: str = "stop-1"
+    dropoff_stop_id: str = "stop-9"
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,8 @@ class _SubscriptionDTO:
 @dataclass(frozen=True)
 class _TripDTO:
     vehicle_id: str
+    route_id: str = "route-1"
+    trip_type: str = "morning"
 
 
 class _FakeStudentAssignmentRepo:
@@ -126,11 +131,12 @@ class FakeBillingService:
 
 
 class FakeTripService:
-    def __init__(self, vehicle_id: str) -> None:
+    def __init__(self, vehicle_id: str, trip_type: str = "morning") -> None:
         self._vehicle_id = vehicle_id
+        self._trip_type = trip_type
 
     async def get_trip_by_id(self, query, *, uow):
-        return _TripDTO(vehicle_id=self._vehicle_id)
+        return _TripDTO(vehicle_id=self._vehicle_id, trip_type=self._trip_type)
 
 
 class MissingTripService:
@@ -163,6 +169,7 @@ def make_container(
     parents_by_id: dict[str, _ParentDTO],
     subscription: _SubscriptionDTO | None = _SubscriptionDTO(status="active"),
     trip_vehicle_id: str | None = None,
+    trip_type: str = "morning",
 ) -> tuple[Container, RecordingNotificationService]:
     container = Container()
     container.bind_singleton(
@@ -173,7 +180,9 @@ def make_container(
     notification_service = RecordingNotificationService()
     container.bind_singleton(NotificationApplicationService, notification_service)
     if trip_vehicle_id is not None:
-        container.bind_singleton(TripApplicationService, FakeTripService(trip_vehicle_id))
+        container.bind_singleton(
+            TripApplicationService, FakeTripService(trip_vehicle_id, trip_type)
+        )
 
     # `TransportOpsUnitOfWork` actually IS used now — `notify_vehicle_watchers` opens it
     # directly to read `student_assignments.list_all()` (see that method's own docstring).
@@ -392,6 +401,100 @@ class EventProcessorTests(unittest.IsolatedAsyncioTestCase):
         await processor.process(event)
         self.assertEqual(len(notifications.created), 1)
         self.assertEqual(notifications.created[0]["type"], "approaching_stop")
+
+
+class ApproachingStopRecipientTests(unittest.IsolatedAsyncioTestCase):
+    """A stop event reaches only the families whose child uses that stop on that trip: the
+    pickup stop in the morning, the dropoff stop in the afternoon. Never the whole bus."""
+
+    async def _approach(self, *, stop_id: str, trip_type: str = "morning", assignments=None):
+        container, notifications = make_container(
+            assignments=assignments
+            or [
+                _AssignmentDTO("s1", "active", "veh-1", pickup_stop_id="stop-1", dropoff_stop_id="stop-9"),
+                _AssignmentDTO("s2", "active", "veh-1", pickup_stop_id="stop-2", dropoff_stop_id="stop-8"),
+            ],
+            links_by_student={
+                "s1": [_ParentLinkDTO(parent_id="p1")],
+                "s2": [_ParentLinkDTO(parent_id="p2")],
+            },
+            parents_by_id={"p1": _ParentDTO(user_id="user-1"), "p2": _ParentDTO(user_id="user-2")},
+            trip_vehicle_id="veh-1",
+            trip_type=trip_type,
+        )
+        processor = VehicleApproachingStopNotifier(_NotificationFanOut(container))
+        await processor.process(
+            make_event(
+                event_type="VehicleApproachingStop",
+                aggregate_id="01J8Z3K9G6X8YV5T4N2R7QW3GC",
+                payload={"trip_id": "trip-1", "stop_id": stop_id},
+            )
+        )
+        return [n["recipient_user_id"] for n in notifications.created]
+
+    async def test_only_the_parent_at_the_approached_stop_is_notified(self) -> None:
+        self.assertEqual(await self._approach(stop_id="stop-1"), ["user-1"])
+        self.assertEqual(await self._approach(stop_id="stop-2"), ["user-2"])
+
+    async def test_morning_matches_the_pickup_stop_not_the_dropoff_stop(self) -> None:
+        self.assertEqual(await self._approach(stop_id="stop-9", trip_type="morning"), [])
+
+    async def test_afternoon_matches_the_dropoff_stop(self) -> None:
+        self.assertEqual(await self._approach(stop_id="stop-9", trip_type="afternoon"), ["user-1"])
+        self.assertEqual(await self._approach(stop_id="stop-1", trip_type="afternoon"), [])
+
+    async def test_a_stop_nobody_uses_notifies_nobody(self) -> None:
+        self.assertEqual(await self._approach(stop_id="stop-5"), [])
+
+    async def test_a_child_on_another_route_of_the_same_bus_is_not_notified(self) -> None:
+        recipients = await self._approach(
+            stop_id="stop-1",
+            assignments=[
+                _AssignmentDTO("s1", "active", "veh-1", route_id="route-other", pickup_stop_id="stop-1"),
+            ],
+        )
+        self.assertEqual(recipients, [])
+
+    async def test_siblings_at_one_stop_notify_their_parent_once(self) -> None:
+        container, notifications = make_container(
+            assignments=[
+                _AssignmentDTO("s1", "active", "veh-1"),
+                _AssignmentDTO("s2", "active", "veh-1"),
+            ],
+            links_by_student={
+                "s1": [_ParentLinkDTO(parent_id="p1")],
+                "s2": [_ParentLinkDTO(parent_id="p1")],
+            },
+            parents_by_id={"p1": _ParentDTO(user_id="user-1")},
+            trip_vehicle_id="veh-1",
+        )
+        processor = VehicleApproachingStopNotifier(_NotificationFanOut(container))
+        await processor.process(
+            make_event(
+                event_type="VehicleApproachingStop",
+                aggregate_id="01J8Z3K9G6X8YV5T4N2R7QW3GC",
+                payload={"trip_id": "trip-1", "stop_id": "stop-1"},
+            )
+        )
+        self.assertEqual(len(notifications.created), 1)
+
+    async def test_an_inactive_subscription_notifies_nobody(self) -> None:
+        container, notifications = make_container(
+            assignments=[_AssignmentDTO("s1", "active", "veh-1")],
+            links_by_student={"s1": [_ParentLinkDTO(parent_id="p1")]},
+            parents_by_id={"p1": _ParentDTO(user_id="user-1")},
+            subscription=None,
+            trip_vehicle_id="veh-1",
+        )
+        processor = VehicleApproachingStopNotifier(_NotificationFanOut(container))
+        await processor.process(
+            make_event(
+                event_type="VehicleApproachingStop",
+                aggregate_id="01J8Z3K9G6X8YV5T4N2R7QW3GC",
+                payload={"trip_id": "trip-1", "stop_id": "stop-1"},
+            )
+        )
+        self.assertEqual(notifications.created, [])
 
 
 class DanglingTripReferenceTests(unittest.IsolatedAsyncioTestCase):

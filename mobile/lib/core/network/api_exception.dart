@@ -15,6 +15,17 @@ class ApiException implements Exception {
     this.correlationId,
   });
 
+  /// The server could not be reached at all (offline, timeout, DNS).
+  const ApiException.network()
+      : statusCode = 0,
+        code = 'NETWORK',
+        message = 'Could not reach the RAAD server. Check your connection.',
+        correlationId = null;
+
+  bool get isNetwork => statusCode == 0;
+  bool get isNotFound => statusCode == 404;
+  bool get isUnauthorized => statusCode == 401;
+
   factory ApiException.fromEnvelope(int statusCode, Map<String, dynamic> body) {
     final error = body['error'] as Map<String, dynamic>?;
     if (error == null) {

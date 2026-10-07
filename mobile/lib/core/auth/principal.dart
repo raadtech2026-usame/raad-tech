@@ -8,10 +8,14 @@ class Principal {
   final String role;
   final String? organizationId;
 
+  /// True while the account still holds the one-time password the school handed over.
+  final bool isPasswordChangeRequired;
+
   const Principal({
     required this.userId,
     required this.role,
     required this.organizationId,
+    this.isPasswordChangeRequired = false,
   });
 
   factory Principal.fromJson(Map<String, dynamic> json) {
@@ -19,6 +23,8 @@ class Principal {
       userId: json['user_id'] as String,
       role: json['role'] as String,
       organizationId: json['organization_id'] as String?,
+      isPasswordChangeRequired:
+          json['is_password_change_required'] as bool? ?? false,
     );
   }
 

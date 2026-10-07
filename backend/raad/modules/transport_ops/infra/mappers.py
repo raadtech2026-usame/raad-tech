@@ -795,6 +795,7 @@ def incident_to_model(incident: Incident, *, existing: IncidentModel | None = No
     model.resolution = incident.resolution
     model.recorded_in_error = incident.recorded_in_error
     model.source_alert_id = incident.source_alert_id
+    model.reported_by_staff_id = incident.reported_by_staff_id
     model.closed_at = _to_naive_utc(incident.closed_at)
     model.created_at = _to_naive_utc(incident.created_at)
     model.updated_at = _to_naive_utc(incident.updated_at)
@@ -820,6 +821,9 @@ def model_to_incident(model: IncidentModel) -> Incident:
         resolution=model.resolution,
         recorded_in_error=model.recorded_in_error,
         source_alert_id=model.source_alert_id.strip() if model.source_alert_id else None,
+        reported_by_staff_id=(
+            model.reported_by_staff_id.strip() if model.reported_by_staff_id else None
+        ),
         closed_at=model.closed_at,
         created_at=model.created_at,
         updated_at=model.updated_at,

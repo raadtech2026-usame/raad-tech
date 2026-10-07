@@ -66,6 +66,8 @@ class RecordIncidentCommand:
     staff_ids: tuple[str, ...] = ()
     student_ids: tuple[str, ...] = ()
     source_alert_id: str | None = None
+    #: ADR-0061: the reporting staff member when it comes from the mobile app.
+    reported_by_staff_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,7 @@ class IncidentApplicationService:
                 clock=self._clock,
                 actor_id=command.actor.user_id,
                 source_alert_id=command.source_alert_id,
+                reported_by_staff_id=command.reported_by_staff_id,
                 **values,
             )
             uow.incidents.add(incident)

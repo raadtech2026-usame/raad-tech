@@ -720,6 +720,10 @@ class IncidentModel(AuditedTableMixin, Base):
     recorded_in_error: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     source_alert_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    #: ADR-0061: the staff member who reported it from the mobile app, if any.
+    reported_by_staff_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("transport_staff.id"), nullable=True, index=True
+    )
 
 
 class IncidentNoteModel(AuditedTableMixin, Base):

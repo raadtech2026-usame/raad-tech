@@ -711,6 +711,10 @@ class IncidentRepository(ABC):
         """Newest `occurred_at` first, within the caller's scope."""
         raise NotImplementedError
 
+    async def list_reported_by(self, staff_id: str, *, limit: int = 100) -> list[Incident]:
+        """ADR-0061: the incidents one staff member reported, newest first."""
+        raise NotImplementedError
+
 
 class IncidentNoteRepository(ABC):
     @abstractmethod

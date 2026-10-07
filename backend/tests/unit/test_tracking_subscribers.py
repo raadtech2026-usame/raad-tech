@@ -607,9 +607,7 @@ class GeofenceEvaluationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state.stops_exhausted)
         self.assertIsNone(state.stop_target_id)
 
-    async def test_stop_without_a_configured_radius_is_never_evaluated_or_advanced(
-        self,
-    ) -> None:
+    async def test_stop_without_a_configured_radius_is_never_evaluated(self) -> None:
         stop = _make_stop(id="stop-1", sequence_no=1, geofence_radius_m=None)
         route = _make_route([stop])
         organization = _make_organization()
@@ -622,8 +620,105 @@ class GeofenceEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(tracking_service.recorded_crossings, [])
         state = await state_port.get_state(TRIP_ID_1)
-        self.assertEqual(state.stop_target_id, "stop-1")
-        self.assertFalse(state.stops_exhausted)
+        # Nothing on this route can ever be evaluated, so the trip's stops are done.
+        self.assertIsNone(state.stop_target_id)
+        self.assertTrue(state.stops_exhausted)
+
+    async def test_stop_without_a_radius_does_not_block_the_stops_after_it(self) -> None:
+        """Regression: a radius-less stop used to pin the evaluator on itself for the whole
+        trip, so no later stop ever fired."""
+        stop_1 = _make_stop(id="stop-1", sequence_no=1, geofence_radius_m=None)
+        stop_2 = _make_stop(
+            id="stop-2", sequence_no=2, latitude=_FAR_AWAY_LATITUDE_OFFSET, geofence_radius_m=100
+        )
+        route = _make_route([stop_1, stop_2])
+        clock = _MutableClock(datetime(2026, 7, 26, 9, 0, 0, tzinfo=timezone.utc))
+        processor, tracking_service, state_port = self._make_processor(
+            route=route, organization=_make_organization(), clock=clock
+        )
+
+        await processor.process(_make_position_event(latitude=0.0))  # at the radius-less stop
+        self.assertEqual(tracking_service.recorded_crossings, [])
+        await processor.process(_make_position_event(latitude=_FAR_AWAY_LATITUDE_OFFSET))
+
+        fired = [(c.event_type, c.stop_id) for c in tracking_service.recorded_crossings]
+        self.assertIn((GeofenceEventType.APPROACHING_STOP, "stop-2"), fired)
+        self.assertIn((GeofenceEventType.ENTERED_STOP, "stop-2"), fired)
+        state = await state_port.get_state(TRIP_ID_1)
+        self.assertEqual(state.stop_target_id, "stop-2")
+
+    async def test_a_skipped_stop_does_not_block_the_stops_after_it(self) -> None:
+        """Regression: the evaluator only moved on after the bus left a stop's radius, so a
+        stop the bus never visited (no child there that day, another road) held up the rest."""
+        stop_1 = _make_stop(id="stop-1", sequence_no=1, latitude=0.5, geofence_radius_m=100)
+        stop_2 = _make_stop(id="stop-2", sequence_no=2, latitude=1.0, geofence_radius_m=100)
+        stop_3 = _make_stop(id="stop-3", sequence_no=3, latitude=1.5, geofence_radius_m=100)
+        route = _make_route([stop_1, stop_2, stop_3])
+        clock = _MutableClock(datetime(2026, 7, 26, 9, 0, 0, tzinfo=timezone.utc))
+        processor, tracking_service, state_port = self._make_processor(
+            route=route, organization=_make_organization(), clock=clock
+        )
+
+        await processor.process(_make_position_event(latitude=0.0))  # nowhere near any stop
+        self.assertEqual(tracking_service.recorded_crossings, [])
+        await processor.process(_make_position_event(latitude=1.0))  # straight to stop 2
+
+        fired = [(c.event_type, c.stop_id) for c in tracking_service.recorded_crossings]
+        self.assertEqual(
+            fired,
+            [
+                (GeofenceEventType.APPROACHING_STOP, "stop-2"),
+                (GeofenceEventType.ENTERED_STOP, "stop-2"),
+            ],
+        )
+
+        clock.advance(seconds=200)
+        await processor.process(_make_position_event(latitude=1.25))  # leaves stop 2
+        await processor.process(_make_position_event(latitude=1.5))  # reaches stop 3
+
+        fired = [(c.event_type, c.stop_id) for c in tracking_service.recorded_crossings]
+        self.assertIn((GeofenceEventType.EXITED, "stop-2"), fired)
+        self.assertIn((GeofenceEventType.ENTERED_STOP, "stop-3"), fired)
+        # The skipped stop never fires, and is never returned to.
+        self.assertNotIn("stop-1", [stop_id for _event, stop_id in fired])
+
+    async def test_two_close_stops_are_still_taken_in_order(self) -> None:
+        """Being within reach of the next stop too must not skip the current one."""
+        stop_1 = _make_stop(id="stop-1", sequence_no=1, latitude=0.0, geofence_radius_m=100)
+        stop_2 = _make_stop(id="stop-2", sequence_no=2, latitude=0.001, geofence_radius_m=100)
+        route = _make_route([stop_1, stop_2])
+        clock = _MutableClock(datetime(2026, 7, 26, 9, 0, 0, tzinfo=timezone.utc))
+        processor, tracking_service, _state_port = self._make_processor(
+            route=route, organization=_make_organization(), clock=clock
+        )
+
+        await processor.process(_make_position_event(latitude=0.0))
+
+        fired = [(c.event_type, c.stop_id) for c in tracking_service.recorded_crossings]
+        self.assertEqual(
+            fired,
+            [
+                (GeofenceEventType.APPROACHING_STOP, "stop-1"),
+                (GeofenceEventType.ENTERED_STOP, "stop-1"),
+            ],
+        )
+
+    async def test_the_same_stop_event_is_not_recorded_twice(self) -> None:
+        stop = _make_stop(id="stop-1", sequence_no=1, geofence_radius_m=100)
+        clock = _MutableClock(datetime(2026, 7, 26, 9, 0, 0, tzinfo=timezone.utc))
+        processor, tracking_service, _state_port = self._make_processor(
+            route=_make_route([stop]), organization=_make_organization(), clock=clock
+        )
+
+        for _ in range(3):
+            await processor.process(_make_position_event(latitude=0.0))
+
+        approaching = [
+            c
+            for c in tracking_service.recorded_crossings
+            if c.event_type == GeofenceEventType.APPROACHING_STOP
+        ]
+        self.assertEqual(len(approaching), 1)
 
     async def test_organization_geofence_cooldown_suppresses_rapid_reentry(self) -> None:
         stop = _make_stop(id="stop-1", sequence_no=1, geofence_radius_m=100)

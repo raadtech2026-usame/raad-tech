@@ -52,7 +52,8 @@ class _VideoWatchScreenState extends ConsumerState<VideoWatchScreen> {
       if (session.streamUrl == null) {
         setState(() {
           _isRequesting = false;
-          _error = 'No stream URL was returned — the video relay may not be configured.';
+          _error =
+              'No stream URL was returned — the video relay may not be configured.';
         });
         return;
       }
@@ -116,7 +117,9 @@ class _VideoWatchScreenState extends ConsumerState<VideoWatchScreen> {
             if (_error != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 16),
-                child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                child: Text(_error!,
+                    style:
+                        TextStyle(color: Theme.of(context).colorScheme.error)),
               ),
             FilledButton.icon(
               onPressed: _isRequesting ? null : _watchLive,

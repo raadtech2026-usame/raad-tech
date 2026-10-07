@@ -98,11 +98,19 @@ class FakeTrackingService:
 
 
 class FakeTripService:
-    def __init__(self, trip_by_id: dict[str, _TripStatusDTO] | None = None) -> None:
+    def __init__(
+        self,
+        trip_by_id: dict[str, _TripStatusDTO] | None = None,
+        active_trip_by_vehicle: dict[str, object | None] | None = None,
+    ) -> None:
         self._by_id = trip_by_id or {}
+        self._active_by_vehicle = active_trip_by_vehicle or {}
 
     async def get_trip_by_id(self, query, *, uow):
         return self._by_id[query.trip_id]
+
+    async def get_active_trip_for_vehicle(self, query, *, uow):
+        return self._active_by_vehicle.get(query.vehicle_id)
 
 
 class FakeParentService:
@@ -162,6 +170,7 @@ def make_container(
     vehicles: dict[str, _VehicleDTO] | None = None,
     positions: dict[str, _PositionDTO | None] | None = None,
     trips: dict[str, _TripStatusDTO] | None = None,
+    active_trips: dict[str, object | None] | None = None,
     parent_id: str = "parent-1",
     children: list[str] | None = None,
     assignments: dict[str, _AssignmentDTO | None] | None = None,
@@ -171,7 +180,10 @@ def make_container(
     container = Container()
     container.bind_singleton(VehicleApplicationService, FakeVehicleService(vehicles or {}))
     container.bind_singleton(TrackingApplicationService, FakeTrackingService(positions))
-    container.bind_singleton(TripApplicationService, FakeTripService(trips))
+    container.bind_singleton(
+        TripApplicationService,
+        FakeTripService(trip_by_id=trips, active_trip_by_vehicle=active_trips),
+    )
     container.bind_singleton(
         ParentApplicationService, FakeParentService({"user-1": _ParentDTO(id=parent_id)})
     )
@@ -315,10 +327,13 @@ class HandleSubscribeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(websocket.closed_with, WsCloseCode.FORBIDDEN)
 
     async def test_parent_subscribe_to_owned_vehicle_with_active_trip_is_granted(self) -> None:
+        """Item 5: Parent who owns a child on the vehicle, trip in progress ->
+        WebSocket subscribe accepted and a position frame is delivered.
+        Models production reality: cached position has trip_id=None."""
         container = make_container(
             vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
-            positions={"veh-1": _PositionDTO(trip_id="trip-1")},
-            trips={"trip-1": _TripStatusDTO(status="in_progress")},
+            positions={"veh-1": _PositionDTO(trip_id=None)},
+            active_trips={"veh-1": _TripStatusDTO(status="in_progress")},
             children=["s1"],
             assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
             # no subscription bound (FakeBillingService always returns None) - only the D4
@@ -337,6 +352,68 @@ class HandleSubscribeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result, "veh-1")
+
+        # Position frame fanout delivery
+        handler = build_tracking_fanout_handler(connections=connections, container=container)
+        event = make_event(
+            "DevicePositionReported",
+            dict(PositionFrameTests.REALISTIC_PAYLOAD, vehicle_id="veh-1", trip_id=None),
+        )
+        await handler(event)
+
+        self.assertEqual(len(websocket.sent), 1)
+        frame = websocket.sent[0]
+        self.assertEqual(frame["type"], "position")
+        self.assertEqual(frame["vehicle_id"], "veh-1")
+
+    async def test_parent_subscribe_to_owned_vehicle_without_active_trip_is_denied(self) -> None:
+        """Item 6: Same parent, trip NOT in progress -> denied."""
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            positions={"veh-1": _PositionDTO(trip_id=None)},
+            active_trips={},
+            children=["s1"],
+            assignments={"s1": _AssignmentDTO(status="active", vehicle_id="veh-1")},
+        )
+        connections = ConnectionManager()
+        websocket = FakeWebSocket()
+
+        result = await handle_subscribe(
+            {"type": "subscribe", "channel": "vehicle", "vehicle_id": "veh-1"},
+            websocket=websocket,
+            principal=PARENT,
+            container=container,
+            connections=connections,
+            current_vehicle_id=None,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(websocket.closed_with, WsCloseCode.FORBIDDEN)
+        self.assertEqual(await connections.subscribers_for("veh-1"), [])
+
+    async def test_parent_subscribe_to_unowned_vehicle_with_active_trip_is_denied(self) -> None:
+        """Item 7: Parent with no child on that vehicle, trip in progress -> denied (ownership still enforced)."""
+        container = make_container(
+            vehicles={"veh-1": _VehicleDTO(organization_id=ORG_ID)},
+            positions={"veh-1": _PositionDTO(trip_id=None)},
+            active_trips={"veh-1": _TripStatusDTO(status="in_progress")},
+            children=[],
+        )
+        connections = ConnectionManager()
+        websocket = FakeWebSocket()
+
+        result = await handle_subscribe(
+            {"type": "subscribe", "channel": "vehicle", "vehicle_id": "veh-1"},
+            websocket=websocket,
+            principal=PARENT,
+            container=container,
+            connections=connections,
+            current_vehicle_id=None,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(websocket.closed_with, WsCloseCode.FORBIDDEN)
+        self.assertEqual(await connections.subscribers_for("veh-1"), [])
 
     async def test_parent_subscribe_to_unowned_vehicle_is_denied_and_closes_forbidden(self) -> None:
         container = make_container(

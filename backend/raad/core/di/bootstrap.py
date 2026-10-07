@@ -156,7 +156,12 @@ from raad.modules.reporting.infra.renderers import (
     ExcelReportRenderer,
     PdfReportRenderer,
 )
-from raad.core.di.transport_staff_adapters import FleetVehicleDirectoryAdapter
+from raad.core.di.transport_staff_adapters import (
+    FleetVehicleDirectoryAdapter,
+    FleetVehicleSummaryAdapter,
+)
+from raad.modules.transport_ops.application.ports import VehicleSummaryPort
+from raad.modules.transport_ops.application.self_service import SelfServiceApplicationService
 from raad.core.di.safety_adapters import BrokerDeviceCommandAdapter, TransportOpsActiveTripAdapter
 from raad.modules.tracking.application.safety_services import SafetyAlertApplicationService
 from raad.core.di.erp_adapters import (
@@ -851,6 +856,17 @@ def build_container(settings: Settings) -> Container:
                 vehicle_directory=container.resolve(VehicleDirectoryPort),
             ),
         )
+        # ADR-0061 — mobile self-service for parents and drivers.
+        container.bind_singleton(VehicleSummaryPort, FleetVehicleSummaryAdapter(container))
+        container.bind_singleton(
+            SelfServiceApplicationService,
+            SelfServiceApplicationService(
+                clock=container.resolve(Clock),
+                vehicles=container.resolve(VehicleSummaryPort),
+                operations=container.resolve(DailyOperationsApplicationService),
+                incidents=container.resolve(IncidentApplicationService),
+            ),
+        )
         container.bind_factory(
             BillingUnitOfWork,
             lambda: SqlAlchemyBillingUnitOfWork(
@@ -985,6 +1001,13 @@ def build_container(settings: Settings) -> Container:
                 parent_service=container.resolve(ParentApplicationService),
                 driver_service=container.resolve(DriverApplicationService),
                 student_parent_service=container.resolve(StudentParentApplicationService),
+                # ADR-0060 (`GET /me/transport`).
+                student_assignment_service=container.resolve(
+                    StudentAssignmentApplicationService
+                ),
+                route_service=container.resolve(RouteApplicationService),
+                trip_service=container.resolve(TripApplicationService),
+                vehicle_service=container.resolve(VehicleApplicationService),
             ),
         )
 

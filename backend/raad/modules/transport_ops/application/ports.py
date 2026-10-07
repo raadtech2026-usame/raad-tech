@@ -24,6 +24,7 @@ data source like `tracking`'s Redis latest-position cache for `Student`.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from raad.core.db.unit_of_work import UnitOfWork
 from raad.core.tenancy.principal import Principal, Role
@@ -121,4 +122,25 @@ class VehicleDirectoryPort(ABC):
     @abstractmethod
     async def organization_of_vehicle(self, vehicle_id: str) -> str | None:
         """The owning organization's id, or `None` when no such bus exists."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class VehicleSummary:
+    """What a parent or a driver may know about a bus: its plate and its label."""
+
+    id: str
+    plate_no: str
+    label: str | None
+
+
+class VehicleSummaryPort(ABC):
+    """ADR-0061: plate and label for buses named on trips. Same reason as `VehicleDirectoryPort`:
+    buses belong to `fleet_device`; the adapter lives in the composition root."""
+
+    @abstractmethod
+    async def summaries(
+        self, vehicle_ids: list[str], *, organization_id: str
+    ) -> dict[str, VehicleSummary]:
+        """Keyed by id. A bus that does not exist or belongs to another organization is absent."""
         raise NotImplementedError

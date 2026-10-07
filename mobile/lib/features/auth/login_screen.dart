@@ -2,16 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_state.dart';
-import '../../core/network/api_exception.dart';
+import '../../core/config/env.dart';
+import '../../core/l10n/strings.dart';
+import '../../shared/widgets.dart';
 
-/// Shared by both roles — the backend has no role-specific login endpoint, and the app itself
-/// doesn't know which role a credential belongs to until `POST /auth/login` responds
-/// (`app/app.dart` then routes on `principal.role`). No placeholder/example credentials on
-/// either field, mirroring the web dashboard's own `LoginPage` convention exactly (CLAUDE.md's
-/// Phase F0 entry) — there is nothing to type until an Org Admin has actually created this
-/// person's Parent/Driver account.
+/// One sign-in screen for both roles. The server decides the role; the app routes on it.
 class LoginScreen extends ConsumerStatefulWidget {
-  const LoginScreen({super.key});
+  final bool sessionExpired;
+  const LoginScreen({super.key, this.sessionExpired = false});
 
   @override
   ConsumerState<LoginScreen> createState() => _LoginScreenState();
@@ -21,6 +19,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _identifierController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isSubmitting = false;
+  bool _showPassword = false;
   String? _errorMessage;
 
   @override
@@ -31,6 +30,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Future<void> _submit() async {
+    final s = ref.read(stringsProvider);
+    final configurationError = Env.releaseConfigurationError;
+    if (configurationError != null) {
+      setState(() => _errorMessage = configurationError);
+      return;
+    }
     setState(() {
       _isSubmitting = true;
       _errorMessage = null;
@@ -40,10 +45,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             identifier: _identifierController.text.trim(),
             password: _passwordController.text,
           );
-    } on ApiException catch (e) {
-      setState(() => _errorMessage = e.message);
-    } catch (_) {
-      setState(() => _errorMessage = 'Could not reach the RAAD server. Check your connection.');
+    } catch (error) {
+      if (mounted) setState(() => _errorMessage = errorMessage(error, s));
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -51,7 +54,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
+    final language = ref.watch(languageProvider);
+    final message =
+        _errorMessage ?? (widget.sessionExpired ? s.sessionExpired : null);
     return Scaffold(
+      backgroundColor: Colors.white,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -60,38 +68,60 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                Image.asset('assets/logo-raad.png',
+                    height: 84, semanticLabel: 'RAAD'),
+                const SizedBox(height: 8),
                 const Text(
                   'RAAD',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 2),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  s.signInSubtitle,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: RaadColors.grey),
                 ),
                 const SizedBox(height: 32),
                 TextField(
                   controller: _identifierController,
-                  decoration: const InputDecoration(
-                    labelText: 'Email or phone number',
-                    border: OutlineInputBorder(),
+                  decoration: InputDecoration(
+                    labelText: s.identifierLabel,
+                    prefixIcon: const Icon(Icons.person_outline_rounded),
                   ),
                   keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.next,
+                  autocorrect: false,
                   enabled: !_isSubmitting,
                 ),
                 const SizedBox(height: 16),
                 TextField(
                   controller: _passwordController,
-                  decoration: const InputDecoration(
-                    labelText: 'Password',
-                    border: OutlineInputBorder(),
+                  decoration: InputDecoration(
+                    labelText: s.passwordLabel,
+                    prefixIcon: const Icon(Icons.lock_outline_rounded),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _showPassword
+                            ? Icons.visibility_off_rounded
+                            : Icons.visibility_rounded,
+                      ),
+                      onPressed: () =>
+                          setState(() => _showPassword = !_showPassword),
+                    ),
                   ),
-                  obscureText: true,
+                  obscureText: !_showPassword,
                   enabled: !_isSubmitting,
                   onSubmitted: (_) => _submit(),
                 ),
-                if (_errorMessage != null) ...[
+                if (message != null) ...[
                   const SizedBox(height: 16),
-                  Text(
-                    _errorMessage!,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
-                  ),
+                  Text(message,
+                      style: TextStyle(
+                          color: Theme.of(context).colorScheme.error)),
                 ],
                 const SizedBox(height: 24),
                 FilledButton(
@@ -102,7 +132,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           width: 20,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Text('Sign in'),
+                      : Text(s.signIn),
+                ),
+                const SizedBox(height: 24),
+                Center(
+                  child: SegmentedButton<String>(
+                    segments: [
+                      ButtonSegment(value: 'so', label: Text(s.somali)),
+                      ButtonSegment(value: 'en', label: Text(s.english)),
+                    ],
+                    selected: {language},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (value) =>
+                        ref.read(languageProvider.notifier).state = value.first,
+                  ),
                 ),
               ],
             ),
