@@ -59,7 +59,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final message =
         _errorMessage ?? (widget.sessionExpired ? s.sessionExpired : null);
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).colorScheme.surface,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -83,7 +83,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 Text(
                   s.signInSubtitle,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: RaadColors.grey),
+                  style: TextStyle(color: context.muted),
                 ),
                 const SizedBox(height: 32),
                 TextField(

@@ -1852,6 +1852,23 @@ What a future change must not undo:
 **Not built:** background push (no Firebase project, no sender; `PushService` is the seam),
 ETA, notification preferences, a boarding record, iOS build, store release signing.
 
+## Organization Admin on Mobile (ADR-0062, 2026-10-07)
+
+RAAD Mobile has three experiences: parent, driver, and a read-only view for the Organization
+Admin. What a future change must not undo:
+
+- **The admin view reads; it does not write.** It uses endpoints the web dashboard already
+  calls with permissions `org_admin` already holds: no new route, permission or migration.
+  Acknowledging an alert or cancelling a trip from a phone each needs its own decision.
+- **There is no "organization user" role.** The seven roles are unchanged; `org_admin` is the
+  only organization-side account. RAAD's own staff roles get no mobile experience.
+- **No video for the admin on mobile.** Org Admin video stays on the web
+  (`.claude/rules/frontend.md` #4); mobile video stays the per-parent grant of ADR-0026.
+- **One theme for all three experiences**, taken from `frontend/src/styles/tokens.css`, light
+  and dark, following the device until the person chooses. Do not give a role its own theme,
+  and use `context.muted`/`context.colors` in screens, not fixed colours.
+- **A figure that cannot be read is a dash, never zero.**
+
 ## Per-Student Transport Pricing (ADR-0048, 2026-09-28)
 
 Amends ADR-0042 §1 at the user's direction ("the fee must be assigned individually to each

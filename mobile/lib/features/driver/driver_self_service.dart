@@ -104,7 +104,7 @@ class DocumentsScreen extends ConsumerWidget {
                             if (d.expiresOn != null)
                               Text(
                                 s.expiresOn(friendlyDay(d.expiresOn!, s)),
-                                style: const TextStyle(color: RaadColors.grey),
+                                style: TextStyle(color: context.muted),
                               ),
                           ],
                         ),
@@ -192,7 +192,7 @@ class UnavailabilityScreen extends ConsumerWidget {
                           Text(s.unavailabilityReason(item.reason)),
                           if (item.note != null)
                             Text(item.note!,
-                                style: const TextStyle(color: RaadColors.grey)),
+                                style: TextStyle(color: context.muted)),
                         ],
                       ),
                     ),
@@ -291,8 +291,7 @@ class _UnavailabilityFormState extends ConsumerState<_UnavailabilityForm> {
               style:
                   const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
           const SizedBox(height: 4),
-          Text(s.unavailabilityNote,
-              style: const TextStyle(color: RaadColors.grey)),
+          Text(s.unavailabilityNote, style: TextStyle(color: context.muted)),
           const SizedBox(height: 16),
           Row(
             children: [
@@ -405,7 +404,7 @@ class IncidentsScreen extends ConsumerWidget {
                     Text(
                       '${s.incidentCategoryName(i.category)} · ${s.severityName(i.severity)} · '
                       '${friendlyMoment(i.occurredAt, s)}',
-                      style: const TextStyle(color: RaadColors.grey),
+                      style: TextStyle(color: context.muted),
                     ),
                     if (i.description != null) ...[
                       const SizedBox(height: 6),

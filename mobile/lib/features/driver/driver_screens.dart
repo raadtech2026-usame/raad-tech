@@ -389,7 +389,7 @@ class DriverMoreScreen extends ConsumerWidget {
         Padding(
           padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
           child: Text(s.gpsFromBus,
-              style: const TextStyle(fontSize: 12.5, color: RaadColors.grey)),
+              style: TextStyle(fontSize: 12.5, color: context.muted)),
         ),
       ],
     );

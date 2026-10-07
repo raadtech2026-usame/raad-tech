@@ -4,37 +4,87 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/l10n/strings.dart';
 import '../core/network/api_exception.dart';
 
-/// RAAD brand colours (the web dashboard's `styles/tokens.css`).
+/// RAAD colours, taken from the web dashboard's `frontend/src/styles/tokens.css` so the app and
+/// the dashboard read as one product. The status colours are the same in light and dark.
 class RaadColors {
   const RaadColors._();
-  static const blue = Color(0xFF1E63FF);
-  static const green = Color(0xFF2FBF4F);
-  static const amber = Color(0xFFE08A00);
-  static const red = Color(0xFFD93025);
-  static const grey = Color(0xFF6B7280);
+  static const blue = Color(0xFF1E63FF); // --color-brand-primary
+  static const green = Color(0xFF10B981); // --color-success
+  static const amber = Color(0xFFF59E0B); // --color-warning
+  static const red = Color(0xFFEF4444); // --color-danger
+
+  /// Secondary text on a light surface. Screens should prefer `context.muted`, which follows
+  /// the theme; this stays for the few places that draw on a fixed light background.
+  static const grey = Color(0xFF64748B); // --color-text-muted
 }
 
-ThemeData raadTheme() {
-  final scheme = ColorScheme.fromSeed(seedColor: RaadColors.blue);
+extension RaadThemeContext on BuildContext {
+  ColorScheme get colors => Theme.of(this).colorScheme;
+
+  /// Secondary text: `--color-text-muted` in the current theme.
+  Color get muted => colors.onSurfaceVariant;
+}
+
+/// The app's theme in the web dashboard's light or dark tokens (`[data-theme="dark"]`).
+ThemeData raadTheme([Brightness brightness = Brightness.light]) {
+  final dark = brightness == Brightness.dark;
+  final primary = dark ? const Color(0xFF3B82F6) : RaadColors.blue;
+  final canvas = dark ? const Color(0xFF090D16) : const Color(0xFFF4F6FA);
+  final surface = dark ? const Color(0xFF111827) : Colors.white;
+  final subtle = dark ? const Color(0xFF162032) : const Color(0xFFF8FAFC);
+  final border = dark ? const Color(0x17FFFFFF) : const Color(0xFFE2E8F0);
+  final inputBorder = dark ? const Color(0x29FFFFFF) : const Color(0xFFCBD5E1);
+  final text = dark ? const Color(0xFFF8FAFC) : const Color(0xFF0F172A);
+  final muted = dark ? const Color(0xFF94A3B8) : const Color(0xFF64748B);
+  final primaryTint = dark ? const Color(0x473B82F6) : const Color(0xFFDBE7FF);
+
+  final scheme =
+      ColorScheme.fromSeed(seedColor: RaadColors.blue, brightness: brightness)
+          .copyWith(
+    primary: primary,
+    onPrimary: Colors.white,
+    secondary: RaadColors.green,
+    secondaryContainer: primaryTint,
+    onSecondaryContainer: dark ? const Color(0xFFDBE7FF) : RaadColors.blue,
+    error: RaadColors.red,
+    surface: surface,
+    onSurface: text,
+    onSurfaceVariant: muted,
+    surfaceContainerLowest: surface,
+    surfaceContainerLow: surface,
+    surfaceContainer: surface,
+    surfaceContainerHigh: subtle,
+    surfaceContainerHighest: subtle,
+    outline: inputBorder,
+    outlineVariant: border,
+  );
   return ThemeData(
     colorScheme: scheme,
     useMaterial3: true,
-    scaffoldBackgroundColor: const Color(0xFFF5F7FB),
+    scaffoldBackgroundColor: canvas,
+    dividerTheme: DividerThemeData(color: border, thickness: 1),
     appBarTheme: AppBarTheme(
-      backgroundColor: scheme.surface,
-      foregroundColor: scheme.onSurface,
+      backgroundColor: surface,
+      foregroundColor: text,
+      surfaceTintColor: Colors.transparent,
       elevation: 0,
       scrolledUnderElevation: 1,
       centerTitle: false,
     ),
     cardTheme: CardThemeData(
       elevation: 0,
-      color: Colors.white,
+      color: surface,
+      surfaceTintColor: Colors.transparent,
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: Color(0xFFE5E9F2)),
+        side: BorderSide(color: border),
       ),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      backgroundColor: surface,
+      surfaceTintColor: Colors.transparent,
+      indicatorColor: primaryTint,
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
@@ -45,8 +95,12 @@ ThemeData raadTheme() {
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: Colors.white,
+      fillColor: surface,
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: inputBorder),
+      ),
     ),
   );
 }
@@ -122,7 +176,7 @@ class SectionTitle extends StatelessWidget {
         style: Theme.of(context)
             .textTheme
             .titleSmall
-            ?.copyWith(color: RaadColors.grey, fontWeight: FontWeight.w700),
+            ?.copyWith(color: context.muted, fontWeight: FontWeight.w700),
       ),
     );
   }
@@ -188,12 +242,12 @@ class EmptyView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 48, color: RaadColors.grey),
+            Icon(icon, size: 48, color: context.muted),
             const SizedBox(height: 12),
             Text(
               message,
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 15, color: RaadColors.grey),
+              style: TextStyle(fontSize: 15, color: context.muted),
             ),
           ],
         ),
@@ -223,7 +277,7 @@ class ErrorView extends ConsumerWidget {
                   ? Icons.wifi_off_rounded
                   : Icons.error_outline_rounded,
               size: 48,
-              color: RaadColors.grey,
+              color: context.muted,
             ),
             const SizedBox(height: 12),
             Text(

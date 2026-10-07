@@ -1,13 +1,26 @@
-# Mobile — RAAD Flutter app (Parent + Driver)
+# Mobile — RAAD Flutter app (Parent, Driver, Organization Admin)
 
-One Flutter app, two experiences, chosen by the role the server returns at sign-in
-(`.claude/rules/flutter.md` #1). No admin features. Android first; the iOS project is generated
-but has not been built.
+One Flutter app, three experiences, chosen by the role the server returns at sign-in
+(`.claude/rules/flutter.md` #1): Parent, Driver, and a read-only operations view for the
+Organization Admin (ADR-0062). RAAD's own staff roles use the web dashboard. Android first; the
+iOS project is generated but has not been built.
 
 Design records: ADR-0023 (`/me`), ADR-0026 (parent camera access), ADR-0060 (`/me/transport`),
-ADR-0061 (mobile self-service).
+ADR-0061 (mobile self-service), ADR-0062 (organization admin on mobile).
+
+Colours come from the web dashboard's `frontend/src/styles/tokens.css`, in light and dark. The
+app follows the phone's setting until the person chooses one in their account screen.
 
 ## What each role can do
+
+**Organization Admin** (read-only)
+
+- Overview: buses, buses online now, trips in progress, students, drivers, routes, and what
+  needs attention (open safety alerts, trips without a driver today).
+- Today: each bus with its trips, driver, status and crew.
+- Alerts: open and acknowledged safety alerts.
+- Notifications and account. No camera, and nothing is changed from the phone: managing is done
+  on the web dashboard.
 
 **Parent**
 

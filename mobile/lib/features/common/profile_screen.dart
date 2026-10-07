@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/auth/auth_state.dart';
 import '../../core/l10n/strings.dart';
+import '../../core/theme/theme_mode.dart';
 import '../../shared/widgets.dart';
 
 /// The signed-in person's own account, the language choice and sign-out. [extra] lets a role
@@ -17,6 +18,7 @@ class ProfileScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final s = ref.watch(stringsProvider);
     final language = ref.watch(languageProvider);
+    final themeMode = ref.watch(themeModeProvider);
     final profile = ref.watch(userProfileProvider);
     return Scaffold(
       appBar: AppBar(title: Text(title)),
@@ -37,7 +39,7 @@ class ProfileScreen extends ConsumerWidget {
                   ),
                   const SizedBox(height: 4),
                   StatusChip(
-                    label: user.role == 'driver' ? s.roleDriver : s.roleParent,
+                    label: s.roleName(user.role),
                     color: RaadColors.blue,
                   ),
                   const SizedBox(height: 8),
@@ -67,6 +69,22 @@ class ProfileScreen extends ConsumerWidget {
               showSelectedIcon: false,
               onSelectionChanged: (value) =>
                   ref.read(languageProvider.notifier).state = value.first,
+            ),
+          ),
+          SectionTitle(s.appearance),
+          SectionCard(
+            child: SegmentedButton<ThemeMode>(
+              segments: [
+                ButtonSegment(
+                    value: ThemeMode.system, label: Text(s.themeSystem)),
+                ButtonSegment(
+                    value: ThemeMode.light, label: Text(s.themeLight)),
+                ButtonSegment(value: ThemeMode.dark, label: Text(s.themeDark)),
+              ],
+              selected: {themeMode},
+              showSelectedIcon: false,
+              onSelectionChanged: (value) =>
+                  ref.read(themeModeProvider.notifier).set(value.first),
             ),
           ),
           const SizedBox(height: 24),

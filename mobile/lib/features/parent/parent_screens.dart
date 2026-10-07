@@ -240,8 +240,7 @@ class _BusCard extends ConsumerWidget {
               label: Text(s.trackBus),
             )
           else
-            Text(s.trackingOnlyOnTrip,
-                style: const TextStyle(color: RaadColors.grey)),
+            Text(s.trackingOnlyOnTrip, style: TextStyle(color: context.muted)),
         ],
       ),
     );
@@ -333,7 +332,7 @@ class TripTile extends ConsumerWidget {
               if (trip.routeName != null) trip.routeName!,
               if (trip.vehicle != null) trip.vehicle!.displayName,
             ].join(' · '),
-            style: const TextStyle(color: RaadColors.grey),
+            style: TextStyle(color: context.muted),
           ),
           if (trip.isCancelled && trip.cancelledReason != null) ...[
             const SizedBox(height: 6),
@@ -376,7 +375,7 @@ class _LatestNotification extends ConsumerWidget {
           const SizedBox(height: 6),
           Text(
             friendlyMoment(n.createdAt, s),
-            style: const TextStyle(fontSize: 12, color: RaadColors.grey),
+            style: TextStyle(fontSize: 12, color: context.muted),
           ),
         ],
       ),
@@ -446,8 +445,7 @@ class ParentHistoryScreen extends ConsumerWidget {
                   _ChildSelector(children: children, selected: child),
                   const SizedBox(height: 12),
                 ],
-                Text(s.historyNote,
-                    style: const TextStyle(color: RaadColors.grey)),
+                Text(s.historyNote, style: TextStyle(color: context.muted)),
                 const SizedBox(height: 12),
                 if (past.isEmpty)
                   Padding(
