@@ -142,11 +142,14 @@ class _NotificationTile extends ConsumerWidget {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(body, style: const TextStyle(color: Color(0xFF374151))),
+                Text(body,
+                    style: TextStyle(
+                        color:
+                            context.colors.onSurface.withValues(alpha: 0.82))),
                 const SizedBox(height: 6),
                 Text(
                   friendlyMoment(n.createdAt, s),
-                  style: const TextStyle(fontSize: 12, color: RaadColors.grey),
+                  style: TextStyle(fontSize: 12, color: context.muted),
                 ),
               ],
             ),

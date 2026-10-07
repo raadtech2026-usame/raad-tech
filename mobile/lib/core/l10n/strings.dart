@@ -52,8 +52,8 @@ class Strings {
   String get passwordTooShort =>
       _('Furuhu waa inuu ka badnaadaa 8 xaraf.', 'Use at least 8 characters.');
   String get unsupportedRole => _(
-        'Akoonkan laguma isticmaali karo app-ka. Waalidka iyo darawallada oo keliya.',
-        'This account cannot use the mobile app. Parent and Driver accounts only.',
+        'Akoonkan laguma isticmaali karo app-ka. Shaqaalaha RAAD waxay isticmaalaan app.raadsystems.tech.',
+        'This account cannot use the mobile app. RAAD staff use app.raadsystems.tech.',
       );
   String get sessionExpired => _('Fadhigaagu wuu dhacay. Mar kale gal.',
       'Your session expired. Please sign in again.');
@@ -326,6 +326,89 @@ class Strings {
   String get email => 'Email';
   String get roleParent => _('Waalid', 'Parent');
   String get roleDriver => _('Darawal', 'Driver');
+  String get roleOrgAdmin => _("Maamulaha hay'adda", 'Organization admin');
+  String roleName(String role) => switch (role) {
+        'driver' => roleDriver,
+        'parent' => roleParent,
+        'org_admin' => roleOrgAdmin,
+        _ => role,
+      };
+
+  // ---- appearance
+  String get appearance => _('Muuqaalka', 'Appearance');
+  String get themeSystem => _('Taleefan', 'Phone');
+  String get themeLight => _('Iftiin', 'Light');
+  String get themeDark => _('Mugdi', 'Dark');
+
+  // ---- organization admin (ADR-0062)
+  String get navOverview => _('Guudmar', 'Overview');
+  String get navAlerts => _('Digniinaha', 'Alerts');
+  String get adminOverviewTitle =>
+      _("Guudmarka hay'adda", 'Organization overview');
+  String get adminNeedsAttention => _('U baahan fiiro', 'Needs attention');
+  String get adminAllClear =>
+      _('Wax fiiro u baahan ma jiraan.', 'Nothing needs attention.');
+  String adminUncoveredTrips(int n) => _(
+      '$n safar oo aan darawal lahayn maanta',
+      '$n trip(s) without a driver today');
+  String adminOpenAlerts(int n) =>
+      _('$n digniin badbaado oo furan', '$n open safety alert(s)');
+  String get adminFleet => _('Gaadiidka', 'Fleet');
+  String get adminPeople => _('Dadka iyo jidadka', 'People and routes');
+  String get adminVehicles => _('Basaska', 'Buses');
+  String get adminOnlineNow => _('Hadda xiriirsan', 'Online now');
+  String get adminTripsInProgress => _('Safarro socda', 'Trips in progress');
+  String get adminStudents => _('Ardayda', 'Students');
+  String get adminDrivers => _('Darawallada', 'Drivers');
+  String get adminRoutes => _('Jidadka', 'Routes');
+  String get adminOnlineBuses =>
+      _('Basaska hadda xiriirsan', 'Buses online now');
+  String get adminNoBusOnline =>
+      _('Bas xiriirsan ma jiro hadda.', 'No bus is online right now.');
+  String adminShowingOf(int shown, int total) =>
+      _('$shown ka mid ah $total', 'Showing $shown of $total');
+  String get adminTodayTitle => _('Hawlgalka maanta', "Today's operations");
+  String get adminNoTripsToday =>
+      _('Maanta safar ma qorsheysna.', 'No trips are planned today.');
+  String get adminClosedToday => _('Maanta waa fasax', 'Closed today');
+  String adminTripCount(int n) => _('$n safar', '$n trip(s)');
+  String get adminNoDriver => _('Darawal ma leh', 'No driver');
+  String get adminCrew => _('Shaqaalaha', 'Crew');
+  String get adminSubstitute => _('Beddel', 'Substitute');
+  String get adminAbsent => _('Ma joogo', 'Absent');
+  String adminUncoveredReason(String reason) => switch (reason) {
+        'driver_inactive' => _('Darawalku ma shaqeeyo', 'Driver is not active'),
+        'driver_unavailable' =>
+          _('Darawalku ma joogo maanta', 'Driver is unavailable today'),
+        'driver_not_compliant' => _('Dukumentiyada darawalka ma dhammeystirna',
+            'Driver documents are not in order'),
+        _ => reason,
+      };
+  String get adminAlertsTitle => _('Digniinaha badbaadada', 'Safety alerts');
+  String get adminNoAlerts => _('Digniin furan ma jirto.', 'No open alerts.');
+  String get adminCritical => _('Degdeg', 'Critical');
+  String get adminLateAlert => _('Si daahsan ayaa loo helay', 'Received late');
+  String adminOccurrences(int n) => _('$n jeer', '$n times');
+  String adminAlertStatus(String status) => switch (status) {
+        'open' => _('Furan', 'Open'),
+        'acknowledged' => _('Waa la arkay', 'Acknowledged'),
+        _ => status,
+      };
+  String alarmTypeName(String type) => switch (type) {
+        'sos' => _('Baaq degdeg ah (SOS)', 'SOS'),
+        'overspeed' => _('Xawaare dheeraad ah', 'Overspeed'),
+        'fatigue' => _('Daal darawal', 'Driver fatigue'),
+        'power_cut' => _("Korontada oo go'day", 'Power cut'),
+        'camera_fault' => _('Cillad kamarad', 'Camera fault'),
+        'collision' => _('Shil', 'Collision'),
+        'rollover' => _('Rogmasho', 'Rollover'),
+        'illegal_door_open' => _('Albaab si khaldan u furmay', 'Door opened'),
+        _ => type,
+      };
+  String get adminManageOnWeb => _(
+        'Wax ka beddelka iyo maamulka buuxa waxaa laga sameeyaa app.raadsystems.tech.',
+        'Changes and full management are done at app.raadsystems.tech.',
+      );
   String get gpsFromBus => _(
         'Goobta baska waxaa laga helaa qalabka baska ku rakiban, ma aha taleefankaaga.',
         'The bus location comes from the device on the bus, not from your phone.',

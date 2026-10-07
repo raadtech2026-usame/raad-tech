@@ -216,7 +216,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
             Text(s.liveLocation),
             Text(
               '${child.fullName} · ${child.vehicle!.displayName}',
-              style: const TextStyle(fontSize: 12.5, color: RaadColors.grey),
+              style: TextStyle(fontSize: 12.5, color: context.muted),
             ),
           ],
         ),
@@ -252,7 +252,7 @@ class _PositionPanel extends ConsumerWidget {
             position.lat!, position.lng!, stop!.latitude, stop!.longitude);
     return Container(
       width: double.infinity,
-      color: Colors.white,
+      color: context.colors.surface,
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
       child: SafeArea(
         top: false,
@@ -269,8 +269,7 @@ class _PositionPanel extends ConsumerWidget {
                 if (position.eventTime != null)
                   Text(
                     s.lastUpdated(clock(position.eventTime!)),
-                    style:
-                        const TextStyle(fontSize: 12.5, color: RaadColors.grey),
+                    style: TextStyle(fontSize: 12.5, color: context.muted),
                   ),
               ],
             ),
@@ -281,7 +280,7 @@ class _PositionPanel extends ConsumerWidget {
                 style:
                     const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
               ),
-              Text(stop!.name, style: const TextStyle(color: RaadColors.grey)),
+              Text(stop!.name, style: TextStyle(color: context.muted)),
             ],
             if (position.speedKph != null) ...[
               const SizedBox(height: 6),

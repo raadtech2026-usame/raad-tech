@@ -10,6 +10,9 @@ import 'package:raad_mobile/core/data/repository.dart';
 import 'package:raad_mobile/core/l10n/strings.dart';
 import 'package:raad_mobile/core/network/api_client.dart';
 import 'package:raad_mobile/core/network/api_exception.dart';
+import 'package:raad_mobile/core/theme/theme_mode.dart';
+import 'package:raad_mobile/features/admin/admin_data.dart';
+import 'package:raad_mobile/shared/widgets.dart';
 import 'package:raad_mobile/features/video/video_providers.dart';
 
 /// A repository that answers from memory and records what the screens asked it to do.
@@ -90,6 +93,54 @@ class _FakeAuthRepository extends AuthRepository {
   }
 }
 
+/// The organization admin's reads, answered from memory.
+class FakeAdminRepository extends AdminRepository {
+  FakeAdminRepository() : super(ApiClient());
+
+  AdminOverview overviewData = const AdminOverview(
+      vehicles: 0,
+      onlineNow: 0,
+      tripsInProgress: 0,
+      students: 0,
+      drivers: 0,
+      routes: 0);
+  DailyBoard board =
+      const DailyBoard(closures: [], vehicles: [], uncoveredTrips: 0);
+  List<SafetyAlert> alerts = [];
+  List<AdminVehicle> vehicleList = [];
+  FleetOnline online = const FleetOnline(vehicles: [], totalOnline: 0);
+  Object? failWith;
+
+  Future<T> _answer<T>(T value) async {
+    if (failWith != null) throw failWith!;
+    return value;
+  }
+
+  @override
+  Future<AdminOverview> overview() => _answer(overviewData);
+
+  @override
+  Future<DailyBoard> dailyBoard(DateTime day) => _answer(board);
+
+  @override
+  Future<List<SafetyAlert>> activeAlerts() => _answer(alerts);
+
+  @override
+  Future<List<AdminVehicle>> vehicles() => _answer(vehicleList);
+
+  @override
+  Future<FleetOnline> fleetOnline() => _answer(online);
+}
+
+class _FixedThemeMode extends ThemeModeController {
+  _FixedThemeMode(ThemeMode mode) {
+    state = mode;
+  }
+
+  @override
+  Future<void> set(ThemeMode mode) async => state = mode;
+}
+
 const offline = ApiException.network();
 
 /// Pumps [home] signed in as [role], in English unless [somali], on top of [repository].
@@ -99,10 +150,15 @@ Widget testApp(
   String role = 'parent',
   bool somali = false,
   bool videoAccess = false,
+  FakeAdminRepository? admin,
+  bool dark = false,
 }) {
   return ProviderScope(
     overrides: [
       repositoryProvider.overrideWithValue(repository),
+      if (admin != null) adminRepositoryProvider.overrideWithValue(admin),
+      themeModeProvider.overrideWith(
+          (ref) => _FixedThemeMode(dark ? ThemeMode.dark : ThemeMode.light)),
       authRepositoryProvider.overrideWithValue(_FakeAuthRepository()),
       languageProvider.overrideWith((ref) => somali ? 'so' : 'en'),
       principalProvider.overrideWithValue(
@@ -120,7 +176,14 @@ Widget testApp(
         ),
       ),
     ],
-    child: MaterialApp(home: home),
+    child: Consumer(
+      builder: (context, ref, _) => MaterialApp(
+        theme: raadTheme(Brightness.light),
+        darkTheme: raadTheme(Brightness.dark),
+        themeMode: ref.watch(themeModeProvider),
+        home: home,
+      ),
+    ),
   );
 }
 
