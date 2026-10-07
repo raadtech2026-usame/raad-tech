@@ -2,7 +2,13 @@
 
 Derived from `docs/business/RAAD_Phase2_Enterprise_Architecture_v1_2.md` §9.
 
-1. **One codebase, two role experiences** (Parent, Driver) via RBAC — no admin features on mobile.
+1. **One codebase, three role experiences** (Parent, Driver, and a read-only operations view
+   for the Organization Admin) via RBAC. The Organization Admin view was added by ADR-0062
+   (2026-10-07), amending this rule's original "two experiences, no admin features on mobile":
+   it reads endpoints the web dashboard already uses, with permissions `org_admin` already
+   holds, and writes nothing. Managing (finance, registration, timetables, reports, devices,
+   acknowledging alerts) stays on the web dashboard, and RAAD's own staff roles have no mobile
+   experience. Any write from the admin view needs its own decision.
 2. **The Driver app does not stream the phone's GPS as the tracking source.** Location comes from
    the bus MDVR/GPS terminal via the backend; the Driver app is a control/UI client (start/end trip,
    view assignments).
