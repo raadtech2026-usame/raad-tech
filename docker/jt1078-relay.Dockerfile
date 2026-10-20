@@ -17,7 +17,7 @@
 # custom build - this relay only uses ffmpeg's standard alaw-decode + AAC-LC encode, both stable
 # for many releases.
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
