@@ -120,7 +120,7 @@ services:
     environment:
       RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
       RAAD_BROKER__STREAM_MAX_LENGTH: ${RAAD_BROKER__STREAM_MAX_LENGTH:-0}
-      RAAD_BROKER__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      RAAD_BROKER__URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/1
       RAAD_CORS__ALLOWED_ORIGINS: ${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}
       RAAD_DB__URL: postgresql+asyncpg://${POSTGRES_USER:-raad}:${POSTGRES_PASSWORD:-raad}@postgres:5432/${POSTGRES_DB:-raad}
       RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL: ${JT1078_SIGNALING_URL:-ws://localhost:7911}
@@ -128,7 +128,7 @@ services:
       RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
       RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
       RAAD_PAYMENT__PROVIDER_CREDENTIALS: ${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}
-      RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+      RAAD_REDIS__URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/0
     healthcheck:
       interval: 30s
       retries: 5
@@ -191,9 +191,9 @@ services:
         condition: service_healthy
         required: true
     environment:
-      DEVICE_GATEWAY_BROKER_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      DEVICE_GATEWAY_BROKER_URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/1
       DEVICE_GATEWAY_LOG_LEVEL: ${DEVICE_GATEWAY_LOG_LEVEL:-INFO}
-      DEVICE_GATEWAY_REDIS_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+      DEVICE_GATEWAY_REDIS_URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/0
       DEVICE_GATEWAY_STREAM_MAX_LENGTH: ${DEVICE_GATEWAY_STREAM_MAX_LENGTH:-0}
     healthcheck:
       interval: 30s
@@ -261,7 +261,7 @@ services:
         required: true
     environment:
       JT1078_RELAY_ABSOLUTE_IDLE_SECONDS: ${JT1078_RELAY_ABSOLUTE_IDLE_SECONDS:-60}
-      JT1078_RELAY_BROKER_URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      JT1078_RELAY_BROKER_URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/1
       JT1078_RELAY_ENVIRONMENT: ${JT1078_RELAY_ENVIRONMENT:-dev}
       JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS: ${JT1078_RELAY_IDLE_SWEEP_INTERVAL_SECONDS:-1}
       JT1078_RELAY_INGEST_TIMEOUT_SECONDS: ${JT1078_RELAY_INGEST_TIMEOUT_SECONDS:-30}
@@ -310,7 +310,7 @@ services:
     environment:
       RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
       RAAD_BROKER__STREAM_MAX_LENGTH: ${RAAD_BROKER__STREAM_MAX_LENGTH:-0}
-      RAAD_BROKER__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      RAAD_BROKER__URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/1
       RAAD_CORS__ALLOWED_ORIGINS: ${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}
       RAAD_DB__URL: postgresql+asyncpg://${POSTGRES_USER:-raad}:${POSTGRES_PASSWORD:-raad}@postgres:5432/${POSTGRES_DB:-raad}
       RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL: ${JT1078_SIGNALING_URL:-ws://localhost:7911}
@@ -318,7 +318,7 @@ services:
       RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
       RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
       RAAD_PAYMENT__PROVIDER_CREDENTIALS: ${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}
-      RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+      RAAD_REDIS__URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/0
     image: ghcr.io/raadtech2026-usame/raad-backend:${SOURCE_COMMIT}
     logging:
       driver: json-file
@@ -488,7 +488,7 @@ services:
     environment:
       RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
       RAAD_BROKER__STREAM_MAX_LENGTH: ${RAAD_BROKER__STREAM_MAX_LENGTH:-0}
-      RAAD_BROKER__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+      RAAD_BROKER__URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/1
       RAAD_CORS__ALLOWED_ORIGINS: ${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}
       RAAD_DB__URL: postgresql+asyncpg://${POSTGRES_USER:-raad}:${POSTGRES_PASSWORD:-raad}@postgres:5432/${POSTGRES_DB:-raad}
       RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL: ${JT1078_SIGNALING_URL:-ws://localhost:7911}
@@ -496,7 +496,7 @@ services:
       RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
       RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
       RAAD_PAYMENT__PROVIDER_CREDENTIALS: ${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}
-      RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+      RAAD_REDIS__URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/0
       RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES: ${RAAD_WORKERS__AUTO_GENERATE_PARENT_INVOICES:-false}
       RAAD_WORKERS__STAFF_DOCUMENT_EXPIRY_ALERTS: ${RAAD_WORKERS__STAFF_DOCUMENT_EXPIRY_ALERTS:-true}
       RAAD_WORKERS__AUTO_GENERATE_TRIPS: ${RAAD_WORKERS__AUTO_GENERATE_TRIPS:-false}
@@ -527,6 +527,7 @@ volumes:
   raad_backups_data:
     name: docker_raad_backups_data
   raad_postgres_data:
+    external: true
     name: docker_raad_postgres_data
   raad_prometheus_data:
     name: docker_raad_prometheus_data
@@ -538,7 +539,7 @@ x-backend-build:
 x-backend-env:
   RAAD_AUTH__JWT_SECRET_KEY: ${RAAD_AUTH__JWT_SECRET_KEY:-dev-only-change-me}
   RAAD_BROKER__STREAM_MAX_LENGTH: ${RAAD_BROKER__STREAM_MAX_LENGTH:-0}
-  RAAD_BROKER__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/1
+  RAAD_BROKER__URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/1
   RAAD_CORS__ALLOWED_ORIGINS: ${RAAD_CORS__ALLOWED_ORIGINS:-["http://localhost"]}
   RAAD_DB__URL: postgresql+asyncpg://${POSTGRES_USER:-raad}:${POSTGRES_PASSWORD:-raad}@postgres:5432/${POSTGRES_DB:-raad}
   RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL: ${JT1078_SIGNALING_URL:-ws://localhost:7911}
@@ -546,7 +547,7 @@ x-backend-env:
   RAAD_OBSERVABILITY__LOG_LEVEL: ${RAAD_OBSERVABILITY__LOG_LEVEL:-INFO}
   RAAD_PAYMENT__PROVIDER: ${RAAD_PAYMENT__PROVIDER:-}
   RAAD_PAYMENT__PROVIDER_CREDENTIALS: ${RAAD_PAYMENT__PROVIDER_CREDENTIALS:-{}}
-  RAAD_REDIS__URL: redis://:${REDIS_PASSWORD:-dev-only-change-me}@redis:6379/0
+  RAAD_REDIS__URL: redis://:${REDIS_PASSWORD_URLENCODED:-dev-only-change-me}@redis:6379/0
 x-logging:
   driver: json-file
   options:
