@@ -173,6 +173,14 @@ class SqlAlchemyDeviceTokenRepository(
         result = await self._session.execute(statement)
         return self._track(result.scalar_one_or_none())
 
+    async def list_active_for_user(self, user_id: UserId) -> list[DeviceToken]:
+        statement = select(DeviceTokenModel).where(
+            DeviceTokenModel.user_id == str(user_id),
+            DeviceTokenModel.revoked_at.is_(None),
+        )
+        result = await self._session.execute(statement)
+        return [self._track(row) for row in result.scalars().all() if row is not None]
+
     def flush_tracked_changes(self) -> None:
         for device_token, model in self._tracked.values():
             device_token_to_model(device_token, existing=model)

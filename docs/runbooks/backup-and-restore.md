@@ -106,12 +106,12 @@ the mechanism, not a specific vendor choice — see `PROJECT_STATUS.md`). To tur
 
 1. Pick any [rclone-supported backend](https://rclone.org/overview/) — S3, Backblaze B2,
    DigitalOcean Spaces, Cloudflare R2, SFTP to a second server, etc.
-2. Configure that remote (`rclone config`, run once, produces an `rclone.conf`) and make it
-   available to the `backup` container — either bind-mount a real `rclone.conf` into
-   `/root/.config/rclone/rclone.conf`, or set the equivalent `RCLONE_CONFIG_<REMOTE>_*`
-   environment variables (rclone reads either).
-3. Set `BACKUP_RCLONE_REMOTE=<remote-name>:<bucket-or-path>` in `docker/.env`.
-4. Restart the `backup` service and confirm the "pushing to off-site remote" log line appears
+2. Configure that remote (`rclone config`, run once, produces an `rclone.conf`) and place it
+   in `infrastructure/backups/rclone/rclone.conf` (or set `RCLONE_CONFIG_DIR`), or set the equivalent
+   `RCLONE_CONFIG_<REMOTE>_*` environment variables (rclone reads either).
+3. Set `BACKUP_RCLONE_REMOTE=<remote-name>:<bucket-or-path>` and optionally
+   `BACKUP_RCLONE_RETENTION_DAYS=30` in `docker/.env`.
+4. Restart the `backup` service and confirm the "pushing to off-site remote" and "pruning off-site backups" log lines appear
    (not the unconfigured warning) on the next run.
 
 ## Verifying it worked

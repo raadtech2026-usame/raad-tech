@@ -30,4 +30,11 @@ class Principal {
   bool get isParent => role == 'parent';
   bool get isDriver => role == 'driver';
   bool get isOrgAdmin => role == 'org_admin';
+
+  Map<String, dynamic> toJson() => {
+        'user_id': userId,
+        'role': role,
+        'organization_id': organizationId,
+        'is_password_change_required': isPasswordChangeRequired,
+      };
 }

@@ -51,6 +51,9 @@ class RedisSettings(RedisConnectionSettings):
 
 
 class BrokerSettings(RedisConnectionSettings):
+    stream_name: str = "raad:events"
+    telemetry_stream_name: str = "raad:telemetry"
+    telemetry_stream_max_length: int = 100_000
     url: str = ""
     #: **Default 0 = trimming DISABLED. Do not turn this on without first making the device
     #: registry durable.** Live-proven regression, 2026-09-02: this was briefly defaulted to
@@ -175,6 +178,12 @@ class FeatureFlags(BaseModel):
     additional_notification_channels_enabled: bool = False
 
 
+class FirebaseSettings(BaseModel):
+    enabled: bool = False
+    credentials_path: str | None = None
+    project_id: str | None = None
+
+
 class WorkerSettings(BaseModel):
     """Background worker tuning (Backend LLD §11). The worker *runtime* (Celery vs arq) is
     still an open item (§20.1) — these intervals drive the runtime-agnostic polling loop in
@@ -205,6 +214,8 @@ class WorkerSettings(BaseModel):
     # when the stream is idle (`block_ms` still returns early with whatever is available); they
     # only raise the ceiling during a burst.
     notification_worker_batch_size: int = 200
+    telemetry_worker_interval_seconds: float = 1.0
+    telemetry_worker_batch_size: int = 500
     report_worker_interval_seconds: float = 10.0
     vehicle_position_retention_days: int = 90  # `.claude/rules/database.md` #6's own
     # "recommend 90 days, configurable"
@@ -328,6 +339,7 @@ class Settings(BaseSettings):
     observability: ObservabilitySettings = ObservabilitySettings()
     feature_flags: FeatureFlags = FeatureFlags()
     workers: WorkerSettings = WorkerSettings()
+    firebase: FirebaseSettings = FirebaseSettings()
 
     def validate_on_startup(self) -> None:
         """Fail-fast checks that must hold before the app is allowed to serve traffic

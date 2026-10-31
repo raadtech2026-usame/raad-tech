@@ -25,7 +25,12 @@ from raad.core.di.container import Container
 from raad.core.di.billing_audit_adapter import AuditPlanHistoryAdapter
 from raad.core.di.session_cap_adapter import SystemSettingSessionCapAdapter
 from raad.core.events.outbox import OutboxWriter, SqlOutboxPublisher
-from raad.core.events.ports import BrokerConsumer, BrokerPort, OutboxPublisher
+from raad.core.events.ports import (
+    BrokerConsumer,
+    BrokerPort,
+    OutboxPublisher,
+    TelemetryBrokerConsumer,
+)
 from raad.core.events.processor import EventProcessorRegistry
 from raad.core.events.redis_streams import (
     RedisDeadLetterQueue,
@@ -172,7 +177,14 @@ from raad.core.di.erp_adapters import (
 from raad.modules.organization.application.ports import BillingProvisioningPort
 from raad.modules.billing.infra.adapters import StripePaymentAdapter
 from raad.modules.billing.infra.repositories import SqlAlchemyBillingUnitOfWork
-from raad.modules.notifications.application.ports import NotificationsUnitOfWork
+from raad.modules.notifications.application.ports import (
+    NotificationsUnitOfWork,
+    PushNotificationSenderPort,
+)
+from raad.modules.notifications.infra.adapters import (
+    FirebaseFcmPushSender,
+    NoopPushNotificationSender,
+)
 from raad.modules.notifications.application.services import NotificationApplicationService
 from raad.modules.notifications.events.subscribers import register_notification_processors
 from raad.modules.notifications.infra.repositories import (
@@ -456,6 +468,15 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
+    if settings.firebase.enabled:
+        push_sender: PushNotificationSenderPort = FirebaseFcmPushSender(
+            credentials_path=settings.firebase.credentials_path,
+            project_id=settings.firebase.project_id,
+        )
+    else:
+        push_sender = NoopPushNotificationSender()
+    container.bind_singleton(PushNotificationSenderPort, push_sender)
+
     # ReportingApplicationService needs no TokenService either — always constructible, same
     # reasoning as the services above.
     container.bind_singleton(
@@ -592,6 +613,17 @@ def build_container(settings: Settings) -> Container:
                 retry_policy=container.resolve(RetryPolicy),
                 dead_letter_queue=dead_letter_queue,
                 batch_size=settings.workers.notification_worker_batch_size,
+            ),
+        )
+        container.bind_singleton(
+            TelemetryBrokerConsumer,
+            RedisStreamsBrokerConsumer(
+                broker_redis_client,
+                stream_name=settings.broker.telemetry_stream_name,
+                group_name="telemetry-worker",
+                retry_policy=container.resolve(RetryPolicy),
+                dead_letter_queue=dead_letter_queue,
+                batch_size=settings.workers.telemetry_worker_batch_size,
             ),
         )
 

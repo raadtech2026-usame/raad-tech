@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import '../config/env.dart';
+import '../storage/local_cache.dart';
 import 'api_exception.dart';
 
 /// REST client for the RAAD Business API.
@@ -13,23 +14,33 @@ import 'api_exception.dart';
 /// the one that lives in secure storage). When a call answers 401, [onUnauthorized] is asked
 /// once to obtain a fresh access token and the call is repeated; if that fails the caller gets
 /// the 401 and the app signs out.
+///
+/// Incorporates a [LocalCache] so network drops return the last-known cached JSON
+/// payload for read requests rather than throwing blank screen errors.
 class ApiClient {
   static const Duration timeout = Duration(seconds: 20);
 
   final http.Client _client;
+  final LocalCache _cache;
   String? _accessToken;
 
   /// Set by the auth controller. Returns true when a new access token is in place.
   Future<bool> Function()? onUnauthorized;
   Future<bool>? _refreshing;
 
-  ApiClient({http.Client? client}) : _client = client ?? http.Client();
+  ApiClient({http.Client? client, LocalCache? cache})
+      : _client = client ?? http.Client(),
+        _cache = cache ?? LocalCache();
 
   String? get accessToken => _accessToken;
+
+  LocalCache get cache => _cache;
 
   void setAccessToken(String token) => _accessToken = token;
 
   void clearAccessToken() => _accessToken = null;
+
+  Future<void> clearCache() => _cache.clear();
 
   Map<String, String> _headers(bool auth) {
     return {
@@ -39,16 +50,43 @@ class ApiClient {
     };
   }
 
-  Future<Map<String, dynamic>> get(String path, {bool auth = true}) async {
-    final decoded = await _send('GET', path, auth: auth);
-    return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+  Future<Map<String, dynamic>> get(String path,
+      {bool auth = true, bool cache = true}) async {
+    try {
+      final decoded = await _send('GET', path, auth: auth);
+      final result =
+          decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+      if (cache && result.isNotEmpty) {
+        await _cache.putJson(path, result);
+      }
+      return result;
+    } on ApiException catch (e) {
+      if (cache && e.isNetwork) {
+        final cached = await _cache.getMap(path);
+        if (cached != null) return cached;
+      }
+      rethrow;
+    }
   }
 
   /// For endpoints that answer with a JSON array (`/me/students`, `/me/trips`, ...).
-  Future<List<Map<String, dynamic>>> getList(String path) async {
-    final decoded = await _send('GET', path, auth: true);
-    if (decoded is! List) return const [];
-    return decoded.whereType<Map<String, dynamic>>().toList();
+  Future<List<Map<String, dynamic>>> getList(String path,
+      {bool cache = true}) async {
+    try {
+      final decoded = await _send('GET', path, auth: true);
+      if (decoded is! List) return const [];
+      final result = decoded.whereType<Map<String, dynamic>>().toList();
+      if (cache && result.isNotEmpty) {
+        await _cache.putJson(path, result);
+      }
+      return result;
+    } on ApiException catch (e) {
+      if (cache && e.isNetwork) {
+        final cached = await _cache.getList(path);
+        if (cached != null) return cached;
+      }
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> post(

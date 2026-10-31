@@ -71,7 +71,12 @@ from raad.core.tenancy.principal import SYSTEM_PRINCIPAL
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.notifications.application.commands import CreateNotificationCommand
-from raad.modules.notifications.application.ports import NotificationsUnitOfWork
+from raad.core.time.clock import Clock
+from raad.modules.notifications.application.ports import (
+    NotificationsUnitOfWork,
+    PushNotificationSenderPort,
+)
+from raad.modules.notifications.domain.value_objects import UserId
 from raad.modules.notifications.application.services import NotificationApplicationService
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import (
@@ -176,6 +181,69 @@ class _NotificationFanOut:
                     ),
                     uow=self._container.resolve(NotificationsUnitOfWork),
                 )
+                await self._send_push(
+                    user_id=parent.user_id,
+                    title=title,
+                    body=body,
+                    type=type,
+                    data=data,
+                    trip_id=trip_id,
+                )
+
+    async def _send_push(
+        self,
+        *,
+        user_id: str,
+        title: str,
+        body: str,
+        type: str,
+        data: dict[str, Any] | None,
+        trip_id: str | None,
+    ) -> None:
+        push_sender = self._container.try_resolve(PushNotificationSenderPort)
+        if push_sender is None:
+            return
+        notifications_uow = self._container.try_resolve(NotificationsUnitOfWork)
+        if notifications_uow is None or not hasattr(notifications_uow, "device_tokens"):
+            return
+
+        try:
+            async with notifications_uow:
+                tokens = await notifications_uow.device_tokens.list_active_for_user(
+                    UserId(user_id)
+                )
+                if not tokens:
+                    return
+                token_strings = [str(t.fcm_token) for t in tokens]
+
+                payload_data: dict[str, str] = {"type": type}
+                if trip_id:
+                    payload_data["trip_id"] = str(trip_id)
+                if data:
+                    for k, v in data.items():
+                        if v is not None:
+                            payload_data[str(k)] = str(v)
+
+                dead_tokens = await push_sender.send_to_tokens(
+                    tokens=token_strings,
+                    title=title,
+                    body=body,
+                    data=payload_data,
+                )
+                if dead_tokens:
+                    clock = self._container.resolve(Clock)
+                    for dead in dead_tokens:
+                        token_entity = next(
+                            (t for t in tokens if str(t.fcm_token) == dead), None
+                        )
+                        if token_entity:
+                            token_entity.revoke(clock=clock, actor_id=None)
+                    await notifications_uow.commit()
+        except Exception as exc:
+            logger.warning(
+                "fcm_push_notification_failed",
+                extra={"user_id": user_id, "error": str(exc)},
+            )
 
     async def resolve_trip(self, trip_id: str) -> Any | None:
         """The trip, or `None` when it no longer exists (see `resolve_vehicle_id_for_trip`)."""
@@ -305,7 +373,7 @@ class VehicleApproachingStopNotifier(EventProcessor):
             organization_id=event.org_id,
             type="approaching_stop",
             title="Approaching stop",
-            body="Your child's bus is approaching the stop.",
+            body="The school bus is approaching your home.",
             data={
                 "trip_id": trip_id,
                 "stop_id": stop_id,
@@ -341,8 +409,8 @@ class VehicleArrivedAtOrganizationNotifier(EventProcessor):
             vehicle_id=vehicle_id,
             organization_id=event.org_id,
             type="arrived_org",
-            title="Arrived",
-            body="Your child's bus has arrived.",
+            title="Arrived at school",
+            body="The bus has arrived safely at school.",
             data={"trip_id": trip_id},
             trip_id=trip_id,
         )

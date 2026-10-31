@@ -89,3 +89,8 @@ class DeviceTokenRepository(ABC):
         §7.6) — a direct `select()`, mirroring `PaymentRepository.get_by_idempotency_key`'s
         identical shape for an analogous non-`get_by_id` finder."""
         raise NotImplementedError
+
+    @abstractmethod
+    async def list_active_for_user(self, user_id: UserId) -> list[DeviceToken]:
+        """Returns all unrevoked device tokens registered by the given user."""
+        raise NotImplementedError

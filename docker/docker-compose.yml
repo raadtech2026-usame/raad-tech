@@ -328,8 +328,11 @@ services:
       PGDATABASE: ${POSTGRES_DB:-raad}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
       BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE:-}
+      BACKUP_RCLONE_RETENTION_DAYS: ${BACKUP_RCLONE_RETENTION_DAYS:-30}
+      RCLONE_CONFIG: ${RCLONE_CONFIG:-/root/.config/rclone/rclone.conf}
     volumes:
       - raad_backups_data:/backups
+      - ${RCLONE_CONFIG_DIR:-../infrastructure/backups/rclone}:/root/.config/rclone:ro
     depends_on:
       postgres:
         condition: service_healthy

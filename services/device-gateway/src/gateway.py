@@ -164,7 +164,10 @@ class DeviceGateway:
     def _build_event_publisher(self) -> EventPublisher:
         if self._redis_client is not None:
             return RedisEventPublisher(
-                self._redis_client, max_length=self._broker_config.stream_max_length
+                self._redis_client,
+                max_length=self._broker_config.stream_max_length,
+                telemetry_stream_name=self._broker_config.telemetry_stream_name,
+                telemetry_max_length=self._broker_config.telemetry_stream_max_length,
             )
         return LoggingEventPublisher()
 

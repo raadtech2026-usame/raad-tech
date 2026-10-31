@@ -30,7 +30,10 @@ from raad.core.events.base import DomainEvent
 from raad.core.policies.subscription_access import parse_subscription_state
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
-from raad.modules.notifications.application.ports import NotificationsUnitOfWork
+from raad.modules.notifications.application.ports import (
+    NotificationsUnitOfWork,
+    PushNotificationSenderPort,
+)
 from raad.modules.notifications.application.services import NotificationApplicationService
 from raad.modules.notifications.events.subscribers import (
     TripEndedNotifier,
@@ -557,6 +560,215 @@ class ParseSubscriptionStateTests(unittest.TestCase):
         self.assertIsNone(parse_subscription_state(None))
         self.assertIsNone(parse_subscription_state("something_invented_later"))
 
+
+
+
+class RecordingPushSender(PushNotificationSenderPort):
+    def __init__(self, dead_tokens: list[str] | None = None) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.dead_tokens = dead_tokens or []
+
+    async def send_to_tokens(
+        self,
+        *,
+        tokens: list[str],
+        title: str,
+        body: str,
+        data: dict[str, str] | None = None,
+    ) -> list[str]:
+        self.sent.append(
+            {
+                "tokens": tokens,
+                "title": title,
+                "body": body,
+                "data": data,
+            }
+        )
+        return self.dead_tokens
+
+
+class FcmPushDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_approaching_stop_delivers_push_to_parent_registered_tokens(self) -> None:
+        container, _ = make_container(
+            assignments=[
+                _AssignmentDTO(
+                    student_id="s1",
+                    status="active",
+                    vehicle_id="veh-1",
+                    pickup_stop_id="stop-1",
+                    dropoff_stop_id="stop-2",
+                )
+            ],
+            links_by_student={"s1": [_ParentLinkDTO(parent_id="p1")]},
+            parents_by_id={"p1": _ParentDTO(user_id="user-1")},
+            trip_vehicle_id="veh-1",
+        )
+        push_sender = RecordingPushSender()
+        container.bind_singleton(PushNotificationSenderPort, push_sender)
+
+        class MockToken:
+            def __init__(self, token_str: str) -> None:
+                self.fcm_token = token_str
+                self.revoked = False
+
+            def revoke(self, clock=None, actor_id=None) -> None:
+                self.revoked = True
+
+        mock_token = MockToken("fcm-tok-xyz")
+
+        class MockDeviceTokensRepo:
+            async def list_active_for_user(self, user_id):
+                return [mock_token]
+
+        class MockNotificationsUow:
+            def __init__(self):
+                self.device_tokens = MockDeviceTokensRepo()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def commit(self):
+                pass
+
+        container.bind_singleton(NotificationsUnitOfWork, MockNotificationsUow())
+
+        processor = VehicleApproachingStopNotifier(_NotificationFanOut(container))
+        event = make_event(
+            event_type="VehicleApproachingStop",
+            aggregate_id="01J8Z3K9G6X8YV5T4N2R7QW3GC",
+            payload={"trip_id": "trip-1", "stop_id": "stop-1"},
+        )
+        await processor.process(event)
+
+        self.assertEqual(len(push_sender.sent), 1)
+        self.assertEqual(push_sender.sent[0]["tokens"], ["fcm-tok-xyz"])
+        self.assertEqual(push_sender.sent[0]["title"], "Approaching stop")
+        self.assertEqual(
+            push_sender.sent[0]["body"], "The school bus is approaching your home."
+        )
+        self.assertEqual(push_sender.sent[0]["data"]["type"], "approaching_stop")
+
+    async def test_arrived_org_delivers_push_to_parent_registered_tokens(self) -> None:
+        container, _ = make_container(
+            assignments=[
+                _AssignmentDTO(
+                    student_id="s1",
+                    status="active",
+                    vehicle_id="veh-1",
+                )
+            ],
+            links_by_student={"s1": [_ParentLinkDTO(parent_id="p1")]},
+            parents_by_id={"p1": _ParentDTO(user_id="user-1")},
+            trip_vehicle_id="veh-1",
+        )
+        push_sender = RecordingPushSender()
+        container.bind_singleton(PushNotificationSenderPort, push_sender)
+
+        class MockToken:
+            def __init__(self, token_str: str) -> None:
+                self.fcm_token = token_str
+                self.revoked = False
+
+            def revoke(self, clock=None, actor_id=None) -> None:
+                self.revoked = True
+
+        mock_token = MockToken("fcm-tok-abc")
+
+        class MockDeviceTokensRepo:
+            async def list_active_for_user(self, user_id):
+                return [mock_token]
+
+        class MockNotificationsUow:
+            def __init__(self):
+                self.device_tokens = MockDeviceTokensRepo()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def commit(self):
+                pass
+
+        container.bind_singleton(NotificationsUnitOfWork, MockNotificationsUow())
+
+        processor = VehicleArrivedAtOrganizationNotifier(_NotificationFanOut(container))
+        event = make_event(
+            event_type="VehicleArrivedAtOrganization",
+            aggregate_id="01J8Z3K9G6X8YV5T4N2R7QW3GC",
+            payload={"trip_id": "trip-1"},
+        )
+        await processor.process(event)
+
+        self.assertEqual(len(push_sender.sent), 1)
+        self.assertEqual(push_sender.sent[0]["tokens"], ["fcm-tok-abc"])
+        self.assertEqual(push_sender.sent[0]["title"], "Arrived at school")
+        self.assertEqual(
+            push_sender.sent[0]["body"], "The bus has arrived safely at school."
+        )
+        self.assertEqual(push_sender.sent[0]["data"]["type"], "arrived_org")
+
+    async def test_dead_tokens_are_revoked(self) -> None:
+        container, _ = make_container(
+            assignments=[
+                _AssignmentDTO(
+                    student_id="s1",
+                    status="active",
+                    vehicle_id="veh-1",
+                )
+            ],
+            links_by_student={"s1": [_ParentLinkDTO(parent_id="p1")]},
+            parents_by_id={"p1": _ParentDTO(user_id="user-1")},
+            trip_vehicle_id="veh-1",
+        )
+        push_sender = RecordingPushSender(dead_tokens=["fcm-dead-123"])
+        container.bind_singleton(PushNotificationSenderPort, push_sender)
+
+        class MockToken:
+            def __init__(self, token_str: str) -> None:
+                self.fcm_token = token_str
+                self.revoked = False
+
+            def revoke(self, clock=None, actor_id=None) -> None:
+                self.revoked = True
+
+        mock_token = MockToken("fcm-dead-123")
+
+        class MockDeviceTokensRepo:
+            async def list_active_for_user(self, user_id):
+                return [mock_token]
+
+        class MockNotificationsUow:
+            def __init__(self):
+                self.device_tokens = MockDeviceTokensRepo()
+                self.committed = False
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def commit(self):
+                self.committed = True
+
+        uow = MockNotificationsUow()
+        container.bind_singleton(NotificationsUnitOfWork, uow)
+
+        processor = VehicleArrivedAtOrganizationNotifier(_NotificationFanOut(container))
+        event = make_event(
+            event_type="VehicleArrivedAtOrganization",
+            aggregate_id="01J8Z3K9G6X8YV5T4N2R7QW3GC",
+            payload={"trip_id": "trip-1"},
+        )
+        await processor.process(event)
+
+        self.assertTrue(mock_token.revoked)
+        self.assertTrue(uow.committed)
 
 if __name__ == "__main__":
     unittest.main()

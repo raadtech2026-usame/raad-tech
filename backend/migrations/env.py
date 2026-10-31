@@ -26,6 +26,7 @@ from raad.core.db.base import Base
 # today, but audit_entries is imported explicitly here rather than relying on that same
 # incidental mechanism).
 import raad.core.audit.writer  # noqa: F401 — registers AuditEntryRecord
+import raad.core.events.outbox  # noqa: F401 — registers OutboxRecord
 
 # Import every module's `infra/models.py` here so their ORM classes register onto
 # `Base.metadata` before autogenerate runs.

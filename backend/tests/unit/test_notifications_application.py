@@ -206,6 +206,13 @@ class InMemoryDeviceTokenRepository(DeviceTokenRepository):
     async def get_by_token(self, fcm_token: str) -> DeviceToken | None:
         return next(
             (t for t in self.by_id.values() if str(t.fcm_token) == fcm_token), None
+
+    async def list_active_for_user(self, user_id: UserId) -> list[DeviceToken]:
+        return [
+            t
+            for t in self.by_id.values()
+            if str(t.user_id) == str(user_id) and t.revoked_at is None
+        ]
         )
 
 

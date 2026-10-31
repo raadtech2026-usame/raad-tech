@@ -130,6 +130,31 @@ class FakeAdminRepository extends AdminRepository {
 
   @override
   Future<FleetOnline> fleetOnline() => _answer(online);
+
+  List<AdminDriver> driverList = [];
+  List<AdminParent> parentList = [];
+  List<AdminStudent> studentList = [];
+  List<AdminDevice> deviceList = [];
+  List<AdminRoute> routeList = [];
+  List<BoardTrip> tripList = [];
+
+  @override
+  Future<List<AdminDriver>> drivers() => _answer(driverList);
+
+  @override
+  Future<List<AdminParent>> parents() => _answer(parentList);
+
+  @override
+  Future<List<AdminStudent>> students() => _answer(studentList);
+
+  @override
+  Future<List<AdminDevice>> devices() => _answer(deviceList);
+
+  @override
+  Future<List<AdminRoute>> routes() => _answer(routeList);
+
+  @override
+  Future<List<BoardTrip>> trips() => _answer(tripList);
 }
 
 class _FixedThemeMode extends ThemeModeController {

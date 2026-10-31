@@ -58,19 +58,38 @@ def _build_realtime_lifecycle(app: FastAPI) -> WorkerLifecycle:
 
     workers: list[tuple[Worker, float]] = []
     if settings.broker.url:
-        tracking_consumer = build_realtime_broker_consumer(
-            broker_url=settings.broker.url, group_name="ws-tracking", clock=clock
+        tracking_handler = build_tracking_fanout_handler(
+            connections=app.state.tracking_connections, container=container
+        )
+        tracking_telemetry_consumer = build_realtime_broker_consumer(
+            broker_url=settings.broker.url,
+            group_name="ws-tracking-telemetry",
+            clock=clock,
+            stream_name=settings.broker.telemetry_stream_name,
+        )
+        tracking_events_consumer = build_realtime_broker_consumer(
+            broker_url=settings.broker.url,
+            group_name="ws-tracking-events",
+            clock=clock,
+            stream_name=settings.broker.stream_name,
         )
         notifications_consumer = build_realtime_broker_consumer(
-            broker_url=settings.broker.url, group_name="ws-notifications", clock=clock
-        )
-        tracking_worker = BrokerFanOutWorker(
-            "ws_tracking_fanout",
+            broker_url=settings.broker.url,
+            group_name="ws-notifications",
             clock=clock,
-            consumer=tracking_consumer,
-            handler=build_tracking_fanout_handler(
-                connections=app.state.tracking_connections, container=container
-            ),
+            stream_name=settings.broker.stream_name,
+        )
+        tracking_telemetry_worker = BrokerFanOutWorker(
+            "ws_tracking_telemetry_fanout",
+            clock=clock,
+            consumer=tracking_telemetry_consumer,
+            handler=tracking_handler,
+        )
+        tracking_events_worker = BrokerFanOutWorker(
+            "ws_tracking_events_fanout",
+            clock=clock,
+            consumer=tracking_events_consumer,
+            handler=tracking_handler,
         )
         notifications_worker = BrokerFanOutWorker(
             "ws_notifications_fanout",
@@ -81,7 +100,11 @@ def _build_realtime_lifecycle(app: FastAPI) -> WorkerLifecycle:
             ),
         )
         interval = settings.workers.realtime_fanout_interval_seconds
-        workers = [(tracking_worker, interval), (notifications_worker, interval)]
+        workers = [
+            (tracking_telemetry_worker, interval),
+            (tracking_events_worker, interval),
+            (notifications_worker, interval),
+        ]
     else:
         logger.info(
             "realtime_fanout_not_started",

@@ -122,6 +122,11 @@ if [ -n "${BACKUP_RCLONE_REMOTE:-}" ]; then
   echo "[backup] pushing to off-site remote: $BACKUP_RCLONE_REMOTE"
   rclone copy "$DUMP_FILE" "$BACKUP_RCLONE_REMOTE"
   echo "[backup] off-site copy complete"
+  # Remote retention: prune offsite dumps older than BACKUP_RCLONE_RETENTION_DAYS (default 30 days)
+  RCLONE_RETENTION="${BACKUP_RCLONE_RETENTION_DAYS:-30}"
+  echo "[backup] pruning off-site backups older than ${RCLONE_RETENTION}d from $BACKUP_RCLONE_REMOTE"
+  rclone delete --min-age "${RCLONE_RETENTION}d" "$BACKUP_RCLONE_REMOTE"
+  echo "[backup] off-site retention pruning complete"
 else
   echo "[backup] WARNING: BACKUP_RCLONE_REMOTE is not set — this backup exists ONLY on this" >&2
   echo "[backup] WARNING: host's local disk. A VPS/disk failure right now would still mean" >&2

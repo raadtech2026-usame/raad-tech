@@ -59,6 +59,8 @@ from src.events.device_video_signal_status_reported import DeviceVideoSignalStat
 from src.events.publisher_port import DeviceEvent, EventPublisher
 
 DEFAULT_STREAM_NAME = "raad:events"
+DEFAULT_TELEMETRY_STREAM_NAME = "raad:telemetry"
+DEFAULT_TELEMETRY_MAX_LENGTH = 100_000
 
 
 def _envelope(
@@ -266,27 +268,30 @@ class RedisEventPublisher(EventPublisher):
         *,
         stream_name: str = DEFAULT_STREAM_NAME,
         max_length: int = 0,
+        telemetry_stream_name: str = DEFAULT_TELEMETRY_STREAM_NAME,
+        telemetry_max_length: int = DEFAULT_TELEMETRY_MAX_LENGTH,
     ) -> None:
         self._redis = redis_client
         self._stream_name = stream_name
-        #: Approximate `raad:events` cap, applied per `XADD` (2026-09-02). Must match the other
-        #: publishers writing to this same stream (`backend/raad/core/events/redis_streams.
-        #: RedisStreamsBrokerPort`, and this service's sibling relay/gateway publisher) - a single
-        #: unbounded writer is enough to grow the stream past Redis's `maxmemory` on its own,
-        #: which under the deliberate `noeviction` policy makes every subsequent `XADD` fail and
-        #: stops the whole event backbone. Measured live before this fix: 301k entries / ~223 MB
-        #: against a 256 MB ceiling. `0` disables trimming (the previous, unbounded behavior).
         self._max_length = max_length
+        self._telemetry_stream_name = telemetry_stream_name
+        self._telemetry_max_length = telemetry_max_length
 
-    async def _xadd(self, fields: dict) -> None:
-        """Single `XADD` chokepoint so stream trimming is applied identically to every event
-        this publisher writes (see `_max_length`)."""
-        if self._max_length > 0:
+    async def _xadd(self, stream_name: str, fields: dict, max_length: int) -> None:
+        """Single `XADD` chokepoint so stream trimming is applied according to policy."""
+        if max_length > 0:
             await self._redis.xadd(
-                self._stream_name, fields, maxlen=self._max_length, approximate=True
+                stream_name, fields, maxlen=max_length, approximate=True
             )
             return
-        await self._redis.xadd(self._stream_name, fields)
+        await self._redis.xadd(stream_name, fields)
 
     async def publish(self, event: DeviceEvent) -> None:
-        await self._xadd(_fields_for(event))
+        fields = _fields_for(event)
+        if isinstance(event, DevicePositionReported):
+            await self._xadd(
+                self._telemetry_stream_name, fields, self._telemetry_max_length
+            )
+            return
+        await self._xadd(self._stream_name, fields, self._max_length)
+

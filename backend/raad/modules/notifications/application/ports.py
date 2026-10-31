@@ -28,3 +28,19 @@ class NotificationsUnitOfWork(UnitOfWork):
 
     notifications: NotificationRepository
     device_tokens: DeviceTokenRepository
+
+
+class PushNotificationSenderPort:
+    """Outbound port for pushing notifications to mobile devices via FCM."""
+
+    async def send_to_tokens(
+        self,
+        *,
+        tokens: list[str],
+        title: str,
+        body: str,
+        data: dict[str, str] | None = None,
+    ) -> list[str]:
+        """Sends a notification to the specified device tokens.
+        Returns a list of unregistered/dead tokens that failed delivery."""
+        raise NotImplementedError

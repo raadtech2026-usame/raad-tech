@@ -51,14 +51,26 @@ class AuthController extends StateNotifier<AuthState> {
       await _applySession(await _authRepository.refresh(refreshToken));
     } on ApiException catch (e) {
       if (e.isNetwork) {
-        // Offline at startup: keep the token and let the person retry from the login screen
-        // rather than throwing away a session that is probably still good.
+        // Offline at startup: check if a cached session exists to keep the user authenticated
+        // rather than kicking them out to the login screen.
+        final cached = await _tokenStorage.readSession();
+        if (cached != null) {
+          _apiClient.setAccessToken(cached.accessToken);
+          state = AuthAuthenticated(cached);
+          return;
+        }
         state = const AuthUnauthenticated();
         return;
       }
       await _tokenStorage.clear();
       state = const AuthUnauthenticated();
     } catch (_) {
+      final cached = await _tokenStorage.readSession();
+      if (cached != null) {
+        _apiClient.setAccessToken(cached.accessToken);
+        state = AuthAuthenticated(cached);
+        return;
+      }
       await _tokenStorage.clear();
       state = const AuthUnauthenticated();
     }
@@ -97,17 +109,18 @@ class AuthController extends StateNotifier<AuthState> {
     final current = state;
     if (current is AuthAuthenticated) {
       final old = current.session;
-      state = AuthAuthenticated(
-        AuthSession(
-          accessToken: old.accessToken,
-          refreshToken: old.refreshToken,
-          principal: Principal(
-            userId: old.principal.userId,
-            role: old.principal.role,
-            organizationId: old.principal.organizationId,
-          ),
+      final updated = AuthSession(
+        accessToken: old.accessToken,
+        refreshToken: old.refreshToken,
+        principal: Principal(
+          userId: old.principal.userId,
+          role: old.principal.role,
+          organizationId: old.principal.organizationId,
+          isPasswordChangeRequired: false,
         ),
       );
+      await _tokenStorage.saveSession(updated);
+      state = AuthAuthenticated(updated);
     }
   }
 
@@ -126,12 +139,14 @@ class AuthController extends StateNotifier<AuthState> {
 
   Future<void> _signOutLocally({bool sessionExpired = false}) async {
     await _tokenStorage.clear();
+    await _apiClient.clearCache();
     _apiClient.clearAccessToken();
     state = AuthUnauthenticated(sessionExpired: sessionExpired);
   }
 
   Future<void> _applySession(AuthSession session) async {
     await _tokenStorage.saveRefreshToken(session.refreshToken);
+    await _tokenStorage.saveSession(session);
     _apiClient.setAccessToken(session.accessToken);
     final wasSignedIn = state is AuthAuthenticated;
     state = AuthAuthenticated(session);

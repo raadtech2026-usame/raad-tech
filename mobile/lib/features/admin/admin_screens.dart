@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/data/repository.dart';
@@ -9,9 +10,10 @@ import '../common/notifications_screen.dart';
 import '../common/profile_screen.dart';
 import 'admin_data.dart';
 
-/// The Organization Admin's view of their own school's transport (ADR-0062): what is running,
-/// what needs attention, and which buses are connected. It reads; managing is done on the web
-/// dashboard. No live video here: on mobile that stays the per-parent grant of ADR-0026.
+/// The Organization Admin's view of their own school's transport (ADR-0062).
+/// Upgraded to provide complete management parity with the web dashboard:
+/// Users (Drivers, Parents, Students), Fleet (Vehicles, Device Linking),
+/// Dispatch & Routes, and Safety Alerts.
 class AdminShell extends ConsumerStatefulWidget {
   const AdminShell({super.key});
 
@@ -40,6 +42,31 @@ class _AdminShellState extends ConsumerState<AdminShell> {
             padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
             child: Text(s.adminManageOnWeb,
                 style: TextStyle(fontSize: 12.5, color: context.muted)),
+          ),
+          const SizedBox(height: 12),
+          ListTile(
+            leading: const Icon(Icons.people_rounded),
+            title: Text(s.adminNavUsers),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.directions_bus_rounded),
+            title: Text(s.adminNavFleet),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AdminFleetScreen()),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.alt_route_rounded),
+            title: Text(s.adminNavDispatch),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AdminDispatchScreen()),
+            ),
           ),
         ],
       ),
@@ -102,7 +129,25 @@ class AdminOverviewScreen extends ConsumerWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(title: Text(s.adminOverviewTitle)),
+      appBar: AppBar(
+        title: Text(s.adminOverviewTitle),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.people_rounded),
+            tooltip: s.adminNavUsers,
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.directions_bus_rounded),
+            tooltip: s.adminNavFleet,
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AdminFleetScreen()),
+            ),
+          ),
+        ],
+      ),
       body: AsyncBody<AdminOverview>(
         value: overview,
         onRetry: refresh,
@@ -148,6 +193,32 @@ class AdminOverviewScreen extends ConsumerWidget {
                     label: s.adminRoutes,
                     value: data.routes),
               ]),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.people_rounded, size: 18),
+                      label: Text(s.adminNavUsers),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => const AdminUsersScreen()),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.directions_bus_rounded, size: 18),
+                      label: Text(s.adminNavFleet),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => const AdminFleetScreen()),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
               SectionTitle(s.adminOnlineBuses),
               fleet.when(
                 skipLoadingOnRefresh: true,
@@ -246,8 +317,6 @@ class _KpiRow extends StatelessWidget {
 class _Kpi extends StatelessWidget {
   final IconData icon;
   final String label;
-
-  /// Null when the figure could not be read: shown as a dash, never as zero.
   final int? value;
   final Color? color;
   const _Kpi(
@@ -259,44 +328,45 @@ class _Kpi extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SectionCard(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 20, color: color ?? context.colors.primary),
-          const SizedBox(height: 10),
+          Icon(icon, size: 20, color: color ?? context.muted),
+          const SizedBox(height: 8),
           Text(
-            value?.toString() ?? '—',
-            style: const TextStyle(
-                fontSize: 24, fontWeight: FontWeight.w800, height: 1.1),
+            value == null ? '—' : '$value',
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
           ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, color: context.muted),
-          ),
+          const SizedBox(height: 2),
+          Text(label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, color: context.muted)),
         ],
       ),
     );
   }
 }
 
-class _OnlineBuses extends ConsumerWidget {
+class _OnlineBuses extends StatelessWidget {
   final FleetOnline online;
   const _OnlineBuses({required this.online});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final s = ref.watch(stringsProvider);
+  Widget build(BuildContext context) {
+    final s = Strings(Localizations.localeOf(context).languageCode == 'so');
     if (online.vehicles.isEmpty) {
       return SectionCard(
-        child: Text(s.adminNoBusOnline, style: TextStyle(color: context.muted)),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Text(s.adminNoBusOnline,
+              style: TextStyle(color: context.muted, fontSize: 13)),
+        ),
       );
     }
     return SectionCard(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: EdgeInsets.zero,
       child: Column(
         children: [
           for (final vehicle in online.vehicles)
@@ -337,7 +407,18 @@ class AdminTodayScreen extends ConsumerWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(title: Text(s.adminTodayTitle)),
+      appBar: AppBar(
+        title: Text(s.adminTodayTitle),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.alt_route_rounded),
+            tooltip: s.adminNavDispatch,
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AdminDispatchScreen()),
+            ),
+          ),
+        ],
+      ),
       body: AsyncBody<DailyBoard>(
         value: board,
         onRetry: refresh,
@@ -614,4 +695,967 @@ class _AlertCard extends ConsumerWidget {
       ),
     );
   }
+}
+
+// ============================================================================
+// USERS & DIRECTORY SCREEN (Drivers, Parents, Students)
+// ============================================================================
+
+class AdminUsersScreen extends ConsumerStatefulWidget {
+  const AdminUsersScreen({super.key});
+
+  @override
+  ConsumerState<AdminUsersScreen> createState() => _AdminUsersScreenState();
+}
+
+class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 3, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(s.adminNavUsers),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: [
+            Tab(text: s.adminTabDrivers),
+            Tab(text: s.adminTabParents),
+            Tab(text: s.adminTabStudents),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: const [
+          _DriversTab(),
+          _ParentsTab(),
+          _StudentsTab(),
+        ],
+      ),
+    );
+  }
+}
+
+class _DriversTab extends ConsumerWidget {
+  const _DriversTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
+    final drivers = ref.watch(adminDriversProvider);
+
+    return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.person_add_rounded),
+        label: Text(s.adminAddDriver),
+        onPressed: () => _showAddDriverSheet(context, ref, s),
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async => ref.invalidate(adminDriversProvider),
+        child: drivers.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text(s.somethingWrong)),
+          data: (list) {
+            if (list.isEmpty) {
+              return Center(child: Text(s.adminDrivers));
+            }
+            return ListView.separated(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
+              itemCount: list.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (context, i) {
+                final d = list[i];
+                return SectionCard(
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: d.isActive
+                            ? RaadColors.primary.withOpacity(0.15)
+                            : Colors.grey.withOpacity(0.2),
+                        child: Icon(Icons.badge_rounded,
+                            color: d.isActive ? RaadColors.primary : Colors.grey),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(d.fullName,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 15)),
+                            const SizedBox(height: 2),
+                            Text(
+                              '${d.phone}${d.licenseNo != null ? ' · ${d.licenseNo}' : ''}',
+                              style: TextStyle(
+                                  fontSize: 12.5, color: context.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                      PopupMenuButton<String>(
+                        onSelected: (val) async {
+                          await ref
+                              .read(adminRepositoryProvider)
+                              .updateDriverStatus(d.id, val);
+                          ref.invalidate(adminDriversProvider);
+                        },
+                        itemBuilder: (ctx) => [
+                          PopupMenuItem(
+                            value: 'active',
+                            child: Text(s.adminStatusActive),
+                          ),
+                          PopupMenuItem(
+                            value: 'inactive',
+                            child: Text(s.adminStatusInactive),
+                          ),
+                        ],
+                        child: StatusChip(
+                          label: d.isActive
+                              ? s.adminStatusActive
+                              : s.adminStatusInactive,
+                          color: d.isActive ? RaadColors.green : RaadColors.amber,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _ParentsTab extends ConsumerWidget {
+  const _ParentsTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
+    final parents = ref.watch(adminParentsProvider);
+
+    return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.person_add_alt_1_rounded),
+        label: Text(s.adminAddParent),
+        onPressed: () => _showAddParentSheet(context, ref, s),
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async => ref.invalidate(adminParentsProvider),
+        child: parents.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text(s.somethingWrong)),
+          data: (list) {
+            if (list.isEmpty) {
+              return Center(child: Text(s.adminTabParents));
+            }
+            return ListView.separated(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
+              itemCount: list.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (context, i) {
+                final p = list[i];
+                return SectionCard(
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: RaadColors.blue.withOpacity(0.15),
+                        child: const Icon(Icons.family_restroom_rounded,
+                            color: RaadColors.blue),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(p.fullName,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 15)),
+                            const SizedBox(height: 2),
+                            Text(
+                              p.phone + (p.email != null ? ' · ${p.email}' : ''),
+                              style: TextStyle(
+                                  fontSize: 12.5, color: context.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _StudentsTab extends ConsumerWidget {
+  const _StudentsTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
+    final students = ref.watch(adminStudentsProvider);
+
+    return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.school_rounded),
+        label: Text(s.adminEnrollStudent),
+        onPressed: () => _showEnrollStudentSheet(context, ref, s),
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async => ref.invalidate(adminStudentsProvider),
+        child: students.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text(s.somethingWrong)),
+          data: (list) {
+            if (list.isEmpty) {
+              return Center(child: Text(s.adminTabStudents));
+            }
+            return ListView.separated(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
+              itemCount: list.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (context, i) {
+                final st = list[i];
+                return SectionCard(
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: RaadColors.purple.withOpacity(0.15),
+                        child: const Icon(Icons.school_rounded,
+                            color: RaadColors.purple),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(st.fullName,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 15)),
+                            const SizedBox(height: 2),
+                            Text(
+                              '${st.externalRef ?? s.notAvailable}${st.gender != null ? ' · ${st.gender}' : ''}',
+                              style: TextStyle(
+                                  fontSize: 12.5, color: context.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                      PopupMenuButton<String>(
+                        onSelected: (status) async {
+                          await ref
+                              .read(adminRepositoryProvider)
+                              .updateStudentStatus(st.id, status);
+                          ref.invalidate(adminStudentsProvider);
+                        },
+                        itemBuilder: (ctx) => [
+                          PopupMenuItem(
+                            value: 'active',
+                            child: Text(s.adminStatusActive),
+                          ),
+                          PopupMenuItem(
+                            value: 'disabled',
+                            child: Text(s.adminStatusInactive),
+                          ),
+                          PopupMenuItem(
+                            value: 'graduated',
+                            child: Text(s.adminStatusGraduated),
+                          ),
+                          PopupMenuItem(
+                            value: 'transferred',
+                            child: Text(s.adminStatusWithdrawn),
+                          ),
+                        ],
+                        child: StatusChip(
+                          label: st.isActive
+                              ? s.adminStatusActive
+                              : st.status,
+                          color: st.isActive ? RaadColors.green : RaadColors.amber,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// FLEET & VEHICLES MANAGEMENT SCREEN
+// ============================================================================
+
+class AdminFleetScreen extends ConsumerWidget {
+  const AdminFleetScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
+    final vehicles = ref.watch(adminVehiclesListProvider);
+    final fleetOnline = ref.watch(adminFleetOnlineProvider).valueOrNull;
+
+    final onlineIds = fleetOnline?.vehicles.map((v) => v.vehicleId).toSet() ?? {};
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(s.adminNavFleet),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.add_rounded),
+        label: Text(s.adminAddVehicle),
+        onPressed: () => _showAddVehicleSheet(context, ref, s),
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          ref.invalidate(adminVehiclesListProvider);
+          ref.invalidate(adminFleetOnlineProvider);
+        },
+        child: vehicles.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text(s.somethingWrong)),
+          data: (list) {
+            if (list.isEmpty) {
+              return Center(child: Text(s.adminNoBusOnline));
+            }
+            return ListView.separated(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
+              itemCount: list.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (context, i) {
+                final v = list[i];
+                final isOnline = onlineIds.contains(v.id);
+                return SectionCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            backgroundColor: isOnline
+                                ? RaadColors.green.withOpacity(0.15)
+                                : Colors.grey.withOpacity(0.15),
+                            child: Icon(Icons.directions_bus_rounded,
+                                color: isOnline
+                                    ? RaadColors.green
+                                    : Colors.grey),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(v.displayName,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15)),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '${v.capacity ?? '—'} ${s.adminCapacity} · ${isOnline ? s.adminOnlineNow : s.adminStatusInactive}',
+                                  style: TextStyle(
+                                      fontSize: 12, color: context.muted),
+                                ),
+                              ],
+                            ),
+                          ),
+                          PopupMenuButton<String>(
+                            onSelected: (status) async {
+                              await ref
+                                  .read(adminRepositoryProvider)
+                                  .updateVehicleStatus(v.id, status);
+                              ref.invalidate(adminVehiclesListProvider);
+                            },
+                            itemBuilder: (ctx) => [
+                              PopupMenuItem(
+                                value: 'active',
+                                child: Text(s.adminStatusActive),
+                              ),
+                              PopupMenuItem(
+                                value: 'maintenance',
+                                child: Text(s.adminStatusMaintenance),
+                              ),
+                              PopupMenuItem(
+                                value: 'inactive',
+                                child: Text(s.adminStatusInactive),
+                              ),
+                            ],
+                            child: StatusChip(
+                              label: v.isMaintenance
+                                  ? s.adminStatusMaintenance
+                                  : (v.isActive
+                                      ? s.adminStatusActive
+                                      : s.adminStatusInactive),
+                              color: v.isMaintenance
+                                  ? RaadColors.amber
+                                  : (v.isActive
+                                      ? RaadColors.green
+                                      : Colors.grey),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      const Divider(height: 1),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.router_rounded,
+                                  size: 16, color: context.muted),
+                              const SizedBox(width: 6),
+                              Text(
+                                v.terminalId != null
+                                    ? '${s.adminDeviceLinked} (#${v.terminalId})'
+                                    : s.adminNoDeviceLinked,
+                                style: TextStyle(
+                                    fontSize: 12, color: context.muted),
+                              ),
+                            ],
+                          ),
+                          TextButton.icon(
+                            icon: const Icon(Icons.link_rounded, size: 16),
+                            label: Text(s.adminLinkDevice,
+                                style: const TextStyle(fontSize: 12)),
+                            onPressed: () =>
+                                _showLinkDeviceDialog(context, ref, v, s),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// DISPATCH & ROUTES SCREEN
+// ============================================================================
+
+class AdminDispatchScreen extends ConsumerWidget {
+  const AdminDispatchScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
+    final routes = ref.watch(adminRoutesProvider);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(s.adminRoutesTitle),
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async => ref.invalidate(adminRoutesProvider),
+        child: routes.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text(s.somethingWrong)),
+          data: (list) {
+            if (list.isEmpty) {
+              return Center(child: Text(s.adminRoutesTitle));
+            }
+            return ListView.separated(
+              padding: const EdgeInsets.all(16),
+              itemCount: list.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (context, i) {
+                final r = list[i];
+                return SectionCard(
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: RaadColors.primary.withOpacity(0.12),
+                        child: const Icon(Icons.alt_route_rounded,
+                            color: RaadColors.primary),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(r.name,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 15)),
+                            const SizedBox(height: 2),
+                            Text(
+                              '${r.code != null ? '${r.code} · ' : ''}${s.adminStopsCount(r.stopCount)}',
+                              style: TextStyle(
+                                  fontSize: 12.5, color: context.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// DIALOGS & FORM BOTTOM SHEETS
+// ============================================================================
+
+void _showTempPasswordDialog(
+    BuildContext context, String name, String password, Strings s) {
+  showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Row(
+        children: [
+          const Icon(Icons.key_rounded, color: RaadColors.primary),
+          const SizedBox(width: 8),
+          Expanded(child: Text(s.adminTempPasswordTitle)),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('$name:'),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.grey.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: RaadColors.primary.withOpacity(0.4)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SelectableText(
+                    password,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.copy_rounded, size: 20),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: password));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(s.adminCopied)),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(s.adminTempPasswordMsg,
+              style: TextStyle(fontSize: 12, color: context.muted)),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: Text(s.confirm),
+        ),
+      ],
+    ),
+  );
+}
+
+void _showAddDriverSheet(
+    BuildContext context, WidgetRef ref, Strings s) {
+  final nameCtrl = TextEditingController();
+  final phoneCtrl = TextEditingController();
+  final licenseCtrl = TextEditingController();
+  final emailCtrl = TextEditingController();
+
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    builder: (ctx) => Padding(
+      padding: EdgeInsets.fromLTRB(
+          16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(s.adminAddDriver,
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 16),
+          TextField(
+            controller: nameCtrl,
+            decoration: InputDecoration(
+                labelText: s.adminFullName, border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: phoneCtrl,
+            keyboardType: TextInputType.phone,
+            decoration: InputDecoration(
+                labelText: s.adminPhone, border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: licenseCtrl,
+            decoration: InputDecoration(
+                labelText: s.adminLicenseNo, border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: emailCtrl,
+            keyboardType: TextInputType.emailAddress,
+            decoration: InputDecoration(
+                labelText: s.adminEmail, border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: () async {
+              if (nameCtrl.text.isEmpty || phoneCtrl.text.isEmpty) return;
+              Navigator.of(ctx).pop();
+              try {
+                final res = await ref.read(adminRepositoryProvider).createDriver(
+                      fullName: nameCtrl.text.trim(),
+                      phone: phoneCtrl.text.trim(),
+                      licenseNo: licenseCtrl.text.trim(),
+                      email: emailCtrl.text.trim(),
+                    );
+                ref.invalidate(adminDriversProvider);
+                final tempPass = res['temporary_password'] as String?;
+                if (tempPass != null && context.mounted) {
+                  _showTempPasswordDialog(
+                      context, nameCtrl.text.trim(), tempPass, s);
+                }
+              } catch (_) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(s.somethingWrong)),
+                  );
+                }
+              }
+            },
+            child: Center(child: Text(s.save)),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+void _showAddParentSheet(
+    BuildContext context, WidgetRef ref, Strings s) {
+  final nameCtrl = TextEditingController();
+  final phoneCtrl = TextEditingController();
+  final emailCtrl = TextEditingController();
+
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    builder: (ctx) => Padding(
+      padding: EdgeInsets.fromLTRB(
+          16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(s.adminAddParent,
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 16),
+          TextField(
+            controller: nameCtrl,
+            decoration: InputDecoration(
+                labelText: s.adminFullName, border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: phoneCtrl,
+            keyboardType: TextInputType.phone,
+            decoration: InputDecoration(
+                labelText: s.adminPhone, border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: emailCtrl,
+            keyboardType: TextInputType.emailAddress,
+            decoration: InputDecoration(
+                labelText: s.adminEmail, border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: () async {
+              if (nameCtrl.text.isEmpty || phoneCtrl.text.isEmpty) return;
+              Navigator.of(ctx).pop();
+              try {
+                final res = await ref.read(adminRepositoryProvider).createParent(
+                      fullName: nameCtrl.text.trim(),
+                      phone: phoneCtrl.text.trim(),
+                      email: emailCtrl.text.trim(),
+                    );
+                ref.invalidate(adminParentsProvider);
+                final tempPass = res['temporary_password'] as String?;
+                if (tempPass != null && context.mounted) {
+                  _showTempPasswordDialog(
+                      context, nameCtrl.text.trim(), tempPass, s);
+                }
+              } catch (_) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(s.somethingWrong)),
+                  );
+                }
+              }
+            },
+            child: Center(child: Text(s.save)),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+void _showEnrollStudentSheet(
+    BuildContext context, WidgetRef ref, Strings s) {
+  final nameCtrl = TextEditingController();
+  final refCtrl = TextEditingController();
+  String gender = 'male';
+
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setModalState) => Padding(
+        padding: EdgeInsets.fromLTRB(
+            16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(s.adminEnrollStudent,
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            TextField(
+              controller: nameCtrl,
+              decoration: InputDecoration(
+                  labelText: s.adminFullName,
+                  border: const OutlineInputBorder()),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: refCtrl,
+              decoration: InputDecoration(
+                  labelText: s.adminAdmissionNo,
+                  border: const OutlineInputBorder()),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: gender,
+              decoration: InputDecoration(
+                  labelText: s.adminGender,
+                  border: const OutlineInputBorder()),
+              items: [
+                DropdownMenuItem(value: 'male', child: Text(s.adminMale)),
+                DropdownMenuItem(value: 'female', child: Text(s.adminFemale)),
+              ],
+              onChanged: (val) {
+                if (val != null) setModalState(() => gender = val);
+              },
+            ),
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: () async {
+                if (nameCtrl.text.isEmpty) return;
+                Navigator.of(ctx).pop();
+                try {
+                  await ref.read(adminRepositoryProvider).enrollStudent(
+                        fullName: nameCtrl.text.trim(),
+                        externalRef: refCtrl.text.trim(),
+                        gender: gender,
+                      );
+                  ref.invalidate(adminStudentsProvider);
+                } catch (_) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(s.somethingWrong)),
+                    );
+                  }
+                }
+              },
+              child: Center(child: Text(s.save)),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+void _showAddVehicleSheet(
+    BuildContext context, WidgetRef ref, Strings s) {
+  final plateCtrl = TextEditingController();
+  final labelCtrl = TextEditingController();
+  final capCtrl = TextEditingController();
+
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    builder: (ctx) => Padding(
+      padding: EdgeInsets.fromLTRB(
+          16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(s.adminAddVehicle,
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 16),
+          TextField(
+            controller: plateCtrl,
+            decoration: InputDecoration(
+                labelText: s.adminPlateNo, border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: labelCtrl,
+            decoration: InputDecoration(
+                labelText: s.adminLabel, border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: capCtrl,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+                labelText: s.adminCapacity, border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: () async {
+              if (plateCtrl.text.isEmpty) return;
+              Navigator.of(ctx).pop();
+              try {
+                await ref.read(adminRepositoryProvider).createVehicle(
+                      plateNo: plateCtrl.text.trim(),
+                      label: labelCtrl.text.trim(),
+                      capacity: int.tryParse(capCtrl.text.trim()),
+                    );
+                ref.invalidate(adminVehiclesListProvider);
+              } catch (_) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(s.somethingWrong)),
+                  );
+                }
+              }
+            },
+            child: Center(child: Text(s.save)),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+void _showLinkDeviceDialog(
+    BuildContext context, WidgetRef ref, AdminVehicle vehicle, Strings s) {
+  showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(s.adminAssignDeviceTitle),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Consumer(
+          builder: (context, ref, child) {
+            final devices = ref.watch(adminDevicesProvider);
+            return devices.when(
+              loading: () =>
+                  const Center(child: CircularProgressIndicator()),
+              error: (_, __) => Text(s.somethingWrong),
+              data: (list) {
+                final unassigned =
+                    list.where((d) => d.vehicleId == null).toList();
+                if (unassigned.isEmpty) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(s.adminNoDeviceLinked,
+                        style: TextStyle(color: context.muted)),
+                  );
+                }
+                return ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: unassigned.length,
+                  itemBuilder: (ctx, i) {
+                    final d = unassigned[i];
+                    return ListTile(
+                      leading: const Icon(Icons.router_rounded),
+                      title: Text(d.terminalId),
+                      subtitle: Text(d.model ?? d.status),
+                      onTap: () async {
+                        Navigator.of(ctx).pop();
+                        try {
+                          await ref
+                              .read(adminRepositoryProvider)
+                              .assignDevice(d.id, vehicle.id);
+                          ref.invalidate(adminVehiclesListProvider);
+                          ref.invalidate(adminDevicesProvider);
+                        } catch (_) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text(s.somethingWrong)),
+                            );
+                          }
+                        }
+                      },
+                    );
+                  },
+                );
+              },
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: Text(s.cancel),
+        ),
+      ],
+    ),
+  );
 }

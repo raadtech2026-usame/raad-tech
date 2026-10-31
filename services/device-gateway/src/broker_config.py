@@ -32,6 +32,12 @@ class BrokerConfig:
     #: the projection to stop depending on infinite history (persist it, or compact registry
     #: events onto their own keys) — a design change, not a tuning knob.
     stream_max_length: int = 0
+    #: High-volume GPS positions are separated from foundational device lifecycle events onto
+    #: their own telemetry stream (`raad:telemetry`). Unlike `raad:events` (which must remain
+    #: unbounded so `DeviceRegistryProjection` never loses founding registration events),
+    #: `telemetry_stream_name` safely applies approximate trimming to bound Redis memory.
+    telemetry_stream_name: str = "raad:telemetry"
+    telemetry_stream_max_length: int = 100_000
 
     @classmethod
     def from_env(cls) -> "BrokerConfig":
@@ -39,5 +45,11 @@ class BrokerConfig:
             url=os.environ.get("DEVICE_GATEWAY_BROKER_URL") or None,
             stream_max_length=int(
                 os.environ.get("DEVICE_GATEWAY_STREAM_MAX_LENGTH", "0")
+            ),
+            telemetry_stream_name=os.environ.get(
+                "DEVICE_GATEWAY_TELEMETRY_STREAM_NAME", "raad:telemetry"
+            ),
+            telemetry_stream_max_length=int(
+                os.environ.get("DEVICE_GATEWAY_TELEMETRY_STREAM_MAX_LENGTH", "100000")
             ),
         )

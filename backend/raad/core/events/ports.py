@@ -59,3 +59,10 @@ class BrokerConsumer(ABC):
     @abstractmethod
     async def consume(self, handler: Callable[[DomainEvent], Awaitable[None]]) -> None:
         raise NotImplementedError
+
+
+class TelemetryBrokerConsumer(BrokerConsumer):
+    """Inbound consumer port dedicated to high-volume telemetry streams (e.g. raad:telemetry).
+    Kept distinct from the primary domain event BrokerConsumer so telemetry message volume
+    never starves or delays critical domain event processors."""
+    pass

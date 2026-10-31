@@ -37,7 +37,7 @@ from typing import Awaitable, Callable
 from raad.core.config.settings import Settings, get_settings
 from raad.core.di.bootstrap import build_container
 from raad.core.di.container import Container
-from raad.core.events.ports import BrokerConsumer
+from raad.core.events.ports import BrokerConsumer, TelemetryBrokerConsumer
 from raad.core.events.processor import EventProcessorRegistry
 from raad.core.logging.setup import configure_logging, get_logger
 from raad.core.time.clock import Clock
@@ -70,6 +70,7 @@ from raad.interfaces.workers.staff_document_alerts import (
     notify_expiring_staff_documents as send_staff_document_alerts,
 )
 from raad.interfaces.workers.notification_worker import NotificationWorker
+from raad.interfaces.workers.telemetry_worker import TelemetryWorker
 from raad.interfaces.workers.outbox_relay import OutboxRelayWorker
 from raad.interfaces.workers.report_worker import ReportWorker
 from raad.interfaces.workers.scheduler import SchedulerWorker
@@ -502,6 +503,23 @@ def create_lifecycle(
         logger.info(
             "notification_worker_not_started",
             extra={"reason": "no BrokerConsumer bound (RAAD_BROKER__URL not configured)"},
+        )
+
+    telemetry_consumer = container.try_resolve(TelemetryBrokerConsumer)
+    if telemetry_consumer is not None:
+        telemetry_worker = TelemetryWorker(
+            clock=clock,
+            consumer=telemetry_consumer,
+            registry=container.resolve(EventProcessorRegistry),
+        )
+        registry.register(telemetry_worker)
+        workers.append(
+            (telemetry_worker, settings.workers.telemetry_worker_interval_seconds)
+        )
+    else:
+        logger.info(
+            "telemetry_worker_not_started",
+            extra={"reason": "no TelemetryBrokerConsumer bound (RAAD_BROKER__URL not configured)"},
         )
 
     lifecycle = WorkerLifecycle(workers)

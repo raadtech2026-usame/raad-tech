@@ -90,7 +90,7 @@ class RedisEventPublisherTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(redis.entries), 1)
         stream_name, fields = redis.entries[0]
-        self.assertEqual(stream_name, "raad:events")
+        self.assertEqual(stream_name, "raad:telemetry")
         data = _decode(fields)
         self.assertEqual(data["event_type"], "DevicePositionReported")
         self.assertEqual(data["aggregate_type"], "Vehicle")
@@ -170,7 +170,16 @@ class RedisEventPublisherTests(unittest.IsolatedAsyncioTestCase):
         behavior, so every pre-existing caller and test is unaffected."""
         redis = FakeRedisStream()
         publisher = RedisEventPublisher(redis)
-        await publisher.publish(_a_position_event())
+        event = DeviceOnline(
+            terminal_id="00007",
+            organization_id=None,
+            vehicle_id=None,
+            device_id=None,
+            event_time=_NOW,
+            received_at=_NOW,
+        )
+        await publisher.publish(event)
+        self.assertEqual(redis.entries[0][0], "raad:events")
         self.assertEqual(redis.last_xadd_kwargs, {"maxlen": None, "approximate": False})
 
     async def test_publish_applies_approximate_trimming_when_configured(self) -> None:
@@ -181,10 +190,35 @@ class RedisEventPublisherTests(unittest.IsolatedAsyncioTestCase):
         where the next `XADD` fails outright and stops the whole event backbone."""
         redis = FakeRedisStream()
         publisher = RedisEventPublisher(redis, max_length=100_000)
-        await publisher.publish(_a_position_event())
+        event = DeviceOnline(
+            terminal_id="00007",
+            organization_id=None,
+            vehicle_id=None,
+            device_id=None,
+            event_time=_NOW,
+            received_at=_NOW,
+        )
+        await publisher.publish(event)
+        self.assertEqual(redis.entries[0][0], "raad:events")
         self.assertEqual(
             redis.last_xadd_kwargs, {"maxlen": 100_000, "approximate": True}
         )
+
+    async def test_position_event_routes_to_telemetry_stream_with_trimming(self) -> None:
+        redis = FakeRedisStream()
+        publisher = RedisEventPublisher(redis)
+        await publisher.publish(_a_position_event())
+        self.assertEqual(redis.entries[0][0], "raad:telemetry")
+        self.assertEqual(redis.last_xadd_kwargs, {"maxlen": 100_000, "approximate": True})
+
+    async def test_publishes_to_a_custom_telemetry_stream_and_max_length(self) -> None:
+        redis = FakeRedisStream()
+        publisher = RedisEventPublisher(
+            redis, telemetry_stream_name="custom:telemetry", telemetry_max_length=50_000
+        )
+        await publisher.publish(_a_position_event())
+        self.assertEqual(redis.entries[0][0], "custom:telemetry")
+        self.assertEqual(redis.last_xadd_kwargs, {"maxlen": 50_000, "approximate": True})
 
     async def test_publishes_to_a_custom_stream_name_when_given(self) -> None:
         redis = FakeRedisStream()

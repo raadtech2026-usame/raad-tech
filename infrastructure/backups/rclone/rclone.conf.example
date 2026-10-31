@@ -1,0 +1,16 @@
+# Example rclone configuration for RAAD platform offsite backups
+# Place your real rclone.conf in this directory (or point RCLONE_CONFIG_DIR to it)
+#
+# S3 / Cloudflare R2 / AWS Example:
+# [s3-remote]
+# type = s3
+# provider = AWS
+# access_key_id = YOUR_ACCESS_KEY
+# secret_access_key = YOUR_SECRET_KEY
+# region = eu-west-1
+#
+# Backblaze B2 Example:
+# [b2-remote]
+# type = b2
+# account = YOUR_ACCOUNT_ID
+# key = YOUR_APPLICATION_KEY

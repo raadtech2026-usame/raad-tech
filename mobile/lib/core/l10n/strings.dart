@@ -186,11 +186,11 @@ class Strings {
         return _('Baska ilmahaaga safarkiisii wuu dhammeeyay.',
             "Your child's bus has finished its trip.");
       case 'approaching_stop':
-        return _('Baska ilmahaaga wuxuu ku soo dhow yahay goobtaada.',
-            "Your child's bus is close to your stop.");
+        return _('Baska dugsigu wuxuu ku dhow yahay gurigaaga.',
+            'The school bus is approaching your home.');
       case 'arrived_org':
-        return _('Baska ilmahaaga wuxuu gaaray dugsiga.',
-            "Your child's bus has arrived at school.");
+        return _('Baskii wuxuu si nabad ah ku tagay dugsiga.',
+            'The bus has arrived safely at school.');
       default:
         return null;
     }
@@ -409,6 +409,61 @@ class Strings {
         'Wax ka beddelka iyo maamulka buuxa waxaa laga sameeyaa app.raadsystems.tech.',
         'Changes and full management are done at app.raadsystems.tech.',
       );
+  // ---- admin management (Users, Fleet, Dispatch)
+  String get adminNavUsers => _('Dadka', 'Users');
+  String get adminNavFleet => _('Gaadiidka', 'Fleet');
+  String get adminNavDispatch => _('Safarrada', 'Dispatch');
+
+  String get adminTabDrivers => _('Darawallada', 'Drivers');
+  String get adminTabParents => _('Waalidiinta', 'Parents');
+  String get adminTabStudents => _('Ardayda', 'Students');
+
+  String get adminAddDriver => _('Ku dar darawal', 'Add driver');
+  String get adminAddParent => _('Diiwaangeli waalid', 'Register parent');
+  String get adminEnrollStudent => _('Qor arday', 'Enroll student');
+  String get adminAddVehicle => _('Ku dar bas', 'Add vehicle');
+
+  String get adminPlateNo => _('Taargada', 'Plate number');
+  String get adminLabel =>
+      _('Magaca baska (ikhtiyaari)', 'Label / Bus name (optional)');
+  String get adminCapacity => _('Kuraasta', 'Capacity');
+  String get adminFullName => _('Magaca oo buuxa', 'Full name');
+  String get adminPhone => _('Telefoon', 'Phone number');
+  String get adminEmail => _('Email (ikhtiyaari)', 'Email (optional)');
+  String get adminLicenseNo => _('Lambarka laysinka', 'License number');
+  String get adminAdmissionNo =>
+      _('Lambarka aqoonsiga / Dugsiga', 'Admission / Student ID');
+  String get adminGender => _('Jinsiga', 'Gender');
+  String get adminMale => _('Lab', 'Male');
+  String get adminFemale => _('Dheddig', 'Female');
+
+  String get adminStatusActive => _('Shaqeynaya', 'Active');
+  String get adminStatusInactive => _('Joogsaday', 'Inactive');
+  String get adminStatusMaintenance => _('Dayactir', 'Maintenance');
+  String get adminStatusWithdrawn => _('Ka baxay', 'Withdrawn');
+  String get adminStatusGraduated => _('Qalin-jabiyay', 'Graduated');
+
+  String get adminDeviceLinked => _('Qalab ku xiran', 'Device linked');
+  String get adminNoDeviceLinked => _('Qalab kuma xirna', 'No device linked');
+  String get adminLinkDevice => _('Ku xir qalab', 'Link device');
+  String get adminAssignDeviceTitle =>
+      _('Ku xir qalabka baska', 'Link IoT Device to Bus');
+  String get adminSelectDevice =>
+      _('Dooro qalabka terminal-ka', 'Select device terminal');
+  String get adminTrackLive => _('Toos u eeg', 'Live Track');
+
+  String get adminTempPasswordTitle =>
+      _('Furaha ku-meel-gaarka ah', 'Temporary Password');
+  String get adminTempPasswordMsg => _(
+        'Sii furahan isticmaalaha si uu u galo. Furahan dib dambe looma arki karo.',
+        'Give this temporary password to the user. It cannot be viewed again.',
+      );
+  String get adminCopied => _('Waa la koobiyeeyay', 'Copied to clipboard');
+
+  String get adminRoutesTitle => _('Jidadka dugsiga', 'School Routes');
+  String get adminActiveTripsTitle => _('Safarrada maanta', "Today's Trips");
+  String adminStopsCount(int n) => _('$n goobood', '$n stops');
+
   String get gpsFromBus => _(
         'Goobta baska waxaa laga helaa qalabka baska ku rakiban, ma aha taleefankaaga.',
         'The bus location comes from the device on the bus, not from your phone.',
