@@ -236,6 +236,9 @@ class FirebasePushService implements PushService {
 }
 
 final pushServiceProvider = Provider<PushService>((ref) {
+  if (!kIsWeb && Platform.environment.containsKey('FLUTTER_TEST')) {
+    return const NoPushService();
+  }
   return FirebasePushService(
     ref.watch(apiClientProvider),
     ref.watch(secureTokenStorageProvider),

@@ -13,6 +13,7 @@ import 'package:raad_mobile/core/network/api_exception.dart';
 import 'package:raad_mobile/core/theme/theme_mode.dart';
 import 'package:raad_mobile/features/admin/admin_data.dart';
 import 'package:raad_mobile/shared/widgets.dart';
+import 'package:raad_mobile/core/push/push_service.dart';
 import 'package:raad_mobile/features/video/video_providers.dart';
 
 /// A repository that answers from memory and records what the screens asked it to do.
@@ -195,6 +196,7 @@ Widget testApp(
       ),
       authRepositoryProvider.overrideWithValue(_FakeAuthRepository()),
       languageProvider.overrideWith((ref) => somali ? 'so' : 'en'),
+      pushServiceProvider.overrideWithValue(const NoPushService()),
       principalProvider.overrideWithValue(
         Principal(userId: 'user-1', role: role, organizationId: 'org-1'),
       ),
