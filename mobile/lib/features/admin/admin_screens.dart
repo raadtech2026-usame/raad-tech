@@ -786,10 +786,10 @@ class _DriversTab extends ConsumerWidget {
                     children: [
                       CircleAvatar(
                         backgroundColor: d.isActive
-                            ? RaadColors.primary.withOpacity(0.15)
+                            ? RaadColors.brandPrimary.withOpacity(0.15)
                             : Colors.grey.withOpacity(0.2),
                         child: Icon(Icons.badge_rounded,
-                            color: d.isActive ? RaadColors.primary : Colors.grey),
+                            color: d.isActive ? RaadColors.brandPrimary : Colors.grey),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -943,9 +943,9 @@ class _StudentsTab extends ConsumerWidget {
                   child: Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: RaadColors.purple.withOpacity(0.15),
+                        backgroundColor: RaadColors.brandPrimary.withOpacity(0.15),
                         child: const Icon(Icons.school_rounded,
-                            color: RaadColors.purple),
+                            color: RaadColors.brandPrimary),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -1196,9 +1196,9 @@ class AdminDispatchScreen extends ConsumerWidget {
                   child: Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: RaadColors.primary.withOpacity(0.12),
+                        backgroundColor: RaadColors.brandPrimary.withOpacity(0.12),
                         child: const Icon(Icons.alt_route_rounded,
-                            color: RaadColors.primary),
+                            color: RaadColors.brandPrimary),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -1240,7 +1240,7 @@ void _showTempPasswordDialog(
     builder: (ctx) => AlertDialog(
       title: Row(
         children: [
-          const Icon(Icons.key_rounded, color: RaadColors.primary),
+          const Icon(Icons.key_rounded, color: RaadColors.brandPrimary),
           const SizedBox(width: 8),
           Expanded(child: Text(s.adminTempPasswordTitle)),
         ],
@@ -1256,7 +1256,7 @@ void _showTempPasswordDialog(
             decoration: BoxDecoration(
               color: Colors.grey.withOpacity(0.1),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: RaadColors.primary.withOpacity(0.4)),
+              border: Border.all(color: RaadColors.brandPrimary.withOpacity(0.4)),
             ),
             child: Row(
               children: [

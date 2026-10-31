@@ -9,6 +9,9 @@ import '../core/network/api_exception.dart';
 class RaadColors {
   const RaadColors._();
   static const blue = Color(0xFF1E63FF); // --color-brand-primary
+  static const brandPrimary = blue;
+  static const primary = blue;
+  static const purple = Color(0xFF8B5CF6);
   static const green = Color(0xFF10B981); // --color-success
   static const amber = Color(0xFFF59E0B); // --color-warning
   static const red = Color(0xFFEF4444); // --color-danger

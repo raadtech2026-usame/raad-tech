@@ -100,6 +100,30 @@ class ApiClient {
     return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
   }
 
+  Future<Map<String, dynamic>> patch(
+    String path, {
+    Map<String, dynamic>? body,
+    Map<String, dynamic>? data,
+    bool auth = true,
+    Map<String, String>? extraHeaders,
+  }) async {
+    final decoded = await _send('PATCH', path,
+        auth: auth, body: body ?? data, extraHeaders: extraHeaders);
+    return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> put(
+    String path, {
+    Map<String, dynamic>? body,
+    Map<String, dynamic>? data,
+    bool auth = true,
+    Map<String, String>? extraHeaders,
+  }) async {
+    final decoded = await _send('PUT', path,
+        auth: auth, body: body ?? data, extraHeaders: extraHeaders);
+    return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+  }
+
   Future<void> delete(String path) async {
     await _send('DELETE', path, auth: true);
   }

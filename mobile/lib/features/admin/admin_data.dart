@@ -532,7 +532,7 @@ final adminRepositoryProvider = Provider<AdminRepository>((ref) {
   final client = ref.watch(apiClientProvider);
   final authState = ref.watch(authControllerProvider);
   final orgId = authState is AuthAuthenticated
-      ? authState.session.principal.organizationId
+      ? (authState.session.principal.organizationId ?? '')
       : '';
   return AdminRepository(client, orgId: orgId);
 });
