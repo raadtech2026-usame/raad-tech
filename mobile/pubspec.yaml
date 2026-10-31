@@ -65,7 +65,7 @@ dependencies:
     sdk: flutter
   flutter_riverpod: ^2.5.1
   flutter_secure_storage: ^9.2.2
-  web_socket_channel: ^2.4.5
+  web_socket_channel: ^3.0.1
   http: ^1.2.1
   media_kit: ^1.1.11
   media_kit_video: ^1.2.5
