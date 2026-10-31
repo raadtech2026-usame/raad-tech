@@ -786,8 +786,8 @@ class _DriversTab extends ConsumerWidget {
                     children: [
                       CircleAvatar(
                         backgroundColor: d.isActive
-                            ? RaadColors.brandPrimary.withOpacity(0.15)
-                            : Colors.grey.withOpacity(0.2),
+                            ? RaadColors.brandPrimary.withValues(alpha: 0.15)
+                            : Colors.grey.withValues(alpha: 0.2),
                         child: Icon(Icons.badge_rounded,
                             color: d.isActive ? RaadColors.brandPrimary : Colors.grey),
                       ),
@@ -877,7 +877,7 @@ class _ParentsTab extends ConsumerWidget {
                   child: Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: RaadColors.blue.withOpacity(0.15),
+                        backgroundColor: RaadColors.blue.withValues(alpha: 0.15),
                         child: const Icon(Icons.family_restroom_rounded,
                             color: RaadColors.blue),
                       ),
@@ -943,7 +943,7 @@ class _StudentsTab extends ConsumerWidget {
                   child: Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: RaadColors.brandPrimary.withOpacity(0.15),
+                        backgroundColor: RaadColors.brandPrimary.withValues(alpha: 0.15),
                         child: const Icon(Icons.school_rounded,
                             color: RaadColors.brandPrimary),
                       ),
@@ -1059,8 +1059,8 @@ class AdminFleetScreen extends ConsumerWidget {
                         children: [
                           CircleAvatar(
                             backgroundColor: isOnline
-                                ? RaadColors.green.withOpacity(0.15)
-                                : Colors.grey.withOpacity(0.15),
+                                ? RaadColors.green.withValues(alpha: 0.15)
+                                : Colors.grey.withValues(alpha: 0.15),
                             child: Icon(Icons.directions_bus_rounded,
                                 color: isOnline
                                     ? RaadColors.green
@@ -1196,7 +1196,7 @@ class AdminDispatchScreen extends ConsumerWidget {
                   child: Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: RaadColors.brandPrimary.withOpacity(0.12),
+                        backgroundColor: RaadColors.brandPrimary.withValues(alpha: 0.12),
                         child: const Icon(Icons.alt_route_rounded,
                             color: RaadColors.brandPrimary),
                       ),
@@ -1254,9 +1254,9 @@ void _showTempPasswordDialog(
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: Colors.grey.withOpacity(0.1),
+              color: Colors.grey.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: RaadColors.brandPrimary.withOpacity(0.4)),
+              border: Border.all(color: RaadColors.brandPrimary.withValues(alpha: 0.4)),
             ),
             child: Row(
               children: [
@@ -1485,7 +1485,7 @@ void _showEnrollStudentSheet(
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              value: gender,
+              initialValue: gender,
               decoration: InputDecoration(
                   labelText: s.adminGender,
                   border: const OutlineInputBorder()),

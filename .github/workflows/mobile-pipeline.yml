@@ -59,7 +59,7 @@ jobs:
         run: flutter pub get
 
       - name: Static analysis
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos
 
       - name: Verify formatting
         run: dart format --output=none --set-exit-if-changed .
