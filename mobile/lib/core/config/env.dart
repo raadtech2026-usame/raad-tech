@@ -2,26 +2,44 @@
 ///
 /// ```
 /// flutter build apk --release \
-///   --dart-define=API_BASE_URL=https://api.example.com/api/v1 \
-///   --dart-define=WS_BASE_URL=wss://api.example.com \
+///   --dart-define=API_BASE_URL=https://api.raadsystems.tech \
+///   --dart-define=WS_BASE_URL=wss://api.raadsystems.tech/ws \
 ///   --dart-define=MAPBOX_ACCESS_TOKEN=pk....
 /// ```
 ///
-/// The defaults reach a backend on the development machine from the Android emulator
-/// (`10.0.2.2` is the emulator's name for the host). They are plain HTTP, which a release
-/// build refuses: see [Env.releaseConfigurationError].
+/// Production fallback defaults point to https://api.raadsystems.tech and
+/// wss://api.raadsystems.tech/ws. They are secure HTTPS/WSS, accepted by [Env.releaseConfigurationError].
 class Env {
   const Env._();
 
-  static const String apiBaseUrl = String.fromEnvironment(
+  static const String rawApiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:8000/api/v1',
+    defaultValue: 'https://api.raadsystems.tech',
   );
 
-  static const String wsBaseUrl = String.fromEnvironment(
+  static const String rawWsBaseUrl = String.fromEnvironment(
     'WS_BASE_URL',
-    defaultValue: 'ws://10.0.2.2:8000',
+    defaultValue: 'wss://api.raadsystems.tech/ws',
   );
+
+  /// Normalized API base URL ensuring the `/api/v1` prefix is cleanly present.
+  static String get apiBaseUrl {
+    final sanitized = rawApiBaseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (sanitized.endsWith('/api/v1')) {
+      return sanitized;
+    }
+    return '$sanitized/api/v1';
+  }
+
+  /// Normalized WebSocket base URL ensuring trailing `/ws` or `/` is cleanly handled
+  /// before feature endpoints (`/ws/tracking`, `/ws/notifications`) are appended.
+  static String get wsBaseUrl {
+    var sanitized = rawWsBaseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (sanitized.endsWith('/ws')) {
+      sanitized = sanitized.substring(0, sanitized.length - 3);
+    }
+    return sanitized;
+  }
 
   /// The public Mapbox token (ADR-0011, the web dashboard's provider). Empty means no map
   /// tiles: the tracking screen then shows the position as text instead of failing.
@@ -36,7 +54,8 @@ class Env {
   /// A release build must not send a password or a token over plain HTTP.
   static String? get releaseConfigurationError {
     if (!isRelease) return null;
-    if (!apiBaseUrl.startsWith('https://') || !wsBaseUrl.startsWith('wss://')) {
+    if (!rawApiBaseUrl.startsWith('https://') ||
+        !rawWsBaseUrl.startsWith('wss://')) {
       return 'This build was made without a secure server address '
           '(API_BASE_URL must be https, WS_BASE_URL must be wss).';
     }

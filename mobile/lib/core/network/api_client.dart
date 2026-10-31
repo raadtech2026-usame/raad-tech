@@ -157,7 +157,10 @@ class ApiClient {
     Map<String, String>? extraHeaders,
     bool isRetry = false,
   }) async {
-    final uri = Uri.parse('${Env.apiBaseUrl}$path');
+    final cleanPath = path.startsWith('/api/v1')
+        ? path.substring('/api/v1'.length)
+        : path;
+    final uri = Uri.parse('${Env.apiBaseUrl}$cleanPath');
     final headers = _headers(auth)..addAll(extraHeaders ?? const {});
     final http.Response response;
     try {
