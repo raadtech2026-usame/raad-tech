@@ -35,7 +35,9 @@ class ProfileScreen extends ConsumerWidget {
                   Text(
                     user.fullName,
                     style: const TextStyle(
-                        fontSize: 20, fontWeight: FontWeight.w800),
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   StatusChip(
@@ -45,14 +47,16 @@ class ProfileScreen extends ConsumerWidget {
                   const SizedBox(height: 8),
                   if (user.phone != null)
                     InfoRow(
-                        icon: Icons.phone_rounded,
-                        label: s.phone,
-                        value: user.phone!),
+                      icon: Icons.phone_rounded,
+                      label: s.phone,
+                      value: user.phone!,
+                    ),
                   if (user.email != null)
                     InfoRow(
-                        icon: Icons.mail_outline_rounded,
-                        label: s.email,
-                        value: user.email!),
+                      icon: Icons.mail_outline_rounded,
+                      label: s.email,
+                      value: user.email!,
+                    ),
                 ],
               ),
             ),
@@ -76,9 +80,13 @@ class ProfileScreen extends ConsumerWidget {
             child: SegmentedButton<ThemeMode>(
               segments: [
                 ButtonSegment(
-                    value: ThemeMode.system, label: Text(s.themeSystem)),
+                  value: ThemeMode.system,
+                  label: Text(s.themeSystem),
+                ),
                 ButtonSegment(
-                    value: ThemeMode.light, label: Text(s.themeLight)),
+                  value: ThemeMode.light,
+                  label: Text(s.themeLight),
+                ),
                 ButtonSegment(value: ThemeMode.dark, label: Text(s.themeDark)),
               ],
               selected: {themeMode},

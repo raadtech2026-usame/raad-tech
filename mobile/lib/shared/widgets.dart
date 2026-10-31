@@ -42,25 +42,27 @@ ThemeData raadTheme([Brightness brightness = Brightness.light]) {
   final primaryTint = dark ? const Color(0x473B82F6) : const Color(0xFFDBE7FF);
 
   final scheme =
-      ColorScheme.fromSeed(seedColor: RaadColors.blue, brightness: brightness)
-          .copyWith(
-    primary: primary,
-    onPrimary: Colors.white,
-    secondary: RaadColors.green,
-    secondaryContainer: primaryTint,
-    onSecondaryContainer: dark ? const Color(0xFFDBE7FF) : RaadColors.blue,
-    error: RaadColors.red,
-    surface: surface,
-    onSurface: text,
-    onSurfaceVariant: muted,
-    surfaceContainerLowest: surface,
-    surfaceContainerLow: surface,
-    surfaceContainer: surface,
-    surfaceContainerHigh: subtle,
-    surfaceContainerHighest: subtle,
-    outline: inputBorder,
-    outlineVariant: border,
-  );
+      ColorScheme.fromSeed(
+        seedColor: RaadColors.blue,
+        brightness: brightness,
+      ).copyWith(
+        primary: primary,
+        onPrimary: Colors.white,
+        secondary: RaadColors.green,
+        secondaryContainer: primaryTint,
+        onSecondaryContainer: dark ? const Color(0xFFDBE7FF) : RaadColors.blue,
+        error: RaadColors.red,
+        surface: surface,
+        onSurface: text,
+        onSurfaceVariant: muted,
+        surfaceContainerLowest: surface,
+        surfaceContainerLow: surface,
+        surfaceContainer: surface,
+        surfaceContainerHigh: subtle,
+        surfaceContainerHighest: subtle,
+        outline: inputBorder,
+        outlineVariant: border,
+      );
   return ThemeData(
     colorScheme: scheme,
     useMaterial3: true,
@@ -139,7 +141,10 @@ class StatusChip extends StatelessWidget {
       child: Text(
         label,
         style: TextStyle(
-            color: color, fontSize: 12.5, fontWeight: FontWeight.w700),
+          color: color,
+          fontSize: 12.5,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }
@@ -176,9 +181,7 @@ class SectionTitle extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(4, 20, 4, 8),
       child: Text(
         text,
-        style: Theme.of(context)
-            .textTheme
-            .titleSmall
+        style: Theme.of(context).textTheme.titleSmall
             ?.copyWith(color: context.muted, fontWeight: FontWeight.w700),
       ),
     );
@@ -189,11 +192,12 @@ class InfoRow extends StatelessWidget {
   final IconData icon;
   final String label;
   final String value;
-  const InfoRow(
-      {super.key,
-      required this.icon,
-      required this.label,
-      required this.value});
+  const InfoRow({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -208,13 +212,21 @@ class InfoRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label,
-                    style: const TextStyle(
-                        fontSize: 12.5, color: RaadColors.grey)),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    color: RaadColors.grey,
+                  ),
+                ),
                 const SizedBox(height: 2),
-                Text(value,
-                    style: const TextStyle(
-                        fontSize: 15.5, fontWeight: FontWeight.w600)),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 15.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ],
             ),
           ),
@@ -321,11 +333,12 @@ class AsyncBody<T> extends StatelessWidget {
   final AsyncValue<T> value;
   final VoidCallback onRetry;
   final Widget Function(T data) builder;
-  const AsyncBody(
-      {super.key,
-      required this.value,
-      required this.onRetry,
-      required this.builder});
+  const AsyncBody({
+    super.key,
+    required this.value,
+    required this.onRetry,
+    required this.builder,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -338,16 +351,20 @@ class AsyncBody<T> extends StatelessWidget {
   }
 }
 
-Future<bool> confirm(BuildContext context,
-    {required String title, required Strings s}) async {
+Future<bool> confirm(
+  BuildContext context, {
+  required String title,
+  required Strings s,
+}) async {
   final result = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
       title: Text(title),
       actions: [
         TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(s.cancel)),
+          onPressed: () => Navigator.pop(context, false),
+          child: Text(s.cancel),
+        ),
         FilledButton(
           style: FilledButton.styleFrom(minimumSize: const Size(96, 44)),
           onPressed: () => Navigator.pop(context, true),

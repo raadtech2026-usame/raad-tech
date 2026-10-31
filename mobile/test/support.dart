@@ -75,8 +75,11 @@ class FakeRepository extends RaadRepository {
     String? tripId,
   }) async {
     if (failWith != null) throw failWith!;
-    reportedIncidents
-        .add({'category': category, 'severity': severity, 'title': title});
+    reportedIncidents.add({
+      'category': category,
+      'severity': severity,
+      'title': title,
+    });
   }
 }
 
@@ -86,10 +89,11 @@ class _FakeAuthRepository extends AuthRepository {
   @override
   Future<UserProfile> profile() async {
     return const UserProfile(
-        fullName: 'Test Person',
-        email: null,
-        phone: '+252610000000',
-        role: 'parent');
+      fullName: 'Test Person',
+      email: null,
+      phone: '+252610000000',
+      role: 'parent',
+    );
   }
 }
 
@@ -98,14 +102,18 @@ class FakeAdminRepository extends AdminRepository {
   FakeAdminRepository() : super(ApiClient());
 
   AdminOverview overviewData = const AdminOverview(
-      vehicles: 0,
-      onlineNow: 0,
-      tripsInProgress: 0,
-      students: 0,
-      drivers: 0,
-      routes: 0);
-  DailyBoard board =
-      const DailyBoard(closures: [], vehicles: [], uncoveredTrips: 0);
+    vehicles: 0,
+    onlineNow: 0,
+    tripsInProgress: 0,
+    students: 0,
+    drivers: 0,
+    routes: 0,
+  );
+  DailyBoard board = const DailyBoard(
+    closures: [],
+    vehicles: [],
+    uncoveredTrips: 0,
+  );
   List<SafetyAlert> alerts = [];
   List<AdminVehicle> vehicleList = [];
   FleetOnline online = const FleetOnline(vehicles: [], totalOnline: 0);
@@ -183,7 +191,8 @@ Widget testApp(
       repositoryProvider.overrideWithValue(repository),
       if (admin != null) adminRepositoryProvider.overrideWithValue(admin),
       themeModeProvider.overrideWith(
-          (ref) => _FixedThemeMode(dark ? ThemeMode.dark : ThemeMode.light)),
+        (ref) => _FixedThemeMode(dark ? ThemeMode.dark : ThemeMode.light),
+      ),
       authRepositoryProvider.overrideWithValue(_FakeAuthRepository()),
       languageProvider.overrideWith((ref) => somali ? 'so' : 'en'),
       principalProvider.overrideWithValue(
@@ -255,11 +264,19 @@ ChildTransport child({
     routeName: assigned ? 'North' : null,
     pickupStop: assigned
         ? const Stop(
-            id: 'stop-1', name: 'Bakaaraha', latitude: 2.04, longitude: 45.31)
+            id: 'stop-1',
+            name: 'Bakaaraha',
+            latitude: 2.04,
+            longitude: 45.31,
+          )
         : null,
     dropoffStop: assigned
         ? const Stop(
-            id: 'stop-9', name: 'School gate', latitude: 2.05, longitude: 45.33)
+            id: 'stop-9',
+            name: 'School gate',
+            latitude: 2.05,
+            longitude: 45.33,
+          )
         : null,
     vehicle: assigned
         ? const Vehicle(id: 'veh-1', plateNo: 'AB-1234', label: 'Bus 1')

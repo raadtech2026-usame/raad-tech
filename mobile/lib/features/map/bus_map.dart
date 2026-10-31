@@ -62,7 +62,8 @@ class _BusMapState extends State<BusMap> {
   @override
   void didUpdateWidget(BusMap oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final moved = oldWidget.busLatitude != widget.busLatitude ||
+    final moved =
+        oldWidget.busLatitude != widget.busLatitude ||
         oldWidget.busLongitude != widget.busLongitude;
     if (moved && _ready) {
       _controller.move(_bus, _controller.camera.zoom);
@@ -104,8 +105,11 @@ class _BusMapState extends State<BusMap> {
                 width: 44,
                 height: 44,
                 alignment: Alignment.topCenter,
-                child: const Icon(Icons.location_on_rounded,
-                    size: 44, color: RaadColors.green),
+                child: const Icon(
+                  Icons.location_on_rounded,
+                  size: 44,
+                  color: RaadColors.green,
+                ),
               ),
             Marker(
               point: _bus,
@@ -117,11 +121,14 @@ class _BusMapState extends State<BusMap> {
                   shape: BoxShape.circle,
                   border: Border.all(color: Colors.white, width: 3),
                   boxShadow: const [
-                    BoxShadow(blurRadius: 6, color: Colors.black26)
+                    BoxShadow(blurRadius: 6, color: Colors.black26),
                   ],
                 ),
-                child: const Icon(Icons.directions_bus_rounded,
-                    color: Colors.white, size: 26),
+                child: const Icon(
+                  Icons.directions_bus_rounded,
+                  color: Colors.white,
+                  size: 26,
+                ),
               ),
             ),
           ],
@@ -132,8 +139,10 @@ class _BusMapState extends State<BusMap> {
             margin: const EdgeInsets.all(4),
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             color: Colors.white70,
-            child: Text(widget.tiles.attribution,
-                style: const TextStyle(fontSize: 10)),
+            child: Text(
+              widget.tiles.attribution,
+              style: const TextStyle(fontSize: 10),
+            ),
           ),
         ),
       ],

@@ -27,8 +27,10 @@ class RaadRepository {
   }
 
   // ---- trips (both roles)
-  Future<List<Trip>> myTrips(
-      {required DateTime from, required DateTime to}) async {
+  Future<List<Trip>> myTrips({
+    required DateTime from,
+    required DateTime to,
+  }) async {
     final path = '/me/trips?from=${isoDate(from)}&to=${isoDate(to)}';
     return (await _client.getList(path)).map(Trip.fromJson).toList();
   }
@@ -62,12 +64,15 @@ class RaadRepository {
     required String reason,
     String? note,
   }) {
-    return _client.post('/me/unavailability', body: {
-      'starts_on': isoDate(startsOn),
-      'ends_on': isoDate(endsOn),
-      'reason': reason,
-      if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
-    });
+    return _client.post(
+      '/me/unavailability',
+      body: {
+        'starts_on': isoDate(startsOn),
+        'ends_on': isoDate(endsOn),
+        'reason': reason,
+        if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+      },
+    );
   }
 
   Future<void> withdrawUnavailability(String id) =>
@@ -86,14 +91,17 @@ class RaadRepository {
     String? description,
     String? tripId,
   }) {
-    return _client.post('/me/incidents', body: {
-      'category': category,
-      'severity': severity,
-      'title': title.trim(),
-      if (description != null && description.trim().isNotEmpty)
-        'description': description.trim(),
-      if (tripId != null) 'trip_id': tripId,
-    });
+    return _client.post(
+      '/me/incidents',
+      body: {
+        'category': category,
+        'severity': severity,
+        'title': title.trim(),
+        if (description != null && description.trim().isNotEmpty)
+          'description': description.trim(),
+        if (tripId != null) 'trip_id': tripId,
+      },
+    );
   }
 
   // ---- notifications (both roles; the server returns only the caller's own)
@@ -114,8 +122,9 @@ final repositoryProvider = Provider<RaadRepository>((ref) {
 
 // ---- parent state
 
-final myTransportProvider =
-    FutureProvider.autoDispose<List<ChildTransport>>((ref) {
+final myTransportProvider = FutureProvider.autoDispose<List<ChildTransport>>((
+  ref,
+) {
   ref.watch(principalProvider);
   return ref.watch(repositoryProvider).myTransport();
 });
@@ -127,7 +136,9 @@ final selectedChildProvider = StateProvider<String?>((ref) => null);
 final parentTripsProvider = FutureProvider.autoDispose<List<Trip>>((ref) {
   ref.watch(principalProvider);
   final today = dateOnly(DateTime.now());
-  return ref.watch(repositoryProvider).myTrips(
+  return ref
+      .watch(repositoryProvider)
+      .myTrips(
         from: today.subtract(const Duration(days: 30)),
         to: today.add(const Duration(days: 7)),
       );
@@ -139,16 +150,18 @@ final parentTripsProvider = FutureProvider.autoDispose<List<Trip>>((ref) {
 final driverTripsProvider = FutureProvider.autoDispose<List<Trip>>((ref) {
   ref.watch(principalProvider);
   final today = dateOnly(DateTime.now());
-  return ref.watch(repositoryProvider).myTrips(
+  return ref
+      .watch(repositoryProvider)
+      .myTrips(
         from: today.subtract(const Duration(days: 30)),
         to: today.add(const Duration(days: 14)),
       );
 });
 
-final tripDetailProvider =
-    FutureProvider.autoDispose.family<TripDetail, String>((ref, id) {
-  return ref.watch(repositoryProvider).myTrip(id);
-});
+final tripDetailProvider = FutureProvider.autoDispose
+    .family<TripDetail, String>((ref, id) {
+      return ref.watch(repositoryProvider).myTrip(id);
+    });
 
 final myCrewProvider = FutureProvider.autoDispose<List<BusCrew>>((ref) {
   return ref.watch(repositoryProvider).myCrew();
@@ -160,11 +173,12 @@ final myDocumentsProvider = FutureProvider.autoDispose<MyDocuments>((ref) {
 
 final myUnavailabilityProvider =
     FutureProvider.autoDispose<List<Unavailability>>((ref) {
-  return ref.watch(repositoryProvider).myUnavailability();
-});
+      return ref.watch(repositoryProvider).myUnavailability();
+    });
 
-final myIncidentsProvider =
-    FutureProvider.autoDispose<List<IncidentReport>>((ref) {
+final myIncidentsProvider = FutureProvider.autoDispose<List<IncidentReport>>((
+  ref,
+) {
   return ref.watch(repositoryProvider).myIncidents();
 });
 
@@ -187,8 +201,9 @@ final notificationsLiveProvider = Provider.autoDispose<void>((ref) {
   final token = ref.watch(apiClientProvider).accessToken;
   if (ref.watch(principalProvider) == null || token == null) return;
   final socket = NotificationsSocket()..connect(token);
-  final subscription =
-      socket.arrivals.listen((_) => ref.invalidate(notificationsProvider));
+  final subscription = socket.arrivals.listen(
+    (_) => ref.invalidate(notificationsProvider),
+  );
   ref.onDispose(() {
     subscription.cancel();
     socket.dispose();

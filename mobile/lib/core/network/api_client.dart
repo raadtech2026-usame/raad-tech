@@ -29,8 +29,8 @@ class ApiClient {
   Future<bool>? _refreshing;
 
   ApiClient({http.Client? client, LocalCache? cache})
-      : _client = client ?? http.Client(),
-        _cache = cache ?? LocalCache();
+    : _client = client ?? http.Client(),
+      _cache = cache ?? LocalCache();
 
   String? get accessToken => _accessToken;
 
@@ -50,12 +50,16 @@ class ApiClient {
     };
   }
 
-  Future<Map<String, dynamic>> get(String path,
-      {bool auth = true, bool cache = true}) async {
+  Future<Map<String, dynamic>> get(
+    String path, {
+    bool auth = true,
+    bool cache = true,
+  }) async {
     try {
       final decoded = await _send('GET', path, auth: auth);
-      final result =
-          decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+      final result = decoded is Map<String, dynamic>
+          ? decoded
+          : <String, dynamic>{};
       if (cache && result.isNotEmpty) {
         await _cache.putJson(path, result);
       }
@@ -70,8 +74,10 @@ class ApiClient {
   }
 
   /// For endpoints that answer with a JSON array (`/me/students`, `/me/trips`, ...).
-  Future<List<Map<String, dynamic>>> getList(String path,
-      {bool cache = true}) async {
+  Future<List<Map<String, dynamic>>> getList(
+    String path, {
+    bool cache = true,
+  }) async {
     try {
       final decoded = await _send('GET', path, auth: true);
       if (decoded is! List) return const [];
@@ -95,8 +101,13 @@ class ApiClient {
     bool auth = true,
     Map<String, String>? extraHeaders,
   }) async {
-    final decoded = await _send('POST', path,
-        auth: auth, body: body, extraHeaders: extraHeaders);
+    final decoded = await _send(
+      'POST',
+      path,
+      auth: auth,
+      body: body,
+      extraHeaders: extraHeaders,
+    );
     return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
   }
 
@@ -107,8 +118,13 @@ class ApiClient {
     bool auth = true,
     Map<String, String>? extraHeaders,
   }) async {
-    final decoded = await _send('PATCH', path,
-        auth: auth, body: body ?? data, extraHeaders: extraHeaders);
+    final decoded = await _send(
+      'PATCH',
+      path,
+      auth: auth,
+      body: body ?? data,
+      extraHeaders: extraHeaders,
+    );
     return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
   }
 
@@ -119,8 +135,13 @@ class ApiClient {
     bool auth = true,
     Map<String, String>? extraHeaders,
   }) async {
-    final decoded = await _send('PUT', path,
-        auth: auth, body: body ?? data, extraHeaders: extraHeaders);
+    final decoded = await _send(
+      'PUT',
+      path,
+      auth: auth,
+      body: body ?? data,
+      extraHeaders: extraHeaders,
+    );
     return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
   }
 
@@ -143,7 +164,8 @@ class ApiClient {
       final request = http.Request(method, uri)..headers.addAll(headers);
       if (body != null) request.body = jsonEncode(body);
       response = await http.Response.fromStream(
-          await _client.send(request).timeout(timeout));
+        await _client.send(request).timeout(timeout),
+      );
     } on SocketException {
       throw const ApiException.network();
     } on TimeoutException {
@@ -157,8 +179,14 @@ class ApiClient {
         !isRetry &&
         onUnauthorized != null) {
       if (await _refreshOnce()) {
-        return _send(method, path,
-            auth: auth, body: body, extraHeaders: extraHeaders, isRetry: true);
+        return _send(
+          method,
+          path,
+          auth: auth,
+          body: body,
+          extraHeaders: extraHeaders,
+          isRetry: true,
+        );
       }
     }
     return _decode(response);
@@ -166,8 +194,9 @@ class ApiClient {
 
   /// Concurrent 401s share one refresh: a refresh token can be used only once.
   Future<bool> _refreshOnce() {
-    return _refreshing ??=
-        onUnauthorized!().whenComplete(() => _refreshing = null);
+    return _refreshing ??= onUnauthorized!().whenComplete(
+      () => _refreshing = null,
+    );
   }
 
   dynamic _decode(http.Response response) {

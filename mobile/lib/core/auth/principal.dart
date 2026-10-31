@@ -32,9 +32,9 @@ class Principal {
   bool get isOrgAdmin => role == 'org_admin';
 
   Map<String, dynamic> toJson() => {
-        'user_id': userId,
-        'role': role,
-        'organization_id': organizationId,
-        'is_password_change_required': isPasswordChangeRequired,
-      };
+    'user_id': userId,
+    'role': role,
+    'organization_id': organizationId,
+    'is_password_change_required': isPasswordChangeRequired,
+  };
 }

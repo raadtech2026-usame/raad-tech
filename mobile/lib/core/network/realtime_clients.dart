@@ -68,18 +68,26 @@ class TrackingSocket {
   void connect({required String accessToken, required String vehicleId}) {
     disconnect();
     _tripEnded = false;
-    final channel =
-        WebSocketChannel.connect(Uri.parse('${Env.wsBaseUrl}/ws/tracking'));
+    final channel = WebSocketChannel.connect(
+      Uri.parse('${Env.wsBaseUrl}/ws/tracking'),
+    );
     _channel = channel;
-    channel.ready.then((_) {
-      if (identical(_channel, channel) && !_opened.isClosed) _opened.add(null);
-    }, onError: (_) {
-      // The stream's own error or done event reports the failure.
-    });
+    channel.ready.then(
+      (_) {
+        if (identical(_channel, channel) && !_opened.isClosed)
+          _opened.add(null);
+      },
+      onError: (_) {
+        // The stream's own error or done event reports the failure.
+      },
+    );
     channel.sink.add(jsonEncode({'type': 'auth', 'token': accessToken}));
     channel.sink.add(
-      jsonEncode(
-          {'type': 'subscribe', 'channel': 'vehicle', 'vehicle_id': vehicleId}),
+      jsonEncode({
+        'type': 'subscribe',
+        'channel': 'vehicle',
+        'vehicle_id': vehicleId,
+      }),
     );
     _subscription = channel.stream.listen(
       (raw) {
@@ -153,7 +161,8 @@ class NotificationsSocket {
     _subscription?.cancel();
     _channel?.sink.close();
     final channel = WebSocketChannel.connect(
-        Uri.parse('${Env.wsBaseUrl}/ws/notifications'));
+      Uri.parse('${Env.wsBaseUrl}/ws/notifications'),
+    );
     _channel = channel;
     channel.sink.add(jsonEncode({'type': 'auth', 'token': _token}));
     _subscription = channel.stream.listen(

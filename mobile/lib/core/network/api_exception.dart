@@ -17,10 +17,10 @@ class ApiException implements Exception {
 
   /// The server could not be reached at all (offline, timeout, DNS).
   const ApiException.network()
-      : statusCode = 0,
-        code = 'NETWORK',
-        message = 'Could not reach the RAAD server. Check your connection.',
-        correlationId = null;
+    : statusCode = 0,
+      code = 'NETWORK',
+      message = 'Could not reach the RAAD server. Check your connection.',
+      correlationId = null;
 
   bool get isNetwork => statusCode == 0;
   bool get isNotFound => statusCode == 404;

@@ -18,9 +18,9 @@ class Strings {
   String get close => _('Xir', 'Close');
   String get loading => _('Waa la soo rarayaa…', 'Loading…');
   String get noConnection => _(
-        'Lama xiriiri karo server-ka RAAD. Hubi internet-kaaga.',
-        'Could not reach the RAAD server. Check your connection.',
-      );
+    'Lama xiriiri karo server-ka RAAD. Hubi internet-kaaga.',
+    'Could not reach the RAAD server. Check your connection.',
+  );
   String get somethingWrong => _('Wax baa khaldamay.', 'Something went wrong.');
   String get notAvailable => _('Lama hayo', 'Not available');
   String get today => _('Maanta', 'Today');
@@ -41,9 +41,9 @@ class Strings {
   String get changePasswordTitle =>
       _('Beddel furaha sirta ah', 'Change your password');
   String get changePasswordIntro => _(
-        'Waxaad ku gashay furo ku-meel-gaar ah. Dooro mid cusub si aad u sii wadato.',
-        'You signed in with a temporary password. Choose a new one to continue.',
-      );
+    'Waxaad ku gashay furo ku-meel-gaar ah. Dooro mid cusub si aad u sii wadato.',
+    'You signed in with a temporary password. Choose a new one to continue.',
+  );
   String get newPassword => _('Furaha cusub', 'New password');
   String get repeatPassword =>
       _('Ku celi furaha cusub', 'Repeat the new password');
@@ -52,11 +52,13 @@ class Strings {
   String get passwordTooShort =>
       _('Furuhu waa inuu ka badnaadaa 8 xaraf.', 'Use at least 8 characters.');
   String get unsupportedRole => _(
-        'Akoonkan laguma isticmaali karo app-ka. Shaqaalaha RAAD waxay isticmaalaan app.raadsystems.tech.',
-        'This account cannot use the mobile app. RAAD staff use app.raadsystems.tech.',
-      );
-  String get sessionExpired => _('Fadhigaagu wuu dhacay. Mar kale gal.',
-      'Your session expired. Please sign in again.');
+    'Akoonkan laguma isticmaali karo app-ka. Shaqaalaha RAAD waxay isticmaalaan app.raadsystems.tech.',
+    'This account cannot use the mobile app. RAAD staff use app.raadsystems.tech.',
+  );
+  String get sessionExpired => _(
+    'Fadhigaagu wuu dhacay. Mar kale gal.',
+    'Your session expired. Please sign in again.',
+  );
 
   // ---- navigation
   String get navHome => _('Bogga hore', 'Home');
@@ -97,17 +99,17 @@ class Strings {
   // ---- parent
   String get myChildren => _('Carruurtayda', 'My children');
   String get noChildren => _(
-        'Wali carruur laguma xirin akoonkaaga. La xiriir dugsiga.',
-        'No children are linked to your account yet. Contact the school.',
-      );
+    'Wali carruur laguma xirin akoonkaaga. La xiriir dugsiga.',
+    'No children are linked to your account yet. Contact the school.',
+  );
   String get bus => _('Baska', 'Bus');
   String get route => _('Jidka', 'Route');
   String get pickupStop => _('Goobta qaadista', 'Pickup stop');
   String get dropoffStop => _('Goobta dejinta', 'Dropoff stop');
   String get noAssignment => _(
-        'Ilmahan wali bas looma qoondeyn.',
-        'This child has not been assigned to a bus yet.',
-      );
+    'Ilmahan wali bas looma qoondeyn.',
+    'This child has not been assigned to a bus yet.',
+  );
   String get noBusYet => _('Bas wali looma qoondeyn', 'No bus assigned yet');
   String get trackBus => _('La soco baska', 'Track the bus');
   String get liveLocation => _('Goobta baska', 'Bus location');
@@ -119,18 +121,20 @@ class Strings {
   String get latestNotification =>
       _('Ogeysiiskii u dambeeyay', 'Latest notification');
   String get trackingOnlyOnTrip => _(
-        'Goobta baska waxaa la arki karaa marka uu safar ku jiro oo keliya.',
-        'The bus location is shown only while it is on a trip.',
-      );
+    'Goobta baska waxaa la arki karaa marka uu safar ku jiro oo keliya.',
+    'The bus location is shown only while it is on a trip.',
+  );
   String get waitingForPosition =>
       _('Waxaa la sugayaa goobta baska…', 'Waiting for the bus location…');
   String get tripEnded => _('Safarku wuu dhammaaday.', 'The trip has ended.');
   String get trackingDenied => _(
-        'Goobta baska hadda lama heli karo.',
-        'The bus location is not available right now.',
-      );
-  String get connectionLost => _('Xiriirkii wuu go\'ay. Dib ayaa loo xirayaa…',
-      'Connection lost. Reconnecting…');
+    'Goobta baska hadda lama heli karo.',
+    'The bus location is not available right now.',
+  );
+  String get connectionLost => _(
+    'Xiriirkii wuu go\'ay. Dib ayaa loo xirayaa…',
+    'Connection lost. Reconnecting…',
+  );
   String lastUpdated(String when) =>
       _('Markii u dambeysay: $when', 'Last updated: $when');
   String get staleLocation =>
@@ -142,14 +146,14 @@ class Strings {
   String speed(String kph) =>
       _('Xawaaraha: $kph km/saacaddii', 'Speed: $kph km/h');
   String get mapUnavailable => _(
-        'Khariidadda lama heli karo. Goobta hoos ayaa lagu muujiyay.',
-        'The map is unavailable. The location is shown below.',
-      );
+    'Khariidadda lama heli karo. Goobta hoos ayaa lagu muujiyay.',
+    'The map is unavailable. The location is shown below.',
+  );
   String get historyTitle => _('Taariikhda safarrada', 'Trip history');
   String get historyNote => _(
-        'Halkan waxaa ka muuqda safarrada baska ilmahaaga. RAAD ma diiwaangeliso in ilmuhu fuulay iyo in kale.',
-        "These are the trips of your child's bus. RAAD does not record whether a child boarded.",
-      );
+    'Halkan waxaa ka muuqda safarrada baska ilmahaaga. RAAD ma diiwaangeliso in ilmuhu fuulay iyo in kale.',
+    "These are the trips of your child's bus. RAAD does not record whether a child boarded.",
+  );
   String get noHistory => _('Wali safar ma jiro', 'No trips yet');
   String get watchVideo => _('Daawo muuqaalka baska', 'Watch the bus camera');
 
@@ -181,16 +185,24 @@ class Strings {
     switch (kind ?? type) {
       case 'trip_started':
         return _(
-            'Baska ilmahaaga wuu dhaqaaqay.', "Your child's bus has set off.");
+          'Baska ilmahaaga wuu dhaqaaqay.',
+          "Your child's bus has set off.",
+        );
       case 'trip_completed':
-        return _('Baska ilmahaaga safarkiisii wuu dhammeeyay.',
-            "Your child's bus has finished its trip.");
+        return _(
+          'Baska ilmahaaga safarkiisii wuu dhammeeyay.',
+          "Your child's bus has finished its trip.",
+        );
       case 'approaching_stop':
-        return _('Baska dugsigu wuxuu ku dhow yahay gurigaaga.',
-            'The school bus is approaching your home.');
+        return _(
+          'Baska dugsigu wuxuu ku dhow yahay gurigaaga.',
+          'The school bus is approaching your home.',
+        );
       case 'arrived_org':
-        return _('Baskii wuxuu si nabad ah ku tagay dugsiga.',
-            'The bus has arrived safely at school.');
+        return _(
+          'Baskii wuxuu si nabad ah ku tagay dugsiga.',
+          'The bus has arrived safely at school.',
+        );
       default:
         return null;
     }
@@ -208,9 +220,9 @@ class Strings {
       _('Ma dhammeynaysaa safarkan?', 'End this trip?');
   String get coverBadge => _('Beddel', 'Cover');
   String get coverNote => _(
-        'Safarkan waxaad ku beddeleysaa darawal kale.',
-        'You are standing in for another driver on this trip.',
-      );
+    'Safarkan waxaad ku beddeleysaa darawal kale.',
+    'You are standing in for another driver on this trip.',
+  );
   String get tripDetails => _('Faahfaahinta safarka', 'Trip details');
   String get stops => _('Goobaha', 'Stops');
   String get passengers => _('Ardayda', 'Students');
@@ -235,9 +247,9 @@ class Strings {
   String get reportUnavailability =>
       _('Sheeg inaadan iman karin', 'Report unavailability');
   String get unavailabilityNote => _(
-        'Xafiiska ayaa la ogeysiinayaa si beddel loo diyaariyo.',
-        'The office is told so that cover can be arranged.',
-      );
+    'Xafiiska ayaa la ogeysiinayaa si beddel loo diyaariyo.',
+    'The office is told so that cover can be arranged.',
+  );
   String get firstDay => _('Maalinta koowaad', 'First day');
   String get lastDay => _('Maalinta u dambeysa', 'Last day');
   String get reason => _('Sababta', 'Reason');
@@ -263,7 +275,9 @@ class Strings {
   String get incidents => _('Dhacdooyinka', 'Incidents');
   String get reportIncident => _('Soo sheeg dhacdo', 'Report an incident');
   String get noIncidents => _(
-      'Dhacdo aad soo sheegtay ma jirto', 'You have not reported any incident');
+    'Dhacdo aad soo sheegtay ma jirto',
+    'You have not reported any incident',
+  );
   String get incidentTitle => _('Maxaa dhacay?', 'What happened?');
   String get incidentDescription => _('Faahfaahin', 'Details');
   String get incidentCategory => _('Nooca', 'Type');
@@ -328,11 +342,11 @@ class Strings {
   String get roleDriver => _('Darawal', 'Driver');
   String get roleOrgAdmin => _("Maamulaha hay'adda", 'Organization admin');
   String roleName(String role) => switch (role) {
-        'driver' => roleDriver,
-        'parent' => roleParent,
-        'org_admin' => roleOrgAdmin,
-        _ => role,
-      };
+    'driver' => roleDriver,
+    'parent' => roleParent,
+    'org_admin' => roleOrgAdmin,
+    _ => role,
+  };
 
   // ---- appearance
   String get appearance => _('Muuqaalka', 'Appearance');
@@ -349,8 +363,9 @@ class Strings {
   String get adminAllClear =>
       _('Wax fiiro u baahan ma jiraan.', 'Nothing needs attention.');
   String adminUncoveredTrips(int n) => _(
-      '$n safar oo aan darawal lahayn maanta',
-      '$n trip(s) without a driver today');
+    '$n safar oo aan darawal lahayn maanta',
+    '$n trip(s) without a driver today',
+  );
   String adminOpenAlerts(int n) =>
       _('$n digniin badbaado oo furan', '$n open safety alert(s)');
   String get adminFleet => _('Gaadiidka', 'Fleet');
@@ -377,38 +392,42 @@ class Strings {
   String get adminSubstitute => _('Beddel', 'Substitute');
   String get adminAbsent => _('Ma joogo', 'Absent');
   String adminUncoveredReason(String reason) => switch (reason) {
-        'driver_inactive' => _('Darawalku ma shaqeeyo', 'Driver is not active'),
-        'driver_unavailable' =>
-          _('Darawalku ma joogo maanta', 'Driver is unavailable today'),
-        'driver_not_compliant' => _('Dukumentiyada darawalka ma dhammeystirna',
-            'Driver documents are not in order'),
-        _ => reason,
-      };
+    'driver_inactive' => _('Darawalku ma shaqeeyo', 'Driver is not active'),
+    'driver_unavailable' => _(
+      'Darawalku ma joogo maanta',
+      'Driver is unavailable today',
+    ),
+    'driver_not_compliant' => _(
+      'Dukumentiyada darawalka ma dhammeystirna',
+      'Driver documents are not in order',
+    ),
+    _ => reason,
+  };
   String get adminAlertsTitle => _('Digniinaha badbaadada', 'Safety alerts');
   String get adminNoAlerts => _('Digniin furan ma jirto.', 'No open alerts.');
   String get adminCritical => _('Degdeg', 'Critical');
   String get adminLateAlert => _('Si daahsan ayaa loo helay', 'Received late');
   String adminOccurrences(int n) => _('$n jeer', '$n times');
   String adminAlertStatus(String status) => switch (status) {
-        'open' => _('Furan', 'Open'),
-        'acknowledged' => _('Waa la arkay', 'Acknowledged'),
-        _ => status,
-      };
+    'open' => _('Furan', 'Open'),
+    'acknowledged' => _('Waa la arkay', 'Acknowledged'),
+    _ => status,
+  };
   String alarmTypeName(String type) => switch (type) {
-        'sos' => _('Baaq degdeg ah (SOS)', 'SOS'),
-        'overspeed' => _('Xawaare dheeraad ah', 'Overspeed'),
-        'fatigue' => _('Daal darawal', 'Driver fatigue'),
-        'power_cut' => _("Korontada oo go'day", 'Power cut'),
-        'camera_fault' => _('Cillad kamarad', 'Camera fault'),
-        'collision' => _('Shil', 'Collision'),
-        'rollover' => _('Rogmasho', 'Rollover'),
-        'illegal_door_open' => _('Albaab si khaldan u furmay', 'Door opened'),
-        _ => type,
-      };
+    'sos' => _('Baaq degdeg ah (SOS)', 'SOS'),
+    'overspeed' => _('Xawaare dheeraad ah', 'Overspeed'),
+    'fatigue' => _('Daal darawal', 'Driver fatigue'),
+    'power_cut' => _("Korontada oo go'day", 'Power cut'),
+    'camera_fault' => _('Cillad kamarad', 'Camera fault'),
+    'collision' => _('Shil', 'Collision'),
+    'rollover' => _('Rogmasho', 'Rollover'),
+    'illegal_door_open' => _('Albaab si khaldan u furmay', 'Door opened'),
+    _ => type,
+  };
   String get adminManageOnWeb => _(
-        'Wax ka beddelka iyo maamulka buuxa waxaa laga sameeyaa app.raadsystems.tech.',
-        'Changes and full management are done at app.raadsystems.tech.',
-      );
+    'Wax ka beddelka iyo maamulka buuxa waxaa laga sameeyaa app.raadsystems.tech.',
+    'Changes and full management are done at app.raadsystems.tech.',
+  );
   // ---- admin management (Users, Fleet, Dispatch)
   String get adminNavUsers => _('Dadka', 'Users');
   String get adminNavFleet => _('Gaadiidka', 'Fleet');
@@ -455,9 +474,9 @@ class Strings {
   String get adminTempPasswordTitle =>
       _('Furaha ku-meel-gaarka ah', 'Temporary Password');
   String get adminTempPasswordMsg => _(
-        'Sii furahan isticmaalaha si uu u galo. Furahan dib dambe looma arki karo.',
-        'Give this temporary password to the user. It cannot be viewed again.',
-      );
+    'Sii furahan isticmaalaha si uu u galo. Furahan dib dambe looma arki karo.',
+    'Give this temporary password to the user. It cannot be viewed again.',
+  );
   String get adminCopied => _('Waa la koobiyeeyay', 'Copied to clipboard');
 
   String get adminRoutesTitle => _('Jidadka dugsiga', 'School Routes');
@@ -465,13 +484,14 @@ class Strings {
   String adminStopsCount(int n) => _('$n goobood', '$n stops');
 
   String get gpsFromBus => _(
-        'Goobta baska waxaa laga helaa qalabka baska ku rakiban, ma aha taleefankaaga.',
-        'The bus location comes from the device on the bus, not from your phone.',
-      );
+    'Goobta baska waxaa laga helaa qalabka baska ku rakiban, ma aha taleefankaaga.',
+    'The bus location comes from the device on the bus, not from your phone.',
+  );
 }
 
 /// 'so' or 'en'.
 final languageProvider = StateProvider<String>((ref) => 'so');
 
-final stringsProvider =
-    Provider<Strings>((ref) => Strings(ref.watch(languageProvider) == 'so'));
+final stringsProvider = Provider<Strings>(
+  (ref) => Strings(ref.watch(languageProvider) == 'so'),
+);

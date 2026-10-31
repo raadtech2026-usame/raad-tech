@@ -41,7 +41,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       _errorMessage = null;
     });
     try {
-      await ref.read(authControllerProvider.notifier).login(
+      await ref
+          .read(authControllerProvider.notifier)
+          .login(
             identifier: _identifierController.text.trim(),
             password: _passwordController.text,
           );
@@ -68,16 +70,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Image.asset('assets/logo-raad.png',
-                    height: 84, semanticLabel: 'RAAD'),
+                Image.asset(
+                  'assets/logo-raad.png',
+                  height: 84,
+                  semanticLabel: 'RAAD',
+                ),
                 const SizedBox(height: 8),
                 const Text(
                   'RAAD',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                      fontSize: 32,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 2),
+                    fontSize: 32,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 2,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(
@@ -119,9 +125,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 ),
                 if (message != null) ...[
                   const SizedBox(height: 16),
-                  Text(message,
-                      style: TextStyle(
-                          color: Theme.of(context).colorScheme.error)),
+                  Text(
+                    message,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
                 ],
                 const SizedBox(height: 24),
                 FilledButton(

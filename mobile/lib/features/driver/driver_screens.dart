@@ -43,9 +43,13 @@ class _DriverShellState extends ConsumerState<DriverShell> {
         onDestinationSelected: (index) => setState(() => _index = index),
         destinations: [
           NavigationDestination(
-              icon: const Icon(Icons.today_rounded), label: s.navToday),
+            icon: const Icon(Icons.today_rounded),
+            label: s.navToday,
+          ),
           NavigationDestination(
-              icon: const Icon(Icons.route_rounded), label: s.navTrips),
+            icon: const Icon(Icons.route_rounded),
+            label: s.navTrips,
+          ),
           NavigationDestination(
             icon: Badge(
               isLabelVisible: unread > 0,
@@ -55,7 +59,9 @@ class _DriverShellState extends ConsumerState<DriverShell> {
             label: s.navNotifications,
           ),
           NavigationDestination(
-              icon: const Icon(Icons.menu_rounded), label: s.navMore),
+            icon: const Icon(Icons.menu_rounded),
+            label: s.navMore,
+          ),
         ],
       ),
     );
@@ -94,8 +100,9 @@ class DriverTodayScreen extends ConsumerWidget {
                   Padding(
                     padding: const EdgeInsets.only(top: 80),
                     child: EmptyView(
-                        icon: Icons.event_available_rounded,
-                        message: s.noTripsToday),
+                      icon: Icons.event_available_rounded,
+                      message: s.noTripsToday,
+                    ),
                   ),
                 for (final trip in mine)
                   Padding(
@@ -104,7 +111,9 @@ class DriverTodayScreen extends ConsumerWidget {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         TripTile(
-                            trip: trip, onTap: () => _openTrip(context, trip)),
+                          trip: trip,
+                          onTap: () => _openTrip(context, trip),
+                        ),
                         if (trip.isScheduled || trip.isInProgress) ...[
                           const SizedBox(height: 8),
                           TripActionButton(trip: trip),
@@ -172,7 +181,9 @@ class _TripActionButtonState extends ConsumerState<TripActionButton> {
               width: 18,
               height: 18,
               child: CircularProgressIndicator(
-                  strokeWidth: 2, color: Colors.white),
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
             )
           : Icon(starting ? Icons.play_arrow_rounded : Icons.stop_rounded),
       label: Text(starting ? s.startTrip : s.endTrip),
@@ -214,7 +225,12 @@ class DriverTripsScreen extends ConsumerWidget {
       child: Scaffold(
         appBar: AppBar(
           title: Text(s.myTrips),
-          bottom: TabBar(tabs: [Tab(text: s.upcoming), Tab(text: s.past)]),
+          bottom: TabBar(
+            tabs: [
+              Tab(text: s.upcoming),
+              Tab(text: s.past),
+            ],
+          ),
         ),
         body: AsyncBody<List<Trip>>(
           value: trips,
@@ -263,8 +279,10 @@ class TripDetailScreen extends ConsumerWidget {
                 TripTile(trip: trip, showDate: true),
                 if (trip.isCover) ...[
                   const SizedBox(height: 8),
-                  Text(s.coverNote,
-                      style: const TextStyle(color: RaadColors.amber)),
+                  Text(
+                    s.coverNote,
+                    style: const TextStyle(color: RaadColors.amber),
+                  ),
                 ],
                 if (trip.isScheduled || trip.isInProgress) ...[
                   const SizedBox(height: 12),
@@ -280,8 +298,10 @@ class TripDetailScreen extends ConsumerWidget {
                           dense: true,
                           leading: CircleAvatar(
                             radius: 14,
-                            child: Text('${stop.sequenceNo ?? ''}',
-                                style: const TextStyle(fontSize: 12)),
+                            child: Text(
+                              '${stop.sequenceNo ?? ''}',
+                              style: const TextStyle(fontSize: 12),
+                            ),
                           ),
                           title: Text(stop.name),
                         ),
@@ -365,12 +385,14 @@ class DriverMoreScreen extends ConsumerWidget {
           padding: EdgeInsets.zero,
           child: ListTile(
             leading: Icon(icon, color: RaadColors.blue),
-            title: Text(label,
-                style: const TextStyle(fontWeight: FontWeight.w600)),
-            trailing: const Icon(Icons.chevron_right_rounded),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => page()),
+            title: Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w600),
             ),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () =>
+                Navigator.of(context)
+                    .push(MaterialPageRoute<void>(builder: (_) => page())),
           ),
         ),
       );
@@ -381,15 +403,23 @@ class DriverMoreScreen extends ConsumerWidget {
       extra: [
         const SizedBox(height: 8),
         entry(Icons.groups_rounded, s.crew, () => const CrewScreen()),
-        entry(Icons.description_rounded, s.documents,
-            () => const DocumentsScreen()),
-        entry(Icons.event_busy_rounded, s.unavailability,
-            () => const UnavailabilityScreen()),
+        entry(
+          Icons.description_rounded,
+          s.documents,
+          () => const DocumentsScreen(),
+        ),
+        entry(
+          Icons.event_busy_rounded,
+          s.unavailability,
+          () => const UnavailabilityScreen(),
+        ),
         entry(Icons.report_rounded, s.incidents, () => const IncidentsScreen()),
         Padding(
           padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
-          child: Text(s.gpsFromBus,
-              style: TextStyle(fontSize: 12.5, color: context.muted)),
+          child: Text(
+            s.gpsFromBus,
+            style: TextStyle(fontSize: 12.5, color: context.muted),
+          ),
         ),
       ],
     );

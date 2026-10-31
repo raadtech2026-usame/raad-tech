@@ -25,8 +25,9 @@ class Env {
 
   /// The public Mapbox token (ADR-0011, the web dashboard's provider). Empty means no map
   /// tiles: the tracking screen then shows the position as text instead of failing.
-  static const String mapboxAccessToken =
-      String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
+  static const String mapboxAccessToken = String.fromEnvironment(
+    'MAPBOX_ACCESS_TOKEN',
+  );
 
   static const bool isRelease = bool.fromEnvironment('dart.vm.product');
 

@@ -12,9 +12,7 @@ void main() {
     'VideoWatchScreen shows a device id field, a camera id field, and a watch button',
     (tester) async {
       await tester.pumpWidget(
-        const ProviderScope(
-          child: MaterialApp(home: VideoWatchScreen()),
-        ),
+        const ProviderScope(child: MaterialApp(home: VideoWatchScreen())),
       );
 
       expect(find.text('Watch live video'), findsOneWidget);
@@ -23,12 +21,11 @@ void main() {
     },
   );
 
-  testWidgets('The watch button is disabled while not requesting',
-      (tester) async {
+  testWidgets('The watch button is disabled while not requesting', (
+    tester,
+  ) async {
     await tester.pumpWidget(
-      const ProviderScope(
-        child: MaterialApp(home: VideoWatchScreen()),
-      ),
+      const ProviderScope(child: MaterialApp(home: VideoWatchScreen())),
     );
 
     final button = tester.widget<FilledButton>(find.byType(FilledButton));

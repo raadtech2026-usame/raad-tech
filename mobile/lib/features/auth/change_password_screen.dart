@@ -88,8 +88,10 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
             ),
             if (_errorMessage != null) ...[
               const SizedBox(height: 16),
-              Text(_errorMessage!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              Text(
+                _errorMessage!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
             ],
             const SizedBox(height: 24),
             FilledButton(

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io' show Platform;
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
@@ -70,8 +71,9 @@ class FirebasePushService implements PushService {
       FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
       // Local notifications configuration for foreground heads-up banner on Android/iOS
-      const androidSettings =
-          AndroidInitializationSettings('@mipmap/ic_launcher');
+      const androidSettings = AndroidInitializationSettings(
+        '@mipmap/ic_launcher',
+      );
       const darwinSettings = DarwinInitializationSettings(
         requestAlertPermission: false,
         requestBadgePermission: false,
@@ -92,16 +94,17 @@ class FirebasePushService implements PushService {
       );
       await _localNotifications
           .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>()
+            AndroidFlutterLocalNotificationsPlugin
+          >()
           ?.createNotificationChannel(channel);
 
       // Set foreground notification presentation options
       await FirebaseMessaging.instance
           .setForegroundNotificationPresentationOptions(
-        alert: true,
-        badge: true,
-        sound: true,
-      );
+            alert: true,
+            badge: true,
+            sound: true,
+          );
 
       // Foreground message listener: present heads-up banner via local notifications
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
@@ -133,19 +136,25 @@ class FirebasePushService implements PushService {
 
       // Handle message open from background
       FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-        debugPrint('Opened app from FCM background notification: ${message.data}');
+        debugPrint(
+          'Opened app from FCM background notification: ${message.data}',
+        );
       });
 
       // Handle message open from terminated state
-      final initialMessage =
-          await FirebaseMessaging.instance.getInitialMessage();
+      final initialMessage = await FirebaseMessaging.instance
+          .getInitialMessage();
       if (initialMessage != null) {
-        debugPrint('Opened app from FCM terminated state: ${initialMessage.data}');
+        debugPrint(
+          'Opened app from FCM terminated state: ${initialMessage.data}',
+        );
       }
 
       _initialized = true;
     } catch (e) {
-      debugPrint('FirebasePushService initialization error (safe fallback): $e');
+      debugPrint(
+        'FirebasePushService initialization error (safe fallback): $e',
+      );
     }
   }
 
@@ -179,10 +188,7 @@ class FirebasePushService implements PushService {
       // Register device FCM token with backend POST /notifications/tokens
       final response = await _apiClient.post(
         '/notifications/tokens',
-        body: {
-          'fcm_token': token,
-          'platform': platformName,
-        },
+        body: {'fcm_token': token, 'platform': platformName},
       );
 
       final deviceTokenId = response['id'] as String?;
@@ -195,10 +201,7 @@ class FirebasePushService implements PushService {
         try {
           final res = await _apiClient.post(
             '/notifications/tokens',
-            body: {
-              'fcm_token': newToken,
-              'platform': platformName,
-            },
+            body: {'fcm_token': newToken, 'platform': platformName},
           );
           final newId = res['id'] as String?;
           if (newId != null) {
@@ -214,8 +217,9 @@ class FirebasePushService implements PushService {
   @override
   Future<void> unregister() async {
     try {
-      final deviceTokenId =
-          await _tokenStorage.readCustom(_registeredTokenIdKey);
+      final deviceTokenId = await _tokenStorage.readCustom(
+        _registeredTokenIdKey,
+      );
       if (deviceTokenId != null) {
         try {
           await _apiClient.delete('/notifications/tokens/$deviceTokenId');

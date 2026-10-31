@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../auth/auth_session.dart';
@@ -13,7 +14,7 @@ class SecureTokenStorage {
   final FlutterSecureStorage _storage;
 
   const SecureTokenStorage({FlutterSecureStorage? storage})
-      : _storage = storage ?? const FlutterSecureStorage();
+    : _storage = storage ?? const FlutterSecureStorage();
 
   Future<void> saveRefreshToken(String token) {
     return _storage.write(key: _refreshTokenKey, value: token);

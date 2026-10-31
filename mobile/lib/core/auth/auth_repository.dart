@@ -58,8 +58,10 @@ class AuthRepository {
   }
 
   Future<void> changePassword(String newPassword) async {
-    await _client
-        .post('/auth/change-password', body: {'new_password': newPassword});
+    await _client.post(
+      '/auth/change-password',
+      body: {'new_password': newPassword},
+    );
   }
 
   Future<UserProfile> profile() async {

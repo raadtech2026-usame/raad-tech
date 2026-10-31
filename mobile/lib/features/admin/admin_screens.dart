@@ -40,25 +40,27 @@ class _AdminShellState extends ConsumerState<AdminShell> {
         extra: [
           Padding(
             padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
-            child: Text(s.adminManageOnWeb,
-                style: TextStyle(fontSize: 12.5, color: context.muted)),
+            child: Text(
+              s.adminManageOnWeb,
+              style: TextStyle(fontSize: 12.5, color: context.muted),
+            ),
           ),
           const SizedBox(height: 12),
           ListTile(
             leading: const Icon(Icons.people_rounded),
             title: Text(s.adminNavUsers),
             trailing: const Icon(Icons.chevron_right_rounded),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
-            ),
+            onTap: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const AdminUsersScreen())),
           ),
           ListTile(
             leading: const Icon(Icons.directions_bus_rounded),
             title: Text(s.adminNavFleet),
             trailing: const Icon(Icons.chevron_right_rounded),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const AdminFleetScreen()),
-            ),
+            onTap: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const AdminFleetScreen())),
           ),
           ListTile(
             leading: const Icon(Icons.alt_route_rounded),
@@ -78,9 +80,13 @@ class _AdminShellState extends ConsumerState<AdminShell> {
         onDestinationSelected: (index) => setState(() => _index = index),
         destinations: [
           NavigationDestination(
-              icon: const Icon(Icons.dashboard_rounded), label: s.navOverview),
+            icon: const Icon(Icons.dashboard_rounded),
+            label: s.navOverview,
+          ),
           NavigationDestination(
-              icon: const Icon(Icons.today_rounded), label: s.navToday),
+            icon: const Icon(Icons.today_rounded),
+            label: s.navToday,
+          ),
           NavigationDestination(
             icon: Badge(
               isLabelVisible: alerts > 0,
@@ -98,7 +104,9 @@ class _AdminShellState extends ConsumerState<AdminShell> {
             label: s.navNotifications,
           ),
           NavigationDestination(
-              icon: const Icon(Icons.person_rounded), label: s.navProfile),
+            icon: const Icon(Icons.person_rounded),
+            label: s.navProfile,
+          ),
         ],
       ),
     );
@@ -135,16 +143,16 @@ class AdminOverviewScreen extends ConsumerWidget {
           IconButton(
             icon: const Icon(Icons.people_rounded),
             tooltip: s.adminNavUsers,
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
-            ),
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const AdminUsersScreen())),
           ),
           IconButton(
             icon: const Icon(Icons.directions_bus_rounded),
             tooltip: s.adminNavFleet,
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const AdminFleetScreen()),
-            ),
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const AdminFleetScreen())),
           ),
         ],
       ),
@@ -163,36 +171,46 @@ class AdminOverviewScreen extends ConsumerWidget {
                 onOpenTab: onOpenTab,
               ),
               SectionTitle(s.adminFleet),
-              _KpiRow(children: [
-                _Kpi(
+              _KpiRow(
+                children: [
+                  _Kpi(
                     icon: Icons.directions_bus_rounded,
                     label: s.adminVehicles,
-                    value: data.vehicles),
-                _Kpi(
+                    value: data.vehicles,
+                  ),
+                  _Kpi(
                     icon: Icons.wifi_tethering_rounded,
                     label: s.adminOnlineNow,
                     value: data.onlineNow,
-                    color: RaadColors.green),
-                _Kpi(
+                    color: RaadColors.green,
+                  ),
+                  _Kpi(
                     icon: Icons.play_circle_outline_rounded,
                     label: s.adminTripsInProgress,
-                    value: data.tripsInProgress),
-              ]),
+                    value: data.tripsInProgress,
+                  ),
+                ],
+              ),
               SectionTitle(s.adminPeople),
-              _KpiRow(children: [
-                _Kpi(
+              _KpiRow(
+                children: [
+                  _Kpi(
                     icon: Icons.school_rounded,
                     label: s.adminStudents,
-                    value: data.students),
-                _Kpi(
+                    value: data.students,
+                  ),
+                  _Kpi(
                     icon: Icons.badge_rounded,
                     label: s.adminDrivers,
-                    value: data.drivers),
-                _Kpi(
+                    value: data.drivers,
+                  ),
+                  _Kpi(
                     icon: Icons.alt_route_rounded,
                     label: s.adminRoutes,
-                    value: data.routes),
-              ]),
+                    value: data.routes,
+                  ),
+                ],
+              ),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -202,7 +220,8 @@ class AdminOverviewScreen extends ConsumerWidget {
                       label: Text(s.adminNavUsers),
                       onPressed: () => Navigator.of(context).push(
                         MaterialPageRoute(
-                            builder: (_) => const AdminUsersScreen()),
+                          builder: (_) => const AdminUsersScreen(),
+                        ),
                       ),
                     ),
                   ),
@@ -213,7 +232,8 @@ class AdminOverviewScreen extends ConsumerWidget {
                       label: Text(s.adminNavFleet),
                       onPressed: () => Navigator.of(context).push(
                         MaterialPageRoute(
-                            builder: (_) => const AdminFleetScreen()),
+                          builder: (_) => const AdminFleetScreen(),
+                        ),
                       ),
                     ),
                   ),
@@ -223,7 +243,8 @@ class AdminOverviewScreen extends ConsumerWidget {
               fleet.when(
                 skipLoadingOnRefresh: true,
                 loading: () => const SectionCard(
-                    child: SizedBox(height: 48, child: LoadingView())),
+                  child: SizedBox(height: 48, child: LoadingView()),
+                ),
                 error: (error, _) =>
                     SectionCard(child: Text(errorMessage(error, s))),
                 data: (online) => _OnlineBuses(online: online),
@@ -240,10 +261,11 @@ class _AttentionCard extends ConsumerWidget {
   final int uncovered;
   final int openAlerts;
   final void Function(int index) onOpenTab;
-  const _AttentionCard(
-      {required this.uncovered,
-      required this.openAlerts,
-      required this.onOpenTab});
+  const _AttentionCard({
+    required this.uncovered,
+    required this.openAlerts,
+    required this.onOpenTab,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -269,8 +291,10 @@ class _AttentionCard extends ConsumerWidget {
               Icon(icon, color: color),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(text,
-                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                child: Text(
+                  text,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
               ),
               Icon(Icons.chevron_right_rounded, color: context.muted),
             ],
@@ -284,12 +308,20 @@ class _AttentionCard extends ConsumerWidget {
       child: Column(
         children: [
           if (openAlerts > 0)
-            row(Icons.shield_rounded, RaadColors.red,
-                s.adminOpenAlerts(openAlerts), adminAlertsTab),
+            row(
+              Icons.shield_rounded,
+              RaadColors.red,
+              s.adminOpenAlerts(openAlerts),
+              adminAlertsTab,
+            ),
           if (openAlerts > 0 && uncovered > 0) const Divider(height: 1),
           if (uncovered > 0)
-            row(Icons.person_off_rounded, RaadColors.amber,
-                s.adminUncoveredTrips(uncovered), adminTodayTab),
+            row(
+              Icons.person_off_rounded,
+              RaadColors.amber,
+              s.adminUncoveredTrips(uncovered),
+              adminTodayTab,
+            ),
         ],
       ),
     );
@@ -319,11 +351,12 @@ class _Kpi extends StatelessWidget {
   final String label;
   final int? value;
   final Color? color;
-  const _Kpi(
-      {required this.icon,
-      required this.label,
-      required this.value,
-      this.color});
+  const _Kpi({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -339,10 +372,12 @@ class _Kpi extends StatelessWidget {
             style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 2),
-          Text(label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 12, color: context.muted)),
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, color: context.muted),
+          ),
         ],
       ),
     );
@@ -360,8 +395,10 @@ class _OnlineBuses extends StatelessWidget {
       return SectionCard(
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Text(s.adminNoBusOnline,
-              style: TextStyle(color: context.muted, fontSize: 13)),
+          child: Text(
+            s.adminNoBusOnline,
+            style: TextStyle(color: context.muted, fontSize: 13),
+          ),
         ),
       );
     }
@@ -372,10 +409,15 @@ class _OnlineBuses extends StatelessWidget {
           for (final vehicle in online.vehicles)
             ListTile(
               dense: true,
-              leading:
-                  const Icon(Icons.circle, size: 12, color: RaadColors.green),
-              title: Text(vehicle.displayName,
-                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              leading: const Icon(
+                Icons.circle,
+                size: 12,
+                color: RaadColors.green,
+              ),
+              title: Text(
+                vehicle.displayName,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
             ),
           if (online.totalOnline > online.vehicles.length)
             Padding(
@@ -435,12 +477,15 @@ class AdminTodayScreen extends ConsumerWidget {
                     child: SectionCard(
                       child: Row(
                         children: [
-                          const Icon(Icons.event_busy_rounded,
-                              color: RaadColors.amber),
+                          const Icon(
+                            Icons.event_busy_rounded,
+                            color: RaadColors.amber,
+                          ),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Text(
-                                '${s.adminClosedToday}: ${data.closures.join(', ')}'),
+                              '${s.adminClosedToday}: ${data.closures.join(', ')}',
+                            ),
                           ),
                         ],
                       ),
@@ -450,14 +495,17 @@ class AdminTodayScreen extends ConsumerWidget {
                   Padding(
                     padding: const EdgeInsets.only(top: 80),
                     child: EmptyView(
-                        icon: Icons.event_available_rounded,
-                        message: s.adminNoTripsToday),
+                      icon: Icons.event_available_rounded,
+                      message: s.adminNoTripsToday,
+                    ),
                   ),
                 for (final bus in buses)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: _BusCard(
-                        bus: bus, name: names[bus.vehicleId] ?? bus.vehicleId),
+                      bus: bus,
+                      name: names[bus.vehicleId] ?? bus.vehicleId,
+                    ),
                   ),
               ],
             ),
@@ -485,12 +533,18 @@ class _BusCard extends ConsumerWidget {
               Icon(Icons.directions_bus_rounded, color: context.colors.primary),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(name,
-                    style: const TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.w800)),
+                child: Text(
+                  name,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
               ),
-              Text(s.adminTripCount(bus.trips.length),
-                  style: TextStyle(fontSize: 12.5, color: context.muted)),
+              Text(
+                s.adminTripCount(bus.trips.length),
+                style: TextStyle(fontSize: 12.5, color: context.muted),
+              ),
             ],
           ),
           for (final trip in bus.trips) ...[
@@ -499,11 +553,14 @@ class _BusCard extends ConsumerWidget {
           ],
           if (bus.crew.isNotEmpty) ...[
             const Divider(height: 24),
-            Text(s.adminCrew,
-                style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
-                    color: context.muted)),
+            Text(
+              s.adminCrew,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                color: context.muted,
+              ),
+            ),
             const SizedBox(height: 6),
             Wrap(
               spacing: 8,
@@ -517,8 +574,9 @@ class _BusCard extends ConsumerWidget {
                       if (member.isSubstitute) s.adminSubstitute,
                       if (member.isUnavailable) s.adminAbsent,
                     ].join(' · '),
-                    color:
-                        member.isUnavailable ? RaadColors.amber : context.muted,
+                    color: member.isUnavailable
+                        ? RaadColors.amber
+                        : context.muted,
                   ),
               ],
             ),
@@ -545,14 +603,17 @@ class _TripRow extends ConsumerWidget {
           children: [
             Expanded(
               child: Text(
-                [s.tripType(trip.tripType), if (departure != null) departure]
-                    .join(' · '),
+                [
+                  s.tripType(trip.tripType),
+                  if (departure != null) departure,
+                ].join(' · '),
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
             StatusChip(
-                label: s.tripStatus(trip.status),
-                color: tripStatusColor(trip.status)),
+              label: s.tripStatus(trip.status),
+              color: tripStatusColor(trip.status),
+            ),
           ],
         ),
         const SizedBox(height: 4),
@@ -568,14 +629,19 @@ class _TripRow extends ConsumerWidget {
             padding: const EdgeInsets.only(top: 6),
             child: Row(
               children: [
-                const Icon(Icons.warning_amber_rounded,
-                    size: 18, color: RaadColors.amber),
+                const Icon(
+                  Icons.warning_amber_rounded,
+                  size: 18,
+                  color: RaadColors.amber,
+                ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
                     s.adminUncoveredReason(trip.uncoveredReason!),
                     style: const TextStyle(
-                        color: RaadColors.amber, fontWeight: FontWeight.w600),
+                      color: RaadColors.amber,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
@@ -584,8 +650,10 @@ class _TripRow extends ConsumerWidget {
         if (trip.status == 'cancelled' && trip.cancelledReason != null)
           Padding(
             padding: const EdgeInsets.only(top: 6),
-            child: Text(trip.cancelledReason!,
-                style: TextStyle(color: context.muted)),
+            child: Text(
+              trip.cancelledReason!,
+              style: TextStyle(color: context.muted),
+            ),
           ),
       ],
     );
@@ -619,8 +687,9 @@ class AdminAlertsScreen extends ConsumerWidget {
                     Padding(
                       padding: const EdgeInsets.only(top: 120),
                       child: EmptyView(
-                          icon: Icons.verified_user_outlined,
-                          message: s.adminNoAlerts),
+                        icon: Icons.verified_user_outlined,
+                        message: s.adminNoAlerts,
+                      ),
                     ),
                   ],
                 )
@@ -631,8 +700,9 @@ class AdminAlertsScreen extends ConsumerWidget {
                   itemBuilder: (context, index) {
                     final alert = data[index];
                     return _AlertCard(
-                        alert: alert,
-                        vehicleName: names[alert.vehicleId] ?? alert.vehicleId);
+                      alert: alert,
+                      vehicleName: names[alert.vehicleId] ?? alert.vehicleId,
+                    );
                   },
                 ),
         ),
@@ -657,15 +727,20 @@ class _AlertCard extends ConsumerWidget {
           Row(
             children: [
               Icon(
-                  alert.isCritical
-                      ? Icons.emergency_rounded
-                      : Icons.warning_amber_rounded,
-                  color: tone),
+                alert.isCritical
+                    ? Icons.emergency_rounded
+                    : Icons.warning_amber_rounded,
+                color: tone,
+              ),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(s.alarmTypeName(alert.alarmType),
-                    style: const TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.w800)),
+                child: Text(
+                  s.alarmTypeName(alert.alarmType),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
               ),
               StatusChip(
                 label: s.adminAlertStatus(alert.status),
@@ -674,8 +749,10 @@ class _AlertCard extends ConsumerWidget {
             ],
           ),
           const SizedBox(height: 8),
-          Text(vehicleName,
-              style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text(
+            vehicleName,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
           const SizedBox(height: 4),
           Text(
             [
@@ -742,11 +819,7 @@ class _AdminUsersScreenState extends ConsumerState<AdminUsersScreen>
       ),
       body: TabBarView(
         controller: _tabController,
-        children: const [
-          _DriversTab(),
-          _ParentsTab(),
-          _StudentsTab(),
-        ],
+        children: const [_DriversTab(), _ParentsTab(), _StudentsTab()],
       ),
     );
   }
@@ -788,22 +861,32 @@ class _DriversTab extends ConsumerWidget {
                         backgroundColor: d.isActive
                             ? RaadColors.brandPrimary.withValues(alpha: 0.15)
                             : Colors.grey.withValues(alpha: 0.2),
-                        child: Icon(Icons.badge_rounded,
-                            color: d.isActive ? RaadColors.brandPrimary : Colors.grey),
+                        child: Icon(
+                          Icons.badge_rounded,
+                          color: d.isActive
+                              ? RaadColors.brandPrimary
+                              : Colors.grey,
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(d.fullName,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold, fontSize: 15)),
+                            Text(
+                              d.fullName,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
                             const SizedBox(height: 2),
                             Text(
                               '${d.phone}${d.licenseNo != null ? ' · ${d.licenseNo}' : ''}',
                               style: TextStyle(
-                                  fontSize: 12.5, color: context.muted),
+                                fontSize: 12.5,
+                                color: context.muted,
+                              ),
                             ),
                           ],
                         ),
@@ -829,7 +912,9 @@ class _DriversTab extends ConsumerWidget {
                           label: d.isActive
                               ? s.adminStatusActive
                               : s.adminStatusInactive,
-                          color: d.isActive ? RaadColors.green : RaadColors.amber,
+                          color: d.isActive
+                              ? RaadColors.green
+                              : RaadColors.amber,
                         ),
                       ),
                     ],
@@ -877,23 +962,34 @@ class _ParentsTab extends ConsumerWidget {
                   child: Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: RaadColors.blue.withValues(alpha: 0.15),
-                        child: const Icon(Icons.family_restroom_rounded,
-                            color: RaadColors.blue),
+                        backgroundColor: RaadColors.blue.withValues(
+                          alpha: 0.15,
+                        ),
+                        child: const Icon(
+                          Icons.family_restroom_rounded,
+                          color: RaadColors.blue,
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(p.fullName,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold, fontSize: 15)),
+                            Text(
+                              p.fullName,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
                             const SizedBox(height: 2),
                             Text(
-                              p.phone + (p.email != null ? ' · ${p.email}' : ''),
+                              p.phone +
+                                  (p.email != null ? ' · ${p.email}' : ''),
                               style: TextStyle(
-                                  fontSize: 12.5, color: context.muted),
+                                fontSize: 12.5,
+                                color: context.muted,
+                              ),
                             ),
                           ],
                         ),
@@ -943,23 +1039,33 @@ class _StudentsTab extends ConsumerWidget {
                   child: Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: RaadColors.brandPrimary.withValues(alpha: 0.15),
-                        child: const Icon(Icons.school_rounded,
-                            color: RaadColors.brandPrimary),
+                        backgroundColor: RaadColors.brandPrimary.withValues(
+                          alpha: 0.15,
+                        ),
+                        child: const Icon(
+                          Icons.school_rounded,
+                          color: RaadColors.brandPrimary,
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(st.fullName,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold, fontSize: 15)),
+                            Text(
+                              st.fullName,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
                             const SizedBox(height: 2),
                             Text(
                               '${st.externalRef ?? s.notAvailable}${st.gender != null ? ' · ${st.gender}' : ''}',
                               style: TextStyle(
-                                  fontSize: 12.5, color: context.muted),
+                                fontSize: 12.5,
+                                color: context.muted,
+                              ),
                             ),
                           ],
                         ),
@@ -990,10 +1096,10 @@ class _StudentsTab extends ConsumerWidget {
                           ),
                         ],
                         child: StatusChip(
-                          label: st.isActive
-                              ? s.adminStatusActive
-                              : st.status,
-                          color: st.isActive ? RaadColors.green : RaadColors.amber,
+                          label: st.isActive ? s.adminStatusActive : st.status,
+                          color: st.isActive
+                              ? RaadColors.green
+                              : RaadColors.amber,
                         ),
                       ),
                     ],
@@ -1021,12 +1127,11 @@ class AdminFleetScreen extends ConsumerWidget {
     final vehicles = ref.watch(adminVehiclesListProvider);
     final fleetOnline = ref.watch(adminFleetOnlineProvider).valueOrNull;
 
-    final onlineIds = fleetOnline?.vehicles.map((v) => v.vehicleId).toSet() ?? {};
+    final onlineIds =
+        fleetOnline?.vehicles.map((v) => v.vehicleId).toSet() ?? {};
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(s.adminNavFleet),
-      ),
+      appBar: AppBar(title: Text(s.adminNavFleet)),
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.add_rounded),
         label: Text(s.adminAddVehicle),
@@ -1061,25 +1166,30 @@ class AdminFleetScreen extends ConsumerWidget {
                             backgroundColor: isOnline
                                 ? RaadColors.green.withValues(alpha: 0.15)
                                 : Colors.grey.withValues(alpha: 0.15),
-                            child: Icon(Icons.directions_bus_rounded,
-                                color: isOnline
-                                    ? RaadColors.green
-                                    : Colors.grey),
+                            child: Icon(
+                              Icons.directions_bus_rounded,
+                              color: isOnline ? RaadColors.green : Colors.grey,
+                            ),
                           ),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(v.displayName,
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 15)),
+                                Text(
+                                  v.displayName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                  ),
+                                ),
                                 const SizedBox(height: 2),
                                 Text(
                                   '${v.capacity ?? '—'} ${s.adminCapacity} · ${isOnline ? s.adminOnlineNow : s.adminStatusInactive}',
                                   style: TextStyle(
-                                      fontSize: 12, color: context.muted),
+                                    fontSize: 12,
+                                    color: context.muted,
+                                  ),
                                 ),
                               ],
                             ),
@@ -1109,13 +1219,13 @@ class AdminFleetScreen extends ConsumerWidget {
                               label: v.isMaintenance
                                   ? s.adminStatusMaintenance
                                   : (v.isActive
-                                      ? s.adminStatusActive
-                                      : s.adminStatusInactive),
+                                        ? s.adminStatusActive
+                                        : s.adminStatusInactive),
                               color: v.isMaintenance
                                   ? RaadColors.amber
                                   : (v.isActive
-                                      ? RaadColors.green
-                                      : Colors.grey),
+                                        ? RaadColors.green
+                                        : Colors.grey),
                             ),
                           ),
                         ],
@@ -1128,22 +1238,29 @@ class AdminFleetScreen extends ConsumerWidget {
                         children: [
                           Row(
                             children: [
-                              Icon(Icons.router_rounded,
-                                  size: 16, color: context.muted),
+                              Icon(
+                                Icons.router_rounded,
+                                size: 16,
+                                color: context.muted,
+                              ),
                               const SizedBox(width: 6),
                               Text(
                                 v.terminalId != null
                                     ? '${s.adminDeviceLinked} (#${v.terminalId})'
                                     : s.adminNoDeviceLinked,
                                 style: TextStyle(
-                                    fontSize: 12, color: context.muted),
+                                  fontSize: 12,
+                                  color: context.muted,
+                                ),
                               ),
                             ],
                           ),
                           TextButton.icon(
                             icon: const Icon(Icons.link_rounded, size: 16),
-                            label: Text(s.adminLinkDevice,
-                                style: const TextStyle(fontSize: 12)),
+                            label: Text(
+                              s.adminLinkDevice,
+                              style: const TextStyle(fontSize: 12),
+                            ),
                             onPressed: () =>
                                 _showLinkDeviceDialog(context, ref, v, s),
                           ),
@@ -1174,9 +1291,7 @@ class AdminDispatchScreen extends ConsumerWidget {
     final routes = ref.watch(adminRoutesProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(s.adminRoutesTitle),
-      ),
+      appBar: AppBar(title: Text(s.adminRoutesTitle)),
       body: RefreshIndicator(
         onRefresh: () async => ref.invalidate(adminRoutesProvider),
         child: routes.when(
@@ -1196,23 +1311,33 @@ class AdminDispatchScreen extends ConsumerWidget {
                   child: Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: RaadColors.brandPrimary.withValues(alpha: 0.12),
-                        child: const Icon(Icons.alt_route_rounded,
-                            color: RaadColors.brandPrimary),
+                        backgroundColor: RaadColors.brandPrimary.withValues(
+                          alpha: 0.12,
+                        ),
+                        child: const Icon(
+                          Icons.alt_route_rounded,
+                          color: RaadColors.brandPrimary,
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(r.name,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold, fontSize: 15)),
+                            Text(
+                              r.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
                             const SizedBox(height: 2),
                             Text(
                               '${r.code != null ? '${r.code} · ' : ''}${s.adminStopsCount(r.stopCount)}',
                               style: TextStyle(
-                                  fontSize: 12.5, color: context.muted),
+                                fontSize: 12.5,
+                                color: context.muted,
+                              ),
                             ),
                           ],
                         ),
@@ -1234,7 +1359,11 @@ class AdminDispatchScreen extends ConsumerWidget {
 // ============================================================================
 
 void _showTempPasswordDialog(
-    BuildContext context, String name, String password, Strings s) {
+  BuildContext context,
+  String name,
+  String password,
+  Strings s,
+) {
   showDialog(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -1256,7 +1385,9 @@ void _showTempPasswordDialog(
             decoration: BoxDecoration(
               color: Colors.grey.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: RaadColors.brandPrimary.withValues(alpha: 0.4)),
+              border: Border.all(
+                color: RaadColors.brandPrimary.withValues(alpha: 0.4),
+              ),
             ),
             child: Row(
               children: [
@@ -1274,17 +1405,18 @@ void _showTempPasswordDialog(
                   icon: const Icon(Icons.copy_rounded, size: 20),
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: password));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(s.adminCopied)),
-                    );
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(SnackBar(content: Text(s.adminCopied)));
                   },
                 ),
               ],
             ),
           ),
           const SizedBox(height: 12),
-          Text(s.adminTempPasswordMsg,
-              style: TextStyle(fontSize: 12, color: context.muted)),
+          Text(
+            s.adminTempPasswordMsg,
+            style: TextStyle(fontSize: 12, color: context.muted),
+          ),
         ],
       ),
       actions: [
@@ -1297,8 +1429,7 @@ void _showTempPasswordDialog(
   );
 }
 
-void _showAddDriverSheet(
-    BuildContext context, WidgetRef ref, Strings s) {
+void _showAddDriverSheet(BuildContext context, WidgetRef ref, Strings s) {
   final nameCtrl = TextEditingController();
   final phoneCtrl = TextEditingController();
   final licenseCtrl = TextEditingController();
@@ -1309,39 +1440,52 @@ void _showAddDriverSheet(
     isScrollControlled: true,
     builder: (ctx) => Padding(
       padding: EdgeInsets.fromLTRB(
-          16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
+        16,
+        16,
+        16,
+        MediaQuery.of(ctx).viewInsets.bottom + 16,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(s.adminAddDriver,
-              style:
-                  const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(
+            s.adminAddDriver,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 16),
           TextField(
             controller: nameCtrl,
             decoration: InputDecoration(
-                labelText: s.adminFullName, border: const OutlineInputBorder()),
+              labelText: s.adminFullName,
+              border: const OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: phoneCtrl,
             keyboardType: TextInputType.phone,
             decoration: InputDecoration(
-                labelText: s.adminPhone, border: const OutlineInputBorder()),
+              labelText: s.adminPhone,
+              border: const OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: licenseCtrl,
             decoration: InputDecoration(
-                labelText: s.adminLicenseNo, border: const OutlineInputBorder()),
+              labelText: s.adminLicenseNo,
+              border: const OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: emailCtrl,
             keyboardType: TextInputType.emailAddress,
             decoration: InputDecoration(
-                labelText: s.adminEmail, border: const OutlineInputBorder()),
+              labelText: s.adminEmail,
+              border: const OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 16),
           FilledButton(
@@ -1349,7 +1493,9 @@ void _showAddDriverSheet(
               if (nameCtrl.text.isEmpty || phoneCtrl.text.isEmpty) return;
               Navigator.of(ctx).pop();
               try {
-                final res = await ref.read(adminRepositoryProvider).createDriver(
+                final res = await ref
+                    .read(adminRepositoryProvider)
+                    .createDriver(
                       fullName: nameCtrl.text.trim(),
                       phone: phoneCtrl.text.trim(),
                       licenseNo: licenseCtrl.text.trim(),
@@ -1359,13 +1505,16 @@ void _showAddDriverSheet(
                 final tempPass = res['temporary_password'] as String?;
                 if (tempPass != null && context.mounted) {
                   _showTempPasswordDialog(
-                      context, nameCtrl.text.trim(), tempPass, s);
+                    context,
+                    nameCtrl.text.trim(),
+                    tempPass,
+                    s,
+                  );
                 }
               } catch (_) {
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(s.somethingWrong)),
-                  );
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(SnackBar(content: Text(s.somethingWrong)));
                 }
               }
             },
@@ -1377,8 +1526,7 @@ void _showAddDriverSheet(
   );
 }
 
-void _showAddParentSheet(
-    BuildContext context, WidgetRef ref, Strings s) {
+void _showAddParentSheet(BuildContext context, WidgetRef ref, Strings s) {
   final nameCtrl = TextEditingController();
   final phoneCtrl = TextEditingController();
   final emailCtrl = TextEditingController();
@@ -1388,33 +1536,44 @@ void _showAddParentSheet(
     isScrollControlled: true,
     builder: (ctx) => Padding(
       padding: EdgeInsets.fromLTRB(
-          16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
+        16,
+        16,
+        16,
+        MediaQuery.of(ctx).viewInsets.bottom + 16,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(s.adminAddParent,
-              style:
-                  const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(
+            s.adminAddParent,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 16),
           TextField(
             controller: nameCtrl,
             decoration: InputDecoration(
-                labelText: s.adminFullName, border: const OutlineInputBorder()),
+              labelText: s.adminFullName,
+              border: const OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: phoneCtrl,
             keyboardType: TextInputType.phone,
             decoration: InputDecoration(
-                labelText: s.adminPhone, border: const OutlineInputBorder()),
+              labelText: s.adminPhone,
+              border: const OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: emailCtrl,
             keyboardType: TextInputType.emailAddress,
             decoration: InputDecoration(
-                labelText: s.adminEmail, border: const OutlineInputBorder()),
+              labelText: s.adminEmail,
+              border: const OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 16),
           FilledButton(
@@ -1422,7 +1581,9 @@ void _showAddParentSheet(
               if (nameCtrl.text.isEmpty || phoneCtrl.text.isEmpty) return;
               Navigator.of(ctx).pop();
               try {
-                final res = await ref.read(adminRepositoryProvider).createParent(
+                final res = await ref
+                    .read(adminRepositoryProvider)
+                    .createParent(
                       fullName: nameCtrl.text.trim(),
                       phone: phoneCtrl.text.trim(),
                       email: emailCtrl.text.trim(),
@@ -1431,13 +1592,16 @@ void _showAddParentSheet(
                 final tempPass = res['temporary_password'] as String?;
                 if (tempPass != null && context.mounted) {
                   _showTempPasswordDialog(
-                      context, nameCtrl.text.trim(), tempPass, s);
+                    context,
+                    nameCtrl.text.trim(),
+                    tempPass,
+                    s,
+                  );
                 }
               } catch (_) {
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(s.somethingWrong)),
-                  );
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(SnackBar(content: Text(s.somethingWrong)));
                 }
               }
             },
@@ -1449,8 +1613,7 @@ void _showAddParentSheet(
   );
 }
 
-void _showEnrollStudentSheet(
-    BuildContext context, WidgetRef ref, Strings s) {
+void _showEnrollStudentSheet(BuildContext context, WidgetRef ref, Strings s) {
   final nameCtrl = TextEditingController();
   final refCtrl = TextEditingController();
   String gender = 'male';
@@ -1461,34 +1624,42 @@ void _showEnrollStudentSheet(
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setModalState) => Padding(
         padding: EdgeInsets.fromLTRB(
-            16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
+          16,
+          16,
+          16,
+          MediaQuery.of(ctx).viewInsets.bottom + 16,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(s.adminEnrollStudent,
-                style:
-                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text(
+              s.adminEnrollStudent,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 16),
             TextField(
               controller: nameCtrl,
               decoration: InputDecoration(
-                  labelText: s.adminFullName,
-                  border: const OutlineInputBorder()),
+                labelText: s.adminFullName,
+                border: const OutlineInputBorder(),
+              ),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: refCtrl,
               decoration: InputDecoration(
-                  labelText: s.adminAdmissionNo,
-                  border: const OutlineInputBorder()),
+                labelText: s.adminAdmissionNo,
+                border: const OutlineInputBorder(),
+              ),
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
               initialValue: gender,
               decoration: InputDecoration(
-                  labelText: s.adminGender,
-                  border: const OutlineInputBorder()),
+                labelText: s.adminGender,
+                border: const OutlineInputBorder(),
+              ),
               items: [
                 DropdownMenuItem(value: 'male', child: Text(s.adminMale)),
                 DropdownMenuItem(value: 'female', child: Text(s.adminFemale)),
@@ -1503,7 +1674,9 @@ void _showEnrollStudentSheet(
                 if (nameCtrl.text.isEmpty) return;
                 Navigator.of(ctx).pop();
                 try {
-                  await ref.read(adminRepositoryProvider).enrollStudent(
+                  await ref
+                      .read(adminRepositoryProvider)
+                      .enrollStudent(
                         fullName: nameCtrl.text.trim(),
                         externalRef: refCtrl.text.trim(),
                         gender: gender,
@@ -1511,9 +1684,9 @@ void _showEnrollStudentSheet(
                   ref.invalidate(adminStudentsProvider);
                 } catch (_) {
                   if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(s.somethingWrong)),
-                    );
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text(s.somethingWrong)));
                   }
                 }
               },
@@ -1526,8 +1699,7 @@ void _showEnrollStudentSheet(
   );
 }
 
-void _showAddVehicleSheet(
-    BuildContext context, WidgetRef ref, Strings s) {
+void _showAddVehicleSheet(BuildContext context, WidgetRef ref, Strings s) {
   final plateCtrl = TextEditingController();
   final labelCtrl = TextEditingController();
   final capCtrl = TextEditingController();
@@ -1537,32 +1709,43 @@ void _showAddVehicleSheet(
     isScrollControlled: true,
     builder: (ctx) => Padding(
       padding: EdgeInsets.fromLTRB(
-          16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
+        16,
+        16,
+        16,
+        MediaQuery.of(ctx).viewInsets.bottom + 16,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(s.adminAddVehicle,
-              style:
-                  const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(
+            s.adminAddVehicle,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 16),
           TextField(
             controller: plateCtrl,
             decoration: InputDecoration(
-                labelText: s.adminPlateNo, border: const OutlineInputBorder()),
+              labelText: s.adminPlateNo,
+              border: const OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: labelCtrl,
             decoration: InputDecoration(
-                labelText: s.adminLabel, border: const OutlineInputBorder()),
+              labelText: s.adminLabel,
+              border: const OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: capCtrl,
             keyboardType: TextInputType.number,
             decoration: InputDecoration(
-                labelText: s.adminCapacity, border: const OutlineInputBorder()),
+              labelText: s.adminCapacity,
+              border: const OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 16),
           FilledButton(
@@ -1570,7 +1753,9 @@ void _showAddVehicleSheet(
               if (plateCtrl.text.isEmpty) return;
               Navigator.of(ctx).pop();
               try {
-                await ref.read(adminRepositoryProvider).createVehicle(
+                await ref
+                    .read(adminRepositoryProvider)
+                    .createVehicle(
                       plateNo: plateCtrl.text.trim(),
                       label: labelCtrl.text.trim(),
                       capacity: int.tryParse(capCtrl.text.trim()),
@@ -1578,9 +1763,8 @@ void _showAddVehicleSheet(
                 ref.invalidate(adminVehiclesListProvider);
               } catch (_) {
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(s.somethingWrong)),
-                  );
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(SnackBar(content: Text(s.somethingWrong)));
                 }
               }
             },
@@ -1593,7 +1777,11 @@ void _showAddVehicleSheet(
 }
 
 void _showLinkDeviceDialog(
-    BuildContext context, WidgetRef ref, AdminVehicle vehicle, Strings s) {
+  BuildContext context,
+  WidgetRef ref,
+  AdminVehicle vehicle,
+  Strings s,
+) {
   showDialog(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -1604,17 +1792,19 @@ void _showLinkDeviceDialog(
           builder: (context, ref, child) {
             final devices = ref.watch(adminDevicesProvider);
             return devices.when(
-              loading: () =>
-                  const Center(child: CircularProgressIndicator()),
+              loading: () => const Center(child: CircularProgressIndicator()),
               error: (_, __) => Text(s.somethingWrong),
               data: (list) {
-                final unassigned =
-                    list.where((d) => d.vehicleId == null).toList();
+                final unassigned = list
+                    .where((d) => d.vehicleId == null)
+                    .toList();
                 if (unassigned.isEmpty) {
                   return Padding(
                     padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Text(s.adminNoDeviceLinked,
-                        style: TextStyle(color: context.muted)),
+                    child: Text(
+                      s.adminNoDeviceLinked,
+                      style: TextStyle(color: context.muted),
+                    ),
                   );
                 }
                 return ListView.builder(

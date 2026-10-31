@@ -15,8 +15,11 @@ class NotificationsScreen extends ConsumerWidget {
   /// Opens the tracking screen for a bus; only parents pass it.
   final void Function(AppNotification notification)? onOpenTransport;
 
-  const NotificationsScreen(
-      {super.key, required this.splitByKind, this.onOpenTransport});
+  const NotificationsScreen({
+    super.key,
+    required this.splitByKind,
+    this.onOpenTransport,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -27,7 +30,9 @@ class NotificationsScreen extends ConsumerWidget {
     Widget list(List<AppNotification> items) {
       if (items.isEmpty) {
         return EmptyView(
-            icon: Icons.notifications_none_rounded, message: s.noNotifications);
+          icon: Icons.notifications_none_rounded,
+          message: s.noNotifications,
+        );
       }
       return RefreshIndicator(
         onRefresh: () async => refresh(),
@@ -58,7 +63,10 @@ class NotificationsScreen extends ConsumerWidget {
       return Scaffold(
         appBar: AppBar(title: Text(s.navNotifications)),
         body: AsyncBody<List<AppNotification>>(
-            value: value, onRetry: refresh, builder: list),
+          value: value,
+          onRetry: refresh,
+          builder: list,
+        ),
       );
     }
     return DefaultTabController(
@@ -69,8 +77,9 @@ class NotificationsScreen extends ConsumerWidget {
           bottom: TabBar(
             tabs: [
               Tab(
-                  icon: const Icon(Icons.directions_bus_rounded),
-                  text: s.transportTab),
+                icon: const Icon(Icons.directions_bus_rounded),
+                text: s.transportTab,
+              ),
               Tab(icon: const Icon(Icons.school_rounded), text: s.schoolTab),
             ],
           ),
@@ -142,10 +151,12 @@ class _NotificationTile extends ConsumerWidget {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(body,
-                    style: TextStyle(
-                        color:
-                            context.colors.onSurface.withValues(alpha: 0.82))),
+                Text(
+                  body,
+                  style: TextStyle(
+                    color: context.colors.onSurface.withValues(alpha: 0.82),
+                  ),
+                ),
                 const SizedBox(height: 6),
                 Text(
                   friendlyMoment(n.createdAt, s),

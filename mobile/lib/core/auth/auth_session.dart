@@ -24,9 +24,8 @@ class AuthSession {
   }
 
   Map<String, dynamic> toJson() => {
-        'access_token': accessToken,
-        'refresh_token': refreshToken,
-        'principal': principal.toJson(),
-      };
-
+    'access_token': accessToken,
+    'refresh_token': refreshToken,
+    'principal': principal.toJson(),
+  };
 }

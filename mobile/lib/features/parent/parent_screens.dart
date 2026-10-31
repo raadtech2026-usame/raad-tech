@@ -27,8 +27,9 @@ class _ParentShellState extends ConsumerState<ParentShell> {
   void _openFromNotification(AppNotification notification) {
     final children =
         ref.read(myTransportProvider).valueOrNull ?? const <ChildTransport>[];
-    final onTrip =
-        children.where((c) => c.vehicle != null && c.isOnTrip).toList();
+    final onTrip = children
+        .where((c) => c.vehicle != null && c.isOnTrip)
+        .toList();
     if (onTrip.isEmpty) return;
     final match = onTrip.firstWhere(
       (c) =>
@@ -50,7 +51,9 @@ class _ParentShellState extends ConsumerState<ParentShell> {
       const ParentHomeScreen(),
       const ParentHistoryScreen(),
       NotificationsScreen(
-          splitByKind: true, onOpenTransport: _openFromNotification),
+        splitByKind: true,
+        onOpenTransport: _openFromNotification,
+      ),
       ProfileScreen(title: s.profile),
     ];
     return Scaffold(
@@ -60,9 +63,13 @@ class _ParentShellState extends ConsumerState<ParentShell> {
         onDestinationSelected: (index) => setState(() => _index = index),
         destinations: [
           NavigationDestination(
-              icon: const Icon(Icons.home_rounded), label: s.navHome),
+            icon: const Icon(Icons.home_rounded),
+            label: s.navHome,
+          ),
           NavigationDestination(
-              icon: const Icon(Icons.history_rounded), label: s.navHistory),
+            icon: const Icon(Icons.history_rounded),
+            label: s.navHistory,
+          ),
           NavigationDestination(
             icon: Badge(
               isLabelVisible: unread > 0,
@@ -72,7 +79,9 @@ class _ParentShellState extends ConsumerState<ParentShell> {
             label: s.navNotifications,
           ),
           NavigationDestination(
-              icon: const Icon(Icons.person_rounded), label: s.navProfile),
+            icon: const Icon(Icons.person_rounded),
+            label: s.navProfile,
+          ),
         ],
       ),
     );
@@ -81,8 +90,10 @@ class _ParentShellState extends ConsumerState<ParentShell> {
 
 ChildTransport? _selected(List<ChildTransport> children, String? selectedId) {
   if (children.isEmpty) return null;
-  return children.firstWhere((c) => c.studentId == selectedId,
-      orElse: () => children.first);
+  return children.firstWhere(
+    (c) => c.studentId == selectedId,
+    orElse: () => children.first,
+  );
 }
 
 /// Home: who, which bus, where it is now, which stop, what happened last.
@@ -107,7 +118,9 @@ class ParentHomeScreen extends ConsumerWidget {
         builder: (children) {
           if (children.isEmpty) {
             return EmptyView(
-                icon: Icons.child_care_rounded, message: s.noChildren);
+              icon: Icons.child_care_rounded,
+              message: s.noChildren,
+            );
           }
           final child = _selected(children, ref.watch(selectedChildProvider))!;
           return RefreshIndicator(
@@ -177,9 +190,10 @@ class _BusCard extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(child.fullName,
-                style:
-                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+            Text(
+              child.fullName,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
             const SizedBox(height: 8),
             Text(s.noAssignment),
           ],
@@ -197,12 +211,15 @@ class _BusCard extends ConsumerWidget {
                 child: Text(
                   child.fullName,
                   style: const TextStyle(
-                      fontSize: 20, fontWeight: FontWeight.w800),
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
               StatusChip(
-                label:
-                    child.isOnTrip ? s.tripStatus('in_progress') : s.noTripNow,
+                label: child.isOnTrip
+                    ? s.tripStatus('in_progress')
+                    : s.noTripNow,
                 color: child.isOnTrip ? RaadColors.green : RaadColors.grey,
               ),
             ],
@@ -215,9 +232,10 @@ class _BusCard extends ConsumerWidget {
           ),
           if (child.routeName != null)
             InfoRow(
-                icon: Icons.alt_route_rounded,
-                label: s.route,
-                value: child.routeName!),
+              icon: Icons.alt_route_rounded,
+              label: s.route,
+              value: child.routeName!,
+            ),
           if (child.pickupStop != null)
             InfoRow(
               icon: Icons.location_on_rounded,
@@ -226,15 +244,17 @@ class _BusCard extends ConsumerWidget {
             ),
           if (child.dropoffStop != null)
             InfoRow(
-                icon: Icons.flag_rounded,
-                label: s.dropoffStop,
-                value: child.dropoffStop!.name),
+              icon: Icons.flag_rounded,
+              label: s.dropoffStop,
+              value: child.dropoffStop!.name,
+            ),
           const SizedBox(height: 12),
           if (vehicle != null && child.isOnTrip)
             FilledButton.icon(
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                    builder: (_) => LiveTrackingScreen(child: child)),
+                  builder: (_) => LiveTrackingScreen(child: child),
+                ),
               ),
               icon: const Icon(Icons.map_rounded),
               label: Text(s.trackBus),
@@ -262,9 +282,11 @@ class _TodayTrips extends ConsumerWidget {
       data: (all) {
         final today = dateOnly(DateTime.now());
         final mine = all
-            .where((t) =>
-                t.scheduledDate == today &&
-                t.studentIds.contains(child.studentId))
+            .where(
+              (t) =>
+                  t.scheduledDate == today &&
+                  t.studentIds.contains(child.studentId),
+            )
             .toList();
         if (mine.isEmpty) return SectionCard(child: Text(s.noTripsToday));
         return Column(
@@ -286,8 +308,12 @@ class TripTile extends ConsumerWidget {
   final Trip trip;
   final bool showDate;
   final VoidCallback? onTap;
-  const TripTile(
-      {super.key, required this.trip, this.showDate = false, this.onTap});
+  const TripTile({
+    super.key,
+    required this.trip,
+    this.showDate = false,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -313,17 +339,22 @@ class TripTile extends ConsumerWidget {
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(title,
-                    style: const TextStyle(
-                        fontSize: 15.5, fontWeight: FontWeight.w700)),
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 15.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
               if (trip.isCover) ...[
                 StatusChip(label: s.coverBadge, color: RaadColors.amber),
                 const SizedBox(width: 6),
               ],
               StatusChip(
-                  label: s.tripStatus(trip.status),
-                  color: tripStatusColor(trip.status)),
+                label: s.tripStatus(trip.status),
+                color: tripStatusColor(trip.status),
+              ),
             ],
           ),
           const SizedBox(height: 6),
@@ -339,7 +370,9 @@ class TripTile extends ConsumerWidget {
             Text(
               '${s.cancelledReason}: ${trip.cancelledReason}',
               style: const TextStyle(
-                  color: RaadColors.red, fontWeight: FontWeight.w600),
+                color: RaadColors.red,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ],
         ],
@@ -357,7 +390,8 @@ class _LatestNotification extends ConsumerWidget {
     final list = ref.watch(notificationsProvider).valueOrNull;
     if (list == null) {
       return const SectionCard(
-          child: SizedBox(height: 40, child: LoadingView()));
+        child: SizedBox(height: 40, child: LoadingView()),
+      );
     }
     final transport = list.where((n) => n.isTransport).toList();
     if (transport.isEmpty) return SectionCard(child: Text(s.noNotifications));
@@ -430,9 +464,11 @@ class ParentHistoryScreen extends ConsumerWidget {
         builder: (all) {
           final today = dateOnly(DateTime.now());
           final past = all
-              .where((t) =>
-                  !t.scheduledDate.isAfter(today) &&
-                  (child == null || t.studentIds.contains(child.studentId)))
+              .where(
+                (t) =>
+                    !t.scheduledDate.isAfter(today) &&
+                    (child == null || t.studentIds.contains(child.studentId)),
+              )
               .toList()
               .reversed
               .toList();
@@ -451,7 +487,9 @@ class ParentHistoryScreen extends ConsumerWidget {
                   Padding(
                     padding: const EdgeInsets.only(top: 48),
                     child: EmptyView(
-                        icon: Icons.history_rounded, message: s.noHistory),
+                      icon: Icons.history_rounded,
+                      message: s.noHistory,
+                    ),
                   ),
                 for (final trip in past)
                   Padding(

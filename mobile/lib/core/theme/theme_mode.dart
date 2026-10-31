@@ -10,8 +10,8 @@ class ThemeModeController extends StateNotifier<ThemeMode> {
   final FlutterSecureStorage _storage;
 
   ThemeModeController({FlutterSecureStorage? storage})
-      : _storage = storage ?? const FlutterSecureStorage(),
-        super(ThemeMode.system) {
+    : _storage = storage ?? const FlutterSecureStorage(),
+      super(ThemeMode.system) {
     _load();
   }
 
@@ -36,4 +36,5 @@ class ThemeModeController extends StateNotifier<ThemeMode> {
 }
 
 final themeModeProvider = StateNotifierProvider<ThemeModeController, ThemeMode>(
-    (ref) => ThemeModeController());
+  (ref) => ThemeModeController(),
+);

@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// Lightweight offline cache backed by FlutterSecureStorage and an in-memory map.
@@ -11,7 +12,7 @@ class LocalCache {
   final Map<String, dynamic> _memory = {};
 
   LocalCache({FlutterSecureStorage? storage})
-      : _storage = storage ?? const FlutterSecureStorage();
+    : _storage = storage ?? const FlutterSecureStorage();
 
   String _key(String path) => '$_prefix$path';
 

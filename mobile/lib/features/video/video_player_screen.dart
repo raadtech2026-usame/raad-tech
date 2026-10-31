@@ -97,16 +97,15 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
                 ),
               )
             : _isConnecting
-                ? const Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 16),
-                      Text('Connecting…',
-                          style: TextStyle(color: Colors.white)),
-                    ],
-                  )
-                : Video(controller: _controller),
+            ? const Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('Connecting…', style: TextStyle(color: Colors.white)),
+                ],
+              )
+            : Video(controller: _controller),
       ),
     );
   }

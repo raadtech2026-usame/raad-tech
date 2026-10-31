@@ -36,15 +36,15 @@ class AdminVehicle {
   bool get isMaintenance => status == 'maintenance';
 
   factory AdminVehicle.fromJson(Map<String, dynamic> json) => AdminVehicle(
-        id: json['id'] as String,
-        plateNo: json['plate_no'] as String? ?? '',
-        label: json['label'] as String?,
-        status: json['status'] as String? ?? 'active',
-        capacity: json['capacity'] as int?,
-        deviceId: json['device_id'] as String?,
-        terminalId: json['terminal_id'] as String?,
-        isOnline: json['is_online'] as bool? ?? false,
-      );
+    id: json['id'] as String,
+    plateNo: json['plate_no'] as String? ?? '',
+    label: json['label'] as String?,
+    status: json['status'] as String? ?? 'active',
+    capacity: json['capacity'] as int?,
+    deviceId: json['device_id'] as String?,
+    terminalId: json['terminal_id'] as String?,
+    isOnline: json['is_online'] as bool? ?? false,
+  );
 }
 
 class AdminDriver {
@@ -67,13 +67,13 @@ class AdminDriver {
   bool get isActive => status == 'active';
 
   factory AdminDriver.fromJson(Map<String, dynamic> json) => AdminDriver(
-        id: json['id'] as String,
-        fullName: json['full_name'] as String? ?? '',
-        phone: json['phone'] as String? ?? '',
-        email: json['email'] as String?,
-        licenseNo: json['license_no'] as String?,
-        status: json['status'] as String? ?? 'active',
-      );
+    id: json['id'] as String,
+    fullName: json['full_name'] as String? ?? '',
+    phone: json['phone'] as String? ?? '',
+    email: json['email'] as String?,
+    licenseNo: json['license_no'] as String?,
+    status: json['status'] as String? ?? 'active',
+  );
 }
 
 class AdminParent {
@@ -92,12 +92,12 @@ class AdminParent {
   });
 
   factory AdminParent.fromJson(Map<String, dynamic> json) => AdminParent(
-        id: json['id'] as String,
-        fullName: json['full_name'] as String? ?? '',
-        phone: json['phone'] as String? ?? '',
-        email: json['email'] as String?,
-        address: json['address'] as String?,
-      );
+    id: json['id'] as String,
+    fullName: json['full_name'] as String? ?? '',
+    phone: json['phone'] as String? ?? '',
+    email: json['email'] as String?,
+    address: json['address'] as String?,
+  );
 }
 
 class AdminStudent {
@@ -118,12 +118,12 @@ class AdminStudent {
   bool get isActive => status == 'active';
 
   factory AdminStudent.fromJson(Map<String, dynamic> json) => AdminStudent(
-        id: json['id'] as String,
-        fullName: json['full_name'] as String? ?? '',
-        externalRef: json['external_ref'] as String?,
-        gender: json['gender'] as String?,
-        status: json['status'] as String? ?? 'active',
-      );
+    id: json['id'] as String,
+    fullName: json['full_name'] as String? ?? '',
+    externalRef: json['external_ref'] as String?,
+    gender: json['gender'] as String?,
+    status: json['status'] as String? ?? 'active',
+  );
 }
 
 class AdminDevice {
@@ -142,12 +142,12 @@ class AdminDevice {
   });
 
   factory AdminDevice.fromJson(Map<String, dynamic> json) => AdminDevice(
-        id: json['id'] as String,
-        terminalId: json['terminal_id'] as String? ?? '',
-        model: json['model'] as String?,
-        status: json['status'] as String? ?? '',
-        vehicleId: json['vehicle_id'] as String?,
-      );
+    id: json['id'] as String,
+    terminalId: json['terminal_id'] as String? ?? '',
+    model: json['model'] as String?,
+    status: json['status'] as String? ?? '',
+    vehicleId: json['vehicle_id'] as String?,
+  );
 }
 
 class AdminRoute {
@@ -166,12 +166,12 @@ class AdminRoute {
   });
 
   factory AdminRoute.fromJson(Map<String, dynamic> json) => AdminRoute(
-        id: json['id'] as String,
-        name: json['name'] as String? ?? '',
-        code: json['code'] as String?,
-        stopCount: (json['stops'] as List<dynamic>? ?? const []).length,
-        status: json['status'] as String? ?? 'active',
-      );
+    id: json['id'] as String,
+    name: json['name'] as String? ?? '',
+    code: json['code'] as String?,
+    stopCount: (json['stops'] as List<dynamic>? ?? const []).length,
+    status: json['status'] as String? ?? 'active',
+  );
 }
 
 class BoardTrip {
@@ -196,15 +196,15 @@ class BoardTrip {
   });
 
   factory BoardTrip.fromJson(Map<String, dynamic> json) => BoardTrip(
-        id: json['id'] as String,
-        tripType: json['trip_type'] as String? ?? '',
-        routeName: json['route_name'] as String?,
-        plannedDeparture: json['planned_departure'] as String?,
-        driverName: json['driver_name'] as String?,
-        status: json['status'] as String? ?? '',
-        cancelledReason: json['cancelled_reason'] as String?,
-        uncoveredReason: json['uncovered_reason'] as String?,
-      );
+    id: json['id'] as String,
+    tripType: json['trip_type'] as String? ?? '',
+    routeName: json['route_name'] as String?,
+    plannedDeparture: json['planned_departure'] as String?,
+    driverName: json['driver_name'] as String?,
+    status: json['status'] as String? ?? '',
+    cancelledReason: json['cancelled_reason'] as String?,
+    uncoveredReason: json['uncovered_reason'] as String?,
+  );
 }
 
 class BoardCrewMember {
@@ -241,10 +241,10 @@ class BoardVehicle {
   });
 
   factory BoardVehicle.fromJson(Map<String, dynamic> json) => BoardVehicle(
-        vehicleId: json['vehicle_id'] as String,
-        trips: _list(json['trips']).map(BoardTrip.fromJson).toList(),
-        crew: _list(json['crew']).map(BoardCrewMember.fromJson).toList(),
-      );
+    vehicleId: json['vehicle_id'] as String,
+    trips: _list(json['trips']).map(BoardTrip.fromJson).toList(),
+    crew: _list(json['crew']).map(BoardCrewMember.fromJson).toList(),
+  );
 }
 
 class DailyBoard {
@@ -261,12 +261,12 @@ class DailyBoard {
   int get tripCount => vehicles.fold(0, (sum, v) => sum + v.trips.length);
 
   factory DailyBoard.fromJson(Map<String, dynamic> json) => DailyBoard(
-        closures: (json['closures'] as List<dynamic>? ?? const [])
-            .map((e) => '$e')
-            .toList(),
-        vehicles: _list(json['vehicles']).map(BoardVehicle.fromJson).toList(),
-        uncoveredTrips: json['uncovered_trips'] as int? ?? 0,
-      );
+    closures: (json['closures'] as List<dynamic>? ?? const [])
+        .map((e) => '$e')
+        .toList(),
+    vehicles: _list(json['vehicles']).map(BoardVehicle.fromJson).toList(),
+    uncoveredTrips: json['uncovered_trips'] as int? ?? 0,
+  );
 }
 
 class SafetyAlert {
@@ -291,15 +291,15 @@ class SafetyAlert {
   });
 
   factory SafetyAlert.fromJson(Map<String, dynamic> json) => SafetyAlert(
-        id: json['id'] as String,
-        vehicleId: json['vehicle_id'] as String? ?? '',
-        alarmType: json['alarm_type'] as String? ?? '',
-        isCritical: json['is_critical'] as bool? ?? false,
-        status: json['status'] as String? ?? '',
-        lastRaisedAt: parseServerTime(json['last_raised_at']),
-        isLate: json['is_late'] as bool? ?? false,
-        occurrences: json['occurrences'] as int? ?? 1,
-      );
+    id: json['id'] as String,
+    vehicleId: json['vehicle_id'] as String? ?? '',
+    alarmType: json['alarm_type'] as String? ?? '',
+    isCritical: json['is_critical'] as bool? ?? false,
+    status: json['status'] as String? ?? '',
+    lastRaisedAt: parseServerTime(json['last_raised_at']),
+    isLate: json['is_late'] as bool? ?? false,
+    occurrences: json['occurrences'] as int? ?? 1,
+  );
 }
 
 class OnlineVehicle {
@@ -317,10 +317,10 @@ class OnlineVehicle {
       label == null || label!.isEmpty ? plateNo : '$label · $plateNo';
 
   factory OnlineVehicle.fromJson(Map<String, dynamic> json) => OnlineVehicle(
-        vehicleId: json['vehicle_id'] as String,
-        plateNo: json['plate_no'] as String? ?? '',
-        label: json['label'] as String?,
-      );
+    vehicleId: json['vehicle_id'] as String,
+    plateNo: json['plate_no'] as String? ?? '',
+    label: json['label'] as String?,
+  );
 }
 
 class FleetOnline {
@@ -330,9 +330,9 @@ class FleetOnline {
   const FleetOnline({required this.vehicles, required this.totalOnline});
 
   factory FleetOnline.fromJson(Map<String, dynamic> json) => FleetOnline(
-        vehicles: _list(json['vehicles']).map(OnlineVehicle.fromJson).toList(),
-        totalOnline: json['total_online'] as int? ?? 0,
-      );
+    vehicles: _list(json['vehicles']).map(OnlineVehicle.fromJson).toList(),
+    totalOnline: json['total_online'] as int? ?? 0,
+  );
 }
 
 class AdminOverview {
@@ -508,7 +508,8 @@ class AdminRepository {
   // --- Trips & Dispatch -----------------------------------------------------
 
   Future<DailyBoard> dailyBoard(DateTime day) async => DailyBoard.fromJson(
-      await _client.get('/daily-operations?date=${isoDate(day)}'));
+    await _client.get('/daily-operations?date=${isoDate(day)}'),
+  );
 
   Future<List<AdminRoute>> routes() async {
     final json = await _client.get('/routes?page=1&page_size=100');
@@ -521,10 +522,9 @@ class AdminRepository {
   }
 
   Future<List<SafetyAlert>> activeAlerts() async {
-    return (await _client
-            .getList('/safety-alerts?status=open&status=acknowledged'))
-        .map(SafetyAlert.fromJson)
-        .toList();
+    return (await _client.getList(
+      '/safety-alerts?status=open&status=acknowledged',
+    )).map(SafetyAlert.fromJson).toList();
   }
 }
 
@@ -538,40 +538,52 @@ final adminRepositoryProvider = Provider<AdminRepository>((ref) {
 });
 
 final adminOverviewProvider = FutureProvider.autoDispose<AdminOverview>(
-    (ref) => ref.watch(adminRepositoryProvider).overview());
+  (ref) => ref.watch(adminRepositoryProvider).overview(),
+);
 
 final adminBoardProvider = FutureProvider.autoDispose<DailyBoard>(
-    (ref) => ref.watch(adminRepositoryProvider).dailyBoard(DateTime.now()));
+  (ref) => ref.watch(adminRepositoryProvider).dailyBoard(DateTime.now()),
+);
 
 final adminAlertsProvider = FutureProvider.autoDispose<List<SafetyAlert>>(
-    (ref) => ref.watch(adminRepositoryProvider).activeAlerts());
+  (ref) => ref.watch(adminRepositoryProvider).activeAlerts(),
+);
 
 final adminFleetOnlineProvider = FutureProvider.autoDispose<FleetOnline>(
-    (ref) => ref.watch(adminRepositoryProvider).fleetOnline());
+  (ref) => ref.watch(adminRepositoryProvider).fleetOnline(),
+);
 
 final adminDriversProvider = FutureProvider.autoDispose<List<AdminDriver>>(
-    (ref) => ref.watch(adminRepositoryProvider).drivers());
+  (ref) => ref.watch(adminRepositoryProvider).drivers(),
+);
 
 final adminParentsProvider = FutureProvider.autoDispose<List<AdminParent>>(
-    (ref) => ref.watch(adminRepositoryProvider).parents());
+  (ref) => ref.watch(adminRepositoryProvider).parents(),
+);
 
 final adminStudentsProvider = FutureProvider.autoDispose<List<AdminStudent>>(
-    (ref) => ref.watch(adminRepositoryProvider).students());
+  (ref) => ref.watch(adminRepositoryProvider).students(),
+);
 
-final adminVehiclesListProvider = FutureProvider.autoDispose<List<AdminVehicle>>(
-    (ref) => ref.watch(adminRepositoryProvider).vehicles());
+final adminVehiclesListProvider =
+    FutureProvider.autoDispose<List<AdminVehicle>>(
+      (ref) => ref.watch(adminRepositoryProvider).vehicles(),
+    );
 
 final adminDevicesProvider = FutureProvider.autoDispose<List<AdminDevice>>(
-    (ref) => ref.watch(adminRepositoryProvider).devices());
+  (ref) => ref.watch(adminRepositoryProvider).devices(),
+);
 
 final adminRoutesProvider = FutureProvider.autoDispose<List<AdminRoute>>(
-    (ref) => ref.watch(adminRepositoryProvider).routes());
+  (ref) => ref.watch(adminRepositoryProvider).routes(),
+);
 
 final adminTripsProvider = FutureProvider.autoDispose<List<BoardTrip>>(
-    (ref) => ref.watch(adminRepositoryProvider).trips());
+  (ref) => ref.watch(adminRepositoryProvider).trips(),
+);
 
 final adminVehicleNamesProvider =
     FutureProvider.autoDispose<Map<String, String>>((ref) async {
-  final vehicles = await ref.watch(adminRepositoryProvider).vehicles();
-  return {for (final v in vehicles) v.id: v.displayName};
-});
+      final vehicles = await ref.watch(adminRepositoryProvider).vehicles();
+      return {for (final v in vehicles) v.id: v.displayName};
+    });

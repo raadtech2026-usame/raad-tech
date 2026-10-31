@@ -35,8 +35,11 @@ class AuthController extends StateNotifier<AuthState> {
   final PushService _push;
 
   AuthController(
-      this._authRepository, this._tokenStorage, this._apiClient, this._push)
-      : super(const AuthInitial()) {
+    this._authRepository,
+    this._tokenStorage,
+    this._apiClient,
+    this._push,
+  ) : super(const AuthInitial()) {
     _apiClient.onUnauthorized = _renewSession;
     _restoreSession();
   }
@@ -82,8 +85,9 @@ class AuthController extends StateNotifier<AuthState> {
     final current = state;
     if (current is! AuthAuthenticated) return false;
     try {
-      final session =
-          await _authRepository.refresh(current.session.refreshToken);
+      final session = await _authRepository.refresh(
+        current.session.refreshToken,
+      );
       await _applySession(session);
       return true;
     } on ApiException catch (e) {
@@ -95,10 +99,14 @@ class AuthController extends StateNotifier<AuthState> {
     }
   }
 
-  Future<void> login(
-      {required String identifier, required String password}) async {
-    final session =
-        await _authRepository.login(identifier: identifier, password: password);
+  Future<void> login({
+    required String identifier,
+    required String password,
+  }) async {
+    final session = await _authRepository.login(
+      identifier: identifier,
+      password: password,
+    );
     await _applySession(session);
   }
 
@@ -158,22 +166,24 @@ class AuthController extends StateNotifier<AuthState> {
 
 final apiClientProvider = Provider<ApiClient>((ref) => ApiClient());
 
-final secureTokenStorageProvider =
-    Provider<SecureTokenStorage>((ref) => const SecureTokenStorage());
+final secureTokenStorageProvider = Provider<SecureTokenStorage>(
+  (ref) => const SecureTokenStorage(),
+);
 
 final authRepositoryProvider = Provider<AuthRepository>((ref) {
   return AuthRepository(ref.watch(apiClientProvider));
 });
 
-final authControllerProvider =
-    StateNotifierProvider<AuthController, AuthState>((ref) {
-  return AuthController(
-    ref.watch(authRepositoryProvider),
-    ref.watch(secureTokenStorageProvider),
-    ref.watch(apiClientProvider),
-    ref.watch(pushServiceProvider),
-  );
-});
+final authControllerProvider = StateNotifierProvider<AuthController, AuthState>(
+  (ref) {
+    return AuthController(
+      ref.watch(authRepositoryProvider),
+      ref.watch(secureTokenStorageProvider),
+      ref.watch(apiClientProvider),
+      ref.watch(pushServiceProvider),
+    );
+  },
+);
 
 /// The signed-in principal, or null.
 final principalProvider = Provider<Principal?>((ref) {

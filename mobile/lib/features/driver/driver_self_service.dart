@@ -64,8 +64,9 @@ class DocumentsScreen extends ConsumerWidget {
                       mine.isCompliant!
                           ? Icons.verified_rounded
                           : Icons.warning_amber_rounded,
-                      color:
-                          mine.isCompliant! ? RaadColors.green : RaadColors.red,
+                      color: mine.isCompliant!
+                          ? RaadColors.green
+                          : RaadColors.red,
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -84,7 +85,9 @@ class DocumentsScreen extends ConsumerWidget {
               Padding(
                 padding: const EdgeInsets.only(top: 48),
                 child: EmptyView(
-                    icon: Icons.description_outlined, message: s.noDocuments),
+                  icon: Icons.description_outlined,
+                  message: s.noDocuments,
+                ),
               ),
             for (final d in mine.documents)
               Padding(
@@ -96,10 +99,13 @@ class DocumentsScreen extends ConsumerWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(d.typeName,
-                                style: const TextStyle(
-                                    fontSize: 15.5,
-                                    fontWeight: FontWeight.w700)),
+                            Text(
+                              d.typeName,
+                              style: const TextStyle(
+                                fontSize: 15.5,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
                             if (d.number != null) Text(d.number!),
                             if (d.expiresOn != null)
                               Text(
@@ -115,8 +121,8 @@ class DocumentsScreen extends ConsumerWidget {
                           color: d.daysLeft! < 0
                               ? RaadColors.red
                               : (d.status == 'valid'
-                                  ? RaadColors.green
-                                  : RaadColors.amber),
+                                    ? RaadColors.green
+                                    : RaadColors.amber),
                         ),
                     ],
                   ),
@@ -168,7 +174,9 @@ class UnavailabilityScreen extends ConsumerWidget {
         builder: (items) {
           if (items.isEmpty) {
             return EmptyView(
-                icon: Icons.event_busy_rounded, message: s.noUnavailability);
+              icon: Icons.event_busy_rounded,
+              message: s.noUnavailability,
+            );
           }
           return ListView.separated(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
@@ -186,13 +194,19 @@ class UnavailabilityScreen extends ConsumerWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(days,
-                              style: const TextStyle(
-                                  fontSize: 15.5, fontWeight: FontWeight.w700)),
+                          Text(
+                            days,
+                            style: const TextStyle(
+                              fontSize: 15.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
                           Text(s.unavailabilityReason(item.reason)),
                           if (item.note != null)
-                            Text(item.note!,
-                                style: TextStyle(color: context.muted)),
+                            Text(
+                              item.note!,
+                              style: TextStyle(color: context.muted),
+                            ),
                         ],
                       ),
                     ),
@@ -202,8 +216,9 @@ class UnavailabilityScreen extends ConsumerWidget {
                       StatusChip(label: s.covered, color: RaadColors.green)
                     else
                       TextButton(
-                          onPressed: () => withdraw(item),
-                          child: Text(s.withdraw)),
+                        onPressed: () => withdraw(item),
+                        child: Text(s.withdraw),
+                      ),
                   ],
                 ),
               );
@@ -263,7 +278,9 @@ class _UnavailabilityFormState extends ConsumerState<_UnavailabilityForm> {
       _error = null;
     });
     try {
-      await ref.read(repositoryProvider).reportUnavailability(
+      await ref
+          .read(repositoryProvider)
+          .reportUnavailability(
             startsOn: _start,
             endsOn: _end,
             reason: _reason,
@@ -282,14 +299,19 @@ class _UnavailabilityFormState extends ConsumerState<_UnavailabilityForm> {
     final s = ref.watch(stringsProvider);
     return Padding(
       padding: EdgeInsets.fromLTRB(
-          20, 20, 20, 20 + MediaQuery.of(context).viewInsets.bottom),
+        20,
+        20,
+        20,
+        20 + MediaQuery.of(context).viewInsets.bottom,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(s.reportUnavailability,
-              style:
-                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+          Text(
+            s.reportUnavailability,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+          ),
           const SizedBox(height: 4),
           Text(s.unavailabilityNote, style: TextStyle(color: context.muted)),
           const SizedBox(height: 16),
@@ -298,16 +320,20 @@ class _UnavailabilityFormState extends ConsumerState<_UnavailabilityForm> {
               Expanded(
                 child: OutlinedButton(
                   onPressed: () => _pick(first: true),
-                  child: Text('${s.firstDay}\n${friendlyDay(_start, s)}',
-                      textAlign: TextAlign.center),
+                  child: Text(
+                    '${s.firstDay}\n${friendlyDay(_start, s)}',
+                    textAlign: TextAlign.center,
+                  ),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: OutlinedButton(
                   onPressed: () => _pick(first: false),
-                  child: Text('${s.lastDay}\n${friendlyDay(_end, s)}',
-                      textAlign: TextAlign.center),
+                  child: Text(
+                    '${s.lastDay}\n${friendlyDay(_end, s)}',
+                    textAlign: TextAlign.center,
+                  ),
                 ),
               ),
             ],
@@ -319,7 +345,9 @@ class _UnavailabilityFormState extends ConsumerState<_UnavailabilityForm> {
             items: [
               for (final r in const ['sick', 'personal', 'training', 'other'])
                 DropdownMenuItem(
-                    value: r, child: Text(s.unavailabilityReason(r))),
+                  value: r,
+                  child: Text(s.unavailabilityReason(r)),
+                ),
             ],
             onChanged: (value) => setState(() => _reason = value ?? 'sick'),
           ),
@@ -332,8 +360,10 @@ class _UnavailabilityFormState extends ConsumerState<_UnavailabilityForm> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
-              child: Text(_error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              child: Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
             ),
           FilledButton(
             onPressed: _busy ? null : _submit,
@@ -373,8 +403,9 @@ class IncidentsScreen extends ConsumerWidget {
         builder: (items) {
           if (items.isEmpty) {
             return EmptyView(
-                icon: Icons.report_gmailerrorred_rounded,
-                message: s.noIncidents);
+              icon: Icons.report_gmailerrorred_rounded,
+              message: s.noIncidents,
+            );
           }
           return ListView.separated(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
@@ -390,9 +421,13 @@ class IncidentsScreen extends ConsumerWidget {
                     Row(
                       children: [
                         Expanded(
-                          child: Text(i.title,
-                              style: const TextStyle(
-                                  fontSize: 15.5, fontWeight: FontWeight.w700)),
+                          child: Text(
+                            i.title,
+                            style: const TextStyle(
+                              fontSize: 15.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
                         ),
                         StatusChip(
                           label: s.incidentStatus(i.status),
@@ -466,7 +501,9 @@ class _ReportIncidentScreenState extends ConsumerState<ReportIncidentScreen> {
       _error = null;
     });
     try {
-      await ref.read(repositoryProvider).reportIncident(
+      await ref
+          .read(repositoryProvider)
+          .reportIncident(
             category: _category,
             severity: _severity,
             title: _title.text,
@@ -502,7 +539,9 @@ class _ReportIncidentScreenState extends ConsumerState<ReportIncidentScreen> {
             items: [
               for (final c in _categories)
                 DropdownMenuItem(
-                    value: c, child: Text(s.incidentCategoryName(c))),
+                  value: c,
+                  child: Text(s.incidentCategoryName(c)),
+                ),
             ],
             onChanged: (value) => setState(() => _category = value ?? 'other'),
           ),
@@ -549,13 +588,17 @@ class _ReportIncidentScreenState extends ConsumerState<ReportIncidentScreen> {
             maxLines: 5,
             maxLength: 4000,
             decoration: InputDecoration(
-                labelText: s.incidentDescription, alignLabelWithHint: true),
+              labelText: s.incidentDescription,
+              alignLabelWithHint: true,
+            ),
           ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
-              child: Text(_error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              child: Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
             ),
           FilledButton(
             onPressed: _busy ? null : _submit,

@@ -155,8 +155,9 @@ class ChildTransport {
       fullName: json['full_name'] as String? ?? '',
       status: json['status'] as String? ?? '',
       hasAssignment: a != null,
-      routeName:
-          route is Map<String, dynamic> ? route['name'] as String? : null,
+      routeName: route is Map<String, dynamic>
+          ? route['name'] as String?
+          : null,
       pickupStop: Stop.fromJson(a?['pickup_stop']),
       dropoffStop: Stop.fromJson(a?['dropoff_stop']),
       vehicle: Vehicle.fromJson(a?['vehicle']),
@@ -192,8 +193,11 @@ class Passenger {
   final String fullName;
   final String? pickupStopName;
   final String? dropoffStopName;
-  const Passenger(
-      {required this.fullName, this.pickupStopName, this.dropoffStopName});
+  const Passenger({
+    required this.fullName,
+    this.pickupStopName,
+    this.dropoffStopName,
+  });
 
   factory Passenger.fromJson(Map<String, dynamic> json) {
     return Passenger(
@@ -277,8 +281,11 @@ class MyDocuments {
   /// Null when the organization requires no documents.
   final bool? isCompliant;
   final List<String> gaps;
-  const MyDocuments(
-      {required this.documents, this.isCompliant, this.gaps = const []});
+  const MyDocuments({
+    required this.documents,
+    this.isCompliant,
+    this.gaps = const [],
+  });
 
   factory MyDocuments.fromJson(Map<String, dynamic> json) {
     final compliance = json['compliance'];
@@ -382,7 +389,7 @@ class AppNotification {
     'trip_started',
     'trip_completed',
     'approaching_stop',
-    'arrived_org'
+    'arrived_org',
   };
   static const _transportKinds = {'trip_cancelled', 'cover_assigned'};
 

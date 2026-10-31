@@ -81,8 +81,9 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
   /// The last known position, so the map is not empty until the next push arrives.
   Future<void> _loadLatest() async {
     try {
-      final latest =
-          await ref.read(repositoryProvider).latestPosition(_vehicleId);
+      final latest = await ref
+          .read(repositoryProvider)
+          .latestPosition(_vehicleId);
       if (mounted && latest != null && _position == null) {
         setState(() => _position = latest);
       }
@@ -157,24 +158,38 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
             Icon(icon, color: color, size: 20),
             const SizedBox(width: 10),
             Expanded(
-                child: Text(text,
-                    style:
-                        TextStyle(color: color, fontWeight: FontWeight.w600))),
+              child: Text(
+                text,
+                style: TextStyle(color: color, fontWeight: FontWeight.w600),
+              ),
+            ),
           ],
         ),
       );
     }
 
     final Widget? status = switch (_phase) {
-      _Phase.tripEnded =>
-        banner(Icons.flag_rounded, s.tripEnded, RaadColors.grey),
-      _Phase.denied =>
-        banner(Icons.info_outline_rounded, s.trackingDenied, RaadColors.amber),
-      _Phase.reconnecting =>
-        banner(Icons.wifi_off_rounded, s.connectionLost, RaadColors.amber),
+      _Phase.tripEnded => banner(
+        Icons.flag_rounded,
+        s.tripEnded,
+        RaadColors.grey,
+      ),
+      _Phase.denied => banner(
+        Icons.info_outline_rounded,
+        s.trackingDenied,
+        RaadColors.amber,
+      ),
+      _Phase.reconnecting => banner(
+        Icons.wifi_off_rounded,
+        s.connectionLost,
+        RaadColors.amber,
+      ),
       _Phase.connecting when !hasFix => null,
-      _ when isStale =>
-        banner(Icons.schedule_rounded, s.staleLocation, RaadColors.amber),
+      _ when isStale => banner(
+        Icons.schedule_rounded,
+        s.staleLocation,
+        RaadColors.amber,
+      ),
       _ => null,
     };
 
@@ -183,7 +198,8 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
       body = _phase == _Phase.denied || _phase == _Phase.tripEnded
           ? EmptyView(
               icon: Icons.directions_bus_outlined,
-              message: s.trackingOnlyOnTrip)
+              message: s.trackingOnlyOnTrip,
+            )
           : Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -227,9 +243,10 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
           Expanded(child: body),
           if (hasFix)
             _PositionPanel(
-                position: position,
-                stop: stop,
-                isLive: _phase == _Phase.live && !isStale),
+              position: position,
+              stop: stop,
+              isLive: _phase == _Phase.live && !isStale,
+            ),
         ],
       ),
     );
@@ -240,8 +257,11 @@ class _PositionPanel extends ConsumerWidget {
   final TrackingPosition position;
   final Stop? stop;
   final bool isLive;
-  const _PositionPanel(
-      {required this.position, required this.stop, required this.isLive});
+  const _PositionPanel({
+    required this.position,
+    required this.stop,
+    required this.isLive,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -249,7 +269,11 @@ class _PositionPanel extends ConsumerWidget {
     final distance = stop == null
         ? null
         : distanceMetres(
-            position.lat!, position.lng!, stop!.latitude, stop!.longitude);
+            position.lat!,
+            position.lng!,
+            stop!.latitude,
+            stop!.longitude,
+          );
     return Container(
       width: double.infinity,
       color: context.colors.surface,
@@ -277,8 +301,10 @@ class _PositionPanel extends ConsumerWidget {
               const SizedBox(height: 10),
               Text(
                 s.distanceToStop(friendlyDistance(distance)),
-                style:
-                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
               Text(stop!.name, style: TextStyle(color: context.muted)),
             ],
@@ -289,7 +315,8 @@ class _PositionPanel extends ConsumerWidget {
             if (!Env.hasMap) ...[
               const SizedBox(height: 6),
               Text(
-                  '${position.lat!.toStringAsFixed(5)}, ${position.lng!.toStringAsFixed(5)}'),
+                '${position.lat!.toStringAsFixed(5)}, ${position.lng!.toStringAsFixed(5)}',
+              ),
             ],
           ],
         ),

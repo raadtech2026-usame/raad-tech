@@ -20,13 +20,13 @@ void main() {
             'id': 'stop-1',
             'name': 'Stop 1',
             'latitude': 2.01,
-            'longitude': 45.01
+            'longitude': 45.01,
           },
           'dropoff_stop': {
             'id': 'stop-9',
             'name': 'Stop 9',
             'latitude': 2.04,
-            'longitude': 45.04
+            'longitude': 45.04,
           },
           'vehicle': {'id': 'veh-1', 'plate_no': 'AB-1234', 'label': 'Bus'},
         },
@@ -47,36 +47,38 @@ void main() {
       expect(child.relevantStop!.id, 'stop-9');
     });
 
-    test('a child with no assignment, and dangling references, do not throw',
-        () {
-      final unassigned = ChildTransport.fromJson({
-        'student_id': 's1',
-        'full_name': 'Amina',
-        'status': 'active',
-        'assignment': null,
-        'current_trip': null,
-      });
-      expect(unassigned.hasAssignment, isFalse);
-      expect(unassigned.isOnTrip, isFalse);
-      expect(unassigned.relevantStop, isNull);
+    test(
+      'a child with no assignment, and dangling references, do not throw',
+      () {
+        final unassigned = ChildTransport.fromJson({
+          'student_id': 's1',
+          'full_name': 'Amina',
+          'status': 'active',
+          'assignment': null,
+          'current_trip': null,
+        });
+        expect(unassigned.hasAssignment, isFalse);
+        expect(unassigned.isOnTrip, isFalse);
+        expect(unassigned.relevantStop, isNull);
 
-      final dangling = ChildTransport.fromJson({
-        'student_id': 's1',
-        'full_name': 'Amina',
-        'status': 'active',
-        'assignment': {
-          'assignment_id': 'a',
-          'route': null,
-          'pickup_stop': null,
-          'dropoff_stop': null,
-          'vehicle': null,
-        },
-        'current_trip': null,
-      });
-      expect(dangling.hasAssignment, isTrue);
-      expect(dangling.vehicle, isNull);
-      expect(dangling.routeName, isNull);
-    });
+        final dangling = ChildTransport.fromJson({
+          'student_id': 's1',
+          'full_name': 'Amina',
+          'status': 'active',
+          'assignment': {
+            'assignment_id': 'a',
+            'route': null,
+            'pickup_stop': null,
+            'dropoff_stop': null,
+            'vehicle': null,
+          },
+          'current_trip': null,
+        });
+        expect(dangling.hasAssignment, isTrue);
+        expect(dangling.vehicle, isNull);
+        expect(dangling.routeName, isNull);
+      },
+    );
   });
 
   group('Trip', () {
@@ -217,7 +219,7 @@ void main() {
         'scheduled',
         'in_progress',
         'completed',
-        'cancelled'
+        'cancelled',
       ]) {
         expect(const Strings(true).tripStatus(status), isNot(status));
         expect(const Strings(false).tripStatus(status), isNot(status));

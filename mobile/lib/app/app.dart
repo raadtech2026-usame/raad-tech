@@ -30,10 +30,12 @@ class RaadApp extends ConsumerWidget {
       themeMode: ref.watch(themeModeProvider),
       home: switch (authState) {
         AuthInitial() => const _SplashScreen(),
-        AuthUnauthenticated(sessionExpired: final expired) =>
-          LoginScreen(sessionExpired: expired),
-        AuthAuthenticated(session: final session) =>
-          homeForPrincipal(session.principal),
+        AuthUnauthenticated(sessionExpired: final expired) => LoginScreen(
+          sessionExpired: expired,
+        ),
+        AuthAuthenticated(session: final session) => homeForPrincipal(
+          session.principal,
+        ),
       },
     );
   }
