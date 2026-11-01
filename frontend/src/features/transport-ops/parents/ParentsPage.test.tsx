@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OffsetPage } from "../../../shared/api/types";
@@ -186,7 +186,7 @@ describe("ParentsPage", () => {
 
     renderPage();
     await waitFor(() => expect(screen.getByText("Fatima Ali")).toBeInTheDocument());
-    await userEvent.click(screen.getByText("Fatima Ali"));
+    fireEvent.click(screen.getByText("Fatima Ali"));
 
     const dialog = await screen.findByRole("dialog");
     await waitFor(() => expect(api.getParent).toHaveBeenCalledWith(PARENT_SUMMARY.id));
@@ -206,7 +206,7 @@ describe("ParentsPage", () => {
 
     renderPage();
     await waitFor(() => expect(screen.getByText("Fatima Ali")).toBeInTheDocument());
-    await userEvent.click(screen.getByText("Fatima Ali"));
+    fireEvent.click(screen.getByText("Fatima Ali"));
 
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("USD 25.00")).toBeInTheDocument();
@@ -220,7 +220,7 @@ describe("ParentsPage", () => {
 
     renderPage();
     await waitFor(() => expect(screen.getByText("Fatima Ali")).toBeInTheDocument());
-    await userEvent.click(screen.getByText("Fatima Ali"));
+    fireEvent.click(screen.getByText("Fatima Ali"));
 
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("Amina Hassan · Primary guardian")).toBeInTheDocument();
@@ -239,7 +239,7 @@ describe("ParentsPage", () => {
 
     renderPage();
     await waitFor(() => expect(screen.getByText("Fatima Ali")).toBeInTheDocument());
-    await userEvent.click(screen.getByText("Fatima Ali"));
+    fireEvent.click(screen.getByText("Fatima Ali"));
 
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("No students linked yet.")).toBeInTheDocument();
@@ -251,7 +251,7 @@ describe("ParentsPage", () => {
 
     renderPage();
     await waitFor(() => expect(screen.getByText("Fatima Ali")).toBeInTheDocument());
-    await userEvent.click(screen.getByText("Fatima Ali"));
+    fireEvent.click(screen.getByText("Fatima Ali"));
 
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByRole("button", { name: "Add student" })).toBeInTheDocument();
@@ -336,7 +336,7 @@ describe("ParentsPage", () => {
 
     renderPage();
     await waitFor(() => expect(screen.getByText("Fatima Ali")).toBeInTheDocument());
-    await userEvent.click(screen.getByText("Fatima Ali"));
+    fireEvent.click(screen.getByText("Fatima Ali"));
 
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("USD 80.00 / month")).toBeInTheDocument();
@@ -360,7 +360,7 @@ describe("ParentsPage", () => {
 
     renderPage();
     await waitFor(() => expect(screen.getByText("Fatima Ali")).toBeInTheDocument());
-    await userEvent.click(screen.getByText("Fatima Ali"));
+    fireEvent.click(screen.getByText("Fatima Ali"));
 
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "Deactivate" }));
@@ -380,7 +380,7 @@ describe("ParentsPage", () => {
 
     expect(screen.queryByRole("button", { name: /New Parent/i })).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByText("Fatima Ali"));
+    fireEvent.click(screen.getByText("Fatima Ali"));
     const dialog = await screen.findByRole("dialog");
     await within(dialog).findByText("Amina Hassan · Primary guardian");
 

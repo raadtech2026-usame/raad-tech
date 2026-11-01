@@ -71,7 +71,7 @@ from raad.core.tenancy.principal import SYSTEM_PRINCIPAL
 from raad.modules.billing.application.ports import BillingUnitOfWork
 from raad.modules.billing.application.services import BillingApplicationService
 from raad.modules.notifications.application.commands import CreateNotificationCommand
-from raad.core.time.clock import Clock
+from raad.core.time.clock import Clock, SystemClock
 from raad.modules.notifications.application.ports import (
     NotificationsUnitOfWork,
     PushNotificationSenderPort,
@@ -231,7 +231,7 @@ class _NotificationFanOut:
                     data=payload_data,
                 )
                 if dead_tokens:
-                    clock = self._container.resolve(Clock)
+                    clock = self._container.try_resolve(Clock) or SystemClock()
                     for dead in dead_tokens:
                         token_entity = next(
                             (t for t in tokens if str(t.fcm_token) == dead), None

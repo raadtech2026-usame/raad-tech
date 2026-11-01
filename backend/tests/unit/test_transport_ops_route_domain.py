@@ -532,6 +532,10 @@ class RouteRepositoryInterfaceTests(unittest.TestCase):
             async def get_by_name(self, name: str) -> Route | None:
                 return next((r for r in self._routes.values() if r.name == name), None)
 
+            async def list_by_ids(self, route_ids: list[RouteId]) -> list[Route]:
+                wanted = {str(i) for i in route_ids}
+                return [r for r in self._routes.values() if str(r.id) in wanted]
+
             def add(self, route: Route) -> None:
                 self._routes[str(route.id)] = route
 

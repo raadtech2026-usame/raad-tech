@@ -272,6 +272,10 @@ class InMemoryStudentParentRepository(StudentParentRepository):
     async def list_by_parent(self, parent_id: ParentId) -> list[StudentParent]:
         return [link for link in self.links if link.parent_id == parent_id]
 
+    async def list_by_parents(self, parent_ids: list[ParentId]) -> list[StudentParent]:
+        wanted = {str(pid) for pid in parent_ids}
+        return [link for link in self.links if str(link.parent_id) in wanted]
+
     async def list_by_students(self, student_ids: list[StudentId]) -> list[StudentParent]:
         wanted = {str(sid) for sid in student_ids}
         return [link for link in self.links if str(link.student_id) in wanted]
@@ -291,6 +295,10 @@ class InMemoryRouteRepository(RouteRepository):
 
     async def get_by_name(self, name: str) -> Route | None:
         return next((r for r in self.by_id.values() if r.name == name), None)
+
+    async def list_by_ids(self, route_ids: list[RouteId]) -> list[Route]:
+        wanted = {str(i) for i in route_ids}
+        return [r for r in self.by_id.values() if str(r.id) in wanted]
 
     def add(self, route: Route) -> None:
         self.by_id[str(route.id)] = route

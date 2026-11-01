@@ -203,6 +203,10 @@ class InMemoryParentInvoiceRepository(ParentInvoiceRepository):
                 items = [i for i in items if i.status.value == condition.value]
         return _paginate(items, page_request)
 
+    async def list_for_parents(self, parent_ids: list[ParentId]) -> list[ParentInvoice]:
+        wanted = {str(pid) for pid in parent_ids}
+        return [i for i in self.by_id.values() if str(i.parent_id) in wanted]
+
     async def list_for_parent(self, parent_id: ParentId) -> list[ParentInvoice]:
         return [i for i in self.by_id.values() if str(i.parent_id) == str(parent_id)]
 

@@ -177,6 +177,10 @@ class InMemoryStudentParentRepository(StudentParentRepository):
             if str(link.parent_id) == str(parent_id)
         ]
 
+    async def list_by_parents(self, parent_ids: list[ParentId]) -> list[StudentParent]:
+        wanted = {str(pid) for pid in parent_ids}
+        return [link for link in self.by_key.values() if str(link.parent_id) in wanted]
+
     async def list_by_students(self, student_ids: list[StudentId]) -> list[StudentParent]:
         wanted = {str(sid) for sid in student_ids}
         return [link for link in self.by_key.values() if str(link.student_id) in wanted]

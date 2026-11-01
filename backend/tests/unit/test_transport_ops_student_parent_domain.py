@@ -279,6 +279,12 @@ class StudentParentRepositoryInterfaceTests(unittest.TestCase):
                     if str(link.parent_id) == str(parent_id)
                 ]
 
+            async def list_by_parents(self, parent_ids):
+                wanted = {str(pid) for pid in parent_ids}
+                return [
+                    link for link in self._links.values() if str(link.parent_id) in wanted
+                ]
+
             async def list_by_students(self, student_ids):
                 wanted = {str(sid) for sid in student_ids}
                 return [

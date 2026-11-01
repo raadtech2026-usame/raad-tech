@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from raad.core.di.container import Container
+from raad.core.time.clock import Clock, SystemClock
 from raad.core.errors.exceptions import NotFoundError
 from raad.core.events.base import DomainEvent
 from raad.core.policies.subscription_access import parse_subscription_state
@@ -175,6 +176,7 @@ def make_container(
     trip_type: str = "morning",
 ) -> tuple[Container, RecordingNotificationService]:
     container = Container()
+    container.bind_singleton(Clock, SystemClock())
     container.bind_singleton(
         StudentParentApplicationService, FakeStudentParentService(links_by_student)
     )

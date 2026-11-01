@@ -151,6 +151,10 @@ class InMemoryRouteRepository(RouteRepository):
     async def get_by_name(self, name: str) -> Route | None:
         return next((r for r in self.by_id.values() if r.name == name), None)
 
+    async def list_by_ids(self, route_ids: list[RouteId]) -> list[Route]:
+        wanted = {str(i) for i in route_ids}
+        return [r for r in self.by_id.values() if str(r.id) in wanted]
+
     def add(self, route: Route) -> None:
         self.by_id[str(route.id)] = route
 

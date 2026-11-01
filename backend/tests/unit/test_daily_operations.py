@@ -134,6 +134,10 @@ class _Routes(RouteRepository):
     async def get_by_name(self, name):
         return None
 
+    async def list_by_ids(self, route_ids):
+        wanted = {str(i) for i in route_ids}
+        return [r for r in self.by_id.values() if str(r.id) in wanted]
+
     def add(self, route):
         self.by_id[str(route.id)] = route
 
