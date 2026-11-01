@@ -64,9 +64,9 @@ class AuthController extends StateNotifier<AuthState> {
           debugPrint(
             '[AuthController] Restored session from cache for user ${cached.principal.userId}. Triggering push registration...',
           );
-          _push.register().catchError((error) {
+          _push.register().catchError((error, stackTrace) {
             debugPrint(
-              '[AuthController] Push registration on cached session restore failed: $error',
+              '[AuthController] Push registration on cached session restore failed: $error, stack: $stackTrace',
             );
           });
           return;
@@ -84,9 +84,9 @@ class AuthController extends StateNotifier<AuthState> {
         debugPrint(
           '[AuthController] Restored session from fallback cache for user ${cached.principal.userId}. Triggering push registration...',
         );
-        _push.register().catchError((error) {
+        _push.register().catchError((error, stackTrace) {
           debugPrint(
-            '[AuthController] Push registration on fallback session restore failed: $error',
+            '[AuthController] Push registration on fallback session restore failed: $error, stack: $stackTrace',
           );
         });
         return;
@@ -136,9 +136,9 @@ class AuthController extends StateNotifier<AuthState> {
       );
       try {
         await _push.register();
-      } catch (e) {
+      } catch (e, s) {
         debugPrint(
-          '[AuthController] Explicit push registration failed: $e',
+          '[AuthController] Explicit push registration failed: $e, stack: $s',
         );
       }
     }
@@ -169,8 +169,8 @@ class AuthController extends StateNotifier<AuthState> {
   Future<void> logout() async {
     final current = state;
     if (current is AuthAuthenticated) {
-      await _push.unregister().catchError((e) {
-        debugPrint('[AuthController] Push unregister failed on logout: $e');
+      await _push.unregister().catchError((e, s) {
+        debugPrint('[AuthController] Push unregister failed on logout: $e, stack: $s');
       });
       try {
         await _authRepository.logout(current.session.refreshToken);
@@ -198,9 +198,9 @@ class AuthController extends StateNotifier<AuthState> {
       debugPrint(
         '[AuthController] Sign-in complete for user ${session.principal.userId}. Triggering push registration...',
       );
-      _push.register().catchError((error) {
+      _push.register().catchError((error, stackTrace) {
         debugPrint(
-          '[AuthController] Push registration failed post-login: $error',
+          '[AuthController] Push registration failed post-login: $error, stack: $stackTrace',
         );
       });
     }

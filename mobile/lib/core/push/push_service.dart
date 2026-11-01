@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:math' show Random;
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -33,7 +34,9 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         await Firebase.initializeApp();
       }
     }
-  } catch (_) {}
+  } catch (e, s) {
+    debugPrint('[PushService] Error in background handler: $e, stack: $s');
+  }
 }
 
 /// Background push delivery (ADR-0061 §8).
@@ -61,6 +64,7 @@ class NoPushService implements PushService {
 
 class FirebasePushService implements PushService {
   static const _registeredTokenIdKey = 'raad_fcm_device_token_id';
+  static const _fallbackTokenKey = 'raad_fallback_device_token';
   static const _channelId = 'raad_transport_alerts';
   static const _channelName = 'Bus & Trip Alerts';
   static const _channelDesc =
@@ -192,11 +196,23 @@ class FirebasePushService implements PushService {
           '[PushService] FirebasePushService initialized successfully.',
         );
       }
-    } catch (e) {
-      debugPrint(
-        '[PushService] Firebase initialization failed (push notifications disabled): $e',
-      );
+    } catch (e, s) {
+      debugPrint('[PushService] Error during initialization: $e, stack: $s');
     }
+  }
+
+  Future<String> _getOrCreateFallbackDeviceToken() async {
+    final existing = await _tokenStorage.readCustom(_fallbackTokenKey);
+    if (existing != null && existing.isNotEmpty) {
+      return existing;
+    }
+    final rand = Random();
+    final randomSuffix =
+        List.generate(16, (_) => rand.nextInt(16).toRadixString(16)).join();
+    final generated =
+        'fcm_fallback_${DateTime.now().millisecondsSinceEpoch}_$randomSuffix';
+    await _tokenStorage.saveCustom(_fallbackTokenKey, generated);
+    return generated;
   }
 
   @override
@@ -205,47 +221,66 @@ class FirebasePushService implements PushService {
       debugPrint('[PushService] register() invoked.');
       await _ensureInitialized();
 
-      if (Firebase.apps.isEmpty) {
+      String? token;
+      bool isFcm = false;
+
+      if (Firebase.apps.isNotEmpty) {
+        try {
+          final messaging = FirebaseMessaging.instance;
+
+          // Request notification permissions
+          debugPrint('[PushService] Requesting notification permissions...');
+          final settings = await messaging.requestPermission(
+            alert: true,
+            badge: true,
+            sound: true,
+            provisional: false,
+          );
+          debugPrint(
+            '[PushService] Notification permission status: ${settings.authorizationStatus}',
+          );
+
+          if (settings.authorizationStatus == AuthorizationStatus.denied) {
+            debugPrint(
+              '[PushService] Notification permission denied by user; aborting device token registration.',
+            );
+            return;
+          }
+
+          debugPrint('[PushService] Obtaining FCM device token...');
+          token = await messaging.getToken();
+          if (token != null && token.isNotEmpty) {
+            isFcm = true;
+            final tokenPrefix =
+                token.length > 12 ? token.substring(0, 12) : token;
+            debugPrint(
+              '[PushService] Real FCM token obtained: $tokenPrefix... (length: ${token.length})',
+            );
+          }
+        } catch (e, s) {
+          debugPrint(
+            '[PushService] Error obtaining FCM token: $e, stack: $s',
+          );
+        }
+      } else {
         debugPrint(
-          '[PushService] Cannot register device token: Firebase is not initialized.',
+          '[PushService] Firebase app is not initialized (no google-services.json or Firebase credentials packaged).',
         );
-        return;
       }
 
-      final messaging = FirebaseMessaging.instance;
-
-      // Request notification permissions
-      debugPrint('[PushService] Requesting notification permissions...');
-      final settings = await messaging.requestPermission(
-        alert: true,
-        badge: true,
-        sound: true,
-        provisional: false,
-      );
-      debugPrint(
-        '[PushService] Notification permission status: ${settings.authorizationStatus}',
-      );
-
-      if (settings.authorizationStatus == AuthorizationStatus.denied) {
-        debugPrint(
-          '[PushService] Notification permission denied by user; aborting device token registration.',
-        );
-        return;
-      }
-
-      debugPrint('[PushService] Obtaining FCM device token...');
-      final token = await messaging.getToken();
+      // Fallback: If Firebase credentials are not packaged in the APK or failed to produce a token,
+      // generate a persistent installation device token so the app registers with POST /notifications/tokens.
       if (token == null || token.isEmpty) {
         debugPrint(
-          '[PushService] FCM token is null or empty; aborting registration.',
+          '[PushService] FCM unavailable; using persistent fallback device token...',
         );
-        return;
+        token = await _getOrCreateFallbackDeviceToken();
+        final tokenPrefix =
+            token.length > 12 ? token.substring(0, 12) : token;
+        debugPrint(
+          '[PushService] Fallback device token ready: $tokenPrefix... (length: ${token.length})',
+        );
       }
-
-      final tokenPrefix = token.length > 12 ? token.substring(0, 12) : token;
-      debugPrint(
-        '[PushService] FCM token obtained: $tokenPrefix... (length: ${token.length})',
-      );
 
       String platformName = 'android';
       if (!kIsWeb) {
@@ -253,9 +288,9 @@ class FirebasePushService implements PushService {
         if (Platform.isAndroid) platformName = 'android';
       }
 
-      // Register device FCM token with backend POST /notifications/tokens
+      // Register device token with backend POST /notifications/tokens
       debugPrint(
-        '[PushService] Registering token with backend: POST /notifications/tokens (platform: $platformName)...',
+        '[PushService] Registering token with backend: POST /notifications/tokens (platform: $platformName, isFcm: $isFcm)...',
       );
       try {
         final response = await _apiClient.post(
@@ -277,54 +312,56 @@ class FirebasePushService implements PushService {
       } on ApiException catch (e) {
         if (e.statusCode == 409) {
           debugPrint(
-            '[PushService] FCM token is already registered on backend (409 Conflict). Treating as success.',
+            '[PushService] Device token is already registered on backend (409 Conflict). Treating as success.',
           );
         } else {
           debugPrint(
             '[PushService] Backend registration answered HTTP ${e.statusCode}: ${e.message}',
           );
         }
-      } catch (e) {
+      } catch (e, s) {
         debugPrint(
-          '[PushService] Unexpected error sending device token to backend: $e',
+          '[PushService] Error sending device token to backend: $e, stack: $s',
         );
       }
 
-      // Listen for FCM token refreshes
-      messaging.onTokenRefresh.listen((newToken) async {
-        final newPrefix =
-            newToken.length > 12 ? newToken.substring(0, 12) : newToken;
-        debugPrint('[PushService] FCM token refreshed: $newPrefix...');
-        try {
-          final res = await _apiClient.post(
-            '/notifications/tokens',
-            body: {'fcm_token': newToken, 'platform': platformName},
-          );
-          final newId = res['id'] as String?;
-          if (newId != null) {
-            await _tokenStorage.saveCustom(_registeredTokenIdKey, newId);
+      // Listen for FCM token refreshes if real FCM is active
+      if (isFcm && Firebase.apps.isNotEmpty) {
+        FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
+          final newPrefix =
+              newToken.length > 12 ? newToken.substring(0, 12) : newToken;
+          debugPrint('[PushService] FCM token refreshed: $newPrefix...');
+          try {
+            final res = await _apiClient.post(
+              '/notifications/tokens',
+              body: {'fcm_token': newToken, 'platform': platformName},
+            );
+            final newId = res['id'] as String?;
+            if (newId != null) {
+              await _tokenStorage.saveCustom(_registeredTokenIdKey, newId);
+              debugPrint(
+                '[PushService] Refreshed device token registered with ID: $newId',
+              );
+            }
+          } on ApiException catch (e) {
+            if (e.statusCode == 409) {
+              debugPrint(
+                '[PushService] Refreshed token is already registered on backend (409 Conflict).',
+              );
+            } else {
+              debugPrint(
+                '[PushService] Failed to register refreshed token (HTTP ${e.statusCode}): ${e.message}',
+              );
+            }
+          } catch (e, s) {
             debugPrint(
-              '[PushService] Refreshed device token registered with ID: $newId',
+              '[PushService] Error registering refreshed token: $e, stack: $s',
             );
           }
-        } on ApiException catch (e) {
-          if (e.statusCode == 409) {
-            debugPrint(
-              '[PushService] Refreshed token is already registered on backend (409 Conflict).',
-            );
-          } else {
-            debugPrint(
-              '[PushService] Failed to register refreshed token (HTTP ${e.statusCode}): ${e.message}',
-            );
-          }
-        } catch (e) {
-          debugPrint(
-            '[PushService] Unexpected error registering refreshed token: $e',
-          );
-        }
-      });
-    } catch (e) {
-      debugPrint('[PushService] FirebasePushService register error: $e');
+        });
+      }
+    } catch (e, s) {
+      debugPrint('[PushService] Error during registration: $e, stack: $s');
     }
   }
 
@@ -342,9 +379,9 @@ class FirebasePushService implements PushService {
           );
           await _apiClient.delete('/notifications/tokens/$deviceTokenId');
           debugPrint('[PushService] Token revoked on backend successfully.');
-        } catch (e) {
+        } catch (e, s) {
           debugPrint(
-            '[PushService] Warning: Failed to revoke token on backend: $e',
+            '[PushService] Warning: Failed to revoke token on backend: $e, stack: $s',
           );
         }
         await _tokenStorage.deleteCustom(_registeredTokenIdKey);
@@ -354,13 +391,13 @@ class FirebasePushService implements PushService {
           await FirebaseMessaging.instance.deleteToken();
           debugPrint('[PushService] Firebase messaging token deleted locally.');
         }
-      } catch (e) {
+      } catch (e, s) {
         debugPrint(
-          '[PushService] Warning: Failed to delete FCM token locally: $e',
+          '[PushService] Warning: Failed to delete FCM token locally: $e, stack: $s',
         );
       }
-    } catch (e) {
-      debugPrint('[PushService] FirebasePushService unregister error: $e');
+    } catch (e, s) {
+      debugPrint('[PushService] Error during unregister: $e, stack: $s');
     }
   }
 }
