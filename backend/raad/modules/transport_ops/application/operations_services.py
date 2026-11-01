@@ -542,16 +542,14 @@ class DailyOperationsApplicationService:
                 str(s.id): s for s in await uow.staff.list_by_ids([str(a.staff_id) for a in crew_rows])
             }
             coverage.staff.update(crew_staff)
-            routes = {}
-            for route_id in {str(t.route_id) for t in trips}:
-                route = await uow.routes.get(RouteId(route_id))
-                if route is not None:
-                    routes[route_id] = route.name
-            role_names = {}
-            for role_id in {str(a.role_id) for a in crew_rows if a.role_id}:
-                role = await uow.staff_roles.get(TransportStaffRoleId(role_id))
-                if role is not None:
-                    role_names[role_id] = role.name
+            trips_route_ids = [RouteId(rid) for rid in {str(t.route_id) for t in trips}]
+            routes = {str(r.id): r.name for r in await uow.routes.list_by_ids(trips_route_ids)}
+            org_id = str(trips[0].organization_id) if trips else (str(crew_rows[0].organization_id) if crew_rows else None)
+            if org_id:
+                org_roles = await uow.staff_roles.list_for_organization(org_id)
+                role_names = {str(r.id): r.name for r in org_roles}
+            else:
+                role_names = {}
             substitute_ids = {str(c.substitute_staff_id) for c in coverage.covers if c.covers(day)}
             coverage.staff.update(
                 {str(s.id): s for s in await uow.staff.list_by_ids(sorted(substitute_ids))}
@@ -840,11 +838,9 @@ class DailyOperationsApplicationService:
     ) -> list[TimetableEntryDTO]:
         drivers = {str(d.id): d for d in await uow.drivers.list_by_ids([str(e.default_driver_id) for e in entries])}
         staff = {str(s.id): s for s in await uow.staff.list_by_ids([str(d.staff_id) for d in drivers.values()])}
-        routes: dict[str, str | None] = {}
-        for entry in entries:
-            if str(entry.route_id) not in routes:
-                route = await uow.routes.get(entry.route_id)
-                routes[str(entry.route_id)] = route.name if route else None
+        route_ids = [entry.route_id for entry in entries]
+        routes_map = {str(r.id): r.name for r in await uow.routes.list_by_ids(route_ids)}
+        routes: dict[str, str | None] = {str(rid): routes_map.get(str(rid)) for rid in route_ids}
         result = []
         for e in entries:
             driver = drivers.get(str(e.default_driver_id))

@@ -515,6 +515,14 @@ export async function getParentFinancialSummary(parentId: string): Promise<Paren
   return toParentFinancialSummary(wire);
 }
 
+/** `GET /school-finance/parents/financial-summaries?parent_ids=...` - batch family-level summaries. */
+export async function getParentFinancialSummariesBatch(parentIds: string[]): Promise<ParentFinancialSummary[]> {
+  if (parentIds.length === 0) return [];
+  const params = new URLSearchParams({ parent_ids: parentIds.join(",") });
+  const wire = await apiRequest<ParentFinancialSummaryWire[]>(`/school-finance/parents/financial-summaries?${params.toString()}`);
+  return wire.map(toParentFinancialSummary);
+}
+
 /** Same two-place-decimal-string formatting as `features/school-erp/api.ts`'s own `formatAmount`
  * — duplicated rather than cross-imported, matching this file's own precedent above. */
 export function formatParentAmount(amount: string, currency: string): string {

@@ -884,13 +884,14 @@ class StudentParentApplicationService:
         async with uow:
             student = await ensure_student_exists(uow, StudentId(query.student_id))
             links = await uow.student_parents.list_by_student(student.id)
+            parents = {
+                str(p.id): p
+                for p in await uow.parents.list_by_ids([str(l.parent_id) for l in links])
+            }
             result: list[ParentForStudentDTO] = []
             for link in links:
-                parent = await uow.parents.get(link.parent_id)
+                parent = parents.get(str(link.parent_id))
                 if parent is None:
-                    # In-context FK guarantees the row exists, but a soft-deleted Parent
-                    # (`deleted_at` set) is filtered out by `get()`'s default read - skip it
-                    # rather than surfacing a confusing partial DTO for a deleted parent.
                     continue
                 result.append(parent_for_student_to_dto(parent, link))
             return result
@@ -901,11 +902,14 @@ class StudentParentApplicationService:
         async with uow:
             parent = await ensure_parent_exists(uow, ParentId(query.parent_id))
             links = await uow.student_parents.list_by_parent(parent.id)
+            students = {
+                str(s.id): s
+                for s in await uow.students.list_by_ids([str(l.student_id) for l in links])
+            }
             result: list[StudentForParentDTO] = []
             for link in links:
-                student = await uow.students.get(link.student_id)
+                student = students.get(str(link.student_id))
                 if student is None:
-                    # Same soft-delete caveat as list_parents_for_student above.
                     continue
                 result.append(student_for_parent_to_dto(student, link))
             return result

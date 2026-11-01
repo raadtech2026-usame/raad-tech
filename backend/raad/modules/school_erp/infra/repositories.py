@@ -1151,6 +1151,18 @@ class SqlAlchemyParentInvoiceRepository(
         rows = (await self._session.execute(statement)).scalars().all()
         return [self._track(row) for row in rows]  # type: ignore[misc]
 
+    async def list_for_parents(self, parent_ids: list[ParentId]) -> list[ParentInvoice]:
+        if not parent_ids:
+            return []
+        statement = self._apply_scope(
+            select(self.model).where(
+                self.model.parent_id.in_([str(pid) for pid in parent_ids]),
+                self.model.deleted_at.is_(None),
+            )
+        ).order_by(self.model.period.desc())
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [self._track(row) for row in rows]  # type: ignore[misc]
+
     async def summarise_totals(
         self, *, period: BillingPeriod | None = None
     ) -> FinanceTotals:

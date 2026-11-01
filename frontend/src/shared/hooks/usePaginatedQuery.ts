@@ -23,6 +23,7 @@ export interface UsePaginatedQueryOptions<T> {
   /** Matches `useQuery`'s own `enabled` — e.g. gate the request on a required parent id
    * existing yet. Defaults to `true`. */
   enabled?: boolean;
+  staleTime?: number;
 }
 
 export interface UsePaginatedQueryResult<T> {
@@ -69,6 +70,7 @@ export function usePaginatedQuery<T>({
   initialSort = null,
   initialFilters = {},
   enabled = true,
+  staleTime = 30_000,
 }: UsePaginatedQueryOptions<T>): UsePaginatedQueryResult<T> {
   const [page, setPageState] = useState(1);
   const [sort, setSort] = useState<SortState | null>(initialSort);
@@ -85,6 +87,7 @@ export function usePaginatedQuery<T>({
     queryFn: () => fetcher(params),
     placeholderData: keepPreviousData,
     enabled,
+    staleTime,
   });
 
   function setPage(next: number): void {

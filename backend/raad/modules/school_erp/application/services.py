@@ -2372,6 +2372,107 @@ class ParentFinanceApplicationService:
     # Family-level all-time summary (2026-09-10 explicit user directive, rewritten for ADR-0042)
     # ==========================================================================================
 
+    async def get_parent_financial_summaries_batch(
+        self,
+        parent_ids: list[str],
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> list[ParentFinancialSummaryDTO]:
+        if not parent_ids:
+            return []
+
+        async with transport_ops_uow:
+            p_ids = [ParentId(pid) for pid in parent_ids]
+            all_links = await transport_ops_uow.student_parents.list_by_parents(p_ids)
+            student_ids = list({str(link.student_id) for link in all_links})
+            students_by_id = {
+                str(s.id): s
+                for s in await transport_ops_uow.students.list_by_ids(student_ids)
+            }
+
+        children_by_parent: dict[str, list[StudentForParentDTO]] = {pid: [] for pid in parent_ids}
+        for link in all_links:
+            pid = str(link.parent_id)
+            student = students_by_id.get(str(link.student_id))
+            if student is not None and pid in children_by_parent:
+                children_by_parent[pid].append(student_for_parent_to_dto(student, link))
+
+        async with school_erp_uow:
+            all_invoices = await school_erp_uow.parent_invoices.list_for_parents(
+                [ParentId(pid) for pid in parent_ids]
+            )
+
+        invoices_by_parent: dict[str, list[ParentInvoice]] = {pid: [] for pid in parent_ids}
+        for inv in all_invoices:
+            pid = str(inv.parent_id)
+            if pid in invoices_by_parent:
+                invoices_by_parent[pid].append(inv)
+
+        results: list[ParentFinancialSummaryDTO] = []
+        for pid in parent_ids:
+            children = children_by_parent.get(pid, [])
+            invoices = invoices_by_parent.get(pid, [])
+            billable = [inv for inv in invoices if inv.status != ParentInvoiceStatus.CANCELLED]
+            currency = billable[0].amount.currency if billable else _PARENT_FINANCE_DEFAULT_CURRENCY
+
+            per_child_due: dict[str, Decimal] = {child.student_id: _ZERO for child in children}
+            per_child_paid: dict[str, Decimal] = {child.student_id: _ZERO for child in children}
+            per_child_count: dict[str, int] = {child.student_id: 0 for child in children}
+            total_due = _ZERO
+            total_paid = _ZERO
+            total_outstanding = _ZERO
+
+            for invoice in billable:
+                total_due += invoice.amount.amount
+                total_paid += invoice.amount_paid
+                total_outstanding += invoice.balance_due
+                for line in invoice.lines:
+                    sid = str(line.student_id)
+                    if sid not in per_child_due:
+                        continue
+                    per_child_due[sid] += line.amount.amount
+                    per_child_paid[sid] += line.amount_paid
+                    per_child_count[sid] += 1
+
+            child_dtos = [
+                ParentChildFinancialDTO(
+                    student_id=child.student_id,
+                    full_name=child.full_name,
+                    status=child.status,
+                    total_due=_money(per_child_due[child.student_id]),
+                    total_paid=_money(per_child_paid[child.student_id]),
+                    outstanding=_money(
+                        max(per_child_due[child.student_id] - per_child_paid[child.student_id], _ZERO)
+                    ),
+                    invoice_count=per_child_count[child.student_id],
+                )
+                for child in children
+            ]
+
+            if total_due <= _ZERO:
+                summary_status = "no_invoices"
+            elif total_paid <= _ZERO:
+                summary_status = "unpaid"
+            elif total_paid >= total_due:
+                summary_status = "paid"
+            else:
+                summary_status = "partially_paid"
+
+            results.append(
+                ParentFinancialSummaryDTO(
+                    parent_id=pid,
+                    currency=currency,
+                    total_due=_money(total_due),
+                    total_paid=_money(total_paid),
+                    outstanding=_money(total_outstanding),
+                    status=summary_status,
+                    children=child_dtos,
+                )
+            )
+
+        return results
+
     async def get_parent_financial_summary(
         self,
         parent_id: str,

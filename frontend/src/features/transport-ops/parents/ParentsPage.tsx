@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Contact, Navigation, Pencil, Plus, Receipt, Search, UserMinus, UserPlus, Wallet } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
@@ -35,6 +35,7 @@ import {
   getFamilyFees,
   getParentBillingProfile,
   getParentFinancialSummary,
+  getParentFinancialSummariesBatch,
   linkStudentToParent,
   listOrganizationsForPicker,
   getParentInvoiceDetail,
@@ -600,25 +601,24 @@ export function ParentsPage() {
     return map;
   }, [organizationsLookup.data]);
 
-  // Bounded to the current page's rows only — see this component's own docstring.
-  const financialQueries = useQueries({
-    queries: rows.map((row) => ({
-      queryKey: ["parents", "financial-summary", row.id],
-      queryFn: () => getParentFinancialSummary(row.id),
-      staleTime: 15_000,
-    })),
+  // Bounded to the current page's rows only - fetched in a single batch request
+  const parentIds = useMemo(() => rows.map((r) => r.id), [rows]);
+  const financialBatchQuery = useQuery({
+    queryKey: ["parents", "financial-summaries-batch", parentIds],
+    queryFn: () => getParentFinancialSummariesBatch(parentIds),
+    enabled: parentIds.length > 0,
+    staleTime: 30_000,
   });
 
   const financialByParentId = useMemo(() => {
     const map = new Map<string, ParentFinancialSummary>();
-    rows.forEach((row, index) => {
-      const data = financialQueries[index]?.data;
-      if (data) {
-        map.set(row.id, data);
+    if (financialBatchQuery.data) {
+      for (const summary of financialBatchQuery.data) {
+        map.set(summary.parentId, summary);
       }
-    });
+    }
     return map;
-  }, [rows, financialQueries]);
+  }, [financialBatchQuery.data]);
 
   const visibleRows = useMemo(() => {
     if (paymentFilter === "all") {

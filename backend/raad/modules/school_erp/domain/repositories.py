@@ -482,6 +482,11 @@ class ParentInvoiceRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_for_parents(self, parent_ids: list[ParentId]) -> list[ParentInvoice]:
+        """Every invoice for the given parents, newest period first."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def summarise_totals(self, *, period: BillingPeriod | None = None) -> FinanceTotals:
         """Reuses `FinanceTotals` (above) unchanged — same shape `StudentInvoiceRepository`
         already returns, so `application/queries.finance_totals_to_dto` needs no change to read

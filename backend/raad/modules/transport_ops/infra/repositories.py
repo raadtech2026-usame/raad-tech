@@ -481,6 +481,15 @@ class SqlAlchemyStudentParentRepository(StudentParentRepository):
         result = await self._session.execute(statement)
         return [self._track(row) for row in result.scalars().all()]
 
+    async def list_by_parents(self, parent_ids: list[ParentId]) -> list[StudentParent]:
+        if not parent_ids:
+            return []
+        statement = select(StudentParentModel).where(
+            StudentParentModel.parent_id.in_([str(pid) for pid in parent_ids])
+        )
+        result = await self._session.execute(statement)
+        return [self._track(row) for row in result.scalars().all()]
+
     async def list_by_students(self, student_ids: list[StudentId]) -> list[StudentParent]:
         """ADR-0041 §1. `student_id IN (...)` short-circuits to an empty list for an empty
         input — SQLAlchemy renders `IN ()` as a query that never matches, which works but is
@@ -662,6 +671,17 @@ class SqlAlchemyRouteRepository(SqlAlchemyRepositoryBase[RouteModel], RouteRepos
         model = route_to_model(route)
         super().add(model)
         self._tracked[str(route.id)] = (route, model)
+
+    async def list_by_ids(self, route_ids: list[RouteId]) -> list[Route]:
+        if not route_ids:
+            return []
+        statement = select(RouteModel).where(
+            RouteModel.id.in_([str(rid) for rid in route_ids]),
+            RouteModel.deleted_at.is_(None),
+        )
+        statement = self._apply_scope(statement)
+        result = await self._session.execute(statement)
+        return [model_to_route(row) for row in result.scalars().all()]
 
     async def list_all(self) -> list[Route]:
         rows = await self.list_scoped()

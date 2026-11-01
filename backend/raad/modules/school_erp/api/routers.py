@@ -1014,6 +1014,28 @@ def _parent_financial_summary_response(
 
 
 @school_finance_router.get(
+    "/parents/financial-summaries",
+    response_model=list[ParentFinancialSummaryResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Batch parent financial summaries across multiple parents",
+)
+async def get_parent_financial_summaries_batch(
+    parent_ids: str = Query(..., description="Comma-separated parent IDs"),
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.parent_invoices.list"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[ParentFinancialSummaryResponse]:
+    ids = [pid.strip() for pid in parent_ids.split(",") if pid.strip()]
+    dtos = await service.get_parent_financial_summaries_batch(
+        ids, school_erp_uow=school_erp_uow, transport_ops_uow=transport_ops_uow
+    )
+    return [_parent_financial_summary_response(dto) for dto in dtos]
+
+
+@school_finance_router.get(
     "/parents/{parent_id}/summary",
     response_model=ParentFinancialSummaryResponse,
     status_code=status.HTTP_200_OK,

@@ -135,6 +135,9 @@ class StudentModel(AuditedTableMixin, Base):
     """`students` (Database Design §6.2): a student enrolled with an organization."""
 
     __tablename__ = "students"
+    __table_args__ = (
+        Index("ix_students__organization_id_full_name", "organization_id", "full_name"),
+    )
 
     organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
     full_name: Mapped[str] = mapped_column(VARCHAR(200), nullable=False)
@@ -161,6 +164,9 @@ class ParentModel(AuditedTableMixin, Base):
     """
 
     __tablename__ = "parents"
+    __table_args__ = (
+        Index("ix_parents__organization_id_full_name", "organization_id", "full_name"),
+    )
 
     organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
     user_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
@@ -373,6 +379,12 @@ class StudentAssignmentModel(AuditedTableMixin, Base):
         Index(
             "ix_student_assignments__student_id_status",
             "student_id",
+            "status",
+        ),
+        Index(
+            "ix_student_assignments__route_vehicle_status",
+            "route_id",
+            "vehicle_id",
             "status",
         ),
     )

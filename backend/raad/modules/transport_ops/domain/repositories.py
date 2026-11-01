@@ -262,6 +262,11 @@ class StudentParentRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_by_parents(self, parent_ids: list[ParentId]) -> list[StudentParent]:
+        """Bulk query resolving many parents to their student links at once."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def list_by_students(self, student_ids: list[StudentId]) -> list[StudentParent]:
         """ADR-0041 §1 — one bulk `student_id IN (...)` query resolving many students to their
         parent links at once, for the Parent Invoice read model (grouping a whole organization's
@@ -344,6 +349,11 @@ class RouteRepository(ABC):
     @abstractmethod
     def add(self, route: Route) -> None:
         """Persistence of changes is flushed by the Unit of Work, not the repository (§7.1)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_by_ids(self, route_ids: list[RouteId]) -> list[Route]:
+        """A single scoped WHERE id IN (...) lookup for multiple routes."""
         raise NotImplementedError
 
     @abstractmethod
