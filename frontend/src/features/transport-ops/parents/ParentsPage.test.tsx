@@ -15,6 +15,7 @@ vi.mock("./api", () => ({
   listOrganizationsForPicker: vi.fn(),
   findParentByExactPhone: vi.fn(),
   getParentFinancialSummary: vi.fn(),
+  getParentFinancialSummariesBatch: vi.fn(),
   getParentBillingProfile: vi.fn(),
   getFamilyFees: vi.fn(),
   setStudentBillingFee: vi.fn(),
@@ -107,6 +108,7 @@ describe("ParentsPage", () => {
     vi.mocked(api.unlinkStudentFromParent).mockReset();
     vi.mocked(api.findParentByExactPhone).mockReset().mockResolvedValue(null);
     vi.mocked(api.getParentFinancialSummary).mockReset().mockResolvedValue(NO_INVOICES_SUMMARY);
+    vi.mocked(api.getParentFinancialSummariesBatch).mockReset().mockResolvedValue([NO_INVOICES_SUMMARY]);
     vi.mocked(api.getParentBillingProfile).mockReset().mockResolvedValue(null);
     vi.mocked(api.getFamilyFees).mockReset().mockResolvedValue({
       parentId: PARENT_SUMMARY.id, monthlyTotal: "0.00", currency: null, unpricedActiveStudents: 0, students: [],
@@ -155,18 +157,20 @@ describe("ParentsPage", () => {
   });
 
   it("shows per-row financial columns fetched from the family financial summary", async () => {
-    vi.mocked(api.listParents).mockResolvedValue(pageOf([PARENT_SUMMARY], 1));
-    vi.mocked(api.getParentFinancialSummary).mockResolvedValue({
+    const summary = {
       ...NO_INVOICES_SUMMARY,
       totalDue: "60.00",
       totalPaid: "30.00",
       outstanding: "30.00",
-      status: "partially_paid",
+      status: "partially_paid" as const,
       children: [
         { studentId: "s1", fullName: "Mohamed", status: "active", totalDue: "30.00", totalPaid: "30.00", outstanding: "0.00", invoiceCount: 1 },
         { studentId: "s2", fullName: "Aisha", status: "active", totalDue: "30.00", totalPaid: "0.00", outstanding: "30.00", invoiceCount: 1 },
       ],
-    });
+    };
+    vi.mocked(api.listParents).mockResolvedValue(pageOf([PARENT_SUMMARY], 1));
+    vi.mocked(api.getParentFinancialSummary).mockResolvedValue(summary);
+    vi.mocked(api.getParentFinancialSummariesBatch).mockResolvedValue([summary]);
 
     renderPage();
     await waitFor(() => expect(screen.getByText("Fatima Ali")).toBeInTheDocument());
