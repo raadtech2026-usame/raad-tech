@@ -16,6 +16,10 @@
 
 set -eu
 
+if [ -d "/usr/lib/postgresql/16/bin" ] && [ "${PATH#*/usr/lib/postgresql/16/bin}" = "$PATH" ]; then
+  export PATH="/usr/lib/postgresql/16/bin:$PATH"
+fi
+
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
 BACKUP_SH="$REPO_ROOT/scripts/db/backup.sh"
@@ -41,6 +45,34 @@ trap cleanup EXIT INT TERM
 echo "[test] creating throwaway databases: $DRILL_DB, $RESTORE_DB"
 createdb "$DRILL_DB"
 createdb "$RESTORE_DB"
+
+echo "[test] verifying PostgreSQL client and server version compatibility"
+PG_DUMP_VER="$(pg_dump --version)"
+PG_RESTORE_VER="$(pg_restore --version)"
+PSQL_VER="$(psql --version)"
+echo "[test] pg_dump: $PG_DUMP_VER"
+echo "[test] pg_restore: $PG_RESTORE_VER"
+echo "[test] psql: $PSQL_VER"
+
+PG_DUMP_MAJOR="$(echo "$PG_DUMP_VER" | sed -E 's/.*PostgreSQL[^0-9]*([0-9]+).*/\1/')"
+PG_RESTORE_MAJOR="$(echo "$PG_RESTORE_VER" | sed -E 's/.*PostgreSQL[^0-9]*([0-9]+).*/\1/')"
+
+SERVER_NUM="$(psql -v ON_ERROR_STOP=1 -d "$DRILL_DB" -tAc "SHOW server_version_num;")"
+SERVER_VER="$(psql -v ON_ERROR_STOP=1 -d "$DRILL_DB" -tAc "SHOW server_version;")"
+SERVER_MAJOR=$((SERVER_NUM / 10000))
+echo "[test] server_version: $SERVER_VER (major: $SERVER_MAJOR)"
+
+if [ "$PG_DUMP_MAJOR" != "$SERVER_MAJOR" ]; then
+  echo "[test] FAIL: pg_dump major version ($PG_DUMP_MAJOR) does not match target server major version ($SERVER_MAJOR)" >&2
+  exit 1
+fi
+
+if [ "$PG_RESTORE_MAJOR" != "$SERVER_MAJOR" ]; then
+  echo "[test] FAIL: pg_restore major version ($PG_RESTORE_MAJOR) does not match target server major version ($SERVER_MAJOR)" >&2
+  exit 1
+fi
+
+echo "[test] version check passed: pg_dump, pg_restore, and PostgreSQL server are all major version $SERVER_MAJOR"
 
 echo "[test] seeding marker row into $DRILL_DB"
 psql -v ON_ERROR_STOP=1 -d "$DRILL_DB" \

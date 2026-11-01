@@ -14,6 +14,10 @@
 
 set -eu
 
+if [ -d "/usr/lib/postgresql/16/bin" ] && [ "${PATH#*/usr/lib/postgresql/16/bin}" = "$PATH" ]; then
+  export PATH="/usr/lib/postgresql/16/bin:$PATH"
+fi
+
 TARGET_URL=""
 CONFIRMED=0
 DUMP_FILE=""

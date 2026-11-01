@@ -25,10 +25,14 @@ on:
     branches: [main]
     paths:
       - "backend/**"
+      - "scripts/db/**"
+      - "testing/backups/**"
       - ".github/workflows/backend-pipeline.yml"
   pull_request:
     paths:
       - "backend/**"
+      - "scripts/db/**"
+      - "testing/backups/**"
       - ".github/workflows/backend-pipeline.yml"
 
 jobs:
@@ -125,5 +129,6 @@ jobs:
           PGPASSWORD: raad
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends postgresql-client
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
           sh testing/backups/test_backup_restore.sh

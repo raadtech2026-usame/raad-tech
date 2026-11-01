@@ -17,6 +17,10 @@
 
 set -eu
 
+if [ -d "/usr/lib/postgresql/16/bin" ] && [ "${PATH#*/usr/lib/postgresql/16/bin}" = "$PATH" ]; then
+  export PATH="/usr/lib/postgresql/16/bin:$PATH"
+fi
+
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 TARGET_URL="${1:-${BACKUP_DATABASE_URL:-}}"
