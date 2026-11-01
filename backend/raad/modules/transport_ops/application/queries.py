@@ -120,7 +120,7 @@ def student_to_dto(student: Student) -> StudentDTO:
         organization_id=str(student.organization_id),
         full_name=student.full_name,
         external_ref=student.external_ref,
-        status=student.status.value if hasattr(student.status, "value") else str(student.status),
+        status=student.status.value,
         created_at=student.created_at,
         updated_at=student.updated_at,
         date_of_birth=student.date_of_birth,
@@ -135,7 +135,7 @@ def student_to_summary_dto(student: Student) -> StudentSummaryDTO:
     return StudentSummaryDTO(
         id=str(student.id),
         full_name=student.full_name,
-        status=student.status.value if hasattr(student.status, "value") else str(student.status),
+        status=student.status.value,
     )
 
 
@@ -295,7 +295,7 @@ def student_for_parent_to_dto(
     return StudentForParentDTO(
         student_id=str(student.id),
         full_name=student.full_name,
-        status=student.status.value if hasattr(student.status, "value") else str(student.status),
+        status=student.status.value,
         relationship=link.relationship,
         is_primary=link.is_primary,
         date_of_birth=student.date_of_birth,

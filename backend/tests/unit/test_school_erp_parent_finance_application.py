@@ -351,12 +351,30 @@ class FakeStudentParentApplicationService:
         return list(self._children_by_parent.get(query.parent_id, []))
 
 
+class _FakeStudentStatus:
+    def __init__(self, value: str = "active") -> None:
+        self.value = value
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _FakeStudentStatus):
+            return self.value == other.value
+        return self.value == other
+
+    def __str__(self) -> str:
+        return self.value
+
+
 @dataclass
 class FakeStudent:
     id: str
     organization_id: str
     full_name: str
-    status: str = "active"
+    status: Any = "active"
+    date_of_birth: date | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.status, str):
+            self.status = _FakeStudentStatus(self.status)
 
 
 class FakeStudentApplicationService:
