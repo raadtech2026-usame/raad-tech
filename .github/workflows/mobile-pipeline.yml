@@ -33,6 +33,9 @@ on:
       - "mobile/**"
       - ".github/workflows/mobile-pipeline.yml"
 
+permissions:
+  contents: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -75,3 +78,18 @@ jobs:
         with:
           name: raad-tech-mobile-apk
           path: mobile/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Publish Latest Release APK
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest build/app/outputs/flutter-apk/app-release.apk --clobber
+            gh release edit latest --target "${{ github.sha }}" --title "RAAD Mobile App (Latest Build)" --notes "Automated release updated on $(date -u +'%Y-%m-%d %H:%M UTC') from commit ${{ github.sha }}."
+          else
+            gh release create latest build/app/outputs/flutter-apk/app-release.apk \
+              --target "${{ github.sha }}" \
+              --title "RAAD Mobile App (Latest Build)" \
+              --notes "Automated release updated on $(date -u +'%Y-%m-%d %H:%M UTC') from commit ${{ github.sha }}."
+          fi || echo "Warning: GitHub release update failed, artifact remains available in workflow run."
