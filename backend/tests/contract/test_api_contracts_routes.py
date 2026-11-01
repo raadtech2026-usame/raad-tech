@@ -470,6 +470,11 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/school-finance/parents/{parent_id}/summary",
         "2026-09-10 parent finance - family-level sum across a parent's own children",
     ),
+    (
+        "GET",
+        "/api/v1/school-finance/parents/financial-summaries",
+        "2026-09-10 parent finance - batch family-level summary across multiple parents",
+    ),
     # ADR-0042 (2026-09-11, supersedes ADR-0041 SS1) - ParentBillingProfile + ParentInvoice are
     # real aggregates now, not a StudentInvoice-grouping read model. New permission namespace
     # (school_erp.parent_billing_profiles.*/.parent_invoices.*, migration a9c73e5f0b8d). The old

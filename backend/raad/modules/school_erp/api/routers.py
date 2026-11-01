@@ -1028,6 +1028,12 @@ async def get_parent_financial_summaries_batch(
     school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
     transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> list[ParentFinancialSummaryResponse]:
+    """Batch-fetch family-level financial summaries across multiple parents.
+
+    Resolves family-level balances (total due, paid, outstanding, and per-child status)
+    for multiple parents in a single round-trip, eliminating N+1 query waterfalls
+    during parent list rendering. Requires `school_erp.parent_invoices.list`.
+    """
     ids = [pid.strip() for pid in parent_ids.split(",") if pid.strip()]
     dtos = await service.get_parent_financial_summaries_batch(
         ids, school_erp_uow=school_erp_uow, transport_ops_uow=transport_ops_uow
