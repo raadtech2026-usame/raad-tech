@@ -47,6 +47,26 @@ class Env {
     'MAPBOX_ACCESS_TOKEN',
   );
 
+  /// Optional Firebase configuration passed with `--dart-define` for environments
+  /// where native google-services.json / GoogleService-Info.plist is not bundled.
+  static const String firebaseApiKey = String.fromEnvironment(
+    'FIREBASE_API_KEY',
+  );
+  static const String firebaseAppId = String.fromEnvironment(
+    'FIREBASE_APP_ID',
+  );
+  static const String firebaseMessagingSenderId = String.fromEnvironment(
+    'FIREBASE_MESSAGING_SENDER_ID',
+  );
+  static const String firebaseProjectId = String.fromEnvironment(
+    'FIREBASE_PROJECT_ID',
+  );
+
+  static bool get hasFirebaseConfig =>
+      firebaseApiKey.isNotEmpty &&
+      firebaseAppId.isNotEmpty &&
+      firebaseProjectId.isNotEmpty;
+
   static const bool isRelease = bool.fromEnvironment('dart.vm.product');
 
   static bool get hasMap => mapboxAccessToken.isNotEmpty;

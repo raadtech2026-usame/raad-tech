@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../network/api_client.dart';
@@ -60,6 +61,14 @@ class AuthController extends StateNotifier<AuthState> {
         if (cached != null) {
           _apiClient.setAccessToken(cached.accessToken);
           state = AuthAuthenticated(cached);
+          debugPrint(
+            '[AuthController] Restored session from cache for user ${cached.principal.userId}. Triggering push registration...',
+          );
+          _push.register().catchError((error) {
+            debugPrint(
+              '[AuthController] Push registration on cached session restore failed: $error',
+            );
+          });
           return;
         }
         state = const AuthUnauthenticated();
@@ -67,11 +76,19 @@ class AuthController extends StateNotifier<AuthState> {
       }
       await _tokenStorage.clear();
       state = const AuthUnauthenticated();
-    } catch (_) {
+    } catch (e) {
       final cached = await _tokenStorage.readSession();
       if (cached != null) {
         _apiClient.setAccessToken(cached.accessToken);
         state = AuthAuthenticated(cached);
+        debugPrint(
+          '[AuthController] Restored session from fallback cache for user ${cached.principal.userId}. Triggering push registration...',
+        );
+        _push.register().catchError((error) {
+          debugPrint(
+            '[AuthController] Push registration on fallback session restore failed: $error',
+          );
+        });
         return;
       }
       await _tokenStorage.clear();
@@ -110,6 +127,23 @@ class AuthController extends StateNotifier<AuthState> {
     await _applySession(session);
   }
 
+  /// Public method to explicitly trigger push token registration.
+  Future<void> registerPushToken() async {
+    final current = state;
+    if (current is AuthAuthenticated) {
+      debugPrint(
+        '[AuthController] Explicit push registration requested for user ${current.session.principal.userId}.',
+      );
+      try {
+        await _push.register();
+      } catch (e) {
+        debugPrint(
+          '[AuthController] Explicit push registration failed: $e',
+        );
+      }
+    }
+  }
+
   /// Replaces the temporary password. The server clears its flag; the session in hand is
   /// updated to match so the app moves on without a second login.
   Future<void> changePassword(String newPassword) async {
@@ -135,7 +169,9 @@ class AuthController extends StateNotifier<AuthState> {
   Future<void> logout() async {
     final current = state;
     if (current is AuthAuthenticated) {
-      await _push.unregister().catchError((_) {});
+      await _push.unregister().catchError((e) {
+        debugPrint('[AuthController] Push unregister failed on logout: $e');
+      });
       try {
         await _authRepository.logout(current.session.refreshToken);
       } catch (_) {
@@ -159,7 +195,14 @@ class AuthController extends StateNotifier<AuthState> {
     final wasSignedIn = state is AuthAuthenticated;
     state = AuthAuthenticated(session);
     if (!wasSignedIn) {
-      _push.register().catchError((_) {});
+      debugPrint(
+        '[AuthController] Sign-in complete for user ${session.principal.userId}. Triggering push registration...',
+      );
+      _push.register().catchError((error) {
+        debugPrint(
+          '[AuthController] Push registration failed post-login: $error',
+        );
+      });
     }
   }
 }

@@ -47,6 +47,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             identifier: _identifierController.text.trim(),
             password: _passwordController.text,
           );
+      debugPrint(
+        '[LoginScreen] Login completed successfully; push registration triggered via auth controller.',
+      );
     } catch (error) {
       if (mounted) setState(() => _errorMessage = errorMessage(error, s));
     } finally {
