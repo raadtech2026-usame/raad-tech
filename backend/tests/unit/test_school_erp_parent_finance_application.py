@@ -254,7 +254,49 @@ class FakeSchoolErpUnitOfWork:
         pass
 
 
+class FakeStudentLink:
+    def __init__(self, parent_id: str, student_id: str, relationship: str = "parent", is_primary: bool = True) -> None:
+        self.parent_id = parent_id
+        self.student_id = student_id
+        self.relationship = relationship
+        self.is_primary = is_primary
+
+
+class FakeStudentParentRepo:
+    def __init__(self, children_by_parent: dict[str, list[Any]] | None = None) -> None:
+        self.children_by_parent = children_by_parent or {}
+
+    async def list_by_parents(self, parent_ids: list[Any]) -> list[FakeStudentLink]:
+        links = []
+        for pid in parent_ids:
+            for child in self.children_by_parent.get(str(pid), []):
+                links.append(
+                    FakeStudentLink(
+                        parent_id=str(pid),
+                        student_id=child.student_id,
+                        relationship="parent",
+                        is_primary=child.is_primary,
+                    )
+                )
+        return links
+
+
+class FakeStudentRepo:
+    def __init__(self, students: dict[str, Any] | None = None) -> None:
+        self.students = students or {}
+
+    async def list_by_ids(self, student_ids: list[str]) -> list[Any]:
+        return [self.students[sid] for sid in student_ids if sid in self.students]
+
+
 class FakeTransportOpsUnitOfWork:
+    def __init__(
+        self,
+        children_by_parent: dict[str, list[Any]] | None = None,
+        students: dict[str, Any] | None = None,
+    ) -> None:
+        self.student_parents = FakeStudentParentRepo(children_by_parent)
+        self.students = FakeStudentRepo(students)
     """A no-op stand-in — every call site that takes this parameter only forwards it to a fake
     `ParentApplicationService`/`StudentParentApplicationService` method below, neither of which
     actually reads it."""
@@ -393,7 +435,10 @@ class _Base(unittest.IsolatedAsyncioTestCase):
             students=self.students,
         )
         self.school_erp_uow = FakeSchoolErpUnitOfWork()
-        self.transport_ops_uow = FakeTransportOpsUnitOfWork()
+        self.transport_ops_uow = FakeTransportOpsUnitOfWork(
+            children_by_parent=self.children,
+            students=self.students,
+        )
         self.actor = make_actor()
 
     async def _set_fee(self, student_id: str, fee: str, *, currency: str = "USD"):
@@ -928,6 +973,50 @@ class FinancialSummaryTests(_Base):
                 school_erp_uow=self.school_erp_uow,
                 transport_ops_uow=self.transport_ops_uow,
             )
+
+
+    async def test_batch_summaries_resolves_multiple_parents_correctly(self) -> None:
+        await self._open_profile(PARENT_A, per_child="40.00")
+        await self._open_profile(PARENT_B, per_child="50.00")
+        (invoice_a, invoice_b) = await self._generate(period="2026-09")
+        await self._pay(invoice_a.id, "40.00", allocations={STUDENT_A1: "40.00"})
+
+        summaries = await self.service.get_parent_financial_summaries_batch(
+            [PARENT_A, PARENT_B],
+            school_erp_uow=self.school_erp_uow,
+            transport_ops_uow=self.transport_ops_uow,
+        )
+        self.assertEqual(len(summaries), 2)
+        by_parent = {s.parent_id: s for s in summaries}
+
+        # Parent A: 2 children, 80 due, 40 paid, partially_paid
+        summary_a = by_parent[PARENT_A]
+        self.assertEqual(summary_a.total_due, "80.00")
+        self.assertEqual(summary_a.total_paid, "40.00")
+        self.assertEqual(summary_a.outstanding, "40.00")
+        self.assertEqual(summary_a.status, "partially_paid")
+        self.assertEqual(len(summary_a.children), 2)
+        children_a = {c.student_id: c for c in summary_a.children}
+        self.assertEqual(children_a[STUDENT_A1].total_paid, "40.00")
+        self.assertEqual(children_a[STUDENT_A1].outstanding, "0.00")
+        self.assertEqual(children_a[STUDENT_A2].total_paid, "0.00")
+        self.assertEqual(children_a[STUDENT_A2].outstanding, "40.00")
+
+        # Parent B: 1 child, 50 due, 0 paid, unpaid
+        summary_b = by_parent[PARENT_B]
+        self.assertEqual(summary_b.total_due, "50.00")
+        self.assertEqual(summary_b.total_paid, "0.00")
+        self.assertEqual(summary_b.outstanding, "50.00")
+        self.assertEqual(summary_b.status, "unpaid")
+        self.assertEqual(len(summary_b.children), 1)
+
+    async def test_batch_summaries_empty_list_returns_empty(self) -> None:
+        summaries = await self.service.get_parent_financial_summaries_batch(
+            [],
+            school_erp_uow=self.school_erp_uow,
+            transport_ops_uow=self.transport_ops_uow,
+        )
+        self.assertEqual(summaries, [])
 
 
 class ListParentInvoicesTests(_Base):

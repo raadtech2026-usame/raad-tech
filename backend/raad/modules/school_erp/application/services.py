@@ -124,6 +124,7 @@ from raad.modules.transport_ops.application.queries import (
     ListParentsForStudentQuery,
     ListStudentsForParentQuery,
     StudentForParentDTO,
+    student_for_parent_to_dto,
 )
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
