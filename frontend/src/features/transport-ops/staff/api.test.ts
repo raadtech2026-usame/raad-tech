@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../shared/api/client", () => ({
   apiRequest: vi.fn(),
+  configureAuthTokenGetter: vi.fn(),
+  configureUnauthorizedHandler: vi.fn(),
 }));
 
 import { apiRequest } from "../../../shared/api/client";
