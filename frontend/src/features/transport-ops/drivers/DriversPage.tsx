@@ -19,7 +19,7 @@ import { Button } from "../../../shared/components/Button/Button";
 import { Input } from "../../../shared/components/Input/Input";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { CreateDriverForm } from "./CreateDriverForm";
-import { listStaffDocuments, downloadStaffDocumentAttachment } from "../staff/api";
+import { listStaffDocuments, downloadStaffDocumentAttachment, type StaffDocument } from "../staff/api";
 import {
   getDriver,
   listDrivers,
@@ -111,6 +111,12 @@ export function DriversPage() {
     queryKey: ["drivers", "detail", selectedDriver?.id],
     queryFn: () => getDriver(selectedDriver!.id),
     enabled: selectedDriver !== null,
+  });
+
+  const driverDocsQuery = useQuery({
+    queryKey: ["transport-staff", "documents", selectedDriver?.staffId],
+    queryFn: () => listStaffDocuments(selectedDriver!.staffId),
+    enabled: Boolean(selectedDriver?.staffId),
   });
 
   const organizationsLookup = useQuery({
@@ -285,13 +291,17 @@ export function DriversPage() {
               </div>
               {driverDocsQuery.isLoading ? (
                 <Skeleton height={36} />
+              ) : driverDocsQuery.isError ? (
+                <div style={{ fontSize: "var(--text-sm)", color: "var(--color-text-muted)" }}>
+                  Could not load identity documents.
+                </div>
               ) : (driverDocsQuery.data ?? []).length === 0 ? (
                 <div style={{ fontSize: "var(--text-sm)", color: "var(--color-text-muted)" }}>
                   No identity documents attached.
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-                  {(driverDocsQuery.data ?? []).map((doc) => (
+                  {(driverDocsQuery.data ?? []).map((doc: StaffDocument) => (
                     <div
                       key={doc.id}
                       style={{

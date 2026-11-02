@@ -12,6 +12,7 @@ import {
   grantDriverAccess,
   listCrew,
   listExpiringDocuments,
+  downloadStaffDocumentAttachment,
   listStaffRoles,
   recordStaffDocument,
   updateStaff,
@@ -212,6 +213,47 @@ describe("transport staff api", () => {
       "/transport-staff-roles",
       "/transport-staff-roles?organization_id=org%201",
     ]);
+  });
+});
+
+describe("downloadStaffDocumentAttachment", () => {
+  it("opens attachment blob in a new tab when request succeeds", async () => {
+    const originalOpen = window.open;
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    const originalFetch = globalThis.fetch;
+
+    window.open = vi.fn();
+    URL.createObjectURL = vi.fn().mockReturnValue("blob:mock-url");
+    URL.revokeObjectURL = vi.fn();
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      blob: vi.fn().mockResolvedValueOnce(new Blob(["test-data"])),
+    } as unknown as Response);
+
+    await downloadStaffDocumentAttachment("doc-456");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/staff-documents/doc-456/attachment"),
+      expect.anything(),
+    );
+    expect(window.open).toHaveBeenCalledWith("blob:mock-url", "_blank");
+
+    window.open = originalOpen;
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+    globalThis.fetch = originalFetch;
+  });
+
+  it("rejects with server message when request fails", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      json: vi.fn().mockResolvedValueOnce({ error: { message: "File missing" } }),
+    } as unknown as Response);
+
+    await expect(downloadStaffDocumentAttachment("missing-doc")).rejects.toThrow("File missing");
+    globalThis.fetch = originalFetch;
   });
 });
 

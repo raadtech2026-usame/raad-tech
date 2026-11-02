@@ -11,9 +11,15 @@ vi.mock("./api", () => ({
   registerDriver: vi.fn(),
   updateDriverStatus: vi.fn(),
   listOrganizationsForPicker: vi.fn(),
+});
+
+vi.mock("../staff/api", () => ({
+  listStaffDocuments: vi.fn().mockResolvedValue([]),
+  downloadStaffDocumentAttachment: vi.fn().mockResolvedValue(undefined),
 }));
 
 import * as api from "./api";
+import * as staffApi from "../staff/api";
 import { useAuthStore } from "../../../shared/stores/authStore";
 import { DriversPage } from "./DriversPage";
 
@@ -63,6 +69,8 @@ describe("DriversPage", () => {
     vi.mocked(api.listDrivers).mockReset();
     vi.mocked(api.getDriver).mockReset().mockResolvedValue(DRIVER_DETAIL);
     vi.mocked(api.updateDriverStatus).mockReset();
+    vi.mocked(staffApi.listStaffDocuments).mockReset().mockResolvedValue([]);
+    vi.mocked(staffApi.downloadStaffDocumentAttachment).mockReset().mockResolvedValue(undefined);
     vi.mocked(api.listOrganizationsForPicker)
       .mockReset()
       .mockResolvedValue([{ id: "01ARZ3NDEKTSV4RRFFQ69G5FBW", name: "Green Valley School" }]);
@@ -145,5 +153,41 @@ describe("DriversPage", () => {
     await within(dialog).findByText("Green Valley School");
 
     expect(within(dialog).queryByRole("button", { name: "Deactivate" })).not.toBeInTheDocument();
+  });
+
+  it("renders driver identity documents and allows viewing attachments", async () => {
+    vi.mocked(api.listDrivers).mockResolvedValue(pageOf([DRIVER_SUMMARY], 1));
+    vi.mocked(staffApi.listStaffDocuments).mockResolvedValue([
+      {
+        id: "doc-1",
+        staffId: DRIVER_SUMMARY.staffId,
+        typeId: "type-license",
+        typeName: "Driving License",
+        number: "DL-12345",
+        issuedOn: "2024-01-01",
+        expiresOn: "2028-01-01",
+        daysLeft: 500,
+        status: "valid",
+        notes: null,
+        replacedById: null,
+        privateFieldsVisible: true,
+        createdAt: "2024-01-01T00:00:00Z",
+        fileName: "license.pdf",
+        fileContentType: "application/pdf",
+        hasAttachment: true,
+      },
+    ]);
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("DL-00231")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("DL-00231"));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Driving License")).toBeInTheDocument();
+    expect(within(dialog).getByText("license.pdf")).toBeInTheDocument();
+
+    const viewBtn = within(dialog).getByRole("button", { name: /view/i });
+    await userEvent.click(viewBtn);
+    expect(staffApi.downloadStaffDocumentAttachment).toHaveBeenCalledWith("doc-1", "license.pdf");
   });
 });

@@ -10,6 +10,7 @@ vi.mock("./api", () => ({
   changeStaffStatus: vi.fn(),
   listCrew: vi.fn().mockResolvedValue([]),
   listStaffDocuments: vi.fn().mockResolvedValue([]),
+  downloadStaffDocumentAttachment: vi.fn().mockResolvedValue(undefined),
   listVehiclesForPicker: vi.fn().mockResolvedValue([]),
   listExpiringDocuments: vi.fn().mockResolvedValue([]),
   listStaffCompliance: vi.fn().mockResolvedValue([]),
