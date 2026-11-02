@@ -1,8 +1,5 @@
 import {
   forwardRef,
-  useRef,
-  useImperativeHandle,
-  useEffect,
   type InputHTMLAttributes,
   type ChangeEvent,
   type FocusEvent,
@@ -21,7 +18,7 @@ export interface PhoneInputProps
 
 /**
  * Normalizes input so any pasted "+252...", "252...", or "0..." is stripped down
- * to the national digits.
+ * to the national digits for visual display in the input.
  */
 function cleanToNational(val?: string | number | readonly string[]): string {
   if (val === undefined || val === null) return "";
@@ -47,40 +44,6 @@ export const PhoneInput = forwardRef<HTMLInputElement, PhoneInputProps>(
     { value, onChange, onBlur, invalid, className, placeholder = "612345678", ...rest },
     ref,
   ) {
-    const inputRef = useRef<HTMLInputElement | null>(null);
-
-    useImperativeHandle(ref, () => {
-      const el = inputRef.current;
-      if (!el) return {} as HTMLInputElement;
-      return new Proxy(el, {
-        get(target, prop, receiver) {
-          if (prop === "value") {
-            return toE164(target.value);
-          }
-          const val = Reflect.get(target, prop, receiver);
-          return typeof val === "function" ? val.bind(target) : val;
-        },
-        set(target, prop, val, receiver) {
-          if (prop === "value") {
-            target.value = cleanToNational(val);
-            return true;
-          }
-          return Reflect.set(target, prop, val, receiver);
-        },
-      });
-    });
-
-    // If an external reset() or default value set an E.164 string on the DOM element directly,
-    // ensure the displayed text in the input box is the national number.
-    useEffect(() => {
-      if (inputRef.current) {
-        const raw = inputRef.current.value;
-        if (raw.startsWith("+252") || raw.startsWith("252") || raw.startsWith("0")) {
-          inputRef.current.value = cleanToNational(raw);
-        }
-      }
-    });
-
     const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
       const raw = e.target.value;
       const national = cleanToNational(raw);
@@ -136,7 +99,7 @@ export const PhoneInput = forwardRef<HTMLInputElement, PhoneInputProps>(
           +252
         </span>
         <Input
-          ref={inputRef}
+          ref={ref}
           type="tel"
           className={styles.input}
           invalid={invalid}

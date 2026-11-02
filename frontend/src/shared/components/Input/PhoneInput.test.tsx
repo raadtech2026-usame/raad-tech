@@ -40,8 +40,8 @@ describe("PhoneInput", () => {
     });
   });
 
-  describe("Proxy and ref behaviors", () => {
-    it("proxies ref.value getter to return E.164 and setter to clean to national", () => {
+  describe("forwardRef attachment", () => {
+    it("attaches ref directly to the native HTMLInputElement without proxying", () => {
       let refHandle: HTMLInputElement | null = null;
       function TestComponent() {
         const inputRef = useRef<HTMLInputElement | null>(null);
@@ -59,18 +59,12 @@ describe("PhoneInput", () => {
       }
 
       render(<TestComponent />);
-      expect(refHandle).not.null;
-      // Getter returns E.164
-      expect(refHandle!.value).toBe("+252612345678");
-
-      // Setter normalizes to national
-      refHandle!.value = "+252619998877";
-      const input = screen.getByRole("textbox") as HTMLInputElement;
-      expect(input.value).toBe("619998877");
-      expect(refHandle!.value).toBe("+252619998877");
+      expect(refHandle).not.toBeNull();
+      expect(refHandle).toBeInstanceOf(HTMLInputElement);
+      expect(refHandle!.value).toBe("612345678");
     });
 
-    it("allows standard DOM methods through the proxy such as focus() and blur()", () => {
+    it("allows standard DOM methods such as focus() and blur() without illegal invocation", () => {
       const ref = React.createRef<HTMLInputElement>();
       render(<PhoneInput ref={ref} />);
       expect(typeof ref.current?.focus).toBe("function");
