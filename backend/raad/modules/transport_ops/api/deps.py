@@ -22,6 +22,9 @@ from raad.modules.transport_ops.application.services import (
     StudentParentApplicationService,
     TripApplicationService,
 )
+from raad.modules.transport_ops.application.import_services import (
+    ImportApplicationService,
+)
 from raad.modules.transport_ops.application.incident_services import IncidentApplicationService
 from raad.modules.transport_ops.application.operations_services import (
     DailyOperationsApplicationService,
@@ -108,3 +111,9 @@ def get_incident_service(
     container: Container = Depends(get_container),
 ) -> IncidentApplicationService:
     return container.resolve(IncidentApplicationService)
+
+
+def get_import_service(
+    container: Container = Depends(get_container),
+) -> ImportApplicationService:
+    return container.resolve(ImportApplicationService)

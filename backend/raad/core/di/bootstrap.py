@@ -122,6 +122,9 @@ from raad.modules.transport_ops.application.services import (
     StudentParentApplicationService,
     TripApplicationService,
 )
+from raad.modules.transport_ops.application.import_services import (
+    ImportApplicationService,
+)
 from raad.modules.transport_ops.application.incident_services import IncidentApplicationService
 from raad.modules.transport_ops.application.operations_services import (
     DailyOperationsApplicationService,
@@ -327,6 +330,13 @@ def build_container(settings: Settings) -> Container:
     container.bind_singleton(
         StudentApplicationService,
         StudentApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+        ),
+    )
+    container.bind_singleton(
+        ImportApplicationService,
+        ImportApplicationService(
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
         ),
@@ -853,6 +863,14 @@ def build_container(settings: Settings) -> Container:
         container.bind_singleton(
             DriverApplicationService,
             DriverApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
+                user_provisioning=container.resolve(UserProvisioningPort),
+            ),
+        )
+        container.bind_singleton(
+            ImportApplicationService,
+            ImportApplicationService(
                 clock=container.resolve(Clock),
                 id_generator=container.resolve(IdGenerator),
                 user_provisioning=container.resolve(UserProvisioningPort),

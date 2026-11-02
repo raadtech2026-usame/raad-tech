@@ -62,7 +62,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -1049,3 +1049,39 @@ class IncidentResponse(BaseModel):
     created_at: datetime
     notes: list[IncidentNoteResponse]
     private_fields_visible: bool
+
+
+# -----------------------------------------------------------------------------
+# Bulk Ingestion Schemas (Students & Parents Excel / CSV Import)
+# -----------------------------------------------------------------------------
+
+
+class ImportRowError(BaseModel):
+    row_number: int
+    column: str
+    error_message: str
+
+
+class ImportRowPreview(BaseModel):
+    row_number: int
+    is_valid: bool
+    data: dict[str, Any]
+    errors: list[str] = Field(default_factory=list)
+
+
+class ImportValidationSummary(BaseModel):
+    resource_type: str
+    total_rows: int
+    valid_rows: int
+    invalid_rows: int
+    errors: list[ImportRowError] = Field(default_factory=list)
+    preview: list[ImportRowPreview] = Field(default_factory=list)
+
+
+class ImportCommitSummary(BaseModel):
+    resource_type: str
+    created_count: int
+    updated_count: int
+    skipped_count: int
+    total_processed: int
+    errors: list[str] = Field(default_factory=list)

@@ -81,7 +81,11 @@ async function parseErrorEnvelope(response: Response): Promise<ApiErrorDetail> {
 }
 
 async function rawRequest<T>(path: string, options: RequestOptions): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json", ...options.headers };
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  const headers: Record<string, string> = { ...options.headers };
+  if (!isFormData && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
   if (!options.anonymous) {
     const token = getAccessToken();
     if (token) {
@@ -92,7 +96,11 @@ async function rawRequest<T>(path: string, options: RequestOptions): Promise<T> 
   const response = await fetch(`${env.apiBaseUrl}${path}`, {
     method: options.method ?? "GET",
     headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    body: isFormData
+      ? (options.body as FormData)
+      : options.body !== undefined
+      ? JSON.stringify(options.body)
+      : undefined,
     keepalive: options.keepalive,
   });
 
@@ -141,4 +149,31 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     }
     throw error;
   }
+}
+
+
+/** Downloads a file by path and triggers a browser file-save prompt. */
+export async function downloadFile(path: string, defaultFilename: string): Promise<void> {
+  const headers: Record<string, string> = {};
+  const token = getAccessToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const response = await fetch(`${env.apiBaseUrl}${path}`, {
+    method: "GET",
+    headers,
+  });
+  if (!response.ok) {
+    const detail = await parseErrorEnvelope(response);
+    throw new ApiError(response.status, detail);
+  }
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = defaultFilename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
 }

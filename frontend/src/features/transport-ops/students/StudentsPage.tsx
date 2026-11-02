@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { GraduationCap, Pencil, Plus, Search, UserMinus, UserPlus, Users } from "lucide-react";
+import { GraduationCap, Pencil, Plus, Search, UploadCloud, UserMinus, UserPlus, Users } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
@@ -18,6 +18,7 @@ import { Button } from "../../../shared/components/Button/Button";
 import { IconButton } from "../../../shared/components/IconButton/IconButton";
 import { Input } from "../../../shared/components/Input/Input";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
+import { BulkImportDialog } from "../imports/BulkImportDialog";
 import { CreateStudentForm } from "./CreateStudentForm";
 import { EditStudentForm } from "./EditStudentForm";
 import { LinkGuardianForm } from "./LinkGuardianForm";
@@ -182,6 +183,7 @@ export function StudentsPage() {
 
   const [selectedStudent, setSelectedStudent] = useState<StudentSummary | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [linkGuardianOpen, setLinkGuardianOpen] = useState(false);
   const [assignRouteOpen, setAssignRouteOpen] = useState(false);
@@ -315,9 +317,14 @@ export function StudentsPage() {
             aria-label="Search students"
           />
           {canManage && (
-            <Button leadingIcon={<Plus size={15} />} onClick={() => setCreateOpen(true)}>
-              New Student
-            </Button>
+            <>
+              <Button variant="secondary" leadingIcon={<UploadCloud size={15} />} onClick={() => setImportOpen(true)}>
+                Import
+              </Button>
+              <Button leadingIcon={<Plus size={15} />} onClick={() => setCreateOpen(true)}>
+                New Student
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -476,6 +483,15 @@ export function StudentsPage() {
         studentId={selectedStudent?.id ?? null}
         studentName={selectedStudent?.fullName}
         organizationId={detail?.organizationId ?? null}
+      />
+
+      <BulkImportDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        resourceType="students"
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ["students"] });
+        }}
       />
 
     </div>

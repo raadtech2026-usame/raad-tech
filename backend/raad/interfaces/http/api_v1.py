@@ -52,6 +52,7 @@ from raad.modules.platform_finance.api.routers import platform_finance_router
 from raad.modules.school_erp.api.routers import school_finance_router
 from raad.modules.reporting.api.routers import reports_router
 from raad.modules.tracking.api.routers import safety_alerts_router, tracking_router
+from raad.modules.transport_ops.api.imports_router import imports_router
 from raad.modules.transport_ops.api.me_routers import me_transport_router
 from raad.modules.transport_ops.api.routers import (
     daily_operations_router,
@@ -181,6 +182,7 @@ api_router.include_router(
 )
 # ADR-0056 — the incident log.
 api_router.include_router(incidents_router, prefix="/incidents", tags=["transport-ops"])
+api_router.include_router(imports_router, prefix="/imports", tags=["imports"])
 
 api_router.include_router(
     tracking_router, prefix="/tracking", tags=["tracking"]
