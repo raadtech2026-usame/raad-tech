@@ -644,6 +644,22 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/reports/{definition_key}/preview",
         "ADR-0041 SS3 - JSON preview, same build_table call export uses",
     ),
+    # Bulk Data Import Wizard - Excel / CSV ingestion engine for Students and Parents.
+    (
+        "GET",
+        "/api/v1/imports/{resource_type}/template",
+        "Bulk Data Import Wizard - starter template (.xlsx / .csv) with headers and sample rows",
+    ),
+    (
+        "POST",
+        "/api/v1/imports/{resource_type}/validate",
+        "Bulk Data Import Wizard - dry-run spreadsheet validation without DB persistence",
+    ),
+    (
+        "POST",
+        "/api/v1/imports/{resource_type}/commit",
+        "Bulk Data Import Wizard - atomic batch upsert/insert in a single DB transaction",
+    ),
 ]
 
 
