@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Plus, Search, UserRound } from "lucide-react";
+import { Paperclip, Plus, Search, UserRound } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
@@ -19,6 +19,7 @@ import { Button } from "../../../shared/components/Button/Button";
 import { Input } from "../../../shared/components/Input/Input";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { CreateDriverForm } from "./CreateDriverForm";
+import { listStaffDocuments, downloadStaffDocumentAttachment } from "../staff/api";
 import {
   getDriver,
   listDrivers,
@@ -275,6 +276,57 @@ export function DriversPage() {
                     { key: "Updated", value: formatDate(detail.updatedAt) },
                   ]
             : []
+        }
+        children={
+          selectedDriver?.staffId ? (
+            <div style={{ marginTop: "var(--space-4)" }}>
+              <div style={{ fontSize: "var(--text-sm)", fontWeight: "var(--font-weight-semibold)", color: "var(--color-text-secondary)", marginBottom: "var(--space-2)" }}>
+                Attachments / Identity Documents
+              </div>
+              {driverDocsQuery.isLoading ? (
+                <Skeleton height={36} />
+              ) : (driverDocsQuery.data ?? []).length === 0 ? (
+                <div style={{ fontSize: "var(--text-sm)", color: "var(--color-text-muted)" }}>
+                  No identity documents attached.
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                  {(driverDocsQuery.data ?? []).map((doc) => (
+                    <div
+                      key={doc.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "8px 12px",
+                        background: "var(--color-bg-inset)",
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid var(--color-border-default)",
+                      }}
+                    >
+                      <div style={{ display: "flex", flexDirection: "column" }}>
+                        <span style={{ fontSize: "var(--text-sm)", fontWeight: "var(--font-weight-medium)" }}>
+                          {doc.typeName}
+                        </span>
+                        <span style={{ fontSize: "var(--text-xs)", color: "var(--color-text-muted)" }}>
+                          {doc.fileName ?? (doc.number ? `No. ${doc.number}` : "Document")}
+                        </span>
+                      </div>
+                      {doc.hasAttachment && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => downloadStaffDocumentAttachment(doc.id, doc.fileName ?? "document")}
+                        >
+                          <Paperclip size={13} /> View
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null
         }
         footer={
           selectedDriver &&

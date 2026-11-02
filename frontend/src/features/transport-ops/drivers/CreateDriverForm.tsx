@@ -8,6 +8,7 @@ import { Button } from "../../../shared/components/Button/Button";
 import { FormDrawer } from "../../../shared/components/Drawer/FormDrawer";
 import { FormField } from "../../../shared/components/FormField/FormField";
 import { Input } from "../../../shared/components/Input/Input";
+import { PhoneInput } from "../../../shared/components/Input/PhoneInput";
 import { Select } from "../../../shared/components/Select/Select";
 import { useToast } from "../../../shared/components/Toast/toastStore";
 import { useAuthStore } from "../../../shared/stores/authStore";
@@ -261,7 +262,7 @@ export function CreateDriverForm({ open, onClose }: CreateDriverFormProps) {
         </FormField>
 
         <FormField label="Phone" hint="E.164 format, e.g. +252612345678." error={errors.phone?.message}>
-          <Input placeholder="+252612345678" invalid={!!errors.phone} {...register("phone")} />
+          <PhoneInput placeholder="+252612345678" invalid={!!errors.phone} {...register("phone")} />
         </FormField>
 
         <FormField label="License number" error={errors.licenseNo?.message}>

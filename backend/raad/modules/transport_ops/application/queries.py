@@ -747,6 +747,9 @@ class StaffDocumentDTO:
     days_left: int | None
     replaced_by_id: str | None
     created_at: datetime
+    file_name: str | None = None
+    file_content_type: str | None = None
+    has_attachment: bool = False
 
 
 @dataclass(frozen=True)

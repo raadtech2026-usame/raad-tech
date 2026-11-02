@@ -1,3 +1,4 @@
+import { Paperclip } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "../../../shared/components/Badge/Badge";
@@ -10,6 +11,7 @@ import {
   endCrewAssignment,
   listCrew,
   listStaffDocuments,
+  downloadStaffDocumentAttachment,
   listVehiclesForPicker,
   type CrewAssignment,
   type StaffDocument,
@@ -277,6 +279,16 @@ export function StaffDocumentsSection({ staffId, canManage, onAdd, onRenew }: St
                 </span>
               </div>
               <div className={styles.itemActions}>
+                {(document.hasAttachment || document.fileName) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => downloadStaffDocumentAttachment(document.id, document.fileName ?? "attachment")}
+                    title={`View ${document.fileName ?? "attachment"}`}
+                  >
+                    <Paperclip size={14} /> View attachment
+                  </Button>
+                )}
                 <Badge variant={documentStatusTone(document.status)}>{documentStatusLabel(document.status)}</Badge>
                 {canManage && document.status !== "superseded" && (
                   <Button size="sm" variant="ghost" onClick={() => onRenew(document)}>

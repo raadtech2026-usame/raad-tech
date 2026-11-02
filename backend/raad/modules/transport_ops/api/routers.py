@@ -2768,6 +2768,28 @@ async def update_staff_document(
     return _document_to_response(document, principal)
 
 
+@staff_documents_router.get(
+    "/{document_id}/attachment",
+    summary="Download or view a staff document's file attachment",
+)
+async def get_staff_document_attachment(
+    document_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.staff_documents.list"))
+    ),
+    service: TransportStaffApplicationService = Depends(get_transport_staff_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> Response:
+    content, media_type, filename = await service.get_document_attachment(
+        document_id, principal, uow=uow
+    )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 # ============================================================================================
 # ADR-0052/0053/0054: daily transport operations
 # ============================================================================================

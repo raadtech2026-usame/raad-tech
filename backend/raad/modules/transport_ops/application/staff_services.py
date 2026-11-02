@@ -745,6 +745,9 @@ class TransportStaffApplicationService:
                 expires_on=command.expires_on,
                 notes=_clean(command.notes),
                 replaces_id=replaced.id if replaced else None,
+                file_name=command.file_name,
+                file_content_type=command.file_content_type,
+                file_data=command.file_data,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )
@@ -847,6 +850,35 @@ class TransportStaffApplicationService:
             document.mark_alerted(threshold_days, clock=self._clock)
             uow.record_events(document.pull_domain_events())
             await uow.commit()
+
+    async def get_document_attachment(
+        self,
+        document_id: str,
+        principal: Principal,
+        *,
+        uow: TransportOpsUnitOfWork,
+    ) -> tuple[bytes, str, str]:
+        """Returns (content_bytes, media_type, filename)."""
+        async with uow:
+            document = await uow.staff_documents.get(StaffDocumentId(document_id))
+            if document is None or not document.file_data:
+                raise NotFoundError(f"Document {document_id} has no attachment.")
+            if principal.org_id and str(document.organization_id) != principal.org_id:
+                raise NotFoundError(f"Document {document_id} not found.")
+
+            import base64
+
+            raw = document.file_data
+            if "," in raw and raw.startswith("data:"):
+                raw = raw.split(",", 1)[1]
+            try:
+                content = base64.b64decode(raw)
+            except Exception:
+                raise DomainError("Attachment data is corrupted.")
+
+            media_type = document.file_content_type or "application/octet-stream"
+            filename = document.file_name or f"document-{document_id}"
+            return content, media_type, filename
 
     # ---- helpers --------------------------------------------------------------------------
 
@@ -1012,6 +1044,9 @@ class TransportStaffApplicationService:
                     days_left=d.days_left(today),
                     replaced_by_id=_str_or_none(d.replaced_by_id),
                     created_at=d.created_at,
+                    file_name=d.file_name,
+                    file_content_type=d.file_content_type,
+                    has_attachment=bool(d.file_data),
                 )
             )
         return result

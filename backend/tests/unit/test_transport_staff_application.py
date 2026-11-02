@@ -516,6 +516,25 @@ class DocumentTests(StaffServiceTestCase):
         )
         self.assertEqual(await self.service.collect_due_expiry_alerts(uow=self.uow), [])
 
+    async def test_document_attachment_roundtrip(self) -> None:
+        import base64
+        fake_content = b"%PDF-1.4 test document"
+        encoded = base64.b64encode(fake_content).decode("ascii")
+        doc = await self.record(
+            number="DL-99",
+            file_name="license.pdf",
+            file_content_type="application/pdf",
+            file_data=encoded,
+        )
+        self.assertTrue(doc.has_attachment)
+        self.assertEqual(doc.file_name, "license.pdf")
+        content, media_type, filename = await self.service.get_document_attachment(
+            doc.id, admin(), uow=self.uow
+        )
+        self.assertEqual(content, fake_content)
+        self.assertEqual(media_type, "application/pdf")
+        self.assertEqual(filename, "license.pdf")
+
     async def test_filter_by_status(self) -> None:
         await self.register(full_name="Second")
         page = await self.service.list_staff(

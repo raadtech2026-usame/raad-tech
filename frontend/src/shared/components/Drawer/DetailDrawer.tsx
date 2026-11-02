@@ -25,6 +25,7 @@ export interface DetailDrawerProps {
   mapSlot?: ReactNode;
   stats?: DrawerStat[];
   rows?: DrawerRow[];
+  children?: ReactNode;
   footer?: ReactNode;
 }
 
@@ -44,6 +45,7 @@ export function DetailDrawer({
   mapSlot,
   stats,
   rows,
+  children,
   footer,
 }: DetailDrawerProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -137,6 +139,7 @@ export function DetailDrawer({
               ))}
             </div>
           )}
+          {children}
         </div>
         {footer && <div className={styles.footer}>{footer}</div>}
       </div>

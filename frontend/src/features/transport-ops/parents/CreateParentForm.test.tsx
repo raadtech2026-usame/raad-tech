@@ -188,11 +188,28 @@ describe("CreateParentForm", () => {
       renderForm();
 
       await userEvent.type(screen.getByPlaceholderText("e.g. Fatima Ali"), "Fatima Ali");
-      await userEvent.type(screen.getByPlaceholderText("+252612345678"), "0612345678");
+      await userEvent.type(screen.getByPlaceholderText("+252612345678"), "invalid-phone");
       await userEvent.click(screen.getByRole("button", { name: "Register parent" }));
 
       expect(await screen.findByText("Phone must be E.164 format, e.g. +252612345678")).toBeInTheDocument();
       expect(api.registerParent).not.toHaveBeenCalled();
+    });
+
+    it("normalizes national phone number with automatic +252 prefix", async () => {
+      vi.mocked(api.registerParent).mockResolvedValue(REGISTERED);
+      renderForm();
+
+      await userEvent.type(screen.getByPlaceholderText("e.g. Fatima Ali"), "Fatima Ali");
+      await userEvent.type(screen.getByPlaceholderText("+252612345678"), "612345678");
+      await userEvent.click(screen.getByRole("button", { name: "Register parent" }));
+
+      await waitFor(() =>
+        expect(api.registerParent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            phone: "+252612345678",
+          }),
+        ),
+      );
     });
 
     it("shows a duplicate-phone warning and lets the admin open the existing parent", async () => {

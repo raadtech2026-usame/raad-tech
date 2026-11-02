@@ -214,7 +214,7 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
 
   function currentParams(): DownloadReportParams {
     return {
-      period: period || undefined,
+      period: period || (start ? start.slice(0, 7) : undefined),
       start: start || undefined,
       end: end || undefined,
       vehicleId: vehicle?.id,
@@ -232,13 +232,17 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
     },
   });
 
-  async function run(format: ReportFormat, print = false) {
+  async function run(format: ReportFormat, preview = false) {
     setBusy(format);
     try {
-      await downloadReport(definition.key, format, currentParams());
+      if (preview) {
+        await downloadReport(definition.key, format, currentParams(), { preview: true });
+      } else {
+        await downloadReport(definition.key, format, currentParams());
+      }
       toast.success(
-        print ? "Report ready to print" : "Report downloaded",
-        print ? `${definition.title} was downloaded — open it to print.` : `${definition.title} (${format.toUpperCase()})`,
+        preview ? "Report opened in new tab" : "Report downloaded",
+        preview ? `${definition.title} opened for preview and printing.` : `${definition.title} (${format.toUpperCase()})`,
       );
     } catch (error) {
       toast.error("Export failed", error instanceof Error ? error.message : "Please try again.");
@@ -292,7 +296,7 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
         <div className={styles.filterBar}>
           {accepts.has("period") && (
             <FormField label="Period" hint="YYYY-MM — leave blank for all time">
-              <Input value={period} onChange={(e) => setPeriod(e.target.value)} placeholder="2026-09" />
+              <Input type="month" value={period} onChange={(e) => setPeriod(e.target.value)} placeholder="2026-09" aria-label="Period" />
             </FormField>
           )}
           {hasDateRange && (

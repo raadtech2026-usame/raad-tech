@@ -589,6 +589,9 @@ class StaffDocumentModel(AuditedTableMixin, Base):
         nullable=True,
     )
     alerted_threshold_days: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    file_name: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    file_content_type: Mapped[str | None] = mapped_column(VARCHAR(100), nullable=True)
+    file_data: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # ---- ADR-0052/0053: timetable, closures, unavailability, cover ------------------------------

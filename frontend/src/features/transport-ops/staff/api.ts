@@ -146,6 +146,9 @@ export interface StaffDocument {
   replacedById: string | null;
   privateFieldsVisible: boolean;
   createdAt: string;
+  fileName: string | null;
+  fileContentType: string | null;
+  hasAttachment: boolean;
 }
 
 // ---- wire shapes ----------------------------------------------------------------------------
@@ -255,6 +258,9 @@ interface StaffDocumentWire {
   replaced_by_id: string | null;
   private_fields_visible: boolean;
   created_at: string;
+  file_name?: string | null;
+  file_content_type?: string | null;
+  has_attachment?: boolean;
 }
 
 export function toStaffRole(wire: StaffRoleWire): StaffRole {
@@ -362,6 +368,9 @@ export function toStaffDocument(wire: StaffDocumentWire): StaffDocument {
     replacedById: wire.replaced_by_id,
     privateFieldsVisible: wire.private_fields_visible,
     createdAt: wire.created_at,
+    fileName: wire.file_name ?? null,
+    fileContentType: wire.file_content_type ?? null,
+    hasAttachment: Boolean(wire.has_attachment),
   };
 }
 
@@ -603,6 +612,9 @@ export interface RecordDocumentInput {
   notes: string | null;
   /** Set when this is a renewal: the old document is marked superseded. */
   replacesId: string | null;
+  fileName?: string | null;
+  fileContentType?: string | null;
+  fileData?: string | null;
 }
 
 export async function recordStaffDocument(staffId: string, input: RecordDocumentInput): Promise<StaffDocument> {
@@ -615,9 +627,39 @@ export async function recordStaffDocument(staffId: string, input: RecordDocument
       expires_on: input.expiresOn,
       notes: input.notes,
       replaces_id: input.replacesId,
+      file_name: input.fileName ?? null,
+      file_content_type: input.fileContentType ?? null,
+      file_data: input.fileData ?? null,
     },
   });
   return toStaffDocument(wire);
+}
+
+
+export async function downloadStaffDocumentAttachment(
+  documentId: string,
+  _fallbackName = "document",
+): Promise<void> {
+  const token = useAuthStore.getState().accessToken;
+  const response = await fetch(`${env.apiBaseUrl}/staff-documents/${encodeURIComponent(documentId)}/attachment`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (!response.ok) {
+    let message = `Failed to download document (${response.status})`;
+    try {
+      const body = await response.json();
+      message = body?.error?.message ?? message;
+    } catch {
+      // Non-JSON error
+    }
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 export async function listExpiringDocuments(): Promise<StaffDocument[]> {

@@ -208,6 +208,7 @@ async def list_report_catalog(
 async def export_report(
     definition_key: str,
     format: str = Query(default="pdf", pattern="^(pdf|xlsx)$"),
+    disposition: str = Query(default="inline", pattern="^(attachment|inline)$"),
     period: str | None = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
     start: date | None = Query(default=None),
     end: date | None = Query(default=None),
@@ -255,7 +256,7 @@ async def export_report(
         content=rendered.content,
         media_type=rendered.media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{rendered.filename}"'
+            "Content-Disposition": f'{disposition}; filename="{rendered.filename}"'
         },
     )
 

@@ -580,6 +580,9 @@ class RecordStaffDocumentCommand:
     expires_on: date | None = None
     notes: str | None = None
     replaces_id: str | None = None
+    file_name: str | None = None
+    file_content_type: str | None = None
+    file_data: str | None = None
 
 
 @dataclass(frozen=True)

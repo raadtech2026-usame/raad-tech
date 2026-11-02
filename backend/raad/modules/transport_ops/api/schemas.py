@@ -746,6 +746,9 @@ class RecordStaffDocumentRequest(BaseModel):
     expires_on: date | None = None
     notes: str | None = None
     replaces_id: str | None = None
+    file_name: str | None = None
+    file_content_type: str | None = None
+    file_data: str | None = None
 
 
 class UpdateStaffDocumentRequest(BaseModel):
@@ -755,6 +758,9 @@ class UpdateStaffDocumentRequest(BaseModel):
     issued_on: date | None = None
     expires_on: date | None = None
     notes: str | None = None
+    file_name: str | None = None
+    file_content_type: str | None = None
+    file_data: str | None = None
 
 
 class StaffDocumentResponse(BaseModel):
@@ -775,6 +781,9 @@ class StaffDocumentResponse(BaseModel):
     replaced_by_id: str | None
     private_fields_visible: bool
     created_at: datetime
+    file_name: str | None = None
+    file_content_type: str | None = None
+    has_attachment: bool = False
 
 
 # ---- ADR-0052/0053/0054: daily transport operations -----------------------------------------

@@ -128,9 +128,10 @@ export function DateRangePresetFilter({ start, end, onChange }: DateRangePresetF
           ))}
         </Select>
       </FormField>
-      <FormField label="From">
+      <FormField label="Start Date">
         <Input
           type="date"
+          aria-label="From"
           value={start}
           onChange={(e) => {
             setPresetId("custom");
@@ -138,9 +139,10 @@ export function DateRangePresetFilter({ start, end, onChange }: DateRangePresetF
           }}
         />
       </FormField>
-      <FormField label="To">
+      <FormField label="End Date">
         <Input
           type="date"
+          aria-label="To"
           value={end}
           onChange={(e) => {
             setPresetId("custom");

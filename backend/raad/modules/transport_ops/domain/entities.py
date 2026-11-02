@@ -2440,7 +2440,7 @@ class StaffDocument(_AggregateRoot):
     scan. Status is computed from the dates on every read. A renewal is a new document; the old
     one points at it (`replaced_by_id`) and drops out of every alert."""
 
-    _EDITABLE = ("number", "issued_on", "expires_on", "notes")
+    _EDITABLE = ("number", "issued_on", "expires_on", "notes", "file_name", "file_content_type", "file_data")
 
     def __init__(
         self,
@@ -2455,6 +2455,9 @@ class StaffDocument(_AggregateRoot):
         notes: str | None,
         replaced_by_id: StaffDocumentId | None,
         alerted_threshold_days: int | None,
+        file_name: str | None = None,
+        file_content_type: str | None = None,
+        file_data: str | None = None,
         created_at: datetime,
         updated_at: datetime,
     ) -> None:
@@ -2472,6 +2475,9 @@ class StaffDocument(_AggregateRoot):
         self.notes = notes
         self.replaced_by_id = replaced_by_id
         self.alerted_threshold_days = alerted_threshold_days
+        self.file_name = file_name
+        self.file_content_type = file_content_type
+        self.file_data = file_data
         self.created_at = created_at
         self.updated_at = updated_at
 
@@ -2494,6 +2500,9 @@ class StaffDocument(_AggregateRoot):
         expires_on: date | None,
         notes: str | None,
         replaces_id: StaffDocumentId | None,
+        file_name: str | None = None,
+        file_content_type: str | None = None,
+        file_data: str | None = None,
         clock: Clock,
         actor_id: str | None = None,
     ) -> "StaffDocument":
@@ -2509,6 +2518,9 @@ class StaffDocument(_AggregateRoot):
             notes=notes,
             replaced_by_id=None,
             alerted_threshold_days=None,
+            file_name=file_name,
+            file_content_type=file_content_type,
+            file_data=file_data,
             created_at=now,
             updated_at=now,
         )

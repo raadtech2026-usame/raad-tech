@@ -616,6 +616,9 @@ def staff_document_to_model(
     model.notes = document.notes
     model.replaced_by_id = _str_or_none(document.replaced_by_id)
     model.alerted_threshold_days = document.alerted_threshold_days
+    model.file_name = document.file_name
+    model.file_content_type = document.file_content_type
+    model.file_data = document.file_data
     model.created_at = _to_naive_utc(document.created_at)
     model.updated_at = _to_naive_utc(document.updated_at)
     return model
@@ -633,6 +636,9 @@ def model_to_staff_document(model: StaffDocumentModel) -> StaffDocument:
         notes=model.notes,
         replaced_by_id=StaffDocumentId(model.replaced_by_id) if model.replaced_by_id else None,
         alerted_threshold_days=model.alerted_threshold_days,
+        file_name=model.file_name,
+        file_content_type=model.file_content_type,
+        file_data=model.file_data,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )

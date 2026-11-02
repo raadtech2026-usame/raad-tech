@@ -154,12 +154,17 @@ export async function previewReport(
  * Revokes the object URL after the click. Skipping that is the classic leak here: every download
  * would otherwise pin its full blob in memory for the lifetime of the document.
  */
+export interface DownloadReportOptions {
+  preview?: boolean;
+}
+
 export async function downloadReport(
   definitionKey: string,
   format: ReportFormat,
   params: DownloadReportParams = {},
+  options: DownloadReportOptions = {},
 ): Promise<void> {
-  const qs = buildReportQuery(params, { format });
+  const qs = buildReportQuery(params, { format, disposition: options.preview ? "inline" : "attachment" });
 
   const token = useAuthStore.getState().accessToken;
   const response = await fetch(
@@ -180,11 +185,19 @@ export async function downloadReport(
   }
 
   const blob = await response.blob();
+  const pdfBlob = format === "pdf" ? new Blob([blob], { type: "application/pdf" }) : blob;
+  const url = URL.createObjectURL(pdfBlob);
+
+  if (options.preview) {
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    return;
+  }
+
   const filename =
     parseFilename(response.headers.get("Content-Disposition")) ??
     `${definitionKey.replace(/\./g, "-")}.${format}`;
 
-  const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;

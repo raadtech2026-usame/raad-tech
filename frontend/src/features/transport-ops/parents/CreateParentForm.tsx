@@ -9,6 +9,7 @@ import { Button } from "../../../shared/components/Button/Button";
 import { FormDrawer } from "../../../shared/components/Drawer/FormDrawer";
 import { FormField } from "../../../shared/components/FormField/FormField";
 import { Input } from "../../../shared/components/Input/Input";
+import { PhoneInput } from "../../../shared/components/Input/PhoneInput";
 import { Select } from "../../../shared/components/Select/Select";
 import { Toggle } from "../../../shared/components/Toggle/Toggle";
 import { useToast } from "../../../shared/components/Toast/toastStore";
@@ -540,7 +541,7 @@ export function CreateParentForm({ open, onClose, onOpenExisting }: CreateParent
         </FormField>
 
         <FormField label="Primary phone" hint="E.164 format, e.g. +252612345678." error={errors.phone?.message}>
-          <Input placeholder="+252612345678" invalid={!!errors.phone} {...register("phone")} />
+          <PhoneInput placeholder="+252612345678" invalid={!!errors.phone} {...register("phone")} />
         </FormField>
 
         {duplicate && (
@@ -560,7 +561,7 @@ export function CreateParentForm({ open, onClose, onOpenExisting }: CreateParent
         )}
 
         <FormField label="Alternative phone" hint="Optional." error={errors.alternatePhone?.message}>
-          <Input placeholder="+252611111111" invalid={!!errors.alternatePhone} {...register("alternatePhone")} />
+          <PhoneInput placeholder="+252611111111" invalid={!!errors.alternatePhone} {...register("alternatePhone")} />
         </FormField>
 
         <FormField label="Address" hint="Optional." error={errors.address?.message}>
@@ -572,7 +573,7 @@ export function CreateParentForm({ open, onClose, onOpenExisting }: CreateParent
         </FormField>
 
         <FormField label="Emergency contact phone" hint="Optional." error={errors.emergencyContactPhone?.message}>
-          <Input placeholder="+252622222222" invalid={!!errors.emergencyContactPhone} {...register("emergencyContactPhone")} />
+          <PhoneInput placeholder="+252622222222" invalid={!!errors.emergencyContactPhone} {...register("emergencyContactPhone")} />
         </FormField>
 
         <FormField label="Notes" hint="Optional." error={errors.notes?.message}>

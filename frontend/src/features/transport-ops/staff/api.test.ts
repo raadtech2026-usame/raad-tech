@@ -174,6 +174,28 @@ describe("transport staff api", () => {
     expect(vi.mocked(apiRequest).mock.calls[0][1]).toMatchObject({ body: { replaces_id: "doc0", type_id: "t1" } });
   });
 
+  it("recordStaffDocument carries attachment file details when provided", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      ...DOCUMENT_WIRE,
+      file_name: "id.pdf",
+      file_content_type: "application/pdf",
+      has_attachment: true,
+    });
+    const doc = await recordStaffDocument("s1", {
+      typeId: "t1",
+      number: "DL-2",
+      issuedOn: null,
+      expiresOn: "2031-10-07",
+      notes: null,
+      replacesId: null,
+      fileName: "id.pdf",
+      fileContentType: "application/pdf",
+      fileData: "data:application/pdf;base64,JVBERi0xLjQ...",
+    });
+    expect(doc.hasAttachment).toBe(true);
+    expect(doc.fileName).toBe("id.pdf");
+  });
+
   it("listExpiringDocuments maps days left and status", async () => {
     vi.mocked(apiRequest).mockResolvedValueOnce([DOCUMENT_WIRE]);
     const [document] = await listExpiringDocuments();

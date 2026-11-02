@@ -8,6 +8,7 @@ import { Button } from "../../../shared/components/Button/Button";
 import { FormDrawer } from "../../../shared/components/Drawer/FormDrawer";
 import { FormField } from "../../../shared/components/FormField/FormField";
 import { Input } from "../../../shared/components/Input/Input";
+import { PhoneInput } from "../../../shared/components/Input/PhoneInput";
 import { useToast } from "../../../shared/components/Toast/toastStore";
 import { ApiError } from "../../../shared/api/types";
 import { grantDriverAccess, type GrantDriverAccessResult, type Staff } from "./api";
@@ -160,7 +161,7 @@ export function GrantDriverAccessForm({ open, onClose, staff }: GrantDriverAcces
           <Input type="email" {...register("email")} aria-label="Login email" />
         </FormField>
         <FormField label="Login phone" hint="Defaults to their staff phone" error={errors.phone?.message}>
-          <Input {...register("phone")} aria-label="Login phone" placeholder="+252…" />
+          <PhoneInput {...register("phone")} aria-label="Login phone" placeholder="+252…" />
         </FormField>
       </form>
     </FormDrawer>

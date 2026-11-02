@@ -8,6 +8,7 @@ import { Button } from "../../../shared/components/Button/Button";
 import { FormDrawer } from "../../../shared/components/Drawer/FormDrawer";
 import { FormField } from "../../../shared/components/FormField/FormField";
 import { Input } from "../../../shared/components/Input/Input";
+import { PhoneInput } from "../../../shared/components/Input/PhoneInput";
 import { Select } from "../../../shared/components/Select/Select";
 import { useToast } from "../../../shared/components/Toast/toastStore";
 import { ApiError } from "../../../shared/api/types";
@@ -177,10 +178,10 @@ export function StaffForm({ open, onClose, staff, onSaved }: StaffFormProps) {
         </div>
         <div className={styles.formRow}>
           <FormField label="Phone" error={errors.phone?.message}>
-            <Input {...register("phone")} aria-label="Phone" placeholder="+252…" />
+            <PhoneInput {...register("phone")} aria-label="Phone" placeholder="+252…" />
           </FormField>
           <FormField label="Alternate phone" error={errors.alternatePhone?.message}>
-            <Input {...register("alternatePhone")} aria-label="Alternate phone" placeholder="+252…" />
+            <PhoneInput {...register("alternatePhone")} aria-label="Alternate phone" placeholder="+252…" />
           </FormField>
         </div>
         <FormField label="Start date">
@@ -191,7 +192,7 @@ export function StaffForm({ open, onClose, staff, onSaved }: StaffFormProps) {
             <Input {...register("emergencyContactName")} aria-label="Emergency contact name" />
           </FormField>
           <FormField label="Emergency contact phone" error={errors.emergencyContactPhone?.message}>
-            <Input {...register("emergencyContactPhone")} aria-label="Emergency contact phone" placeholder="+252…" />
+            <PhoneInput {...register("emergencyContactPhone")} aria-label="Emergency contact phone" placeholder="+252…" />
           </FormField>
         </div>
         <FormField label="Notes" error={errors.notes?.message}>

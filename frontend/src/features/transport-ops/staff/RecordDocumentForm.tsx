@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileBadge } from "lucide-react";
 import { useForm } from "react-hook-form";
@@ -64,9 +64,36 @@ export function RecordDocumentForm({ open, onClose, staffId, staffName, renewing
     defaultValues: { typeId: "", number: "", issuedOn: "", expiresOn: "", notes: "" },
   });
 
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [fileContentType, setFileContentType] = useState<string | null>(null);
+  const [fileData, setFileData] = useState<string | null>(null);
+
   useEffect(() => {
-    if (open) reset({ typeId: renewing?.typeId ?? "", number: "", issuedOn: "", expiresOn: "", notes: "" });
+    if (open) {
+      reset({ typeId: renewing?.typeId ?? "", number: "", issuedOn: "", expiresOn: "", notes: "" });
+      setFileName(null);
+      setFileContentType(null);
+      setFileData(null);
+    }
   }, [open, renewing, reset]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setFileContentType(file.type || "application/octet-stream");
+    const reader = new FileReader();
+    reader.onload = () => {
+      setFileData(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveFile = () => {
+    setFileName(null);
+    setFileContentType(null);
+    setFileData(null);
+  };
 
   const mutation = useMutation({
     mutationFn: (values: FormValues) =>
@@ -77,6 +104,9 @@ export function RecordDocumentForm({ open, onClose, staffId, staffName, renewing
         expiresOn: values.expiresOn || null,
         notes: values.notes.trim() || null,
         replacesId: renewing?.id ?? null,
+        fileName,
+        fileContentType,
+        fileData,
       }),
     onSuccess: (document) => {
       queryClient.invalidateQueries({ queryKey: ["transport-staff", "documents"] });
@@ -138,6 +168,28 @@ export function RecordDocumentForm({ open, onClose, staffId, staffName, renewing
             <Input type="date" {...register("expiresOn")} aria-label="Expires" />
           </FormField>
         </div>
+        <FormField
+          label="Attachments / Identity Documents"
+          hint="Upload national ID, driving license, or certificate (PDF, JPG, PNG)"
+        >
+          {fileName ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "4px" }}>
+              <span style={{ fontSize: "14px", fontWeight: 500, color: "var(--color-text-primary)" }}>
+                {fileName}
+              </span>
+              <Button type="button" variant="ghost" size="sm" onClick={handleRemoveFile}>
+                Remove
+              </Button>
+            </div>
+          ) : (
+            <Input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,image/jpeg,image/png,application/pdf"
+              aria-label="Attachments / Identity Documents"
+              onChange={handleFileChange}
+            />
+          )}
+        </FormField>
         <FormField label="Notes" error={errors.notes?.message}>
           <Input {...register("notes")} aria-label="Notes" />
         </FormField>

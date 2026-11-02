@@ -230,6 +230,34 @@ describe("ReportsPage — organization Report Center", () => {
     );
   });
 
+  it("previews PDF in a new tab when Preview PDF is clicked", async () => {
+    vi.mocked(previewReport).mockResolvedValue({
+      title: "Parent Invoice Report",
+      subtitle: null,
+      headers: ["Invoice"],
+      rows: [["2026-09-PARENT1"]],
+      metadata: {},
+      numericColumns: [],
+      totalRow: null,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByText("Parent Invoice Report"));
+    await user.click(screen.getByRole("button", { name: "View" }));
+    await screen.findByText("2026-09-PARENT1");
+    await user.click(screen.getByRole("button", { name: /Preview PDF/ }));
+
+    await waitFor(() =>
+      expect(downloadReport).toHaveBeenCalledWith(
+        "org.parent_invoices",
+        "pdf",
+        expect.any(Object),
+        { preview: true },
+      ),
+    );
+  });
+
   it("surfaces a preview failure via a toast rather than a silent no-op", async () => {
     vi.mocked(previewReport).mockRejectedValue(new Error("Report failed to build."));
     const user = userEvent.setup();

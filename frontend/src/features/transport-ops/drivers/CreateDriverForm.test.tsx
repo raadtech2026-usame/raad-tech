@@ -154,6 +154,27 @@ describe("CreateDriverForm", () => {
       );
     });
 
+    it("submits with national phone number input normalized to E.164", async () => {
+      vi.mocked(api.registerDriver).mockResolvedValue(REGISTER_RESULT);
+      renderForm();
+
+      await userEvent.type(screen.getByPlaceholderText("e.g. Hassan Warsame"), "Hassan Warsame");
+      await userEvent.type(screen.getByPlaceholderText("+252612345678"), "612345678");
+      await userEvent.type(screen.getByPlaceholderText("e.g. DL-00231"), "DL-00231");
+
+      await userEvent.click(screen.getByRole("button", { name: "Register driver" }));
+
+      await waitFor(() =>
+        expect(api.registerDriver).toHaveBeenCalledWith({
+          organizationId: ORG_OPTION.id,
+          fullName: "Hassan Warsame",
+          email: null,
+          phone: "+252612345678",
+          licenseNo: "DL-00231",
+        }),
+      );
+    });
+
     it("surfaces a backend error via a toast and keeps the drawer open", async () => {
       vi.mocked(api.registerDriver).mockRejectedValue(
         new ApiError(422, { code: "VALIDATION_ERROR", message: "Request validation failed.", correlationId: null }),
