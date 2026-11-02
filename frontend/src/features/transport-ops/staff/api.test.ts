@@ -226,10 +226,9 @@ describe("downloadStaffDocumentAttachment", () => {
     window.open = vi.fn();
     URL.createObjectURL = vi.fn().mockReturnValue("blob:mock-url");
     URL.revokeObjectURL = vi.fn();
-    globalThis.fetch = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      blob: vi.fn().mockResolvedValueOnce(new Blob(["test-data"])),
-    } as unknown as Response);
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(new Blob(["test-data"]), { status: 200 }),
+    );
 
     await downloadStaffDocumentAttachment("doc-456");
     expect(globalThis.fetch).toHaveBeenCalledWith(
@@ -246,11 +245,12 @@ describe("downloadStaffDocumentAttachment", () => {
 
   it("rejects with server message when request fails", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockResolvedValueOnce({
-      ok: false,
-      status: 404,
-      json: vi.fn().mockResolvedValueOnce({ error: { message: "File missing" } }),
-    } as unknown as Response);
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: "File missing" } }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
 
     await expect(downloadStaffDocumentAttachment("missing-doc")).rejects.toThrow("File missing");
     globalThis.fetch = originalFetch;

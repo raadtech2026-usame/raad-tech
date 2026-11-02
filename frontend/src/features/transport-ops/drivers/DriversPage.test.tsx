@@ -11,7 +11,7 @@ vi.mock("./api", () => ({
   registerDriver: vi.fn(),
   updateDriverStatus: vi.fn(),
   listOrganizationsForPicker: vi.fn(),
-});
+}));
 
 vi.mock("../staff/api", () => ({
   listStaffDocuments: vi.fn().mockResolvedValue([]),
@@ -160,7 +160,9 @@ describe("DriversPage", () => {
     vi.mocked(staffApi.listStaffDocuments).mockResolvedValue([
       {
         id: "doc-1",
+        organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FBW",
         staffId: DRIVER_SUMMARY.staffId,
+        staffName: "Ahmed Yusuf",
         typeId: "type-license",
         typeName: "Driving License",
         number: "DL-12345",
