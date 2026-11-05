@@ -127,22 +127,60 @@ class DataTransferApiIntegrationTests(unittest.TestCase):
         cls.client = cls.client_context.__enter__()
         cls.tokens: TokenService = cls.client.app.state.container.resolve(TokenService)
 
-        # Seed support_assignments for finance user so they have authorized org scope
+        # Seed test organization, user, and support_assignment for isolated execution
         settings = get_settings()
         engine = create_async_engine(settings.db.url)
 
-        async def seed_support():
+        async def seed_fixtures():
             async with engine.begin() as conn:
+                # 1. Fetch an existing active region (seeded by migration 8768136a6464)
+                reg_result = await conn.execute(
+                    text("SELECT id FROM regions WHERE status = 'active' ORDER BY id LIMIT 1;")
+                )
+                region_id = reg_result.scalar_one_or_none()
+                if not region_id:
+                    region_id = "01M4ZPZGYJENXVC8JC31DXBY94"
+                    await conn.execute(
+                        text(
+                            "INSERT INTO regions (id, name, geographic_scope, status, created_at, updated_at, row_version) "
+                            "VALUES (:reg_id, 'East Africa', 'East Africa Scope', 'active', now(), now(), 1) "
+                            "ON CONFLICT (id) DO NOTHING;"
+                        ),
+                        {"reg_id": region_id},
+                    )
+
+                # 2. Seed test organization matching EXISTING_ORG_ID
+                await conn.execute(
+                    text(
+                        "INSERT INTO organizations (id, name, org_type, region_id, status, approaching_distance_m, created_at, updated_at, row_version) "
+                        "VALUES (:org_id, 'Integration Test School', 'school', :reg_id, 'active', 300, now(), now(), 1) "
+                        "ON CONFLICT (id) DO NOTHING;"
+                    ),
+                    {"org_id": EXISTING_ORG_ID, "reg_id": region_id},
+                )
+
+                # 3. Seed finance user in users table
+                await conn.execute(
+                    text(
+                        "INSERT INTO users (id, full_name, email, role, status, mfa_enabled, created_at, updated_at, row_version) "
+                        "VALUES (:user_id, 'Finance Test User', 'finance.test@example.com', 'finance_staff', 'active', false, now(), now(), 1) "
+                        "ON CONFLICT (id) DO NOTHING;"
+                    ),
+                    {"user_id": "01M4ZSMKCWDG8ZW51S9YVRENM6"},
+                )
+
+                # 4. Seed support assignment linking finance user to the test organization
                 await conn.execute(
                     text(
                         "INSERT INTO support_assignments (user_id, organization_id, granted_at) "
-                        "VALUES ('01M4ZSMKCWDG8ZW51S9YVRENM6', '01M4ZT3DV63S4D3SY3X0MA9YVX', now()) "
+                        "VALUES (:user_id, :org_id, now()) "
                         "ON CONFLICT DO NOTHING;"
-                    )
+                    ),
+                    {"user_id": "01M4ZSMKCWDG8ZW51S9YVRENM6", "org_id": EXISTING_ORG_ID},
                 )
             await engine.dispose()
 
-        asyncio.run(seed_support())
+        asyncio.run(seed_fixtures())
 
         # Principals
         cls.founder = Principal(user_id="01M4ZSMKCWDG8ZW51S9YVRENM3", role=Role.FOUNDER, org_id=None)
@@ -167,16 +205,62 @@ class DataTransferApiIntegrationTests(unittest.TestCase):
         settings = get_settings()
         engine = create_async_engine(settings.db.url)
 
-        async def cleanup_support():
+        async def cleanup_fixtures():
             async with engine.begin() as conn:
+                # 1. Clean up support assignment
                 await conn.execute(
                     text(
-                        "DELETE FROM support_assignments WHERE user_id = '01M4ZSMKCWDG8ZW51S9YVRENM6';"
+                        "DELETE FROM support_assignments WHERE user_id = '01M4ZSMKCWDG8ZW51S9YVRENM6' AND organization_id = :org_id;"
+                    ),
+                    {"org_id": EXISTING_ORG_ID},
+                )
+                # 2. Clean up test user and any provisioned parent test users
+                await conn.execute(
+                    text(
+                        "DELETE FROM users WHERE id = '01M4ZSMKCWDG8ZW51S9YVRENM6' "
+                        "OR email LIKE 'parent.%@example.com' "
+                        "OR phone LIKE '+25261599%' "
+                        "OR phone LIKE '+25261511%';"
                     )
+                )
+                # 3. Clean up import batches created by the test suite
+                await conn.execute(
+                    text(
+                        "DELETE FROM import_batches WHERE organization_id = :org_id;"
+                    ),
+                    {"org_id": EXISTING_ORG_ID},
+                )
+                # 4. Clean up student-parent links created by the test suite
+                await conn.execute(
+                    text(
+                        "DELETE FROM student_parents WHERE student_id IN (SELECT id FROM students WHERE organization_id = :org_id);"
+                    ),
+                    {"org_id": EXISTING_ORG_ID},
+                )
+                # 5. Clean up students created by the test suite
+                await conn.execute(
+                    text(
+                        "DELETE FROM students WHERE organization_id = :org_id;"
+                    ),
+                    {"org_id": EXISTING_ORG_ID},
+                )
+                # 6. Clean up parents created by the test suite
+                await conn.execute(
+                    text(
+                        "DELETE FROM parents WHERE organization_id = :org_id;"
+                    ),
+                    {"org_id": EXISTING_ORG_ID},
+                )
+                # 7. Clean up test organization if created by this test suite
+                await conn.execute(
+                    text(
+                        "DELETE FROM organizations WHERE id = :org_id AND name = 'Integration Test School';"
+                    ),
+                    {"org_id": EXISTING_ORG_ID},
                 )
             await engine.dispose()
 
-        asyncio.run(cleanup_support())
+        asyncio.run(cleanup_fixtures())
 
     def _auth(self, principal: Principal) -> dict[str, str]:
         pair = self.tokens.issue_token_pair(
@@ -439,6 +523,7 @@ class DataTransferApiIntegrationTests(unittest.TestCase):
         auth = self._auth(self.founder)
         suffix = datetime.now(timezone.utc).strftime("%H%M%S")
         adm_no = f"ADM-REL-{suffix}"
+        parent_phone = f"061511{suffix[-4:]}"
 
         # 1. First commit: enroll student with parent
         file_bytes_1 = create_sample_student_xlsx([
@@ -447,7 +532,7 @@ class DataTransferApiIntegrationTests(unittest.TestCase):
                 "admission_number": adm_no,
                 "grade_level": "Grade 5",
                 "parent_name": f"Parent Warsame {suffix}",
-                "parent_phone": "0615112233",
+                "parent_phone": parent_phone,
                 "gender": "male",
                 "date_of_birth": "2014-04-12",
                 "notes": "Bus 1",
