@@ -21,7 +21,7 @@ GHCR — ghcr.io/raadtech2026-usame/raad-{backend,frontend,device-gateway,jt1078
         │   public packages: the VPS needs NO registry credential
         ▼
 deploy job — runs only if ALL five builds succeeded (needs: build)
-        │   GET https://coolify.raadsystems.tech/api/v1/deploy?uuid=<app-uuid>
+        │   POST https://coolify.raadsystems.tech/api/v1/deploy (or http://72.62.7.212:8000/api/v1/deploy)?uuid=<app-uuid>
         ▼
 Coolify 4.3.21
         │   git clone → docker compose build      (no-op: nothing is buildable)
@@ -91,7 +91,7 @@ public URLs compiled into the JS bundle.
 | `VITE_STRIPE_PUBLISHABLE_KEY` | Currently **unset/empty** in production. Leave unset unless Stripe is configured — an unset secret interpolates to an empty string, matching today. |
 | `COOLIFY_URL` | `https://coolify.raadsystems.tech` |
 | `COOLIFY_API_TOKEN` | Coolify token with the **`deploy` ability only**. See §5. |
-| `COOLIFY_APP_UUID` | `wkhdh0xb83peateermo2s0vd` |
+| `COOLIFY_APP_UUID` | `m0lhtrori7rbplpzwzilohfz` |
 
 `GITHUB_TOKEN` needs no setup — the workflow requests `packages: write` itself, and the repository
 default is `read`.
@@ -154,7 +154,7 @@ Run in this order; later checks depend on earlier ones.
 | 1 | Images are pulled, not built | `docker inspect -f '{{.Config.Image}}' <container>` → starts with `ghcr.io/` |
 | 2 | Commit matches | `docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' <c> \| grep SOURCE_COMMIT` equals the deployed SHA |
 | 3 | Container health | `docker ps` → all `(healthy)`; `migrate` `Exited (0)` |
-| 4 | Postgres / Redis | `healthy`; data volumes unchanged (`wkhdh0xb83peateermo2s0vd_raad-postgres-data`) |
+| 4 | Postgres / Redis | `healthy`; data volumes unchanged (`m0lhtrori7rbplpzwzilohfz_raad-postgres-data`) |
 | 5 | Backend | `curl -s https://api.raadsystems.tech/api/v1/health/ready` |
 | 6 | Frontend | `curl -sI https://app.raadsystems.tech` → `200` |
 | 7 | WebSocket | `/ws/tracking`, `/ws/notifications` connect |
