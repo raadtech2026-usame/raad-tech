@@ -660,6 +660,27 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/imports/{resource_type}/commit",
         "Bulk Data Import Wizard - atomic batch upsert/insert in a single DB transaction",
     ),
+    # Centralized Enterprise Bulk Data Import -- Platform Administration (Super Admin)
+    (
+        "GET",
+        "/api/v1/admin/organizations/{organization_id}/imports/templates/{resource_type}",
+        "Centralized Enterprise Bulk Import -- standardized starter template (.xlsx / .csv)",
+    ),
+    (
+        "POST",
+        "/api/v1/admin/organizations/{organization_id}/imports/validate",
+        "Centralized Enterprise Bulk Import -- dry-run validation within target organization scope",
+    ),
+    (
+        "POST",
+        "/api/v1/admin/organizations/{organization_id}/imports/commit",
+        "Centralized Enterprise Bulk Import -- atomic commit with persistent batch audit record",
+    ),
+    (
+        "GET",
+        "/api/v1/admin/organizations/{organization_id}/imports/batches",
+        "Centralized Enterprise Bulk Import -- batch history audit log for target organization",
+    ),
 ]
 
 

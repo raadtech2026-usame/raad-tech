@@ -40,16 +40,13 @@ async def check_import_permission(
     request: Request,
     principal: Principal = Depends(get_principal),
 ) -> Principal:
-    """RBAC check ensuring caller has create rights for the resource type."""
-    norm_type = resource_type.strip().lower()
-    if norm_type == "students":
-        perm = Permission("transport_ops.students.create")
-    elif norm_type == "parents":
-        perm = Permission("transport_ops.parents.create")
-    else:
-        raise ValidationError(
-            f"Unsupported resource type '{resource_type}'. Supported: 'students', 'parents'."
-        )
+    """RBAC check ensuring caller has platform administration import rights.
+
+    Explicitly requires `data_transfer.import.execute`, which is granted strictly to
+    platform administration roles (Founder, Regional Manager, Support Staff) and withheld
+    from Org Admin.
+    """
+    perm = Permission("data_transfer.import.execute")
 
     container = get_container(request)
     evaluator = container.resolve(PermissionEvaluator)

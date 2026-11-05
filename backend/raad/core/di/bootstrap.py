@@ -122,6 +122,13 @@ from raad.modules.transport_ops.application.services import (
     StudentParentApplicationService,
     TripApplicationService,
 )
+from raad.modules.data_transfer.application.ports import DataTransferUnitOfWork
+from raad.modules.data_transfer.application.services import (
+    DataTransferApplicationService,
+)
+from raad.modules.data_transfer.infra.repositories import (
+    SqlAlchemyDataTransferUnitOfWork,
+)
 from raad.modules.transport_ops.application.import_services import (
     ImportApplicationService,
 )
@@ -339,6 +346,14 @@ def build_container(settings: Settings) -> Container:
         ImportApplicationService(
             clock=container.resolve(Clock),
             id_generator=container.resolve(IdGenerator),
+        ),
+    )
+    container.bind_singleton(
+        DataTransferApplicationService,
+        DataTransferApplicationService(
+            clock=container.resolve(Clock),
+            id_generator=container.resolve(IdGenerator),
+            import_service=container.resolve(ImportApplicationService),
         ),
     )
     # ParentApplicationService/DriverApplicationService now additionally need
@@ -876,6 +891,14 @@ def build_container(settings: Settings) -> Container:
                 user_provisioning=container.resolve(UserProvisioningPort),
             ),
         )
+        container.bind_singleton(
+            DataTransferApplicationService,
+            DataTransferApplicationService(
+                clock=container.resolve(Clock),
+                id_generator=container.resolve(IdGenerator),
+                import_service=container.resolve(ImportApplicationService),
+            ),
+        )
         # ADR-0049/0050/0051 — also needs UserProvisioningPort (driver access), and asks
         # fleet_device which organization owns a bus through the composition-root adapter.
         container.bind_singleton(VehicleDirectoryPort, FleetVehicleDirectoryAdapter(container))
@@ -960,6 +983,14 @@ def build_container(settings: Settings) -> Container:
         container.bind_factory(
             VideoUnitOfWork,
             lambda: SqlAlchemyVideoUnitOfWork(
+                session_factory,
+                container.resolve(OutboxWriter),
+                container.resolve(AuditWriter),
+            ),
+        )
+        container.bind_factory(
+            DataTransferUnitOfWork,
+            lambda: SqlAlchemyDataTransferUnitOfWork(
                 session_factory,
                 container.resolve(OutboxWriter),
                 container.resolve(AuditWriter),

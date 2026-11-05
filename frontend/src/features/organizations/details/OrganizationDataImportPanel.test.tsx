@@ -1,0 +1,204 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("./importApi", () => ({
+  downloadPlatformImportTemplate: vi.fn(),
+  validatePlatformImport: vi.fn(),
+  commitPlatformImport: vi.fn(),
+  listPlatformImportBatches: vi.fn(),
+}));
+
+import {
+  commitPlatformImport,
+  downloadPlatformImportTemplate,
+  listPlatformImportBatches,
+  validatePlatformImport,
+} from "./importApi";
+import { OrganizationDataImportPanel } from "./OrganizationDataImportPanel";
+
+const mockBatches = [
+  {
+    id: "batch-01",
+    organizationId: "01J8Z3K9G6X8YV5T4N2R7QW001",
+    actorUserId: "usr-founder-1",
+    resourceType: "students" as const,
+    status: "committed" as const,
+    originalFilename: "students_roster.xlsx",
+    fileSizeBytes: 24500,
+    totalRows: 150,
+    createdCount: 145,
+    updatedCount: 5,
+    skippedCount: 0,
+    failedCount: 0,
+    conflictStrategy: "skip" as const,
+    errorReportAvailable: false,
+    committedAt: "2026-11-05T09:00:00Z",
+    createdAt: "2026-11-05T08:55:00Z",
+  },
+];
+
+describe("OrganizationDataImportPanel", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    vi.mocked(listPlatformImportBatches).mockResolvedValue({
+      items: mockBatches,
+      total: 1,
+    });
+  });
+
+  function renderPanel() {
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <OrganizationDataImportPanel
+          organizationId="01J8Z3K9G6X8YV5T4N2R7QW001"
+          organizationName="Mogadishu International School"
+        />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("renders the platform governance banner, template downloads, and past batch history", async () => {
+    renderPanel();
+
+    expect(
+      screen.getByText(/Enterprise Centralized Data Import — Mogadishu International School/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/1. Official Excel & CSV Templates/i)).toBeInTheDocument();
+    expect(screen.getByText(/2. Upload & Execute Bulk Import/i)).toBeInTheDocument();
+    expect(screen.getByText(/3. Import Batch Audit History/i)).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByText("batch-01")).toBeInTheDocument();
+      expect(screen.getByText("+145")).toBeInTheDocument();
+    });
+  });
+
+  it("triggers template download with correct organization scope", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    const excelDownloadButtons = screen.getAllByRole("button", { name: /Excel \(\.xlsx\)/i });
+    expect(excelDownloadButtons.length).toBeGreaterThanOrEqual(1);
+
+    await user.click(excelDownloadButtons[0]);
+    expect(downloadPlatformImportTemplate).toHaveBeenCalledWith(
+      "01J8Z3K9G6X8YV5T4N2R7QW001",
+      "students",
+      "xlsx",
+    );
+  });
+
+  it("validates an uploaded file and displays validation diagnostics and preview", async () => {
+    const user = userEvent.setup();
+    vi.mocked(validatePlatformImport).mockResolvedValueOnce({
+      resourceType: "students",
+      organizationId: "01J8Z3K9G6X8YV5T4N2R7QW001",
+      totalRows: 2,
+      validRows: 2,
+      invalidRows: 0,
+      errors: [],
+      preview: [
+        {
+          rowNumber: 2,
+          isValid: true,
+          data: { full_name: "Ahmed Ali", external_reference: "STU-001" },
+          errors: [],
+        },
+        {
+          rowNumber: 3,
+          isValid: true,
+          data: { full_name: "Fatima Omar", external_reference: "STU-002" },
+          errors: [],
+        },
+      ],
+    });
+
+    renderPanel();
+
+    const file = new File(["dummy"], "students.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, file);
+
+    expect(screen.getByText("students.xlsx")).toBeInTheDocument();
+
+    const validateBtn = screen.getByRole("button", { name: /Validate Spreadsheet/i });
+    await user.click(validateBtn);
+
+    expect(validatePlatformImport).toHaveBeenCalledWith(
+      "01J8Z3K9G6X8YV5T4N2R7QW001",
+      "students",
+      file,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Total Rows").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText("Valid Rows")).toBeInTheDocument();
+      expect(screen.getByText(/Commit 2 Record\(s\) to Tenant/i)).toBeInTheDocument();
+    });
+  });
+
+  it("executes atomic commit and displays success summary", async () => {
+    const user = userEvent.setup();
+    vi.mocked(validatePlatformImport).mockResolvedValueOnce({
+      resourceType: "students",
+      organizationId: "01J8Z3K9G6X8YV5T4N2R7QW001",
+      totalRows: 1,
+      validRows: 1,
+      invalidRows: 0,
+      errors: [],
+      preview: [{ rowNumber: 2, isValid: true, data: { full_name: "Hassan Ali" }, errors: [] }],
+    });
+
+    vi.mocked(commitPlatformImport).mockResolvedValueOnce({
+      batchId: "batch-99",
+      resourceType: "students",
+      organizationId: "01J8Z3K9G6X8YV5T4N2R7QW001",
+      createdCount: 1,
+      updatedCount: 0,
+      skippedCount: 0,
+      totalProcessed: 1,
+      status: "committed",
+      errors: [],
+    });
+
+    renderPanel();
+
+    const file = new File(["dummy"], "students.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, file);
+
+    const validateBtn = screen.getByRole("button", { name: /Validate Spreadsheet/i });
+    await user.click(validateBtn);
+
+    const commitBtn = await screen.findByRole("button", {
+      name: /Commit 1 Record\(s\) to Tenant/i,
+    });
+    await user.click(commitBtn);
+
+    expect(commitPlatformImport).toHaveBeenCalledWith(
+      "01J8Z3K9G6X8YV5T4N2R7QW001",
+      "students",
+      file,
+      "skip",
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Bulk Import Executed Successfully \(Batch #batch-99\)/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/1 created/i)).toBeInTheDocument();
+    });
+  });
+});

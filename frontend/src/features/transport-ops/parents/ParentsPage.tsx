@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Contact, Navigation, Pencil, Plus, Receipt, Search, UploadCloud, UserMinus, UserPlus, Wallet } from "lucide-react";
+import { Contact, Navigation, Pencil, Plus, Receipt, Search, UserMinus, UserPlus, Wallet } from "lucide-react";
 import { usePageHeader } from "../../../app/layout/PageHeaderContext";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { useAuthStore } from "../../../shared/stores/authStore";
@@ -19,7 +19,6 @@ import { IconButton } from "../../../shared/components/IconButton/IconButton";
 import { Input } from "../../../shared/components/Input/Input";
 import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { BillingProfileForm } from "./BillingProfileForm";
-import { BulkImportDialog } from "../imports/BulkImportDialog";
 import { CreateParentForm } from "./CreateParentForm";
 import { EditParentForm } from "./EditParentForm";
 import { FamilyTransportationForm } from "./FamilyTransportationForm";
@@ -536,7 +535,6 @@ export function ParentsPage() {
 
   const [selectedParent, setSelectedParent] = useState<ParentSummary | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [billingOpen, setBillingOpen] = useState(false);
   const [payingInvoice, setPayingInvoice] = useState<ParentInvoiceSummary | null>(null);
@@ -746,14 +744,9 @@ export function ParentsPage() {
             aria-label="Search parents"
           />
           {canManage && (
-            <>
-              <Button variant="secondary" leadingIcon={<UploadCloud size={15} />} onClick={() => setImportOpen(true)}>
-                Import
-              </Button>
-              <Button leadingIcon={<Plus size={15} />} onClick={() => setCreateOpen(true)}>
-                New Parent
-              </Button>
-            </>
+            <Button leadingIcon={<Plus size={15} />} onClick={() => setCreateOpen(true)}>
+              New Parent
+            </Button>
           )}
         </div>
       </div>
@@ -908,14 +901,6 @@ export function ParentsPage() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onOpenExisting={(parent) => setSelectedParent(parent)}
-      />
-      <BulkImportDialog
-        open={importOpen}
-        onClose={() => setImportOpen(false)}
-        resourceType="parents"
-        onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ["parents"] });
-        }}
       />
       <EditParentForm open={editOpen} onClose={() => setEditOpen(false)} parent={detail ?? null} />
       <BillingProfileForm

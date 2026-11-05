@@ -15,6 +15,7 @@ import {
   UserCog,
   Users,
   Wallet,
+  UploadCloud,
 } from "lucide-react";
 
 /**
@@ -40,7 +41,8 @@ export type OrganizationDetailTabId =
   | "finance"
   | "usage"
   | "audit"
-  | "settings";
+  | "settings"
+  | "data_import";
 
 /** Navigation grouping only (Organization Management phase) — presentation of the same fixed tab
  * set, not a change to which tabs exist or what routes/data each one reads. */
@@ -130,6 +132,13 @@ export const ORGANIZATION_DETAIL_TABS: OrganizationDetailTab[] = [
     label: "Usage",
     description: "What this organization consumes against its plan",
     icon: <GaugeCircle size={18} />,
+    group: "operations",
+  },
+  {
+    id: "data_import",
+    label: "Data Import",
+    description: "Centralized enterprise bulk data import and batch history",
+    icon: <UploadCloud size={18} />,
     group: "operations",
   },
   {

@@ -34,6 +34,7 @@ import { OrganizationOverviewSummary } from "./OrganizationOverviewSummary";
 import { OrganizationSettingsTab } from "./OrganizationSettingsTab";
 import { OrganizationSubscriptionPanel } from "./OrganizationSubscriptionPanel";
 import { OrganizationUsageTab } from "./OrganizationUsageTab";
+import { OrganizationDataImportPanel } from "./OrganizationDataImportPanel";
 import type { OrganizationDetailTabId } from "./tabs";
 import styles from "./OrganizationDetailsPage.module.css";
 
@@ -458,6 +459,14 @@ export function OrganizationTabPanel({
 
     case "usage":
       return <OrganizationUsageTab organizationId={organizationId} />;
+
+    case "data_import":
+      return (
+        <OrganizationDataImportPanel
+          organizationId={organizationId}
+          organizationName={organization.name}
+        />
+      );
 
     case "audit":
       return (

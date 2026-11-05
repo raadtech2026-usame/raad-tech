@@ -29,6 +29,7 @@ from raad.interfaces.http.subscription_guard import (
     enforce_organization_subscription,
 )
 
+from raad.modules.data_transfer.api.routers import data_transfer_admin_router
 from raad.modules.billing.api.routers import billing_router
 from raad.modules.fleet_device.api.routers import (
     device_inventory_router,
@@ -183,6 +184,11 @@ api_router.include_router(
 # ADR-0056 — the incident log.
 api_router.include_router(incidents_router, prefix="/incidents", tags=["transport-ops"])
 api_router.include_router(imports_router, prefix="/imports", tags=["imports"])
+api_router.include_router(
+    data_transfer_admin_router,
+    prefix="/admin/organizations",
+    tags=["admin-imports"],
+)
 
 api_router.include_router(
     tracking_router, prefix="/tracking", tags=["tracking"]

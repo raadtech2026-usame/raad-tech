@@ -299,8 +299,13 @@ class ImportApplicationService:
         rows: list[tuple[int, dict[str, str]]] = []
 
         if filename_lower.endswith(".xlsx") or file_bytes.startswith(b"PK"):
-            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+            try:
+                wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+            except Exception as exc:
+                raise ValidationError(f"Invalid or corrupted Excel workbook: {exc}") from exc
             ws = wb.active
+            if ws is None:
+                raise ValidationError("Excel workbook contains no active worksheet.")
             header_keys: list[str] = []
             for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
                 if row_idx == 1:

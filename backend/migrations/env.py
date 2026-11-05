@@ -42,6 +42,7 @@ import raad.modules.video.infra.models  # noqa: F401 — registers VideoSessionM
 import raad.modules.platform_audit.infra.models  # noqa: F401 — registers SystemSettingModel
 import raad.modules.school_erp.infra.models  # noqa: F401 — registers FeePlan/StudentInvoice/StudentPayment/Income/Expense/FinancialCategory models (ADR-0040)
 import raad.modules.platform_finance.infra.models  # noqa: F401 — registers PlatformExpense/PlatformIncome/PlatformFinancialCategory models (ADR-0040)
+import raad.modules.data_transfer.infra.models  # noqa: F401 — registers ImportBatchModel
 
 config = context.config
 
