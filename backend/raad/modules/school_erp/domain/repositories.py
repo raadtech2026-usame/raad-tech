@@ -28,6 +28,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import Sequence
 
 from raad.core.pagination import (
     FilterCondition,
@@ -203,6 +204,13 @@ class StudentInvoiceRepository(ABC):
         """"One invoice per student per period" — the invariant that makes re-running monthly
         generation a no-op rather than a double charge. Backed by a real unique index too
         (`ux_erp_student_invoices__student_period`), so a race cannot slip past this check."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_existing_student_ids_for_period(
+        self, *, student_ids: Sequence[StudentId | str], period: BillingPeriod
+    ) -> set[str]:
+        """Remediates PERF-05: batch query returning the subset of student_ids that already have an invoice for period."""
         raise NotImplementedError
 
     @abstractmethod
@@ -460,6 +468,13 @@ class ParentInvoiceRepository(ABC):
         generation a no-op rather than a double charge, backed by a real unique index too
         (`ux_erp_parent_invoices__org_parent_period`), the identical two-layer pattern
         `StudentInvoiceRepository.exists_for_student_period` already establishes."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_existing_parent_ids_for_period(
+        self, *, parent_ids: Sequence[ParentId | str], period: BillingPeriod
+    ) -> set[str]:
+        """Remediates PERF-05: batch query returning the subset of parent_ids that already have an active invoice for period."""
         raise NotImplementedError
 
     @abstractmethod

@@ -190,16 +190,10 @@ class VideoApplicationService:
         same invariant a second time, since only that single in-process object can reliably
         serialize a genuine race between two near-simultaneous requests)."""
         async with uow:
-            existing = await uow.video_sessions.list_all()
-        if any(
-            session.device_id == DeviceId(command.device_id)
-            and session.purpose == VideoPurpose.INTERCOM
-            and session.status in _OPEN_STATUSES
-            for session in existing
-        ):
-            raise ConflictError(
-                f"An intercom session is already open for device {command.device_id}."
-            )
+            if await uow.video_sessions.has_active_intercom(DeviceId(command.device_id)):
+                raise ConflictError(
+                    f"An intercom session is already open for device {command.device_id}."
+                )
 
         async with uow:
             session = VideoSession.request_intercom(
@@ -292,14 +286,10 @@ class VideoApplicationService:
         read — `video_sessions.requested_by` carries no index of its own (Database Design §7.4),
         matching that reasoning exactly."""
         async with uow:
-            sessions = await uow.video_sessions.list_all()
-        return [
-            video_session_to_dto(session)
-            for session in sessions
-            if str(session.requested_by) == requested_by_user_id
-            and session.purpose.value == purpose
-            and session.status in _OPEN_STATUSES
-        ]
+            sessions = await uow.video_sessions.list_open_sessions_for_user(
+                user_id=requested_by_user_id, purpose=purpose
+            )
+        return [video_session_to_dto(session) for session in sessions]
 
     async def mark_session_active(
         self, command: MarkVideoSessionActiveCommand, *, uow: VideoUnitOfWork
@@ -401,7 +391,7 @@ class VideoApplicationService:
         driven reconciliation path fails to run at all, never a replacement racing to beat it."""
         async with uow:
             now = self._clock.now().replace(tzinfo=None)
-            sessions = await uow.video_sessions.list_all()
+            sessions = await uow.video_sessions.list_open_sessions()
             reconciled = 0
             video_threshold = (
                 stale_after_seconds

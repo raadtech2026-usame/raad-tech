@@ -5,7 +5,6 @@ validation engine, batch ingestion into tenant context, and persistent import hi
 Managed exclusively by RAAD-TECH Platform Administration (Super Admin).
 """
 
-from raad.modules.data_transfer.api.routers import data_transfer_admin_router
 from raad.modules.data_transfer.application.ports import DataTransferUnitOfWork
 from raad.modules.data_transfer.application.services import (
     DataTransferApplicationService,
@@ -26,5 +25,4 @@ __all__ = [
     "ImportBatchId",
     "ImportResourceType",
     "ImportStatus",
-    "data_transfer_admin_router",
 ]

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from typing import Sequence
 
 from sqlalchemy import Select, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -377,6 +378,23 @@ class SqlAlchemyStudentInvoiceRepository(
         )
         result = await self._session.execute(statement)
         return (result.scalar() or 0) > 0
+
+    async def find_existing_student_ids_for_period(
+        self, *, student_ids: Sequence[StudentId | str], period: BillingPeriod
+    ) -> set[str]:
+        if not student_ids:
+            return set()
+        str_ids = [str(sid) for sid in student_ids]
+        statement = self._apply_scope(
+            select(self.model.student_id)
+            .where(
+                self.model.student_id.in_(str_ids),
+                self.model.period == str(period),
+                self.model.deleted_at.is_(None),
+            )
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return {_char(sid) for sid in rows if sid is not None}
 
     async def list_for_student(self, student_id: StudentId) -> list[StudentInvoice]:
         statement = self._live().where(self.model.student_id == str(student_id))
@@ -1117,6 +1135,24 @@ class SqlAlchemyParentInvoiceRepository(
         )
         result = await self._session.execute(statement)
         return (result.scalar() or 0) > 0
+
+    async def find_existing_parent_ids_for_period(
+        self, *, parent_ids: Sequence[ParentId | str], period: BillingPeriod
+    ) -> set[str]:
+        if not parent_ids:
+            return set()
+        str_ids = [str(pid) for pid in parent_ids]
+        statement = self._apply_scope(
+            select(self.model.parent_id)
+            .where(
+                self.model.parent_id.in_(str_ids),
+                self.model.period == str(period),
+                self.model.status != "cancelled",
+                self.model.deleted_at.is_(None),
+            )
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return {_char(pid) for pid in rows if pid is not None}
 
     def add(self, invoice: ParentInvoice) -> None:
         model = parent_invoice_to_model(invoice)

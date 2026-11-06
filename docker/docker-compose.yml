@@ -103,6 +103,21 @@ services:
     container_name: raad-postgres
     logging: *default-logging
     restart: unless-stopped
+    # Performance tuning parameters for 8 GB RAM VPS (PERF-06 remediation):
+    #   shared_buffers=1GB: 25% of memory for PostgreSQL shared cache (default was 128MB).
+    #   effective_cache_size=4GB: hints query planner on available OS file-system cache (50% of RAM).
+    #   random_page_cost=1.1: reflects fast SSD NVMe random read performance (default 4.0 assumes spinning disk).
+    #   work_mem=16MB: per-operation sort/hash memory (default was 4MB).
+    #   jit=off: disables JIT compilation overhead on fast transactional OLTP queries.
+    command:
+      [
+        "postgres",
+        "-c", "shared_buffers=1GB",
+        "-c", "effective_cache_size=4GB",
+        "-c", "random_page_cost=1.1",
+        "-c", "work_mem=16MB",
+        "-c", "jit=off",
+      ]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-raad}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-raad}
@@ -336,6 +351,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f backup-loop.sh > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
 
   device-gateway:
     build:
@@ -562,6 +584,13 @@ services:
     depends_on:
       backend:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+      start_interval: 2s
 
   nginx:
     image: nginx:1.27-alpine
