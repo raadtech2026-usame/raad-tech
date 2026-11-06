@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import io
 import unittest
+import uuid
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
@@ -75,6 +76,41 @@ def create_sample_student_xlsx(rows: list[dict[str, str]]) -> bytes:
             r.get("gender", ""),
             r.get("date_of_birth", ""),
             r.get("notes", ""),
+        ])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def create_sample_bus_manifest_xlsx(rows: list[dict[str, str]]) -> bytes:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Bus Manifest"
+
+    headers = [
+        "bus_name",
+        "parent_name",
+        "parent_phone",
+        "parent_email",
+        "student_1_name",
+        "student_1_fee",
+        "student_2_name",
+        "student_2_fee",
+    ]
+    ws.append(headers)
+
+    for r in rows:
+        ws.append([
+            r.get("bus_name", "Bus 01"),
+            r.get("parent_name", "Parent One"),
+            r.get("parent_phone", "0615112233"),
+            r.get("parent_email", ""),
+            r.get("student_1_name", "Child One"),
+            r.get("student_1_fee", "30.00"),
+            r.get("student_2_name", ""),
+            r.get("student_2_fee", ""),
         ])
 
     buf = io.BytesIO()
@@ -237,6 +273,13 @@ class DataTransferApiIntegrationTests(unittest.TestCase):
                     ),
                     {"org_id": EXISTING_ORG_ID},
                 )
+                # 4b. Clean up student billing profiles created by the test suite
+                await conn.execute(
+                    text(
+                        "DELETE FROM erp_student_billing_profiles WHERE organization_id = :org_id;"
+                    ),
+                    {"org_id": EXISTING_ORG_ID},
+                )
                 # 5. Clean up students created by the test suite
                 await conn.execute(
                     text(
@@ -248,6 +291,13 @@ class DataTransferApiIntegrationTests(unittest.TestCase):
                 await conn.execute(
                     text(
                         "DELETE FROM parents WHERE organization_id = :org_id;"
+                    ),
+                    {"org_id": EXISTING_ORG_ID},
+                )
+                # 6b. Clean up routes created by the test suite
+                await conn.execute(
+                    text(
+                        "DELETE FROM routes WHERE organization_id = :org_id AND name LIKE 'Bus %';"
                     ),
                     {"org_id": EXISTING_ORG_ID},
                 )
@@ -480,8 +530,8 @@ class DataTransferApiIntegrationTests(unittest.TestCase):
 
     def test_commit_parents_persists_to_postgresql_with_iam_user(self) -> None:
         auth = self._auth(self.founder)
-        suffix = datetime.now(timezone.utc).strftime("%H%M%S")
-        phone = f"061599{suffix[-4:]}"
+        suffix = uuid.uuid4().hex[:8]
+        phone = f"061{int(uuid.uuid4().int % 9000000 + 1000000)}"
         email = f"parent.{suffix}@example.com"
 
         file_bytes = create_sample_parent_xlsx([
@@ -521,9 +571,9 @@ class DataTransferApiIntegrationTests(unittest.TestCase):
 
     def test_commit_students_with_parent_relationship_and_duplicate_upsert(self) -> None:
         auth = self._auth(self.founder)
-        suffix = datetime.now(timezone.utc).strftime("%H%M%S")
+        suffix = uuid.uuid4().hex[:8]
         adm_no = f"ADM-REL-{suffix}"
-        parent_phone = f"061511{suffix[-4:]}"
+        parent_phone = f"061{int(uuid.uuid4().int % 9000000 + 1000000)}"
 
         # 1. First commit: enroll student with parent
         file_bytes_1 = create_sample_student_xlsx([
@@ -611,6 +661,35 @@ class DataTransferApiIntegrationTests(unittest.TestCase):
         error_msgs = [e["error_message"] for e in errors]
         self.assertTrue(any("Full name is required" in m for m in error_msgs))
         self.assertTrue(any("Duplicate admission number" in m for m in error_msgs))
+
+    def test_commit_bus_manifest_persists_to_postgresql(self) -> None:
+        auth = self._auth(self.founder)
+        suffix = uuid.uuid4().hex[:8]
+        bus_name = f"Bus Manifest {suffix}"
+        parent_phone = f"061{int(uuid.uuid4().int % 9000000 + 1000000)}"
+
+        file_bytes = create_sample_bus_manifest_xlsx([
+            {
+                "bus_name": bus_name,
+                "parent_name": f"Parent Jamac {suffix}",
+                "parent_phone": parent_phone,
+                "parent_email": f"parent.{suffix}@example.com",
+                "student_1_name": f"Student A {suffix}",
+                "student_1_fee": "30.00",
+                "student_2_name": f"Student B {suffix}",
+                "student_2_fee": "25.00",
+            }
+        ])
+
+        resp = self.client.post(
+            f"/api/v1/admin/organizations/{EXISTING_ORG_ID}/imports/commit?resource_type=bus_manifest&conflict_strategy=skip_invalid",
+            files={"file": ("bus_manifest.xlsx", file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            headers=auth,
+        )
+        self.assertEqual(resp.status_code, 200)
+        commit_data = resp.json()
+        self.assertEqual(commit_data["status"], "committed")
+        self.assertEqual(commit_data["created_count"], 3)
 
     def test_validate_corrupted_excel_bytes_returns_validation_error(self) -> None:
         auth = self._auth(self.founder)

@@ -249,6 +249,32 @@ class DataTransferServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(NotFoundError):
             await self.service.get_batch("NONEXISTENT", data_transfer_uow=self.transfer_uow)
 
+    async def test_commit_bus_manifest_batch_lifecycle(self) -> None:
+        csv_data = (
+            "bus_name,parent_name,parent_phone,student_1_name,student_1_fee\n"
+            "Bus 05,Xuseen Cali,0615112233,Sahal Xuseen,40.00\n"
+        ).encode("utf-8")
+
+        result, batch = await self.service.commit_import(
+            organization_id=TARGET_ORG_A,
+            resource_type="bus_manifest",
+            file_bytes=csv_data,
+            filename="bus_05.csv",
+            conflict_strategy=ConflictStrategy.SKIP_INVALID,
+            principal=self.super_admin,
+            data_transfer_uow=self.transfer_uow,
+            transport_ops_uow=self.transport_uow,
+        )
+
+        self.assertEqual(batch.resource_type, "bus_manifest")
+        self.assertEqual(batch.status, ImportStatus.COMMITTED)
+        self.assertEqual(batch.created_count, 2)  # 1 parent + 1 student
+        self.assertEqual(self.transfer_uow.commit_count, 1)
+
+        saved_batch = await self.batch_repo.get(batch.id)
+        self.assertIsNotNone(saved_batch)
+        self.assertEqual(saved_batch.resource_type, "bus_manifest")
+
 
 if __name__ == "__main__":
     unittest.main()

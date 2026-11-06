@@ -109,6 +109,7 @@ from raad.modules.tracking.infra.adapters import (
 )
 from raad.modules.tracking.infra.repositories import SqlAlchemyTrackingUnitOfWork
 from raad.modules.transport_ops.application.ports import (
+    StudentBillingPort,
     TransportOpsUnitOfWork,
     UserProvisioningPort,
     VehicleDirectoryPort,
@@ -182,6 +183,7 @@ from raad.modules.tracking.application.safety_services import SafetyAlertApplica
 from raad.core.di.erp_adapters import (
     BillingOnboardingAdapter,
     BillingSubscriptionRevenueAdapter,
+    TransportOpsStudentBillingAdapter,
     TransportOpsStudentContextAdapter,
 )
 from raad.modules.organization.application.ports import BillingProvisioningPort
@@ -884,11 +886,16 @@ def build_container(settings: Settings) -> Container:
             ),
         )
         container.bind_singleton(
+            StudentBillingPort,
+            TransportOpsStudentBillingAdapter(container),
+        )
+        container.bind_singleton(
             ImportApplicationService,
             ImportApplicationService(
                 clock=container.resolve(Clock),
                 id_generator=container.resolve(IdGenerator),
                 user_provisioning=container.resolve(UserProvisioningPort),
+                student_billing=container.resolve(StudentBillingPort),
             ),
         )
         container.bind_singleton(

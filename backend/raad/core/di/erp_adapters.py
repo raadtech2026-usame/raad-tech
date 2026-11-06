@@ -36,7 +36,10 @@ from raad.modules.school_erp.application.ports import (
     StudentTransportContext,
     StudentTransportContextPort,
 )
-from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
+from raad.modules.transport_ops.application.ports import (
+    StudentBillingPort,
+    TransportOpsUnitOfWork,
+)
 from raad.modules.transport_ops.application.services import (
     StudentAssignmentApplicationService,
 )
@@ -194,4 +197,44 @@ class BillingOnboardingAdapter(BillingProvisioningPort):
                 organization_id=organization_id, plan_id=plan_id, actor=actor
             ),
             uow=uow,
+        )
+
+
+class TransportOpsStudentBillingAdapter(StudentBillingPort):
+    """Sets a student's recurring monthly transportation fee in school_erp (ADR-0048)."""
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+
+    async def set_student_monthly_fee(
+        self,
+        *,
+        organization_id: str,
+        student_id: str,
+        monthly_fee: str | float | Decimal,
+        currency: str = "USD",
+        actor: Principal,
+    ) -> None:
+        from raad.modules.school_erp.application.commands import SetStudentBillingFeeCommand
+        from raad.modules.school_erp.application.ports import SchoolErpUnitOfWork
+        from raad.modules.school_erp.application.services import SchoolErpApplicationService
+
+        erp_service: SchoolErpApplicationService = self._container.resolve(
+            SchoolErpApplicationService
+        )
+        erp_uow: SchoolErpUnitOfWork = self._container.resolve(SchoolErpUnitOfWork)
+        transport_uow: TransportOpsUnitOfWork = self._container.resolve(
+            TransportOpsUnitOfWork
+        )
+
+        command = SetStudentBillingFeeCommand(
+            student_id=student_id,
+            monthly_fee=str(monthly_fee),
+            currency=currency,
+            actor=actor,
+        )
+        await erp_service.set_student_billing_fee(
+            command,
+            school_erp_uow=erp_uow,
+            transport_ops_uow=transport_uow,
         )

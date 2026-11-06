@@ -87,10 +87,11 @@ describe("OrganizationDataImportPanel", () => {
     const excelDownloadButtons = screen.getAllByRole("button", { name: /Excel \(\.xlsx\)/i });
     expect(excelDownloadButtons.length).toBeGreaterThanOrEqual(1);
 
+    // First card is the recommended bus manifest template
     await user.click(excelDownloadButtons[0]);
     expect(downloadPlatformImportTemplate).toHaveBeenCalledWith(
       "01J8Z3K9G6X8YV5T4N2R7QW001",
-      "students",
+      "bus_manifest",
       "xlsx",
     );
   });
@@ -98,7 +99,7 @@ describe("OrganizationDataImportPanel", () => {
   it("validates an uploaded file and displays validation diagnostics and preview", async () => {
     const user = userEvent.setup();
     vi.mocked(validatePlatformImport).mockResolvedValueOnce({
-      resourceType: "students",
+      resourceType: "bus_manifest",
       organizationId: "01J8Z3K9G6X8YV5T4N2R7QW001",
       totalRows: 2,
       validRows: 2,
@@ -108,13 +109,13 @@ describe("OrganizationDataImportPanel", () => {
         {
           rowNumber: 2,
           isValid: true,
-          data: { full_name: "Ahmed Ali", external_reference: "STU-001" },
+          data: { bus_name: "Bus Route 1", parent_name: "Ahmed Ali", parent_phone: "+252615112233" },
           errors: [],
         },
         {
           rowNumber: 3,
           isValid: true,
-          data: { full_name: "Fatima Omar", external_reference: "STU-002" },
+          data: { bus_name: "Bus Route 1", parent_name: "Fatima Omar", parent_phone: "+252615445566" },
           errors: [],
         },
       ],
@@ -122,21 +123,21 @@ describe("OrganizationDataImportPanel", () => {
 
     renderPanel();
 
-    const file = new File(["dummy"], "students.xlsx", {
+    const file = new File(["dummy"], "bus_manifest.xlsx", {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
 
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
     await user.upload(fileInput, file);
 
-    expect(screen.getByText("students.xlsx")).toBeInTheDocument();
+    expect(screen.getByText("bus_manifest.xlsx")).toBeInTheDocument();
 
     const validateBtn = screen.getByRole("button", { name: /Validate Spreadsheet/i });
     await user.click(validateBtn);
 
     expect(validatePlatformImport).toHaveBeenCalledWith(
       "01J8Z3K9G6X8YV5T4N2R7QW001",
-      "students",
+      "bus_manifest",
       file,
     );
 
@@ -150,18 +151,18 @@ describe("OrganizationDataImportPanel", () => {
   it("executes atomic commit and displays success summary", async () => {
     const user = userEvent.setup();
     vi.mocked(validatePlatformImport).mockResolvedValueOnce({
-      resourceType: "students",
+      resourceType: "bus_manifest",
       organizationId: "01J8Z3K9G6X8YV5T4N2R7QW001",
       totalRows: 1,
       validRows: 1,
       invalidRows: 0,
       errors: [],
-      preview: [{ rowNumber: 2, isValid: true, data: { full_name: "Hassan Ali" }, errors: [] }],
+      preview: [{ rowNumber: 2, isValid: true, data: { bus_name: "Bus 1", parent_name: "Hassan Ali" }, errors: [] }],
     });
 
     vi.mocked(commitPlatformImport).mockResolvedValueOnce({
       batchId: "batch-99",
-      resourceType: "students",
+      resourceType: "bus_manifest",
       organizationId: "01J8Z3K9G6X8YV5T4N2R7QW001",
       createdCount: 1,
       updatedCount: 0,
@@ -173,7 +174,7 @@ describe("OrganizationDataImportPanel", () => {
 
     renderPanel();
 
-    const file = new File(["dummy"], "students.xlsx", {
+    const file = new File(["dummy"], "bus_manifest.xlsx", {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
@@ -189,7 +190,7 @@ describe("OrganizationDataImportPanel", () => {
 
     expect(commitPlatformImport).toHaveBeenCalledWith(
       "01J8Z3K9G6X8YV5T4N2R7QW001",
-      "students",
+      "bus_manifest",
       file,
       "skip",
     );

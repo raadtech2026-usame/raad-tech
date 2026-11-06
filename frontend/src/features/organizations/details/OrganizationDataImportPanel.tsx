@@ -61,7 +61,7 @@ export function OrganizationDataImportPanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Import workflow state
-  const [resourceType, setResourceType] = useState<ImportResourceType>("students");
+  const [resourceType, setResourceType] = useState<ImportResourceType>("bus_manifest");
   const [conflictStrategy, setConflictStrategy] = useState<ImportConflictStrategy>("skip");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -220,6 +220,39 @@ export function OrganizationDataImportPanel({
         </div>
 
         <div className={styles.templateGrid}>
+          {/* Unified Bus Manifest Template Card */}
+          <div className={styles.templateCard} style={{ borderColor: "var(--color-brand-primary)" }}>
+            <div className={styles.templateCardTop}>
+              <div className={styles.templateCardIcon}>
+                <FileSpreadsheet size={20} color="var(--color-brand-primary)" />
+              </div>
+              <div className={styles.templateCardMeta}>
+                <div className={styles.templateCardTitle}>🚌 Bus Manifest Template (Recommended)</div>
+                <div className={styles.templateCardDesc}>
+                  Unified template per bus: bus name, parent full name &amp; Somali phone (auto password: 1234), and all children with their monthly transport fees. No class/grade required.
+                </div>
+              </div>
+            </div>
+            <div className={styles.templateActions}>
+              <Button
+                variant="primary"
+                size="sm"
+                leadingIcon={<Download size={14} />}
+                onClick={() => handleDownloadTemplate("bus_manifest", "xlsx")}
+              >
+                Excel (.xlsx)
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                leadingIcon={<FileText size={14} />}
+                onClick={() => handleDownloadTemplate("bus_manifest", "csv")}
+              >
+                CSV (.csv)
+              </Button>
+            </div>
+          </div>
+
           {/* Students Template Card */}
           <div className={styles.templateCard}>
             <div className={styles.templateCardTop}>
@@ -309,6 +342,19 @@ export function OrganizationDataImportPanel({
           <div className={styles.controlGroup}>
             <span className={styles.controlLabel}>Entity Type</span>
             <div className={styles.segmentedControl}>
+              <button
+                type="button"
+                className={`${styles.segmentedButton} ${
+                  resourceType === "bus_manifest" ? styles.segmentedButtonActive : ""
+                }`}
+                onClick={() => {
+                  setResourceType("bus_manifest");
+                  setValidationResult(null);
+                  setCommitResult(null);
+                }}
+              >
+                🚌 Bus Manifest (Recommended)
+              </button>
               <button
                 type="button"
                 className={`${styles.segmentedButton} ${
