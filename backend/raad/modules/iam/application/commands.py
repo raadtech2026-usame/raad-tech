@@ -38,6 +38,7 @@ class CreateUserWithTemporaryPasswordCommand:
     phone: str | None
     full_name: str
     actor: Principal
+    initial_password: str | None = None
 
 
 @dataclass(frozen=True)

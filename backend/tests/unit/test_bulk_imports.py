@@ -10,6 +10,7 @@ import csv
 import io
 import unittest
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 import openpyxl
 
@@ -18,10 +19,12 @@ from raad.core.ids.generator import IdGenerator
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.import_services import (
+    BUS_MANIFEST_TEMPLATE_COLUMNS,
     ImportApplicationService,
     normalize_somali_phone,
 )
 from raad.modules.transport_ops.application.ports import (
+    StudentBillingPort,
     TransportOpsUnitOfWork,
     UserProvisioningPort,
 )
@@ -150,6 +153,7 @@ class FakeUserProvisioningPort(UserProvisioningPort):
         phone: str | None,
         full_name: str,
         actor: Principal,
+        initial_password: str | None = None,
     ) -> tuple[str, str]:
         user_id = f"01J8Z3K9G6X8YV5T4N2RUSR{len(self.created):03d}"
         self.created.append(
@@ -160,9 +164,30 @@ class FakeUserProvisioningPort(UserProvisioningPort):
                 "email": email,
                 "phone": phone,
                 "full_name": full_name,
+                "initial_password": initial_password,
             }
         )
-        return user_id, "Tmp-Pass-123"
+        return user_id, initial_password or "Tmp-Pass-123"
+
+
+class FakeStudentBillingPort(StudentBillingPort):
+    def __init__(self) -> None:
+        self.fees: dict[str, dict] = {}
+
+    async def set_student_monthly_fee(
+        self,
+        *,
+        organization_id: str,
+        student_id: str,
+        monthly_fee: str | float | Decimal,
+        currency: str = "USD",
+        actor: Principal,
+    ) -> None:
+        self.fees[student_id] = {
+            "organization_id": organization_id,
+            "monthly_fee": Decimal(str(monthly_fee)),
+            "currency": currency,
+        }
 
 
 class FakeTransportOpsUnitOfWork(TransportOpsUnitOfWork):
@@ -203,10 +228,12 @@ class BulkImportTests(unittest.IsolatedAsyncioTestCase):
         self.clock = FixedClock(datetime(2026, 11, 2, 10, 0, 0, tzinfo=timezone.utc))
         self.id_gen = SequentialIdGenerator()
         self.user_prov = FakeUserProvisioningPort()
+        self.billing_port = FakeStudentBillingPort()
         self.service = ImportApplicationService(
             clock=self.clock,
             id_generator=self.id_gen,
             user_provisioning=self.user_prov,
+            student_billing=self.billing_port,
         )
 
         self.students_repo = InMemoryStudentRepository()
@@ -516,6 +543,109 @@ class BulkImportTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(self.uow.rollback_count, 1)
+
+    def test_generate_template_bus_manifest(self) -> None:
+        raw_xlsx, media_type, filename = self.service.generate_template("bus_manifest", "xlsx")
+        self.assertIn("spreadsheetml", media_type)
+        self.assertTrue(filename.endswith(".xlsx"))
+
+        wb = openpyxl.load_workbook(io.BytesIO(raw_xlsx))
+        ws = wb.active
+        self.assertEqual(ws.title, "Bus Ingestion Template")
+
+        headers = [cell.value for cell in ws[1] if cell.value]
+        self.assertIn("bus_name", headers)
+        self.assertIn("parent_name", headers)
+        self.assertIn("parent_phone", headers)
+        self.assertIn("student_1_name", headers)
+        self.assertIn("student_1_fee", headers)
+        # CRITICAL USER REQUIREMENT: grade/class must NOT be in columns
+        self.assertNotIn("grade_level", headers)
+        self.assertNotIn("class", headers)
+
+    async def test_validate_bus_manifest_csv_valid(self) -> None:
+        csv_data = (
+            "bus_name,parent_name,parent_phone,parent_email,student_1_name,student_1_fee,student_2_name,student_2_fee\n"
+            "Bus 01,Cali Faarax,0615123456,cali@example.com,Axmed Cali,30.00,Maryan Cali,25.00\n"
+            "Bus 01,Faadumo Jaamac,0615998877,,Cabdi Maxamed,35.00,,\n"
+        ).encode("utf-8")
+
+        result = await self.service.validate_import(
+            "bus_manifest",
+            csv_data,
+            "bus_manifest.csv",
+            VALID_ORG_ID,
+            uow=self.uow,
+        )
+
+        self.assertEqual(result.total_rows, 2)
+        self.assertEqual(result.valid_rows, 2)
+        self.assertEqual(result.invalid_rows, 0)
+        self.assertEqual(len(result.errors), 0)
+
+        # Check children parsed correctly
+        first_row_children = result.preview[0].data["children"]
+        self.assertEqual(len(first_row_children), 2)
+        self.assertEqual(first_row_children[0]["name"], "Axmed Cali")
+        self.assertEqual(first_row_children[0]["fee"], Decimal("30.00"))
+        self.assertEqual(first_row_children[1]["name"], "Maryan Cali")
+        self.assertEqual(first_row_children[1]["fee"], Decimal("25.00"))
+
+    async def test_commit_bus_manifest_import_atomic(self) -> None:
+        csv_data = (
+            "bus_name,parent_name,parent_phone,parent_email,student_1_name,student_1_fee,student_2_name,student_2_fee\n"
+            "Bus 01,Cali Faarax,0615123456,cali@example.com,Axmed Cali,30.00,Maryan Cali,25.00\n"
+            "Bus 01,Faadumo Jaamac,0615998877,,Cabdi Maxamed,35.00,,\n"
+        ).encode("utf-8")
+
+        result = await self.service.commit_import(
+            "bus_manifest",
+            csv_data,
+            "bus_manifest.csv",
+            VALID_ORG_ID,
+            self.principal,
+            uow=self.uow,
+        )
+
+        # 2 parents + 3 students = 5 created records
+        self.assertEqual(result.created_count, 5)
+        self.assertEqual(self.uow.commit_count, 1)
+
+        # Route created
+        routes = await self.routes_repo.list_all()
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0].name, "Bus 01")
+
+        # Parents created
+        parents = await self.parents_repo.list_all()
+        self.assertEqual(len(parents), 2)
+        self.assertEqual(str(parents[0].phone), "+252615123456")
+
+        # IAM users created with default password "1234"
+        self.assertEqual(len(self.user_prov.created), 2)
+        self.assertEqual(self.user_prov.created[0]["initial_password"], "1234")
+
+        # Students created
+        students = await self.students_repo.list_all()
+        self.assertEqual(len(students), 3)
+        student_names = {s.full_name for s in students}
+        self.assertIn("Axmed Cali", student_names)
+        self.assertIn("Maryan Cali", student_names)
+        self.assertIn("Cabdi Maxamed", student_names)
+
+        # Student parent links created
+        links = self.student_parents_repo.links
+        self.assertEqual(len(links), 3)
+
+        # Student billing fees recorded in school_erp
+        self.assertEqual(len(self.billing_port.fees), 3)
+        fees_by_student_name = {
+            s.full_name: self.billing_port.fees[str(s.id)]["monthly_fee"]
+            for s in students
+        }
+        self.assertEqual(fees_by_student_name["Axmed Cali"], Decimal("30.00"))
+        self.assertEqual(fees_by_student_name["Maryan Cali"], Decimal("25.00"))
+        self.assertEqual(fees_by_student_name["Cabdi Maxamed"], Decimal("35.00"))
 
 
 if __name__ == "__main__":

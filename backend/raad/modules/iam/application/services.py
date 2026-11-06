@@ -249,10 +249,17 @@ class UserApplicationService:
         async with uow:
             email = Email(command.email) if command.email else None
             phone = PhoneNumber(command.phone) if command.phone else None
+            if phone is not None:
+                existing_phone_user = await uow.users.get_by_phone(phone)
+                if existing_phone_user is not None:
+                    if command.role == Role.PARENT and (
+                        existing_phone_user.organization_id is None
+                        or str(existing_phone_user.organization_id) == str(command.organization_id)
+                    ):
+                        return user_to_dto(existing_phone_user), (command.initial_password or "1234")
+                    await ensure_phone_available(uow, phone)
             if email is not None:
                 await ensure_email_available(uow, email)
-            if phone is not None:
-                await ensure_phone_available(uow, phone)
 
             user = User.invite(
                 id=UserId(self._id_generator.new_id()),
@@ -268,7 +275,10 @@ class UserApplicationService:
                 clock=self._clock,
                 actor_id=command.actor.user_id,
             )
-            temporary_password = _generate_temporary_password(self._password_policy)
+            if command.initial_password:
+                temporary_password = command.initial_password
+            else:
+                temporary_password = _generate_temporary_password(self._password_policy)
             user.set_temporary_password_hash(
                 self._password_hasher.hash(temporary_password),
                 clock=self._clock,

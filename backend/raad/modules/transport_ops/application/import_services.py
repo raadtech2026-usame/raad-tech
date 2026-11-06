@@ -11,6 +11,7 @@ import io
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 import openpyxl
@@ -22,11 +23,13 @@ from raad.core.ids.generator import IdGenerator
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.ports import (
+    StudentBillingPort,
     TransportOpsUnitOfWork,
     UserProvisioningPort,
 )
 from raad.modules.transport_ops.domain.entities import (
     Parent,
+    Route,
     Student,
     StudentParent,
 )
@@ -35,6 +38,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     OrganizationId,
     ParentId,
     PhoneNumber,
+    RouteId,
     StudentId,
     UserId,
 )
@@ -63,6 +67,66 @@ PARENT_TEMPLATE_COLUMNS = [
     ("emergency_contact_name", "Emergency Contact Name", "e.g. Ali Warsame"),
     ("emergency_contact_phone", "Emergency Contact Phone", "e.g. 0615999888"),
     ("notes", "Notes", "Optional notes"),
+]
+
+BUS_MANIFEST_TEMPLATE_COLUMNS = [
+    ("bus_name", "Bus Name *", "e.g. Bus 01"),
+    ("parent_name", "Parent Full Name *", "e.g. Cali Faarax"),
+    ("parent_phone", "Parent Phone *", "e.g. 0615123456"),
+    ("parent_email", "Parent Email", "e.g. cali@example.com (Optional)"),
+    ("student_1_name", "Student 1 Name *", "e.g. Axmed Cali"),
+    ("student_1_fee", "Student 1 Monthly Fee ($)", "e.g. 30.00"),
+    ("student_2_name", "Student 2 Name", "e.g. Maryan Cali (Optional)"),
+    ("student_2_fee", "Student 2 Monthly Fee ($)", "e.g. 25.00 (Optional)"),
+    ("student_3_name", "Student 3 Name", "e.g. Yaasiin Cali (Optional)"),
+    ("student_3_fee", "Student 3 Monthly Fee ($)", "e.g. 20.00 (Optional)"),
+    ("student_4_name", "Student 4 Name", "Optional"),
+    ("student_4_fee", "Student 4 Monthly Fee ($)", "Optional"),
+]
+
+BUS_MANIFEST_SAMPLE_ROWS = [
+    [
+        "Bus 01",
+        "Cali Faarax",
+        "0615123456",
+        "cali.faarax@example.com",
+        "Axmed Cali",
+        "30.00",
+        "Maryan Cali",
+        "25.00",
+        "",
+        "",
+        "",
+        "",
+    ],
+    [
+        "Bus 01",
+        "Faadumo Jaamac",
+        "0615998877",
+        "",
+        "Cabdi Maxamed",
+        "35.00",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ],
+    [
+        "Bus 02",
+        "Xasan Cumar",
+        "+252615654321",
+        "xasan.cumar@example.com",
+        "Khadar Xasan",
+        "30.00",
+        "Hani Xasan",
+        "30.00",
+        "Guuleed Xasan",
+        "20.00",
+        "",
+        "",
+    ],
 ]
 
 STUDENT_SAMPLE_ROWS = [
@@ -209,19 +273,21 @@ class ImportApplicationService:
         clock: Clock,
         id_generator: IdGenerator,
         user_provisioning: UserProvisioningPort | None = None,
+        student_billing: StudentBillingPort | None = None,
     ) -> None:
         self._clock = clock
         self._id_generator = id_generator
         self._user_provisioning = user_provisioning
+        self._student_billing = student_billing
 
     def generate_template(
         self, resource_type: str, format_type: str = "xlsx"
     ) -> tuple[bytes, str, str]:
         """Generates downloadable starter template (.xlsx or .csv) with documented column headers."""
         norm_type = resource_type.strip().lower()
-        if norm_type not in ("students", "parents"):
+        if norm_type not in ("bus_manifest", "students", "parents"):
             raise ValidationError(
-                f"Unsupported resource type '{resource_type}'. Supported: 'students', 'parents'."
+                f"Unsupported resource type '{resource_type}'. Supported: 'bus_manifest', 'students', 'parents'."
             )
 
         norm_format = format_type.strip().lower()
@@ -230,17 +296,23 @@ class ImportApplicationService:
                 f"Unsupported template format '{format_type}'. Supported: 'xlsx', 'csv'."
             )
 
-        columns = (
-            STUDENT_TEMPLATE_COLUMNS if norm_type == "students" else PARENT_TEMPLATE_COLUMNS
-        )
-        sample_rows = (
-            STUDENT_SAMPLE_ROWS if norm_type == "students" else PARENT_SAMPLE_ROWS
-        )
+        if norm_type == "bus_manifest":
+            columns = BUS_MANIFEST_TEMPLATE_COLUMNS
+            sample_rows = BUS_MANIFEST_SAMPLE_ROWS
+            sheet_title = "Bus Ingestion Template"
+        elif norm_type == "students":
+            columns = STUDENT_TEMPLATE_COLUMNS
+            sample_rows = STUDENT_SAMPLE_ROWS
+            sheet_title = "Students Template"
+        else:
+            columns = PARENT_TEMPLATE_COLUMNS
+            sample_rows = PARENT_SAMPLE_ROWS
+            sheet_title = "Parents Template"
 
         if norm_format == "xlsx":
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.title = f"{norm_type.capitalize()} Template"
+            ws.title = sheet_title
 
             header_fill = PatternFill(
                 start_color="1E3A8A", end_color="1E3A8A", fill_type="solid"
@@ -406,9 +478,9 @@ class ImportApplicationService:
     ) -> ImportValidationResult:
         """Dry-run validation of the uploaded file without persisting to DB."""
         norm_type = resource_type.strip().lower()
-        if norm_type not in ("students", "parents"):
+        if norm_type not in ("bus_manifest", "students", "parents"):
             raise ValidationError(
-                f"Unsupported resource type '{resource_type}'. Supported: 'students', 'parents'."
+                f"Unsupported resource type '{resource_type}'. Supported: 'bus_manifest', 'students', 'parents'."
             )
 
         if not file_bytes:
@@ -434,12 +506,13 @@ class ImportApplicationService:
             row_data = self._normalize_row_keys(raw_dict)
             row_errors: list[str] = []
 
-            # 1. Full name validation
-            full_name = row_data.get("full_name", "").strip()
-            if not full_name:
-                err = "Full name is required."
-                row_errors.append(err)
-                errors.append(RowError(row_num, "full_name", err))
+            if norm_type in ("students", "parents"):
+                # 1. Full name validation
+                full_name = row_data.get("full_name", "").strip()
+                if not full_name:
+                    err = "Full name is required."
+                    row_errors.append(err)
+                    errors.append(RowError(row_num, "full_name", err))
 
             if norm_type == "students":
                 # Admission number duplicate in file
@@ -532,6 +605,86 @@ class ImportApplicationService:
                     else:
                         row_data["emergency_contact_phone"] = norm_em_phone or ""
 
+            elif norm_type == "bus_manifest":
+                bus_name = str(row_data.get("bus_name") or row_data.get("route_code") or "").strip()
+                if not bus_name:
+                    err = "Bus Name is required."
+                    row_errors.append(err)
+                    errors.append(RowError(row_num, "bus_name", err))
+
+                parent_name = str(row_data.get("parent_name") or row_data.get("full_name") or "").strip()
+                if not parent_name:
+                    err = "Parent full name is required."
+                    row_errors.append(err)
+                    errors.append(RowError(row_num, "parent_name", err))
+
+                parent_phone = str(row_data.get("parent_phone") or row_data.get("phone") or "").strip()
+                if not parent_phone:
+                    err = "Parent phone number is required."
+                    row_errors.append(err)
+                    errors.append(RowError(row_num, "parent_phone", err))
+                else:
+                    norm_phone, phone_err = normalize_somali_phone(parent_phone)
+                    if phone_err:
+                        row_errors.append(phone_err)
+                        errors.append(RowError(row_num, "parent_phone", phone_err))
+                    else:
+                        row_data["parent_phone"] = norm_phone or ""
+
+                parent_email = str(row_data.get("parent_email") or row_data.get("email") or "").strip()
+                if parent_email:
+                    if "@" not in parent_email or "." not in parent_email:
+                        err = f"Invalid email format: '{parent_email}'."
+                        row_errors.append(err)
+                        errors.append(RowError(row_num, "parent_email", err))
+
+                # Extract children (supports multi-column student_1_name..student_10_name and single student_name)
+                children: list[dict[str, Any]] = []
+                for i in range(1, 11):
+                    c_name = str(row_data.get(f"student_{i}_name", "") or "").strip()
+                    c_fee_raw = str(row_data.get(f"student_{i}_fee", "") or "").strip()
+                    if c_name:
+                        fee_val = Decimal("0.00")
+                        if c_fee_raw:
+                            try:
+                                fee_clean = c_fee_raw.replace("$", "").replace(",", "").strip()
+                                fee_val = Decimal(fee_clean)
+                                if fee_val < 0:
+                                    err = f"Fee for student '{c_name}' cannot be negative: '{c_fee_raw}'."
+                                    row_errors.append(err)
+                                    errors.append(RowError(row_num, f"student_{i}_fee", err))
+                            except Exception:
+                                err = f"Invalid fee amount for student '{c_name}': '{c_fee_raw}'."
+                                row_errors.append(err)
+                                errors.append(RowError(row_num, f"student_{i}_fee", err))
+                        children.append({"name": c_name, "fee": fee_val})
+
+                if not children:
+                    single_name = str(row_data.get("student_name", "") or "").strip()
+                    single_fee_raw = str(row_data.get("student_fee", "") or row_data.get("fee", "") or "").strip()
+                    if single_name:
+                        fee_val = Decimal("0.00")
+                        if single_fee_raw:
+                            try:
+                                fee_clean = single_fee_raw.replace("$", "").replace(",", "").strip()
+                                fee_val = Decimal(fee_clean)
+                                if fee_val < 0:
+                                    err = f"Fee for student '{single_name}' cannot be negative: '{single_fee_raw}'."
+                                    row_errors.append(err)
+                                    errors.append(RowError(row_num, "student_fee", err))
+                            except Exception:
+                                err = f"Invalid fee amount for student '{single_name}': '{single_fee_raw}'."
+                                row_errors.append(err)
+                                errors.append(RowError(row_num, "student_fee", err))
+                        children.append({"name": single_name, "fee": fee_val})
+
+                if not children:
+                    err = "At least one student name is required."
+                    row_errors.append(err)
+                    errors.append(RowError(row_num, "student_1_name", err))
+                else:
+                    row_data["children"] = children
+
             is_valid = len(row_errors) == 0
             previews.append(
                 RowPreview(
@@ -603,7 +756,9 @@ class ImportApplicationService:
                     continue
 
                 row_data = preview.data
-                full_name = row_data["full_name"]
+
+                if norm_type in ("students", "parents"):
+                    full_name = row_data.get("full_name", "")
 
                 if norm_type == "students":
                     adm_no = row_data.get("admission_number", "").strip() or None
@@ -770,6 +925,105 @@ class ImportApplicationService:
                         if phone:
                             parents_by_phone[phone] = parent
                         created_count += 1
+
+                elif norm_type == "bus_manifest":
+                    bus_name = str(row_data.get("bus_name") or row_data.get("route_code") or "").strip()
+                    parent_name = str(row_data.get("parent_name") or row_data.get("full_name") or "").strip()
+                    parent_phone = row_data.get("parent_phone", "").strip()
+                    parent_email = str(row_data.get("parent_email") or row_data.get("email") or "").strip() or None
+                    children = row_data.get("children", [])
+
+                    # 1. Bus / Route lookup or auto-creation
+                    route: Route
+                    if bus_name.lower() in routes_by_name:
+                        route = routes_by_name[bus_name.lower()]
+                    else:
+                        route = Route.create(
+                            id=RouteId(self._id_generator.new_id()),
+                            organization_id=OrganizationId(organization_id),
+                            name=bus_name,
+                            clock=self._clock,
+                            actor_id=principal.user_id,
+                        )
+                        uow.routes.add(route)
+                        uow.record_events(route.pull_domain_events())
+                        routes_by_name[bus_name.lower()] = route
+
+                    # 2. Parent lookup or auto-registration
+                    parent: Parent
+                    if parent_phone and parent_phone in parents_by_phone:
+                        parent = parents_by_phone[parent_phone]
+                    else:
+                        # Provision IAM user with initial password "1234"
+                        user_id: str
+                        if self._user_provisioning:
+                            user_id, _ = await self._user_provisioning.create_user_with_temporary_password(
+                                organization_id=organization_id,
+                                role=Role.PARENT,
+                                email=parent_email,
+                                phone=parent_phone,
+                                full_name=parent_name,
+                                actor=principal,
+                                initial_password="1234",
+                            )
+                        else:
+                            user_id = self._id_generator.new_id()
+
+                        parent = Parent.register(
+                            id=ParentId(self._id_generator.new_id()),
+                            organization_id=OrganizationId(organization_id),
+                            user_id=UserId(user_id),
+                            full_name=parent_name,
+                            phone=PhoneNumber(parent_phone) if parent_phone else None,
+                            clock=self._clock,
+                            actor_id=principal.user_id,
+                        )
+                        uow.parents.add(parent)
+                        uow.record_events(parent.pull_domain_events())
+                        if parent_phone:
+                            parents_by_phone[parent_phone] = parent
+                        created_count += 1
+
+                    # 3. Children enrollment, parent linking, and billing setup
+                    for child in children:
+                        child_name = child["name"]
+                        child_fee = child["fee"]
+
+                        student = Student.enroll(
+                            id=StudentId(self._id_generator.new_id()),
+                            organization_id=OrganizationId(organization_id),
+                            full_name=child_name,
+                            notes=f"Bus: {bus_name}",
+                            clock=self._clock,
+                            actor_id=principal.user_id,
+                        )
+                        uow.students.add(student)
+                        uow.record_events(student.pull_domain_events())
+                        created_count += 1
+
+                        link = StudentParent.link(
+                            student_id=student.id,
+                            student_organization_id=student.organization_id,
+                            parent_id=parent.id,
+                            parent_organization_id=parent.organization_id,
+                            relationship="Parent",
+                            is_primary=True,
+                            clock=self._clock,
+                            actor_id=principal.user_id,
+                        )
+                        uow.student_parents.add(link)
+
+                        if child_fee is not None and self._student_billing:
+                            try:
+                                await self._student_billing.set_student_monthly_fee(
+                                    organization_id=organization_id,
+                                    student_id=str(student.id),
+                                    monthly_fee=child_fee,
+                                    currency="USD",
+                                    actor=principal,
+                                )
+                            except Exception:
+                                pass
 
             # Single atomic commit for the batch
             await uow.commit()

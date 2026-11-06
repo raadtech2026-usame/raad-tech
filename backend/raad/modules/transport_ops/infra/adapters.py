@@ -40,6 +40,7 @@ class IamUserProvisioningAdapter(UserProvisioningPort):
         phone: str | None,
         full_name: str,
         actor: Principal,
+        initial_password: str | None = None,
     ) -> tuple[str, str]:
         uow = self._uow_factory()
         command = CreateUserWithTemporaryPasswordCommand(
@@ -49,6 +50,7 @@ class IamUserProvisioningAdapter(UserProvisioningPort):
             phone=phone,
             full_name=full_name,
             actor=actor,
+            initial_password=initial_password,
         )
         user_dto, temporary_password = await self._user_service.create_user_with_temporary_password(
             command, uow=uow

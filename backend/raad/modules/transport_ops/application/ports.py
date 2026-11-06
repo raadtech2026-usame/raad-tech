@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from decimal import Decimal
 
 from raad.core.db.unit_of_work import UnitOfWork
 from raad.core.tenancy.principal import Principal, Role
@@ -109,7 +110,25 @@ class UserProvisioningPort(ABC):
         phone: str | None,
         full_name: str,
         actor: Principal,
+        initial_password: str | None = None,
     ) -> tuple[str, str]:
+        raise NotImplementedError
+
+
+
+class StudentBillingPort(ABC):
+    """Outbound port for setting recurring monthly student transportation fees in school_erp."""
+
+    @abstractmethod
+    async def set_student_monthly_fee(
+        self,
+        *,
+        organization_id: str,
+        student_id: str,
+        monthly_fee: str | float | Decimal,
+        currency: str = "USD",
+        actor: Principal,
+    ) -> None:
         raise NotImplementedError
 
 

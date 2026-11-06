@@ -34,5 +34,6 @@ class ConflictStrategy(str, Enum):
 class ImportResourceType(str, Enum):
     """Supported entity resource types for bulk data transfer."""
 
+    BUS_MANIFEST = "bus_manifest"
     STUDENTS = "students"
     PARENTS = "parents"

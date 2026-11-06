@@ -1,6 +1,6 @@
 import { apiRequest, downloadFile } from "../../../shared/api/client";
 
-export type ImportResourceType = "students" | "parents";
+export type ImportResourceType = "bus_manifest" | "students" | "parents";
 export type ImportConflictStrategy = "skip" | "overwrite";
 
 export interface ImportRowError {
