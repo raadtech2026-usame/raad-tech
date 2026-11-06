@@ -161,8 +161,9 @@ def _docs_kwargs(environment: Environment) -> dict[str, str | None]:
     return {}
 
 
-def create_app() -> FastAPI:
-    settings = get_settings()
+def create_app(settings: Settings | None = None) -> FastAPI:
+    if settings is None:
+        settings = get_settings()
     app = FastAPI(
         title="RAAD Business API",
         version="0.1.0",
@@ -198,6 +199,7 @@ def create_app() -> FastAPI:
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        max_age=settings.cors.max_age,
     )
 
     register_exception_handlers(app)

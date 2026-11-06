@@ -503,12 +503,15 @@ class SchoolErpApplicationService:
                 raise DomainError("Fee plan belongs to a different organization")
 
             contexts = await self._resolve_transport_contexts(command.student_ids)
+            existing_student_ids = (
+                await uow.student_invoices.find_existing_student_ids_for_period(
+                    student_ids=command.student_ids, period=period
+                )
+            )
             issued: list[StudentInvoice] = []
 
             for student_id in command.student_ids:
-                if await uow.student_invoices.exists_for_student_period(
-                    student_id=StudentId(student_id), period=period
-                ):
+                if student_id in existing_student_ids:
                     continue
 
                 context = contexts.get(student_id)
@@ -1423,12 +1426,15 @@ class ParentFinanceApplicationService:
         )
         skipped: list[GenerationSkipDTO] = []
         children_by_parent: dict[str, list[StudentForParentDTO]] = {}
+        existing_parent_ids = (
+            await school_erp_uow.parent_invoices.find_existing_parent_ids_for_period(
+                parent_ids=[profile.parent_id for profile in profiles], period=period
+            )
+        )
         for profile in profiles:
             parent_id = str(profile.parent_id)
             parent_name = parent_names.get(parent_id, parent_id)
-            if await school_erp_uow.parent_invoices.exists_for_parent_period(
-                parent_id=profile.parent_id, period=period
-            ):
+            if parent_id in existing_parent_ids:
                 skipped.append(GenerationSkipDTO(parent_id, parent_name, "already_invoiced"))
                 continue
             children = await self._resolve_active_children(

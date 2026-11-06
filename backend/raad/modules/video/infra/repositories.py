@@ -23,6 +23,7 @@ takes effect. This is what makes `POST /video/sessions/{id}/stop` (`api/routers.
 
 from __future__ import annotations
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import SqlAlchemyRepositoryBase
@@ -31,7 +32,11 @@ from raad.core.tenancy.scope import TenantRegionScope
 from raad.modules.video.application.ports import VideoUnitOfWork
 from raad.modules.video.domain.entities import VideoSession
 from raad.modules.video.domain.repositories import VideoSessionRepository
-from raad.modules.video.domain.value_objects import VideoSessionId
+from raad.modules.video.domain.value_objects import (
+    DeviceId,
+    VideoPurpose,
+    VideoSessionId,
+)
 from raad.modules.video.infra.mappers import model_to_video_session, video_session_to_model
 from raad.modules.video.infra.models import VideoSessionModel
 
@@ -69,6 +74,45 @@ class SqlAlchemyVideoSessionRepository(
         the *same* object references it stores, with no object/row mapping step to skip: only a
         real-database integration test exposed it."""
         rows = await self.list_scoped()
+        return [session for row in rows if (session := self._track(row)) is not None]
+
+    async def has_active_intercom(self, device_id: DeviceId) -> bool:
+        stmt = (
+            select(func.count())
+            .select_from(VideoSessionModel)
+            .where(
+                VideoSessionModel.device_id == str(device_id),
+                VideoSessionModel.purpose == "intercom",
+                VideoSessionModel.status.in_(["requested", "active"]),
+            )
+        )
+        stmt = self._apply_scope(stmt)
+        count = await self._session.scalar(stmt)
+        return bool(count and count > 0)
+
+    async def list_open_sessions_for_user(
+        self, user_id: str, purpose: VideoPurpose | str
+    ) -> list[VideoSession]:
+        purpose_val = purpose.value if hasattr(purpose, "value") else str(purpose)
+        stmt = (
+            select(VideoSessionModel)
+            .where(
+                VideoSessionModel.requested_by == str(user_id),
+                VideoSessionModel.purpose == purpose_val,
+                VideoSessionModel.status.in_(["requested", "active"]),
+            )
+        )
+        stmt = self._apply_scope(stmt)
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [session for row in rows if (session := self._track(row)) is not None]
+
+    async def list_open_sessions(self) -> list[VideoSession]:
+        stmt = (
+            select(VideoSessionModel)
+            .where(VideoSessionModel.status.in_(["requested", "active"]))
+        )
+        stmt = self._apply_scope(stmt)
+        rows = (await self._session.execute(stmt)).scalars().all()
         return [session for row in rows if (session := self._track(row)) is not None]
 
     def flush_tracked_changes(self) -> None:

@@ -11,7 +11,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from raad.modules.video.domain.entities import VideoSession
-from raad.modules.video.domain.value_objects import VideoSessionId
+from raad.modules.video.domain.value_objects import (
+    DeviceId,
+    VideoPurpose,
+    VideoSessionId,
+)
 
 
 class VideoSessionRepository(ABC):
@@ -30,4 +34,21 @@ class VideoSessionRepository(ABC):
         the three POST routes) — implemented anyway for the same reason `TransportFeeRepository.
         list_all` is: a complete, tested use-case at the layers below the router, not itself an
         HTTP-exposed capability."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def has_active_intercom(self, device_id: DeviceId) -> bool:
+        """Remediates PERF-04: fast indexed check for whether an open intercom session exists."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_open_sessions_for_user(
+        self, user_id: str, purpose: VideoPurpose | str
+    ) -> list[VideoSession]:
+        """Remediates PERF-04: targeted database query for open sessions belonging to a user."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_open_sessions(self) -> list[VideoSession]:
+        """Remediates PERF-04: queries only open sessions (requested/active) for stale reconciliation."""
         raise NotImplementedError

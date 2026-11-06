@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import CHAR, JSON, DateTime, Integer, String, select
+from sqlalchemy import CHAR, JSON, DateTime, Index, Integer, String, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,6 +33,14 @@ class OutboxRecord(UlidPrimaryKeyMixin, Base):
     is a ledger, not a mutable business row, so `TimestampMixin` doesn't apply)."""
 
     __tablename__ = "outbox"
+    __table_args__ = (
+        Index(
+            "ix_outbox__pending_created_at",
+            "created_at",
+            postgresql_where=text("published_at IS NULL"),
+            sqlite_where=text("published_at IS NULL"),
+        ),
+    )
 
     event_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
     event_type: Mapped[str] = mapped_column(String(150), nullable=False)

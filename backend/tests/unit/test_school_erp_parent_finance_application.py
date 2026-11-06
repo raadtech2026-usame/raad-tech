@@ -22,6 +22,7 @@ import unittest
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from typing import Sequence
 
 from raad.core.errors.exceptions import (
     AuthorizationError,
@@ -186,6 +187,18 @@ class InMemoryParentInvoiceRepository(ParentInvoiceRepository):
             and i.status is not ParentInvoiceStatus.CANCELLED
             for i in self.by_id.values()
         )
+
+    async def find_existing_parent_ids_for_period(
+        self, *, parent_ids: Sequence[ParentId | str], period: BillingPeriod
+    ) -> set[str]:
+        wanted = {str(pid) for pid in parent_ids}
+        return {
+            str(i.parent_id)
+            for i in self.by_id.values()
+            if str(i.parent_id) in wanted
+            and str(i.period) == str(period)
+            and i.status is not ParentInvoiceStatus.CANCELLED
+        }
 
     def add(self, invoice: ParentInvoice) -> None:
         self.by_id[str(invoice.id)] = invoice

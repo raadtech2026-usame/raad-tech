@@ -26,6 +26,7 @@ from __future__ import annotations
 import unittest
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from typing import Sequence
 
 from raad.core.errors.exceptions import (
     AuthorizationError,
@@ -243,6 +244,16 @@ class InMemoryStudentInvoiceRepository(StudentInvoiceRepository):
             str(i.student_id) == str(student_id) and str(i.period) == str(period)
             for i in self.by_id.values()
         )
+
+    async def find_existing_student_ids_for_period(
+        self, *, student_ids: Sequence[StudentId | str], period: BillingPeriod
+    ) -> set[str]:
+        str_ids = {str(sid) for sid in student_ids}
+        return {
+            str(i.student_id)
+            for i in self.by_id.values()
+            if str(i.student_id) in str_ids and str(i.period) == str(period)
+        }
 
     async def list_for_student(self, student_id: StudentId) -> list[StudentInvoice]:
         return [i for i in self.by_id.values() if str(i.student_id) == str(student_id)]
@@ -581,6 +592,18 @@ class InMemoryParentInvoiceRepository(ParentInvoiceRepository):
             and i.status is not ParentInvoiceStatus.CANCELLED
             for i in self.by_id.values()
         )
+
+    async def find_existing_parent_ids_for_period(
+        self, *, parent_ids: Sequence[ParentId | str], period: BillingPeriod
+    ) -> set[str]:
+        wanted = {str(pid) for pid in parent_ids}
+        return {
+            str(i.parent_id)
+            for i in self.by_id.values()
+            if str(i.parent_id) in wanted
+            and str(i.period) == str(period)
+            and i.status is not ParentInvoiceStatus.CANCELLED
+        }
 
     def add(self, invoice: ParentInvoice) -> None:
         self.by_id[str(invoice.id)] = invoice
@@ -1404,6 +1427,28 @@ class OverdueSweepTests(_Base):
             self.uow.student_invoices.by_id[invoices[0].id].status,
             StudentInvoiceStatus.PAID,
         )
+
+
+class BatchInvoiceQueryOptimizationTests(_Base):
+    async def test_find_existing_student_ids_for_period(self) -> None:
+        """PERF-05: verify batch lookup finds existing student invoice IDs in one call."""
+        plan_id = await self._fee_plan("50.00")
+        invoices = await self._generate(plan_id, [STUDENT_A])
+        self.assertEqual(len(invoices), 1)
+
+        found = await self.uow.student_invoices.find_existing_student_ids_for_period(
+            student_ids=[STUDENT_A, STUDENT_B], period=BillingPeriod("2026-09")
+        )
+        self.assertIn(STUDENT_A, found)
+        self.assertNotIn(STUDENT_B, found)
+
+    async def test_find_existing_parent_ids_for_period(self) -> None:
+        """PERF-05: verify batch lookup finds existing parent invoice IDs in one call."""
+        period = BillingPeriod("2026-09")
+        found_empty = await self.uow.parent_invoices.find_existing_parent_ids_for_period(
+            parent_ids=["parent-1", "parent-2"], period=period
+        )
+        self.assertEqual(found_empty, set())
 
 
 if __name__ == "__main__":  # pragma: no cover

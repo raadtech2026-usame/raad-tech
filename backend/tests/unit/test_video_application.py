@@ -44,7 +44,9 @@ from raad.modules.video.domain.value_objects import (
     DeviceId,
     OrganizationId,
     UserId,
+    VideoPurpose,
     VideoSessionId,
+    VideoSessionStatus,
 )
 
 VALID_ORG_ULID = "01J8Z3K9G6X8YV5T4N2R7QW3MD"
@@ -95,6 +97,33 @@ class InMemoryVideoSessionRepository(VideoSessionRepository):
 
     async def list_all(self) -> list[VideoSession]:
         return list(self.by_id.values())
+
+    async def has_active_intercom(self, device_id: DeviceId) -> bool:
+        return any(
+            s.device_id == device_id
+            and s.purpose == VideoPurpose.INTERCOM
+            and s.status in (VideoSessionStatus.REQUESTED, VideoSessionStatus.ACTIVE)
+            for s in self.by_id.values()
+        )
+
+    async def list_open_sessions_for_user(
+        self, user_id: str, purpose: VideoPurpose | str
+    ) -> list[VideoSession]:
+        p_val = purpose.value if hasattr(purpose, "value") else str(purpose)
+        return [
+            s
+            for s in self.by_id.values()
+            if str(s.requested_by) == user_id
+            and s.purpose.value == p_val
+            and s.status in (VideoSessionStatus.REQUESTED, VideoSessionStatus.ACTIVE)
+        ]
+
+    async def list_open_sessions(self) -> list[VideoSession]:
+        return [
+            s
+            for s in self.by_id.values()
+            if s.status in (VideoSessionStatus.REQUESTED, VideoSessionStatus.ACTIVE)
+        ]
 
 
 class FakeVideoUnitOfWork(VideoUnitOfWork):
@@ -1032,6 +1061,28 @@ class MarkSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
             uow=uow,
         )
         self.assertEqual(uow.recorded_events, [])
+
+    async def test_has_active_intercom_detects_open_sessions(self) -> None:
+        """PERF-04: repository has_active_intercom detects requested or active sessions."""
+        uow = make_uow()
+        dev_id = DeviceId("01J8Z3K9G6X8YV5T4N2R7QW3MD")
+        self.assertFalse(await uow.video_sessions.has_active_intercom(dev_id))
+
+        session = VideoSession.request_intercom(
+            id=VideoSessionId(SequentialIdGenerator().new_id()),
+            organization_id=OrganizationId(VALID_ORG_ULID),
+            device_id=dev_id,
+            camera_id=CameraId("cam-1"),
+            requested_by=UserId(SequentialIdGenerator().new_id()),
+            clock=CLOCK,
+            actor_id="test-actor",
+        )
+        uow.video_sessions.add(session)
+        self.assertTrue(await uow.video_sessions.has_active_intercom(dev_id))
+
+        session.fail(clock=CLOCK, actor_id="test-actor", reason="test")
+        self.assertFalse(await uow.video_sessions.has_active_intercom(dev_id))
+
 
 
 if __name__ == "__main__":

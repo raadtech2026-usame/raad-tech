@@ -53,10 +53,13 @@ DUMP_FILE="$BACKUP_DIR/raad_${DB_LABEL}_${TIMESTAMP}.dump"
 # actually handles failure.
 cleanup_partial_dump() {
   _status=$?
-  if [ "$_status" -ne 0 ] && [ -e "$DUMP_FILE" ]; then
-    echo "[backup] FAILED (exit $_status) — removing partial dump so it can never be" >&2
-    echo "[backup] mistaken for a usable backup: $DUMP_FILE" >&2
-    rm -f "$DUMP_FILE"
+  if [ "$_status" -ne 0 ]; then
+    echo "FAIL:$(date -u +%Y-%m-%dT%H:%M:%SZ):exit_${_status}" > "$BACKUP_DIR/.latest_status" 2>/dev/null || true
+    if [ -e "$DUMP_FILE" ]; then
+      echo "[backup] FAILED (exit $_status) — removing partial dump so it can never be" >&2
+      echo "[backup] mistaken for a usable backup: $DUMP_FILE" >&2
+      rm -f "$DUMP_FILE"
+    fi
   fi
 }
 trap cleanup_partial_dump EXIT
@@ -139,4 +142,5 @@ else
   echo "[backup] WARNING: production." >&2
 fi
 
+echo "OK:$(date -u +%Y-%m-%dT%H:%M:%SZ):$DUMP_FILE:$DUMP_SIZE" > "$BACKUP_DIR/.latest_status"
 echo "[backup] done"

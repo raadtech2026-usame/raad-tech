@@ -43,7 +43,12 @@ from raad.modules.video.application.ports import (
 from raad.modules.video.application.services import VideoApplicationService
 from raad.modules.video.domain.entities import VideoSession
 from raad.modules.video.domain.repositories import VideoSessionRepository
-from raad.modules.video.domain.value_objects import VideoSessionId
+from raad.modules.video.domain.value_objects import (
+    DeviceId,
+    VideoPurpose,
+    VideoSessionId,
+    VideoSessionStatus,
+)
 from raad.modules.video.events.subscribers import (
     SYSTEM_PRINCIPAL,
     ParentVideoLiveAccessRevokedProcessor,
@@ -253,6 +258,33 @@ class _InMemoryVideoSessionRepository(VideoSessionRepository):
 
     async def list_all(self) -> list[VideoSession]:
         return list(self.by_id.values())
+
+    async def has_active_intercom(self, device_id: DeviceId) -> bool:
+        return any(
+            s.device_id == device_id
+            and s.purpose == VideoPurpose.INTERCOM
+            and s.status in (VideoSessionStatus.REQUESTED, VideoSessionStatus.ACTIVE)
+            for s in self.by_id.values()
+        )
+
+    async def list_open_sessions_for_user(
+        self, user_id: str, purpose: VideoPurpose | str
+    ) -> list[VideoSession]:
+        p_val = purpose.value if hasattr(purpose, "value") else str(purpose)
+        return [
+            s
+            for s in self.by_id.values()
+            if str(s.requested_by) == user_id
+            and s.purpose.value == p_val
+            and s.status in (VideoSessionStatus.REQUESTED, VideoSessionStatus.ACTIVE)
+        ]
+
+    async def list_open_sessions(self) -> list[VideoSession]:
+        return [
+            s
+            for s in self.by_id.values()
+            if s.status in (VideoSessionStatus.REQUESTED, VideoSessionStatus.ACTIVE)
+        ]
 
 
 class _FakeVideoUnitOfWork(VideoUnitOfWork):

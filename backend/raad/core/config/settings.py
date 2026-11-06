@@ -154,6 +154,7 @@ class CorsSettings(BaseModel):
     #3), never a cookie, so the browser's credentialed-request mode is not needed here."""
 
     allowed_origins: list[str] = ["http://localhost:3000"]
+    max_age: int = 86400
 
 
 class WebSocketSettings(BaseModel):
