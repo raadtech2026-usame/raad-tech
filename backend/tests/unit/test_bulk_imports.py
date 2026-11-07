@@ -119,6 +119,10 @@ class InMemoryStudentParentRepository:
     async def list_by_parent(self, parent_id: ParentId) -> list[StudentParent]:
         return [l for l in self.links.values() if str(l.parent_id) == str(parent_id)]
 
+    async def list_by_parents(self, parent_ids: list[ParentId]) -> list[StudentParent]:
+        pids = {str(pid) for pid in parent_ids}
+        return [l for l in self.links.values() if str(l.parent_id) in pids]
+
 
 class InMemoryRouteRepository:
     def __init__(self) -> None:
@@ -646,6 +650,84 @@ class BulkImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fees_by_student_name["Axmed Cali"], Decimal("30.00"))
         self.assertEqual(fees_by_student_name["Maryan Cali"], Decimal("25.00"))
         self.assertEqual(fees_by_student_name["Cabdi Maxamed"], Decimal("35.00"))
+
+    async def test_commit_bus_manifest_reimport_idempotent_updates_fees(self) -> None:
+        """Verifies that re-importing the same bus manifest updates existing records and applies fees without duplicating students."""
+        csv_data = (
+            "bus_name,parent_name,parent_phone,parent_email,student_1_name,student_1_fee\n"
+            "Buska goofoow,Maryan Jamac,0616650292,,Cabdalla Cali,30.00\n"
+        ).encode("utf-8")
+
+        # 1. First import: creates 1 parent + 1 student
+        result_1 = await self.service.commit_import(
+            "bus_manifest",
+            csv_data,
+            "manifest.csv",
+            VALID_ORG_ID,
+            self.principal,
+            uow=self.uow,
+        )
+        self.assertEqual(result_1.created_count, 2)
+        self.assertEqual(result_1.updated_count, 0)
+
+        students_1 = await self.students_repo.list_all()
+        self.assertEqual(len(students_1), 1)
+        original_student_id = str(students_1[0].id)
+        self.assertEqual(self.billing_port.fees[original_student_id]["monthly_fee"], Decimal("30.00"))
+
+        # Clear billing port to simulate the bug where fees were dropped on first import
+        self.billing_port.fees.clear()
+
+        # 2. Second import (Re-importing the exact same file or updated fee)
+        csv_data_2 = (
+            "bus_name,parent_name,parent_phone,parent_email,student_1_name,student_1_fee\n"
+            "Buska goofoow,Maryan Jamac,0616650292,,Cabdalla Cali,45.00\n"
+        ).encode("utf-8")
+
+        result_2 = await self.service.commit_import(
+            "bus_manifest",
+            csv_data_2,
+            "manifest.csv",
+            VALID_ORG_ID,
+            self.principal,
+            uow=self.uow,
+        )
+
+        # No new records created — 1 student updated!
+        self.assertEqual(result_2.created_count, 0)
+        self.assertEqual(result_2.updated_count, 1)
+
+        # Still exactly 1 student and 1 parent in database (NO DUPLICATES!)
+        students_2 = await self.students_repo.list_all()
+        self.assertEqual(len(students_2), 1)
+        self.assertEqual(str(students_2[0].id), original_student_id)
+
+        parents_2 = await self.parents_repo.list_all()
+        self.assertEqual(len(parents_2), 1)
+
+        # Fee was successfully applied to the existing student!
+        self.assertEqual(self.billing_port.fees[original_student_id]["monthly_fee"], Decimal("45.00"))
+
+    async def test_bus_manifest_flexible_column_headers(self) -> None:
+        """Verifies that human/custom column headers like 'Student 1 Monthly Fee ($)' or 'lacag' are recognized."""
+        csv_data = (
+            "Bus Name,Parent Full Name,Parent Phone,Student 1 Name,Student 1 Monthly Fee ($)\n"
+            "Bus 01,Xaawa Maxamuud,0617001122,Khadro Xaawa,20.00\n"
+        ).encode("utf-8")
+
+        result = await self.service.commit_import(
+            "bus_manifest",
+            csv_data,
+            "manifest.csv",
+            VALID_ORG_ID,
+            self.principal,
+            uow=self.uow,
+        )
+        self.assertEqual(result.created_count, 2)
+        students = await self.students_repo.list_all()
+        self.assertEqual(len(students), 1)
+        st_id = str(students[0].id)
+        self.assertEqual(self.billing_port.fees[st_id]["monthly_fee"], Decimal("20.00"))
 
 
 if __name__ == "__main__":

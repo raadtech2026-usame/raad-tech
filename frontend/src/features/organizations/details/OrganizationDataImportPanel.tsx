@@ -539,10 +539,27 @@ export function OrganizationDataImportPanel({
                           )}
                         </td>
                         <td>
-                          {Object.entries(row.data)
-                            .slice(0, 4)
-                            .map(([k, v]) => `${k}: ${String(v ?? "—")}`)
-                            .join(" | ")}
+                          {Array.isArray(row.data.children) && row.data.children.length > 0 ? (
+                            <span>
+                              <strong>{String(row.data.bus_name || row.data.route_code || "Bus")}</strong>
+                              {" • "}
+                              {String(row.data.parent_name || row.data.full_name || "Parent")}
+                              {row.data.parent_phone ? ` (${String(row.data.parent_phone)})` : ""}
+                              {" • "}
+                              <span style={{ color: "var(--color-brand, #3b82f6)" }}>
+                                Students:{" "}
+                                {(row.data.children as Array<{ name?: string; fee?: string | number }>)
+                                  .map((c) => `${c.name || "Child"}${c.fee ? ` ($${c.fee})` : ""}`)
+                                  .join(", ")}
+                              </span>
+                            </span>
+                          ) : (
+                            Object.entries(row.data)
+                              .filter(([k]) => k !== "children")
+                              .slice(0, 4)
+                              .map(([k, v]) => `${k}: ${String(v ?? "—")}`)
+                              .join(" | ")
+                          )}
                         </td>
                         <td>
                           {row.errors.length > 0 ? (

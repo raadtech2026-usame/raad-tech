@@ -202,4 +202,45 @@ describe("OrganizationDataImportPanel", () => {
       expect(screen.getByText(/1 created/i)).toBeInTheDocument();
     });
   });
+
+  it("displays children and monthly fee preview for bus manifest", async () => {
+    const user = userEvent.setup();
+    vi.mocked(validatePlatformImport).mockResolvedValueOnce({
+      resourceType: "bus_manifest",
+      organizationId: "01J8Z3K9G6X8YV5T4N2R7QW001",
+      totalRows: 1,
+      validRows: 1,
+      invalidRows: 0,
+      errors: [],
+      preview: [
+        {
+          rowNumber: 3,
+          isValid: true,
+          data: {
+            bus_name: "Buska goofoow",
+            parent_name: "maryan",
+            parent_phone: "+252616650292",
+            children: [{ name: "cabdalla", fee: "30.00" }],
+          },
+          errors: [],
+        },
+      ],
+    });
+
+    renderPanel();
+
+    const file = new File(["dummy"], "bus_manifest.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, file);
+
+    const validateBtn = screen.getByRole("button", { name: /Validate Spreadsheet/i });
+    await user.click(validateBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText("Buska goofoow")).toBeInTheDocument();
+      expect(screen.getByText(/cabdalla \(\$30\.00\)/)).toBeInTheDocument();
+    });
+  });
 });

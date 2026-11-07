@@ -20,6 +20,7 @@ from openpyxl.utils import get_column_letter
 
 from raad.core.errors.exceptions import ValidationError
 from raad.core.ids.generator import IdGenerator
+from raad.core.logging.setup import get_logger
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.ports import (
@@ -46,6 +47,8 @@ from raad.modules.transport_ops.domain.value_objects import (
 
 _PHONE_CLEAN_RE = re.compile(r"[\s\-\.\(\)]")
 _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d")
+
+logger = get_logger("raad.transport_ops.import")
 
 STUDENT_TEMPLATE_COLUMNS = [
     ("full_name", "Full Name *", "e.g. Ahmed Ali"),
@@ -440,11 +443,23 @@ class ImportApplicationService:
         normalized: dict[str, str] = {}
         alias_map = {
             "name": "full_name",
-            "student_name": "full_name",
-            "student_full_name": "full_name",
-            "parent_full_name": "full_name",
+            "parent_full_name": "parent_name",
+            "parent": "parent_name",
+            "waalid": "parent_name",
+            "waalidka": "parent_name",
+            "magaca_waalidka": "parent_name",
             "guardian_name": "parent_name",
             "guardian_phone": "parent_phone",
+            "parent_telephone": "parent_phone",
+            "parent_mobile": "parent_phone",
+            "waalid_phone": "parent_phone",
+            "telefoonka_waalidka": "parent_phone",
+            "waalid_email": "parent_email",
+            "bus": "bus_name",
+            "bus_number": "bus_name",
+            "buska": "bus_name",
+            "gaari": "bus_name",
+            "gaariga": "bus_name",
             "admission_no": "admission_number",
             "student_id": "admission_number",
             "external_ref": "admission_number",
@@ -461,9 +476,44 @@ class ImportApplicationService:
             "home_address": "address",
             "emergency_name": "emergency_contact_name",
             "emergency_phone": "emergency_contact_phone",
+            "monthly_fee": "student_fee",
+            "fee": "student_fee",
+            "tuition_fee": "student_fee",
+            "transport_fee": "student_fee",
+            "lacag": "student_fee",
+            "lacagta": "student_fee",
+            "child_name": "student_name",
+            "arday": "student_name",
+            "magaca_ardayga": "student_name",
         }
         for k, v in raw_dict.items():
-            clean_k = alias_map.get(k, k)
+            k_str = str(k).strip()
+            k_clean = re.sub(r"[^\w]+", "_", k_str.lower()).strip("_")
+
+            # Check numbered student fields (e.g., student_1_fee, student_1_monthly_fee, fee_1, lacag_1)
+            m_fee = re.match(
+                r"^(?:student|child|arday)_?(\d+)_?(?:fee|monthly_fee|amount|price|lacag|lacagta)$",
+                k_clean,
+            )
+            if not m_fee:
+                m_fee = re.match(r"^(?:fee|lacag|amount)_?(\d+)$", k_clean)
+
+            m_name = re.match(
+                r"^(?:student|child|arday)_?(\d+)_?(?:name|full_name|child_name|magac|magaca)$",
+                k_clean,
+            )
+            if not m_name:
+                m_name = re.match(r"^(?:name|arday|magac)_?(\d+)$", k_clean)
+
+            if m_fee:
+                idx = m_fee.group(1)
+                clean_k = f"student_{idx}_fee"
+            elif m_name:
+                idx = m_name.group(1)
+                clean_k = f"student_{idx}_name"
+            else:
+                clean_k = alias_map.get(k_clean, alias_map.get(k_str.lower(), k_clean))
+
             normalized[clean_k] = v
         return normalized
 
@@ -734,21 +784,49 @@ class ImportApplicationService:
         updated_count = 0
         skipped_count = 0
         fatal_errors: list[str] = []
+        pending_billing_fees: list[tuple[str, Decimal]] = []
 
         async with uow:
             # Load existing records in org scope
             existing_students = await uow.students.list_all()
+            students_by_id = {s.id: s for s in existing_students}
             students_by_ref = {
                 s.external_ref: s for s in existing_students if s.external_ref
+            }
+            students_by_name = {
+                s.full_name.strip().lower(): s for s in existing_students if s.full_name
             }
 
             existing_parents = await uow.parents.list_all()
             parents_by_phone = {
                 str(p.phone): p for p in existing_parents if p.phone
             }
+            parents_by_name = {
+                p.full_name.strip().lower(): p for p in existing_parents if p.full_name
+            }
 
             existing_routes = await uow.routes.list_all()
             routes_by_name = {r.name.lower(): r for r in existing_routes}
+
+            existing_links: list[StudentParent] = []
+            if existing_parents:
+                if hasattr(uow.student_parents, "list_by_parents"):
+                    existing_links = await uow.student_parents.list_by_parents(
+                        [p.id for p in existing_parents]
+                    )
+                else:
+                    for p in existing_parents:
+                        existing_links.extend(
+                            await uow.student_parents.list_by_parent(p.id)
+                        )
+
+            existing_children_by_parent: dict[tuple[str, str], Student] = {}
+            for link in existing_links:
+                st = students_by_id.get(link.student_id)
+                if st and st.full_name:
+                    existing_children_by_parent[
+                        (str(link.parent_id), st.full_name.strip().lower())
+                    ] = st
 
             for preview in validation.preview:
                 if not preview.is_valid:
@@ -951,8 +1029,11 @@ class ImportApplicationService:
 
                     # 2. Parent lookup or auto-registration
                     parent: Parent
+                    parent_is_new = False
                     if parent_phone and parent_phone in parents_by_phone:
                         parent = parents_by_phone[parent_phone]
+                    elif parent_name and parent_name.strip().lower() in parents_by_name:
+                        parent = parents_by_name[parent_name.strip().lower()]
                     else:
                         # Provision IAM user with initial password "1234"
                         user_id: str
@@ -982,51 +1063,112 @@ class ImportApplicationService:
                         uow.record_events(parent.pull_domain_events())
                         if parent_phone:
                             parents_by_phone[parent_phone] = parent
+                        if parent_name:
+                            parents_by_name[parent_name.strip().lower()] = parent
                         created_count += 1
+                        parent_is_new = True
 
                     # 3. Children enrollment, parent linking, and billing setup
                     for child in children:
-                        child_name = child["name"]
-                        child_fee = child["fee"]
+                        child_name = str(child.get("name", "")).strip()
+                        if not child_name:
+                            continue
+                        raw_fee = child.get("fee")
+                        child_fee = Decimal(str(raw_fee)) if raw_fee is not None else Decimal("0.00")
+                        key = (str(parent.id), child_name.lower())
 
-                        student = Student.enroll(
-                            id=StudentId(self._id_generator.new_id()),
-                            organization_id=OrganizationId(organization_id),
-                            full_name=child_name,
-                            notes=f"Bus: {bus_name}",
-                            clock=self._clock,
-                            actor_id=principal.user_id,
-                        )
-                        uow.students.add(student)
-                        uow.record_events(student.pull_domain_events())
-                        created_count += 1
-
-                        link = StudentParent.link(
-                            student_id=student.id,
-                            student_organization_id=student.organization_id,
-                            parent_id=parent.id,
-                            parent_organization_id=parent.organization_id,
-                            relationship="Parent",
-                            is_primary=True,
-                            clock=self._clock,
-                            actor_id=principal.user_id,
-                        )
-                        uow.student_parents.add(link)
-
-                        if child_fee is not None and self._student_billing:
-                            try:
-                                await self._student_billing.set_student_monthly_fee(
-                                    organization_id=organization_id,
-                                    student_id=str(student.id),
-                                    monthly_fee=child_fee,
-                                    currency="USD",
-                                    actor=principal,
+                        student: Student
+                        if key in existing_children_by_parent:
+                            # Student already linked to this parent -> update / idempotent
+                            student = existing_children_by_parent[key]
+                            bus_note = f"Bus: {bus_name}"
+                            if not student.notes or bus_note not in student.notes:
+                                student.update_details(
+                                    full_name=student.full_name,
+                                    external_ref=student.external_ref,
+                                    date_of_birth=student.date_of_birth,
+                                    gender=student.gender,
+                                    notes=f"{student.notes} | {bus_note}" if student.notes else bus_note,
+                                    clock=self._clock,
+                                    actor_id=principal.user_id,
                                 )
-                            except Exception:
-                                pass
+                                uow.record_events(student.pull_domain_events())
+                            updated_count += 1
+                        elif child_name.lower() in students_by_name and not parent_is_new:
+                            # Student exists by exact name in org scope -> link to parent
+                            student = students_by_name[child_name.lower()]
+                            existing_link = await uow.student_parents.get(student.id, parent.id)
+                            if existing_link is None:
+                                link = StudentParent.link(
+                                    student_id=student.id,
+                                    student_organization_id=student.organization_id,
+                                    parent_id=parent.id,
+                                    parent_organization_id=parent.organization_id,
+                                    relationship="Parent",
+                                    is_primary=True,
+                                    clock=self._clock,
+                                    actor_id=principal.user_id,
+                                )
+                                uow.student_parents.add(link)
+                            existing_children_by_parent[key] = student
+                            updated_count += 1
+                        else:
+                            # New student -> enroll
+                            student = Student.enroll(
+                                id=StudentId(self._id_generator.new_id()),
+                                organization_id=OrganizationId(organization_id),
+                                full_name=child_name,
+                                notes=f"Bus: {bus_name}",
+                                clock=self._clock,
+                                actor_id=principal.user_id,
+                            )
+                            uow.students.add(student)
+                            uow.record_events(student.pull_domain_events())
+                            created_count += 1
 
-            # Single atomic commit for the batch
+                            link = StudentParent.link(
+                                student_id=student.id,
+                                student_organization_id=student.organization_id,
+                                parent_id=parent.id,
+                                parent_organization_id=parent.organization_id,
+                                relationship="Parent",
+                                is_primary=True,
+                                clock=self._clock,
+                                actor_id=principal.user_id,
+                            )
+                            uow.student_parents.add(link)
+
+                            existing_children_by_parent[key] = student
+                            students_by_name[child_name.lower()] = student
+                            students_by_id[student.id] = student
+
+                        if child_fee is not None:
+                            pending_billing_fees.append((str(student.id), child_fee))
+
+            # Single atomic commit for transport_ops entities
             await uow.commit()
+
+        # Step 4: Record student monthly fees in school_erp AFTER the students are committed to DB
+        # This ensures school_erp queries can locate the persisted students across sessions.
+        for student_id, fee in pending_billing_fees:
+            if self._student_billing is not None and fee is not None:
+                try:
+                    await self._student_billing.set_student_monthly_fee(
+                        organization_id=organization_id,
+                        student_id=student_id,
+                        monthly_fee=fee,
+                        currency="USD",
+                        actor=principal,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to persist student monthly fee %s for student %s in organization %s: %s",
+                        fee,
+                        student_id,
+                        organization_id,
+                        exc,
+                        exc_info=True,
+                    )
 
         return ImportCommitResult(
             resource_type=norm_type,
