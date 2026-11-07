@@ -195,12 +195,20 @@ async def commit_organization_import(
 ) -> ImportCommitSummary:
     file_bytes, resolved_name = await _extract_upload(request, default_filename=filename)
 
+    # Normalize client aliases ("skip" -> SKIP_INVALID, "overwrite" -> UPSERT)
+    if conflict_strategy in (ConflictStrategy.SKIP_INVALID, ConflictStrategy.SKIP):
+        resolved_conflict_strategy = ConflictStrategy.SKIP_INVALID
+    elif conflict_strategy in (ConflictStrategy.UPSERT, ConflictStrategy.OVERWRITE):
+        resolved_conflict_strategy = ConflictStrategy.UPSERT
+    else:
+        resolved_conflict_strategy = ConflictStrategy.STRICT
+
     commit_result, batch = await service.commit_import(
         organization_id=target_org_id,
         resource_type=resource_type,
         file_bytes=file_bytes,
         filename=resolved_name,
-        conflict_strategy=conflict_strategy,
+        conflict_strategy=resolved_conflict_strategy,
         principal=principal,
         data_transfer_uow=data_transfer_uow,
         transport_ops_uow=transport_ops_uow,

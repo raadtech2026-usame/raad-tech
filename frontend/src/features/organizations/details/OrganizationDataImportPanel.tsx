@@ -170,8 +170,19 @@ export function OrganizationDataImportPanel({
       queryClient.invalidateQueries({ queryKey: ["students"] });
       queryClient.invalidateQueries({ queryKey: ["parents"] });
     } catch (err) {
-      const msg =
-        err instanceof ApiError ? err.message : "Import transaction failed and rolled back cleanly.";
+      let msg = "Import transaction failed and rolled back cleanly.";
+      if (err instanceof ApiError) {
+        const details = (err as any).details;
+        if (Array.isArray(details) && details.length > 0) {
+          const detailMsgs = details
+            .map((d: { msg?: string; message?: string }) => d.msg || d.message)
+            .filter(Boolean)
+            .join("; ");
+          msg = detailMsgs || err.message;
+        } else {
+          msg = err.message;
+        }
+      }
       toast.error("Import failed", msg);
     } finally {
       setIsCommitting(false);

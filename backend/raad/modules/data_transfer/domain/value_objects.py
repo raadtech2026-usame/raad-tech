@@ -29,6 +29,8 @@ class ConflictStrategy(str, Enum):
     STRICT = "strict"          # Abort entire transaction on any fatal error
     SKIP_INVALID = "skip_invalid"  # Ingest valid rows and skip invalid ones
     UPSERT = "upsert"          # Update existing records, insert new ones
+    SKIP = "skip"              # Client alias for skip_invalid
+    OVERWRITE = "overwrite"    # Client alias for upsert
 
 
 class ImportResourceType(str, Enum):

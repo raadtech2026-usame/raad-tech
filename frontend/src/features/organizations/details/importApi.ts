@@ -1,7 +1,12 @@
 import { apiRequest, downloadFile } from "../../../shared/api/client";
 
 export type ImportResourceType = "bus_manifest" | "students" | "parents";
-export type ImportConflictStrategy = "skip" | "overwrite";
+export type ImportConflictStrategy =
+  | "skip"
+  | "overwrite"
+  | "skip_invalid"
+  | "upsert"
+  | "strict";
 
 export interface ImportRowError {
   rowNumber: number;
@@ -179,10 +184,20 @@ export async function commitPlatformImport(
   const formData = new FormData();
   formData.append("file", file, file.name);
 
+  // Normalize client aliases ("skip" -> "skip_invalid", "overwrite" -> "upsert")
+  const normalizedStrategy =
+    conflictStrategy === "skip"
+      ? "skip_invalid"
+      : conflictStrategy === "overwrite"
+      ? "upsert"
+      : conflictStrategy;
+
   const wire = await apiRequest<ImportCommitSummaryWire>(
     `/admin/organizations/${encodeURIComponent(
       organizationId,
-    )}/imports/commit?resource_type=${resourceType}&conflict_strategy=${conflictStrategy}`,
+    )}/imports/commit?resource_type=${resourceType}&conflict_strategy=${encodeURIComponent(
+      normalizedStrategy,
+    )}`,
     {
       method: "POST",
       body: formData,

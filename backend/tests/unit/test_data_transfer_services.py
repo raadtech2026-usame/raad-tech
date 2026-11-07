@@ -275,6 +275,26 @@ class DataTransferServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(saved_batch)
         self.assertEqual(saved_batch.resource_type, "bus_manifest")
 
+    async def test_commit_with_client_conflict_strategy_aliases(self) -> None:
+        csv_data = (
+            "bus_name,parent_name,parent_phone,student_1_name,student_1_fee\n"
+            "Bus 06,Maryan Nuur,0615223344,Ubax Cabdi,35.00\n"
+        ).encode("utf-8")
+
+        # Test SKIP alias
+        result, batch = await self.service.commit_import(
+            organization_id=TARGET_ORG_A,
+            resource_type="bus_manifest",
+            file_bytes=csv_data,
+            filename="bus_06.csv",
+            conflict_strategy=ConflictStrategy.SKIP,
+            principal=self.super_admin,
+            data_transfer_uow=self.transfer_uow,
+            transport_ops_uow=self.transport_uow,
+        )
+        self.assertEqual(batch.status, ImportStatus.COMMITTED)
+        self.assertEqual(batch.conflict_strategy, ConflictStrategy.SKIP)
+
 
 if __name__ == "__main__":
     unittest.main()
