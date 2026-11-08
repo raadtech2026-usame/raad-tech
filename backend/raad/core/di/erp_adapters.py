@@ -217,10 +217,10 @@ class TransportOpsStudentBillingAdapter(StudentBillingPort):
     ) -> None:
         from raad.modules.school_erp.application.commands import SetStudentBillingFeeCommand
         from raad.modules.school_erp.application.ports import SchoolErpUnitOfWork
-        from raad.modules.school_erp.application.services import SchoolErpApplicationService
+        from raad.modules.school_erp.application.services import ParentFinanceApplicationService
 
-        erp_service: SchoolErpApplicationService = self._container.resolve(
-            SchoolErpApplicationService
+        erp_service: ParentFinanceApplicationService = self._container.resolve(
+            ParentFinanceApplicationService
         )
         erp_uow: SchoolErpUnitOfWork = self._container.resolve(SchoolErpUnitOfWork)
         transport_uow: TransportOpsUnitOfWork = self._container.resolve(
