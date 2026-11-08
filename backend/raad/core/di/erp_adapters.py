@@ -238,3 +238,52 @@ class TransportOpsStudentBillingAdapter(StudentBillingPort):
             school_erp_uow=erp_uow,
             transport_ops_uow=transport_uow,
         )
+
+    async def ensure_parent_billing_profile(
+        self,
+        *,
+        organization_id: str,
+        parent_id: str,
+        currency: str = "USD",
+        due_day: int = 10,
+        billing_start_period: str | None = None,
+        actor: Principal,
+    ) -> None:
+        from datetime import datetime, timezone
+        from raad.modules.school_erp.application.commands import (
+            CreateOrUpdateParentBillingProfileCommand,
+        )
+        from raad.modules.school_erp.application.ports import SchoolErpUnitOfWork
+        from raad.modules.school_erp.application.services import ParentFinanceApplicationService
+        from raad.modules.school_erp.domain.value_objects import ParentId
+
+        erp_service: ParentFinanceApplicationService = self._container.resolve(
+            ParentFinanceApplicationService
+        )
+        erp_uow: SchoolErpUnitOfWork = self._container.resolve(SchoolErpUnitOfWork)
+        transport_uow: TransportOpsUnitOfWork = self._container.resolve(
+            TransportOpsUnitOfWork
+        )
+
+        async with erp_uow:
+            existing = await erp_uow.parent_billing_profiles.get_by_parent(
+                ParentId(parent_id)
+            )
+            if existing is not None:
+                return
+
+        period = billing_start_period or datetime.now(timezone.utc).strftime("%Y-%m")
+        command = CreateOrUpdateParentBillingProfileCommand(
+            organization_id=organization_id,
+            parent_id=parent_id,
+            currency=currency,
+            billing_start_period=period,
+            due_day=due_day,
+            actor=actor,
+        )
+        await erp_service.create_or_update_billing_profile(
+            command,
+            school_erp_uow=erp_uow,
+            transport_ops_uow=transport_uow,
+        )
+

@@ -177,6 +177,7 @@ class FakeUserProvisioningPort(UserProvisioningPort):
 class FakeStudentBillingPort(StudentBillingPort):
     def __init__(self) -> None:
         self.fees: dict[str, dict] = {}
+        self.parent_profiles: dict[str, dict] = {}
 
     async def set_student_monthly_fee(
         self,
@@ -191,6 +192,23 @@ class FakeStudentBillingPort(StudentBillingPort):
             "organization_id": organization_id,
             "monthly_fee": Decimal(str(monthly_fee)),
             "currency": currency,
+        }
+
+    async def ensure_parent_billing_profile(
+        self,
+        *,
+        organization_id: str,
+        parent_id: str,
+        currency: str = "USD",
+        due_day: int = 10,
+        billing_start_period: str | None = None,
+        actor: Principal,
+    ) -> None:
+        self.parent_profiles[parent_id] = {
+            "organization_id": organization_id,
+            "currency": currency,
+            "due_day": due_day,
+            "billing_start_period": billing_start_period,
         }
 
 
@@ -650,6 +668,13 @@ class BulkImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fees_by_student_name["Axmed Cali"], Decimal("30.00"))
         self.assertEqual(fees_by_student_name["Maryan Cali"], Decimal("25.00"))
         self.assertEqual(fees_by_student_name["Cabdi Maxamed"], Decimal("35.00"))
+
+        # Parent billing accounts initialized in school_erp
+        self.assertEqual(len(self.billing_port.parent_profiles), 2)
+        for p in parents:
+            self.assertIn(str(p.id), self.billing_port.parent_profiles)
+            self.assertEqual(self.billing_port.parent_profiles[str(p.id)]["currency"], "USD")
+            self.assertEqual(self.billing_port.parent_profiles[str(p.id)]["due_day"], 10)
 
     async def test_commit_bus_manifest_reimport_idempotent_updates_fees(self) -> None:
         """Verifies that re-importing the same bus manifest updates existing records and applies fees without duplicating students."""

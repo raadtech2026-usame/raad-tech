@@ -117,7 +117,7 @@ class UserProvisioningPort(ABC):
 
 
 class StudentBillingPort(ABC):
-    """Outbound port for setting recurring monthly student transportation fees in school_erp."""
+    """Outbound port for setting recurring monthly student transportation fees and parent billing accounts in school_erp."""
 
     @abstractmethod
     async def set_student_monthly_fee(
@@ -127,6 +127,19 @@ class StudentBillingPort(ABC):
         student_id: str,
         monthly_fee: str | float | Decimal,
         currency: str = "USD",
+        actor: Principal,
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def ensure_parent_billing_profile(
+        self,
+        *,
+        organization_id: str,
+        parent_id: str,
+        currency: str = "USD",
+        due_day: int = 10,
+        billing_start_period: str | None = None,
         actor: Principal,
     ) -> None:
         raise NotImplementedError

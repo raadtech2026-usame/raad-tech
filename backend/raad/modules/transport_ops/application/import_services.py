@@ -785,6 +785,7 @@ class ImportApplicationService:
         skipped_count = 0
         fatal_errors: list[str] = []
         pending_billing_fees: list[tuple[str, Decimal]] = []
+        pending_parent_billing: set[str] = set()
 
         async with uow:
             # Load existing records in org scope
@@ -927,6 +928,7 @@ class ImportApplicationService:
                                 parents_by_phone[parent_phone] = matched_parent
 
                         if matched_parent is not None:
+                            pending_parent_billing.add(str(matched_parent.id))
                             existing_link = await uow.student_parents.get(
                                 student.id, matched_parent.id
                             )
@@ -1003,6 +1005,7 @@ class ImportApplicationService:
                         if phone:
                             parents_by_phone[phone] = parent
                         created_count += 1
+                    pending_parent_billing.add(str(parent.id))
 
                 elif norm_type == "bus_manifest":
                     bus_name = str(row_data.get("bus_name") or row_data.get("route_code") or "").strip()
@@ -1067,6 +1070,8 @@ class ImportApplicationService:
                             parents_by_name[parent_name.strip().lower()] = parent
                         created_count += 1
                         parent_is_new = True
+
+                    pending_parent_billing.add(str(parent.id))
 
                     # 3. Children enrollment, parent linking, and billing setup
                     for child in children:
@@ -1148,8 +1153,27 @@ class ImportApplicationService:
             # Single atomic commit for transport_ops entities
             await uow.commit()
 
-        # Step 4: Record student monthly fees in school_erp AFTER the students are committed to DB
-        # This ensures school_erp queries can locate the persisted students across sessions.
+        # Step 4: Ensure parent billing profiles and student monthly fees in school_erp AFTER DB commit
+        # This ensures school_erp queries can locate the persisted parents/students across sessions.
+        for parent_id in pending_parent_billing:
+            if self._student_billing is not None:
+                try:
+                    await self._student_billing.ensure_parent_billing_profile(
+                        organization_id=organization_id,
+                        parent_id=parent_id,
+                        currency="USD",
+                        due_day=10,
+                        actor=principal,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to ensure parent billing profile for parent %s in organization %s: %s",
+                        parent_id,
+                        organization_id,
+                        exc,
+                        exc_info=True,
+                    )
+
         for student_id, fee in pending_billing_fees:
             if self._student_billing is not None and fee is not None:
                 try:
