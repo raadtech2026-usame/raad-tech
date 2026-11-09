@@ -423,7 +423,7 @@ export function SystemSettingsPage() {
                   </div>
                   <div className={styles.badgeStack}>
                     <CheckCircle2 size={16} color="var(--color-success)" />
-                    <Badge variant="success">{statsData?.system_health?.database ?? "Connected"}</Badge>
+                    <Badge variant="success">{statsData?.systemHealth?.database ?? "Connected"}</Badge>
                   </div>
                 </div>
                 <div className={styles.paramRow}>
@@ -433,7 +433,7 @@ export function SystemSettingsPage() {
                   </div>
                   <div className={styles.badgeStack}>
                     <CheckCircle2 size={16} color="var(--color-success)" />
-                    <Badge variant="success">{statsData?.system_health?.broker ?? "Connected"}</Badge>
+                    <Badge variant="success">{statsData?.systemHealth?.broker ?? "Connected"}</Badge>
                   </div>
                 </div>
               </CardBody>

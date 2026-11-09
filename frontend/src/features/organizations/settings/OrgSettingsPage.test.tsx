@@ -48,12 +48,12 @@ describe("OrgSettingsPage", () => {
     vi.mocked(orgApi.updateOrganizationSettings).mockReset();
 
     useAuthStore.setState({
-      token: "test-token",
+      accessToken: "test-token",
       principal: {
         userId: "01ARZ3NDEKTSV4RRFFQ69G5FBM",
         role: "org_admin",
         organizationId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        permissions: ["organization.organizations.read", "organization.organizations.update"],
+        regionIds: [],
       },
     });
 

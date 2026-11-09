@@ -9,7 +9,6 @@ import {
   CreditCard,
   Users,
   Info,
-  CheckCircle2,
   ExternalLink,
 } from "lucide-react";
 import { Tabs } from "../../../shared/components/Tabs/Tabs";
@@ -99,6 +98,7 @@ export function OrgSettingsPage() {
   if (!orgId) {
     return (
       <EmptyState
+        icon={<Building2 size={32} />}
         title="No Organization Assigned"
         description="Your user account is not linked to an organization."
       />

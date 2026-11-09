@@ -31,10 +31,10 @@ export interface Organization {
   status: OrganizationStatus;
   createdAt: string;
   updatedAt: string;
-  latitude: number | null;
-  longitude: number | null;
-  geofenceRadiusM: number | null;
-  approachingDistanceM: number;
+  latitude?: number | null;
+  longitude?: number | null;
+  geofenceRadiusM?: number | null;
+  approachingDistanceM?: number;
   trialStartedAt: string | null;
   trialEndsAt: string | null;
   trialState: TrialState;

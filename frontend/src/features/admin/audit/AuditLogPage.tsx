@@ -1,10 +1,10 @@
 import { useState, useMemo, useEffect } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Search, ScrollText, Calendar, User, Database, Building2 } from "lucide-react";
+import { Search, ScrollText } from "lucide-react";
 import { usePaginatedQuery } from "../../../shared/hooks/usePaginatedQuery";
 import { DataTable } from "../../../shared/components/Table/DataTable";
 import { Pagination } from "../../../shared/components/Table/Pagination";
-import { Badge } from "../../../shared/components/Badge/Badge";
+import { Badge, type BadgeVariant } from "../../../shared/components/Badge/Badge";
 import { Input } from "../../../shared/components/Input/Input";
 import { DetailDrawer } from "../../../shared/components/Drawer/DetailDrawer";
 import { listAuditEntries, type AuditEntry } from "../../platform-analytics/api";
@@ -28,7 +28,7 @@ function formatAuditDate(iso: string): string {
   }
 }
 
-function actionTone(action: string): "primary" | "success" | "danger" | "warning" | "info" | "neutral" {
+function actionTone(action: string): BadgeVariant {
   if (action.includes("deleted") || action.includes("suspended") || action.includes("deactivated")) {
     return "danger";
   }
@@ -51,8 +51,6 @@ export function AuditLogPage() {
     page,
     pageSize,
     isLoading,
-    isError,
-    error,
     setPage,
     setSearch,
   } = usePaginatedQuery<AuditEntry>({
@@ -167,8 +165,11 @@ export function AuditLogPage() {
         <DetailDrawer
           open={Boolean(selectedEntry)}
           onClose={() => setSelectedEntry(null)}
+          icon={<ScrollText size={20} />}
+          iconTint="rgba(20, 184, 166, 0.15)"
+          iconColor="var(--color-primary-600)"
           title="Audit Entry Details"
-          badge={
+          status={
             <Badge variant={actionTone(selectedEntry.action)}>
               {selectedEntry.action}
             </Badge>

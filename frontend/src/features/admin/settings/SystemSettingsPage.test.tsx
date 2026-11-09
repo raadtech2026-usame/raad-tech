@@ -48,18 +48,18 @@ describe("SystemSettingsPage", () => {
     });
 
     vi.mocked(analyticsApi.getPlatformStats).mockResolvedValue({
-      organizations: { total: 10, by_status: {}, created_today: 1 },
+      organizations: { total: 10, byStatus: {}, createdToday: 1 },
       vehicles: { total: 20 },
       devices: { total: 20, online: 18, offline: 2 },
-      users: { total: 50, by_status: {}, monthly_active: 30, created_today: 0 },
+      users: { total: 50, byStatus: {}, monthlyActive: 30, createdToday: 0 },
       billing: {
-        subscription_by_status: {},
-        expiring_soon: 0,
-        revenue: { monthly_recurring: 1000, total_collected: 5000 },
-        active_by_billing_cycle: {},
+        subscriptionByStatus: {},
+        expiringSoon: 0,
+        revenue: 5000,
+        activeByBillingCycle: {},
       },
-      payment_due_organizations: [],
-      system_health: { database: "healthy", broker: "healthy" },
+      paymentDueOrganizations: 0,
+      systemHealth: { database: "healthy", broker: "healthy" },
     });
   });
 
