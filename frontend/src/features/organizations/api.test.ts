@@ -66,6 +66,10 @@ describe("organizations api", () => {
           status: "active",
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-02T00:00:00Z",
+          latitude: null,
+          longitude: null,
+          geofenceRadiusM: null,
+          approachingDistanceM: 300,
           trialStartedAt: null,
           trialEndsAt: null,
           trialState: "not_started",
@@ -126,6 +130,10 @@ describe("organizations api", () => {
         status: "active",
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-02T00:00:00Z",
+        latitude: null,
+        longitude: null,
+        geofenceRadiusM: null,
+        approachingDistanceM: 300,
         trialStartedAt: null,
         trialEndsAt: null,
         trialState: "not_started",
@@ -206,5 +214,37 @@ describe("organizations api", () => {
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-01T00:00:00Z",
     });
+  });
+
+  it("updateOrganizationSettings sends geofence and approaching distance fields", async () => {
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      ...ORG_WIRE,
+      latitude: 2.046934,
+      longitude: 45.318162,
+      geofence_radius_m: 250,
+      approaching_distance_m: 350,
+    });
+
+    const { updateOrganizationSettings } = await import("./api");
+    const result = await updateOrganizationSettings("01ARZ3NDEKTSV4RRFFQ69G5FAV", {
+      latitude: 2.046934,
+      longitude: 45.318162,
+      geofenceRadiusM: 250,
+      approachingDistanceM: 350,
+    });
+
+    expect(apiRequest).toHaveBeenCalledWith("/organizations/01ARZ3NDEKTSV4RRFFQ69G5FAV", {
+      method: "PATCH",
+      body: {
+        latitude: 2.046934,
+        longitude: 45.318162,
+        geofence_radius_m: 250,
+        approaching_distance_m: 350,
+      },
+    });
+    expect(result.latitude).toBe(2.046934);
+    expect(result.longitude).toBe(45.318162);
+    expect(result.geofenceRadiusM).toBe(250);
+    expect(result.approachingDistanceM).toBe(350);
   });
 });
