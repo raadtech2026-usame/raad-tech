@@ -90,6 +90,8 @@ from raad.modules.organization.application.commands import (
     RevokeRegionAssignmentCommand,
     RevokeSupportAssignmentCommand,
     SuspendOrganizationCommand,
+    UpdateOrganizationApproachingDistanceCommand,
+    UpdateOrganizationGeofenceCommand,
 )
 from raad.modules.organization.application.ports import OrganizationUnitOfWork
 from raad.modules.organization.application.queries import (
@@ -133,6 +135,10 @@ def _organization_dto_to_response(
         status=organization.status,
         created_at=organization.created_at,
         updated_at=organization.updated_at,
+        latitude=organization.latitude,
+        longitude=organization.longitude,
+        geofence_radius_m=organization.geofence_radius_m,
+        approaching_distance_m=organization.approaching_distance_m,
         trial_started_at=organization.trial_started_at,
         trial_ends_at=organization.trial_ends_at,
         trial_state=organization.trial_state,
@@ -255,14 +261,10 @@ async def get_organization(
     "/{organization_id}",
     response_model=OrganizationResponse,
     status_code=status.HTTP_200_OK,
-    summary="Update an organization's status and/or name",
+    summary="Update an organization's status, name, geofence, and/or approaching distance",
     description=(
-        "In-scope (API Contracts §4.1). Limited to the transitions the Application layer "
-        "exposes — see `UpdateOrganizationRequest`'s docstring for why `billing_model`/"
-        "`region_id`/`org_type` are not accepted here. At least one of `status`/`name` is "
-        "required; both may be given in one request (applied as two separate commits, matching "
-        "`iam.update_user`'s identical composed-field precedent). Authorization resolves "
-        "against the real seeded RBAC permission matrix — see `register_organization`'s note."
+        "In-scope (API Contracts §4.1). At least one field is required. "
+        "Authorization resolves against the real seeded RBAC permission matrix — see `register_organization`'s note."
     ),
 )
 async def update_organization(
@@ -274,10 +276,17 @@ async def update_organization(
     org_service: OrganizationApplicationService = Depends(get_organization_service),
     uow: OrganizationUnitOfWork = Depends(get_organization_uow),
 ) -> OrganizationResponse:
-    if body.status is None and body.name is None:
+    if (
+        body.status is None
+        and body.name is None
+        and body.latitude is None
+        and body.longitude is None
+        and body.geofence_radius_m is None
+        and body.approaching_distance_m is None
+    ):
         raise ValidationError(
-            "At least one of 'status' or 'name' must be provided.",
-            details={"fields": ["status", "name"]},
+            "At least one of 'status', 'name', 'geofence' (latitude, longitude, geofence_radius_m), or 'approaching_distance_m' must be provided.",
+            details={"fields": ["status", "name", "latitude", "longitude", "geofence_radius_m", "approaching_distance_m"]},
         )
 
     organization: OrganizationDTO | None = None
@@ -313,6 +322,41 @@ async def update_organization(
         organization = await org_service.rename_organization(
             RenameOrganizationCommand(
                 organization_id=organization_id, name=body.name, actor=principal
+            ),
+            uow=uow,
+        )
+
+    if (
+        body.latitude is not None
+        or body.longitude is not None
+        or body.geofence_radius_m is not None
+    ):
+        if (
+            body.latitude is None
+            or body.longitude is None
+            or body.geofence_radius_m is None
+        ):
+            raise ValidationError(
+                "latitude, longitude, and geofence_radius_m must be provided together.",
+                details={"fields": ["latitude", "longitude", "geofence_radius_m"]},
+            )
+        organization = await org_service.update_organization_geofence(
+            UpdateOrganizationGeofenceCommand(
+                organization_id=organization_id,
+                latitude=body.latitude,
+                longitude=body.longitude,
+                radius_m=body.geofence_radius_m,
+                actor=principal,
+            ),
+            uow=uow,
+        )
+
+    if body.approaching_distance_m is not None:
+        organization = await org_service.update_organization_approaching_distance(
+            UpdateOrganizationApproachingDistanceCommand(
+                organization_id=organization_id,
+                approaching_distance_m=body.approaching_distance_m,
+                actor=principal,
             ),
             uow=uow,
         )

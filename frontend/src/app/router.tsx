@@ -34,6 +34,9 @@ import { BillingPage } from "../features/billing/BillingPage";
 import { PlatformFinancePage } from "../features/billing/PlatformFinancePage";
 import { OrgFinancePage } from "../features/school-erp/OrgFinancePage";
 import { ReportsPage } from "../features/reports/ReportsPage";
+import { SystemSettingsPage } from "../features/admin/settings/SystemSettingsPage";
+import { AuditLogPage } from "../features/admin/audit/AuditLogPage";
+import { OrgSettingsPage } from "../features/organizations/settings/OrgSettingsPage";
 
 
 /**
@@ -210,6 +213,8 @@ const PLATFORM_BUILT_ROUTES: Record<string, ReactNode> = {
   "/platform/finance": <PlatformFinancePage />,
   "/platform/reports": <ReportsPage />,
   "/platform/billing": <BillingPage />,
+  "/platform/audit": <AuditLogPage />,
+  "/platform/settings": <SystemSettingsPage />,
 };
 
 /** Org Admin's own dashboard equivalent of the Fleet & Device / Transport Ops entries above —
@@ -248,6 +253,8 @@ const ORGANIZATION_BUILT_ROUTES: Record<string, ReactNode> = {
   "/org/finance": <OrgFinancePage />,
   "/org/reports": <ReportsPage />,
   "/org/billing": <Lazy><OrgBillingPage /></Lazy>,
+  "/org/users": <UsersPage />,
+  "/org/settings": <OrgSettingsPage />,
 };
 
 export const router = createBrowserRouter([

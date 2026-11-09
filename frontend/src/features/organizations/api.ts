@@ -31,6 +31,10 @@ export interface Organization {
   status: OrganizationStatus;
   createdAt: string;
   updatedAt: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  geofenceRadiusM?: number | null;
+  approachingDistanceM?: number;
   trialStartedAt: string | null;
   trialEndsAt: string | null;
   trialState: TrialState;
@@ -60,6 +64,10 @@ interface OrganizationWire {
   status: string;
   created_at: string;
   updated_at: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  geofence_radius_m?: number | null;
+  approaching_distance_m?: number | null;
   trial_started_at?: string | null;
   trial_ends_at?: string | null;
   trial_state?: string;
@@ -85,6 +93,10 @@ function toOrganization(wire: OrganizationWire): Organization {
     status: wire.status as OrganizationStatus,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    latitude: wire.latitude ?? null,
+    longitude: wire.longitude ?? null,
+    geofenceRadiusM: wire.geofence_radius_m ?? null,
+    approachingDistanceM: wire.approaching_distance_m ?? 300,
     trialStartedAt: wire.trial_started_at ?? null,
     trialEndsAt: wire.trial_ends_at ?? null,
     trialState: (wire.trial_state as TrialState) ?? "not_started",
@@ -214,6 +226,32 @@ export async function renameOrganization(id: string, name: string): Promise<Orga
   const wire = await apiRequest<OrganizationWire>(`/organizations/${id}`, {
     method: "PATCH",
     body: { name },
+  });
+  return toOrganization(wire);
+}
+
+export interface UpdateOrganizationSettingsInput {
+  name?: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  geofenceRadiusM?: number | null;
+  approachingDistanceM?: number | null;
+}
+
+export async function updateOrganizationSettings(
+  id: string,
+  input: UpdateOrganizationSettingsInput,
+): Promise<Organization> {
+  const body: Record<string, unknown> = {};
+  if (input.name !== undefined) body.name = input.name;
+  if (input.latitude !== undefined) body.latitude = input.latitude;
+  if (input.longitude !== undefined) body.longitude = input.longitude;
+  if (input.geofenceRadiusM !== undefined) body.geofence_radius_m = input.geofenceRadiusM;
+  if (input.approachingDistanceM !== undefined) body.approaching_distance_m = input.approachingDistanceM;
+
+  const wire = await apiRequest<OrganizationWire>(`/organizations/${id}`, {
+    method: "PATCH",
+    body,
   });
   return toOrganization(wire);
 }

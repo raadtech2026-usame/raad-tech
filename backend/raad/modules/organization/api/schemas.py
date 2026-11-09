@@ -27,6 +27,10 @@ class OrganizationResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+    latitude: float | None = None
+    longitude: float | None = None
+    geofence_radius_m: int | None = None
+    approaching_distance_m: int | None = None
     trial_started_at: datetime | None = None
     trial_ends_at: datetime | None = None
     #: Derived (`Organization.trial_state()`), never a stored column — see that method's
@@ -93,6 +97,10 @@ class UpdateOrganizationRequest(BaseModel):
 
     status: str | None = None
     name: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    geofence_radius_m: int | None = None
+    approaching_distance_m: int | None = None
 
 
 class RegionResponse(BaseModel):
