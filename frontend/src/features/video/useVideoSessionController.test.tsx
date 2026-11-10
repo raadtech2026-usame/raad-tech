@@ -656,6 +656,27 @@ describe("useVideoSessionController", () => {
       });
       expect(requestLiveVideo).toHaveBeenCalledTimes(6);
     });
+
+    it("automatically stops the active session when the tab/page is backgrounded (visibilitychange hidden)", async () => {
+      vi.mocked(requestLiveVideo).mockResolvedValue(SESSION);
+      const { result } = renderHook(() => useVideoSessionController("device-1", "camera-1"), { wrapper });
+
+      act(() => result.current.start());
+      await waitFor(() => expect(result.current.phase).toBe("connecting"));
+
+      // Simulate user switching to another tab or app (visibilityState becomes hidden)
+      Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      await waitFor(() => expect(stopVideoSession).toHaveBeenCalledWith(SESSION.id));
+      expect(result.current.phase).toBe("stopped");
+      expect(result.current.canStart).toBe(true);
+
+      // Restore visibilityState
+      Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    });
   });
 });
 

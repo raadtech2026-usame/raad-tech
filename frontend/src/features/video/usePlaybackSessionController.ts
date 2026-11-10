@@ -121,6 +121,30 @@ export function usePlaybackSessionController(
     };
   }, [session, manuallyStopped]);
 
+  // When the user switches tabs, minimizes the browser, or switches to another app
+  // (Page Visibility API: document.visibilityState === "hidden"), stop the playback session
+  // immediately so cellular 4G data on the vehicle's MDVR is not wasted in the background.
+  useEffect(() => {
+    if (!session || manuallyStopped) return;
+    function handleVisibilityChange(): void {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden" && session && !manuallyStopped) {
+        setManuallyStopped(true);
+        void ensureStopped(session.id);
+      }
+    }
+    function handlePageHide(): void {
+      if (session && !manuallyStopped) {
+        void ensureStopped(session.id);
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", handlePageHide);
+    };
+  }, [session, manuallyStopped]);
+
   // Changing the device/camera abandons any session opened for the previous one.
   useEffect(() => {
     setSession(null);

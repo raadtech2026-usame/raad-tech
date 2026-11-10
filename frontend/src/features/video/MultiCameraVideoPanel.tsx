@@ -115,11 +115,24 @@ export function MultiCameraVideoPanel({
     setLiveRequested(true);
   }
 
-  function handleStop(): void {
+  const handleStop = useCallback((): void => {
     setLiveRequested(false);
     setPhaseByCamera({});
     setFocusedCameraId(null);
-  }
+  }, []);
+
+  // When the user switches tabs, minimizes the browser, or switches to another app
+  // while live video is playing, automatically stop live playback to protect cellular data.
+  useEffect(() => {
+    if (!liveRequested) return;
+    function handleVisibilityChange(): void {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        handleStop();
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [liveRequested, handleStop]);
 
   function toggleGrid(): void {
     setFocusedCameraId(null);

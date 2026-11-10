@@ -287,5 +287,26 @@ describe("MultiCameraVideoPanel", () => {
       renderPanel(CAMERAS_4.map((camera) => ({ ...camera, videoSignal: "unknown" as const })));
       expect(await screen.findByText("4 cameras ready")).toBeInTheDocument();
     });
+
+    it("automatically stops live streams when tab or window is hidden to save mobile data", async () => {
+      vi.mocked(requestLiveVideo).mockImplementation((deviceId: string, cameraId: string) =>
+        Promise.resolve(sessionFor(deviceId, cameraId)),
+      );
+      renderPanel();
+
+      await userEvent.click(screen.getByRole("button", { name: "Start Live" }));
+      await waitFor(() => expect(requestLiveVideo).toHaveBeenCalledTimes(4));
+
+      // Simulate tab switch or minimizing browser
+      Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Start Live" })).toBeInTheDocument());
+      expect(await screen.findByText("4 cameras ready")).toBeInTheDocument();
+      await waitFor(() => expect(stopVideoSession).toHaveBeenCalledTimes(4));
+
+      // Restore visibilityState
+      Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    });
   });
 });
