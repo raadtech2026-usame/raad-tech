@@ -451,6 +451,51 @@ class AdminFinanceSummary {
   );
 }
 
+class AdminInvoice {
+  final String id;
+  final String studentId;
+  final String? studentName;
+  final String period;
+  final String amount;
+  final String amountPaid;
+  final String balanceDue;
+  final String currency;
+  final String status;
+  final String? dueDate;
+  final String? notes;
+
+  const AdminInvoice({
+    required this.id,
+    required this.studentId,
+    this.studentName,
+    required this.period,
+    required this.amount,
+    required this.amountPaid,
+    required this.balanceDue,
+    required this.currency,
+    required this.status,
+    this.dueDate,
+    this.notes,
+  });
+
+  bool get isPaid => status == 'paid';
+  bool get isOverdue => status == 'overdue';
+
+  factory AdminInvoice.fromJson(Map<String, dynamic> json) => AdminInvoice(
+    id: json['id'] as String,
+    studentId: json['student_id'] as String? ?? '',
+    studentName: json['student_name'] as String?,
+    period: json['period'] as String? ?? '',
+    amount: json['amount']?.toString() ?? '0.00',
+    amountPaid: json['amount_paid']?.toString() ?? '0.00',
+    balanceDue: json['balance_due']?.toString() ?? '0.00',
+    currency: json['currency'] as String? ?? 'USD',
+    status: json['status'] as String? ?? 'pending',
+    dueDate: json['due_date'] as String?,
+    notes: json['notes'] as String?,
+  );
+}
+
 class AdminParentInvoiceLine {
   final String studentId;
   final String studentName;
@@ -944,16 +989,11 @@ class AdminRepository {
   Future<List<AdminParentInvoice>> generateMonthlyParentInvoices(
     String period,
   ) async {
-    final json = await _client.post(
+    await _client.post(
       '/school-finance/parent-invoices/generate',
       body: {'period': period},
     );
-    if (json is List) {
-      return json
-          .map((i) => AdminParentInvoice.fromJson(i as Map<String, dynamic>))
-          .toList();
-    }
-    return const [];
+    return parentInvoices(period: period);
   }
 
   Future<void> recordParentPayment({

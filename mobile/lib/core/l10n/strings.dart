@@ -517,6 +517,9 @@ class Strings {
   String get adminPeriod => _('Muddada / Bisha', 'Period (YYYY-MM)');
   String get adminDueDate => _('Waqtiga ugu dambeeya', 'Due Date');
   String get adminReference => _('Tixraaca / Reference', 'Reference (optional)');
+  String get adminReferenceCode => _('Tixraaca / Reference', 'Reference (optional)');
+  String get allFieldsRequired => _('Fadlan buuxi dhammaan meelaha bannaan', 'All fields are required');
+  String get adminSelectBus => _('Dooro baska', 'Select bus');
   String get adminNotes => _('Faahfaahin dheeraad ah', 'Notes (optional)');
   String get adminInvoiceStatusPaid => _('Waa la bixiyay', 'Paid');
   String get adminInvoiceStatusPending => _('Dhiman', 'Pending');
@@ -534,7 +537,6 @@ class Strings {
   String get adminIntercomConnecting => _('Waa la xiriirinayaa...', 'Connecting voice call...');
   String get adminIntercomDisconnect => _('Jar xiriirka', 'End Call');
   String get adminNoBusesOnRoad => _('Waqtigan xaadirka ah ma jiraan basas safar ku jira.', 'No buses are currently on a trip.');
-  String get adminLinkDevice => _('Ku xir qalab MDVR', 'Link MDVR Device');
   String get adminDeviceLinkedSuccess => _('Qalabka si guul leh ayaa loogu xiray baska', 'Device linked to vehicle successfully');
   String get adminTerminalId => _('Terminal ID', 'Terminal ID');
   String get adminNoDeviceAttached => _('Baskan laguma xirin qalabka MDVR/GPS-ka', 'No MDVR/GPS device attached to this bus');

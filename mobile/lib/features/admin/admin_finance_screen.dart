@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/l10n/strings.dart';
-import '../../core/util/format.dart';
 import '../../shared/widgets.dart';
 import 'admin_data.dart';
 import 'admin_screens.dart';

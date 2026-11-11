@@ -356,7 +356,7 @@ class _AddStaffSheetState extends ConsumerState<_AddStaffSheet> {
             const SizedBox(height: 12),
 
             DropdownButtonFormField<String>(
-              value: _role,
+              initialValue: _role,
               decoration: const InputDecoration(
                 labelText: 'Doorka (Role)',
                 prefixIcon: Icon(Icons.badge_outlined),
@@ -488,7 +488,7 @@ class _AssignCrewSheetState extends ConsumerState<_AssignCrewSheet> {
               loading: () => const LinearProgressIndicator(),
               error: (_, __) => Text(s.adminSelectVehicle),
               data: (vehicles) => DropdownButtonFormField<String>(
-                value: _selectedVehicleId,
+                initialValue: _selectedVehicleId,
                 decoration: InputDecoration(
                   labelText: s.adminSelectVehicle,
                   prefixIcon: const Icon(Icons.directions_bus_rounded),
@@ -510,7 +510,7 @@ class _AssignCrewSheetState extends ConsumerState<_AssignCrewSheet> {
               data: (staffList) {
                 final drivers = staffList.where((st) => st.role.toLowerCase() == 'driver').toList();
                 return DropdownButtonFormField<String>(
-                  value: _selectedDriverId,
+                  initialValue: _selectedDriverId,
                   decoration: InputDecoration(
                     labelText: s.adminSelectDriver,
                     prefixIcon: const Icon(Icons.airline_seat_recline_normal_rounded),
@@ -533,7 +533,7 @@ class _AssignCrewSheetState extends ConsumerState<_AssignCrewSheet> {
               data: (staffList) {
                 final attendants = staffList.where((st) => st.role.toLowerCase() != 'driver').toList();
                 return DropdownButtonFormField<String>(
-                  value: _selectedAttendantId,
+                  initialValue: _selectedAttendantId,
                   decoration: InputDecoration(
                     labelText: s.adminSelectAttendant,
                     prefixIcon: const Icon(Icons.supervised_user_circle_rounded),
