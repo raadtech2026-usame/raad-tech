@@ -113,13 +113,15 @@ export function FleetMapPanel({ vehicles, totalOnline, isLoading, onSelectVehicl
           fixStatus: live.fixStatus,
         });
       } else if (vehicle.position) {
+        const isStale =
+          Date.now() - new Date(vehicle.position.eventTime).getTime() > 2 * 60 * 1000;
         map.set(vehicle.vehicleId, {
           lat: vehicle.position.latitude,
           lng: vehicle.position.longitude,
           headingDeg: vehicle.position.headingDeg ?? undefined,
           speedKph: vehicle.position.speedKph,
           eventTime: vehicle.position.eventTime,
-          fixStatus: "live",
+          fixStatus: isStale ? "stale" : "live",
         });
       }
     }
@@ -247,16 +249,20 @@ export function FleetMapPanel({ vehicles, totalOnline, isLoading, onSelectVehicl
         )}
         {!isLoading && vehicles.length === 0 && (
           <div className={styles.overlay}>
-            <EmptyState icon={<Radio size={28} />} title="No vehicles are currently online" />
+            <div className={styles.overlayCard}>
+              <EmptyState icon={<Radio size={28} />} title="No vehicles are currently online" />
+            </div>
           </div>
         )}
         {!isLoading && vehicles.length > 0 && onlineWithPosition === 0 && (
           <div className={styles.overlay}>
-            <EmptyState
-              icon={<Bus size={28} />}
-              title={`${vehicles.length} vehicle${vehicles.length === 1 ? "" : "s"} online`}
-              description="Waiting for a live position update for each one."
-            />
+            <div className={styles.overlayCard}>
+              <EmptyState
+                icon={<Bus size={28} />}
+                title={`${vehicles.length} vehicle${vehicles.length === 1 ? "" : "s"} online`}
+                description="Waiting for a live position update for each one."
+              />
+            </div>
           </div>
         )}
       </div>

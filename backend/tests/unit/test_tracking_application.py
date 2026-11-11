@@ -100,6 +100,28 @@ class InMemoryVehiclePositionRepository(VehiclePositionRepository):
         ]
         return sorted(matches, key=lambda p: p.event_time)
 
+    async def get_latest_valid_for_vehicle(
+        self, vehicle_id: VehicleId
+    ) -> VehiclePosition | None:
+        matches = [
+            p
+            for p in self.by_id.values()
+            if str(p.vehicle_id) == str(vehicle_id) and p.is_gps_valid
+        ]
+        if not matches:
+            return None
+        return max(matches, key=lambda p: p.event_time)
+
+    async def get_latest_valid_for_vehicles(
+        self, vehicle_ids: list[VehicleId]
+    ) -> dict[VehicleId, VehiclePosition]:
+        result: dict[VehicleId, VehiclePosition] = {}
+        for vid in vehicle_ids:
+            latest = await self.get_latest_valid_for_vehicle(vid)
+            if latest is not None:
+                result[vid] = latest
+        return result
+
     async def list_for_trip_page(
         self,
         trip_id: TripId,
@@ -576,6 +598,31 @@ class GetCurrentVehiclePositionTests(unittest.IsolatedAsyncioTestCase):
             GetCurrentVehiclePositionQuery(vehicle_id=VALID_VEHICLE_ULID)
         )
         self.assertIsNone(result)
+
+    async def test_falls_back_to_uow_when_latest_position_port_has_nothing(self) -> None:
+        """When Redis has no key (e.g. cold start, restart), get_current_vehicle_position
+        falls back to the most recent valid GPS fix from durable history."""
+        service, uow = make_service()
+        # Record an invalid fix first, then a valid one, then an invalid one.
+        await service.record_vehicle_position(
+            _position_command(datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc), is_gps_valid=True),
+            uow=uow,
+        )
+        await service.record_vehicle_position(
+            _position_command(datetime(2026, 1, 1, 11, 0, tzinfo=timezone.utc), is_gps_valid=False),
+            uow=uow,
+        )
+        from raad.modules.tracking.application.queries import (
+            GetCurrentVehiclePositionQuery,
+        )
+
+        result = await service.get_current_vehicle_position(
+            GetCurrentVehiclePositionQuery(vehicle_id=VALID_VEHICLE_ULID),
+            uow=uow,
+        )
+        self.assertNotNull = self.assertIsNotNone(result)
+        self.assertTrue(result.is_gps_valid)
+        self.assertEqual(result.event_time, datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc))
 
     async def test_raises_not_implemented_when_no_port_bound(self) -> None:
         """`latest_position_port` is optional at the service level (Backend Stabilization

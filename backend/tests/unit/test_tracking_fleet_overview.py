@@ -183,6 +183,43 @@ class FleetOverviewApplicationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.vehicles), 1)
         self.assertIsNone(result.vehicles[0].position)
 
+    async def test_falls_back_to_tracking_uow_when_latest_position_port_has_no_key(
+        self,
+    ) -> None:
+        online = [
+            OnlineDeviceAssignmentDTO(
+                device_id="device-1", terminal_id="TERM1", vehicle_id="vehicle-1"
+            )
+        ]
+        service = FleetOverviewApplicationService(
+            vehicle_service=FakeVehicleService([_vehicle_dto("vehicle-1", "ABC-123")]),
+            device_service=FakeDeviceService(online),
+            latest_position_port=FakeLatestPositionPort({}),
+        )
+
+        class _FakeTrackingRepo:
+            def __init__(self, positions):
+                self._pos = positions
+            async def get_latest_valid_for_vehicles(self, vehicle_ids):
+                return {v: self._pos[str(v)] for v in vehicle_ids if str(v) in self._pos}
+
+        class _FakeTrackingUow:
+            def __init__(self, positions):
+                self.vehicle_positions = _FakeTrackingRepo(positions)
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        fake_uow = _FakeTrackingUow({"vehicle-1": _position("vehicle-1", lat=2.04, lng=45.32)})
+        result = await service.list_online_vehicles(
+            fleet_device_uow=_SENTINEL_UOW, tracking_uow=fake_uow
+        )
+
+        self.assertIsNotNone(result.vehicles[0].position)
+        self.assertEqual(result.vehicles[0].position.latitude, 2.04)
+        self.assertEqual(result.vehicles[0].position.longitude, 45.32)
+
     async def test_an_online_device_whose_vehicle_is_out_of_scope_is_silently_excluded(
         self,
     ) -> None:

@@ -166,11 +166,13 @@ async def get_latest_vehicle_position(
         require_permission(Permission("tracking.vehicles.read_latest"))
     ),
     tracking_service: TrackingApplicationService = Depends(get_tracking_service),
+    tracking_uow: TrackingUnitOfWork = Depends(get_tracking_uow),
     trip_service: TripApplicationService = Depends(get_trip_service),
     transport_ops_uow=Depends(get_transport_ops_uow),
 ) -> VehiclePositionResponse:
     position = await tracking_service.get_current_vehicle_position(
-        GetCurrentVehiclePositionQuery(vehicle_id=vehicle_id)
+        GetCurrentVehiclePositionQuery(vehicle_id=vehicle_id),
+        uow=tracking_uow,
     )
     if position is None:
         raise NotFoundError(f"No known position for vehicle {vehicle_id}.")
@@ -297,6 +299,7 @@ async def list_online_vehicles(
         get_fleet_overview_service
     ),
     fleet_device_uow: FleetDeviceUnitOfWork = Depends(get_fleet_device_uow),
+    tracking_uow: TrackingUnitOfWork = Depends(get_tracking_uow),
 ) -> FleetOnlineVehiclesResponse:
     if principal.role not in _FLEET_OVERVIEW_ELIGIBLE_ROLES:
         raise AuthorizationError(
@@ -304,7 +307,8 @@ async def list_online_vehicles(
         )
 
     result = await fleet_overview_service.list_online_vehicles(
-        fleet_device_uow=fleet_device_uow
+        fleet_device_uow=fleet_device_uow,
+        tracking_uow=tracking_uow,
     )
     return FleetOnlineVehiclesResponse(
         vehicles=[_online_vehicle_dto_to_response(v) for v in result.vehicles],

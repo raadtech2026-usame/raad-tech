@@ -216,27 +216,35 @@ class TrackingApplicationService:
     # --- Reads --------------------------------------------------------------------------
 
     async def get_current_vehicle_position(
-        self, query: GetCurrentVehiclePositionQuery
+        self,
+        query: GetCurrentVehiclePositionQuery,
+        *,
+        uow: TrackingUnitOfWork | None = None,
     ) -> VehiclePositionDTO | None:
         """Served by `LatestPositionPort` (Redis-backed via `infra.adapters.
-        RedisLatestPositionPort`, Backend Stabilization phase) — never `TrackingUnitOfWork.
-        vehicle_positions`, per that repository's own "latest is not read from here" contract
-        (Phase 8.1). `latest_position_port` is optional at the *service* level (constructor)
-        so the rest of this service — including `prune_position_history`, the retention
-        scheduled job's own entry point, which needs no Redis at all — stays reachable even
-        without a configured Redis; only this one method needs the port, so only this method
-        fails loudly when it's unbound, mirroring `BillingApplicationService.initiate_payment`'s
-        identical method-granularity "fail loudly, don't fake" treatment of its own optional
-        `PaymentProviderPort`."""
-        if self._latest_position_port is None:
+        RedisLatestPositionPort`, Backend Stabilization phase) with a fallback to
+        `TrackingUnitOfWork.vehicle_positions` when Redis has no record (e.g. cold start,
+        restart, or pre-breakdown fix). `latest_position_port` is optional at the *service*
+        level (constructor) so the rest of this service — including `prune_position_history`,
+        the retention scheduled job's own entry point, which needs no Redis at all — stays
+        reachable even without a configured Redis; only this one method needs the port, so
+        only this method fails loudly when both the port and uow are unbound."""
+        position: VehiclePosition | None = None
+        if self._latest_position_port is not None:
+            position = await self._latest_position_port.get_latest(
+                VehicleId(query.vehicle_id)
+            )
+        if position is None and uow is not None:
+            async with uow:
+                position = await uow.vehicle_positions.get_latest_valid_for_vehicle(
+                    VehicleId(query.vehicle_id)
+                )
+        if position is None and self._latest_position_port is None and uow is None:
             raise NotImplementedError(
                 "No LatestPositionPort is bound - RAAD_REDIS__URL is not configured in this "
                 "environment. See tracking.infra.adapters.RedisLatestPositionPort's own "
                 "module docstring."
             )
-        position = await self._latest_position_port.get_latest(
-            VehicleId(query.vehicle_id)
-        )
         return vehicle_position_to_dto(position) if position is not None else None
 
     async def get_vehicle_position_history(
@@ -345,7 +353,10 @@ class FleetOverviewApplicationService:
         self._latest_position_port = latest_position_port
 
     async def list_online_vehicles(
-        self, *, fleet_device_uow: FleetDeviceUnitOfWork
+        self,
+        *,
+        fleet_device_uow: FleetDeviceUnitOfWork,
+        tracking_uow: TrackingUnitOfWork | None = None,
     ) -> FleetOnlineVehiclesDTO:
         online_devices = await self._device_service.list_online_devices_with_vehicle_assignment(
             uow=fleet_device_uow
@@ -371,6 +382,15 @@ class FleetOverviewApplicationService:
             positions = await self._latest_position_port.get_latest_many(
                 [VehicleId(vid) for vid in vehicle_ids]
             )
+
+        # Fallback to database for any online vehicle that had a cache miss in Redis
+        missing_ids = [VehicleId(vid) for vid in vehicle_ids if VehicleId(vid) not in positions]
+        if missing_ids and tracking_uow is not None:
+            async with tracking_uow:
+                db_positions = await tracking_uow.vehicle_positions.get_latest_valid_for_vehicles(
+                    missing_ids
+                )
+                positions.update(db_positions)
 
         result: list[OnlineVehicleDTO] = []
         for online in capped:

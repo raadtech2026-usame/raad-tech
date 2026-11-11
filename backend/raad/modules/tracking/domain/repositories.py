@@ -82,6 +82,21 @@ class VehiclePositionRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_latest_valid_for_vehicle(
+        self, vehicle_id: VehicleId
+    ) -> VehiclePosition | None:
+        """Returns the most recent valid GPS fix for this vehicle from durable history,
+        or None if no valid fix has ever been recorded."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_latest_valid_for_vehicles(
+        self, vehicle_ids: list[VehicleId]
+    ) -> dict[VehicleId, VehiclePosition]:
+        """Bulk variant of `get_latest_valid_for_vehicle`."""
+        raise NotImplementedError
+
+    @abstractmethod
     def add(self, position: VehiclePosition) -> None:
         """Persistence of changes is flushed by the Unit of Work, not the repository
         (LLD §7.1)."""

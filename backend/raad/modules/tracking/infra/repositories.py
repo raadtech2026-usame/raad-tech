@@ -138,6 +138,34 @@ class SqlAlchemyVehiclePositionRepository(
         result = await self._session.execute(statement)
         return [self._track(row) for row in result.scalars().all()]  # type: ignore[misc]
 
+    async def get_latest_valid_for_vehicle(
+        self, vehicle_id: VehicleId
+    ) -> VehiclePosition | None:
+        statement = (
+            select(VehiclePositionModel)
+            .where(
+                VehiclePositionModel.vehicle_id == str(vehicle_id),
+                VehiclePositionModel.is_gps_valid.is_(True),
+            )
+            .order_by(VehiclePositionModel.event_time.desc())
+            .limit(1)
+        )
+        result = await self._session.execute(statement)
+        row = result.scalars().first()
+        return self._track(row) if row is not None else None
+
+    async def get_latest_valid_for_vehicles(
+        self, vehicle_ids: list[VehicleId]
+    ) -> dict[VehicleId, VehiclePosition]:
+        if not vehicle_ids:
+            return {}
+        result: dict[VehicleId, VehiclePosition] = {}
+        for vid in vehicle_ids:
+            pos = await self.get_latest_valid_for_vehicle(vid)
+            if pos is not None:
+                result[vid] = pos
+        return result
+
     def add(self, position: VehiclePosition) -> None:
         model = vehicle_position_to_model(position)
         super().add(model)

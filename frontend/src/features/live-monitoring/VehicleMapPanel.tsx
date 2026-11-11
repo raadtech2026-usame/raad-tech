@@ -241,16 +241,20 @@ export function VehicleMapPanel({
         )}
         {vehicleId === "" && (
           <div className={styles.overlay}>
-            <EmptyState icon={<MapPin size={28} />} title="Select a vehicle to start tracking" />
+            <div className={styles.overlayCard}>
+              <EmptyState icon={<MapPin size={28} />} title="Select a vehicle to start tracking" />
+            </div>
           </div>
         )}
         {vehicleId !== "" && !isPositionLoading && !hasKnownPosition && (
           <div className={styles.overlay}>
-            <EmptyState
-              icon={<Radio size={28} />}
-              title="No live position data"
-              description="This vehicle hasn't reported a position yet."
-            />
+            <div className={styles.overlayCard}>
+              <EmptyState
+                icon={<Radio size={28} />}
+                title="No live position data"
+                description="This vehicle hasn't reported a position yet."
+              />
+            </div>
           </div>
         )}
       </div>

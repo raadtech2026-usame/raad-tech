@@ -33,6 +33,19 @@
   pointer-events: none;
 }
 
+.overlayCard {
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6) var(--space-8);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  max-width: 400px;
+  text-align: center;
+  pointer-events: auto;
+}
+
 /* Marker appearance itself now lives in `vehicleMarker.module.css` (the shared bus-icon marker,
  * Mapbox UI upgrade) — this file only styles the hover popup card `MapboxMapProvider` renders
  * via `Popup.setHTML`, whose markup is a plain string (not a JSX tree), so these class names are
