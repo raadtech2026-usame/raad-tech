@@ -353,6 +353,159 @@ class AdminOverview {
   });
 }
 
+class AdminFinanceSummary {
+  final String billedAmount;
+  final String collectedAmount;
+  final String outstandingAmount;
+  final int invoiceCount;
+  final int paidInvoiceCount;
+  final int overdueInvoiceCount;
+  final String currency;
+
+  const AdminFinanceSummary({
+    required this.billedAmount,
+    required this.collectedAmount,
+    required this.outstandingAmount,
+    required this.invoiceCount,
+    required this.paidInvoiceCount,
+    required this.overdueInvoiceCount,
+    required this.currency,
+  });
+
+  factory AdminFinanceSummary.fromJson(Map<String, dynamic> json) => AdminFinanceSummary(
+    billedAmount: json['billed_amount'] as String? ?? '0.00',
+    collectedAmount: json['collected_amount'] as String? ?? '0.00',
+    outstandingAmount: json['outstanding_amount'] as String? ?? '0.00',
+    invoiceCount: json['invoice_count'] as int? ?? 0,
+    paidInvoiceCount: json['paid_invoice_count'] as int? ?? 0,
+    overdueInvoiceCount: json['overdue_invoice_count'] as int? ?? 0,
+    currency: json['currency'] as String? ?? 'USD',
+  );
+}
+
+class AdminInvoice {
+  final String id;
+  final String studentId;
+  final String? studentName;
+  final String period;
+  final String amount;
+  final String amountPaid;
+  final String balanceDue;
+  final String currency;
+  final String status;
+  final String? dueDate;
+  final String? notes;
+
+  const AdminInvoice({
+    required this.id,
+    required this.studentId,
+    this.studentName,
+    required this.period,
+    required this.amount,
+    required this.amountPaid,
+    required this.balanceDue,
+    required this.currency,
+    required this.status,
+    this.dueDate,
+    this.notes,
+  });
+
+  bool get isPaid => status == 'paid';
+  bool get isOverdue => status == 'overdue';
+
+  factory AdminInvoice.fromJson(Map<String, dynamic> json) => AdminInvoice(
+    id: json['id'] as String,
+    studentId: json['student_id'] as String? ?? '',
+    studentName: json['student_name'] as String?,
+    period: json['period'] as String? ?? '',
+    amount: json['amount'] as String? ?? '0.00',
+    amountPaid: json['amount_paid'] as String? ?? '0.00',
+    balanceDue: json['balance_due'] as String? ?? '0.00',
+    currency: json['currency'] as String? ?? 'USD',
+    status: json['status'] as String? ?? 'pending',
+    dueDate: json['due_date'] as String?,
+    notes: json['notes'] as String?,
+  );
+}
+
+class AdminTripItem {
+  final String id;
+  final String scheduledDate;
+  final String tripType;
+  final String? routeId;
+  final String? routeName;
+  final String? vehicleId;
+  final String? vehiclePlate;
+  final String? driverId;
+  final String? driverName;
+  final String status;
+  final String? plannedDeparture;
+  final String? cancelledReason;
+
+  const AdminTripItem({
+    required this.id,
+    required this.scheduledDate,
+    required this.tripType,
+    this.routeId,
+    this.routeName,
+    this.vehicleId,
+    this.vehiclePlate,
+    this.driverId,
+    this.driverName,
+    required this.status,
+    this.plannedDeparture,
+    this.cancelledReason,
+  });
+
+  bool get isInProgress => status == 'in_progress';
+  bool get isScheduled => status == 'scheduled';
+  bool get isCompleted => status == 'completed';
+
+  factory AdminTripItem.fromJson(Map<String, dynamic> json) => AdminTripItem(
+    id: json['id'] as String,
+    scheduledDate: json['scheduled_date'] as String? ?? '',
+    tripType: json['trip_type'] as String? ?? '',
+    routeId: json['route_id'] as String?,
+    routeName: json['route_name'] as String?,
+    vehicleId: json['vehicle_id'] as String?,
+    vehiclePlate: json['vehicle_plate'] as String?,
+    driverId: json['driver_id'] as String?,
+    driverName: json['driver_name'] as String?,
+    status: json['status'] as String? ?? '',
+    plannedDeparture: json['planned_departure'] as String?,
+    cancelledReason: json['cancelled_reason'] as String?,
+  );
+}
+
+class AdminStaff {
+  final String id;
+  final String fullName;
+  final String phone;
+  final String role;
+  final String? licenseNo;
+  final String status;
+
+  const AdminStaff({
+    required this.id,
+    required this.fullName,
+    required this.phone,
+    required this.role,
+    this.licenseNo,
+    required this.status,
+  });
+
+  bool get isActive => status == 'active';
+
+  factory AdminStaff.fromJson(Map<String, dynamic> json) => AdminStaff(
+    id: json['id'] as String,
+    fullName: json['full_name'] as String? ?? '',
+    phone: json['phone'] as String? ?? '',
+    role: json['role'] as String? ?? 'driver',
+    licenseNo: json['license_no'] as String?,
+    status: json['status'] as String? ?? 'active',
+  );
+}
+
 List<Map<String, dynamic>> _list(Object? value) =>
     (value as List<dynamic>? ?? const []).cast<Map<String, dynamic>>();
 
@@ -516,6 +669,52 @@ class AdminRepository {
     return _list(json['data']).map(AdminRoute.fromJson).toList();
   }
 
+  Future<void> createRoute({
+    required String name,
+    String? code,
+    String? description,
+  }) async {
+    final body = {
+      'organization_id': orgId,
+      'name': name,
+      if (code != null && code.isNotEmpty) 'code': code,
+      if (description != null && description.isNotEmpty)
+        'description': description,
+    };
+    await _client.post('/routes', body: body);
+  }
+
+  Future<void> addStopToRoute({
+    required String routeId,
+    required String name,
+    required double latitude,
+    required double longitude,
+    int sequence = 1,
+  }) async {
+    final body = {
+      'name': name,
+      'latitude': latitude,
+      'longitude': longitude,
+      'sequence': sequence,
+    };
+    await _client.post('/routes/$routeId/stops', body: body);
+  }
+
+  Future<List<AdminTripItem>> listTrips({String? status, String? search}) async {
+    final statusFilter = status != null && status != 'all' ? '&filter[status]=$status' : '';
+    final searchFilter = search != null && search.isNotEmpty ? '&search=$search' : '';
+    final json = await _client.get('/trips?page=1&page_size=100$statusFilter$searchFilter');
+    return _list(json['data']).map(AdminTripItem.fromJson).toList();
+  }
+
+  Future<void> startTrip(String tripId) async {
+    await _client.post('/trips/$tripId/start', body: {});
+  }
+
+  Future<void> endTrip(String tripId) async {
+    await _client.post('/trips/$tripId/end', body: {});
+  }
+
   Future<List<BoardTrip>> trips() async {
     final json = await _client.get('/trips?page=1&page_size=100');
     return _list(json['data']).map(BoardTrip.fromJson).toList();
@@ -525,6 +724,134 @@ class AdminRepository {
     return (await _client.getList(
       '/safety-alerts?status=open&status=acknowledged',
     )).map(SafetyAlert.fromJson).toList();
+  }
+
+  // --- ERP Finance ----------------------------------------------------------
+
+  Future<AdminFinanceSummary> financeSummary() async {
+    try {
+      final json = await _client.get('/school-finance/summary');
+      return AdminFinanceSummary.fromJson(json);
+    } catch (_) {
+      return const AdminFinanceSummary(
+        billedAmount: '0.00',
+        collectedAmount: '0.00',
+        outstandingAmount: '0.00',
+        invoiceCount: 0,
+        paidInvoiceCount: 0,
+        overdueInvoiceCount: 0,
+        currency: 'USD',
+      );
+    }
+  }
+
+  Future<List<AdminInvoice>> invoices({String? status}) async {
+    try {
+      final statusParam = status != null && status.isNotEmpty ? '&filter[status]=$status' : '';
+      final json = await _client.get('/school-finance/student-invoices?page=1&page_size=100$statusParam');
+      return _list(json['data']).map(AdminInvoice.fromJson).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> issueInvoice({
+    required String studentId,
+    required String period,
+    required double amount,
+    String? dueDate,
+    String? notes,
+  }) async {
+    final body = {
+      'organization_id': orgId,
+      'student_id': studentId,
+      'period': period,
+      'amount': amount.toStringAsFixed(2),
+      'currency': 'USD',
+      if (dueDate != null && dueDate.isNotEmpty) 'due_date': dueDate,
+      if (notes != null && notes.isNotEmpty) 'notes': notes,
+    };
+    await _client.post('/school-finance/student-invoices', body: body);
+  }
+
+  Future<void> recordPayment({
+    required String invoiceId,
+    required double amount,
+    required String method,
+    String? reference,
+    String? notes,
+  }) async {
+    final body = {
+      'amount': amount.toStringAsFixed(2),
+      'currency': 'USD',
+      'method': method,
+      'received_on': isoDate(DateTime.now()),
+      if (reference != null && reference.isNotEmpty) 'reference': reference,
+      if (notes != null && notes.isNotEmpty) 'notes': notes,
+    };
+    await _client.post('/school-finance/student-invoices/$invoiceId/payments', body: body);
+  }
+
+  // --- Live Video & Two-Way Intercom ----------------------------------------
+
+  Future<Map<String, dynamic>> requestLiveVideo({
+    required String deviceId,
+    required String cameraId,
+  }) async {
+    return await _client.post('/video/live', body: {
+      'device_id': deviceId,
+      'camera_id': cameraId,
+      'stream_type': 'main',
+    });
+  }
+
+  Future<Map<String, dynamic>> requestIntercom({required String deviceId}) async {
+    return await _client.post('/video/intercom', body: {
+      'device_id': deviceId,
+    });
+  }
+
+  Future<void> stopVideoSession(String sessionId) async {
+    await _client.post('/video/sessions/$sessionId/stop', body: {});
+  }
+
+  // --- Staff & Bus Crew -----------------------------------------------------
+
+  Future<List<AdminStaff>> staffList() async {
+    try {
+      final json = await _client.get('/drivers?page=1&page_size=100');
+      return _list(json['data']).map(AdminStaff.fromJson).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> createStaff({
+    required String fullName,
+    required String phone,
+    required String role,
+    String? licenseNo,
+  }) async {
+    final body = {
+      'organization_id': orgId,
+      'full_name': fullName,
+      'phone': phone,
+      if (licenseNo != null && licenseNo.isNotEmpty) 'license_no': licenseNo,
+    };
+    await _client.post('/drivers', body: body);
+  }
+
+  Future<void> assignBusCrew({
+    required String vehicleId,
+    required String driverId,
+    String? attendantId,
+  }) async {
+    final body = {
+      'vehicle_id': vehicleId,
+      'driver_id': driverId,
+      if (attendantId != null && attendantId.isNotEmpty) 'attendant_id': attendantId,
+    };
+    await _client.post('/vehicles/$vehicleId/crew', body: body);
   }
 }
 
@@ -587,3 +914,21 @@ final adminVehicleNamesProvider =
       final vehicles = await ref.watch(adminRepositoryProvider).vehicles();
       return {for (final v in vehicles) v.id: v.displayName};
     });
+
+// --- 5-Pillar Providers -----------------------------------------------------
+
+final adminFinanceSummaryProvider = FutureProvider.autoDispose<AdminFinanceSummary>(
+  (ref) => ref.watch(adminRepositoryProvider).financeSummary(),
+);
+
+final adminInvoicesListProvider = FutureProvider.autoDispose<List<AdminInvoice>>(
+  (ref) => ref.watch(adminRepositoryProvider).invoices(),
+);
+
+final adminTripsItemsProvider = FutureProvider.autoDispose<List<AdminTripItem>>(
+  (ref) => ref.watch(adminRepositoryProvider).listTrips(),
+);
+
+final adminStaffMembersProvider = FutureProvider.autoDispose<List<AdminStaff>>(
+  (ref) => ref.watch(adminRepositoryProvider).staffList(),
+);

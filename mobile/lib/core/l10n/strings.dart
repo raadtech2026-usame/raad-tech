@@ -487,6 +487,80 @@ class Strings {
     'Goobta baska waxaa laga helaa qalabka baska ku rakiban, ma aha taleefankaaga.',
     'The bus location comes from the device on the bus, not from your phone.',
   );
+
+  // ---- 5-Pillar Org Admin Navigation (Compact, uniform, perfectly aligned)
+  String get adminNavPillarLive => _('Daba-gal', 'Live');
+  String get adminNavPillarTrips => _('Safarro', 'Trips');
+  String get adminNavPillarFinance => _('Maaliyad', 'Finance');
+  String get adminNavPillarRoutes => _('Khadad', 'Routes');
+  String get adminNavPillarStaff => _('Shaqaale', 'Staff');
+
+  // ---- Pillar 1: ERP Finance
+  String get adminFinanceOverviewTitle => _('Xisaabaadka & Qaansheegyada', 'School ERP Finance');
+  String get adminTotalBilled => _('La dalacay', 'Billed');
+  String get adminTotalCollected => _('La qabtay', 'Collected');
+  String get adminTotalOutstanding => _('Deyn dhiman', 'Outstanding');
+  String get adminIssueInvoice => _('Soo saar qaansheeg', 'Issue Invoice');
+  String get adminRecordPayment => _('Qabo lacag', 'Record Payment');
+  String get adminInvoiceList => _('Qaansheegyada', 'Invoices');
+  String get adminInvoiceNumber => _('Lambarka qaansheegta', 'Invoice #');
+  String get adminAmountDollars => _('Cadadka ($)', 'Amount ($)');
+  String get adminPaymentMethod => _('Habka lacag-bixinta', 'Payment Method');
+  String get adminSelectStudent => _('Dooro ardayga', 'Select Student');
+  String get adminSelectParent => _('Dooro waalidka', 'Select Parent');
+  String get adminPeriod => _('Muddada / Bisha', 'Period (YYYY-MM)');
+  String get adminDueDate => _('Waqtiga ugu dambeeya', 'Due Date');
+  String get adminReference => _('Tixraaca / Reference', 'Reference (optional)');
+  String get adminNotes => _('Faahfaahin dheeraad ah', 'Notes (optional)');
+  String get adminInvoiceStatusPaid => _('Waa la bixiyay', 'Paid');
+  String get adminInvoiceStatusPending => _('Dhiman', 'Pending');
+  String get adminInvoiceStatusOverdue => _('Dhaaftay', 'Overdue');
+  String get adminInvoiceStatusCancelled => _('La joojiyay', 'Cancelled');
+
+  // ---- Pillar 2: Live Tracking & Intercom
+  String get adminFleetMapTitle => _('Daba-galka Basaska Tooska ah', 'Live Fleet Map');
+  String get adminSelectBusToInspect => _('Taabo bas si aad u eegto', 'Tap a bus to inspect');
+  String get adminWatchLiveCamera => _('Kaamirada Tooska ah', 'Watch Live Video');
+  String get adminIntercomTitle => _('Two-Way Intercom', 'Two-Way Intercom');
+  String get adminIntercomTalkToDriver => _('La hadal darawalka', 'Talk to Driver');
+  String get adminIntercomPushToTalk => _('Riix si aad ula hadasho', 'Push to Talk');
+  String get adminIntercomConnected => _('Xiriirka codku wuu furan yahay', 'Voice call connected');
+  String get adminIntercomConnecting => _('Waa la xiriirinayaa...', 'Connecting voice call...');
+  String get adminIntercomDisconnect => _('Jar xiriirka', 'End Call');
+  String get adminNoBusesOnRoad => _('Waqtigan xaadirka ah ma jiraan basas safar ku jira.', 'No buses are currently on a trip.');
+
+  // ---- Pillar 3: Trips & Operations Search
+  String get adminTripsTitle => _('Safarrada Dugsiga', 'School Trips');
+  String get adminSearchBus => _('Raadi taargo ama magaca baska...', 'Search plate or bus name...');
+  String get adminFilterAll => _('Dhammaan', 'All');
+  String get adminFilterInProgress => _('Socda', 'In Progress');
+  String get adminFilterScheduled => _('Qorsheysan', 'Scheduled');
+  String get adminFilterCompleted => _('Dhammaaday', 'Completed');
+  String get adminStartTripAction => _('Bilaaw safarka', 'Start Trip');
+  String get adminEndTripAction => _('Dhammee safarka', 'End Trip');
+  String get adminTripDetails => _('Faahfaahinta Safarka', 'Trip Details');
+
+  // ---- Pillar 4: Routes & Stops
+  String get adminRoutesManagementTitle => _('Waddooyinka & Hakadyada', 'Routes & Stops');
+  String get adminCreateNewRoute => _('Abuur khad cusub', 'Create Route');
+  String get adminRouteNameLabel => _('Magaca khadka', 'Route Name');
+  String get adminRouteCodeLabel => _('Koodhka khadka (ikhtiyaari)', 'Route Code (optional)');
+  String get adminAddStopTitle => _('Ku dar hakad cusub', 'Add Stop');
+  String get adminStopNameLabel => _('Magaca hakadka', 'Stop Name');
+  String get adminLatitude => _('Latitude', 'Latitude');
+  String get adminLongitude => _('Longitude', 'Longitude');
+  String get adminSequence => _('Kala horreynta', 'Sequence');
+
+  // ---- Pillar 5: Staff & Crew
+  String get adminStaffManagementTitle => _('Shaqaalaha & Xiridda Basaska', 'Staff & Bus Crew');
+  String get adminCreateStaffMember => _('Ku dar shaqaale cusub', 'Add Staff Member');
+  String get adminStaffRoleDriver => _('Darawal', 'Driver');
+  String get adminStaffRoleAttendant => _('Kalkaaliye', 'Attendant');
+  String get adminAssignCrewToBus => _('U qoondee bas', 'Assign Crew to Bus');
+  String get adminSelectVehicle => _('Dooro baska', 'Select Bus');
+  String get adminSelectDriver => _('Dooro darawalka', 'Select Driver');
+  String get adminSelectAttendant => _('Dooro kalkaaliyaha (ikhtiyaari)', 'Select Attendant (optional)');
+  String get adminBusCrewAssigned => _('Shaqaalaha baska waa la xiray', 'Bus crew assigned successfully');
 }
 
 /// 'so' or 'en'.
