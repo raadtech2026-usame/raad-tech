@@ -164,6 +164,32 @@ class FakeAdminRepository extends AdminRepository {
 
   @override
   Future<List<BoardTrip>> trips() => _answer(tripList);
+
+  AdminFinanceSummary financeSummaryData = const AdminFinanceSummary(
+    billedAmount: '0.00',
+    collectedAmount: '0.00',
+    outstandingAmount: '0.00',
+    invoiceCount: 0,
+    paidInvoiceCount: 0,
+    overdueInvoiceCount: 0,
+    currency: 'USD',
+  );
+  List<AdminInvoice> invoiceList = [];
+  List<AdminTripItem> tripItemsList = [];
+  List<AdminStaff> staffMembersList = [];
+
+  @override
+  Future<AdminFinanceSummary> financeSummary() => _answer(financeSummaryData);
+
+  @override
+  Future<List<AdminInvoice>> invoices({String? status}) => _answer(invoiceList);
+
+  @override
+  Future<List<AdminTripItem>> listTrips({String? status, String? search}) =>
+      _answer(tripItemsList);
+
+  @override
+  Future<List<AdminStaff>> staffList() => _answer(staffMembersList);
 }
 
 class _FixedThemeMode extends ThemeModeController {

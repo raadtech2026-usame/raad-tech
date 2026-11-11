@@ -23,7 +23,6 @@ class AdminFleetMapScreen extends ConsumerStatefulWidget {
 
 class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
   final _mapController = MapController();
-  OnlineVehicle? _selectedVehicle;
 
   // Default coordinate for Mogadishu/Somalia center when no vehicles report yet
   static const _defaultCenter = LatLng(2.0469, 45.3182);
@@ -35,7 +34,6 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
   }
 
   void _inspectVehicle(OnlineVehicle vehicle, AdminVehicle? details) {
-    setState(() => _selectedVehicle = vehicle);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -271,8 +269,8 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
         Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => VideoPlayerScreen(
-              streamUrl: session.streamUrl!,
-              title: widget.vehicle.displayName,
+              videoSessionId: session.id,
+              relayStreamUrl: session.streamUrl!,
             ),
           ),
         );

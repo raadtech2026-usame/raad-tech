@@ -74,8 +74,9 @@ class TrackingSocket {
     _channel = channel;
     channel.ready.then(
       (_) {
-        if (identical(_channel, channel) && !_opened.isClosed)
+        if (identical(_channel, channel) && !_opened.isClosed) {
           _opened.add(null);
+        }
       },
       onError: (_) {
         // The stream's own error or done event reports the failure.

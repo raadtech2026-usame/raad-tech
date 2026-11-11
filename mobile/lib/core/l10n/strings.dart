@@ -504,7 +504,8 @@ class Strings {
   String get adminRecordPayment => _('Qabo lacag', 'Record Payment');
   String get adminInvoiceList => _('Qaansheegyada', 'Invoices');
   String get adminInvoiceNumber => _('Lambarka qaansheegta', 'Invoice #');
-  String get adminAmountDollars => _('Cadadka ($)', 'Amount ($)');
+  String get adminAmountDollars => _(r'Cadadka ($)', r'Amount ($)');
+  String get emptyState => _('Waxba lagama helin', 'No records found');
   String get adminPaymentMethod => _('Habka lacag-bixinta', 'Payment Method');
   String get adminSelectStudent => _('Dooro ardayga', 'Select Student');
   String get adminSelectParent => _('Dooro waalidka', 'Select Parent');

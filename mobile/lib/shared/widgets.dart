@@ -328,6 +328,17 @@ void showError(BuildContext context, Object error, Strings s) {
     ..showSnackBar(SnackBar(content: Text(errorMessage(error, s))));
 }
 
+void showNotice(BuildContext context, String message, {bool isError = false}) {
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? RaadColors.red : null,
+      ),
+    );
+}
+
 /// The standard body for a list or detail backed by one request.
 class AsyncBody<T> extends StatelessWidget {
   final AsyncValue<T> value;

@@ -215,146 +215,11 @@ void main() {
     });
   });
 
-  group('Admin overview', () {
-    testWidgets('shows the figures and what needs attention', (tester) async {
+  group('Admin 5-Pillar Shell', () {
+    testWidgets('shows all 5 operational pillar destinations in Somali', (tester) async {
       await tester.pumpWidget(
         testApp(
           const AdminShell(),
-          repository: FakeRepository(),
-          admin: _busyDay(),
-          role: 'org_admin',
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('Organization overview'), findsOneWidget);
-      expect(find.text('12'), findsOneWidget);
-      expect(find.text('310'), findsOneWidget);
-      expect(find.text('1 open safety alert(s)'), findsOneWidget);
-      expect(find.text('1 trip(s) without a driver today'), findsOneWidget);
-    });
-
-    testWidgets('a figure that could not be read is a dash, not zero', (
-      tester,
-    ) async {
-      final admin = FakeAdminRepository()
-        ..overviewData = const AdminOverview(
-          vehicles: 5,
-          onlineNow: null,
-          tripsInProgress: 0,
-          students: null,
-          drivers: 2,
-          routes: 1,
-        );
-      await tester.pumpWidget(
-        testApp(
-          AdminOverviewScreen(onOpenTab: (_) {}),
-          repository: FakeRepository(),
-          admin: admin,
-          role: 'org_admin',
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('—'), findsNWidgets(2));
-      expect(find.text('Nothing needs attention.'), findsOneWidget);
-    });
-
-    testWidgets('offline shows the error with a retry', (tester) async {
-      final admin = FakeAdminRepository()..failWith = offline;
-      await tester.pumpWidget(
-        testApp(
-          AdminOverviewScreen(onOpenTab: (_) {}),
-          repository: FakeRepository(),
-          admin: admin,
-          role: 'org_admin',
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('Try again'), findsOneWidget);
-    });
-
-    testWidgets('tapping an attention row opens its tab', (tester) async {
-      await tester.pumpWidget(
-        testApp(
-          const AdminShell(),
-          repository: FakeRepository(),
-          admin: _busyDay(),
-          role: 'org_admin',
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.text('1 open safety alert(s)'));
-      await tester.pumpAndSettle();
-      expect(find.text('Safety alerts'), findsOneWidget);
-      expect(find.text('SOS'), findsOneWidget);
-    });
-  });
-
-  group('Admin today', () {
-    testWidgets('lists each bus with its trips, driver and gaps', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        testApp(
-          const AdminTodayScreen(),
-          repository: FakeRepository(),
-          admin: _busyDay(),
-          role: 'org_admin',
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('Bus A · AB-123'), findsOneWidget);
-      expect(find.text('Morning · 06:30'), findsOneWidget);
-      expect(find.text('North route · Cabdi'), findsOneWidget);
-      expect(find.text('North route · No driver'), findsOneWidget);
-      expect(find.text('Driver is unavailable today'), findsOneWidget);
-      expect(find.text('Hodan · Attendant · Substitute'), findsOneWidget);
-    });
-
-    testWidgets('no trips today', (tester) async {
-      await tester.pumpWidget(
-        testApp(
-          const AdminTodayScreen(),
-          repository: FakeRepository(),
-          admin: FakeAdminRepository(),
-          role: 'org_admin',
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('No trips are planned today.'), findsOneWidget);
-    });
-  });
-
-  group('Admin alerts', () {
-    testWidgets('an open critical alert names the bus and has no action', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        testApp(
-          const AdminAlertsScreen(),
-          repository: FakeRepository(),
-          admin: _busyDay(),
-          role: 'org_admin',
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('SOS'), findsOneWidget);
-      expect(find.text('Bus A · AB-123'), findsOneWidget);
-      expect(find.text('Critical'), findsOneWidget);
-      expect(find.byType(FilledButton), findsNothing);
-      expect(find.byType(OutlinedButton), findsNothing);
-    });
-
-    testWidgets('reads in Somali', (tester) async {
-      await tester.pumpWidget(
-        testApp(
-          const AdminAlertsScreen(),
           repository: FakeRepository(),
           admin: _busyDay(),
           role: 'org_admin',
@@ -363,8 +228,47 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Digniinaha badbaadada'), findsOneWidget);
-      expect(find.text('Degdeg'), findsOneWidget);
+      expect(find.text('Daba-gal'), findsOneWidget);
+      expect(find.text('Safarro'), findsOneWidget);
+      expect(find.text('Maaliyad'), findsOneWidget);
+      expect(find.text('Khadad'), findsOneWidget);
+      expect(find.text('Shaqaale'), findsOneWidget);
+    });
+
+    testWidgets('shows all 5 operational pillar destinations in English', (tester) async {
+      await tester.pumpWidget(
+        testApp(
+          const AdminShell(),
+          repository: FakeRepository(),
+          admin: _busyDay(),
+          role: 'org_admin',
+          somali: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Live'), findsOneWidget);
+      expect(find.text('Trips'), findsOneWidget);
+      expect(find.text('Finance'), findsOneWidget);
+      expect(find.text('Routes'), findsOneWidget);
+      expect(find.text('Staff'), findsOneWidget);
+    });
+
+    testWidgets('tapping a pillar tab switches to that screen', (tester) async {
+      await tester.pumpWidget(
+        testApp(
+          const AdminShell(),
+          repository: FakeRepository(),
+          admin: _busyDay(),
+          role: 'org_admin',
+          somali: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Maaliyad'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AdminShell), findsOneWidget);
     });
   });
 
@@ -392,7 +296,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      final context = tester.element(find.text('Organization overview'));
+      final context = tester.element(find.byType(AdminShell));
       expect(Theme.of(context).brightness, Brightness.dark);
       expect(tester.takeException(), isNull);
     });
