@@ -203,6 +203,13 @@ class FakeAdminRepository extends AdminRepository {
   }) async {}
 
   @override
+  Future<Map<String, dynamic>> requestIntercom({
+    required String deviceId,
+    required String cameraId,
+  }) async =>
+      {'id': 'session-intercom-1'};
+
+  @override
   Future<AdminDevice?> getVehicleActiveDevice(String vehicleId) async => null;
 
   @override

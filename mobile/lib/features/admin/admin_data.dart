@@ -1003,13 +1003,28 @@ class AdminRepository {
     String? reference,
     String? notes,
   }) async {
+    final backendMethod = switch (method.toLowerCase()) {
+      'evc plus' || 'zaad' || 'sahal' || 'mobile money' => 'mobile_money',
+      'kaash (cash)' || 'cash' || 'kaash' => 'cash',
+      'bank' || 'bank_transfer' => 'bank_transfer',
+      'card' => 'card',
+      'cheque' => 'cheque',
+      _ => 'mobile_money',
+    };
+
+    final effectiveNotes = (method == 'EVC Plus' || method == 'Zaad' || method == 'Sahal')
+        ? (notes != null && notes.isNotEmpty ? '$method - $notes' : method)
+        : notes;
+
     final body = {
       'amount': amount.toStringAsFixed(2),
       'currency': 'USD',
-      'method': method,
+      'method': backendMethod,
       'received_on': isoDate(DateTime.now()),
-      if (reference != null && reference.isNotEmpty) 'reference': reference,
-      if (notes != null && notes.isNotEmpty) 'notes': notes,
+      if (reference != null && reference.trim().isNotEmpty)
+        'reference': reference.trim(),
+      if (effectiveNotes != null && effectiveNotes.trim().isNotEmpty)
+        'notes': effectiveNotes.trim(),
     };
     await _client.post(
       '/school-finance/parent-invoices/$invoiceId/payments',
@@ -1048,9 +1063,13 @@ class AdminRepository {
     });
   }
 
-  Future<Map<String, dynamic>> requestIntercom({required String deviceId}) async {
+  Future<Map<String, dynamic>> requestIntercom({
+    required String deviceId,
+    required String cameraId,
+  }) async {
     return await _client.post('/video/intercom', body: {
       'device_id': deviceId,
+      'camera_id': cameraId,
     });
   }
 

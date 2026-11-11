@@ -176,9 +176,11 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
                 children: [
                   _filterChip(s.adminFilterAll, 'all'),
                   const SizedBox(width: 6),
-                  _filterChip(s.adminInvoiceStatusPending, 'pending'),
+                  _filterChip('Aan Bixin (Unpaid)', 'unpaid'),
                   const SizedBox(width: 6),
                   _filterChip(s.adminInvoiceStatusPaid, 'paid'),
+                  const SizedBox(width: 6),
+                  _filterChip(s.adminInvoiceStatusPending, 'pending'),
                   const SizedBox(width: 6),
                   _filterChip(s.adminInvoiceStatusOverdue, 'overdue'),
                 ],
@@ -200,6 +202,10 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
               data: (invoices) {
                 final filtered = invoices.where((inv) {
                   if (_statusFilter == 'all') return true;
+                  if (_statusFilter == 'unpaid') {
+                    return !inv.isPaid &&
+                        (double.tryParse(inv.balanceDue) ?? 0) > 0;
+                  }
                   return inv.status.toLowerCase() == _statusFilter;
                 }).toList();
 
@@ -387,6 +393,20 @@ class _ParentInvoiceCard extends StatelessWidget {
     }
   }
 
+  String _statusLabel(String status) {
+    switch (status.toLowerCase()) {
+      case 'paid':
+        return 'BIXIYAY';
+      case 'partially_paid':
+        return 'QAYB';
+      case 'overdue':
+        return 'DHAAFTAY';
+      case 'pending':
+      default:
+        return 'DHIMAN';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = Strings(Localizations.localeOf(context).languageCode == 'so');
@@ -431,7 +451,7 @@ class _ParentInvoiceCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                    invoice.status.toUpperCase(),
+                    _statusLabel(invoice.status),
                     style: TextStyle(
                       color: color,
                       fontWeight: FontWeight.bold,
@@ -464,12 +484,7 @@ class _ParentInvoiceCard extends StatelessWidget {
                     size: 14, color: context.muted),
                 const SizedBox(width: 4),
                 Text(
-                  '${s.adminPeriod}: ${invoice.period}',
-                  style: TextStyle(color: context.muted, fontSize: 12),
-                ),
-                const Spacer(),
-                Text(
-                  '#${invoice.invoiceNumber}',
+                  'Bisha: ${invoice.period}',
                   style: TextStyle(color: context.muted, fontSize: 12),
                 ),
               ],
@@ -695,7 +710,7 @@ class _RecordParentPaymentSheetState
                       DropdownMenuItem(
                         value: inv.id,
                         child: Text(
-                          '${inv.parentName} (${inv.invoiceNumber}) - Dhiman: \$${inv.balanceDue}',
+                          '${inv.parentName} - Dhiman: \$${inv.balanceDue}',
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),

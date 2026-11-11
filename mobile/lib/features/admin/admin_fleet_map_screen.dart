@@ -323,12 +323,19 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
       return;
     }
 
+    final cameraId = (_resolvedDevice?.cameras.isNotEmpty == true)
+        ? _resolvedDevice!.cameras.first.id
+        : '01CAMERA000000000000000A';
+
     setState(() {
       _isConnecting = true;
     });
 
     try {
-      final res = await ref.read(adminRepositoryProvider).requestIntercom(deviceId: deviceId);
+      final res = await ref.read(adminRepositoryProvider).requestIntercom(
+            deviceId: deviceId,
+            cameraId: cameraId,
+          );
       if (!mounted) return;
       setState(() {
         _isConnecting = false;
@@ -355,7 +362,7 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
     });
   }
 
-  Future<void> _watchLiveVideo(Strings s) async {
+  Future<void> _watchLiveVideo(Strings s, {String? selectedCameraId}) async {
     final deviceId = _effectiveDeviceId;
     if (deviceId == null || deviceId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -364,9 +371,10 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
       return;
     }
 
-    final cameraId = (_resolvedDevice?.cameras.isNotEmpty == true)
-        ? _resolvedDevice!.cameras.first.id
-        : '01CAMERA000000000000000A';
+    final cameraId = selectedCameraId ??
+        ((_resolvedDevice?.cameras.isNotEmpty == true)
+            ? _resolvedDevice!.cameras.first.id
+            : '01CAMERA000000000000000A');
 
     try {
       final session = await ref.read(videoRepositoryProvider).requestLive(
@@ -390,6 +398,124 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
         SnackBar(content: Text('${s.somethingWrong}: $e')),
       );
     }
+  }
+
+  Widget _buildCameraWall(BuildContext context, Strings s) {
+    final cameras = (_resolvedDevice?.cameras.isNotEmpty == true)
+        ? _resolvedDevice!.cameras
+        : const [
+            DeviceCamera(
+              id: '01CAMERA000000000000000A',
+              channelNo: 1,
+              label: 'Hore (Waddada)',
+              position: 'front',
+            ),
+            DeviceCamera(
+              id: '01CAMERA000000000000000B',
+              channelNo: 2,
+              label: 'Gudaha Baska',
+              position: 'cabin',
+            ),
+            DeviceCamera(
+              id: '01CAMERA000000000000000C',
+              channelNo: 3,
+              label: 'Dhabarka (Rear)',
+              position: 'rear',
+            ),
+            DeviceCamera(
+              id: '01CAMERA000000000000000D',
+              channelNo: 4,
+              label: 'Albaabka (Door)',
+              position: 'door',
+            ),
+          ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Kaamirooyinka Baska (${cameras.length} CH)',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+            ),
+            Text(
+              'Taabo si aad toos ugu daawato',
+              style: TextStyle(fontSize: 12, color: context.muted),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: 2.3,
+          ),
+          itemCount: cameras.length,
+          itemBuilder: (ctx, idx) {
+            final cam = cameras[idx];
+            return InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => _watchLiveVideo(s, selectedCameraId: cam.id),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: RaadColors.brandPrimary.withValues(alpha: 0.08),
+                  border: Border.all(
+                    color: RaadColors.brandPrimary.withValues(alpha: 0.25),
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: const BoxDecoration(
+                        color: RaadColors.brandPrimary,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.videocam_rounded,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            'CH ${cam.channelNo}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12.5,
+                              color: RaadColors.brandPrimary,
+                            ),
+                          ),
+                          Text(
+                            cam.label ?? 'Kaamero ${cam.channelNo}',
+                            style: const TextStyle(fontSize: 11),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
   }
 
   @override
@@ -547,38 +673,25 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
               ),
             ),
           ] else ...[
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    icon: const Icon(Icons.videocam_rounded),
-                    label: Text(s.adminWatchLiveCamera),
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    onPressed: () => _watchLiveVideo(s),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    icon: _isConnecting
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.record_voice_over_rounded),
-                    label: Text(
-                      _isConnecting ? s.adminIntercomConnecting : s.adminIntercomTalkToDriver,
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    onPressed: _isConnecting ? null : () => _startIntercom(s),
-                  ),
-                ),
-              ],
+            _buildCameraWall(context, s),
+            const SizedBox(height: 14),
+            OutlinedButton.icon(
+              icon: _isConnecting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.record_voice_over_rounded),
+              label: Text(
+                _isConnecting
+                    ? s.adminIntercomConnecting
+                    : s.adminIntercomTalkToDriver,
+              ),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 13),
+              ),
+              onPressed: _isConnecting ? null : () => _startIntercom(s),
             ),
           ],
         ],

@@ -42,10 +42,12 @@ class Env {
   }
 
   /// The public Mapbox token (ADR-0011, the web dashboard's provider). Empty means no map
-  /// tiles: the tracking screen then shows the position as text instead of failing.
-  static const String mapboxAccessToken = String.fromEnvironment(
-    'MAPBOX_ACCESS_TOKEN',
-  );
+  /// tiles: the tracking screen then falls back to OpenStreetMap raster tiles.
+  static String get mapboxAccessToken {
+    const token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
+    if (token.isNotEmpty) return token;
+    return const String.fromEnvironment('VITE_MAPBOX_ACCESS_TOKEN');
+  }
 
   /// Optional Firebase configuration passed with `--dart-define` for environments
   /// where native google-services.json / GoogleService-Info.plist is not bundled.
