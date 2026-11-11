@@ -84,16 +84,25 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
             for (final v in (vehiclesAsync.valueOrNull ?? <AdminVehicle>[])) v.id: v
           };
 
+          // Find first valid vehicle position or fallback to default center
+          LatLng center = _defaultCenter;
+          for (final v in onlineList) {
+            if (v.position != null) {
+              center = LatLng(v.position!.latitude, v.position!.longitude);
+              break;
+            }
+          }
+
           return Stack(
             children: [
               FlutterMap(
                 mapController: _mapController,
-                options: const MapOptions(
-                  initialCenter: _defaultCenter,
+                options: MapOptions(
+                  initialCenter: center,
                   initialZoom: 13,
                   minZoom: 4,
                   maxZoom: 18,
-                  interactionOptions: InteractionOptions(
+                  interactionOptions: const InteractionOptions(
                     flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
                   ),
                 ),
@@ -107,10 +116,15 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
                     markers: [
                       for (int i = 0; i < onlineList.length; i++)
                         Marker(
-                          point: LatLng(
-                            _defaultCenter.latitude + (i * 0.008) - 0.004,
-                            _defaultCenter.longitude + (i * 0.008) - 0.004,
-                          ),
+                          point: onlineList[i].position != null
+                              ? LatLng(
+                                  onlineList[i].position!.latitude,
+                                  onlineList[i].position!.longitude,
+                                )
+                              : LatLng(
+                                  _defaultCenter.latitude + (i * 0.008) - 0.004,
+                                  _defaultCenter.longitude + (i * 0.008) - 0.004,
+                                ),
                           width: 52,
                           height: 52,
                           child: GestureDetector(
@@ -208,9 +222,100 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
   bool _isIntercomActive = false;
   bool _isConnecting = false;
   String? _sessionId;
+  AdminDevice? _resolvedDevice;
+  bool _isLoadingDevice = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDevice();
+  }
+
+  Future<void> _loadDevice() async {
+    final dev = await ref
+        .read(adminRepositoryProvider)
+        .getVehicleActiveDevice(widget.vehicle.vehicleId);
+    if (!mounted) return;
+    setState(() {
+      _resolvedDevice = dev;
+      _isLoadingDevice = false;
+    });
+  }
+
+  String? get _effectiveDeviceId =>
+      widget.vehicle.deviceId ??
+      _resolvedDevice?.id ??
+      widget.details?.deviceId;
+
+  Future<void> _showLinkDeviceDialog(Strings s) async {
+    final devices = await ref.read(adminDevicesProvider.future);
+    if (!mounted) return;
+
+    if (devices.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(s.adminNoDeviceAttached)),
+      );
+      return;
+    }
+
+    String? selectedId = devices.first.id;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(s.adminLinkDevice),
+          content: DropdownButtonFormField<String>(
+            initialValue: selectedId,
+            items: [
+              for (final d in devices)
+                DropdownMenuItem(
+                  value: d.id,
+                  child: Text('${s.adminTerminalId}: ${d.terminalId} (${d.model ?? 'MDVR'})'),
+                ),
+            ],
+            onChanged: (val) {
+              setDialogState(() => selectedId = val);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(s.cancel),
+            ),
+            FilledButton(
+              onPressed: selectedId == null
+                  ? null
+                  : () async {
+                      Navigator.pop(ctx);
+                      try {
+                        await ref
+                            .read(adminRepositoryProvider)
+                            .assignDevice(selectedId!, widget.vehicle.vehicleId);
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(s.adminDeviceLinkedSuccess)),
+                        );
+                        _loadDevice();
+                        ref.invalidate(adminFleetOnlineProvider);
+                        ref.invalidate(adminVehiclesListProvider);
+                      } catch (e) {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('${s.somethingWrong}: $e')),
+                        );
+                      }
+                    },
+              child: Text(s.adminLinkDevice),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Future<void> _startIntercom(Strings s) async {
-    final deviceId = widget.details?.deviceId;
+    final deviceId = _effectiveDeviceId;
     if (deviceId == null || deviceId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(s.adminNoDeviceLinked)),
@@ -251,7 +356,7 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
   }
 
   Future<void> _watchLiveVideo(Strings s) async {
-    final deviceId = widget.details?.deviceId;
+    final deviceId = _effectiveDeviceId;
     if (deviceId == null || deviceId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(s.adminNoDeviceLinked)),
@@ -259,10 +364,14 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
       return;
     }
 
+    final cameraId = (_resolvedDevice?.cameras.isNotEmpty == true)
+        ? _resolvedDevice!.cameras.first.id
+        : '01CAMERA000000000000000A';
+
     try {
       final session = await ref.read(videoRepositoryProvider).requestLive(
         deviceId: deviceId,
-        cameraId: '01CAMERA000000000000000A',
+        cameraId: cameraId,
       );
       if (!mounted) return;
       if (session.streamUrl != null) {
@@ -287,6 +396,8 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
     final theme = Theme.of(context);
+    final hasDevice = _effectiveDeviceId != null && _effectiveDeviceId!.isNotEmpty;
+    final speed = widget.vehicle.position?.speedKph;
 
     return Container(
       decoration: BoxDecoration(
@@ -348,6 +459,20 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
                           s.adminOnlineNow,
                           style: TextStyle(fontSize: 13, color: context.muted),
                         ),
+                        if (speed != null) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.blue.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              '${speed.toStringAsFixed(0)} km/h',
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.blue),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ],
@@ -355,8 +480,39 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
               ),
             ],
           ),
-          const SizedBox(height: 20),
-          if (_isIntercomActive) ...[
+          const SizedBox(height: 16),
+          if (_isLoadingDevice)
+            const Center(child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: CircularProgressIndicator(),
+            ))
+          else if (!hasDevice) ...[
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.1),
+                border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.amber),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      s.adminNoDeviceAttached,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.link_rounded, size: 18),
+                    label: Text(s.adminLinkDevice),
+                    onPressed: () => _showLinkDeviceDialog(s),
+                  ),
+                ],
+              ),
+            ),
+          ] else if (_isIntercomActive) ...[
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(

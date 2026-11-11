@@ -12,18 +12,25 @@ abstract class MapTileSource {
   String get attribution;
 }
 
-/// Mapbox raster tiles, the provider the web dashboard uses (ADR-0011). The token is the
-/// public one given at build time.
+/// Mapbox raster tiles when token is configured, with seamless OpenStreetMap fallback
+/// when MAPBOX_ACCESS_TOKEN is not injected at build time (ADR-0011).
 class MapboxTileSource implements MapTileSource {
   const MapboxTileSource();
 
   @override
-  String get urlTemplate =>
-      'https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/256/{z}/{x}/{y}@2x'
-      '?access_token=${Env.mapboxAccessToken}';
+  String get urlTemplate {
+    if (Env.mapboxAccessToken.isNotEmpty) {
+      return 'https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/256/{z}/{x}/{y}@2x'
+          '?access_token=${Env.mapboxAccessToken}';
+    }
+    // High-reliability public OSM raster tiles (requires zero vendor token)
+    return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+  }
 
   @override
-  String get attribution => '© Mapbox © OpenStreetMap';
+  String get attribution => Env.mapboxAccessToken.isNotEmpty
+      ? '© Mapbox © OpenStreetMap'
+      : '© OpenStreetMap contributors';
 }
 
 /// A bus and, optionally, the family's stop. Follows the bus as it moves.

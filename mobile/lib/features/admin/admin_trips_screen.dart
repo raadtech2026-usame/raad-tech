@@ -58,6 +58,15 @@ class _AdminTripsScreenState extends ConsumerState<AdminTripsScreen> {
     }
   }
 
+  void _openScheduleTripModal(BuildContext context, Strings s) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => const _ScheduleTripSheet(),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
@@ -67,6 +76,11 @@ class _AdminTripsScreenState extends ConsumerState<AdminTripsScreen> {
       appBar: AppBar(
         title: Text(s.adminTripsTitle),
         actions: adminTopActions(context, ref, onRefresh: _refresh),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.add_rounded),
+        label: Text(s.adminScheduleTripAction),
+        onPressed: () => _openScheduleTripModal(context, s),
       ),
       body: RefreshIndicator(
         onRefresh: _refresh,
@@ -356,6 +370,242 @@ class _TripCard extends StatelessWidget {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScheduleTripSheet extends ConsumerStatefulWidget {
+  const _ScheduleTripSheet();
+
+  @override
+  ConsumerState<_ScheduleTripSheet> createState() => _ScheduleTripSheetState();
+}
+
+class _ScheduleTripSheetState extends ConsumerState<_ScheduleTripSheet> {
+  final _formKey = GlobalKey<FormState>();
+  String? _selectedRouteId;
+  String? _selectedVehicleId;
+  String? _selectedDriverId;
+  String _tripType = 'morning';
+  DateTime _scheduledDate = DateTime.now();
+  bool _submitting = false;
+
+  Future<void> _submit(Strings s) async {
+    if (!_formKey.currentState!.validate()) return;
+    if (_selectedRouteId == null ||
+        _selectedVehicleId == null ||
+        _selectedDriverId == null) {
+      showNotice(context, s.allFieldsRequired, isError: true);
+      return;
+    }
+
+    setState(() => _submitting = true);
+    final dateStr =
+        '${_scheduledDate.year}-${_scheduledDate.month.toString().padLeft(2, '0')}-${_scheduledDate.day.toString().padLeft(2, '0')}';
+
+    try {
+      await ref.read(adminRepositoryProvider).scheduleTrip(
+            vehicleId: _selectedVehicleId!,
+            driverId: _selectedDriverId!,
+            routeId: _selectedRouteId!,
+            tripType: _tripType,
+            scheduledDate: dateStr,
+          );
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      showNotice(context, 'Safarka si guul leh ayaa loo qorsheeyay');
+      ref.invalidate(adminTripsItemsProvider);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      showNotice(context, errorMessage(e, s), isError: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
+    final theme = Theme.of(context);
+    final routesAsync = ref.watch(adminRoutesProvider);
+    final vehiclesAsync = ref.watch(adminVehiclesListProvider);
+    final driversAsync = ref.watch(adminDriversProvider);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.fromLTRB(
+        20,
+        16,
+        20,
+        MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: Form(
+        key: _formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Text(
+                s.adminScheduleTripAction,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              ),
+              const SizedBox(height: 16),
+
+              // Route Picker
+              routesAsync.when(
+                loading: () => const LinearProgressIndicator(),
+                error: (e, _) => Text(errorMessage(e, s)),
+                data: (routes) => DropdownButtonFormField<String>(
+                  decoration: InputDecoration(
+                    labelText: s.adminSelectRoute,
+                    prefixIcon: const Icon(Icons.alt_route_rounded),
+                    filled: true,
+                  ),
+                  initialValue: _selectedRouteId,
+                  items: [
+                    for (final r in routes)
+                      DropdownMenuItem(
+                        value: r.id,
+                        child: Text(r.name),
+                      ),
+                  ],
+                  onChanged: (val) => setState(() => _selectedRouteId = val),
+                  validator: (v) => v == null ? s.allFieldsRequired : null,
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Vehicle Picker
+              vehiclesAsync.when(
+                loading: () => const LinearProgressIndicator(),
+                error: (e, _) => Text(errorMessage(e, s)),
+                data: (vehicles) => DropdownButtonFormField<String>(
+                  decoration: InputDecoration(
+                    labelText: s.adminSelectBus,
+                    prefixIcon: const Icon(Icons.directions_bus_rounded),
+                    filled: true,
+                  ),
+                  initialValue: _selectedVehicleId,
+                  items: [
+                    for (final v in vehicles)
+                      DropdownMenuItem(
+                        value: v.id,
+                        child: Text(v.displayName),
+                      ),
+                  ],
+                  onChanged: (val) => setState(() => _selectedVehicleId = val),
+                  validator: (v) => v == null ? s.allFieldsRequired : null,
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Driver Picker
+              driversAsync.when(
+                loading: () => const LinearProgressIndicator(),
+                error: (e, _) => Text(errorMessage(e, s)),
+                data: (drivers) => DropdownButtonFormField<String>(
+                  decoration: InputDecoration(
+                    labelText: s.adminSelectDriver,
+                    prefixIcon: const Icon(Icons.person_outline_rounded),
+                    filled: true,
+                  ),
+                  initialValue: _selectedDriverId,
+                  items: [
+                    for (final d in drivers)
+                      DropdownMenuItem(
+                        value: d.id,
+                        child: Text(d.fullName),
+                      ),
+                  ],
+                  onChanged: (val) => setState(() => _selectedDriverId = val),
+                  validator: (v) => v == null ? s.allFieldsRequired : null,
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Trip Type (Morning / Afternoon)
+              DropdownButtonFormField<String>(
+                decoration: InputDecoration(
+                  labelText: s.adminTripType,
+                  prefixIcon: const Icon(Icons.schedule_rounded),
+                  filled: true,
+                ),
+                initialValue: _tripType,
+                items: [
+                  DropdownMenuItem(
+                    value: 'morning',
+                    child: Text(s.adminTripTypeMorning),
+                  ),
+                  DropdownMenuItem(
+                    value: 'afternoon',
+                    child: Text(s.adminTripTypeAfternoon),
+                  ),
+                ],
+                onChanged: (val) {
+                  if (val != null) setState(() => _tripType = val);
+                },
+              ),
+              const SizedBox(height: 12),
+
+              // Date Picker Tile
+              InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: _scheduledDate,
+                    firstDate: DateTime.now().subtract(const Duration(days: 7)),
+                    lastDate: DateTime.now().add(const Duration(days: 60)),
+                  );
+                  if (picked != null) {
+                    setState(() => _scheduledDate = picked);
+                  }
+                },
+                child: InputDecorator(
+                  decoration: InputDecoration(
+                    labelText: s.adminTripDate,
+                    prefixIcon: const Icon(Icons.calendar_month_rounded),
+                    filled: true,
+                  ),
+                  child: Text(
+                    '${_scheduledDate.year}-${_scheduledDate.month.toString().padLeft(2, '0')}-${_scheduledDate.day.toString().padLeft(2, '0')}',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              FilledButton.icon(
+                icon: _submitting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.check_rounded),
+                label: Text(s.save),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                onPressed: _submitting ? null : () => _submit(s),
+              ),
+            ],
+          ),
         ),
       ),
     );

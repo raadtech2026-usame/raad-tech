@@ -175,6 +175,7 @@ class FakeAdminRepository extends AdminRepository {
     currency: 'USD',
   );
   List<AdminInvoice> invoiceList = [];
+  List<AdminParentInvoice> parentInvoiceList = [];
   List<AdminTripItem> tripItemsList = [];
   List<AdminStaff> staffMembersList = [];
 
@@ -183,6 +184,35 @@ class FakeAdminRepository extends AdminRepository {
 
   @override
   Future<List<AdminInvoice>> invoices({String? status}) => _answer(invoiceList);
+
+  @override
+  Future<List<AdminParentInvoice>> parentInvoices({String? period, String? status}) =>
+      _answer(parentInvoiceList);
+
+  @override
+  Future<List<AdminParentInvoice>> generateMonthlyParentInvoices(String period) =>
+      _answer(parentInvoiceList);
+
+  @override
+  Future<void> recordParentPayment({
+    required String invoiceId,
+    required double amount,
+    required String method,
+    String? reference,
+    String? notes,
+  }) async {}
+
+  @override
+  Future<AdminDevice?> getVehicleActiveDevice(String vehicleId) async => null;
+
+  @override
+  Future<void> scheduleTrip({
+    required String vehicleId,
+    required String driverId,
+    required String routeId,
+    required String tripType,
+    required String scheduledDate,
+  }) async {}
 
   @override
   Future<List<AdminTripItem>> listTrips({String? status, String? search}) =>

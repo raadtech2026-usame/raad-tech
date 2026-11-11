@@ -500,9 +500,14 @@ class Strings {
   String get adminTotalBilled => _('La dalacay', 'Billed');
   String get adminTotalCollected => _('La qabtay', 'Collected');
   String get adminTotalOutstanding => _('Deyn dhiman', 'Outstanding');
-  String get adminIssueInvoice => _('Soo saar qaansheeg', 'Issue Invoice');
+  String get adminIssueInvoice => _('Soo saar biilasha bisha', 'Generate Invoices');
+  String get adminGenerateMonthlyInvoices => _('Soo saar biilasha bisha', 'Generate Monthly Invoices');
+  String get adminGenerateInvoicesConfirm => _('Ma hubtaa inaad biilasha bishan u soo saarto dhammaan waalidiinta?', 'Generate invoices for all parents for this month?');
+  String get adminInvoicesGenerated => _('Biilashii bisha waa la soo saaray', 'Monthly invoices generated successfully');
+  String get adminParentInvoicesTitle => _('Biilasha Waalidiinta', 'Parent Invoices');
+  String get adminChildrenEnrolled => _('carruur', 'children');
   String get adminRecordPayment => _('Qabo lacag', 'Record Payment');
-  String get adminInvoiceList => _('Qaansheegyada', 'Invoices');
+  String get adminInvoiceList => _('Biilasha Waalidiinta', 'Parent Invoices');
   String get adminInvoiceNumber => _('Lambarka qaansheegta', 'Invoice #');
   String get adminAmountDollars => _(r'Cadadka ($)', r'Amount ($)');
   String get emptyState => _('Waxba lagama helin', 'No records found');
@@ -529,6 +534,11 @@ class Strings {
   String get adminIntercomConnecting => _('Waa la xiriirinayaa...', 'Connecting voice call...');
   String get adminIntercomDisconnect => _('Jar xiriirka', 'End Call');
   String get adminNoBusesOnRoad => _('Waqtigan xaadirka ah ma jiraan basas safar ku jira.', 'No buses are currently on a trip.');
+  String get adminLinkDevice => _('Ku xir qalab MDVR', 'Link MDVR Device');
+  String get adminDeviceLinkedSuccess => _('Qalabka si guul leh ayaa loogu xiray baska', 'Device linked to vehicle successfully');
+  String get adminTerminalId => _('Terminal ID', 'Terminal ID');
+  String get adminNoDeviceAttached => _('Baskan laguma xirin qalabka MDVR/GPS-ka', 'No MDVR/GPS device attached to this bus');
+  String get adminCameraOffline => _('Kaamirada baska hadda signal ma hayso', 'Camera has no video signal');
 
   // ---- Pillar 3: Trips & Operations Search
   String get adminTripsTitle => _('Safarrada Dugsiga', 'School Trips');
@@ -540,6 +550,12 @@ class Strings {
   String get adminStartTripAction => _('Bilaaw safarka', 'Start Trip');
   String get adminEndTripAction => _('Dhammee safarka', 'End Trip');
   String get adminTripDetails => _('Faahfaahinta Safarka', 'Trip Details');
+  String get adminScheduleTripAction => _('Abuur Safar Cusub', 'Schedule New Trip');
+  String get adminSelectRoute => _('Dooro khadka', 'Select Route');
+  String get adminTripTypeMorning => _('Subax (Morning)', 'Morning');
+  String get adminTripTypeAfternoon => _('Galab (Afternoon)', 'Afternoon');
+  String get adminTripType => _('Nooca Safarka', 'Trip Type');
+  String get adminTripDate => _('Taariikhda Safarka', 'Trip Date');
 
   // ---- Pillar 4: Routes & Stops
   String get adminRoutesManagementTitle => _('Waddooyinka & Hakadyada', 'Routes & Stops');
@@ -551,6 +567,8 @@ class Strings {
   String get adminLatitude => _('Latitude', 'Latitude');
   String get adminLongitude => _('Longitude', 'Longitude');
   String get adminSequence => _('Kala horreynta', 'Sequence');
+  String get adminFetchBusGps => _('Soo qaado GPS-ka Baska', 'Use Live Bus GPS');
+  String get adminGeofenceRadius => _('Radius-ka Hakadka (Mitir)', 'Geofence Radius (Meters)');
 
   // ---- Pillar 5: Staff & Crew
   String get adminStaffManagementTitle => _('Shaqaalaha & Xiridda Basaska', 'Staff & Bus Crew');

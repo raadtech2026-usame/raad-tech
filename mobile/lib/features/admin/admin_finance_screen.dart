@@ -7,9 +7,9 @@ import '../../shared/widgets.dart';
 import 'admin_data.dart';
 import 'admin_screens.dart';
 
-/// Pillar 1: School ERP Finance.
-/// Allows the Org Admin to inspect financial health (Billed, Collected, Outstanding),
-/// track student fee invoices, issue new invoices, and record mobile/cash payments.
+/// Pillar 1: School ERP Finance (Parent-Centric Billing & Payment Collection).
+/// In accordance with ADR-0042 & ADR-0047, invoices are billed to Parents (bundling
+/// all children enrolled per family). Supports batch monthly invoicing and inline payment recording.
 class AdminFinanceScreen extends ConsumerStatefulWidget {
   const AdminFinanceScreen({super.key});
 
@@ -22,25 +22,59 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
 
   Future<void> _refresh() async {
     ref.invalidate(adminFinanceSummaryProvider);
-    ref.invalidate(adminInvoicesListProvider);
+    ref.invalidate(adminParentInvoicesProvider);
     await ref.read(adminFinanceSummaryProvider.future);
   }
 
-  void _showIssueInvoiceSheet() {
-    showModalBottomSheet<void>(
+  void _confirmGenerateMonthlyInvoices(Strings s) {
+    final now = DateTime.now();
+    final period =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}';
+
+    showDialog<void>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => const _IssueInvoiceSheet(),
-    ).then((_) => _refresh());
+      builder: (ctx) => AlertDialog(
+        title: Text(s.adminGenerateMonthlyInvoices),
+        content: Text(
+          'Ma hubtaa inaad doonayso inaad dalbato dhammaan biilasha waalidiinta ee bisha $period?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(s.cancel),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              try {
+                final generated = await ref
+                    .read(adminRepositoryProvider)
+                    .generateMonthlyParentInvoices(period);
+                if (!mounted) return;
+                showNotice(
+                  context,
+                  '${generated.length} ${s.adminInvoicesGenerated}',
+                );
+                _refresh();
+              } catch (e) {
+                if (!mounted) return;
+                showNotice(context, errorMessage(e, s), isError: true);
+              }
+            },
+            child: Text(s.confirm),
+          ),
+        ],
+      ),
+    );
   }
 
-  void _showRecordPaymentSheet([AdminInvoice? preselectedInvoice]) {
+  void _showRecordPaymentSheet([AdminParentInvoice? preselectedInvoice]) {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => _RecordPaymentSheet(initialInvoice: preselectedInvoice),
+      builder: (ctx) =>
+          _RecordParentPaymentSheet(initialInvoice: preselectedInvoice),
     ).then((_) => _refresh());
   }
 
@@ -48,7 +82,7 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
     final summaryAsync = ref.watch(adminFinanceSummaryProvider);
-    final invoicesAsync = ref.watch(adminInvoicesListProvider);
+    final invoicesAsync = ref.watch(adminParentInvoicesProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -76,7 +110,8 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
               error: (err, _) => SectionCard(
                 child: Row(
                   children: [
-                    const Icon(Icons.error_outline_rounded, color: RaadColors.red),
+                    const Icon(Icons.error_outline_rounded,
+                        color: RaadColors.red),
                     const SizedBox(width: 12),
                     Expanded(child: Text(errorMessage(err, s))),
                     OutlinedButton(onPressed: _refresh, child: Text(s.retry)),
@@ -87,24 +122,32 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
             ),
             const SizedBox(height: 16),
 
-            // Quick Actions: Issue invoice & Record payment
+            // Quick Actions: Batch generate monthly invoices & Record payment
             Row(
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
                     icon: const Icon(Icons.receipt_long_rounded, size: 18),
-                    label: Text(s.adminIssueInvoice, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    label: Text(
+                      s.adminGenerateMonthlyInvoices,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                    onPressed: _showIssueInvoiceSheet,
+                    onPressed: () => _confirmGenerateMonthlyInvoices(s),
                   ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: OutlinedButton.icon(
                     icon: const Icon(Icons.payments_outlined, size: 18),
-                    label: Text(s.adminRecordPayment, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    label: Text(
+                      s.adminRecordPayment,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
@@ -120,8 +163,9 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    s.adminInvoiceList,
-                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                    s.adminParentInvoicesTitle,
+                    style: const TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.bold),
                   ),
                 ),
               ],
@@ -143,7 +187,7 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
             ),
             const SizedBox(height: 12),
 
-            // Invoice Items
+            // Parent Invoice Items
             invoicesAsync.when(
               loading: () => const Center(
                 child: Padding(
@@ -162,16 +206,19 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
 
                 if (filtered.isEmpty) {
                   return SectionCard(
-                    padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 16),
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 36, horizontal: 16),
                     child: Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.receipt_outlined, size: 40, color: context.muted),
+                          Icon(Icons.receipt_outlined,
+                              size: 40, color: context.muted),
                           const SizedBox(height: 12),
                           Text(
                             s.emptyState,
-                            style: TextStyle(color: context.muted, fontSize: 14),
+                            style:
+                                TextStyle(color: context.muted, fontSize: 14),
                           ),
                         ],
                       ),
@@ -182,7 +229,7 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
                 return Column(
                   children: [
                     for (final inv in filtered)
-                      _InvoiceCard(
+                      _ParentInvoiceCard(
                         invoice: inv,
                         onRecordPayment: () => _showRecordPaymentSheet(inv),
                       ),
@@ -318,11 +365,11 @@ class _KpiBox extends StatelessWidget {
   }
 }
 
-class _InvoiceCard extends StatelessWidget {
-  final AdminInvoice invoice;
+class _ParentInvoiceCard extends StatelessWidget {
+  final AdminParentInvoice invoice;
   final VoidCallback onRecordPayment;
 
-  const _InvoiceCard({
+  const _ParentInvoiceCard({
     required this.invoice,
     required this.onRecordPayment,
   });
@@ -331,6 +378,8 @@ class _InvoiceCard extends StatelessWidget {
     switch (status.toLowerCase()) {
       case 'paid':
         return RaadColors.green;
+      case 'partially_paid':
+        return Colors.orange;
       case 'overdue':
         return RaadColors.red;
       case 'pending':
@@ -346,9 +395,9 @@ class _InvoiceCard extends StatelessWidget {
     final isSettled = invoice.isPaid || double.tryParse(invoice.balanceDue) == 0;
 
     return Card(
-      margin: const EdgeInsets.only(bottom: 10),
+      margin: const EdgeInsets.only(bottom: 12),
       elevation: 0.5,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Column(
@@ -357,14 +406,27 @@ class _InvoiceCard extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                  child: Text(
-                    invoice.studentName ?? 'Arday: ${invoice.studentId.substring(0, invoice.studentId.length > 8 ? 8 : invoice.studentId.length)}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                    overflow: TextOverflow.ellipsis,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        invoice.parentName,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 16),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (invoice.parentPhone != null &&
+                          invoice.parentPhone!.isNotEmpty)
+                        Text(
+                          invoice.parentPhone!,
+                          style: TextStyle(fontSize: 12, color: context.muted),
+                        ),
+                    ],
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                     color: color.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(6),
@@ -380,26 +442,74 @@ class _InvoiceCard extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
             Row(
               children: [
-                Icon(Icons.calendar_month_outlined, size: 14, color: context.muted),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    '${invoice.childrenCount} ${s.adminChildrenEnrolled}',
+                    style: const TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.blue),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Icon(Icons.calendar_month_outlined,
+                    size: 14, color: context.muted),
                 const SizedBox(width: 4),
                 Text(
                   '${s.adminPeriod}: ${invoice.period}',
                   style: TextStyle(color: context.muted, fontSize: 12),
                 ),
-                if (invoice.dueDate != null) ...[
-                  const SizedBox(width: 12),
-                  Icon(Icons.schedule_rounded, size: 14, color: context.muted),
-                  const SizedBox(width: 4),
-                  Text(
-                    'Due: ${invoice.dueDate}',
-                    style: TextStyle(color: context.muted, fontSize: 12),
-                  ),
-                ],
+                const Spacer(),
+                Text(
+                  '#${invoice.invoiceNumber}',
+                  style: TextStyle(color: context.muted, fontSize: 12),
+                ),
               ],
             ),
+            if (invoice.lines.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest
+                      .withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  children: [
+                    for (final line in invoice.lines)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              line.studentName,
+                              style: const TextStyle(fontSize: 12.5),
+                            ),
+                            Text(
+                              '\$${line.amount}',
+                              style: const TextStyle(
+                                  fontSize: 12.5, fontWeight: FontWeight.w600),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
             const Divider(height: 18),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -408,8 +518,9 @@ class _InvoiceCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '${s.adminAmountDollars}: \$${invoice.amount}',
-                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                      '${s.adminAmountDollars}: \$${invoice.totalAmount}',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600, fontSize: 13),
                     ),
                     const SizedBox(height: 2),
                     Text(
@@ -425,9 +536,11 @@ class _InvoiceCard extends StatelessWidget {
                 if (!isSettled)
                   ElevatedButton.icon(
                     icon: const Icon(Icons.payment_rounded, size: 15),
-                    label: Text(s.adminRecordPayment, style: const TextStyle(fontSize: 12)),
+                    label: Text(s.adminRecordPayment,
+                        style: const TextStyle(fontSize: 12)),
                     style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
                       minimumSize: Size.zero,
                     ),
                     onPressed: onRecordPayment,
@@ -441,217 +554,17 @@ class _InvoiceCard extends StatelessWidget {
   }
 }
 
-class _IssueInvoiceSheet extends ConsumerStatefulWidget {
-  const _IssueInvoiceSheet();
+class _RecordParentPaymentSheet extends ConsumerStatefulWidget {
+  final AdminParentInvoice? initialInvoice;
+  const _RecordParentPaymentSheet({this.initialInvoice});
 
   @override
-  ConsumerState<_IssueInvoiceSheet> createState() => _IssueInvoiceSheetState();
+  ConsumerState<_RecordParentPaymentSheet> createState() =>
+      _RecordParentPaymentSheetState();
 }
 
-class _IssueInvoiceSheetState extends ConsumerState<_IssueInvoiceSheet> {
-  final _amountController = TextEditingController();
-  final _periodController = TextEditingController();
-  final _notesController = TextEditingController();
-  String? _selectedStudentId;
-  DateTime? _dueDate;
-  bool _submitting = false;
-
-  @override
-  void initState() {
-    super.initState();
-    final now = DateTime.now();
-    _periodController.text = '${now.year}-${now.month.toString().padLeft(2, '0')}';
-  }
-
-  @override
-  void dispose() {
-    _amountController.dispose();
-    _periodController.dispose();
-    _notesController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _submit() async {
-    final s = ref.read(stringsProvider);
-    if (_selectedStudentId == null || _selectedStudentId!.isEmpty) {
-      showNotice(context, s.adminSelectStudent, isError: true);
-      return;
-    }
-    final amount = double.tryParse(_amountController.text.trim());
-    if (amount == null || amount <= 0) {
-      showNotice(context, 'Gali cadad sax ah', isError: true);
-      return;
-    }
-
-    setState(() => _submitting = true);
-    try {
-      await ref.read(adminRepositoryProvider).issueInvoice(
-        studentId: _selectedStudentId!,
-        period: _periodController.text.trim(),
-        amount: amount,
-        dueDate: _dueDate != null ? isoDate(_dueDate!) : null,
-        notes: _notesController.text.trim(),
-      );
-      if (mounted) {
-        showNotice(context, 'Qaansheegta si guul leh ayaa loo soo saaray');
-        Navigator.of(context).pop();
-      }
-    } catch (err) {
-      if (mounted) {
-        showNotice(context, errorMessage(err, s), isError: true);
-      }
-    } finally {
-      if (mounted) setState(() => _submitting = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final s = ref.watch(stringsProvider);
-    final studentsAsync = ref.watch(adminStudentsProvider);
-
-    return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context).scaffoldBackgroundColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      padding: EdgeInsets.only(
-        left: 20,
-        right: 20,
-        top: 20,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-      ),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  s.adminIssueInvoice,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close_rounded),
-                  onPressed: () => Navigator.of(context).pop(),
-                ),
-              ],
-            ),
-            const Divider(),
-            const SizedBox(height: 8),
-
-            // Student picker
-            studentsAsync.when(
-              loading: () => const LinearProgressIndicator(),
-              error: (_, __) => Text(s.adminSelectStudent),
-              data: (students) => DropdownButtonFormField<String>(
-                value: _selectedStudentId,
-                decoration: InputDecoration(
-                  labelText: s.adminSelectStudent,
-                  prefixIcon: const Icon(Icons.person_rounded),
-                  border: const OutlineInputBorder(),
-                ),
-                items: [
-                  for (final st in students)
-                    DropdownMenuItem(
-                      value: st.id,
-                      child: Text(st.fullName.isNotEmpty ? st.fullName : st.id),
-                    ),
-                ],
-                onChanged: (val) => setState(() => _selectedStudentId = val),
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            // Amount field
-            TextField(
-              controller: _amountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(
-                labelText: s.adminAmountDollars,
-                prefixIcon: const Icon(Icons.attach_money_rounded),
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            // Period
-            TextField(
-              controller: _periodController,
-              decoration: InputDecoration(
-                labelText: s.adminPeriod,
-                prefixIcon: const Icon(Icons.calendar_month_rounded),
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            // Due Date
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.event_rounded),
-              title: Text(
-                _dueDate == null
-                    ? s.adminDueDate
-                    : '${s.adminDueDate}: ${isoDate(_dueDate!)}',
-              ),
-              trailing: OutlinedButton(
-                onPressed: () async {
-                  final picked = await showDatePicker(
-                    context: context,
-                    initialDate: DateTime.now().add(const Duration(days: 15)),
-                    firstDate: DateTime.now().subtract(const Duration(days: 30)),
-                    lastDate: DateTime.now().add(const Duration(days: 180)),
-                  );
-                  if (picked != null) setState(() => _dueDate = picked);
-                },
-                child: const Text('Dooro'),
-              ),
-            ),
-            const SizedBox(height: 8),
-
-            // Notes
-            TextField(
-              controller: _notesController,
-              decoration: InputDecoration(
-                labelText: s.adminNotes,
-                prefixIcon: const Icon(Icons.note_alt_outlined),
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            ElevatedButton(
-              onPressed: _submitting ? null : _submit,
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-              ),
-              child: _submitting
-                  ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Text(s.save),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _RecordPaymentSheet extends ConsumerStatefulWidget {
-  final AdminInvoice? initialInvoice;
-  const _RecordPaymentSheet({this.initialInvoice});
-
-  @override
-  ConsumerState<_RecordPaymentSheet> createState() => _RecordPaymentSheetState();
-}
-
-class _RecordPaymentSheetState extends ConsumerState<_RecordPaymentSheet> {
+class _RecordParentPaymentSheetState
+    extends ConsumerState<_RecordParentPaymentSheet> {
   final _amountController = TextEditingController();
   final _referenceController = TextEditingController();
   final _notesController = TextEditingController();
@@ -659,7 +572,13 @@ class _RecordPaymentSheetState extends ConsumerState<_RecordPaymentSheet> {
   String _paymentMethod = 'EVC Plus';
   bool _submitting = false;
 
-  final _methods = const ['EVC Plus', 'Zaad', 'Sahal', 'Kaash (Cash)', 'Bank'];
+  final _methods = const [
+    'EVC Plus',
+    'Zaad',
+    'Sahal',
+    'Kaash (Cash)',
+    'Bank',
+  ];
 
   @override
   void initState() {
@@ -692,15 +611,16 @@ class _RecordPaymentSheetState extends ConsumerState<_RecordPaymentSheet> {
 
     setState(() => _submitting = true);
     try {
-      await ref.read(adminRepositoryProvider).recordPayment(
-        invoiceId: _selectedInvoiceId!,
-        amount: amount,
-        method: _paymentMethod,
-        reference: _referenceController.text.trim(),
-        notes: _notesController.text.trim(),
-      );
+      await ref.read(adminRepositoryProvider).recordParentPayment(
+            invoiceId: _selectedInvoiceId!,
+            amount: amount,
+            method: _paymentMethod,
+            reference: _referenceController.text.trim(),
+            notes: _notesController.text.trim(),
+          );
       if (mounted) {
-        showNotice(context, 'Lacag-bixinta si guul leh ayaa loo diiwaangeliyay');
+        showNotice(context,
+            'Lacag-bixinta waalidka si guul leh ayaa loo diiwaangeliyay');
         Navigator.of(context).pop();
       }
     } catch (err) {
@@ -715,7 +635,7 @@ class _RecordPaymentSheetState extends ConsumerState<_RecordPaymentSheet> {
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
-    final invoicesAsync = ref.watch(adminInvoicesListProvider);
+    final invoicesAsync = ref.watch(adminParentInvoicesProvider);
 
     return Container(
       decoration: BoxDecoration(
@@ -738,7 +658,8 @@ class _RecordPaymentSheetState extends ConsumerState<_RecordPaymentSheet> {
               children: [
                 Text(
                   s.adminRecordPayment,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 IconButton(
                   icon: const Icon(Icons.close_rounded),
@@ -749,42 +670,55 @@ class _RecordPaymentSheetState extends ConsumerState<_RecordPaymentSheet> {
             const Divider(),
             const SizedBox(height: 8),
 
-            // Invoice selection dropdown
+            // Select Parent Invoice
             invoicesAsync.when(
               loading: () => const LinearProgressIndicator(),
-              error: (_, __) => Text(s.adminInvoiceNumber),
-              data: (invoices) => DropdownButtonFormField<String>(
-                value: _selectedInvoiceId,
-                decoration: InputDecoration(
-                  labelText: s.adminInvoiceNumber,
-                  prefixIcon: const Icon(Icons.receipt_rounded),
-                  border: const OutlineInputBorder(),
-                ),
-                items: [
-                  for (final inv in invoices)
-                    DropdownMenuItem(
-                      value: inv.id,
-                      child: Text(
-                        '${inv.studentName ?? 'Invoice'} - \$${inv.balanceDue} (${inv.period})',
-                        overflow: TextOverflow.ellipsis,
+              error: (e, _) => Text(errorMessage(e, s)),
+              data: (invoices) {
+                final payable = invoices
+                    .where((i) =>
+                        !i.isPaid &&
+                        (double.tryParse(i.balanceDue) ?? 0) > 0)
+                    .toList();
+
+                return DropdownButtonFormField<String>(
+                  decoration: InputDecoration(
+                    labelText: s.adminParentInvoicesTitle,
+                    prefixIcon: const Icon(Icons.receipt_long_rounded),
+                    border: const OutlineInputBorder(),
+                  ),
+                  initialValue: _selectedInvoiceId,
+                  items: [
+                    for (final inv in (payable.isEmpty &&
+                            widget.initialInvoice != null
+                        ? [widget.initialInvoice!]
+                        : payable))
+                      DropdownMenuItem(
+                        value: inv.id,
+                        child: Text(
+                          '${inv.parentName} (${inv.invoiceNumber}) - Dhiman: \$${inv.balanceDue}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
-                    ),
-                ],
-                onChanged: (val) {
-                  setState(() {
-                    _selectedInvoiceId = val;
-                    final selected = invoices.firstWhere((i) => i.id == val);
-                    _amountController.text = selected.balanceDue;
-                  });
-                },
-              ),
+                  ],
+                  onChanged: (val) {
+                    setState(() {
+                      _selectedInvoiceId = val;
+                      final match =
+                          invoices.firstWhere((i) => i.id == val);
+                      _amountController.text = match.balanceDue;
+                    });
+                  },
+                );
+              },
             ),
             const SizedBox(height: 12),
 
-            // Amount field
+            // Payment Amount
             TextField(
               controller: _amountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(
                 labelText: s.adminAmountDollars,
                 prefixIcon: const Icon(Icons.attach_money_rounded),
@@ -793,27 +727,29 @@ class _RecordPaymentSheetState extends ConsumerState<_RecordPaymentSheet> {
             ),
             const SizedBox(height: 12),
 
-            // Payment method dropdown
+            // Method Picker
             DropdownButtonFormField<String>(
-              value: _paymentMethod,
               decoration: InputDecoration(
                 labelText: s.adminPaymentMethod,
-                prefixIcon: const Icon(Icons.account_balance_rounded),
+                prefixIcon: const Icon(Icons.account_balance_wallet_rounded),
                 border: const OutlineInputBorder(),
               ),
+              initialValue: _paymentMethod,
               items: [
                 for (final m in _methods)
                   DropdownMenuItem(value: m, child: Text(m)),
               ],
-              onChanged: (val) => setState(() => _paymentMethod = val ?? 'EVC Plus'),
+              onChanged: (val) {
+                if (val != null) setState(() => _paymentMethod = val);
+              },
             ),
             const SizedBox(height: 12),
 
-            // Reference (e.g. mobile transaction code)
+            // Reference / Transaction ID
             TextField(
               controller: _referenceController,
               decoration: InputDecoration(
-                labelText: s.adminReference,
+                labelText: s.adminReferenceCode,
                 prefixIcon: const Icon(Icons.tag_rounded),
                 border: const OutlineInputBorder(),
               ),
@@ -823,6 +759,7 @@ class _RecordPaymentSheetState extends ConsumerState<_RecordPaymentSheet> {
             // Notes
             TextField(
               controller: _notesController,
+              maxLines: 2,
               decoration: InputDecoration(
                 labelText: s.adminNotes,
                 prefixIcon: const Icon(Icons.note_alt_outlined),

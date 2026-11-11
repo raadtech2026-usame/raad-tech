@@ -327,6 +327,7 @@ class _AddStopSheetState extends ConsumerState<_AddStopSheet> {
   final _nameController = TextEditingController();
   final _latController = TextEditingController(text: '2.0469');
   final _lngController = TextEditingController(text: '45.3182');
+  final _radiusController = TextEditingController(text: '100');
   final _seqController = TextEditingController();
   bool _submitting = false;
 
@@ -341,8 +342,32 @@ class _AddStopSheetState extends ConsumerState<_AddStopSheet> {
     _nameController.dispose();
     _latController.dispose();
     _lngController.dispose();
+    _radiusController.dispose();
     _seqController.dispose();
     super.dispose();
+  }
+
+  void _autofillBusPosition(Strings s) {
+    final fleet = ref.read(adminFleetOnlineProvider).valueOrNull;
+    if (fleet == null || fleet.vehicles.isEmpty) {
+      showNotice(context, s.adminNoBusesOnRoad, isError: true);
+      return;
+    }
+
+    final vehicleWithPos = fleet.vehicles.firstWhere(
+      (v) => v.position != null,
+      orElse: () => fleet.vehicles.first,
+    );
+
+    if (vehicleWithPos.position != null) {
+      setState(() {
+        _latController.text = vehicleWithPos.position!.latitude.toStringAsFixed(6);
+        _lngController.text = vehicleWithPos.position!.longitude.toStringAsFixed(6);
+      });
+      showNotice(context, '${s.adminFetchBusGps}: ${vehicleWithPos.displayName}');
+    } else {
+      showNotice(context, 'Ma jiro bas GPS live ah soo diraya hadda', isError: true);
+    }
   }
 
   Future<void> _submit() async {
@@ -359,6 +384,7 @@ class _AddStopSheetState extends ConsumerState<_AddStopSheet> {
       return;
     }
     final seq = int.tryParse(_seqController.text.trim()) ?? (widget.route.stopCount + 1);
+    final radius = int.tryParse(_radiusController.text.trim()) ?? 100;
 
     setState(() => _submitting = true);
     try {
@@ -368,6 +394,7 @@ class _AddStopSheetState extends ConsumerState<_AddStopSheet> {
         latitude: lat,
         longitude: lng,
         sequence: seq,
+        geofenceRadiusM: radius,
       );
       if (mounted) {
         showNotice(context, 'Hakadka si guul leh ayaa loogu daray khadka');
@@ -429,6 +456,17 @@ class _AddStopSheetState extends ConsumerState<_AddStopSheet> {
             ),
             const SizedBox(height: 12),
 
+            // Autofill button
+            OutlinedButton.icon(
+              icon: const Icon(Icons.my_location_rounded, size: 18),
+              label: Text(s.adminFetchBusGps),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+              ),
+              onPressed: () => _autofillBusPosition(s),
+            ),
+            const SizedBox(height: 10),
+
             Row(
               children: [
                 Expanded(
@@ -456,14 +494,32 @@ class _AddStopSheetState extends ConsumerState<_AddStopSheet> {
             ),
             const SizedBox(height: 12),
 
-            TextField(
-              controller: _seqController,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: s.adminSequence,
-                prefixIcon: const Icon(Icons.format_list_numbered_rounded),
-                border: const OutlineInputBorder(),
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _radiusController,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: s.adminGeofenceRadius,
+                      prefixIcon: const Icon(Icons.radio_button_checked_rounded),
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _seqController,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: s.adminSequence,
+                      prefixIcon: const Icon(Icons.format_list_numbered_rounded),
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 20),
 

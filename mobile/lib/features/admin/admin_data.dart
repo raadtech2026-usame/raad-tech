@@ -126,12 +126,38 @@ class AdminStudent {
   );
 }
 
+class DeviceCamera {
+  final String id;
+  final int channelNo;
+  final String? position;
+  final String? label;
+  final String? videoSignal;
+
+  const DeviceCamera({
+    required this.id,
+    required this.channelNo,
+    this.position,
+    this.label,
+    this.videoSignal,
+  });
+
+  factory DeviceCamera.fromJson(Map<String, dynamic> json) => DeviceCamera(
+    id: json['id'] as String,
+    channelNo: json['channel_no'] as int? ?? 1,
+    position: json['position'] as String?,
+    label: json['label'] as String?,
+    videoSignal: json['video_signal'] as String?,
+  );
+}
+
 class AdminDevice {
   final String id;
   final String terminalId;
   final String? model;
   final String status;
   final String? vehicleId;
+  final bool isOnline;
+  final List<DeviceCamera> cameras;
 
   const AdminDevice({
     required this.id,
@@ -139,6 +165,8 @@ class AdminDevice {
     this.model,
     required this.status,
     this.vehicleId,
+    this.isOnline = false,
+    this.cameras = const [],
   });
 
   factory AdminDevice.fromJson(Map<String, dynamic> json) => AdminDevice(
@@ -147,6 +175,10 @@ class AdminDevice {
     model: json['model'] as String?,
     status: json['status'] as String? ?? '',
     vehicleId: json['vehicle_id'] as String?,
+    isOnline: json['is_online'] as bool? ?? false,
+    cameras: (json['cameras'] as List<dynamic>? ?? const [])
+        .map((c) => DeviceCamera.fromJson(c as Map<String, dynamic>))
+        .toList(),
   );
 }
 
@@ -302,15 +334,46 @@ class SafetyAlert {
   );
 }
 
+class OnlineVehiclePosition {
+  final double latitude;
+  final double longitude;
+  final double? headingDeg;
+  final double? speedKph;
+  final DateTime? eventTime;
+
+  const OnlineVehiclePosition({
+    required this.latitude,
+    required this.longitude,
+    this.headingDeg,
+    this.speedKph,
+    this.eventTime,
+  });
+
+  factory OnlineVehiclePosition.fromJson(Map<String, dynamic> json) =>
+      OnlineVehiclePosition(
+        latitude: (json['latitude'] as num).toDouble(),
+        longitude: (json['longitude'] as num).toDouble(),
+        headingDeg: (json['heading_deg'] as num?)?.toDouble(),
+        speedKph: (json['speed_kph'] as num?)?.toDouble(),
+        eventTime: parseServerTime(json['event_time']),
+      );
+}
+
 class OnlineVehicle {
   final String vehicleId;
   final String plateNo;
   final String? label;
+  final String? deviceId;
+  final bool isOnline;
+  final OnlineVehiclePosition? position;
 
   const OnlineVehicle({
     required this.vehicleId,
     required this.plateNo,
     required this.label,
+    this.deviceId,
+    this.isOnline = true,
+    this.position,
   });
 
   String get displayName =>
@@ -320,6 +383,11 @@ class OnlineVehicle {
     vehicleId: json['vehicle_id'] as String,
     plateNo: json['plate_no'] as String? ?? '',
     label: json['label'] as String?,
+    deviceId: json['device_id'] as String?,
+    isOnline: json['is_online'] as bool? ?? true,
+    position: json['position'] != null
+        ? OnlineVehiclePosition.fromJson(json['position'] as Map<String, dynamic>)
+        : null,
   );
 }
 
@@ -383,49 +451,95 @@ class AdminFinanceSummary {
   );
 }
 
-class AdminInvoice {
-  final String id;
+class AdminParentInvoiceLine {
   final String studentId;
-  final String? studentName;
-  final String period;
+  final String studentName;
   final String amount;
   final String amountPaid;
   final String balanceDue;
-  final String currency;
-  final String status;
-  final String? dueDate;
-  final String? notes;
+  final String? feePlanName;
 
-  const AdminInvoice({
-    required this.id,
+  const AdminParentInvoiceLine({
     required this.studentId,
-    this.studentName,
-    required this.period,
+    required this.studentName,
     required this.amount,
     required this.amountPaid,
     required this.balanceDue,
+    this.feePlanName,
+  });
+
+  factory AdminParentInvoiceLine.fromJson(Map<String, dynamic> json) =>
+      AdminParentInvoiceLine(
+        studentId: json['student_id'] as String? ?? '',
+        studentName: json['student_name'] as String? ?? '',
+        amount: json['amount']?.toString() ?? '0.00',
+        amountPaid: json['amount_paid']?.toString() ?? '0.00',
+        balanceDue: json['balance_due']?.toString() ?? '0.00',
+        feePlanName: json['fee_plan_name'] as String?,
+      );
+}
+
+class AdminParentInvoice {
+  final String id;
+  final String parentId;
+  final String parentName;
+  final String? parentPhone;
+  final String invoiceNumber;
+  final String period;
+  final String currency;
+  final String totalAmount;
+  final String amountPaid;
+  final String balanceDue;
+  final String status;
+  final int childrenCount;
+  final String? dueDate;
+  final DateTime? createdAt;
+  final List<AdminParentInvoiceLine> lines;
+
+  const AdminParentInvoice({
+    required this.id,
+    required this.parentId,
+    required this.parentName,
+    this.parentPhone,
+    required this.invoiceNumber,
+    required this.period,
     required this.currency,
+    required this.totalAmount,
+    required this.amountPaid,
+    required this.balanceDue,
     required this.status,
+    required this.childrenCount,
     this.dueDate,
-    this.notes,
+    this.createdAt,
+    this.lines = const [],
   });
 
   bool get isPaid => status == 'paid';
+  bool get isPartiallyPaid => status == 'partially_paid';
   bool get isOverdue => status == 'overdue';
 
-  factory AdminInvoice.fromJson(Map<String, dynamic> json) => AdminInvoice(
-    id: json['id'] as String,
-    studentId: json['student_id'] as String? ?? '',
-    studentName: json['student_name'] as String?,
-    period: json['period'] as String? ?? '',
-    amount: json['amount'] as String? ?? '0.00',
-    amountPaid: json['amount_paid'] as String? ?? '0.00',
-    balanceDue: json['balance_due'] as String? ?? '0.00',
-    currency: json['currency'] as String? ?? 'USD',
-    status: json['status'] as String? ?? 'pending',
-    dueDate: json['due_date'] as String?,
-    notes: json['notes'] as String?,
-  );
+  factory AdminParentInvoice.fromJson(Map<String, dynamic> json) =>
+      AdminParentInvoice(
+        id: json['id'] as String,
+        parentId: json['parent_id'] as String? ?? '',
+        parentName: json['parent_name'] as String? ?? '',
+        parentPhone: json['parent_phone'] as String?,
+        invoiceNumber: json['invoice_number'] as String? ?? '',
+        period: json['period'] as String? ?? '',
+        currency: json['currency'] as String? ?? 'USD',
+        totalAmount: json['total_amount']?.toString() ?? '0.00',
+        amountPaid: json['amount_paid']?.toString() ?? '0.00',
+        balanceDue: json['balance_due']?.toString() ?? '0.00',
+        status: json['status'] as String? ?? 'pending',
+        childrenCount: json['children_count'] as int? ??
+            (json['lines'] as List<dynamic>? ?? const []).length,
+        dueDate: json['due_date'] as String?,
+        createdAt: parseServerTime(json['created_at']),
+        lines: (json['lines'] as List<dynamic>? ?? const [])
+            .map((l) =>
+                AdminParentInvoiceLine.fromJson(l as Map<String, dynamic>))
+            .toList(),
+      );
 }
 
 class AdminTripItem {
@@ -651,6 +765,19 @@ class AdminRepository {
     return _list(json['data']).map(AdminDevice.fromJson).toList();
   }
 
+  Future<AdminDevice?> getVehicleActiveDevice(String vehicleId) async {
+    try {
+      final assignment =
+          await _client.get('/vehicles/$vehicleId/device-assignment');
+      final deviceId = assignment['device_id'] as String?;
+      if (deviceId == null || deviceId.isEmpty) return null;
+      final devJson = await _client.get('/devices/$deviceId');
+      return AdminDevice.fromJson(devJson);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> assignDevice(String deviceId, String vehicleId) async {
     await _client.post(
       '/devices/$deviceId/assign',
@@ -690,14 +817,34 @@ class AdminRepository {
     required double latitude,
     required double longitude,
     int sequence = 1,
+    int? geofenceRadiusM = 100,
   }) async {
     final body = {
       'name': name,
       'latitude': latitude,
       'longitude': longitude,
-      'sequence': sequence,
+      'sequence_no': sequence,
+      if (geofenceRadiusM != null) 'geofence_radius_m': geofenceRadiusM,
     };
     await _client.post('/routes/$routeId/stops', body: body);
+  }
+
+  Future<void> scheduleTrip({
+    required String vehicleId,
+    required String driverId,
+    required String routeId,
+    required String tripType,
+    required String scheduledDate,
+  }) async {
+    final body = {
+      'organization_id': orgId,
+      'vehicle_id': vehicleId,
+      'driver_id': driverId,
+      'route_id': routeId,
+      'trip_type': tripType,
+      'scheduled_date': scheduledDate,
+    };
+    await _client.post('/trips', body: body);
   }
 
   Future<List<AdminTripItem>> listTrips({String? status, String? search}) async {
@@ -772,6 +919,62 @@ class AdminRepository {
       if (notes != null && notes.isNotEmpty) 'notes': notes,
     };
     await _client.post('/school-finance/student-invoices', body: body);
+  }
+
+  Future<List<AdminParentInvoice>> parentInvoices({
+    String? period,
+    String? status,
+  }) async {
+    try {
+      final periodParam =
+          period != null && period.isNotEmpty ? '&period=$period' : '';
+      final statusParam =
+          status != null && status.isNotEmpty && status != 'all'
+              ? '&status=$status'
+              : '';
+      final json = await _client.get(
+        '/school-finance/parent-invoices?page=1&page_size=100$periodParam$statusParam',
+      );
+      return _list(json['data']).map(AdminParentInvoice.fromJson).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<List<AdminParentInvoice>> generateMonthlyParentInvoices(
+    String period,
+  ) async {
+    final json = await _client.post(
+      '/school-finance/parent-invoices/generate',
+      body: {'period': period},
+    );
+    if (json is List) {
+      return json
+          .map((i) => AdminParentInvoice.fromJson(i as Map<String, dynamic>))
+          .toList();
+    }
+    return const [];
+  }
+
+  Future<void> recordParentPayment({
+    required String invoiceId,
+    required double amount,
+    required String method,
+    String? reference,
+    String? notes,
+  }) async {
+    final body = {
+      'amount': amount.toStringAsFixed(2),
+      'currency': 'USD',
+      'method': method,
+      'received_on': isoDate(DateTime.now()),
+      if (reference != null && reference.isNotEmpty) 'reference': reference,
+      if (notes != null && notes.isNotEmpty) 'notes': notes,
+    };
+    await _client.post(
+      '/school-finance/parent-invoices/$invoiceId/payments',
+      body: body,
+    );
   }
 
   Future<void> recordPayment({
@@ -923,6 +1126,11 @@ final adminFinanceSummaryProvider = FutureProvider.autoDispose<AdminFinanceSumma
 
 final adminInvoicesListProvider = FutureProvider.autoDispose<List<AdminInvoice>>(
   (ref) => ref.watch(adminRepositoryProvider).invoices(),
+);
+
+final adminParentInvoicesProvider =
+    FutureProvider.autoDispose<List<AdminParentInvoice>>(
+  (ref) => ref.watch(adminRepositoryProvider).parentInvoices(),
 );
 
 final adminTripsItemsProvider = FutureProvider.autoDispose<List<AdminTripItem>>(
