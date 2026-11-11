@@ -93,7 +93,7 @@ class FakeTrackingService:
     def __init__(self, position_by_vehicle: dict[str, _PositionDTO | None] | None = None) -> None:
         self._by_vehicle = position_by_vehicle or {}
 
-    async def get_current_vehicle_position(self, query):
+    async def get_current_vehicle_position(self, query, *args, **kwargs):
         return self._by_vehicle.get(query.vehicle_id)
 
 

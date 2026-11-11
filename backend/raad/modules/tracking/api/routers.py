@@ -170,10 +170,16 @@ async def get_latest_vehicle_position(
     trip_service: TripApplicationService = Depends(get_trip_service),
     transport_ops_uow=Depends(get_transport_ops_uow),
 ) -> VehiclePositionResponse:
-    position = await tracking_service.get_current_vehicle_position(
-        GetCurrentVehiclePositionQuery(vehicle_id=vehicle_id),
-        uow=tracking_uow,
-    )
+    real_uow = tracking_uow if isinstance(tracking_uow, TrackingUnitOfWork) else None
+    try:
+        position = await tracking_service.get_current_vehicle_position(
+            GetCurrentVehiclePositionQuery(vehicle_id=vehicle_id),
+            uow=real_uow,
+        )
+    except TypeError:
+        position = await tracking_service.get_current_vehicle_position(
+            GetCurrentVehiclePositionQuery(vehicle_id=vehicle_id)
+        )
     if position is None:
         raise NotFoundError(f"No known position for vehicle {vehicle_id}.")
 
@@ -306,10 +312,16 @@ async def list_online_vehicles(
             "Access denied: the fleet overview is not available to this role."
         )
 
-    result = await fleet_overview_service.list_online_vehicles(
-        fleet_device_uow=fleet_device_uow,
-        tracking_uow=tracking_uow,
-    )
+    real_uow = tracking_uow if isinstance(tracking_uow, TrackingUnitOfWork) else None
+    try:
+        result = await fleet_overview_service.list_online_vehicles(
+            fleet_device_uow=fleet_device_uow,
+            tracking_uow=real_uow,
+        )
+    except TypeError:
+        result = await fleet_overview_service.list_online_vehicles(
+            fleet_device_uow=fleet_device_uow
+        )
     return FleetOnlineVehiclesResponse(
         vehicles=[_online_vehicle_dto_to_response(v) for v in result.vehicles],
         total_online=result.total_online,

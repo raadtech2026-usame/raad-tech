@@ -175,7 +175,7 @@ class FakeTrackingService:
     ) -> None:
         self._by_vehicle = position_by_vehicle or {}
 
-    async def get_current_vehicle_position(self, query):
+    async def get_current_vehicle_position(self, query, *args, **kwargs):
         return self._by_vehicle.get(query.vehicle_id)
 
 
@@ -184,7 +184,7 @@ class RedisUnboundTrackingService:
     no `LatestPositionPort` is bound at all — raises `NotImplementedError`, never returns a
     fake position."""
 
-    async def get_current_vehicle_position(self, query):
+    async def get_current_vehicle_position(self, query, *args, **kwargs):
         raise NotImplementedError("No LatestPositionPort is bound.")
 
 
@@ -923,7 +923,7 @@ class _FakeTrackingServiceWithPosition:
     def __init__(self, position: VehiclePositionDTO | None) -> None:
         self._position = position
 
-    async def get_current_vehicle_position(self, query):
+    async def get_current_vehicle_position(self, query, *args, **kwargs):
         return self._position
 
 
