@@ -48,7 +48,6 @@ class _AdminMultiCameraScreenState
   bool _isIntercomConnecting = false;
   bool _isIntercomActive = false;
   String? _intercomSessionId;
-  String? _intercomError;
 
   // Single focused camera channel if tapped (null = 2x2 grid)
   int? _focusedCameraIndex;
@@ -63,7 +62,6 @@ class _AdminMultiCameraScreenState
       },
       onError: (err) {
         if (!mounted) return;
-        setState(() => _intercomError = err);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(err), backgroundColor: RaadColors.red),
         );
@@ -92,7 +90,6 @@ class _AdminMultiCameraScreenState
 
     setState(() {
       _isIntercomConnecting = true;
-      _intercomError = null;
     });
 
     try {
@@ -204,7 +201,7 @@ class _AdminMultiCameraScreenState
                   padding:
                       const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
-                    color: RaadColors.green.withOpacity(0.2),
+                    color: RaadColors.green.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(4),
                     border: Border.all(color: RaadColors.green, width: 0.8),
                   ),
@@ -381,7 +378,7 @@ class _AdminMultiCameraScreenState
                               color: (_intercomController.isTransmitting
                                       ? RaadColors.red
                                       : RaadColors.brandPrimary)
-                                  .withOpacity(0.4),
+                                  .withValues(alpha: 0.4),
                               blurRadius: 8,
                               offset: const Offset(0, 2),
                             ),
@@ -415,8 +412,8 @@ class _AdminMultiCameraScreenState
                   ),
                   const SizedBox(width: 10),
                   IconButton.filled(
-                    style: IconButton.filledStyleFrom(
-                      backgroundColor: RaadColors.red.withOpacity(0.2),
+                    style: IconButton.styleFrom(
+                      backgroundColor: RaadColors.red.withValues(alpha: 0.2),
                       foregroundColor: RaadColors.red,
                       padding: const EdgeInsets.all(12),
                     ),
@@ -631,7 +628,7 @@ class _CameraStreamTileState extends ConsumerState<_CameraStreamTile> {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.65),
+                      color: Colors.black.withValues(alpha: 0.65),
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: Text(
@@ -648,7 +645,7 @@ class _CameraStreamTileState extends ConsumerState<_CameraStreamTile> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 4, vertical: 2),
                       decoration: BoxDecoration(
-                        color: RaadColors.green.withOpacity(0.8),
+                        color: RaadColors.green.withValues(alpha: 0.8),
                         borderRadius: BorderRadius.circular(3),
                       ),
                       child: const Text(
