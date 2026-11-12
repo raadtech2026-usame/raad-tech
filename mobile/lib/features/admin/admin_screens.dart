@@ -11,6 +11,8 @@ import 'admin_routes_screen.dart';
 import 'admin_staff_screen.dart';
 import 'admin_trips_screen.dart';
 
+export 'admin_multi_camera_screen.dart';
+
 /// Top App Bar actions helper providing uniform Refresh, Notification and Profile icons.
 List<Widget> adminTopActions(
   BuildContext context,

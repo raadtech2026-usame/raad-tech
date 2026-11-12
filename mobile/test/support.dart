@@ -203,11 +203,26 @@ class FakeAdminRepository extends AdminRepository {
   }) async {}
 
   @override
+  Future<OnlineVehiclePosition?> getLatestVehiclePosition(String vehicleId) async => null;
+
+  @override
+  Future<Map<String, dynamic>> requestLiveVideo({
+    required String deviceId,
+    required String cameraId,
+    String streamType = 'sub',
+  }) async =>
+      {'id': 'session-1', 'stream_url': 'ws://fake/stream'};
+
+  @override
   Future<Map<String, dynamic>> requestIntercom({
     required String deviceId,
     required String cameraId,
   }) async =>
-      {'id': 'session-intercom-1'};
+      {
+        'id': 'session-intercom-1',
+        'stream_url': 'ws://fake/intercom-downlink',
+        'uplink_url': 'ws://fake/intercom-uplink',
+      };
 
   @override
   Future<AdminDevice?> getVehicleActiveDevice(String vehicleId) async => null;

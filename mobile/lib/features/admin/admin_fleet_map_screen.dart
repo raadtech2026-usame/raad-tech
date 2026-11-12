@@ -6,19 +6,20 @@ import 'package:latlong2/latlong.dart';
 import '../../core/l10n/strings.dart';
 import '../../shared/widgets.dart';
 import '../map/bus_map.dart';
-import '../video/video_player_screen.dart';
-import '../video/video_providers.dart';
 import 'admin_data.dart';
+import 'admin_multi_camera_screen.dart';
 import 'admin_screens.dart';
 
 /// Pillar 2: Live Tracking, Live Video & Two-Way Intercom.
-/// Displays an interactive map of all active/online buses.
-/// Tapping a bus opens an action panel with telemetry, live camera, and two-way intercom.
+/// Displays an interactive map of all buses in the fleet (both online and offline at last known position).
+/// Tapping a bus opens an action panel with telemetry, driver details, speed, and a direct button
+/// to the multi-camera CCTV wall screen.
 class AdminFleetMapScreen extends ConsumerStatefulWidget {
   const AdminFleetMapScreen({super.key});
 
   @override
-  ConsumerState<AdminFleetMapScreen> createState() => _AdminFleetMapScreenState();
+  ConsumerState<AdminFleetMapScreen> createState() =>
+      _AdminFleetMapScreenState();
 }
 
 class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
@@ -27,13 +28,21 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
   // Default coordinate for Mogadishu/Somalia center when no vehicles report yet
   static const _defaultCenter = LatLng(2.0469, 45.3182);
 
+  // Cache of last known positions for vehicles (so offline buses remain visible)
+  final Map<String, OnlineVehiclePosition> _lastKnownPositions = {};
+  final Set<String> _requestedLatestPositions = {};
+
   @override
   void dispose() {
     _mapController.dispose();
     super.dispose();
   }
 
-  void _inspectVehicle(OnlineVehicle vehicle, AdminVehicle? details) {
+  void _inspectVehicle({
+    required OnlineVehicle vehicle,
+    required AdminVehicle? details,
+    required String? driverName,
+  }) {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -41,8 +50,25 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
       builder: (ctx) => _VehicleActionSheet(
         vehicle: vehicle,
         details: details,
+        driverName: driverName,
       ),
     );
+  }
+
+  void _fetchLastKnownPosition(String vehicleId) {
+    if (_requestedLatestPositions.contains(vehicleId)) return;
+    _requestedLatestPositions.add(vehicleId);
+
+    ref
+        .read(adminRepositoryProvider)
+        .getLatestVehiclePosition(vehicleId)
+        .then((pos) {
+      if (pos != null && mounted) {
+        setState(() {
+          _lastKnownPositions[vehicleId] = pos;
+        });
+      }
+    }).catchError((_) {});
   }
 
   @override
@@ -50,6 +76,7 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
     final s = ref.watch(stringsProvider);
     final fleetAsync = ref.watch(adminFleetOnlineProvider);
     final vehiclesAsync = ref.watch(adminVehiclesListProvider);
+    final boardAsync = ref.watch(adminBoardProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -60,6 +87,7 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
           onRefresh: () {
             ref.invalidate(adminFleetOnlineProvider);
             ref.invalidate(adminVehiclesListProvider);
+            ref.invalidate(adminBoardProvider);
           },
         ),
       ),
@@ -72,7 +100,10 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
               Text(s.somethingWrong),
               const SizedBox(height: 8),
               OutlinedButton(
-                onPressed: () => ref.invalidate(adminFleetOnlineProvider),
+                onPressed: () {
+                  ref.invalidate(adminFleetOnlineProvider);
+                  ref.invalidate(adminVehiclesListProvider);
+                },
                 child: Text(s.retry),
               ),
             ],
@@ -80,9 +111,47 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
         ),
         data: (fleet) {
           final onlineList = fleet.vehicles;
-          final vehicleMap = {
-            for (final v in (vehiclesAsync.valueOrNull ?? <AdminVehicle>[])) v.id: v
-          };
+          final allVehicles = vehiclesAsync.valueOrNull ?? <AdminVehicle>[];
+          final vehicleMap = {for (final v in allVehicles) v.id: v};
+
+          // Build driver lookup from daily dispatch board
+          final vehicleDriverMap = <String, String>{};
+          final board = boardAsync.valueOrNull;
+          if (board != null) {
+            for (final bv in board.vehicles) {
+              for (final trip in bv.trips) {
+                if (trip.driverName != null && trip.driverName!.isNotEmpty) {
+                  vehicleDriverMap[bv.vehicleId] = trip.driverName!;
+                  break;
+                }
+              }
+              if (!vehicleDriverMap.containsKey(bv.vehicleId)) {
+                for (final crew in bv.crew) {
+                  if (crew.roleName?.toLowerCase() == 'driver') {
+                    vehicleDriverMap[bv.vehicleId] = crew.name;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+
+          // Cache positions from online vehicles
+          final onlineIds = <String>{};
+          for (final v in onlineList) {
+            onlineIds.add(v.vehicleId);
+            if (v.position != null) {
+              _lastKnownPositions[v.vehicleId] = v.position!;
+            }
+          }
+
+          // Trigger fetch for offline vehicles that have no cached position yet
+          for (final v in allVehicles) {
+            if (!onlineIds.contains(v.id) &&
+                !_lastKnownPositions.containsKey(v.id)) {
+              _fetchLastKnownPosition(v.id);
+            }
+          }
 
           // Find first valid vehicle position or fallback to default center
           LatLng center = _defaultCenter;
@@ -91,6 +160,110 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
               center = LatLng(v.position!.latitude, v.position!.longitude);
               break;
             }
+          }
+          if (center == _defaultCenter && _lastKnownPositions.isNotEmpty) {
+            final firstPos = _lastKnownPositions.values.first;
+            center = LatLng(firstPos.latitude, firstPos.longitude);
+          }
+
+          // Collect markers: online vehicles first, then offline vehicles with known coordinates
+          final markers = <Marker>[];
+
+          // 1. Online bus markers
+          for (int i = 0; i < onlineList.length; i++) {
+            final v = onlineList[i];
+            final pos = v.position ?? _lastKnownPositions[v.vehicleId];
+            final point = pos != null
+                ? LatLng(pos.latitude, pos.longitude)
+                : LatLng(
+                    _defaultCenter.latitude + (i * 0.008) - 0.004,
+                    _defaultCenter.longitude + (i * 0.008) - 0.004,
+                  );
+
+            markers.add(
+              Marker(
+                point: point,
+                width: 52,
+                height: 52,
+                child: GestureDetector(
+                  onTap: () => _inspectVehicle(
+                    vehicle: v,
+                    details: vehicleMap[v.vehicleId],
+                    driverName: vehicleDriverMap[v.vehicleId],
+                  ),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: RaadColors.brandPrimary,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2.5),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 6,
+                          offset: Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.directions_bus_rounded,
+                      color: Colors.white,
+                      size: 26,
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }
+
+          // 2. Offline bus markers at last known position
+          for (final v in allVehicles) {
+            if (onlineIds.contains(v.id)) continue; // Already rendered above
+            final pos = _lastKnownPositions[v.id];
+            if (pos == null) continue; // No position on record yet
+
+            final point = LatLng(pos.latitude, pos.longitude);
+            final offlineVehicle = OnlineVehicle(
+              vehicleId: v.id,
+              plateNo: v.plateNo,
+              label: v.label,
+              deviceId: v.deviceId,
+              isOnline: false,
+              position: pos,
+            );
+
+            markers.add(
+              Marker(
+                point: point,
+                width: 48,
+                height: 48,
+                child: GestureDetector(
+                  onTap: () => _inspectVehicle(
+                    vehicle: offlineVehicle,
+                    details: v,
+                    driverName: vehicleDriverMap[v.id],
+                  ),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF64748B), // Slate grey for offline
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 4,
+                          offset: Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.directions_bus_rounded,
+                      color: Colors.white70,
+                      size: 22,
+                    ),
+                  ),
+                ),
+              ),
+            );
           }
 
           return Stack(
@@ -112,49 +285,7 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
                     userAgentPackageName: 'so.raad.mobile',
                     maxNativeZoom: 18,
                   ),
-                  MarkerLayer(
-                    markers: [
-                      for (int i = 0; i < onlineList.length; i++)
-                        Marker(
-                          point: onlineList[i].position != null
-                              ? LatLng(
-                                  onlineList[i].position!.latitude,
-                                  onlineList[i].position!.longitude,
-                                )
-                              : LatLng(
-                                  _defaultCenter.latitude + (i * 0.008) - 0.004,
-                                  _defaultCenter.longitude + (i * 0.008) - 0.004,
-                                ),
-                          width: 52,
-                          height: 52,
-                          child: GestureDetector(
-                            onTap: () => _inspectVehicle(
-                              onlineList[i],
-                              vehicleMap[onlineList[i].vehicleId],
-                            ),
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: RaadColors.brandPrimary,
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: 2.5),
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Colors.black26,
-                                    blurRadius: 6,
-                                    offset: Offset(0, 3),
-                                  ),
-                                ],
-                              ),
-                              child: const Icon(
-                                Icons.directions_bus_rounded,
-                                color: Colors.white,
-                                size: 26,
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
+                  MarkerLayer(markers: markers),
                 ],
               ),
               Positioned(
@@ -162,9 +293,13 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
                 left: 16,
                 right: 16,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.95),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .surface
+                        .withValues(alpha: 0.95),
                     borderRadius: BorderRadius.circular(12),
                     boxShadow: const [
                       BoxShadow(
@@ -180,7 +315,9 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
                         width: 10,
                         height: 10,
                         decoration: BoxDecoration(
-                          color: onlineList.isEmpty ? Colors.grey : RaadColors.green,
+                          color: onlineList.isEmpty
+                              ? Colors.grey
+                              : RaadColors.green,
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -190,7 +327,10 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
                           onlineList.isEmpty
                               ? s.adminNoBusesOnRoad
                               : '${onlineList.length} ${s.adminOnlineNow} · ${s.adminSelectBusToInspect}',
-                          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
                         ),
                       ),
                     ],
@@ -208,20 +348,20 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
 class _VehicleActionSheet extends ConsumerStatefulWidget {
   final OnlineVehicle vehicle;
   final AdminVehicle? details;
+  final String? driverName;
 
   const _VehicleActionSheet({
     required this.vehicle,
     required this.details,
+    this.driverName,
   });
 
   @override
-  ConsumerState<_VehicleActionSheet> createState() => _VehicleActionSheetState();
+  ConsumerState<_VehicleActionSheet> createState() =>
+      _VehicleActionSheetState();
 }
 
 class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
-  bool _isIntercomActive = false;
-  bool _isConnecting = false;
-  String? _sessionId;
   AdminDevice? _resolvedDevice;
   bool _isLoadingDevice = true;
 
@@ -271,7 +411,9 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
               for (final d in devices)
                 DropdownMenuItem(
                   value: d.id,
-                  child: Text('${s.adminTerminalId}: ${d.terminalId} (${d.model ?? 'MDVR'})'),
+                  child: Text(
+                    '${s.adminTerminalId}: ${d.terminalId} (${d.model ?? 'MDVR'})',
+                  ),
                 ),
             ],
             onChanged: (val) {
@@ -314,216 +456,52 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
     );
   }
 
-  Future<void> _startIntercom(Strings s) async {
-    final deviceId = _effectiveDeviceId;
-    if (deviceId == null || deviceId.isEmpty) {
+  void _openMultiCameraScreen(Strings s) {
+    final devId = _effectiveDeviceId;
+    if (devId == null || devId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(s.adminNoDeviceLinked)),
+        SnackBar(content: Text(s.adminNoDeviceLinkedMessage)),
       );
       return;
     }
 
-    final cameraId = (_resolvedDevice?.cameras.isNotEmpty == true)
-        ? _resolvedDevice!.cameras.first.id
-        : '01CAMERA000000000000000A';
-
-    setState(() {
-      _isConnecting = true;
-    });
-
-    try {
-      final res = await ref.read(adminRepositoryProvider).requestIntercom(
-            deviceId: deviceId,
-            cameraId: cameraId,
-          );
-      if (!mounted) return;
-      setState(() {
-        _isConnecting = false;
-        _isIntercomActive = true;
-        _sessionId = res['id'] as String?;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _isConnecting = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${s.somethingWrong}: $e')),
-      );
-    }
-  }
-
-  Future<void> _endIntercom() async {
-    if (_sessionId != null) {
-      await ref.read(adminRepositoryProvider).stopVideoSession(_sessionId!);
-    }
-    if (!mounted) return;
-    setState(() {
-      _isIntercomActive = false;
-      _sessionId = null;
-    });
-  }
-
-  Future<void> _watchLiveVideo(Strings s, {String? selectedCameraId}) async {
-    final deviceId = _effectiveDeviceId;
-    if (deviceId == null || deviceId.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(s.adminNoDeviceLinked)),
-      );
-      return;
-    }
-
-    final cameraId = selectedCameraId ??
-        ((_resolvedDevice?.cameras.isNotEmpty == true)
-            ? _resolvedDevice!.cameras.first.id
-            : '01CAMERA000000000000000A');
-
-    try {
-      final session = await ref.read(videoRepositoryProvider).requestLive(
-        deviceId: deviceId,
-        cameraId: cameraId,
-      );
-      if (!mounted) return;
-      if (session.streamUrl != null) {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => VideoPlayerScreen(
-              videoSessionId: session.id,
-              relayStreamUrl: session.streamUrl!,
-            ),
-          ),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${s.somethingWrong}: $e')),
-      );
-    }
-  }
-
-  Widget _buildCameraWall(BuildContext context, Strings s) {
-    final cameras = (_resolvedDevice?.cameras.isNotEmpty == true)
-        ? _resolvedDevice!.cameras
-        : const [
-            DeviceCamera(
-              id: '01CAMERA000000000000000A',
-              channelNo: 1,
-              label: 'Hore (Waddada)',
-              position: 'front',
-            ),
-            DeviceCamera(
-              id: '01CAMERA000000000000000B',
-              channelNo: 2,
-              label: 'Gudaha Baska',
-              position: 'cabin',
-            ),
-            DeviceCamera(
-              id: '01CAMERA000000000000000C',
-              channelNo: 3,
-              label: 'Dhabarka (Rear)',
-              position: 'rear',
-            ),
-            DeviceCamera(
-              id: '01CAMERA000000000000000D',
-              channelNo: 4,
-              label: 'Albaabka (Door)',
-              position: 'door',
-            ),
-          ];
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              'Kaamirooyinka Baska (${cameras.length} CH)',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-            ),
-            Text(
-              'Taabo si aad toos ugu daawato',
-              style: TextStyle(fontSize: 12, color: context.muted),
-            ),
-          ],
+    Navigator.of(context).pop(); // Close bottom sheet
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AdminMultiCameraScreen(
+          vehicleId: widget.vehicle.vehicleId,
+          plateNo: widget.vehicle.plateNo,
+          label: widget.vehicle.label,
+          driverName: widget.driverName,
+          speedKph: widget.vehicle.position?.speedKph,
+          deviceId: devId,
+          cameras: _resolvedDevice?.cameras ?? const [],
         ),
-        const SizedBox(height: 10),
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 10,
-            childAspectRatio: 2.3,
-          ),
-          itemCount: cameras.length,
-          itemBuilder: (ctx, idx) {
-            final cam = cameras[idx];
-            return InkWell(
-              borderRadius: BorderRadius.circular(12),
-              onTap: () => _watchLiveVideo(s, selectedCameraId: cam.id),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                decoration: BoxDecoration(
-                  color: RaadColors.brandPrimary.withValues(alpha: 0.08),
-                  border: Border.all(
-                    color: RaadColors.brandPrimary.withValues(alpha: 0.25),
-                  ),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: const BoxDecoration(
-                        color: RaadColors.brandPrimary,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.videocam_rounded,
-                        color: Colors.white,
-                        size: 16,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            'CH ${cam.channelNo}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12.5,
-                              color: RaadColors.brandPrimary,
-                            ),
-                          ),
-                          Text(
-                            cam.label ?? 'Kaamero ${cam.channelNo}',
-                            style: const TextStyle(fontSize: 11),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        ),
-      ],
+      ),
     );
+  }
+
+  String _formatSpeed(Strings s) {
+    if (!widget.vehicle.isOnline) {
+      return s.adminSpeedOffline;
+    }
+    final speed = widget.vehicle.position?.speedKph;
+    if (speed == null || speed <= 0) {
+      return s.adminSpeedStopped;
+    }
+    return s.adminSpeedMoving(speed.round());
   }
 
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
     final theme = Theme.of(context);
-    final hasDevice = _effectiveDeviceId != null && _effectiveDeviceId!.isNotEmpty;
-    final speed = widget.vehicle.position?.speedKph;
+    final hasDevice =
+        _effectiveDeviceId != null && _effectiveDeviceId!.isNotEmpty;
+    final isOnline = widget.vehicle.isOnline;
+    final driverText = widget.driverName != null && widget.driverName!.isNotEmpty
+        ? widget.driverName!
+        : s.adminDriverUnassigned;
 
     return Container(
       decoration: BoxDecoration(
@@ -546,17 +524,21 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
               ),
             ),
           ),
+
+          // Header: Bus Icon, Plate, Online/Offline badge & Speed
           Row(
             children: [
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: RaadColors.brandPrimary.withValues(alpha: 0.12),
+                  color: isOnline
+                      ? RaadColors.brandPrimary.withValues(alpha: 0.12)
+                      : Colors.grey.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(16),
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.directions_bus_rounded,
-                  color: RaadColors.brandPrimary,
+                  color: isOnline ? RaadColors.brandPrimary : const Color(0xFF64748B),
                   size: 28,
                 ),
               ),
@@ -567,38 +549,50 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
                   children: [
                     Text(
                       widget.vehicle.displayName,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
                     ),
-                    const SizedBox(height: 2),
+                    const SizedBox(height: 4),
                     Row(
                       children: [
                         Container(
                           width: 8,
                           height: 8,
-                          decoration: const BoxDecoration(
-                            color: RaadColors.green,
+                          decoration: BoxDecoration(
+                            color: isOnline ? RaadColors.green : const Color(0xFF64748B),
                             shape: BoxShape.circle,
                           ),
                         ),
                         const SizedBox(width: 6),
                         Text(
-                          s.adminOnlineNow,
-                          style: TextStyle(fontSize: 13, color: context.muted),
+                          isOnline ? s.adminStatusOnline : s.adminStatusOffline,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: isOnline ? RaadColors.green : const Color(0xFF64748B),
+                          ),
                         ),
-                        if (speed != null) ...[
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Colors.blue.withValues(alpha: 0.1),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              '${speed.toStringAsFixed(0)} km/h',
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.blue),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: isOnline
+                                ? Colors.blue.withValues(alpha: 0.1)
+                                : Colors.grey.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            _formatSpeed(s),
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: isOnline ? Colors.blue : const Color(0xFF64748B),
                             ),
                           ),
-                        ],
+                        ),
                       ],
                     ),
                   ],
@@ -606,12 +600,112 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
               ),
             ],
           ),
+
+          const SizedBox(height: 18),
+
+          // Telemetry and Driver Info Card
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.4),
+              ),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.person_rounded,
+                        size: 20, color: RaadColors.brandPrimary),
+                    const SizedBox(width: 10),
+                    Text(
+                      '${s.adminDriverLabel}:',
+                      style: TextStyle(fontSize: 13, color: context.muted),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        driverText,
+                        style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        textAlign: TextAlign.end,
+                      ),
+                    ),
+                  ],
+                ),
+                if (_resolvedDevice != null) ...[
+                  const Divider(height: 16),
+                  Row(
+                    children: [
+                      const Icon(Icons.developer_board_rounded,
+                          size: 20, color: RaadColors.brandPrimary),
+                      const SizedBox(width: 10),
+                      Text(
+                        '${s.adminTerminalId}:',
+                        style: TextStyle(fontSize: 13, color: context.muted),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          _resolvedDevice!.terminalId,
+                          style: const TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          textAlign: TextAlign.end,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+
           const SizedBox(height: 16),
+
+          if (!isOnline) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF64748B).withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: const Color(0xFF64748B).withValues(alpha: 0.25),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline_rounded,
+                      color: Color(0xFF64748B), size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      s.adminOfflineBusNotice,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF64748B),
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
+
           if (_isLoadingDevice)
-            const Center(child: Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: CircularProgressIndicator(),
-            ))
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: CircularProgressIndicator(),
+              ),
+            )
           else if (!hasDevice) ...[
             Container(
               padding: const EdgeInsets.all(14),
@@ -627,7 +721,10 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
                   Expanded(
                     child: Text(
                       s.adminNoDeviceAttached,
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
                   ),
                   TextButton.icon(
@@ -638,60 +735,25 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
                 ],
               ),
             ),
-          ] else if (_isIntercomActive) ...[
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: RaadColors.green.withValues(alpha: 0.1),
-                border: Border.all(color: RaadColors.green.withValues(alpha: 0.3)),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.mic_rounded, color: RaadColors.green, size: 24),
-                      const SizedBox(width: 8),
-                      Text(
-                        s.adminIntercomConnected,
-                        style: const TextStyle(fontWeight: FontWeight.bold, color: RaadColors.green),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: RaadColors.red,
-                      foregroundColor: Colors.white,
-                    ),
-                    icon: const Icon(Icons.call_end_rounded),
-                    label: Text(s.adminIntercomDisconnect),
-                    onPressed: _endIntercom,
-                  ),
-                ],
-              ),
-            ),
           ] else ...[
-            _buildCameraWall(context, s),
-            const SizedBox(height: 14),
-            OutlinedButton.icon(
-              icon: _isConnecting
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.record_voice_over_rounded),
+            // Primary Full-Width Action: Daawo Kaamirooyinka (Live Videos)
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: RaadColors.brandPrimary,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              icon: const Icon(Icons.videocam_rounded, size: 22),
               label: Text(
-                _isConnecting
-                    ? s.adminIntercomConnecting
-                    : s.adminIntercomTalkToDriver,
+                s.adminWatchLiveVideos,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 13),
-              ),
-              onPressed: _isConnecting ? null : () => _startIntercom(s),
+              onPressed: () => _openMultiCameraScreen(s),
             ),
           ],
         ],

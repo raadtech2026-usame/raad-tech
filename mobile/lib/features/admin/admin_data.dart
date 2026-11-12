@@ -683,6 +683,15 @@ class AdminRepository {
   Future<FleetOnline> fleetOnline() async =>
       FleetOnline.fromJson(await _client.get('/tracking/vehicles/online'));
 
+  Future<OnlineVehiclePosition?> getLatestVehiclePosition(String vehicleId) async {
+    try {
+      final json = await _client.get('/tracking/vehicles/$vehicleId/latest');
+      return OnlineVehiclePosition.fromJson(json);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<AdminOverview> overview() async {
     Future<int?> safe(Future<int> request) async {
       try {
@@ -1055,11 +1064,12 @@ class AdminRepository {
   Future<Map<String, dynamic>> requestLiveVideo({
     required String deviceId,
     required String cameraId,
+    String streamType = 'sub',
   }) async {
     return await _client.post('/video/live', body: {
       'device_id': deviceId,
       'camera_id': cameraId,
-      'stream_type': 'main',
+      'stream_type': streamType,
     });
   }
 
