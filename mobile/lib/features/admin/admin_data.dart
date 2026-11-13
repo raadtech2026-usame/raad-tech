@@ -560,7 +560,16 @@ class AdminParentInvoice {
   });
 
   bool get isPaid => status == 'paid';
-  bool get isPartiallyPaid => status == 'partially_paid';
+  bool get isPartiallyPaid =>
+      status == 'partially_paid' ||
+      status == 'partial' ||
+      ((double.tryParse(amountPaid) ?? 0) > 0 &&
+          (double.tryParse(balanceDue) ?? 0) > 0);
+  bool get isUnpaid =>
+      status == 'unpaid' ||
+      (!isPaid &&
+          !isPartiallyPaid &&
+          (double.tryParse(balanceDue) ?? 0) > 0);
   bool get isOverdue => status == 'overdue';
 
   factory AdminParentInvoice.fromJson(Map<String, dynamic> json) =>
@@ -572,7 +581,9 @@ class AdminParentInvoice {
         invoiceNumber: json['invoice_number'] as String? ?? '',
         period: json['period'] as String? ?? '',
         currency: json['currency'] as String? ?? 'USD',
-        totalAmount: json['total_amount']?.toString() ?? '0.00',
+        totalAmount: json['total_amount']?.toString() ??
+            json['amount']?.toString() ??
+            '0.00',
         amountPaid: json['amount_paid']?.toString() ?? '0.00',
         balanceDue: json['balance_due']?.toString() ?? '0.00',
         status: json['status'] as String? ?? 'pending',
@@ -978,6 +989,7 @@ class AdminRepository {
   Future<List<AdminParentInvoice>> parentInvoices({
     String? period,
     String? status,
+    String? vehicleId,
   }) async {
     try {
       final periodParam =
@@ -986,8 +998,12 @@ class AdminRepository {
           status != null && status.isNotEmpty && status != 'all'
               ? '&status=$status'
               : '';
+      final vehicleParam =
+          vehicleId != null && vehicleId.isNotEmpty && vehicleId != 'all'
+              ? '&vehicle_id=$vehicleId'
+              : '';
       final json = await _client.get(
-        '/school-finance/parent-invoices?page=1&page_size=100$periodParam$statusParam',
+        '/school-finance/parent-invoices?page=1&page_size=100$periodParam$statusParam$vehicleParam',
       );
       return _list(json['data']).map(AdminParentInvoice.fromJson).toList();
     } catch (_) {
@@ -1200,6 +1216,12 @@ final adminInvoicesListProvider = FutureProvider.autoDispose<List<AdminInvoice>>
 final adminParentInvoicesProvider =
     FutureProvider.autoDispose<List<AdminParentInvoice>>(
   (ref) => ref.watch(adminRepositoryProvider).parentInvoices(),
+);
+
+final adminParentInvoicesByBusProvider =
+    FutureProvider.autoDispose.family<List<AdminParentInvoice>, String?>(
+  (ref, vehicleId) =>
+      ref.watch(adminRepositoryProvider).parentInvoices(vehicleId: vehicleId),
 );
 
 final adminTripsItemsProvider = FutureProvider.autoDispose<List<AdminTripItem>>(

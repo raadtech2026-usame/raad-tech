@@ -522,6 +522,10 @@ class Strings {
   String get adminSelectBus => _('Dooro baska', 'Select bus');
   String get adminNotes => _('Faahfaahin dheeraad ah', 'Notes (optional)');
   String get adminInvoiceStatusPaid => _('Waa la bixiyay', 'Paid');
+  String get adminInvoiceStatusPartial => _('Qayb Bixiyay', 'Partial');
+  String get adminFilterPartial => _('Qayb Bixiyay (Partial)', 'Partially Paid');
+  String get adminFilterAllBuses => _('Dhammaan Basaska (All Buses)', 'All Buses');
+  String get adminFilterBus => _('Dooro Baska', 'Filter by Bus');
   String get adminInvoiceStatusPending => _('Dhiman', 'Pending');
   String get adminInvoiceStatusOverdue => _('Dhaaftay', 'Overdue');
   String get adminInvoiceStatusCancelled => _('La joojiyay', 'Cancelled');

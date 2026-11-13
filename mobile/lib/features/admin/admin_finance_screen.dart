@@ -17,11 +17,14 @@ class AdminFinanceScreen extends ConsumerStatefulWidget {
 }
 
 class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
-  String _statusFilter = 'all'; // all, paid, pending, overdue
+  String _statusFilter = 'all'; // all, unpaid, partial, paid, overdue
+  String? _selectedVehicleId; // null or 'all' for all buses
 
   Future<void> _refresh() async {
     ref.invalidate(adminFinanceSummaryProvider);
     ref.invalidate(adminParentInvoicesProvider);
+    ref.invalidate(adminParentInvoicesByBusProvider);
+    ref.invalidate(adminVehiclesListProvider);
     await ref.read(adminFinanceSummaryProvider.future);
   }
 
@@ -81,7 +84,10 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
     final summaryAsync = ref.watch(adminFinanceSummaryProvider);
-    final invoicesAsync = ref.watch(adminParentInvoicesProvider);
+    final vehiclesAsync = ref.watch(adminVehiclesListProvider);
+    final invoicesAsync = _selectedVehicleId != null && _selectedVehicleId != 'all'
+        ? ref.watch(adminParentInvoicesByBusProvider(_selectedVehicleId))
+        : ref.watch(adminParentInvoicesProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -157,7 +163,7 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
             ),
             const SizedBox(height: 20),
 
-            // Invoices Section Header & Filter Chips
+            // Invoices Section Header
             Row(
               children: [
                 Expanded(
@@ -170,25 +176,72 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
               ],
             ),
             const SizedBox(height: 8),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  _filterChip(s.adminFilterAll, 'all'),
-                  const SizedBox(width: 6),
-                  _filterChip('Aan Bixin (Unpaid)', 'unpaid'),
-                  const SizedBox(width: 6),
-                  _filterChip(s.adminInvoiceStatusPaid, 'paid'),
-                  const SizedBox(width: 6),
-                  _filterChip(s.adminInvoiceStatusPending, 'pending'),
-                  const SizedBox(width: 6),
-                  _filterChip(s.adminInvoiceStatusOverdue, 'overdue'),
-                ],
+
+            // Bus Filter Dropdown (Filter per bus)
+            Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .outlineVariant
+                      .withValues(alpha: 0.5),
+                ),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  isExpanded: true,
+                  value: _selectedVehicleId ?? 'all',
+                  icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                  items: [
+                    DropdownMenuItem(
+                      value: 'all',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.directions_bus_rounded,
+                              size: 20, color: RaadColors.brandPrimary),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              s.adminFilterAllBuses,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600, fontSize: 13.5),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    for (final v in (vehiclesAsync.valueOrNull ?? <AdminVehicle>[]))
+                      DropdownMenuItem(
+                        value: v.id,
+                        child: Row(
+                          children: [
+                            const Icon(Icons.directions_bus_outlined,
+                                size: 20, color: Colors.blueGrey),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                v.displayName,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600, fontSize: 13.5),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                  onChanged: (val) {
+                    setState(() => _selectedVehicleId = val);
+                  },
+                ),
               ),
             ),
-            const SizedBox(height: 12),
 
-            // Parent Invoice Items
+            // Parent Invoice Items & Status Filters
             invoicesAsync.when(
               loading: () => const Center(
                 child: Padding(
@@ -200,44 +253,112 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
                 child: Text(errorMessage(err, s)),
               ),
               data: (invoices) {
+                final totalInBus = invoices.length;
+                final paidInBus = invoices.where((i) => i.isPaid).length;
+                final partialInBus = invoices.where((i) => i.isPartiallyPaid).length;
+                final unpaidInBus = invoices.where((i) => i.isUnpaid).length;
+
                 final filtered = invoices.where((inv) {
                   if (_statusFilter == 'all') return true;
-                  if (_statusFilter == 'unpaid') {
-                    return !inv.isPaid &&
-                        (double.tryParse(inv.balanceDue) ?? 0) > 0;
-                  }
+                  if (_statusFilter == 'unpaid') return inv.isUnpaid;
+                  if (_statusFilter == 'partial') return inv.isPartiallyPaid;
+                  if (_statusFilter == 'paid') return inv.isPaid;
+                  if (_statusFilter == 'overdue') return inv.isOverdue;
                   return inv.status.toLowerCase() == _statusFilter;
                 }).toList();
 
-                if (filtered.isEmpty) {
-                  return SectionCard(
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 36, horizontal: 16),
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Status breakdown summary strip for this bus
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .surfaceContainerLowest,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .outlineVariant
+                              .withValues(alpha: 0.35),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
                         children: [
-                          Icon(Icons.receipt_outlined,
-                              size: 40, color: context.muted),
-                          const SizedBox(height: 12),
-                          Text(
-                            s.emptyState,
-                            style:
-                                TextStyle(color: context.muted, fontSize: 14),
+                          _StatPill(
+                            label: 'Waalidiin',
+                            value: '$totalInBus',
+                            color: RaadColors.brandPrimary,
+                          ),
+                          _StatPill(
+                            label: 'Bixiyay',
+                            value: '$paidInBus',
+                            color: RaadColors.green,
+                          ),
+                          _StatPill(
+                            label: 'Qayb',
+                            value: '$partialInBus',
+                            color: Colors.orange,
+                          ),
+                          _StatPill(
+                            label: 'Aan Bixin',
+                            value: '$unpaidInBus',
+                            color: RaadColors.red,
                           ),
                         ],
                       ),
                     ),
-                  );
-                }
 
-                return Column(
-                  children: [
-                    for (final inv in filtered)
-                      _ParentInvoiceCard(
-                        invoice: inv,
-                        onRecordPayment: () => _showRecordPaymentSheet(inv),
+                    // Filter Chips with dynamic counts
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          _filterChip('${s.adminFilterAll} ($totalInBus)', 'all'),
+                          const SizedBox(width: 6),
+                          _filterChip('Aan Bixin ($unpaidInBus)', 'unpaid'),
+                          const SizedBox(width: 6),
+                          _filterChip('${s.adminFilterPartial} ($partialInBus)', 'partial'),
+                          const SizedBox(width: 6),
+                          _filterChip('${s.adminInvoiceStatusPaid} ($paidInBus)', 'paid'),
+                          const SizedBox(width: 6),
+                          _filterChip(s.adminInvoiceStatusOverdue, 'overdue'),
+                        ],
                       ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    if (filtered.isEmpty)
+                      SectionCard(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 36, horizontal: 16),
+                        child: Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.receipt_outlined,
+                                  size: 40, color: context.muted),
+                              const SizedBox(height: 12),
+                              Text(
+                                s.emptyState,
+                                style: TextStyle(
+                                    color: context.muted, fontSize: 14),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    else
+                      for (final inv in filtered)
+                        _ParentInvoiceCard(
+                          invoice: inv,
+                          onRecordPayment: () => _showRecordPaymentSheet(inv),
+                        ),
                   ],
                 );
               },
@@ -370,6 +491,40 @@ class _KpiBox extends StatelessWidget {
   }
 }
 
+class _StatPill extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _StatPill({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          value,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 15,
+            color: color,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: TextStyle(fontSize: 11, color: context.muted),
+        ),
+      ],
+    );
+  }
+}
+
 class _ParentInvoiceCard extends StatelessWidget {
   final AdminParentInvoice invoice;
   final VoidCallback onRecordPayment;
@@ -379,38 +534,24 @@ class _ParentInvoiceCard extends StatelessWidget {
     required this.onRecordPayment,
   });
 
-  Color _statusColor(String status) {
-    switch (status.toLowerCase()) {
-      case 'paid':
-        return RaadColors.green;
-      case 'partially_paid':
-        return Colors.orange;
-      case 'overdue':
-        return RaadColors.red;
-      case 'pending':
-      default:
-        return RaadColors.amber;
-    }
+  Color _statusColor(AdminParentInvoice inv) {
+    if (inv.isPaid) return RaadColors.green;
+    if (inv.isPartiallyPaid) return Colors.orange;
+    if (inv.isOverdue) return RaadColors.red;
+    return RaadColors.red;
   }
 
-  String _statusLabel(String status) {
-    switch (status.toLowerCase()) {
-      case 'paid':
-        return 'BIXIYAY';
-      case 'partially_paid':
-        return 'QAYB';
-      case 'overdue':
-        return 'DHAAFTAY';
-      case 'pending':
-      default:
-        return 'DHIMAN';
-    }
+  String _statusLabel(AdminParentInvoice inv) {
+    if (inv.isPaid) return 'BIXIYAY';
+    if (inv.isPartiallyPaid) return 'QAYB BIXIYAY';
+    if (inv.isOverdue) return 'DHAAFTAY';
+    return 'AAN BIXIN';
   }
 
   @override
   Widget build(BuildContext context) {
     final s = Strings(Localizations.localeOf(context).languageCode == 'so');
-    final color = _statusColor(invoice.status);
+    final color = _statusColor(invoice);
     final isSettled = invoice.isPaid || double.tryParse(invoice.balanceDue) == 0;
 
     return Card(
@@ -451,7 +592,7 @@ class _ParentInvoiceCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                    _statusLabel(invoice.status),
+                    _statusLabel(invoice),
                     style: TextStyle(
                       color: color,
                       fontWeight: FontWeight.bold,

@@ -636,31 +636,6 @@ class _VehicleActionSheetState extends ConsumerState<_VehicleActionSheet> {
                     ),
                   ],
                 ),
-                if (_resolvedDevice != null) ...[
-                  const Divider(height: 16),
-                  Row(
-                    children: [
-                      const Icon(Icons.developer_board_rounded,
-                          size: 20, color: RaadColors.brandPrimary),
-                      const SizedBox(width: 10),
-                      Text(
-                        '${s.adminTerminalId}:',
-                        style: TextStyle(fontSize: 13, color: context.muted),
-                      ),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          _resolvedDevice!.terminalId,
-                          style: const TextStyle(
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                          textAlign: TextAlign.end,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
               ],
             ),
           ),

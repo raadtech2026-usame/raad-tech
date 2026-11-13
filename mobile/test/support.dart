@@ -186,7 +186,11 @@ class FakeAdminRepository extends AdminRepository {
   Future<List<AdminInvoice>> invoices({String? status}) => _answer(invoiceList);
 
   @override
-  Future<List<AdminParentInvoice>> parentInvoices({String? period, String? status}) =>
+  Future<List<AdminParentInvoice>> parentInvoices({
+    String? period,
+    String? status,
+    String? vehicleId,
+  }) =>
       _answer(parentInvoiceList);
 
   @override
