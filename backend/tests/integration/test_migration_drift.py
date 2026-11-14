@@ -141,7 +141,7 @@ class TestMigrationDrift(unittest.TestCase):
         script_dir = ScriptDirectory.from_config(cfg)
 
         heads = script_dir.get_heads()
-        self.assertEqual(heads, ["c3d4e5f6a7b8"], f"Expected single head 'c3d4e5f6a7b8', got {heads}")
+        self.assertEqual(heads, ["d4e5f6a7b8c9"], f"Expected single head 'd4e5f6a7b8c9', got {heads}")
 
         visited: set[str] = set()
         curr: str | None = heads[0]
@@ -157,6 +157,7 @@ class TestMigrationDrift(unittest.TestCase):
         self.assertIn("a1b2c3d4e5f6", visited)
         self.assertIn("b2c3d4e5f6a7", visited)
         self.assertIn("c3d4e5f6a7b8", visited)
+        self.assertIn("d4e5f6a7b8c9", visited)
 
     def test_clean_upgrade_and_head_verification(self) -> None:
         """Criteria 1, 7, 8, 11: Clean upgrade to head, table creation, RBAC seeding, version check."""
@@ -169,7 +170,7 @@ class TestMigrationDrift(unittest.TestCase):
             # 11. Alembic version reaches head
             rows = asyncio.run(self._query(apg_url, "SELECT version_num FROM alembic_version"))
             self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["version_num"], "c3d4e5f6a7b8")
+            self.assertEqual(rows[0]["version_num"], "d4e5f6a7b8c9")
 
             # 7. import_batches table created
             ib_exists = asyncio.run(

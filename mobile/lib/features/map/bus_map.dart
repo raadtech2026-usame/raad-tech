@@ -33,41 +33,6 @@ class MapboxTileSource implements MapTileSource {
       : '© OpenStreetMap contributors';
 }
 
-/// Google Maps raster tile source with standard roadmap or hybrid basemap.
-class GoogleMapsTileSource implements MapTileSource {
-  /// 'm' = standard roadmap, 'y' = hybrid satellite with roads
-  final String mapType;
-  final String? apiKey;
-
-  const GoogleMapsTileSource({
-    this.mapType = 'm',
-    this.apiKey,
-  });
-
-  @override
-  String get urlTemplate {
-    final keyParam = (apiKey ?? Env.googleMapsApiKey).isNotEmpty
-        ? '&key=${apiKey ?? Env.googleMapsApiKey}'
-        : '';
-    return 'https://mt1.google.com/vt/lyrs=$mapType&x={x}&y={y}&z={z}$keyParam';
-  }
-
-  @override
-  String get attribution => '© Google Maps';
-}
-
-/// Helper that dynamically resolves the active [MapTileSource].
-class DynamicMapTileSource {
-  const DynamicMapTileSource._();
-
-  static MapTileSource get defaultSource {
-    if (Env.googleMapsApiKey.isNotEmpty) {
-      return const GoogleMapsTileSource();
-    }
-    return const MapboxTileSource();
-  }
-}
-
 /// A bus and, optionally, the family's stop. Follows the bus as it moves.
 class BusMap extends StatefulWidget {
   final double busLatitude;
@@ -77,7 +42,7 @@ class BusMap extends StatefulWidget {
   final double? stopLongitude;
   final String? stopName;
   final bool isStale;
-  final MapTileSource? tiles;
+  final MapTileSource tiles;
 
   const BusMap({
     super.key,
@@ -88,7 +53,7 @@ class BusMap extends StatefulWidget {
     this.stopLongitude,
     this.stopName,
     this.isStale = false,
-    this.tiles,
+    this.tiles = const MapboxTileSource(),
   });
 
   @override
@@ -135,7 +100,7 @@ class _BusMapState extends State<BusMap> {
       ),
       children: [
         TileLayer(
-          urlTemplate: (widget.tiles ?? DynamicMapTileSource.defaultSource).urlTemplate,
+          urlTemplate: widget.tiles.urlTemplate,
           userAgentPackageName: 'so.raad.mobile',
           maxNativeZoom: 18,
         ),
