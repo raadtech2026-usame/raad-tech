@@ -955,7 +955,7 @@ class SqlAlchemyStudentAssignmentRepository(
                 StudentAssignmentModel.status,
                 StudentAssignmentModel.assigned_at,
                 StudentModel.full_name.label("student_name"),
-                StudentModel.grade.label("student_grade"),
+                StudentModel.external_ref.label("student_grade"),
                 ParentModel.id.label("parent_id"),
                 ParentModel.full_name.label("parent_name"),
                 ParentModel.phone.label("parent_phone"),
