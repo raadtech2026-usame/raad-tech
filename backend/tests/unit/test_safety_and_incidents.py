@@ -173,6 +173,21 @@ class SafetyAlertTests(unittest.IsolatedAsyncioTestCase):
         again = await self.service.record_device_alarm(_alarm("overspeed"), uow=self.uow)
         self.assertNotEqual(again.id, alert.id)  # a closed alert is never reopened
 
+    async def test_adas_forward_collision_is_recorded_as_critical(self) -> None:
+        alert = await self.service.record_device_alarm(_alarm("forward_collision"), uow=self.uow)
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert.alarm_type, "forward_collision")
+        self.assertTrue(alert.is_critical)
+        [event] = self.uow.events
+        self.assertEqual(event.event_type, "SafetyAlertRaised")
+        self.assertTrue(event.payload["is_critical"])
+
+    async def test_adas_lane_departure_is_recorded_as_non_critical(self) -> None:
+        alert = await self.service.record_device_alarm(_alarm("lane_departure"), uow=self.uow)
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert.alarm_type, "lane_departure")
+        self.assertFalse(alert.is_critical)
+
 
 # ---- incidents ------------------------------------------------------------------------------
 

@@ -105,6 +105,7 @@ from src.gps_validation import is_plausible_coordinate
 from src.latest_position.writer_port import LatestPositionWriter, LoggingLatestPositionWriter
 from src.vendors.jt808.handlers.position_additional_info import (
     VideoSignalStatus,
+    adas_alarm_info,
     parse_additional_items,
     video_signal_status,
 )
@@ -241,6 +242,7 @@ class LocationHandler(MessageHandler):
         await self._event_publisher.publish(event)
         await self._publish_video_signal_status(message, context, session, event)
         await self._publish_raised_alarms(message, session, event)
+        await self._publish_adas_alarms(message, context, session, event)
 
         log_with_fields(
             logger,
@@ -280,6 +282,42 @@ class LocationHandler(MessageHandler):
                 logger,
                 40,
                 "device_alarm_publish_failed",
+                terminal_id=message.terminal_id,
+                error=str(exc),
+            )
+
+    async def _publish_adas_alarms(
+        self, message: InboundMessage, context: HandlerContext, session, position
+    ) -> None:
+        """Su-biao T/JSATL12 ADAS alarms (item `0x64`). Publishes `DeviceAlarmRaised` when an
+        active ADAS alarm (start or repeat) is reported. A failure here is logged and never
+        affects the position report or its acknowledgement."""
+        try:
+            items = parse_additional_items(message.body)
+            adas = adas_alarm_info(items)
+            if adas is None or adas.flag_status == 2:  # 2 = end of alarm
+                return
+            await self._event_publisher.publish(
+                DeviceAlarmRaised(
+                    terminal_id=message.terminal_id,
+                    organization_id=session.organization_id,
+                    vehicle_id=session.vehicle_id,
+                    device_id=session.device_id,
+                    alarm_type=adas.alarm_type,
+                    alarm_flags=position.alarm_flags,
+                    event_time=adas.event_time or position.event_time,
+                    received_at=position.received_at,
+                    latitude=adas.latitude if adas.latitude is not None else position.latitude,
+                    longitude=adas.longitude if adas.longitude is not None else position.longitude,
+                    speed_kph=adas.vehicle_speed if adas.vehicle_speed is not None else position.speed_kph,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - never lose a position report
+            log_with_fields(
+                logger,
+                30,
+                "adas_alarm_publish_failed",
+                connection_id=context.connection_id,
                 terminal_id=message.terminal_id,
                 error=str(exc),
             )

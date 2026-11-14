@@ -580,6 +580,10 @@ _ALARM_TITLES = {
     "sos": "SOS pressed on a bus",
     "collision": "A bus reported a collision",
     "rollover": "A bus reported a rollover",
+    "forward_collision": "Forward collision warning on a bus",
+    "pedestrian_collision": "Pedestrian collision warning on a bus",
+    "lane_departure": "Lane departure warning on a bus",
+    "headway": "Headway warning on a bus",
 }
 
 

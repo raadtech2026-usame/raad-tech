@@ -303,10 +303,24 @@ class SafetyAlertId:
 #: The canonical alarm types the device plane publishes (ADR-0055 §1). A type the backend does
 #: not know is refused rather than stored as free text.
 ALARM_TYPES = frozenset(
-    {"sos", "overspeed", "fatigue", "power_cut", "camera_fault", "collision", "rollover", "illegal_door_open"}
+    {
+        "sos",
+        "overspeed",
+        "fatigue",
+        "power_cut",
+        "camera_fault",
+        "collision",
+        "rollover",
+        "illegal_door_open",
+        # Su-biao T/JSATL12 Active Safety ADAS alarms (item 0x64)
+        "forward_collision",
+        "lane_departure",
+        "headway",
+        "pedestrian_collision",
+    }
 )
 #: Alarm types that alert Org Admins immediately (ADR-0055 §4).
-CRITICAL_ALARM_TYPES = frozenset({"sos", "collision", "rollover"})
+CRITICAL_ALARM_TYPES = frozenset({"sos", "collision", "rollover", "forward_collision", "pedestrian_collision"})
 
 
 class SafetyAlertStatus(str, Enum):
