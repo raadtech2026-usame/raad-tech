@@ -481,17 +481,15 @@ class StudentAssignmentRepository(ABC):
         Contracts §7/§8) — Tier 2 pagination phase addition, see module docstring."""
         raise NotImplementedError
 
-    @abstractmethod
     async def count_active_by_vehicle(self) -> dict[str, int]:
         """Returns map of vehicle_id -> count of active assigned students."""
-        raise NotImplementedError
+        return {}
 
-    @abstractmethod
     async def list_roster_for_vehicle(
         self, vehicle_id: VehicleId
     ) -> list[dict[str, Any]]:
         """Returns active student roster for a vehicle with student and parent contact info."""
-        raise NotImplementedError
+        return []
 
 
 # ---- ADR-0049/0050/0051 --------------------------------------------------------------------------
