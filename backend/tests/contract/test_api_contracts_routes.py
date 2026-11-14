@@ -681,6 +681,11 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/admin/organizations/{organization_id}/imports/batches",
         "Centralized Enterprise Bulk Import -- batch history audit log for target organization",
     ),
+    (
+        "GET",
+        "/api/v1/config/map-provider",
+        "Config router -- returns platform-wide active map provider ('mapbox' or 'google_maps')",
+    ),
 ]
 
 

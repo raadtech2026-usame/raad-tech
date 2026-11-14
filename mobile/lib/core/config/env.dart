@@ -79,7 +79,7 @@ class Env {
   static const bool isRelease = bool.fromEnvironment('dart.vm.product');
 
   static bool get hasMap =>
-      mapboxAccessToken.isNotEmpty || googleMapsApiKey.isNotEmpty || true;
+      mapboxAccessToken.isNotEmpty || googleMapsApiKey.isNotEmpty;
 
   /// A release build must not send a password or a token over plain HTTP.
   static String? get releaseConfigurationError {
