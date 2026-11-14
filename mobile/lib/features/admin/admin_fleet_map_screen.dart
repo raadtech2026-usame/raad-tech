@@ -280,7 +280,7 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
                 ),
                 children: [
                   TileLayer(
-                    urlTemplate: const MapboxTileSource().urlTemplate,
+                    urlTemplate: DynamicMapTileSource.defaultSource.urlTemplate,
                     userAgentPackageName: 'so.raad.mobile',
                     maxNativeZoom: 18,
                   ),

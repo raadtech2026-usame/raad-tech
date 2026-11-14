@@ -517,7 +517,7 @@ def driver_disabled(
 
 def route_created(
     *,
-    route_id: str,
+    route_id: str | None = None,
     organization_id: str,
     name: str,
     occurred_at: datetime,
@@ -535,7 +535,7 @@ def route_created(
 
 def route_details_updated(
     *,
-    route_id: str,
+    route_id: str | None = None,
     organization_id: str,
     name: str,
     occurred_at: datetime,
@@ -553,7 +553,7 @@ def route_details_updated(
 
 def route_activated(
     *,
-    route_id: str,
+    route_id: str | None = None,
     organization_id: str,
     occurred_at: datetime,
     actor_id: str | None,
@@ -570,7 +570,7 @@ def route_activated(
 
 def route_disabled(
     *,
-    route_id: str,
+    route_id: str | None = None,
     organization_id: str,
     occurred_at: datetime,
     actor_id: str | None,
@@ -587,7 +587,7 @@ def route_disabled(
 
 def route_stop_added(
     *,
-    route_id: str,
+    route_id: str | None = None,
     organization_id: str,
     stop_id: str,
     name: str,
@@ -618,7 +618,7 @@ def route_stop_added(
 
 def route_stop_removed(
     *,
-    route_id: str,
+    route_id: str | None = None,
     organization_id: str,
     stop_id: str,
     occurred_at: datetime,
@@ -636,7 +636,7 @@ def route_stop_removed(
 
 def route_stop_reordered(
     *,
-    route_id: str,
+    route_id: str | None = None,
     organization_id: str,
     stop_id: str,
     new_sequence_no: int,
@@ -663,7 +663,7 @@ def trip_scheduled(
     organization_id: str,
     vehicle_id: str,
     driver_id: str,
-    route_id: str,
+    route_id: str | None = None,
     trip_type: str,
     scheduled_date: str,
     occurred_at: datetime,
@@ -692,7 +692,7 @@ def trip_started(
     organization_id: str,
     vehicle_id: str,
     driver_id: str,
-    route_id: str,
+    route_id: str | None = None,
     started_at: datetime,
     actor_id: str | None,
 ) -> DomainEvent:
@@ -718,7 +718,7 @@ def trip_ended(
     organization_id: str,
     vehicle_id: str,
     driver_id: str,
-    route_id: str,
+    route_id: str | None = None,
     ended_at: datetime,
     actor_id: str | None,
 ) -> DomainEvent:
@@ -798,9 +798,9 @@ def student_assignment_created(
     student_assignment_id: str,
     organization_id: str,
     student_id: str,
-    route_id: str,
-    pickup_stop_id: str,
-    dropoff_stop_id: str,
+    route_id: str | None = None,
+    pickup_stop_id: str | None = None,
+    dropoff_stop_id: str | None = None,
     vehicle_id: str | None,
     occurred_at: datetime,
     actor_id: str | None,
@@ -1135,7 +1135,7 @@ def trip_cancelled(
     trip_id: str,
     organization_id: str,
     vehicle_id: str,
-    route_id: str,
+    route_id: str | None = None,
     trip_type: str,
     scheduled_date: str,
     reason: str,
@@ -1165,7 +1165,7 @@ def route_timetable_entry_saved(
     *,
     entry_id: str,
     organization_id: str,
-    route_id: str,
+    route_id: str | None = None,
     vehicle_id: str,
     trip_type: str,
     weekdays: list[int],

@@ -390,7 +390,7 @@ def model_to_trip(model: TripModel) -> Trip:
         organization_id=OrganizationId(model.organization_id),
         vehicle_id=VehicleId(model.vehicle_id),
         driver_id=DriverId(model.driver_id),
-        route_id=RouteId(model.route_id),
+        route_id=RouteId(model.route_id) if model.route_id is not None else None,
         trip_type=TripType(model.trip_type),
         status=TripStatus(model.status),
         scheduled_date=model.scheduled_date,
@@ -423,9 +423,13 @@ def student_assignment_to_model(
     )
     model.organization_id = str(assignment.organization_id)
     model.student_id = str(assignment.student_id)
-    model.route_id = str(assignment.route_id)
-    model.pickup_stop_id = str(assignment.pickup_stop_id)
-    model.dropoff_stop_id = str(assignment.dropoff_stop_id)
+    model.route_id = str(assignment.route_id) if assignment.route_id is not None else None
+    model.pickup_stop_id = (
+        str(assignment.pickup_stop_id) if assignment.pickup_stop_id is not None else None
+    )
+    model.dropoff_stop_id = (
+        str(assignment.dropoff_stop_id) if assignment.dropoff_stop_id is not None else None
+    )
     model.vehicle_id = (
         str(assignment.vehicle_id) if assignment.vehicle_id is not None else None
     )
@@ -442,9 +446,9 @@ def model_to_student_assignment(model: StudentAssignmentModel) -> StudentAssignm
         id=StudentAssignmentId(model.id),
         organization_id=OrganizationId(model.organization_id),
         student_id=StudentId(model.student_id),
-        route_id=RouteId(model.route_id),
-        pickup_stop_id=StopId(model.pickup_stop_id),
-        dropoff_stop_id=StopId(model.dropoff_stop_id),
+        route_id=RouteId(model.route_id) if model.route_id is not None else None,
+        pickup_stop_id=StopId(model.pickup_stop_id) if model.pickup_stop_id is not None else None,
+        dropoff_stop_id=StopId(model.dropoff_stop_id) if model.dropoff_stop_id is not None else None,
         vehicle_id=VehicleId(model.vehicle_id) if model.vehicle_id else None,
         status=StudentAssignmentStatus(model.status),
         assigned_at=model.assigned_at,

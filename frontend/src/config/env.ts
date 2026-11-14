@@ -7,6 +7,9 @@ export const env = {
    * empty/missing value fails loudly at `MapProvider.mount()` time (a real Mapbox account/token
    * is an operational prerequisite, never a fallback-to-fake value). */
   mapboxAccessToken: import.meta.env.VITE_MAPBOX_ACCESS_TOKEN,
+  /** Google Maps JavaScript API key. Required when active map provider is "google" or "google_maps" —
+   * loaded by `shared/map/providers/GoogleMapsMapProvider`. */
+  googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
   /** ADR-0022. Stripe's own *publishable* key — safe, by design, to ship to the browser (unlike
    * the backend's secret key, which stays `RAAD_PAYMENT__PROVIDER_CREDENTIALS`-only, never
    * returned by any API). `OrgBillingPage`'s "Pay Invoice" flow only mounts Stripe Elements when

@@ -463,10 +463,10 @@ class SetFamilyTransportationCommand:
     at registration) and to change it later — the same one operation either way."""
 
     parent_id: str
-    route_id: str
-    pickup_stop_id: str
-    dropoff_stop_id: str
     actor: Principal
+    route_id: str | None = None
+    pickup_stop_id: str | None = None
+    dropoff_stop_id: str | None = None
     vehicle_id: str | None = None
 
 

@@ -1412,7 +1412,7 @@ class Trip(_AggregateRoot):
         organization_id: OrganizationId,
         vehicle_id: VehicleId,
         driver_id: DriverId,
-        route_id: RouteId,
+        route_id: RouteId | None = None,
         trip_type: TripType,
         status: TripStatus,
         scheduled_date: date,
@@ -1463,8 +1463,8 @@ class Trip(_AggregateRoot):
         vehicle_id: VehicleId,
         driver_id: DriverId,
         driver_organization_id: OrganizationId,
-        route_id: RouteId,
-        route_organization_id: OrganizationId,
+        route_id: RouteId | None = None,
+        route_organization_id: OrganizationId | None = None,
         trip_type: TripType,
         scheduled_date: date,
         clock: Clock,
@@ -1486,7 +1486,7 @@ class Trip(_AggregateRoot):
                 f"{driver_id} (organization {driver_organization_id}): cross-organization "
                 "trip assignments are not permitted."
             )
-        if route_organization_id != organization_id:
+        if route_id is not None and route_organization_id is not None and route_organization_id != organization_id:
             raise DomainError(
                 f"Cannot schedule a Trip for organization {organization_id} with Route "
                 f"{route_id} (organization {route_organization_id}): cross-organization "
@@ -1515,7 +1515,7 @@ class Trip(_AggregateRoot):
                 organization_id=str(organization_id),
                 vehicle_id=str(vehicle_id),
                 driver_id=str(driver_id),
-                route_id=str(route_id),
+                route_id=str(route_id) if route_id is not None else None,
                 trip_type=trip_type.value,
                 scheduled_date=scheduled_date.isoformat(),
                 occurred_at=clock.now(),
@@ -1715,9 +1715,9 @@ class StudentAssignment(_AggregateRoot):
         id: StudentAssignmentId,
         organization_id: OrganizationId,
         student_id: StudentId,
-        route_id: RouteId,
-        pickup_stop_id: StopId,
-        dropoff_stop_id: StopId,
+        route_id: RouteId | None = None,
+        pickup_stop_id: StopId | None = None,
+        dropoff_stop_id: StopId | None = None,
         vehicle_id: VehicleId | None,
         status: StudentAssignmentStatus,
         assigned_at: datetime,
@@ -1753,10 +1753,10 @@ class StudentAssignment(_AggregateRoot):
         organization_id: OrganizationId,
         student_id: StudentId,
         student_organization_id: OrganizationId,
-        route_id: RouteId,
-        route_organization_id: OrganizationId,
-        pickup_stop_id: StopId,
-        dropoff_stop_id: StopId,
+        route_id: RouteId | None = None,
+        route_organization_id: OrganizationId | None = None,
+        pickup_stop_id: StopId | None = None,
+        dropoff_stop_id: StopId | None = None,
         vehicle_id: VehicleId | None,
         clock: Clock,
         actor_id: str | None = None,
@@ -1775,7 +1775,7 @@ class StudentAssignment(_AggregateRoot):
                 f"{student_organization_id}) to organization {organization_id}'s "
                 "StudentAssignment: cross-organization assignments are not permitted."
             )
-        if route_organization_id != organization_id:
+        if route_id is not None and route_organization_id is not None and route_organization_id != organization_id:
             raise DomainError(
                 f"Cannot assign Route {route_id} (organization {route_organization_id}) to "
                 f"organization {organization_id}'s StudentAssignment: cross-organization "
@@ -1801,9 +1801,9 @@ class StudentAssignment(_AggregateRoot):
                 student_assignment_id=str(id),
                 organization_id=str(organization_id),
                 student_id=str(student_id),
-                route_id=str(route_id),
-                pickup_stop_id=str(pickup_stop_id),
-                dropoff_stop_id=str(dropoff_stop_id),
+                route_id=str(route_id) if route_id is not None else None,
+                pickup_stop_id=str(pickup_stop_id) if pickup_stop_id is not None else None,
+                dropoff_stop_id=str(dropoff_stop_id) if dropoff_stop_id is not None else None,
                 vehicle_id=str(vehicle_id) if vehicle_id is not None else None,
                 occurred_at=assignment.assigned_at,
                 actor_id=actor_id,
@@ -2199,7 +2199,7 @@ class VehicleStaffAssignment(_AggregateRoot):
         staff_id: TransportStaffId,
         vehicle_id: VehicleId,
         role_id: TransportStaffRoleId | None,
-        route_id: RouteId | None,
+        route_id: RouteId | None = None,
         starts_on: date,
         ends_on: date | None,
         kind: StaffAssignmentKind,
@@ -2249,7 +2249,7 @@ class VehicleStaffAssignment(_AggregateRoot):
         staff_id: TransportStaffId,
         vehicle_id: VehicleId,
         role_id: TransportStaffRoleId | None,
-        route_id: RouteId | None,
+        route_id: RouteId | None = None,
         starts_on: date,
         ends_on: date | None,
         kind: StaffAssignmentKind,
@@ -2678,7 +2678,7 @@ class RouteTimetableEntry(_AggregateRoot):
         *,
         id: RouteTimetableEntryId,
         organization_id: OrganizationId,
-        route_id: RouteId,
+        route_id: RouteId | None = None,
         vehicle_id: VehicleId,
         trip_type: TripType,
         weekdays: tuple[int, ...],
@@ -3051,7 +3051,7 @@ class Incident(_AggregateRoot):
         occurred_at: datetime,
         vehicle_id: VehicleId | None,
         trip_id: TripId | None,
-        route_id: RouteId | None,
+        route_id: RouteId | None = None,
         title: str,
         description: str | None,
         actions_taken: str | None,

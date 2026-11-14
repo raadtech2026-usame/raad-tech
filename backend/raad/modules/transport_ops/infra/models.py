@@ -393,8 +393,8 @@ class StudentAssignmentModel(AuditedTableMixin, Base):
     student_id: Mapped[str] = mapped_column(
         CHAR(26), ForeignKey("students.id"), nullable=False, index=True
     )
-    route_id: Mapped[str] = mapped_column(
-        CHAR(26), ForeignKey("routes.id"), nullable=False, index=True
+    route_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("routes.id"), nullable=True, index=True
     )
     # Explicit names required: two FKs to the same target table (`stops.id`) would otherwise
     # both collapse to the identical auto-derived name `fk_student_assignments__stops`
@@ -403,15 +403,15 @@ class StudentAssignmentModel(AuditedTableMixin, Base):
     # match the names the migration already created live
     # (`migrations/versions/20260719_1400_acfa30ebf4d8_..._student_.py`) exactly, since no new
     # migration accompanies this fix.
-    pickup_stop_id: Mapped[str] = mapped_column(
+    pickup_stop_id: Mapped[str | None] = mapped_column(
         CHAR(26),
         ForeignKey("stops.id", name="fk_student_assignments__stops_pickup"),
-        nullable=False,
+        nullable=True,
     )
-    dropoff_stop_id: Mapped[str] = mapped_column(
+    dropoff_stop_id: Mapped[str | None] = mapped_column(
         CHAR(26),
         ForeignKey("stops.id", name="fk_student_assignments__stops_dropoff"),
-        nullable=False,
+        nullable=True,
     )
     vehicle_id: Mapped[str | None] = mapped_column(
         CHAR(26), nullable=True, index=True

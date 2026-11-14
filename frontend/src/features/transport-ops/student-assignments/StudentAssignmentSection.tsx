@@ -87,8 +87,8 @@ export function StudentAssignmentSection({
 
   const routeQuery = useQuery({
     queryKey: ["routes", "for-student-assignment", assignment?.routeId],
-    queryFn: () => getRouteWithStops(assignment!.routeId),
-    enabled: assignment !== null,
+    queryFn: () => getRouteWithStops(assignment!.routeId!),
+    enabled: assignment !== null && !!assignment.routeId,
   });
 
   const vehiclesQuery = useQuery({
@@ -157,10 +157,16 @@ export function StudentAssignmentSection({
         <div className={styles.assignmentBody}>
           <div className={styles.assignmentRow}>
             <div>
-              <div className={styles.assignmentRoute}>{routeQuery.data?.name ?? assignment.routeId}</div>
+              <div className={styles.assignmentRoute}>{routeQuery.data?.name ?? assignment.routeId ?? "No route assigned"}</div>
               <div className={styles.assignmentMeta}>
-                Pickup: {stopNameById.get(assignment.pickupStopId) ?? assignment.pickupStopId} · Dropoff:{" "}
-                {stopNameById.get(assignment.dropoffStopId) ?? assignment.dropoffStopId}
+                {assignment.pickupStopId || assignment.dropoffStopId ? (
+                  <>
+                    Pickup: {assignment.pickupStopId ? (stopNameById.get(assignment.pickupStopId) ?? assignment.pickupStopId) : "None"} · Dropoff:{" "}
+                    {assignment.dropoffStopId ? (stopNameById.get(assignment.dropoffStopId) ?? assignment.dropoffStopId) : "None"}
+                  </>
+                ) : (
+                  "Stops: Not set"
+                )}
               </div>
               <div className={styles.assignmentMeta}>
                 Vehicle: {assignment.vehicleId ? (vehiclePlate ?? assignment.vehicleId) : "Not assigned"} · Since{" "}

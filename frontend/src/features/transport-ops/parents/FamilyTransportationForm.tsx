@@ -19,17 +19,19 @@ import styles from "./forms.module.css";
 
 // Matches `transport_ops.domain.value_objects`'s own `_ULID_PATTERN`.
 const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-const ulidField = (label: string) =>
+const optionalUlidField = (label: string) =>
   z
     .string()
-    .min(1, `${label} is required`)
-    .refine((value) => ULID_PATTERN.test(value), { message: `Select a valid ${label.toLowerCase()}` });
+    .optional()
+    .refine((value) => !value || ULID_PATTERN.test(value), {
+      message: `Select a valid ${label.toLowerCase()}`,
+    });
 
 const schema = z.object({
-  routeId: ulidField("Route"),
-  pickupStopId: ulidField("Pickup stop"),
-  dropoffStopId: ulidField("Dropoff stop"),
-  vehicleId: z.string(),
+  routeId: optionalUlidField("Route"),
+  pickupStopId: optionalUlidField("Pickup stop"),
+  dropoffStopId: optionalUlidField("Dropoff stop"),
+  vehicleId: z.string().optional(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -99,7 +101,7 @@ export function FamilyTransportationForm({
 
   const routeStopsQuery = useQuery({
     queryKey: ["routes", "stops-for-family-transportation", watchedRouteId],
-    queryFn: () => getRouteWithStops(watchedRouteId),
+    queryFn: () => getRouteWithStops(watchedRouteId!),
     enabled: open && !!watchedRouteId,
     staleTime: 30_000,
   });
@@ -110,9 +112,9 @@ export function FamilyTransportationForm({
         return Promise.reject(new Error("No parent selected."));
       }
       return setFamilyTransportation(parentId, {
-        routeId: values.routeId,
-        pickupStopId: values.pickupStopId,
-        dropoffStopId: values.dropoffStopId,
+        routeId: values.routeId || null,
+        pickupStopId: values.pickupStopId || null,
+        dropoffStopId: values.dropoffStopId || null,
         vehicleId: values.vehicleId || null,
       });
     },
@@ -189,7 +191,7 @@ export function FamilyTransportationForm({
 
         <FormField label="Route" error={routeError}>
           <Select {...register("routeId")} disabled={routesQuery.isLoading} aria-label="Route">
-            <option value="">{routesQuery.isLoading ? "Loading routes…" : "Select a route"}</option>
+            <option value="">{routesQuery.isLoading ? "Loading routes…" : "No route (optional)"}</option>
             {routeOptions.map((route) => (
               <option key={route.id} value={route.id}>
                 {route.name}
@@ -205,7 +207,7 @@ export function FamilyTransportationForm({
             aria-label="Pickup stop"
           >
             <option value="">
-              {!watchedRouteId ? "Select a route first" : routeStopsQuery.isLoading ? "Loading stops…" : "Select a stop"}
+              {!watchedRouteId ? "No route selected" : routeStopsQuery.isLoading ? "Loading stops…" : "No pickup stop (optional)"}
             </option>
             {stopOptions.map((stop) => (
               <option key={stop.id} value={stop.id}>
@@ -222,7 +224,7 @@ export function FamilyTransportationForm({
             aria-label="Dropoff stop"
           >
             <option value="">
-              {!watchedRouteId ? "Select a route first" : routeStopsQuery.isLoading ? "Loading stops…" : "Select a stop"}
+              {!watchedRouteId ? "No route selected" : routeStopsQuery.isLoading ? "Loading stops…" : "No pickup stop (optional)"}
             </option>
             {stopOptions.map((stop) => (
               <option key={stop.id} value={stop.id}>

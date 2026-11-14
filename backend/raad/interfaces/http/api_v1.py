@@ -49,6 +49,13 @@ from raad.modules.organization.api.routers import (
     scope_assignments_router,
 )
 from raad.modules.platform_audit.api.routers import admin_router
+from raad.modules.platform_audit.api.deps import (
+    get_platform_audit_service,
+    get_platform_audit_uow,
+)
+from raad.modules.platform_audit.application.ports import PlatformAuditUnitOfWork
+from raad.modules.platform_audit.application.queries import GetSystemSettingQuery
+from raad.modules.platform_audit.application.services import PlatformAuditApplicationService
 from raad.modules.platform_finance.api.routers import platform_finance_router
 from raad.modules.school_erp.api.routers import school_finance_router
 from raad.modules.reporting.api.routers import reports_router
@@ -225,6 +232,26 @@ api_router.include_router(
 api_router.include_router(
     platform_finance_router, prefix="/platform-finance", tags=["platform-finance"]
 )  # platform_finance (C12)
+
+config_router = APIRouter()
+
+
+@config_router.get("/map-provider", summary="Get active map provider")
+async def get_active_map_provider(
+    service: PlatformAuditApplicationService = Depends(get_platform_audit_service),
+    uow: PlatformAuditUnitOfWork = Depends(get_platform_audit_uow),
+) -> dict[str, str]:
+    """Returns the platform-wide active map provider ('mapbox' or 'google_maps')."""
+    dto = await service.get_system_setting(GetSystemSettingQuery(key="maps.provider"), uow=uow)
+    if dto is None or not dto.value:
+        dto = await service.get_system_setting(GetSystemSettingQuery(key="active_map_provider"), uow=uow)
+    provider = "mapbox"
+    if dto is not None and isinstance(dto.value, dict):
+        provider = str(dto.value.get("provider", "mapbox"))
+    return {"provider": provider}
+
+
+api_router.include_router(config_router, prefix="/config", tags=["config"])
 
 # WebSocket endpoints (/ws/tracking, /ws/notifications, Backend LLD §16.2) are wired
 # separately in interfaces/http/ws.py, mounted directly on the app (not this router) since

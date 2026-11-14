@@ -76,11 +76,11 @@ describe("StudentAssignmentSection", () => {
   it("shows the current active assignment's route, stops, vehicle, and status", async () => {
     vi.mocked(api.findActiveAssignmentForStudent).mockResolvedValue(ACTIVE_ASSIGNMENT);
     vi.mocked(api.getRouteWithStops).mockResolvedValue({
-      id: ACTIVE_ASSIGNMENT.routeId,
+      id: ACTIVE_ASSIGNMENT.routeId!,
       name: "Morning Route A",
       stops: [
-        { id: ACTIVE_ASSIGNMENT.pickupStopId, name: "Main Street & 5th Ave", sequenceNo: 1 },
-        { id: ACTIVE_ASSIGNMENT.dropoffStopId, name: "School Gate", sequenceNo: 5 },
+        { id: ACTIVE_ASSIGNMENT.pickupStopId!, name: "Main Street & 5th Ave", sequenceNo: 1 },
+        { id: ACTIVE_ASSIGNMENT.dropoffStopId!, name: "School Gate", sequenceNo: 5 },
       ],
     });
     vi.mocked(api.listVehiclesForPicker).mockResolvedValue([
@@ -100,7 +100,7 @@ describe("StudentAssignmentSection", () => {
   it("lets a manager end the active assignment with the selected reason", async () => {
     vi.mocked(api.findActiveAssignmentForStudent).mockResolvedValue(ACTIVE_ASSIGNMENT);
     vi.mocked(api.getRouteWithStops).mockResolvedValue({
-      id: ACTIVE_ASSIGNMENT.routeId,
+      id: ACTIVE_ASSIGNMENT.routeId!,
       name: "Morning Route A",
       stops: [],
     });

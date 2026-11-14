@@ -18,9 +18,9 @@ export interface StudentAssignment {
   id: string;
   organizationId: string;
   studentId: string;
-  routeId: string;
-  pickupStopId: string;
-  dropoffStopId: string;
+  routeId: string | null;
+  pickupStopId: string | null;
+  dropoffStopId: string | null;
   vehicleId: string | null;
   status: StudentAssignmentStatus;
   assignedAt: string;
@@ -37,7 +37,7 @@ export interface StudentAssignment {
 export interface StudentAssignmentSummary {
   id: string;
   studentId: string;
-  routeId: string;
+  routeId: string | null;
   status: StudentAssignmentStatus;
 }
 
@@ -45,9 +45,9 @@ interface StudentAssignmentWire {
   id: string;
   organization_id: string;
   student_id: string;
-  route_id: string;
-  pickup_stop_id: string;
-  dropoff_stop_id: string;
+  route_id: string | null;
+  pickup_stop_id: string | null;
+  dropoff_stop_id: string | null;
   vehicle_id: string | null;
   status: string;
   assigned_at: string;
@@ -59,7 +59,7 @@ interface StudentAssignmentWire {
 interface StudentAssignmentSummaryWire {
   id: string;
   student_id: string;
-  route_id: string;
+  route_id: string | null;
   status: string;
 }
 

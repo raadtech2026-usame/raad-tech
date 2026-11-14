@@ -82,6 +82,7 @@ _EXEMPT_PATH_PREFIXES: tuple[str, ...] = (
     "/api/v1/auth",
     "/api/v1/me",
     "/api/v1/billing",
+    "/api/v1/config",
 )
 
 

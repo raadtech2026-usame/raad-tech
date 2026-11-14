@@ -372,7 +372,7 @@ def driver_to_summary_dto(driver: Driver) -> DriverSummaryDTO:
 
 @dataclass(frozen=True)
 class GetRouteByIdQuery:
-    route_id: str
+    route_id: str | None
 
 
 @dataclass(frozen=True)
@@ -385,7 +385,7 @@ class ListRoutesQuery:
 
 @dataclass(frozen=True)
 class ListStopsForRouteQuery:
-    route_id: str
+    route_id: str | None
 
 
 @dataclass(frozen=True)
@@ -481,7 +481,7 @@ class TripDTO:
     organization_id: str
     vehicle_id: str
     driver_id: str
-    route_id: str
+    route_id: str | None
     trip_type: str
     status: str
     scheduled_date: date
@@ -505,7 +505,7 @@ class TripSummaryDTO:
     id: str
     vehicle_id: str
     driver_id: str
-    route_id: str
+    route_id: str | None
     trip_type: str
     status: str
     scheduled_date: date
@@ -569,9 +569,9 @@ class StudentAssignmentDTO:
     id: str
     organization_id: str
     student_id: str
-    route_id: str
-    pickup_stop_id: str
-    dropoff_stop_id: str
+    route_id: str | None | None
+    pickup_stop_id: str | None
+    dropoff_stop_id: str | None
     vehicle_id: str | None
     status: str
     assigned_at: datetime
@@ -593,7 +593,7 @@ class StudentAssignmentSummaryDTO:
 
     id: str
     student_id: str
-    route_id: str
+    route_id: str | None
     status: str
     vehicle_id: str | None = None
 
@@ -605,9 +605,13 @@ def student_assignment_to_dto(assignment: StudentAssignment) -> StudentAssignmen
         id=str(assignment.id),
         organization_id=str(assignment.organization_id),
         student_id=str(assignment.student_id),
-        route_id=str(assignment.route_id),
-        pickup_stop_id=str(assignment.pickup_stop_id),
-        dropoff_stop_id=str(assignment.dropoff_stop_id),
+        route_id=str(assignment.route_id) if assignment.route_id is not None else None,
+        pickup_stop_id=(
+            str(assignment.pickup_stop_id) if assignment.pickup_stop_id is not None else None
+        ),
+        dropoff_stop_id=(
+            str(assignment.dropoff_stop_id) if assignment.dropoff_stop_id is not None else None
+        ),
         vehicle_id=(
             str(assignment.vehicle_id) if assignment.vehicle_id is not None else None
         ),
@@ -708,7 +712,7 @@ class VehicleStaffAssignmentDTO:
     vehicle_id: str
     role_id: str | None
     role_name: str | None
-    route_id: str | None
+    route_id: str | None | None
     starts_on: date
     ends_on: date | None
     kind: str
@@ -780,7 +784,7 @@ class ListTransportStaffQuery:
 class TimetableEntryDTO:
     id: str
     organization_id: str
-    route_id: str
+    route_id: str | None
     route_name: str | None
     vehicle_id: str
     trip_type: str
@@ -840,7 +844,7 @@ class CoverDTO:
 class BoardTripDTO:
     id: str
     trip_type: str
-    route_id: str
+    route_id: str | None
     route_name: str | None
     planned_departure: time | None
     driver_id: str
@@ -884,7 +888,7 @@ class PlannedTripDTO:
     timetable_entry_id: str
     scheduled_date: date
     trip_type: str
-    route_id: str
+    route_id: str | None
     vehicle_id: str
     driver_id: str
     #: The substitute is driving instead of the default driver.

@@ -475,9 +475,9 @@ class StudentAssignmentResponse(BaseModel):
     id: str
     organization_id: str
     student_id: str
-    route_id: str
-    pickup_stop_id: str
-    dropoff_stop_id: str
+    route_id: str | None = None
+    pickup_stop_id: str | None = None
+    dropoff_stop_id: str | None = None
     vehicle_id: str | None
     status: str
     assigned_at: datetime
@@ -489,16 +489,16 @@ class StudentAssignmentResponse(BaseModel):
 class StudentAssignmentSummaryResponse(BaseModel):
     id: str
     student_id: str
-    route_id: str
+    route_id: str | None = None
     status: str
 
 
 class AssignStudentToRouteRequest(BaseModel):
     organization_id: str
     student_id: str
-    route_id: str
-    pickup_stop_id: str
-    dropoff_stop_id: str
+    route_id: str | None = None
+    pickup_stop_id: str | None = None
+    dropoff_stop_id: str | None = None
     vehicle_id: str | None = None
 
 
@@ -515,9 +515,9 @@ class SetFamilyTransportationRequest(BaseModel):
     linked children. Unlike `AssignStudentToRouteRequest`, this has no `organization_id` field —
     the Parent's own is used, and no `student_id` — every currently-linked child is affected."""
 
-    route_id: str
-    pickup_stop_id: str
-    dropoff_stop_id: str
+    route_id: str | None = None
+    pickup_stop_id: str | None = None
+    dropoff_stop_id: str | None = None
     vehicle_id: str | None = None
 
 

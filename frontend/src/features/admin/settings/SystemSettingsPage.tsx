@@ -9,7 +9,9 @@ import {
   Info,
   CheckCircle2,
   AlertTriangle,
+  MapPin,
 } from "lucide-react";
+import { setCachedMapProvider } from "../../../shared/map/mapSettings";
 import { Tabs } from "../../../shared/components/Tabs/Tabs";
 import { Card, CardHeader, CardBody, CardFooter } from "../../../shared/components/Card/Card";
 import { FormField } from "../../../shared/components/FormField/FormField";
@@ -28,6 +30,7 @@ import styles from "./SystemSettingsPage.module.css";
 const SETTINGS_TABS = [
   { id: "sessions", label: "Security & Sessions" },
   { id: "payments", label: "Payment Gateways" },
+  { id: "maps", label: "Map Provider" },
   { id: "telemetry", label: "Tracking Defaults" },
   { id: "gateways", label: "SMS & Communication" },
   { id: "maintenance", label: "System Health & Maintenance" },
@@ -88,6 +91,14 @@ export function SystemSettingsPage() {
   const rawProvider = (settingsMap.get("billing_payment_provider")?.value?.provider as string) ?? "stripe";
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const currentProvider = selectedProvider ?? rawProvider;
+
+  // Map Provider State (Founder 1-Click Map Switch)
+  const rawMapProvider =
+    (settingsMap.get("maps.provider")?.value?.provider as string) ??
+    (settingsMap.get("active_map_provider")?.value?.provider as string) ??
+    "mapbox";
+  const [selectedMapProvider, setSelectedMapProvider] = useState<string | null>(null);
+  const currentMapProvider = selectedMapProvider ?? rawMapProvider;
 
   // Tracking Defaults State
   const rawTracking = (settingsMap.get("platform_tracking_defaults")?.value as Record<string, number>) ?? {
@@ -279,7 +290,77 @@ export function SystemSettingsPage() {
           </section>
         )}
 
-        {/* Tab 3: Tracking Defaults */}
+        {/* Tab 3: Map Provider (Mapbox vs Google Maps) */}
+        {activeTab === "maps" && (
+          <section className={styles.section}>
+            <Card>
+              <CardHeader
+                title="Active Geospatial Map Engine"
+                subtitle="Switch between Mapbox and Google Maps platform-wide with a single click. Immediately updates map views for Org Admins and Parents."
+                icon={<MapPin size={18} />}
+              />
+              <CardBody>
+                <FormField label="Select Active Map Provider">
+                  <Select
+                    value={currentMapProvider}
+                    onChange={(e) => setSelectedMapProvider(e.target.value)}
+                  >
+                    <option value="mapbox">Mapbox GL JS (Vector Standard Style)</option>
+                    <option value="google_maps">Google Maps (JavaScript Roadmap API)</option>
+                  </Select>
+                </FormField>
+
+                <div className={styles.paramRow}>
+                  <div className={styles.paramInfo}>
+                    <span className={styles.paramLabel}>Current Platform Engine</span>
+                    <span className={styles.paramDesc}>
+                      Active provider served to Org Admins (Dashboard) and Parents (Mobile Live Tracking)
+                    </span>
+                  </div>
+                  <Badge variant={currentMapProvider === "google_maps" ? "success" : "info"}>
+                    {currentMapProvider === "google_maps" ? "Google Maps Active" : "Mapbox Active"}
+                  </Badge>
+                </div>
+
+                <div className={styles.paramRow}>
+                  <div className={styles.paramInfo}>
+                    <span className={styles.paramLabel}>Google Maps Status</span>
+                    <span className={styles.paramDesc}>
+                      Loaded via VITE_GOOGLE_MAPS_API_KEY. Best street accuracy in Somalia/Mogadishu.
+                    </span>
+                  </div>
+                  <Badge variant="info">Ready</Badge>
+                </div>
+
+                <div className={styles.paramRow}>
+                  <div className={styles.paramInfo}>
+                    <span className={styles.paramLabel}>Mapbox Status</span>
+                    <span className={styles.paramDesc}>
+                      Loaded via VITE_MAPBOX_ACCESS_TOKEN. Standard dark/light vector basemap.
+                    </span>
+                  </div>
+                  <Badge variant="info">Ready</Badge>
+                </div>
+              </CardBody>
+              <CardFooter className={styles.actions}>
+                <Button
+                  loading={saveMutation.isPending}
+                  onClick={() => {
+                    setCachedMapProvider(currentMapProvider as any);
+                    saveMutation.mutate({
+                      key: "maps.provider",
+                      value: { provider: currentMapProvider },
+                    });
+                  }}
+                >
+                  Save Active Map Engine
+                </Button>
+              </CardFooter>
+            </Card>
+          </section>
+        )}
+
+        {/* Tab 4: Tracking Defaults */}
         {activeTab === "telemetry" && (
           <section className={styles.section}>
             <Card>

@@ -611,8 +611,8 @@ class ParentApplicationService:
                         student_organization_id=student.organization_id,
                         route_id=family_route.id,
                         route_organization_id=family_route.organization_id,
-                        pickup_stop_id=StopId(command.pickup_stop_id),
-                        dropoff_stop_id=StopId(command.dropoff_stop_id),
+                        pickup_stop_id=StopId(command.pickup_stop_id) if command.pickup_stop_id else None,
+                        dropoff_stop_id=StopId(command.dropoff_stop_id) if command.dropoff_stop_id else None,
                         vehicle_id=family_vehicle_id,
                         clock=self._clock,
                         actor_id=command.actor.user_id,
@@ -668,10 +668,13 @@ class ParentApplicationService:
         children exist re-syncs every one of them, including any added after the last run."""
         async with uow:
             parent = await self._get_parent_or_raise(uow, command.parent_id)
-            route = await ensure_route_exists(uow, RouteId(command.route_id))
-            ensure_pickup_and_dropoff_stops_exist(
-                route, StopId(command.pickup_stop_id), StopId(command.dropoff_stop_id)
-            )
+            route = None
+            if command.route_id:
+                route = await ensure_route_exists(uow, RouteId(command.route_id))
+                if command.pickup_stop_id and command.dropoff_stop_id:
+                    ensure_pickup_and_dropoff_stops_exist(
+                        route, StopId(command.pickup_stop_id), StopId(command.dropoff_stop_id)
+                    )
             new_vehicle_id = (
                 VehicleId(command.vehicle_id) if command.vehicle_id is not None else None
             )
@@ -695,10 +698,10 @@ class ParentApplicationService:
                     organization_id=parent.organization_id,
                     student_id=student.id,
                     student_organization_id=student.organization_id,
-                    route_id=route.id,
-                    route_organization_id=route.organization_id,
-                    pickup_stop_id=StopId(command.pickup_stop_id),
-                    dropoff_stop_id=StopId(command.dropoff_stop_id),
+                    route_id=route.id if route is not None else None,
+                    route_organization_id=route.organization_id if route is not None else None,
+                    pickup_stop_id=StopId(command.pickup_stop_id) if command.pickup_stop_id else None,
+                    dropoff_stop_id=StopId(command.dropoff_stop_id) if command.dropoff_stop_id else None,
                     vehicle_id=new_vehicle_id,
                     clock=self._clock,
                     actor_id=command.actor.user_id,

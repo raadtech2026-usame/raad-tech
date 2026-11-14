@@ -1197,9 +1197,9 @@ export async function listVehiclesForPicker(organizationId: string, search: stri
 }
 
 export interface SetFamilyTransportationInput {
-  routeId: string;
-  pickupStopId: string;
-  dropoffStopId: string;
+  routeId?: string | null;
+  pickupStopId?: string | null;
+  dropoffStopId?: string | null;
   vehicleId?: string | null;
 }
 
@@ -1219,9 +1219,9 @@ export async function setFamilyTransportation(
   await apiRequest<unknown>(`/parents/${parentId}/transportation`, {
     method: "PUT",
     body: {
-      route_id: input.routeId,
-      pickup_stop_id: input.pickupStopId,
-      dropoff_stop_id: input.dropoffStopId,
+      route_id: input.routeId ?? null,
+      pickup_stop_id: input.pickupStopId ?? null,
+      dropoff_stop_id: input.dropoffStopId ?? null,
       vehicle_id: input.vehicleId ?? null,
     },
   });

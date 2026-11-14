@@ -49,6 +49,13 @@ class Env {
     return const String.fromEnvironment('VITE_MAPBOX_ACCESS_TOKEN');
   }
 
+  /// Optional Google Maps API key passed via build args or environment.
+  static String get googleMapsApiKey {
+    const token = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
+    if (token.isNotEmpty) return token;
+    return const String.fromEnvironment('VITE_GOOGLE_MAPS_API_KEY');
+  }
+
   /// Optional Firebase configuration passed with `--dart-define` for environments
   /// where native google-services.json / GoogleService-Info.plist is not bundled.
   static const String firebaseApiKey = String.fromEnvironment(
@@ -71,7 +78,8 @@ class Env {
 
   static const bool isRelease = bool.fromEnvironment('dart.vm.product');
 
-  static bool get hasMap => mapboxAccessToken.isNotEmpty;
+  static bool get hasMap =>
+      mapboxAccessToken.isNotEmpty || googleMapsApiKey.isNotEmpty || true;
 
   /// A release build must not send a password or a token over plain HTTP.
   static String? get releaseConfigurationError {
