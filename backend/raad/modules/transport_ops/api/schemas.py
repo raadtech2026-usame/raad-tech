@@ -493,6 +493,19 @@ class StudentAssignmentSummaryResponse(BaseModel):
     status: str
 
 
+class VehicleStudentRosterItemResponse(BaseModel):
+    assignment_id: str
+    student_id: str
+    student_name: str
+    student_grade: str | None = None
+    parent_id: str | None = None
+    parent_name: str | None = None
+    parent_phone: str | None = None
+    vehicle_id: str
+    status: str
+    assigned_at: datetime
+
+
 class AssignStudentToRouteRequest(BaseModel):
     organization_id: str
     student_id: str

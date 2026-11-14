@@ -91,8 +91,9 @@ whitelists establish, never a wider column set than the list endpoint's own resp
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
@@ -851,6 +852,7 @@ class SqlAlchemyStudentAssignmentRepository(
         "status": FilterField(column="status"),
         "route_id": FilterField(column="route_id"),
         "student_id": FilterField(column="student_id"),
+        "vehicle_id": FilterField(column="vehicle_id"),
     }
     sortable_fields = {
         "status": "status",
@@ -925,6 +927,77 @@ class SqlAlchemyStudentAssignmentRepository(
         )
         result = await self._session.execute(statement)
         return self._track(result.scalar_one_or_none())
+
+    async def count_active_by_vehicle(self) -> dict[str, int]:
+        statement = self._apply_scope(
+            select(
+                StudentAssignmentModel.vehicle_id,
+                func.count(StudentAssignmentModel.id),
+            )
+            .where(
+                StudentAssignmentModel.status == "active",
+                StudentAssignmentModel.vehicle_id.is_not(None),
+                StudentAssignmentModel.deleted_at.is_(None),
+            )
+            .group_by(StudentAssignmentModel.vehicle_id)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return {str(v_id): int(cnt) for v_id, cnt in rows if v_id}
+
+    async def list_roster_for_vehicle(
+        self, vehicle_id: VehicleId
+    ) -> list[dict[str, Any]]:
+        statement = (
+            select(
+                StudentAssignmentModel.id.label("assignment_id"),
+                StudentAssignmentModel.student_id,
+                StudentAssignmentModel.vehicle_id,
+                StudentAssignmentModel.status,
+                StudentAssignmentModel.assigned_at,
+                StudentModel.full_name.label("student_name"),
+                StudentModel.grade.label("student_grade"),
+                ParentModel.id.label("parent_id"),
+                ParentModel.full_name.label("parent_name"),
+                ParentModel.phone.label("parent_phone"),
+            )
+            .select_from(StudentAssignmentModel)
+            .join(
+                StudentModel,
+                and_(
+                    StudentModel.id == StudentAssignmentModel.student_id,
+                    StudentModel.deleted_at.is_(None),
+                ),
+            )
+            .outerjoin(
+                StudentParentModel,
+                StudentParentModel.student_id == StudentModel.id,
+            )
+            .outerjoin(
+                ParentModel,
+                and_(
+                    ParentModel.id == StudentParentModel.parent_id,
+                    ParentModel.deleted_at.is_(None),
+                ),
+            )
+            .where(
+                StudentAssignmentModel.vehicle_id == str(vehicle_id),
+                StudentAssignmentModel.status == "active",
+                StudentAssignmentModel.deleted_at.is_(None),
+            )
+            .order_by(StudentModel.full_name.asc())
+        )
+        statement = self._apply_scope(statement)
+        result = await self._session.execute(statement)
+        rows = result.mappings().all()
+        roster: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for r in rows:
+            aid = str(r["assignment_id"])
+            if aid in seen:
+                continue
+            seen.add(aid)
+            roster.append(dict(r))
+        return roster
 
     def flush_tracked_changes(self) -> None:
         for assignment, model in self._tracked.values():

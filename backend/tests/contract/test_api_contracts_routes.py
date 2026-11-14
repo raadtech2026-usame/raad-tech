@@ -272,6 +272,16 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/student-assignments/{student_assignment_id}",
         "uniform-CRUD addition",
     ),
+    (
+        "GET",
+        "/api/v1/student-assignments/counts-by-vehicle",
+        "Vehicle student count aggregation for vehicle roster and management visibility",
+    ),
+    (
+        "GET",
+        "/api/v1/student-assignments/vehicle/{vehicle_id}",
+        "Vehicle student roster with student and parent contact details",
+    ),
     ("GET", "/api/v1/trips/{trip_id}", "uniform-CRUD addition, CLAUDE.md's own note"),
     ("GET", "/api/v1/notifications/{notification_id}", "uniform-CRUD addition"),
     # /drivers has no corresponding row in API Contracts §4.3 at all (only Trip-level

@@ -681,6 +681,23 @@ class ParentApplicationService:
             links = await uow.student_parents.list_by_parent(parent.id)
             events = []
             assignments: list[StudentAssignment] = []
+
+            if new_vehicle_id is None and route is None:
+                # Removal from transportation: end existing active assignments without creating blank ones
+                for link in links:
+                    student = await uow.students.get(link.student_id)
+                    if student is None:
+                        continue
+                    existing = await uow.student_assignments.active_assignment_for_student(
+                        student.id
+                    )
+                    if existing is not None:
+                        existing.remove(clock=self._clock, actor_id=command.actor.user_id)
+                        events += existing.pull_domain_events()
+                uow.record_events(events)
+                await uow.commit()
+                return []
+
             for link in links:
                 student = await uow.students.get(link.student_id)
                 if student is None:
@@ -1448,12 +1465,15 @@ class StudentAssignmentApplicationService:
         )
         async with uow:
             student = await ensure_student_exists(uow, StudentId(command.student_id))
-            route = await ensure_route_exists(uow, RouteId(command.route_id))
-            ensure_pickup_and_dropoff_stops_exist(
-                route,
-                StopId(command.pickup_stop_id),
-                StopId(command.dropoff_stop_id),
-            )
+            route = None
+            if command.route_id:
+                route = await ensure_route_exists(uow, RouteId(command.route_id))
+                if command.pickup_stop_id and command.dropoff_stop_id:
+                    ensure_pickup_and_dropoff_stops_exist(
+                        route,
+                        StopId(command.pickup_stop_id),
+                        StopId(command.dropoff_stop_id),
+                    )
             await ensure_student_has_no_active_assignment(uow, student.id)
             new_vehicle_id = (
                 VehicleId(command.vehicle_id) if command.vehicle_id is not None else None
@@ -1465,10 +1485,10 @@ class StudentAssignmentApplicationService:
                 organization_id=OrganizationId(command.organization_id),
                 student_id=student.id,
                 student_organization_id=student.organization_id,
-                route_id=route.id,
-                route_organization_id=route.organization_id,
-                pickup_stop_id=StopId(command.pickup_stop_id),
-                dropoff_stop_id=StopId(command.dropoff_stop_id),
+                route_id=route.id if route is not None else None,
+                route_organization_id=route.organization_id if route is not None else None,
+                pickup_stop_id=StopId(command.pickup_stop_id) if command.pickup_stop_id else None,
+                dropoff_stop_id=StopId(command.dropoff_stop_id) if command.dropoff_stop_id else None,
                 vehicle_id=new_vehicle_id,
                 clock=self._clock,
                 actor_id=command.actor.user_id,
@@ -1571,6 +1591,22 @@ class StudentAssignmentApplicationService:
             )
             return (
                 student_assignment_to_dto(assignment) if assignment is not None else None
+            )
+
+    async def count_active_by_vehicle(
+        self, *, uow: TransportOpsUnitOfWork
+    ) -> dict[str, int]:
+        """Returns map of vehicle_id -> count of active assigned students."""
+        async with uow:
+            return await uow.student_assignments.count_active_by_vehicle()
+
+    async def list_roster_for_vehicle(
+        self, vehicle_id: str, *, uow: TransportOpsUnitOfWork
+    ) -> list[dict[str, Any]]:
+        """Returns active student roster for a vehicle with student and parent contact info."""
+        async with uow:
+            return await uow.student_assignments.list_roster_for_vehicle(
+                VehicleId(vehicle_id)
             )
 
     @staticmethod

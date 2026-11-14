@@ -137,9 +137,9 @@ export async function findActiveAssignmentForStudent(studentId: string): Promise
 export interface AssignStudentToRouteInput {
   organizationId: string;
   studentId: string;
-  routeId: string;
-  pickupStopId: string;
-  dropoffStopId: string;
+  routeId?: string | null;
+  pickupStopId?: string | null;
+  dropoffStopId?: string | null;
   vehicleId?: string | null;
 }
 
@@ -156,9 +156,9 @@ export async function assignStudentToRoute(input: AssignStudentToRouteInput): Pr
     body: {
       organization_id: input.organizationId,
       student_id: input.studentId,
-      route_id: input.routeId,
-      pickup_stop_id: input.pickupStopId,
-      dropoff_stop_id: input.dropoffStopId,
+      route_id: input.routeId ?? null,
+      pickup_stop_id: input.pickupStopId ?? null,
+      dropoff_stop_id: input.dropoffStopId ?? null,
       vehicle_id: input.vehicleId ?? null,
     },
   });
@@ -270,4 +270,64 @@ export async function listVehiclesForPicker(organizationId: string, search: stri
   });
   const wire = await apiRequest<OffsetPageWire<VehicleOptionWire>>(`/vehicles?${query}`);
   return wire.data.map((vehicle) => ({ id: vehicle.id, plateNo: vehicle.plate_no, label: vehicle.label }));
+}
+
+export interface VehicleStudentRosterItem {
+  assignmentId: string;
+  studentId: string;
+  studentName: string;
+  studentGrade: string | null;
+  parentId: string | null;
+  parentName: string | null;
+  parentPhone: string | null;
+  vehicleId: string;
+  status: string;
+  assignedAt: string;
+}
+
+interface VehicleStudentRosterItemWire {
+  assignment_id: string;
+  student_id: string;
+  student_name: string;
+  student_grade: string | null;
+  parent_id: string | null;
+  parent_name: string | null;
+  parent_phone: string | null;
+  vehicle_id: string;
+  status: string;
+  assigned_at: string;
+}
+
+export async function getStudentCountsByVehicle(): Promise<Record<string, number>> {
+  return apiRequest<Record<string, number>>("/student-assignments/counts-by-vehicle");
+}
+
+export async function getVehicleStudentRoster(vehicleId: string): Promise<VehicleStudentRosterItem[]> {
+  const wire = await apiRequest<VehicleStudentRosterItemWire[]>(`/student-assignments/vehicle/${vehicleId}`);
+  return wire.map((item) => ({
+    assignmentId: item.assignment_id,
+    studentId: item.student_id,
+    studentName: item.student_name,
+    studentGrade: item.student_grade,
+    parentId: item.parent_id,
+    parentName: item.parent_name,
+    parentPhone: item.parent_phone,
+    vehicleId: item.vehicle_id,
+    status: item.status,
+    assignedAt: item.assigned_at,
+  }));
+}
+
+export async function transferStudentToVehicle(
+  organizationId: string,
+  assignmentId: string,
+  studentId: string,
+  targetVehicleId: string,
+): Promise<StudentAssignment> {
+  await endStudentAssignment(assignmentId, "transferred");
+  return assignStudentToRoute({
+    organizationId,
+    studentId,
+    vehicleId: targetVehicleId,
+  });
 }

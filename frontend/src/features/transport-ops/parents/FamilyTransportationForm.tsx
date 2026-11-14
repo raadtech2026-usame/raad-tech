@@ -137,12 +137,45 @@ export function FamilyTransportationForm({
     },
   });
 
+  const removeMutation = useMutation({
+    mutationFn: () => {
+      if (!parentId) {
+        return Promise.reject(new Error("No parent selected."));
+      }
+      return setFamilyTransportation(parentId, {
+        routeId: null,
+        pickupStopId: null,
+        dropoffStopId: null,
+        vehicleId: null,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["student-assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["parents", "linked-students"] });
+      queryClient.invalidateQueries({ queryKey: ["vehicles"] });
+      toast.success(
+        "Family removed from bus",
+        parentName
+          ? `${parentName}'s children were safely unassigned from bus transportation.`
+          : "This family was safely unassigned from bus transportation.",
+      );
+      reset(DEFAULT_VALUES);
+      onClose();
+    },
+    onError: (error) => {
+      const message =
+        error instanceof ApiError ? error.message : "Could not remove this family from transportation.";
+      toast.error("Removal failed", message);
+    },
+  });
+
   function handleClose(): void {
-    if (mutation.isPending) {
+    if (mutation.isPending || removeMutation.isPending) {
       return;
     }
     reset(DEFAULT_VALUES);
     mutation.reset();
+    removeMutation.reset();
     onClose();
   }
 
@@ -174,10 +207,31 @@ export function FamilyTransportationForm({
       subtitle={parentName ? `Set ${parentName}'s Vehicle/Route/Stops` : "Set this family's Vehicle/Route/Stops"}
       footer={
         <>
-          <Button type="button" variant="secondary" onClick={handleClose} disabled={mutation.isPending}>
+          <Button
+            type="button"
+            variant="danger"
+            loading={removeMutation.isPending}
+            disabled={mutation.isPending || removeMutation.isPending}
+            onClick={() => removeMutation.mutate()}
+          >
+            Remove from Bus
+          </Button>
+          <div style={{ flex: 1 }} />
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={handleClose}
+            disabled={mutation.isPending || removeMutation.isPending}
+          >
             Cancel
           </Button>
-          <Button type="button" variant="primary" loading={isSubmitting || mutation.isPending} onClick={onValid}>
+          <Button
+            type="button"
+            variant="primary"
+            loading={isSubmitting || mutation.isPending}
+            disabled={removeMutation.isPending}
+            onClick={onValid}
+          >
             Save
           </Button>
         </>

@@ -22,6 +22,9 @@ import { Skeleton } from "../../../shared/components/Skeleton/Skeleton";
 import { CreateVehicleForm } from "./CreateVehicleForm";
 import { AssignToBusForm } from "../../transport-ops/staff/AssignToBusForm";
 import { VehicleCrewSection } from "../../transport-ops/staff/StaffSections";
+import { VehicleStudentRosterSection } from "./VehicleStudentRosterSection";
+import { useVehicleActiveDevice } from "../../live-monitoring/useVehicleActiveDevice";
+import { getStudentCountsByVehicle } from "../../transport-ops/student-assignments/api";
 import {
   getVehicle,
   listOrganizationsForPicker,
@@ -103,6 +106,14 @@ export function VehiclesPage() {
     queryKey: ["vehicles", "detail", selectedVehicle?.id],
     queryFn: () => getVehicle(selectedVehicle!.id),
     enabled: selectedVehicle !== null,
+  });
+
+  const activeDevice = useVehicleActiveDevice(selectedVehicle?.id ?? "");
+
+  const studentCountsQuery = useQuery({
+    queryKey: ["student-assignments", "counts-by-vehicle"],
+    queryFn: getStudentCountsByVehicle,
+    staleTime: 30_000,
   });
 
   const {
@@ -196,6 +207,19 @@ export function VehiclesPage() {
         },
       },
       {
+        id: "students",
+        header: "Students",
+        meta: { align: "right" } satisfies DataTableColumnMeta,
+        cell: ({ row }) => {
+          const count = studentCountsQuery.data?.[row.original.id] ?? 0;
+          return (
+            <Badge variant={count > 0 ? "success" : "neutral"}>
+              {count} {count === 1 ? "student" : "students"}
+            </Badge>
+          );
+        },
+      },
+      {
         id: "capacity",
         header: "Capacity",
         meta: { align: "right" } satisfies DataTableColumnMeta,
@@ -218,7 +242,7 @@ export function VehiclesPage() {
         cell: ({ row }) => <span>{formatDate(row.original.createdAt)}</span>,
       },
     ],
-    [organizationNameById],
+    [organizationNameById, studentCountsQuery.data],
   );
 
   const activeStatusFilter = filters.status ?? "all";
@@ -351,7 +375,7 @@ export function VehiclesPage() {
           principal?.role !== "finance_staff" && (
             <VehicleCrewSection
               vehicleId={selectedVehicle.id}
-              canManage={principal?.role === "org_admin"}
+              canManage={canManage}
               onAddCrew={() => setAddCrewOpen(true)}
             />
           )
@@ -365,7 +389,23 @@ export function VehiclesPage() {
                 },
                 { key: "Capacity", value: selectedVehicle.capacity ?? "Not set" },
                 {
-                  key: "Tracking",
+                  key: "Tracking Device",
+                  value: activeDevice.status === "loading" ? (
+                    <Skeleton height={16} />
+                  ) : activeDevice.device ? (
+                    <span>
+                      <MonoText>{activeDevice.device.terminalId}</MonoText> ·{" "}
+                      <Badge variant={activeDevice.device.isOnline ? "success" : "neutral"} dot>
+                        {activeDevice.device.isOnline ? "Online" : "Offline"}
+                      </Badge>
+                      {activeDevice.device.cameras?.length > 0 ? ` · ${activeDevice.device.cameras.length} cameras` : ""}
+                    </span>
+                  ) : (
+                    <span style={{ color: "var(--color-text-muted)" }}>No tracking device attached</span>
+                  ),
+                },
+                {
+                  key: "Tracking Status",
                   value: detailQuery.isLoading ? (
                     <Skeleton height={16} />
                   ) : detailQuery.isError || !detailQuery.data ? (
@@ -383,6 +423,15 @@ export function VehiclesPage() {
                 { key: "Updated", value: formatDate(selectedVehicle.updatedAt) },
               ]
             : []
+        }
+        children={
+          selectedVehicle && (
+            <VehicleStudentRosterSection
+              vehicleId={selectedVehicle.id}
+              organizationId={selectedVehicle.organizationId}
+              canManage={canManage}
+            />
+          )
         }
         footer={
           selectedVehicle && (

@@ -421,11 +421,11 @@ class ChangeTripDriverCommand:
 class AssignStudentToRouteCommand:
     organization_id: str
     student_id: str
-    route_id: str
-    pickup_stop_id: str
-    dropoff_stop_id: str
-    vehicle_id: str | None
-    actor: Principal
+    route_id: str | None = None
+    pickup_stop_id: str | None = None
+    dropoff_stop_id: str | None = None
+    vehicle_id: str | None = None
+    actor: Principal = None  # type: ignore
 
 
 @dataclass(frozen=True)

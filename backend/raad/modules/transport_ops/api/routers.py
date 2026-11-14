@@ -287,6 +287,7 @@ from raad.modules.transport_ops.api.schemas import (
     StopResponse,
     StudentAssignmentResponse,
     StudentAssignmentSummaryResponse,
+    VehicleStudentRosterItemResponse,
     StudentForParentResponse,
     StudentParentLinkResponse,
     StudentResponse,
@@ -2052,6 +2053,46 @@ async def list_student_assignments(
         uow=uow,
     )
     return to_offset_page_response(page, _student_assignment_summary_dto_to_response)
+
+
+@student_assignments_router.get(
+    "/counts-by-vehicle",
+    response_model=dict[str, int],
+    status_code=status.HTTP_200_OK,
+    summary="Get count of active assigned students grouped by vehicle",
+    description="Returns a dictionary mapping vehicle_id to count of active students.",
+)
+async def get_student_counts_by_vehicle(
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_assignments.read"))
+    ),
+    student_assignment_service: StudentAssignmentApplicationService = Depends(
+        get_student_assignment_service
+    ),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> dict[str, int]:
+    return await student_assignment_service.count_active_by_vehicle(uow=uow)
+
+
+@student_assignments_router.get(
+    "/vehicle/{vehicle_id}",
+    response_model=list[VehicleStudentRosterItemResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Get active student roster for a vehicle",
+    description="Returns active assigned students on a vehicle with student and parent contact info.",
+)
+async def get_vehicle_student_roster(
+    vehicle_id: str,
+    principal: Principal = Depends(
+        require_permission(Permission("transport_ops.student_assignments.read"))
+    ),
+    student_assignment_service: StudentAssignmentApplicationService = Depends(
+        get_student_assignment_service
+    ),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[VehicleStudentRosterItemResponse]:
+    roster = await student_assignment_service.list_roster_for_vehicle(vehicle_id, uow=uow)
+    return [VehicleStudentRosterItemResponse(**item) for item in roster]
 
 
 @student_assignments_router.get(
