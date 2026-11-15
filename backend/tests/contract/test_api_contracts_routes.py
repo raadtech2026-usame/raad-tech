@@ -352,6 +352,11 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("DELETE", "/api/v1/me/unavailability/{unavailability_id}", "ADR-0061 - mobile self-service, self-scoped"),
     ("GET", "/api/v1/me/incidents", "ADR-0061 - mobile self-service, self-scoped"),
     ("POST", "/api/v1/me/incidents", "ADR-0061 - mobile self-service, self-scoped"),
+    ("GET", "/api/v1/me/routes", "Driver self-service routes lookup for student stop assignment"),
+    ("POST", "/api/v1/me/assign-student-stop", "Driver on-the-fly student stop geotagging and assignment"),
+    ("GET", "/api/v1/me/trips/{trip_id}/attendance", "Driver student attendance checklist read"),
+    ("POST", "/api/v1/me/trips/{trip_id}/attendance", "Driver student attendance checklist toggle/record"),
+    ("GET", "/api/v1/trips/attendance-report", "Org admin student attendance report per bus, student, date"),
 
     # ADR-0019: account-sharing session cap self-service (commit 07cd3e8) — no API Contracts row.
     ("GET", "/api/v1/auth/sessions", "ADR-0019 account-sharing session cap self-service, no API Contracts row"),
