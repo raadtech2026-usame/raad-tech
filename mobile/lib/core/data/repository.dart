@@ -60,7 +60,7 @@ class RaadRepository {
         if (notes != null && notes.isNotEmpty) 'notes': notes,
       },
     );
-    return AttendanceRecord.fromJson(json as Map<String, dynamic>);
+    return AttendanceRecord.fromJson(json);
   }
 
   Future<void> assignStudentStop({

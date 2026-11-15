@@ -626,6 +626,8 @@ class Strings {
   String get attendanceRate => _('Heerka Xaadirinta', 'Attendance Rate');
   String get filterByStudent => _('Ku raadi ardayga...', 'Search by student name...');
   String get markedAt => _('Waqtiga', 'Marked At');
+  String get selectStudent => adminSelectStudent;
+  String get filterByDate => _('Taariikhda', 'Date');
 }
 
 /// 'so' or 'en'.

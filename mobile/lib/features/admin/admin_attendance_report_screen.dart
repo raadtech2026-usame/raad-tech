@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/data/repository.dart';
 import '../../core/l10n/strings.dart';
 import '../../core/util/format.dart';
 import '../../shared/widgets.dart';

@@ -1289,7 +1289,7 @@ class AdminRepository {
       final json = await _client.get(
         '/trips/attendance-report?$vParam$sParam$rParam$dParam$stParam',
       );
-      return AdminAttendanceReport.fromJson(json as Map<String, dynamic>);
+      return AdminAttendanceReport.fromJson(json);
     } catch (_) {
       return const AdminAttendanceReport(
         records: [],
