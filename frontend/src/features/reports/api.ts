@@ -28,7 +28,7 @@ export type ReportFormat = "pdf" | "xlsx";
  * card-grid instead) — `"subscriptions"` is genuinely new, and `"platform"` is the directory/
  * operational catch-all (Organizations, Regions, Plans, Vehicles, Drivers, Devices, Audit Logs)
  * for platform reports that are neither financial facts nor subscription-lifecycle facts. */
-export type ReportCategory = "financial" | "transportation" | "platform" | "subscriptions";
+export type ReportCategory = "attendance" | "financial" | "transportation" | "platform" | "subscriptions";
 /** `BillingCycle` (`billing/api.ts`'s own type) — duplicated here rather than imported, mirroring
  * this file's own established "define your own narrow lookup rather than couple two feature
  * folders" precedent for `ReportPickerOption`/`listParentsForReportPicker` below. */

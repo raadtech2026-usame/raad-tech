@@ -100,7 +100,7 @@ export function ReportsPage() {
     "Reports",
     scope === "platform"
       ? "Revenue, subscriptions, invoices, payments and platform costs"
-      : "Parent invoices, receivables, income, expense and vehicle cost",
+      : "Student attendance, bus trips, parent invoices and collections",
   );
 
   const catalog = useQuery({
@@ -127,12 +127,20 @@ function OrganizationReportCenter({
 }: {
   catalog: ReturnType<typeof useQuery<ReportDefinition[]>>;
 }) {
-  const [search, setSearch] = useState("");
-  const [activeCategory, setActiveCategory] = useState<ReportCategory>("financial");
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-
   const definitions = catalog.data ?? [];
-  const selected = definitions.find((d) => d.key === selectedKey) ?? null;
+  const hasAttendance = definitions.some((d) => d.category === "attendance");
+  const [search, setSearch] = useState("");
+  const [activeCategory, setActiveCategory] = useState<ReportCategory>(hasAttendance ? "attendance" : "financial");
+  const [selectedKey, setSelectedKey] = useState<string | null>(hasAttendance ? "org.student_attendance" : null);
+
+  const effectiveCategory = definitions.some((d) => d.category === activeCategory)
+    ? activeCategory
+    : ((definitions[0]?.category as ReportCategory) ?? "attendance");
+
+  const selected =
+    definitions.find((d) => d.key === selectedKey) ??
+    definitions.find((d) => d.category === effectiveCategory) ??
+    null;
 
   return (
     <PageSection title="Report Catalogue & Export" description="Select a report template, configure parameters, and export to PDF or Excel.">
@@ -276,17 +284,21 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
         : null;
 
   const filterSummaryItems: ReportFilterSummaryItem[] = [];
+  const isAttendance = definition.key === "org.student_attendance";
+  const statusOptions = isAttendance ? ATTENDANCE_STATUS_OPTIONS : STATUS_OPTIONS;
+
   if (accepts.has("parent_id")) {
     filterSummaryItems.push({ label: "Parent", value: parent?.label ?? "All parents" });
   }
   if (accepts.has("student_id")) {
-    filterSummaryItems.push({ label: "Student", value: student?.label ?? "Not selected" });
+    filterSummaryItems.push({
+      label: "Student",
+      value: student?.label ?? (isAttendance ? "All students" : "Not selected"),
+    });
   }
   if (accepts.has("vehicle_id")) {
     filterSummaryItems.push({ label: "Vehicle", value: vehicle?.label ?? "All vehicles" });
   }
-  const isAttendance = definition.key === "org.student_attendance";
-  const statusOptions = isAttendance ? ATTENDANCE_STATUS_OPTIONS : STATUS_OPTIONS;
 
   if (accepts.has("status")) {
     filterSummaryItems.push({
@@ -344,13 +356,16 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
             </FormField>
           )}
           {accepts.has("student_id") && (
-            <FormField label="Student" hint="Required — the student this statement is for">
+            <FormField
+              label="Student"
+              hint={isAttendance ? "Optional — narrows to one student" : "Required — the student this statement is for"}
+            >
               <ReportEntitySelect
                 value={student}
                 onChange={setStudent}
                 fetchOptions={listStudentsForReportPicker}
                 queryKey="report-student"
-                placeholder="Search students"
+                placeholder={isAttendance ? "All students" : "Search students"}
                 emptyLabel="No students found"
                 icon={<UserRound size={14} />}
               />

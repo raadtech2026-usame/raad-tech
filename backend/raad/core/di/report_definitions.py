@@ -2090,7 +2090,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             build=student_attendance_report,
             roles=_ORG_ROLES,
             accepts=("start", "end", "vehicle_id", "status", "student_id"),
-            category="transportation",
+            category="attendance",
         ),
         # -- Platform ----------------------------------------------------------------------------
         # Organization Management phase: every platform-scope definition below now sets an

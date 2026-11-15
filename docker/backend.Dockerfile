@@ -43,6 +43,5 @@ USER appuser
 
 EXPOSE 8000
 
-# API process default. `migrate`/`worker` (docker-compose.yml) override `command:` on this same
-# image to `alembic upgrade head` / `python -m raad.interfaces.workers.bootstrap`.
-CMD ["uvicorn", "raad.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# API process default: auto-apply any pending database migrations before listening for traffic.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn raad.main:app --host 0.0.0.0 --port 8000"]

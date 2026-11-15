@@ -1645,6 +1645,9 @@ class SqlAlchemyStudentAttendanceRepository(
         marked_at: Any,
         notes: str | None,
     ) -> AttendanceItem:
+        if hasattr(marked_at, "tzinfo") and marked_at.tzinfo is not None:
+            marked_at = marked_at.replace(tzinfo=None)
+
         statement = select(self.model).where(
             self.model.trip_id == trip_id,
             self.model.student_id == student_id,

@@ -52,6 +52,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     StaffUnavailabilityId,
     StopId,
     StudentAssignmentId,
+    StudentAssignmentStatus,
     StudentId,
     TransportStaffId,
     TripId,
@@ -752,25 +753,67 @@ class SelfServiceApplicationService:
                 if my_trips and my_trips[0].vehicle_id:
                     vehicle_id = my_trips[0].vehicle_id
 
-            if existing is not None:
-                existing.transfer(clock=self._clock, actor_id=principal.user_id)
-                uow.record_events(existing.pull_domain_events())
+            if existing is not None and existing.status == StudentAssignmentStatus.ACTIVE:
+                existing.route_id = route.id
+                existing.pickup_stop_id = stop.id
+                existing.dropoff_stop_id = stop.id
+                if vehicle_id:
+                    existing.vehicle_id = vehicle_id
+                existing.updated_at = self._clock.now()
+                assignment = existing
+            else:
+                assignment = StudentAssignment.assign(
+                    id=StudentAssignmentId(UlidGenerator().new_id()),
+                    organization_id=student.organization_id,
+                    student_id=student.id,
+                    student_organization_id=student.organization_id,
+                    route_id=route.id,
+                    route_organization_id=route.organization_id,
+                    pickup_stop_id=stop.id,
+                    dropoff_stop_id=stop.id,
+                    vehicle_id=vehicle_id,
+                    clock=self._clock,
+                    actor_id=principal.user_id,
+                )
+                uow.student_assignments.add(assignment)
+                uow.record_events(assignment.pull_domain_events())
 
-            assignment = StudentAssignment.assign(
-                id=StudentAssignmentId(UlidGenerator().new_id()),
-                organization_id=student.organization_id,
-                student_id=student.id,
-                student_organization_id=student.organization_id,
-                route_id=route.id,
-                route_organization_id=route.organization_id,
-                pickup_stop_id=stop.id,
-                dropoff_stop_id=stop.id,
-                vehicle_id=vehicle_id,
-                clock=self._clock,
-                actor_id=principal.user_id,
-            )
-            uow.student_assignments.add(assignment)
-            uow.record_events(assignment.pull_domain_events())
+            # Auto-assign any siblings sharing the same parent(s)
+            parent_links = await uow.student_parents.list_by_student(student.id)
+            parent_ids = [l.parent_id for l in parent_links]
+            if parent_ids:
+                all_family_links = await uow.student_parents.list_by_parents(parent_ids)
+                sibling_student_ids = {
+                    l.student_id for l in all_family_links if l.student_id != student.id
+                }
+                for sib_id in sibling_student_ids:
+                    sib_assignment = await uow.student_assignments.active_assignment_for_student(sib_id)
+                    if sib_assignment is not None and sib_assignment.status == StudentAssignmentStatus.ACTIVE:
+                        sib_assignment.route_id = route.id
+                        sib_assignment.pickup_stop_id = stop.id
+                        sib_assignment.dropoff_stop_id = stop.id
+                        if vehicle_id:
+                            sib_assignment.vehicle_id = vehicle_id
+                        sib_assignment.updated_at = self._clock.now()
+                    elif sib_assignment is None:
+                        sib_student = await uow.students.get(sib_id)
+                        if sib_student and str(sib_student.organization_id) == str(student.organization_id):
+                            new_sib_assignment = StudentAssignment.assign(
+                                id=StudentAssignmentId(UlidGenerator().new_id()),
+                                organization_id=student.organization_id,
+                                student_id=sib_student.id,
+                                student_organization_id=sib_student.organization_id,
+                                route_id=route.id,
+                                route_organization_id=route.organization_id,
+                                pickup_stop_id=stop.id,
+                                dropoff_stop_id=stop.id,
+                                vehicle_id=vehicle_id,
+                                clock=self._clock,
+                                actor_id=principal.user_id,
+                            )
+                            uow.student_assignments.add(new_sib_assignment)
+                            uow.record_events(new_sib_assignment.pull_domain_events())
+
             await uow.commit()
 
             return {

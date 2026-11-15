@@ -818,6 +818,7 @@ class _DriverTripAttendanceScreenState
     );
     if (!ok || !mounted) return;
 
+    int failed = 0;
     for (final p in unpresent) {
       try {
         await ref.read(repositoryProvider).recordAttendance(
@@ -825,11 +826,17 @@ class _DriverTripAttendanceScreenState
               studentId: p.studentId,
               status: 'present',
             );
-      } catch (_) {}
+      } catch (err) {
+        failed++;
+      }
     }
     ref.invalidate(tripAttendanceProvider(widget.trip.id));
     if (mounted) {
-      showNotice(context, s.attendanceSaved);
+      if (failed == 0) {
+        showNotice(context, s.attendanceSaved);
+      } else {
+        showNotice(context, 'Qaar ka mid ah ardayda lama calaamadeyn ($failed arday)', isError: true);
+      }
     }
   }
 

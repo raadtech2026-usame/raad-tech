@@ -10,8 +10,9 @@ import styles from "./ReportSelectorList.module.css";
  * existing call site (which predates the `categories` prop) keeps its exact current behavior
  * unchanged. The Platform Report Center passes its own `categories` explicitly instead. */
 const ORGANIZATION_CATEGORY_TABS: { id: ReportCategory; label: string }[] = [
-  { id: "financial", label: "Financial" },
+  { id: "attendance", label: "Attendance" },
   { id: "transportation", label: "Transportation" },
+  { id: "financial", label: "Financial" },
 ];
 
 export interface ReportSelectorListProps {
