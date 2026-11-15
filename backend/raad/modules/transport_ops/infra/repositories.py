@@ -145,6 +145,8 @@ from raad.modules.transport_ops.domain.repositories import (
     TransportStaffRoleRepository,
     TripRepository,
     VehicleStaffAssignmentRepository,
+    AttendanceItem,
+    StudentAttendanceRepository,
 )
 from raad.modules.transport_ops.domain.value_objects import (
     IncidentId,
@@ -224,6 +226,7 @@ from raad.modules.transport_ops.infra.models import (
     TransportStaffRoleModel,
     TripModel,
     VehicleStaffAssignmentModel,
+    StudentAttendanceModel,
 )
 
 
@@ -1555,6 +1558,181 @@ class SqlAlchemyIncidentNoteRepository(
         return [self._track_row(row) for row in rows]
 
 
+class SqlAlchemyStudentAttendanceRepository(
+    SqlAlchemyRepositoryBase[StudentAttendanceModel], StudentAttendanceRepository
+):
+    model = StudentAttendanceModel
+
+    async def list_for_trip(self, trip_id: str) -> list[AttendanceItem]:
+        statement = select(self.model).where(
+            self.model.trip_id == trip_id,
+            self.model.deleted_at.is_(None),
+        )
+        statement = self._apply_scope(statement)
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [
+            AttendanceItem(
+                id=str(r.id),
+                trip_id=str(r.trip_id),
+                student_id=str(r.student_id),
+                vehicle_id=str(r.vehicle_id) if r.vehicle_id else None,
+                route_id=str(r.route_id) if r.route_id else None,
+                attendance_date=r.attendance_date,
+                status=r.status,
+                marked_at=r.marked_at,
+                notes=r.notes,
+            )
+            for r in rows
+        ]
+
+    async def get_for_trip_student(
+        self, trip_id: str, student_id: str, attendance_date: date
+    ) -> AttendanceItem | None:
+        statement = select(self.model).where(
+            self.model.trip_id == trip_id,
+            self.model.student_id == student_id,
+            self.model.attendance_date == attendance_date,
+            self.model.deleted_at.is_(None),
+        )
+        statement = self._apply_scope(statement)
+        row = (await self._session.execute(statement)).scalars().first()
+        if not row:
+            return None
+        return AttendanceItem(
+            id=str(row.id),
+            trip_id=str(row.trip_id),
+            student_id=str(row.student_id),
+            vehicle_id=str(row.vehicle_id) if row.vehicle_id else None,
+            route_id=str(row.route_id) if row.route_id else None,
+            attendance_date=row.attendance_date,
+            status=row.status,
+            marked_at=row.marked_at,
+            notes=row.notes,
+        )
+
+    async def record_attendance(
+        self,
+        *,
+        id: str,
+        organization_id: str,
+        trip_id: str,
+        student_id: str,
+        vehicle_id: str | None,
+        route_id: str | None,
+        attendance_date: date,
+        status: str,
+        marked_by_user_id: str | None,
+        marked_at: Any,
+        notes: str | None,
+    ) -> AttendanceItem:
+        statement = select(self.model).where(
+            self.model.trip_id == trip_id,
+            self.model.student_id == student_id,
+            self.model.attendance_date == attendance_date,
+            self.model.deleted_at.is_(None),
+        )
+        row = (await self._session.execute(statement)).scalars().first()
+        if row is not None:
+            row.status = status
+            row.marked_by_user_id = marked_by_user_id
+            row.marked_at = marked_at
+            if notes is not None:
+                row.notes = notes
+        else:
+            row = StudentAttendanceModel(
+                id=id,
+                organization_id=organization_id,
+                trip_id=trip_id,
+                student_id=student_id,
+                vehicle_id=vehicle_id,
+                route_id=route_id,
+                attendance_date=attendance_date,
+                status=status,
+                marked_by_user_id=marked_by_user_id,
+                marked_at=marked_at,
+                notes=notes,
+            )
+            self._session.add(row)
+        return AttendanceItem(
+            id=str(row.id),
+            trip_id=str(row.trip_id),
+            student_id=str(row.student_id),
+            vehicle_id=str(row.vehicle_id) if row.vehicle_id else None,
+            route_id=str(row.route_id) if row.route_id else None,
+            attendance_date=row.attendance_date,
+            status=row.status,
+            marked_at=row.marked_at,
+            notes=row.notes,
+        )
+
+    async def query_report(
+        self,
+        *,
+        organization_id: str,
+        vehicle_id: str | None = None,
+        student_id: str | None = None,
+        route_id: str | None = None,
+        attendance_date: date | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
+        conditions = [
+            self.model.organization_id == organization_id,
+            self.model.deleted_at.is_(None),
+        ]
+        if vehicle_id and vehicle_id != "all":
+            conditions.append(self.model.vehicle_id == vehicle_id)
+        if student_id and student_id != "all":
+            conditions.append(self.model.student_id == student_id)
+        if route_id and route_id != "all":
+            conditions.append(self.model.route_id == route_id)
+        if attendance_date:
+            conditions.append(self.model.attendance_date == attendance_date)
+        if status and status != "all":
+            conditions.append(self.model.status == status)
+
+        stmt = (
+            select(self.model)
+            .where(and_(*conditions))
+            .order_by(self.model.attendance_date.desc(), self.model.marked_at.desc())
+        )
+        records = (await self._session.execute(stmt)).scalars().all()
+
+        student_ids = list({r.student_id for r in records})
+        students_map: dict[str, str] = {}
+        if student_ids:
+            s_stmt = select(StudentModel).where(
+                StudentModel.id.in_(student_ids), StudentModel.deleted_at.is_(None)
+            )
+            s_rows = (await self._session.execute(s_stmt)).scalars().all()
+            students_map = {str(s.id): s.full_name for s in s_rows}
+
+        route_ids = list({r.route_id for r in records if r.route_id})
+        routes_map: dict[str, str] = {}
+        if route_ids:
+            r_stmt = select(RouteModel).where(
+                RouteModel.id.in_(route_ids), RouteModel.deleted_at.is_(None)
+            )
+            r_rows = (await self._session.execute(r_stmt)).scalars().all()
+            routes_map = {str(r.id): r.name for r in r_rows}
+
+        items = []
+        for r in records:
+            items.append({
+                "id": str(r.id),
+                "trip_id": str(r.trip_id),
+                "student_id": str(r.student_id),
+                "student_name": students_map.get(str(r.student_id), "Arday"),
+                "vehicle_id": str(r.vehicle_id) if r.vehicle_id else None,
+                "route_id": str(r.route_id) if r.route_id else None,
+                "route_name": routes_map.get(str(r.route_id)) if r.route_id else None,
+                "attendance_date": r.attendance_date.isoformat(),
+                "status": r.status,
+                "marked_at": r.marked_at.isoformat() if r.marked_at else None,
+                "notes": r.notes,
+            })
+        return items
+
+
 class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfWork):
     """Concrete `TransportOpsUnitOfWork` (Backend LLD §8.2/§6.2). Constructs `transport_ops`'s
     repositories once the session is open, and re-syncs every tracked aggregate's in-place
@@ -1589,6 +1767,7 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
     covers: SqlAlchemyStaffCoverRepository
     incidents: SqlAlchemyIncidentRepository
     incident_notes: SqlAlchemyIncidentNoteRepository
+    attendances: SqlAlchemyStudentAttendanceRepository
 
     async def __aenter__(self) -> "SqlAlchemyTransportOpsUnitOfWork":
         await super().__aenter__()
@@ -1618,6 +1797,7 @@ class SqlAlchemyTransportOpsUnitOfWork(SqlAlchemyUnitOfWork, TransportOpsUnitOfW
         self.covers = SqlAlchemyStaffCoverRepository(self.session, scope=self.scope)
         self.incidents = SqlAlchemyIncidentRepository(self.session, scope=self.scope)
         self.incident_notes = SqlAlchemyIncidentNoteRepository(self.session, scope=self.scope)
+        self.attendances = SqlAlchemyStudentAttendanceRepository(self.session, scope=self.scope)
         return self
 
     async def commit(self) -> None:

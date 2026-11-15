@@ -16,8 +16,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import and_, select
-
 from raad.core.errors.exceptions import NotFoundError, RuleViolationError, ValidationError
 from raad.core.ids.generator import UlidGenerator
 from raad.core.tenancy.principal import Principal, Role
@@ -60,7 +58,6 @@ from raad.modules.transport_ops.domain.value_objects import (
     UserId,
     VehicleId,
 )
-from raad.modules.transport_ops.infra.models import StudentAttendanceModel
 
 #: The longest window one call may ask for. A term is about three months.
 MAX_TRIP_WINDOW_DAYS = 92
@@ -638,19 +635,14 @@ class SelfServiceApplicationService:
             trip = await uow.trips.get(TripId(trip_id))
             if trip is None or trip.driver_id != driver.id:
                 raise NotFoundError(f"Trip {trip_id} not found.")
-            stmt = select(StudentAttendanceModel).where(
-                StudentAttendanceModel.trip_id == trip_id,
-                StudentAttendanceModel.organization_id == str(driver.organization_id),
-                StudentAttendanceModel.deleted_at.is_(None),
-            )
-            records = (await uow.session.scalars(stmt)).all()
+            records = await uow.attendances.list_for_trip(trip_id)
             return [
                 MyAttendanceDTO(
-                    id=str(r.id),
-                    trip_id=str(r.trip_id),
-                    student_id=str(r.student_id),
-                    vehicle_id=str(r.vehicle_id) if r.vehicle_id else None,
-                    route_id=str(r.route_id) if r.route_id else None,
+                    id=r.id,
+                    trip_id=r.trip_id,
+                    student_id=r.student_id,
+                    vehicle_id=r.vehicle_id,
+                    route_id=r.route_id,
                     attendance_date=r.attendance_date,
                     status=r.status,
                     marked_at=r.marked_at,
@@ -678,43 +670,26 @@ class SelfServiceApplicationService:
             if student is None or str(student.organization_id) != str(driver.organization_id):
                 raise NotFoundError(f"Student {student_id} not found.")
 
-            stmt = select(StudentAttendanceModel).where(
-                StudentAttendanceModel.trip_id == trip_id,
-                StudentAttendanceModel.student_id == student_id,
-                StudentAttendanceModel.attendance_date == trip.scheduled_date,
-                StudentAttendanceModel.deleted_at.is_(None),
+            record = await uow.attendances.record_attendance(
+                id=UlidGenerator().new_id(),
+                organization_id=str(driver.organization_id),
+                trip_id=str(trip.id),
+                student_id=str(student.id),
+                vehicle_id=str(trip.vehicle_id) if trip.vehicle_id else None,
+                route_id=str(trip.route_id) if trip.route_id else None,
+                attendance_date=trip.scheduled_date,
+                status=status,
+                marked_by_user_id=principal.user_id,
+                marked_at=self._clock.now(),
+                notes=notes,
             )
-            existing = (await uow.session.scalars(stmt)).first()
-            now = self._clock.now()
-            if existing is not None:
-                existing.status = status
-                existing.marked_by_user_id = principal.user_id
-                existing.marked_at = now
-                if notes is not None:
-                    existing.notes = notes
-                record = existing
-            else:
-                record = StudentAttendanceModel(
-                    id=UlidGenerator().new_id(),
-                    organization_id=str(driver.organization_id),
-                    trip_id=str(trip.id),
-                    student_id=str(student.id),
-                    vehicle_id=str(trip.vehicle_id) if trip.vehicle_id else None,
-                    route_id=str(trip.route_id) if trip.route_id else None,
-                    attendance_date=trip.scheduled_date,
-                    status=status,
-                    marked_by_user_id=principal.user_id,
-                    marked_at=now,
-                    notes=notes,
-                )
-                uow.session.add(record)
             await uow.commit()
             return MyAttendanceDTO(
-                id=str(record.id),
-                trip_id=str(record.trip_id),
-                student_id=str(record.student_id),
-                vehicle_id=str(record.vehicle_id) if record.vehicle_id else None,
-                route_id=str(record.route_id) if record.route_id else None,
+                id=record.id,
+                trip_id=record.trip_id,
+                student_id=record.student_id,
+                vehicle_id=record.vehicle_id,
+                route_id=record.route_id,
                 attendance_date=record.attendance_date,
                 status=record.status,
                 marked_at=record.marked_at,

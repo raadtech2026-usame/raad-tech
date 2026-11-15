@@ -48,6 +48,7 @@ from raad.modules.transport_ops.domain.repositories import (
     TransportStaffRoleRepository,
     TripRepository,
     VehicleStaffAssignmentRepository,
+    StudentAttendanceRepository,
 )
 
 
@@ -86,6 +87,7 @@ class TransportOpsUnitOfWork(UnitOfWork):
     #: ADR-0056: the incident log and its timeline.
     incidents: IncidentRepository
     incident_notes: IncidentNoteRepository
+    attendances: StudentAttendanceRepository
 
 
 class UserProvisioningPort(ABC):

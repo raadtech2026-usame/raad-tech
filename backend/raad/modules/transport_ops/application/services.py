@@ -1440,6 +1440,41 @@ class TripApplicationService:
                 page_size=page.page_size,
             )
 
+    async def get_attendance_report(
+        self,
+        *,
+        actor: Principal,
+        vehicle_id: str | None = None,
+        student_id: str | None = None,
+        route_id: str | None = None,
+        attendance_date: date | None = None,
+        status: str | None = None,
+        uow: TransportOpsUnitOfWork,
+    ) -> dict[str, Any]:
+        async with uow:
+            items = await uow.attendances.query_report(
+                organization_id=actor.org_id,
+                vehicle_id=vehicle_id,
+                student_id=student_id,
+                route_id=route_id,
+                attendance_date=attendance_date,
+                status=status,
+            )
+            total = len(items)
+            present = sum(1 for i in items if i["status"] in ("present", "boarded"))
+            absent = sum(1 for i in items if i["status"] == "absent")
+            rate = round((present / total * 100), 1) if total > 0 else 0.0
+
+            return {
+                "records": items,
+                "summary": {
+                    "total": total,
+                    "present": present,
+                    "absent": absent,
+                    "rate": rate,
+                },
+            }
+
     @staticmethod
     async def _get_trip_or_raise(uow: TransportOpsUnitOfWork, trip_id: str) -> Trip:
         trip = await uow.trips.get(TripId(trip_id))

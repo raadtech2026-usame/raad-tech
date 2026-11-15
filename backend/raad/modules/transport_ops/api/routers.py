@@ -195,7 +195,6 @@ from datetime import date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy import and_, select
 
 from raad.core.errors.exceptions import (
     ConflictError,
@@ -430,7 +429,6 @@ from raad.modules.transport_ops.application.services import (
     StudentParentApplicationService,
     TripApplicationService,
 )
-from raad.modules.transport_ops.infra.models import StudentAttendanceModel
 
 students_router = APIRouter()
 parents_router = APIRouter()
@@ -1847,71 +1845,18 @@ async def get_attendance_report(
     attendance_date: date | None = Query(default=None, alias="date"),
     status: str | None = Query(default=None),
     principal: Principal = Depends(require_permission(Permission("transport_ops.trips.read"))),
+    trip_service: TripApplicationService = Depends(get_trip_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> dict[str, Any]:
-    async with uow:
-        conditions = [
-            StudentAttendanceModel.organization_id == principal.org_id,
-            StudentAttendanceModel.deleted_at.is_(None),
-        ]
-        if vehicle_id and vehicle_id != "all":
-            conditions.append(StudentAttendanceModel.vehicle_id == vehicle_id)
-        if student_id and student_id != "all":
-            conditions.append(StudentAttendanceModel.student_id == student_id)
-        if route_id and route_id != "all":
-            conditions.append(StudentAttendanceModel.route_id == route_id)
-        if attendance_date:
-            conditions.append(StudentAttendanceModel.attendance_date == attendance_date)
-        if status and status != "all":
-            conditions.append(StudentAttendanceModel.status == status)
-
-        stmt = (
-            select(StudentAttendanceModel)
-            .where(and_(*conditions))
-            .order_by(StudentAttendanceModel.attendance_date.desc(), StudentAttendanceModel.marked_at.desc())
-        )
-        records = (await uow.session.scalars(stmt)).all()
-
-        student_ids = list({r.student_id for r in records})
-        students_map = {
-            str(s.id): s.full_name
-            for s in await uow.students.list_by_ids(student_ids)
-        }
-        routes_map = {
-            str(r.id): r.name
-            for r in await uow.routes.list_all()
-        }
-
-        items = []
-        for r in records:
-            items.append({
-                "id": str(r.id),
-                "trip_id": str(r.trip_id),
-                "student_id": str(r.student_id),
-                "student_name": students_map.get(str(r.student_id), "Arday"),
-                "vehicle_id": str(r.vehicle_id) if r.vehicle_id else None,
-                "route_id": str(r.route_id) if r.route_id else None,
-                "route_name": routes_map.get(str(r.route_id)) if r.route_id else None,
-                "attendance_date": r.attendance_date.isoformat(),
-                "status": r.status,
-                "marked_at": r.marked_at.isoformat() if r.marked_at else None,
-                "notes": r.notes,
-            })
-
-        total = len(items)
-        present = sum(1 for i in items if i["status"] in ("present", "boarded"))
-        absent = sum(1 for i in items if i["status"] == "absent")
-        rate = round((present / total * 100), 1) if total > 0 else 0.0
-
-        return {
-            "records": items,
-            "summary": {
-                "total": total,
-                "present": present,
-                "absent": absent,
-                "rate": rate,
-            },
-        }
+    return await trip_service.get_attendance_report(
+        actor=principal,
+        vehicle_id=vehicle_id,
+        student_id=student_id,
+        route_id=route_id,
+        attendance_date=attendance_date,
+        status=status,
+        uow=uow,
+    )
 
 
 @trips_router.get(

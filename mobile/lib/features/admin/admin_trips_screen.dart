@@ -75,7 +75,16 @@ class _AdminTripsScreenState extends ConsumerState<AdminTripsScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(s.adminTripsTitle),
-        actions: adminTopActions(context, ref, onRefresh: _refresh),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.fact_check_rounded),
+            tooltip: s.attendanceReport,
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AdminAttendanceReportScreen()),
+            ),
+          ),
+          ...adminTopActions(context, ref, onRefresh: _refresh),
+        ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.add_rounded),

@@ -76,6 +76,7 @@ phase actually touches, `api/routers.py`'s module docstring).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import date, datetime
 
 from raad.core.pagination import (
@@ -748,4 +749,60 @@ class IncidentNoteRepository(ABC):
     @abstractmethod
     async def list_for_incident(self, incident_id: IncidentId) -> list[IncidentNote]:
         """Oldest first: the timeline order."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class AttendanceItem:
+    id: str
+    trip_id: str
+    student_id: str
+    vehicle_id: str | None
+    route_id: str | None
+    attendance_date: date
+    status: str
+    marked_at: datetime
+    notes: str | None
+
+
+class StudentAttendanceRepository(ABC):
+    @abstractmethod
+    async def list_for_trip(self, trip_id: str) -> list[AttendanceItem]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_for_trip_student(
+        self, trip_id: str, student_id: str, attendance_date: date
+    ) -> AttendanceItem | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def record_attendance(
+        self,
+        *,
+        id: str,
+        organization_id: str,
+        trip_id: str,
+        student_id: str,
+        vehicle_id: str | None,
+        route_id: str | None,
+        attendance_date: date,
+        status: str,
+        marked_by_user_id: str | None,
+        marked_at: datetime,
+        notes: str | None,
+    ) -> AttendanceItem:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def query_report(
+        self,
+        *,
+        organization_id: str,
+        vehicle_id: str | None = None,
+        student_id: str | None = None,
+        route_id: str | None = None,
+        attendance_date: date | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
         raise NotImplementedError

@@ -28,7 +28,10 @@ from raad.modules.transport_ops.domain.repositories import (
     StaffDocumentTypeRepository,
     TransportStaffRepository,
     TransportStaffRoleRepository,
+    TripRepository,
     VehicleStaffAssignmentRepository,
+    AttendanceItem,
+    StudentAttendanceRepository,
 )
 
 
@@ -290,6 +293,85 @@ class InMemoryIncidentNoteRepository(IncidentNoteRepository):
         return sorted((n for n in self.by_id.values() if n.incident_id == incident_id), key=lambda n: (n.created_at, str(n.id)))
 
 
+class InMemoryStudentAttendanceRepository(StudentAttendanceRepository):
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    async def list_for_trip(self, trip_id: str) -> list[AttendanceItem]:
+        return [
+            AttendanceItem(**r)
+            for r in self.records
+            if r["trip_id"] == trip_id
+        ]
+
+    async def get_for_trip_student(
+        self, trip_id: str, student_id: str, attendance_date: date
+    ) -> AttendanceItem | None:
+        rec = next(
+            (
+                r
+                for r in self.records
+                if r["trip_id"] == trip_id
+                and r["student_id"] == student_id
+                and r["attendance_date"] == attendance_date
+            ),
+            None,
+        )
+        return AttendanceItem(**rec) if rec else None
+
+    async def record_attendance(
+        self,
+        *,
+        id: str,
+        organization_id: str,
+        trip_id: str,
+        student_id: str,
+        vehicle_id: str | None,
+        route_id: str | None,
+        attendance_date: date,
+        status: str,
+        marked_by_user_id: str | None,
+        marked_at: Any,
+        notes: str | None,
+    ) -> AttendanceItem:
+        for r in self.records:
+            if (
+                r["trip_id"] == trip_id
+                and r["student_id"] == student_id
+                and r["attendance_date"] == attendance_date
+            ):
+                r["status"] = status
+                r["marked_at"] = marked_at
+                if notes is not None:
+                    r["notes"] = notes
+                return AttendanceItem(**r)
+        item = {
+            "id": id,
+            "trip_id": trip_id,
+            "student_id": student_id,
+            "vehicle_id": vehicle_id,
+            "route_id": route_id,
+            "attendance_date": attendance_date,
+            "status": status,
+            "marked_at": marked_at,
+            "notes": notes,
+        }
+        self.records.append(item)
+        return AttendanceItem(**item)
+
+    async def query_report(
+        self,
+        *,
+        organization_id: str,
+        vehicle_id: str | None = None,
+        student_id: str | None = None,
+        route_id: str | None = None,
+        attendance_date: date | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
+        return self.records
+
+
 def attach_staff_repositories(uow) -> None:
     """Gives a fake `TransportOpsUnitOfWork` empty staff repositories."""
     uow.staff_roles = InMemoryTransportStaffRoleRepository()
@@ -303,3 +385,4 @@ def attach_staff_repositories(uow) -> None:
     uow.covers = InMemoryStaffCoverRepository()
     uow.incidents = InMemoryIncidentRepository()
     uow.incident_notes = InMemoryIncidentNoteRepository()
+    uow.attendances = InMemoryStudentAttendanceRepository()
