@@ -33,6 +33,8 @@ def upgrade() -> None:
         sa.Column("marked_by_user_id", sa.CHAR(length=26), nullable=True),
         sa.Column("marked_at", sa.DateTime(timezone=False), nullable=False),
         sa.Column("notes", sa.VARCHAR(length=255), nullable=True),
+        sa.Column("created_by", sa.CHAR(length=26), nullable=True),
+        sa.Column("updated_by", sa.CHAR(length=26), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=False), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=False), nullable=False),
         sa.Column("row_version", sa.Integer(), nullable=False, server_default="1"),
@@ -73,9 +75,51 @@ def upgrade() -> None:
         ["vehicle_id", "attendance_date"],
         unique=False,
     )
+    op.create_index(
+        op.f("ix_student_attendance__attendance_date"),
+        "student_attendance",
+        ["attendance_date"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_student_attendance__organization_id"),
+        "student_attendance",
+        ["organization_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_student_attendance__route_id"),
+        "student_attendance",
+        ["route_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_student_attendance__student_id"),
+        "student_attendance",
+        ["student_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_student_attendance__trip_id"),
+        "student_attendance",
+        ["trip_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_student_attendance__vehicle_id"),
+        "student_attendance",
+        ["vehicle_id"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:
+    op.drop_index(op.f("ix_student_attendance__vehicle_id"), table_name="student_attendance")
+    op.drop_index(op.f("ix_student_attendance__trip_id"), table_name="student_attendance")
+    op.drop_index(op.f("ix_student_attendance__student_id"), table_name="student_attendance")
+    op.drop_index(op.f("ix_student_attendance__route_id"), table_name="student_attendance")
+    op.drop_index(op.f("ix_student_attendance__organization_id"), table_name="student_attendance")
+    op.drop_index(op.f("ix_student_attendance__attendance_date"), table_name="student_attendance")
     op.drop_index("ix_student_attendance__vehicle_date", table_name="student_attendance")
     op.drop_index("ix_student_attendance__trip_student", table_name="student_attendance")
     op.drop_index("ix_student_attendance__student_date", table_name="student_attendance")
