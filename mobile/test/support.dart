@@ -124,7 +124,7 @@ class FakeRepository extends RaadRepository {
   Future<List<DriverRouteOption>> getDriverRoutes() => _answer(driverRoutes);
 
   @override
-  Future<List<DriverStudentOption>> getDriverStudents() =>
+  Future<List<DriverStudentOption>> getDriverStudents([String? vehicleId]) =>
       _answer(driverStudents);
 }
 
