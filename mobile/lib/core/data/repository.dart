@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/auth_state.dart';
 import '../network/api_client.dart';
+import '../network/api_exception.dart';
 import '../network/realtime_clients.dart';
 import '../util/format.dart';
 import 'models.dart';

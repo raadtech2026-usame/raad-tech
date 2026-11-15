@@ -886,15 +886,13 @@ class SqlAlchemyStudentAssignmentRepository(
     async def list_active_for_route_vehicle(
         self, route_id: RouteId, vehicle_id: VehicleId
     ) -> list[StudentAssignment]:
-        match_conditions = []
-        if route_id:
-            match_conditions.append(StudentAssignmentModel.route_id == str(route_id))
-        if vehicle_id:
-            match_conditions.append(StudentAssignmentModel.vehicle_id == str(vehicle_id))
-
         statement = self._apply_scope(
             select(StudentAssignmentModel).where(
-                or_(*match_conditions) if match_conditions else false(),
+                StudentAssignmentModel.route_id == str(route_id),
+                or_(
+                    StudentAssignmentModel.vehicle_id == str(vehicle_id),
+                    StudentAssignmentModel.vehicle_id.is_(None),
+                ),
                 StudentAssignmentModel.status == "active",
                 StudentAssignmentModel.deleted_at.is_(None),
             )

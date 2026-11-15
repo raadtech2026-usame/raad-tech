@@ -292,16 +292,6 @@ class SelfServiceApplicationService:
                 self._trip_dto(t, routes, vehicles, students=riders[str(t.id)])
                 for t in sorted(trips, key=_trip_order)
             ]
-        if principal.role in (Role.ORG_ADMIN, Role.FOUNDER, Role.REGIONAL_MANAGER):
-            start, end = self._window(start, end, default_back=0, default_forward=7)
-            async with uow:
-                trips = await uow.trips.list_between(start, end)
-                routes = await self._route_names(uow, trips)
-            vehicles = await self._vehicle_summaries(trips, str(principal.organization_id or ""))
-            return [
-                self._trip_dto(t, routes, vehicles)
-                for t in sorted(trips, key=_trip_order)
-            ]
         raise NotFoundError("No Parent or Driver profile is linked to this account.")
 
     async def my_trip_detail(
@@ -309,27 +299,17 @@ class SelfServiceApplicationService:
     ) -> MyTripDetailDTO:
         """Driver only, own trip only: the stops, the crew that day and who rides."""
         async with uow:
+            driver = await self._driver(uow, principal)
             trip = await uow.trips.get(TripId(trip_id))
-            if trip is None:
-                raise NotFoundError(f"Trip {trip_id} not found.")
-            driver = None
-            if principal.role == Role.DRIVER:
-                driver = await self._driver(uow, principal)
-                if trip.driver_id != driver.id:
-                    raise NotFoundError(f"Trip {trip_id} not found.")
-            elif principal.role in (Role.ORG_ADMIN, Role.FOUNDER, Role.REGIONAL_MANAGER):
-                if principal.organization_id and str(trip.organization_id) != str(principal.organization_id):
-                    raise NotFoundError(f"Trip {trip_id} not found.")
-            else:
+            if trip is None or trip.driver_id != driver.id:
                 raise NotFoundError(f"Trip {trip_id} not found.")
 
             route = await uow.routes.get(trip.route_id)
             stops = sorted(route.stops, key=lambda s: s.sequence_no) if route is not None else []
             stop_names = {str(s.id): s.name for s in stops}
-            covers = await self._cover_trip_ids(uow, [trip], driver) if driver is not None else set()
-            my_staff_id = str(driver.staff_id) if driver is not None else ""
+            covers = await self._cover_trip_ids(uow, [trip], driver)
             crew = await self._crew_members(
-                uow, trip.scheduled_date, [str(trip.vehicle_id)], my_staff_id
+                uow, trip.scheduled_date, [str(trip.vehicle_id)], str(driver.staff_id)
             )
             assignments = await uow.student_assignments.list_active_for_route_vehicle(
                 trip.route_id, trip.vehicle_id
@@ -338,24 +318,21 @@ class SelfServiceApplicationService:
                 str(s.id): s
                 for s in await uow.students.list_by_ids([str(a.student_id) for a in assignments])
             }
-            seen_students: set[str] = set()
-            passengers: list[MyPassengerDTO] = []
-            for a in assignments:
-                sid = str(a.student_id)
-                if sid in students and sid not in seen_students:
-                    seen_students.add(sid)
-                    passengers.append(
-                        MyPassengerDTO(
-                            student_id=sid,
-                            full_name=students[sid].full_name,
-                            pickup_stop_name=stop_names.get(str(a.pickup_stop_id)),
-                            dropoff_stop_name=stop_names.get(str(a.dropoff_stop_id)),
-                        )
+            passengers = sorted(
+                (
+                    MyPassengerDTO(
+                        student_id=str(a.student_id),
+                        full_name=students[str(a.student_id)].full_name,
+                        pickup_stop_name=stop_names.get(str(a.pickup_stop_id)),
+                        dropoff_stop_name=stop_names.get(str(a.dropoff_stop_id)),
                     )
-            passengers.sort(key=lambda p: p.full_name)
+                    for a in assignments
+                    if str(a.student_id) in students
+                ),
+                key=lambda p: p.full_name,
+            )
             routes = {str(trip.route_id): route.name} if route is not None else {}
-        org_id = str(driver.organization_id) if driver else str(principal.organization_id or trip.organization_id)
-        vehicles = await self._vehicle_summaries([trip], org_id)
+        vehicles = await self._vehicle_summaries([trip], str(driver.organization_id))
         return MyTripDetailDTO(
             trip=self._trip_dto(trip, routes, vehicles, is_cover=str(trip.id) in covers),
             stops=[
@@ -655,17 +632,9 @@ class SelfServiceApplicationService:
         self, principal: Principal, trip_id: str, *, uow: TransportOpsUnitOfWork
     ) -> list[MyAttendanceDTO]:
         async with uow:
+            driver = await self._driver(uow, principal)
             trip = await uow.trips.get(TripId(trip_id))
-            if trip is None:
-                raise NotFoundError(f"Trip {trip_id} not found.")
-            if principal.role == Role.DRIVER:
-                driver = await self._driver(uow, principal)
-                if trip.driver_id != driver.id:
-                    raise NotFoundError(f"Trip {trip_id} not found.")
-            elif principal.role in (Role.ORG_ADMIN, Role.FOUNDER, Role.REGIONAL_MANAGER):
-                if principal.organization_id and str(trip.organization_id) != str(principal.organization_id):
-                    raise NotFoundError(f"Trip {trip_id} not found.")
-            else:
+            if trip is None or trip.driver_id != driver.id:
                 raise NotFoundError(f"Trip {trip_id} not found.")
             records = await uow.attendances.list_for_trip(trip_id)
             return [
@@ -694,28 +663,17 @@ class SelfServiceApplicationService:
         uow: TransportOpsUnitOfWork,
     ) -> MyAttendanceDTO:
         async with uow:
+            driver = await self._driver(uow, principal)
             trip = await uow.trips.get(TripId(trip_id))
-            if trip is None:
+            if trip is None or trip.driver_id != driver.id:
                 raise NotFoundError(f"Trip {trip_id} not found.")
-            driver = None
-            if principal.role == Role.DRIVER:
-                driver = await self._driver(uow, principal)
-                if trip.driver_id != driver.id:
-                    raise NotFoundError(f"Trip {trip_id} not found.")
-            elif principal.role in (Role.ORG_ADMIN, Role.FOUNDER, Role.REGIONAL_MANAGER):
-                if principal.organization_id and str(trip.organization_id) != str(principal.organization_id):
-                    raise NotFoundError(f"Trip {trip_id} not found.")
-            else:
-                raise NotFoundError(f"Trip {trip_id} not found.")
-
-            org_id = str(driver.organization_id) if driver else str(principal.organization_id or trip.organization_id)
             student = await uow.students.get(StudentId(student_id))
-            if student is None or (org_id and str(student.organization_id) != org_id):
+            if student is None or str(student.organization_id) != str(driver.organization_id):
                 raise NotFoundError(f"Student {student_id} not found.")
 
             record = await uow.attendances.record_attendance(
                 id=UlidGenerator().new_id(),
-                organization_id=org_id,
+                organization_id=str(driver.organization_id),
                 trip_id=str(trip.id),
                 student_id=str(student.id),
                 vehicle_id=str(trip.vehicle_id) if trip.vehicle_id else None,
