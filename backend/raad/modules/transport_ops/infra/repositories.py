@@ -889,7 +889,10 @@ class SqlAlchemyStudentAssignmentRepository(
         statement = self._apply_scope(
             select(StudentAssignmentModel).where(
                 StudentAssignmentModel.route_id == str(route_id),
-                StudentAssignmentModel.vehicle_id == str(vehicle_id),
+                or_(
+                    StudentAssignmentModel.vehicle_id == str(vehicle_id),
+                    StudentAssignmentModel.vehicle_id.is_(None),
+                ),
                 StudentAssignmentModel.status == "active",
                 StudentAssignmentModel.deleted_at.is_(None),
             )

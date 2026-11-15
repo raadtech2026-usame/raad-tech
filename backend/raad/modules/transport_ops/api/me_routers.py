@@ -347,9 +347,14 @@ async def driver_list_routes(
 
 
 @me_transport_router.get(
-    "/students",
+    "/driver-students",
     response_model=list[DriverStudentOptionResponse],
     summary="List students in organization for driver stop assignment",
+)
+@me_transport_router.get(
+    "/students",
+    response_model=list[DriverStudentOptionResponse],
+    summary="List students in organization for driver stop assignment (alias)",
 )
 async def driver_list_students(
     principal: Principal = Depends(get_current_user),

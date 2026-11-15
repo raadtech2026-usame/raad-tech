@@ -353,6 +353,7 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("GET", "/api/v1/me/incidents", "ADR-0061 - mobile self-service, self-scoped"),
     ("POST", "/api/v1/me/incidents", "ADR-0061 - mobile self-service, self-scoped"),
     ("GET", "/api/v1/me/routes", "Driver self-service routes lookup for student stop assignment"),
+    ("GET", "/api/v1/me/driver-students", "Driver self-service list students in organization for stop assignment"),
     ("POST", "/api/v1/me/assign-student-stop", "Driver on-the-fly student stop geotagging and assignment"),
     ("GET", "/api/v1/me/trips/{trip_id}/attendance", "Driver student attendance checklist read"),
     ("POST", "/api/v1/me/trips/{trip_id}/attendance", "Driver student attendance checklist toggle/record"),

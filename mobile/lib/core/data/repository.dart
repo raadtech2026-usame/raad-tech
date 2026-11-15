@@ -91,7 +91,7 @@ class RaadRepository {
   }
 
   Future<List<DriverStudentOption>> getDriverStudents() async {
-    return (await _client.getList('/me/students'))
+    return (await _client.getList('/me/driver-students'))
         .map(DriverStudentOption.fromJson)
         .toList();
   }

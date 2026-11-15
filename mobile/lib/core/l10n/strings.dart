@@ -628,6 +628,14 @@ class Strings {
   String get markedAt => _('Waqtiga', 'Marked At');
   String get selectStudent => adminSelectStudent;
   String get filterByDate => _('Taariikhda', 'Date');
+  String get capturePhoneGps => _('Qabo GPS-ka Telka', 'Capture Phone GPS');
+  String get gpsCaptured => _('Goobta GPS-ka telka waa la qabtay', 'Phone GPS location captured');
+  String get enableGpsPrompt => _('Fadlan shid oo ogolow GPS-ka telkaaga', 'Please enable location services on your device');
+  String get markAllPresent => _('Xaadir dhammaan', 'Mark All Present');
+  String get allStudents => _('Dhammaan', 'All');
+  String get noPassengersYet => _('Ma jiraan arday ku qoran safarkan', 'No students assigned to this trip');
+  String get todayAttendanceNote => _('Halkan toos uga qaad xaadirinta safarka', 'Take attendance directly for this trip');
+  String get markAllPresentConfirm => _('Dhammaan ardayda safarkan ma u calaamadinaysaa in ay joogaan?', 'Mark all students in this trip as present?');
 }
 
 /// 'so' or 'en'.
