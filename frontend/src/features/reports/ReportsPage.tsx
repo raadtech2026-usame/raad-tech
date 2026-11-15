@@ -131,16 +131,9 @@ function OrganizationReportCenter({
   const hasAttendance = definitions.some((d) => d.category === "attendance");
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<ReportCategory>(hasAttendance ? "attendance" : "financial");
-  const [selectedKey, setSelectedKey] = useState<string | null>(hasAttendance ? "org.student_attendance" : null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
-  const effectiveCategory = definitions.some((d) => d.category === activeCategory)
-    ? activeCategory
-    : ((definitions[0]?.category as ReportCategory) ?? "attendance");
-
-  const selected =
-    definitions.find((d) => d.key === selectedKey) ??
-    definitions.find((d) => d.category === effectiveCategory) ??
-    null;
+  const selected = definitions.find((d) => d.key === selectedKey) ?? null;
 
   return (
     <PageSection title="Report Catalogue & Export" description="Select a report template, configure parameters, and export to PDF or Excel.">
