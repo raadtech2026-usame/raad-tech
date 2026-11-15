@@ -841,7 +841,7 @@ class _DriverTripAttendanceScreenState
           ),
         ],
       ),
-      body: AsyncBody<MyTripDetail>(
+      body: AsyncBody<TripDetail>(
         value: detailAsync,
         onRetry: refresh,
         builder: (detail) {
@@ -891,7 +891,7 @@ class _DriverTripAttendanceScreenState
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            '${detail.trip.tripType.toUpperCase()} · ${detail.trip.scheduledDate}',
+                            '${detail.trip.tripType.toUpperCase()} · ${isoDate(detail.trip.scheduledDate)}',
                             style: TextStyle(fontSize: 12, color: context.muted),
                           ),
                         ],
@@ -1166,8 +1166,10 @@ class _AssignStudentStopSheetState
       }
 
       final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 10),
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 10),
+        ),
       );
       if (mounted) {
         setState(() {
@@ -1355,7 +1357,7 @@ class _AssignStudentStopSheetState
                     onChanged: (val) {
                       setState(() {
                         _selectedStudentId = val;
-                        final student = studentsAsync.valueOrNull?.firstWhere((e) => e.id == val);
+                        final student = studentsAsync.valueOrNull?.where((e) => e.id == val).firstOrNull;
                         if (student != null && _stopNameController.text.isEmpty) {
                           _stopNameController.text = 'Guriga ${student.fullName}';
                         }
