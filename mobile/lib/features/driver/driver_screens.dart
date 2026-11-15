@@ -135,12 +135,13 @@ class DriverTodayScreen extends ConsumerWidget {
             icon: const Icon(Icons.add_location_alt_rounded),
             tooltip: s.assignStudentStop,
             onPressed: () {
-              final active = trips.valueOrNull?.where((t) => t.status == 'in_progress').firstOrNull;
-              final first = trips.valueOrNull?.firstOrNull;
+              final active = mine.isNotEmpty
+                  ? mine.firstWhere((t) => t.isInProgress, orElse: () => mine.first)
+                  : null;
               _openAssignStudentStopModal(
                 context,
-                active?.routeId ?? first?.routeId,
-                active?.vehicle?.id ?? first?.vehicle?.id,
+                active?.routeId,
+                active?.vehicle?.id,
               );
             },
           ),
@@ -1252,7 +1253,7 @@ class _AssignStudentStopSheetState
         showNotice(context, s.studentStopAssigned);
         Navigator.of(context).pop();
         ref.invalidate(driverTripsProvider);
-        ref.invalidate(driverStudentsProvider(widget.initialVehicleId));
+        ref.invalidate(driverStudentsProvider);
       }
     } catch (err) {
       if (mounted) showError(context, err, s);
@@ -1356,7 +1357,7 @@ class _AssignStudentStopSheetState
                     TextButton.icon(
                       icon: const Icon(Icons.refresh_rounded, size: 16),
                       label: Text(s.retry),
-                      onPressed: () => ref.invalidate(driverStudentsProvider(widget.initialVehicleId)),
+                      onPressed: () => ref.invalidate(driverStudentsProvider),
                     ),
                   ],
                 ),
