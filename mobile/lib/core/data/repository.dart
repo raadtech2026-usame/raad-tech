@@ -85,15 +85,35 @@ class RaadRepository {
   }
 
   Future<List<DriverRouteOption>> getDriverRoutes() async {
-    return (await _client.getList('/me/routes'))
-        .map(DriverRouteOption.fromJson)
-        .toList();
+    try {
+      return (await _client.getList('/me/routes'))
+          .map(DriverRouteOption.fromJson)
+          .toList();
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) {
+        return const [];
+      }
+      rethrow;
+    }
   }
 
   Future<List<DriverStudentOption>> getDriverStudents() async {
-    return (await _client.getList('/me/driver-students'))
-        .map(DriverStudentOption.fromJson)
-        .toList();
+    try {
+      return (await _client.getList('/me/driver-students'))
+          .map(DriverStudentOption.fromJson)
+          .toList();
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) {
+        try {
+          return (await _client.getList('/me/students'))
+              .map(DriverStudentOption.fromJson)
+              .toList();
+        } catch (_) {
+          return const [];
+        }
+      }
+      rethrow;
+    }
   }
 
   Future<void> startTrip(String tripId) => _client.post('/trips/$tripId/start');

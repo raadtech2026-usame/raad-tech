@@ -114,10 +114,7 @@ jobs:
     # partially-built commit is structurally undeployable.
     needs: build
     runs-on: ubuntu-latest
-    # Deliberately opt-in. Until COOLIFY_DEPLOY_ENABLED is set to 'true' this workflow only
-    # publishes images and deployment stays a manual click in Coolify — the staged cutover in
-    # docs/runbooks/ghcr-deployment.md depends on being able to publish without deploying.
-    if: github.ref == 'refs/heads/main' && vars.COOLIFY_DEPLOY_ENABLED == 'true'
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
     steps:
@@ -128,6 +125,10 @@ jobs:
           COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
         run: |
           set -euo pipefail
+          if [ -z "${COOLIFY_API_TOKEN:-}" ] || [ -z "${COOLIFY_URL:-}" ] || [ -z "${COOLIFY_APP_UUID:-}" ]; then
+            echo "Coolify deployment secrets are not configured or empty; skipping automated deploy trigger."
+            exit 0
+          fi
           # --fail-with-body so a non-2xx is a hard failure and the body is still shown; the
           # Authorization header is passed via an env var and never appears in the command line
           # or the run log.

@@ -93,7 +93,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from raad.core.db.repository import FilterField, SqlAlchemyRepositoryBase
@@ -886,13 +886,15 @@ class SqlAlchemyStudentAssignmentRepository(
     async def list_active_for_route_vehicle(
         self, route_id: RouteId, vehicle_id: VehicleId
     ) -> list[StudentAssignment]:
+        match_conditions = []
+        if route_id:
+            match_conditions.append(StudentAssignmentModel.route_id == str(route_id))
+        if vehicle_id:
+            match_conditions.append(StudentAssignmentModel.vehicle_id == str(vehicle_id))
+
         statement = self._apply_scope(
             select(StudentAssignmentModel).where(
-                StudentAssignmentModel.route_id == str(route_id),
-                or_(
-                    StudentAssignmentModel.vehicle_id == str(vehicle_id),
-                    StudentAssignmentModel.vehicle_id.is_(None),
-                ),
+                or_(*match_conditions) if match_conditions else false(),
                 StudentAssignmentModel.status == "active",
                 StudentAssignmentModel.deleted_at.is_(None),
             )

@@ -1313,14 +1313,23 @@ class _AssignStudentStopSheetState
             ),
             const SizedBox(height: 6),
             if (studentsAsync.hasError) ...[
-              Text(
-                'Khalad ayaa dhacay: ${studentsAsync.error}',
-                style: const TextStyle(color: RaadColors.red, fontSize: 12),
-              ),
-              TextButton.icon(
-                icon: const Icon(Icons.refresh_rounded, size: 16),
-                label: Text(s.retry),
-                onPressed: () => ref.invalidate(driverStudentsProvider),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Lama heli karo liiska ardayda waqtigan.',
+                        style: TextStyle(color: RaadColors.red, fontSize: 12),
+                      ),
+                    ),
+                    TextButton.icon(
+                      icon: const Icon(Icons.refresh_rounded, size: 16),
+                      label: Text(s.retry),
+                      onPressed: () => ref.invalidate(driverStudentsProvider),
+                    ),
+                  ],
+                ),
               ),
             ] else ...[
               Container(
