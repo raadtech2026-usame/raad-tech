@@ -800,30 +800,79 @@ class SelfServiceApplicationService:
             ]
 
     async def my_students(
-        self, principal: Principal, *, uow: TransportOpsUnitOfWork
+        self,
+        principal: Principal,
+        *,
+        vehicle_id: str | None = None,
+        uow: TransportOpsUnitOfWork,
     ) -> list[dict[str, Any]]:
         async with uow:
-            students = await uow.students.list_all()
+            target_vehicle_ids: set[str] = set()
+            if vehicle_id:
+                target_vehicle_ids.add(vehicle_id)
+            elif principal.role == Role.DRIVER:
+                driver = await uow.drivers.get_by_user_id(UserId(principal.user_id))
+                if driver is not None:
+                    trips = await uow.trips.list_between(
+                        self._today() - timedelta(days=30), self._today() + timedelta(days=30)
+                    )
+                    target_vehicle_ids.update(
+                        str(t.vehicle_id) for t in trips if t.driver_id == driver.id and t.vehicle_id
+                    )
+                    staff_assignments = await uow.staff_assignments.list_between(
+                        self._today() - timedelta(days=30), self._today() + timedelta(days=30)
+                    )
+                    target_vehicle_ids.update(
+                        str(a.vehicle_id)
+                        for a in staff_assignments
+                        if str(a.staff_id) == str(driver.staff_id) and a.vehicle_id
+                    )
+
+            if target_vehicle_ids:
+                assignments = await uow.student_assignments.list_active_for_vehicles(
+                    [VehicleId(v) for v in target_vehicle_ids]
+                )
+            elif principal.role != Role.DRIVER:
+                assignments = [
+                    a for a in await uow.student_assignments.list_all()
+                    if a.status.value == "active"
+                ]
+            else:
+                assignments = []
+
             routes = {str(r.id): r for r in await uow.routes.list_all()}
+            students = {
+                str(s.id): s
+                for s in await uow.students.list_by_ids([str(a.student_id) for a in assignments])
+            }
+            seen_students: set[str] = set()
             result = []
-            for s in sorted(students, key=lambda x: x.full_name):
-                assignment = await uow.student_assignments.active_assignment_for_student(s.id)
+            for a in assignments:
+                sid = str(a.student_id)
+                if sid in seen_students:
+                    continue
+                s = students.get(sid)
+                if s is None:
+                    continue
+                seen_students.add(sid)
                 route_name = None
                 stop_name = None
-                if assignment and assignment.route_id:
-                    route = routes.get(str(assignment.route_id))
+                if a.route_id:
+                    route = routes.get(str(a.route_id))
                     if route:
                         route_name = route.name
-                        for st in route.stops:
-                            if st.id == assignment.pickup_stop_id:
-                                stop_name = st.name
-                                break
+                        if a.pickup_stop_id:
+                            for st in route.stops:
+                                if st.id == a.pickup_stop_id:
+                                    stop_name = st.name
+                                    break
                 result.append({
                     "id": str(s.id),
                     "full_name": s.full_name,
                     "current_route_name": route_name,
                     "current_stop_name": stop_name,
                 })
+            result.sort(key=lambda x: x["full_name"])
             return result
 
     # ---- helpers --------------------------------------------------------------------------

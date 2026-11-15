@@ -98,15 +98,21 @@ class RaadRepository {
     }
   }
 
-  Future<List<DriverStudentOption>> getDriverStudents() async {
+  Future<List<DriverStudentOption>> getDriverStudents([String? vehicleId]) async {
     try {
-      return (await _client.getList('/me/driver-students'))
+      final query = (vehicleId != null && vehicleId.isNotEmpty)
+          ? '?vehicle_id=${Uri.encodeComponent(vehicleId)}'
+          : '';
+      return (await _client.getList('/me/driver-students$query'))
           .map(DriverStudentOption.fromJson)
           .toList();
     } on ApiException catch (e) {
       if (e.statusCode == 404) {
         try {
-          return (await _client.getList('/me/students'))
+          final query = (vehicleId != null && vehicleId.isNotEmpty)
+              ? '?vehicle_id=${Uri.encodeComponent(vehicleId)}'
+              : '';
+          return (await _client.getList('/me/students$query'))
               .map(DriverStudentOption.fromJson)
               .toList();
         } catch (_) {
@@ -296,6 +302,7 @@ final driverRoutesProvider = FutureProvider.autoDispose<List<DriverRouteOption>>
   (ref) => ref.watch(repositoryProvider).getDriverRoutes(),
 );
 
-final driverStudentsProvider = FutureProvider.autoDispose<List<DriverStudentOption>>(
-  (ref) => ref.watch(repositoryProvider).getDriverStudents(),
+final driverStudentsProvider =
+    FutureProvider.autoDispose.family<List<DriverStudentOption>, String?>(
+  (ref, vehicleId) => ref.watch(repositoryProvider).getDriverStudents(vehicleId),
 );

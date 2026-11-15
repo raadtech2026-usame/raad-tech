@@ -69,12 +69,19 @@ class _DriverShellState extends ConsumerState<DriverShell> {
   }
 }
 
-void _openAssignStudentStopModal(BuildContext context, [String? preselectedRouteId]) {
+void _openAssignStudentStopModal(
+  BuildContext context, [
+  String? preselectedRouteId,
+  String? preselectedVehicleId,
+]) {
   showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
-    builder: (ctx) => _AssignStudentStopSheet(initialRouteId: preselectedRouteId),
+    builder: (ctx) => _AssignStudentStopSheet(
+      initialRouteId: preselectedRouteId,
+      initialVehicleId: preselectedVehicleId,
+    ),
   );
 }
 
@@ -127,7 +134,15 @@ class DriverTodayScreen extends ConsumerWidget {
           IconButton(
             icon: const Icon(Icons.add_location_alt_rounded),
             tooltip: s.assignStudentStop,
-            onPressed: () => _openAssignStudentStopModal(context),
+            onPressed: () {
+              final active = trips.valueOrNull?.where((t) => t.status == 'in_progress').firstOrNull;
+              final first = trips.valueOrNull?.firstOrNull;
+              _openAssignStudentStopModal(
+                context,
+                active?.routeId ?? first?.routeId,
+                active?.vehicle?.id ?? first?.vehicle?.id,
+              );
+            },
           ),
         ],
       ),
@@ -572,6 +587,7 @@ class _TripPassengersAttendanceSectionState
               onPressed: () => _openAssignStudentStopModal(
                 context,
                 widget.trip.routeId,
+                widget.trip.vehicle?.id,
               ),
             ),
           ],
@@ -682,10 +698,12 @@ class _PassengerAttendanceTile extends StatelessWidget {
         ),
       ),
       subtitle: Text(
-        [
-          if (passenger.pickupStopName != null) passenger.pickupStopName!,
-          if (passenger.dropoffStopName != null) passenger.dropoffStopName!,
-        ].join(' → '),
+        (passenger.pickupStopName != null || passenger.dropoffStopName != null)
+            ? [
+                if (passenger.pickupStopName != null) passenger.pickupStopName!,
+                if (passenger.dropoffStopName != null) passenger.dropoffStopName!,
+              ].join(' → ')
+            : 'Weli ma laha joogsi cayiman',
         style: TextStyle(fontSize: 12, color: context.muted),
       ),
       trailing: InkWell(
@@ -832,7 +850,11 @@ class _DriverTripAttendanceScreenState
           IconButton(
             icon: const Icon(Icons.add_location_alt_rounded),
             tooltip: s.assignStudentStop,
-            onPressed: () => _openAssignStudentStopModal(context, widget.trip.routeId),
+            onPressed: () => _openAssignStudentStopModal(
+              context,
+              widget.trip.routeId,
+              widget.trip.vehicle?.id,
+            ),
           ),
           IconButton(
             icon: const Icon(Icons.refresh_rounded),
@@ -1012,7 +1034,11 @@ class _DriverTripAttendanceScreenState
                         FilledButton.icon(
                           icon: const Icon(Icons.add_location_alt_rounded),
                           label: Text(s.assignStudentStop),
-                          onPressed: () => _openAssignStudentStopModal(context, widget.trip.routeId),
+                          onPressed: () => _openAssignStudentStopModal(
+                            context,
+                            widget.trip.routeId,
+                            widget.trip.vehicle?.id,
+                          ),
                         ),
                       ],
                     ),
@@ -1100,8 +1126,12 @@ class _AttendanceKpi extends StatelessWidget {
 
 class _AssignStudentStopSheet extends ConsumerStatefulWidget {
   final String? initialRouteId;
+  final String? initialVehicleId;
 
-  const _AssignStudentStopSheet({this.initialRouteId});
+  const _AssignStudentStopSheet({
+    this.initialRouteId,
+    this.initialVehicleId,
+  });
 
   @override
   ConsumerState<_AssignStudentStopSheet> createState() =>
@@ -1222,7 +1252,7 @@ class _AssignStudentStopSheetState
         showNotice(context, s.studentStopAssigned);
         Navigator.of(context).pop();
         ref.invalidate(driverTripsProvider);
-        ref.invalidate(driverStudentsProvider);
+        ref.invalidate(driverStudentsProvider(widget.initialVehicleId));
       }
     } catch (err) {
       if (mounted) showError(context, err, s);
@@ -1235,7 +1265,7 @@ class _AssignStudentStopSheetState
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
     final routesAsync = ref.watch(driverRoutesProvider);
-    final studentsAsync = ref.watch(driverStudentsProvider);
+    final studentsAsync = ref.watch(driverStudentsProvider(widget.initialVehicleId));
 
     return Container(
       decoration: BoxDecoration(
@@ -1326,7 +1356,7 @@ class _AssignStudentStopSheetState
                     TextButton.icon(
                       icon: const Icon(Icons.refresh_rounded, size: 16),
                       label: Text(s.retry),
-                      onPressed: () => ref.invalidate(driverStudentsProvider),
+                      onPressed: () => ref.invalidate(driverStudentsProvider(widget.initialVehicleId)),
                     ),
                   ],
                 ),

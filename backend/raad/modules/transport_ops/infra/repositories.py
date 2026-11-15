@@ -888,11 +888,28 @@ class SqlAlchemyStudentAssignmentRepository(
     ) -> list[StudentAssignment]:
         statement = self._apply_scope(
             select(StudentAssignmentModel).where(
-                StudentAssignmentModel.route_id == str(route_id),
                 or_(
                     StudentAssignmentModel.vehicle_id == str(vehicle_id),
-                    StudentAssignmentModel.vehicle_id.is_(None),
+                    and_(
+                        StudentAssignmentModel.route_id == str(route_id),
+                        StudentAssignmentModel.vehicle_id.is_(None),
+                    ),
                 ),
+                StudentAssignmentModel.status == "active",
+                StudentAssignmentModel.deleted_at.is_(None),
+            )
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [model_to_student_assignment(row) for row in rows]
+
+    async def list_active_for_vehicles(
+        self, vehicle_ids: list[VehicleId]
+    ) -> list[StudentAssignment]:
+        if not vehicle_ids:
+            return []
+        statement = self._apply_scope(
+            select(StudentAssignmentModel).where(
+                StudentAssignmentModel.vehicle_id.in_([str(v) for v in vehicle_ids]),
                 StudentAssignmentModel.status == "active",
                 StudentAssignmentModel.deleted_at.is_(None),
             )

@@ -357,11 +357,12 @@ async def driver_list_routes(
     summary="List students in organization for driver stop assignment (alias)",
 )
 async def driver_list_students(
+    vehicle_id: str | None = Query(None, description="Optional vehicle ID to filter students"),
     principal: Principal = Depends(get_current_user),
     service: SelfServiceApplicationService = Depends(get_self_service),
     uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
 ) -> list[DriverStudentOptionResponse]:
-    students = await service.my_students(principal, uow=uow)
+    students = await service.my_students(principal, vehicle_id=vehicle_id, uow=uow)
     return [DriverStudentOptionResponse.model_validate(s) for s in students]
 
 

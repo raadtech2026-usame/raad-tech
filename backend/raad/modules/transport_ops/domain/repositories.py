@@ -460,6 +460,12 @@ class StudentAssignmentRepository(ABC):
         """ADR-0054 §2: the active assignments whose children ride this route on this bus."""
         raise NotImplementedError
 
+    async def list_active_for_vehicles(
+        self, vehicle_ids: list[VehicleId]
+    ) -> list[StudentAssignment]:
+        """Active student assignments whose assigned vehicle is in `vehicle_ids`."""
+        return []
+
     @abstractmethod
     async def active_assignment_for_student(
         self, student_id: StudentId
