@@ -195,6 +195,13 @@ const STATUS_OPTIONS: { value: ReportStatus | ""; label: string }[] = [
   { value: "unpaid", label: "Unpaid" },
 ];
 
+const ATTENDANCE_STATUS_OPTIONS: { value: ReportStatus | ""; label: string }[] = [
+  { value: "", label: "All statuses" },
+  { value: "present", label: "Present" },
+  { value: "absent", label: "Absent" },
+  { value: "boarded", label: "Boarded" },
+];
+
 /** One selected report's own filters + preview + export. Mounted with `key={definition.key}` by
  * its parent so switching reports resets every filter and the preview, rather than carrying stale
  * state (a Vehicle picked for the Bus Report) into a report that doesn't use it. */
@@ -278,10 +285,13 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
   if (accepts.has("vehicle_id")) {
     filterSummaryItems.push({ label: "Vehicle", value: vehicle?.label ?? "All vehicles" });
   }
+  const isAttendance = definition.key === "org.student_attendance";
+  const statusOptions = isAttendance ? ATTENDANCE_STATUS_OPTIONS : STATUS_OPTIONS;
+
   if (accepts.has("status")) {
     filterSummaryItems.push({
-      label: "Payment status",
-      value: STATUS_OPTIONS.find((option) => option.value === status)?.label ?? "All",
+      label: isAttendance ? "Attendance status" : "Payment status",
+      value: statusOptions.find((option) => option.value === status)?.label ?? "All",
     });
   }
 
@@ -347,9 +357,9 @@ function ReportDetailPanel({ definition }: { definition: ReportDefinition }) {
             </FormField>
           )}
           {accepts.has("status") && (
-            <FormField label="Payment status">
+            <FormField label={isAttendance ? "Attendance status" : "Payment status"}>
               <Select value={status} onChange={(e) => setStatus(e.target.value as ReportStatus | "")}>
-                {STATUS_OPTIONS.map((option) => (
+                {statusOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>

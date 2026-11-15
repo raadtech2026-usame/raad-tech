@@ -1673,6 +1673,8 @@ class SqlAlchemyStudentAttendanceRepository(
         student_id: str | None = None,
         route_id: str | None = None,
         attendance_date: date | None = None,
+        start: date | None = None,
+        end: date | None = None,
         status: str | None = None,
     ) -> list[dict]:
         conditions = [
@@ -1687,6 +1689,10 @@ class SqlAlchemyStudentAttendanceRepository(
             conditions.append(self.model.route_id == route_id)
         if attendance_date:
             conditions.append(self.model.attendance_date == attendance_date)
+        if start:
+            conditions.append(self.model.attendance_date >= start)
+        if end:
+            conditions.append(self.model.attendance_date <= end)
         if status and status != "all":
             conditions.append(self.model.status == status)
 

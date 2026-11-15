@@ -367,6 +367,8 @@ class InMemoryStudentAttendanceRepository(StudentAttendanceRepository):
         student_id: str | None = None,
         route_id: str | None = None,
         attendance_date: date | None = None,
+        start: date | None = None,
+        end: date | None = None,
         status: str | None = None,
     ) -> list[dict]:
         return self.records

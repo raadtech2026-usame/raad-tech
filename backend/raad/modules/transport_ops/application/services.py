@@ -1448,6 +1448,8 @@ class TripApplicationService:
         student_id: str | None = None,
         route_id: str | None = None,
         attendance_date: date | None = None,
+        start: date | None = None,
+        end: date | None = None,
         status: str | None = None,
         uow: TransportOpsUnitOfWork,
     ) -> dict[str, Any]:
@@ -1458,6 +1460,8 @@ class TripApplicationService:
                 student_id=student_id,
                 route_id=route_id,
                 attendance_date=attendance_date,
+                start=start,
+                end=end,
                 status=status,
             )
             total = len(items)

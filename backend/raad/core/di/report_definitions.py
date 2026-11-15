@@ -51,6 +51,7 @@ from raad.modules.transport_ops.application.services import (
     StudentApplicationService,
     StudentAssignmentApplicationService,
     StudentParentApplicationService,
+    TripApplicationService,
 )
 
 _PLATFORM_ROLES = (
@@ -449,6 +450,74 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             rows=rows,
             metadata=metadata,
             numeric_columns=[3, 4, 5],
+        )
+
+    async def student_attendance_report(request: ReportRequest) -> ReportTable:
+        """Daily student trip attendance report per bus, student, date range and status."""
+        trip_service: TripApplicationService = container.resolve(TripApplicationService)
+        transport_ops_uow = _scoped(container, TransportOpsUnitOfWork, request)
+        report = await trip_service.get_attendance_report(
+            actor=request.principal,
+            vehicle_id=request.vehicle_id,
+            student_id=request.student_id,
+            start=request.start,
+            end=request.end,
+            status=request.status,
+            uow=transport_ops_uow,
+        )
+        records = report.get("records", [])
+        summary = report.get("summary", {})
+
+        vehicle_names = await _vehicle_names(
+            container,
+            request,
+            {r["vehicle_id"] for r in records if r.get("vehicle_id")},
+        )
+
+        rows = []
+        for r in records:
+            v_id = r.get("vehicle_id")
+            v_label = _vehicle_label(vehicle_names, v_id) if v_id else "—"
+            rows.append([
+                r["attendance_date"],
+                r["student_name"],
+                v_label,
+                r.get("route_name") or "—",
+                r["status"].replace("_", " ").title(),
+                r.get("marked_at") or "—",
+                r.get("notes") or "—",
+            ])
+
+        total = summary.get("total", len(rows))
+        present = summary.get("present", 0)
+        absent = summary.get("absent", 0)
+        rate = summary.get("rate", 0.0)
+
+        metadata = {
+            "Total Records": str(total),
+            "Present": str(present),
+            "Absent": str(absent),
+            "Attendance Rate": f"{rate}%",
+        }
+        if request.vehicle_id:
+            v_name = _vehicle_label(vehicle_names, request.vehicle_id)
+            metadata["Vehicle"] = v_name
+
+        if request.start and request.end:
+            period_text = f"{request.start.isoformat()} → {request.end.isoformat()}"
+        elif request.start:
+            period_text = f"From {request.start.isoformat()}"
+        elif request.period:
+            period_text = _period_label(request)
+        else:
+            period_text = "All time"
+
+        return ReportTable(
+            title="Student Attendance Report",
+            subtitle=f"{period_text} — student daily attendance and rates",
+            headers=["Date", "Student", "Vehicle", "Route", "Status", "Marked At", "Notes"],
+            rows=rows,
+            metadata=metadata,
         )
 
     def _month_bounds(period: str) -> tuple[date, date]:
@@ -2011,6 +2080,16 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             build=bus_report,
             roles=_ORG_ROLES,
             accepts=("vehicle_id", "period", "status"),
+            category="transportation",
+        ),
+        ReportDefinition(
+            key="org.student_attendance",
+            title="Student Attendance Report",
+            description="Daily student trip attendance records: students present, absent, and attendance rate per bus and date.",
+            scope="organization",
+            build=student_attendance_report,
+            roles=_ORG_ROLES,
+            accepts=("start", "end", "vehicle_id", "status", "student_id"),
             category="transportation",
         ),
         # -- Platform ----------------------------------------------------------------------------

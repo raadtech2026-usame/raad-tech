@@ -42,10 +42,9 @@ export type ReportSubscriptionStatus =
   | "suspended"
   | "expired"
   | "cancelled";
-/** `ParentInvoiceStatus` (ADR-0042) — the only four values the Report Center's Status selector
- * offers, matching the directive's own named set exactly (no "cancelled" option in this UI, even
- * though the backend query also accepts it). */
-export type ReportStatus = "unpaid" | "partial" | "paid";
+/** `ParentInvoiceStatus` (ADR-0042) or attendance status — values the Report Center's Status selector
+ * offers. */
+export type ReportStatus = "unpaid" | "partial" | "paid" | "present" | "absent" | "boarded";
 
 export interface ReportDefinition {
   key: string;
