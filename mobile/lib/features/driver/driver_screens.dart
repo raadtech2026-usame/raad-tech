@@ -1266,7 +1266,7 @@ class _AssignStudentStopSheetState
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
     final routesAsync = ref.watch(driverRoutesProvider);
-    final studentsAsync = ref.watch(driverStudentsProvider(widget.initialVehicleId));
+    final studentsAsync = ref.watch(driverStudentsProvider);
 
     return Container(
       decoration: BoxDecoration(

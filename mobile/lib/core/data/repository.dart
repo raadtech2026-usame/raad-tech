@@ -302,7 +302,6 @@ final driverRoutesProvider = FutureProvider.autoDispose<List<DriverRouteOption>>
   (ref) => ref.watch(repositoryProvider).getDriverRoutes(),
 );
 
-final driverStudentsProvider =
-    FutureProvider.autoDispose.family<List<DriverStudentOption>, String?>(
-  (ref, vehicleId) => ref.watch(repositoryProvider).getDriverStudents(vehicleId),
+final driverStudentsProvider = FutureProvider.autoDispose<List<DriverStudentOption>>(
+  (ref) => ref.watch(repositoryProvider).getDriverStudents(),
 );
