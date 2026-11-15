@@ -82,6 +82,50 @@ class FakeRepository extends RaadRepository {
       'title': title,
     });
   }
+
+  List<AttendanceRecord> attendanceRecords = [];
+  List<DriverRouteOption> driverRoutes = [];
+  List<DriverStudentOption> driverStudents = [];
+
+  @override
+  Future<List<AttendanceRecord>> getTripAttendance(String tripId) =>
+      _answer(attendanceRecords);
+
+  @override
+  Future<AttendanceRecord> recordAttendance({
+    required String tripId,
+    required String studentId,
+    required String status,
+    String? notes,
+  }) async {
+    final record = AttendanceRecord(
+      id: 'att-1',
+      tripId: tripId,
+      studentId: studentId,
+      attendanceDate: '2026-11-15',
+      status: status,
+      markedAt: '2026-11-15T08:00:00Z',
+      notes: notes,
+    );
+    return _answer(record);
+  }
+
+  @override
+  Future<void> assignStudentStop({
+    required String studentId,
+    required String routeId,
+    required double latitude,
+    required double longitude,
+    String? stopName,
+    int radiusM = 500,
+  }) async {}
+
+  @override
+  Future<List<DriverRouteOption>> getDriverRoutes() => _answer(driverRoutes);
+
+  @override
+  Future<List<DriverStudentOption>> getDriverStudents() =>
+      _answer(driverStudents);
 }
 
 class _FakeAuthRepository extends AuthRepository {
@@ -246,6 +290,21 @@ class FakeAdminRepository extends AdminRepository {
 
   @override
   Future<List<AdminStaff>> staffList() => _answer(staffMembersList);
+
+  AdminAttendanceReport attendanceReportData = const AdminAttendanceReport(
+    records: [],
+    summary: AdminAttendanceSummary(total: 0, present: 0, absent: 0, rate: 0.0),
+  );
+
+  @override
+  Future<AdminAttendanceReport> attendanceReport({
+    String? vehicleId,
+    String? studentId,
+    String? routeId,
+    String? date,
+    String? status,
+  }) =>
+      _answer(attendanceReportData);
 }
 
 class _FixedThemeMode extends ThemeModeController {

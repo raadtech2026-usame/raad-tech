@@ -190,10 +190,12 @@ class CrewMember {
 }
 
 class Passenger {
+  final String studentId;
   final String fullName;
   final String? pickupStopName;
   final String? dropoffStopName;
   const Passenger({
+    this.studentId = '',
     required this.fullName,
     this.pickupStopName,
     this.dropoffStopName,
@@ -201,9 +203,93 @@ class Passenger {
 
   factory Passenger.fromJson(Map<String, dynamic> json) {
     return Passenger(
+      studentId: json['student_id'] as String? ?? '',
       fullName: json['full_name'] as String? ?? '',
       pickupStopName: json['pickup_stop_name'] as String?,
       dropoffStopName: json['dropoff_stop_name'] as String?,
+    );
+  }
+}
+
+class AttendanceRecord {
+  final String id;
+  final String tripId;
+  final String studentId;
+  final String? vehicleId;
+  final String? routeId;
+  final String attendanceDate;
+  final String status;
+  final String markedAt;
+  final String? notes;
+
+  const AttendanceRecord({
+    required this.id,
+    required this.tripId,
+    required this.studentId,
+    this.vehicleId,
+    this.routeId,
+    required this.attendanceDate,
+    required this.status,
+    required this.markedAt,
+    this.notes,
+  });
+
+  bool get isPresent => status == 'present' || status == 'boarded';
+
+  factory AttendanceRecord.fromJson(Map<String, dynamic> json) {
+    return AttendanceRecord(
+      id: json['id'] as String? ?? '',
+      tripId: json['trip_id'] as String? ?? '',
+      studentId: json['student_id'] as String? ?? '',
+      vehicleId: json['vehicle_id'] as String?,
+      routeId: json['route_id'] as String?,
+      attendanceDate: json['attendance_date'] as String? ?? '',
+      status: json['status'] as String? ?? 'present',
+      markedAt: json['marked_at'] as String? ?? '',
+      notes: json['notes'] as String?,
+    );
+  }
+}
+
+class DriverRouteOption {
+  final String id;
+  final String name;
+  final int stopCount;
+
+  const DriverRouteOption({
+    required this.id,
+    required this.name,
+    this.stopCount = 0,
+  });
+
+  factory DriverRouteOption.fromJson(Map<String, dynamic> json) {
+    return DriverRouteOption(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      stopCount: (json['stop_count'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+class DriverStudentOption {
+  final String id;
+  final String fullName;
+  final String? currentRouteName;
+  final String? currentStopName;
+
+  const DriverStudentOption({
+    required this.id,
+    required this.fullName,
+    this.currentRouteName,
+    this.currentStopName,
+  });
+
+  factory DriverStudentOption.fromJson(Map<String, dynamic> json) {
+    return DriverStudentOption(
+      id: json['id'] as String? ?? '',
+      fullName: json['full_name'] as String? ?? '',
+      currentRouteName: json['current_route_name'] as String?,
+      currentStopName: json['current_stop_name'] as String?,
     );
   }
 }

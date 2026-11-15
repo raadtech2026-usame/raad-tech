@@ -40,6 +40,62 @@ class RaadRepository {
     return TripDetail.fromJson(await _client.get('/me/trips/$tripId'));
   }
 
+  Future<List<AttendanceRecord>> getTripAttendance(String tripId) async {
+    return (await _client.getList('/me/trips/$tripId/attendance'))
+        .map(AttendanceRecord.fromJson)
+        .toList();
+  }
+
+  Future<AttendanceRecord> recordAttendance({
+    required String tripId,
+    required String studentId,
+    required String status,
+    String? notes,
+  }) async {
+    final json = await _client.post(
+      '/me/trips/$tripId/attendance',
+      body: {
+        'student_id': studentId,
+        'status': status,
+        if (notes != null && notes.isNotEmpty) 'notes': notes,
+      },
+    );
+    return AttendanceRecord.fromJson(json as Map<String, dynamic>);
+  }
+
+  Future<void> assignStudentStop({
+    required String studentId,
+    required String routeId,
+    required double latitude,
+    required double longitude,
+    String? stopName,
+    int radiusM = 500,
+  }) async {
+    await _client.post(
+      '/me/assign-student-stop',
+      body: {
+        'student_id': studentId,
+        'route_id': routeId,
+        'latitude': latitude,
+        'longitude': longitude,
+        if (stopName != null && stopName.isNotEmpty) 'stop_name': stopName,
+        'geofence_radius_m': radiusM,
+      },
+    );
+  }
+
+  Future<List<DriverRouteOption>> getDriverRoutes() async {
+    return (await _client.getList('/me/routes'))
+        .map(DriverRouteOption.fromJson)
+        .toList();
+  }
+
+  Future<List<DriverStudentOption>> getDriverStudents() async {
+    return (await _client.getList('/me/students'))
+        .map(DriverStudentOption.fromJson)
+        .toList();
+  }
+
   Future<void> startTrip(String tripId) => _client.post('/trips/$tripId/start');
 
   Future<void> endTrip(String tripId) => _client.post('/trips/$tripId/end');
@@ -209,3 +265,16 @@ final notificationsLiveProvider = Provider.autoDispose<void>((ref) {
     socket.dispose();
   });
 });
+
+final tripAttendanceProvider =
+    FutureProvider.autoDispose.family<List<AttendanceRecord>, String>(
+  (ref, tripId) => ref.watch(repositoryProvider).getTripAttendance(tripId),
+);
+
+final driverRoutesProvider = FutureProvider.autoDispose<List<DriverRouteOption>>(
+  (ref) => ref.watch(repositoryProvider).getDriverRoutes(),
+);
+
+final driverStudentsProvider = FutureProvider.autoDispose<List<DriverStudentOption>>(
+  (ref) => ref.watch(repositoryProvider).getDriverStudents(),
+);

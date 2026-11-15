@@ -114,6 +114,33 @@ class _AdminTripsScreenState extends ConsumerState<AdminTripsScreen> {
               ),
             ),
 
+            // Attendance Report Action Button
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.fact_check_rounded, size: 18),
+                      label: Text(
+                        s.attendanceReport,
+                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const AdminAttendanceReportScreen(),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
             // Status Filter Chips
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,

@@ -755,3 +755,43 @@ class IncidentNoteModel(AuditedTableMixin, Base):
     )
     body: Mapped[str] = mapped_column(Text, nullable=False)
     author_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+
+
+_ATTENDANCE_STATUS_VALUES = ("present", "absent", "boarded")
+
+
+class StudentAttendanceModel(AuditedTableMixin, Base):
+    """Student attendance records per trip and date."""
+
+    __tablename__ = "student_attendance"
+    __table_args__ = (
+        Index("ix_student_attendance__org_date", "organization_id", "attendance_date"),
+        Index("ix_student_attendance__student_date", "student_id", "attendance_date"),
+        Index("ix_student_attendance__trip_student", "trip_id", "student_id"),
+        Index("ix_student_attendance__vehicle_date", "vehicle_id", "attendance_date"),
+        UniqueConstraint(
+            "organization_id",
+            "trip_id",
+            "student_id",
+            "attendance_date",
+            name="ux_student_attendance__org_trip_student_date",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(CHAR(26), nullable=False, index=True)
+    trip_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("trips.id"), nullable=False, index=True
+    )
+    student_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("students.id"), nullable=False, index=True
+    )
+    vehicle_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True, index=True)
+    route_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("routes.id"), nullable=True, index=True
+    )
+    attendance_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(VARCHAR(32), nullable=False, default="present")
+    marked_by_user_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    marked_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    notes: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+

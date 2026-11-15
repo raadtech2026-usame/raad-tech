@@ -68,6 +68,15 @@ class _DriverShellState extends ConsumerState<DriverShell> {
   }
 }
 
+void _openAssignStudentStopModal(BuildContext context, [String? preselectedRouteId]) {
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (ctx) => _AssignStudentStopSheet(initialRouteId: preselectedRouteId),
+  );
+}
+
 void _openTrip(BuildContext context, Trip trip) {
   Navigator.of(context).push(
     MaterialPageRoute<void>(builder: (_) => TripDetailScreen(tripId: trip.id)),
@@ -84,7 +93,16 @@ class DriverTodayScreen extends ConsumerWidget {
     final trips = ref.watch(driverTripsProvider);
     void refresh() => ref.invalidate(driverTripsProvider);
     return Scaffold(
-      appBar: AppBar(title: Text(s.navToday)),
+      appBar: AppBar(
+        title: Text(s.navToday),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add_location_alt_rounded),
+            tooltip: s.assignStudentStop,
+            onPressed: () => _openAssignStudentStopModal(context),
+          ),
+        ],
+      ),
       body: AsyncBody<List<Trip>>(
         value: trips,
         onRetry: refresh,
@@ -308,30 +326,7 @@ class TripDetailScreen extends ConsumerWidget {
                     ],
                   ),
                 ),
-                SectionTitle('${s.passengers} (${d.passengers.length})'),
-                if (d.passengers.isEmpty)
-                  SectionCard(child: Text(s.noPassengers))
-                else
-                  SectionCard(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Column(
-                      children: [
-                        for (final p in d.passengers)
-                          ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.person_rounded),
-                            title: Text(p.fullName),
-                            subtitle: Text(
-                              [
-                                if (p.pickupStopName != null) p.pickupStopName!,
-                                if (p.dropoffStopName != null)
-                                  p.dropoffStopName!,
-                              ].join(' → '),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
+                _TripPassengersAttendanceSection(trip: trip, passengers: d.passengers),
                 SectionTitle(s.crew),
                 CrewList(members: d.crew),
               ],
@@ -422,6 +417,525 @@ class DriverMoreScreen extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _TripPassengersAttendanceSection extends ConsumerStatefulWidget {
+  final Trip trip;
+  final List<Passenger> passengers;
+
+  const _TripPassengersAttendanceSection({
+    required this.trip,
+    required this.passengers,
+  });
+
+  @override
+  ConsumerState<_TripPassengersAttendanceSection> createState() =>
+      _TripPassengersAttendanceSectionState();
+}
+
+class _TripPassengersAttendanceSectionState
+    extends ConsumerState<_TripPassengersAttendanceSection> {
+  final Set<String> _pendingToggles = {};
+
+  Future<void> _toggleAttendance(Passenger passenger, bool isCurrentlyPresent) async {
+    final s = ref.read(stringsProvider);
+    final studentId = passenger.studentId;
+    if (studentId.isEmpty || _pendingToggles.contains(studentId)) return;
+
+    setState(() => _pendingToggles.add(studentId));
+    final newStatus = isCurrentlyPresent ? 'absent' : 'present';
+    try {
+      await ref.read(repositoryProvider).recordAttendance(
+            tripId: widget.trip.id,
+            studentId: studentId,
+            status: newStatus,
+          );
+      ref.invalidate(tripAttendanceProvider(widget.trip.id));
+      if (mounted) {
+        showNotice(
+          context,
+          newStatus == 'present'
+              ? '${passenger.fullName} - ${s.markPresent}'
+              : '${passenger.fullName} - ${s.markAbsent}',
+        );
+      }
+    } catch (err) {
+      if (mounted) showError(context, err, s);
+    } finally {
+      if (mounted) setState(() => _pendingToggles.remove(studentId));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
+    final attendanceAsync = ref.watch(tripAttendanceProvider(widget.trip.id));
+    final records = attendanceAsync.valueOrNull ?? const <AttendanceRecord>[];
+    final attendanceMap = {for (final a in records) a.studentId: a};
+
+    final presentCount = widget.passengers
+        .where((p) => attendanceMap[p.studentId]?.isPresent == true)
+        .length;
+    final totalCount = widget.passengers.length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: SectionTitle(
+                '${s.attendanceTitle} ($presentCount/$totalCount)',
+              ),
+            ),
+            TextButton.icon(
+              icon: const Icon(Icons.add_location_alt_outlined, size: 16),
+              label: Text(s.assignStudentStop, style: const TextStyle(fontSize: 12)),
+              onPressed: () => _openAssignStudentStopModal(
+                context,
+                widget.trip.routeId,
+              ),
+            ),
+          ],
+        ),
+        if (widget.passengers.isEmpty)
+          SectionCard(child: Text(s.noPassengers))
+        else
+          SectionCard(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(
+              children: [
+                if (totalCount > 0)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              '${s.attendanceStats}: $presentCount ${s.present.toLowerCase()}',
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              '${(presentCount / totalCount * 100).toInt()}%',
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.bold,
+                                color: presentCount > 0 ? RaadColors.green : context.muted,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(
+                            value: totalCount > 0 ? presentCount / totalCount : 0,
+                            minHeight: 6,
+                            backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            valueColor: const AlwaysStoppedAnimation(RaadColors.green),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                for (final p in widget.passengers) ...[
+                  _PassengerAttendanceTile(
+                    passenger: p,
+                    record: attendanceMap[p.studentId],
+                    isPending: _pendingToggles.contains(p.studentId),
+                    onToggle: () {
+                      final isPresent = attendanceMap[p.studentId]?.isPresent == true;
+                      _toggleAttendance(p, isPresent);
+                    },
+                  ),
+                  if (p != widget.passengers.last)
+                    const Divider(height: 1, indent: 56),
+                ],
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _PassengerAttendanceTile extends StatelessWidget {
+  final Passenger passenger;
+  final AttendanceRecord? record;
+  final bool isPending;
+  final VoidCallback onToggle;
+
+  const _PassengerAttendanceTile({
+    required this.passenger,
+    required this.record,
+    required this.isPending,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final s = Strings(Localizations.localeOf(context).languageCode == 'so');
+    final isPresent = record?.isPresent == true;
+
+    return ListTile(
+      dense: true,
+      leading: CircleAvatar(
+        radius: 17,
+        backgroundColor: isPresent
+            ? RaadColors.green.withValues(alpha: 0.15)
+            : context.muted.withValues(alpha: 0.12),
+        child: Icon(
+          Icons.person_rounded,
+          size: 19,
+          color: isPresent ? RaadColors.green : context.muted,
+        ),
+      ),
+      title: Text(
+        passenger.fullName,
+        style: TextStyle(
+          fontWeight: isPresent ? FontWeight.bold : FontWeight.w600,
+          fontSize: 14,
+        ),
+      ),
+      subtitle: Text(
+        [
+          if (passenger.pickupStopName != null) passenger.pickupStopName!,
+          if (passenger.dropoffStopName != null) passenger.dropoffStopName!,
+        ].join(' → '),
+        style: TextStyle(fontSize: 12, color: context.muted),
+      ),
+      trailing: InkWell(
+        onTap: isPending ? null : onToggle,
+        borderRadius: BorderRadius.circular(20),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: isPresent
+                ? RaadColors.green.withValues(alpha: 0.15)
+                : Theme.of(context).colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: isPresent
+                  ? RaadColors.green
+                  : Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5),
+              width: 1.2,
+            ),
+          ),
+          child: isPending
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isPresent
+                          ? Icons.check_circle_rounded
+                          : Icons.radio_button_unchecked_rounded,
+                      size: 18,
+                      color: isPresent ? RaadColors.green : context.muted,
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      isPresent ? s.markPresent : s.markAbsent,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: isPresent ? RaadColors.green : context.muted,
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AssignStudentStopSheet extends ConsumerStatefulWidget {
+  final String? initialRouteId;
+
+  const _AssignStudentStopSheet({this.initialRouteId});
+
+  @override
+  ConsumerState<_AssignStudentStopSheet> createState() =>
+      _AssignStudentStopSheetState();
+}
+
+class _AssignStudentStopSheetState
+    extends ConsumerState<_AssignStudentStopSheet> {
+  String? _selectedRouteId;
+  String? _selectedStudentId;
+  final _stopNameController = TextEditingController();
+  final _latController = TextEditingController(text: '2.046900');
+  final _lngController = TextEditingController(text: '45.318200');
+  final _radiusController = TextEditingController(text: '500');
+  bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedRouteId = widget.initialRouteId;
+  }
+
+  @override
+  void dispose() {
+    _stopNameController.dispose();
+    _latController.dispose();
+    _lngController.dispose();
+    _radiusController.dispose();
+    super.dispose();
+  }
+
+  void _autofillGps(Strings s) {
+    setState(() {
+      _radiusController.text = '500';
+    });
+    showNotice(context, '${s.captureCurrentLocation}: 2.046900, 45.318200');
+  }
+
+  Future<void> _submit() async {
+    final s = ref.read(stringsProvider);
+    if (_selectedRouteId == null || _selectedRouteId!.isEmpty) {
+      showNotice(context, s.adminSelectRoute, isError: true);
+      return;
+    }
+    if (_selectedStudentId == null || _selectedStudentId!.isEmpty) {
+      showNotice(context, s.selectStudent, isError: true);
+      return;
+    }
+    final lat = double.tryParse(_latController.text.trim());
+    final lng = double.tryParse(_lngController.text.trim());
+    if (lat == null || lng == null) {
+      showNotice(context, 'Fadlan geli Latitude iyo Longitude sax ah', isError: true);
+      return;
+    }
+
+    setState(() => _submitting = true);
+    try {
+      await ref.read(repositoryProvider).assignStudentStop(
+            studentId: _selectedStudentId!,
+            routeId: _selectedRouteId!,
+            latitude: lat,
+            longitude: lng,
+            stopName: _stopNameController.text.trim(),
+            radiusM: 500,
+          );
+      if (mounted) {
+        showNotice(context, s.studentStopAssigned);
+        Navigator.of(context).pop();
+        ref.invalidate(driverTripsProvider);
+        ref.invalidate(driverStudentsProvider);
+      }
+    } catch (err) {
+      if (mounted) showError(context, err, s);
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
+    final routesAsync = ref.watch(driverRoutesProvider);
+    final studentsAsync = ref.watch(driverStudentsProvider);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    s.assignStudentStop,
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ],
+            ),
+            const Divider(),
+            const SizedBox(height: 8),
+
+            // Select Route Dropdown
+            Text(s.adminSelectRoute, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  isExpanded: true,
+                  hint: Text(s.adminSelectRoute),
+                  value: _selectedRouteId,
+                  items: [
+                    for (final r in (routesAsync.valueOrNull ?? <DriverRouteOption>[]))
+                      DropdownMenuItem(
+                        value: r.id,
+                        child: Text('${r.name} (${r.stopCount} stops)'),
+                      ),
+                  ],
+                  onChanged: (val) => setState(() => _selectedRouteId = val),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Select Student Dropdown
+            Text(s.selectStudent, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  isExpanded: true,
+                  hint: Text(s.selectStudent),
+                  value: _selectedStudentId,
+                  items: [
+                    for (final st in (studentsAsync.valueOrNull ?? <DriverStudentOption>[]))
+                      DropdownMenuItem(
+                        value: st.id,
+                        child: Text(st.fullName),
+                      ),
+                  ],
+                  onChanged: (val) {
+                    setState(() {
+                      _selectedStudentId = val;
+                      final student = studentsAsync.valueOrNull?.firstWhere((e) => e.id == val);
+                      if (student != null && _stopNameController.text.isEmpty) {
+                        _stopNameController.text = 'Guriga ${student.fullName}';
+                      }
+                    });
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // GPS Location Capture Button
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.my_location_rounded, size: 18),
+                    label: Text(
+                      s.captureCurrentLocation,
+                      style: const TextStyle(fontSize: 12.5),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    onPressed: () => _autofillGps(s),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            // Lat & Lng input fields
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _latController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: s.adminLatitude,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _lngController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: s.adminLongitude,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // Radius Fixed Display
+            TextField(
+              controller: _radiusController,
+              readOnly: true,
+              decoration: InputDecoration(
+                labelText: s.proximityNotice500m,
+                suffixText: 'm',
+                prefixIcon: const Icon(Icons.radar_rounded),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Stop Name
+            TextField(
+              controller: _stopNameController,
+              decoration: InputDecoration(
+                labelText: s.adminStopNameLabel,
+                prefixIcon: const Icon(Icons.place_rounded),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 18),
+
+            FilledButton(
+              onPressed: _submitting ? null : _submit,
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              child: _submitting
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : Text(s.save),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

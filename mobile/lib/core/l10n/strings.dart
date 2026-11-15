@@ -607,6 +607,25 @@ class Strings {
   String get adminSelectDriver => _('Dooro darawalka', 'Select Driver');
   String get adminSelectAttendant => _('Dooro kalkaaliyaha (ikhtiyaari)', 'Select Attendant (optional)');
   String get adminBusCrewAssigned => _('Shaqaalaha baska waa la xiray', 'Bus crew assigned successfully');
+
+  // ---- Student Attendance & Stop Geotagging
+  String get attendance => _('Xaadirinta', 'Attendance');
+  String get attendanceTitle => _('Xaadirinta Ardayda', 'Student Attendance');
+  String get present => _('Imaaday', 'Present');
+  String get absent => _('Maqan', 'Absent');
+  String get markPresent => _('Xaadir', 'Boarded');
+  String get markAbsent => _('Maqan', 'Absent');
+  String get attendanceStats => _('Xaaladda Xaadirinta', 'Attendance Summary');
+  String get attendanceSaved => _('Xaadirinta waa la keydiyay', 'Attendance saved');
+  String get assignStudentStop => _('Qoondayso Goobta Ardayga', 'Assign Student Stop');
+  String get captureCurrentLocation => _('Qabo Goobta Hadda (GPS)', 'Capture Current GPS');
+  String get studentStopAssigned => _('Goobta ardayga waa la keydiyay', 'Student stop assigned successfully');
+  String get proximityNotice500m => _('Gacan-wareegga digniinta (500m goor hore)', 'Proximity geofence radius (500m alert)');
+  String get attendanceReport => _('Warbixinta Xaadirinta', 'Attendance Report');
+  String get attendanceReportTitle => _('Warbixinta Xaadirinta Ardayda', 'Student Attendance Report');
+  String get attendanceRate => _('Heerka Xaadirinta', 'Attendance Rate');
+  String get filterByStudent => _('Ku raadi ardayga...', 'Search by student name...');
+  String get markedAt => _('Waqtiga', 'Marked At');
 }
 
 /// 'so' or 'en'.

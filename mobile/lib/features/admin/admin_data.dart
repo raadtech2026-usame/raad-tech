@@ -676,6 +676,128 @@ class AdminStaff {
   );
 }
 
+class AdminAttendanceRecord {
+  final String id;
+  final String tripId;
+  final String studentId;
+  final String studentName;
+  final String? vehicleId;
+  final String? routeId;
+  final String? routeName;
+  final String attendanceDate;
+  final String status;
+  final String? markedAt;
+  final String? notes;
+
+  const AdminAttendanceRecord({
+    required this.id,
+    required this.tripId,
+    required this.studentId,
+    required this.studentName,
+    this.vehicleId,
+    this.routeId,
+    this.routeName,
+    required this.attendanceDate,
+    required this.status,
+    this.markedAt,
+    this.notes,
+  });
+
+  bool get isPresent => status == 'present' || status == 'boarded';
+
+  factory AdminAttendanceRecord.fromJson(Map<String, dynamic> json) =>
+      AdminAttendanceRecord(
+        id: json['id'] as String? ?? '',
+        tripId: json['trip_id'] as String? ?? '',
+        studentId: json['student_id'] as String? ?? '',
+        studentName: json['student_name'] as String? ?? 'Arday',
+        vehicleId: json['vehicle_id'] as String?,
+        routeId: json['route_id'] as String?,
+        routeName: json['route_name'] as String?,
+        attendanceDate: json['attendance_date'] as String? ?? '',
+        status: json['status'] as String? ?? 'present',
+        markedAt: json['marked_at'] as String?,
+        notes: json['notes'] as String?,
+      );
+}
+
+class AdminAttendanceSummary {
+  final int total;
+  final int present;
+  final int absent;
+  final double rate;
+
+  const AdminAttendanceSummary({
+    required this.total,
+    required this.present,
+    required this.absent,
+    required this.rate,
+  });
+
+  factory AdminAttendanceSummary.fromJson(Map<String, dynamic> json) =>
+      AdminAttendanceSummary(
+        total: (json['total'] as num?)?.toInt() ?? 0,
+        present: (json['present'] as num?)?.toInt() ?? 0,
+        absent: (json['absent'] as num?)?.toInt() ?? 0,
+        rate: (json['rate'] as num?)?.toDouble() ?? 0.0,
+      );
+}
+
+class AdminAttendanceReport {
+  final List<AdminAttendanceRecord> records;
+  final AdminAttendanceSummary summary;
+
+  const AdminAttendanceReport({
+    required this.records,
+    required this.summary,
+  });
+
+  factory AdminAttendanceReport.fromJson(Map<String, dynamic> json) {
+    final recs = (json['records'] as List? ?? const [])
+        .map((j) => AdminAttendanceRecord.fromJson(j as Map<String, dynamic>))
+        .toList();
+    final sum = AdminAttendanceSummary.fromJson(
+      json['summary'] as Map<String, dynamic>? ?? const {},
+    );
+    return AdminAttendanceReport(records: recs, summary: sum);
+  }
+}
+
+class AdminAttendanceQuery {
+  final String? vehicleId;
+  final String? studentId;
+  final String? routeId;
+  final String? date;
+  final String? status;
+
+  const AdminAttendanceQuery({
+    this.vehicleId,
+    this.studentId,
+    this.routeId,
+    this.date,
+    this.status,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AdminAttendanceQuery &&
+          runtimeType == other.runtimeType &&
+          vehicleId == other.vehicleId &&
+          studentId == other.studentId &&
+          routeId == other.routeId &&
+          date == other.date &&
+          status == other.status;
+
+  @override
+  int get hashCode =>
+      vehicleId.hashCode ^
+      studentId.hashCode ^
+      routeId.hashCode ^
+      date.hashCode ^
+      status.hashCode;
+}
+
 List<Map<String, dynamic>> _list(Object? value) =>
     (value as List<dynamic>? ?? const []).cast<Map<String, dynamic>>();
 
@@ -1141,6 +1263,40 @@ class AdminRepository {
     };
     await _client.post('/vehicles/$vehicleId/crew', body: body);
   }
+
+  Future<AdminAttendanceReport> attendanceReport({
+    String? vehicleId,
+    String? studentId,
+    String? routeId,
+    String? date,
+    String? status,
+  }) async {
+    try {
+      final vParam = vehicleId != null && vehicleId.isNotEmpty && vehicleId != 'all'
+          ? '&vehicle_id=$vehicleId'
+          : '';
+      final sParam = studentId != null && studentId.isNotEmpty && studentId != 'all'
+          ? '&student_id=$studentId'
+          : '';
+      final rParam = routeId != null && routeId.isNotEmpty && routeId != 'all'
+          ? '&route_id=$routeId'
+          : '';
+      final dParam = date != null && date.isNotEmpty ? '&date=$date' : '';
+      final stParam = status != null && status.isNotEmpty && status != 'all'
+          ? '&status=$status'
+          : '';
+
+      final json = await _client.get(
+        '/trips/attendance-report?$vParam$sParam$rParam$dParam$stParam',
+      );
+      return AdminAttendanceReport.fromJson(json as Map<String, dynamic>);
+    } catch (_) {
+      return const AdminAttendanceReport(
+        records: [],
+        summary: AdminAttendanceSummary(total: 0, present: 0, absent: 0, rate: 0.0),
+      );
+    }
+  }
 }
 
 final adminRepositoryProvider = Provider<AdminRepository>((ref) {
@@ -1230,4 +1386,15 @@ final adminTripsItemsProvider = FutureProvider.autoDispose<List<AdminTripItem>>(
 
 final adminStaffMembersProvider = FutureProvider.autoDispose<List<AdminStaff>>(
   (ref) => ref.watch(adminRepositoryProvider).staffList(),
+);
+
+final adminAttendanceReportProvider =
+    FutureProvider.autoDispose.family<AdminAttendanceReport, AdminAttendanceQuery>(
+  (ref, query) => ref.watch(adminRepositoryProvider).attendanceReport(
+    vehicleId: query.vehicleId,
+    studentId: query.studentId,
+    routeId: query.routeId,
+    date: query.date,
+    status: query.status,
+  ),
 );

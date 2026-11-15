@@ -88,6 +88,58 @@ class MyTripDetailResponse(BaseModel):
     passengers: list[MyPassengerResponse]
 
 
+class MyAttendanceRecordResponse(BaseModel):
+    id: str
+    trip_id: str
+    student_id: str
+    vehicle_id: str | None = None
+    route_id: str | None = None
+    attendance_date: date
+    status: str
+    marked_at: datetime
+    notes: str | None = None
+
+
+class RecordAttendanceRequest(BaseModel):
+    student_id: str
+    status: str = "present"
+    notes: str | None = None
+
+
+class DriverAssignStudentStopRequest(BaseModel):
+    student_id: str
+    route_id: str
+    latitude: float
+    longitude: float
+    stop_name: str | None = None
+    geofence_radius_m: int = 500
+
+
+class DriverAssignStudentStopResponse(BaseModel):
+    stop_id: str
+    stop_name: str
+    route_id: str
+    student_id: str
+    latitude: float
+    longitude: float
+    geofence_radius_m: int
+    assignment_id: str
+    status: str
+
+
+class DriverRouteOptionResponse(BaseModel):
+    id: str
+    name: str
+    stop_count: int = 0
+
+
+class DriverStudentOptionResponse(BaseModel):
+    id: str
+    full_name: str
+    current_route_name: str | None = None
+    current_stop_name: str | None = None
+
+
 class MyCrewResponse(BaseModel):
     vehicle: MyVehicleResponse
     members: list[MyCrewMemberResponse]
@@ -213,6 +265,99 @@ async def get_my_trip(
 ) -> MyTripDetailResponse:
     detail = await service.my_trip_detail(principal, trip_id, uow=uow)
     return MyTripDetailResponse.model_validate(asdict(detail))
+
+
+# ---- student attendance & stop assignment -----------------------------------------------------
+
+
+@me_transport_router.get(
+    "/trips/{trip_id}/attendance",
+    response_model=list[MyAttendanceRecordResponse],
+    summary="List attendance marked for students on this trip",
+)
+async def get_my_trip_attendance(
+    trip_id: str,
+    principal: Principal = Depends(get_current_user),
+    service: SelfServiceApplicationService = Depends(get_self_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[MyAttendanceRecordResponse]:
+    records = await service.get_trip_attendance(principal, trip_id, uow=uow)
+    return [MyAttendanceRecordResponse.model_validate(asdict(r)) for r in records]
+
+
+@me_transport_router.post(
+    "/trips/{trip_id}/attendance",
+    response_model=MyAttendanceRecordResponse,
+    summary="Record or update student attendance for this trip",
+)
+async def record_my_trip_attendance(
+    trip_id: str,
+    body: RecordAttendanceRequest,
+    principal: Principal = Depends(get_current_user),
+    service: SelfServiceApplicationService = Depends(get_self_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> MyAttendanceRecordResponse:
+    record = await service.record_trip_attendance(
+        principal,
+        trip_id,
+        student_id=body.student_id,
+        status=body.status,
+        notes=body.notes,
+        uow=uow,
+    )
+    return MyAttendanceRecordResponse.model_validate(asdict(record))
+
+
+@me_transport_router.post(
+    "/assign-student-stop",
+    response_model=DriverAssignStudentStopResponse,
+    summary="Capture student stop via GPS (500m radius) and assign student to route",
+)
+async def driver_assign_student_stop(
+    body: DriverAssignStudentStopRequest,
+    principal: Principal = Depends(get_current_user),
+    service: SelfServiceApplicationService = Depends(get_self_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> DriverAssignStudentStopResponse:
+    result = await service.assign_student_stop(
+        principal,
+        student_id=body.student_id,
+        route_id=body.route_id,
+        latitude=body.latitude,
+        longitude=body.longitude,
+        stop_name=body.stop_name,
+        geofence_radius_m=body.geofence_radius_m,
+        uow=uow,
+    )
+    return DriverAssignStudentStopResponse.model_validate(result)
+
+
+@me_transport_router.get(
+    "/routes",
+    response_model=list[DriverRouteOptionResponse],
+    summary="List available routes for driver stop assignment",
+)
+async def driver_list_routes(
+    principal: Principal = Depends(get_current_user),
+    service: SelfServiceApplicationService = Depends(get_self_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[DriverRouteOptionResponse]:
+    routes = await service.my_routes(principal, uow=uow)
+    return [DriverRouteOptionResponse.model_validate(r) for r in routes]
+
+
+@me_transport_router.get(
+    "/students",
+    response_model=list[DriverStudentOptionResponse],
+    summary="List students in organization for driver stop assignment",
+)
+async def driver_list_students(
+    principal: Principal = Depends(get_current_user),
+    service: SelfServiceApplicationService = Depends(get_self_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[DriverStudentOptionResponse]:
+    students = await service.my_students(principal, uow=uow)
+    return [DriverStudentOptionResponse.model_validate(s) for s in students]
 
 
 # ---- crew, documents --------------------------------------------------------------------------

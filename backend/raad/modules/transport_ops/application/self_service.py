@@ -16,7 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 
+from sqlalchemy import and_, select
+
 from raad.core.errors.exceptions import NotFoundError, RuleViolationError, ValidationError
+from raad.core.ids.generator import UlidGenerator
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.transport_ops.application.commands import RecordUnavailabilityCommand
@@ -42,15 +45,22 @@ from raad.modules.transport_ops.domain.entities import (
     Driver,
     Incident,
     StaffUnavailability,
+    StudentAssignment,
     Trip,
 )
 from raad.modules.transport_ops.domain.value_objects import (
+    RouteId,
     StaffAssignmentKind,
     StaffUnavailabilityId,
+    StopId,
+    StudentAssignmentId,
+    StudentId,
     TransportStaffId,
     TripId,
     UserId,
+    VehicleId,
 )
+from raad.modules.transport_ops.infra.models import StudentAttendanceModel
 
 #: The longest window one call may ask for. A term is about three months.
 MAX_TRIP_WINDOW_DAYS = 92
@@ -71,6 +81,19 @@ class MyStopDTO:
 class MyTripStudentDTO:
     student_id: str
     full_name: str
+
+
+@dataclass(frozen=True)
+class MyAttendanceDTO:
+    id: str
+    trip_id: str
+    student_id: str
+    vehicle_id: str | None
+    route_id: str | None
+    attendance_date: date
+    status: str
+    marked_at: datetime
+    notes: str | None = None
 
 
 @dataclass(frozen=True)
@@ -605,6 +628,226 @@ class SelfServiceApplicationService:
             driver = await uow.drivers.get_by_staff_id(TransportStaffId(staff_id))
             return str(driver.user_id) if driver is not None else None
 
+    # ---- student attendance & stop assignment ---------------------------------------------
+
+    async def get_trip_attendance(
+        self, principal: Principal, trip_id: str, *, uow: TransportOpsUnitOfWork
+    ) -> list[MyAttendanceDTO]:
+        async with uow:
+            driver = await self._driver(uow, principal)
+            trip = await uow.trips.get(TripId(trip_id))
+            if trip is None or trip.driver_id != driver.id:
+                raise NotFoundError(f"Trip {trip_id} not found.")
+            stmt = select(StudentAttendanceModel).where(
+                StudentAttendanceModel.trip_id == trip_id,
+                StudentAttendanceModel.organization_id == str(driver.organization_id),
+                StudentAttendanceModel.deleted_at.is_(None),
+            )
+            records = (await uow.session.scalars(stmt)).all()
+            return [
+                MyAttendanceDTO(
+                    id=str(r.id),
+                    trip_id=str(r.trip_id),
+                    student_id=str(r.student_id),
+                    vehicle_id=str(r.vehicle_id) if r.vehicle_id else None,
+                    route_id=str(r.route_id) if r.route_id else None,
+                    attendance_date=r.attendance_date,
+                    status=r.status,
+                    marked_at=r.marked_at,
+                    notes=r.notes,
+                )
+                for r in records
+            ]
+
+    async def record_trip_attendance(
+        self,
+        principal: Principal,
+        trip_id: str,
+        *,
+        student_id: str,
+        status: str = "present",
+        notes: str | None = None,
+        uow: TransportOpsUnitOfWork,
+    ) -> MyAttendanceDTO:
+        async with uow:
+            driver = await self._driver(uow, principal)
+            trip = await uow.trips.get(TripId(trip_id))
+            if trip is None or trip.driver_id != driver.id:
+                raise NotFoundError(f"Trip {trip_id} not found.")
+            student = await uow.students.get(StudentId(student_id))
+            if student is None or str(student.organization_id) != str(driver.organization_id):
+                raise NotFoundError(f"Student {student_id} not found.")
+
+            stmt = select(StudentAttendanceModel).where(
+                StudentAttendanceModel.trip_id == trip_id,
+                StudentAttendanceModel.student_id == student_id,
+                StudentAttendanceModel.attendance_date == trip.scheduled_date,
+                StudentAttendanceModel.deleted_at.is_(None),
+            )
+            existing = (await uow.session.scalars(stmt)).first()
+            now = self._clock.now()
+            if existing is not None:
+                existing.status = status
+                existing.marked_by_user_id = principal.user_id
+                existing.marked_at = now
+                if notes is not None:
+                    existing.notes = notes
+                record = existing
+            else:
+                record = StudentAttendanceModel(
+                    id=UlidGenerator().new_id(),
+                    organization_id=str(driver.organization_id),
+                    trip_id=str(trip.id),
+                    student_id=str(student.id),
+                    vehicle_id=str(trip.vehicle_id) if trip.vehicle_id else None,
+                    route_id=str(trip.route_id) if trip.route_id else None,
+                    attendance_date=trip.scheduled_date,
+                    status=status,
+                    marked_by_user_id=principal.user_id,
+                    marked_at=now,
+                    notes=notes,
+                )
+                uow.session.add(record)
+            await uow.commit()
+            return MyAttendanceDTO(
+                id=str(record.id),
+                trip_id=str(record.trip_id),
+                student_id=str(record.student_id),
+                vehicle_id=str(record.vehicle_id) if record.vehicle_id else None,
+                route_id=str(record.route_id) if record.route_id else None,
+                attendance_date=record.attendance_date,
+                status=record.status,
+                marked_at=record.marked_at,
+                notes=record.notes,
+            )
+
+    async def assign_student_stop(
+        self,
+        principal: Principal,
+        *,
+        student_id: str,
+        route_id: str,
+        latitude: float,
+        longitude: float,
+        stop_name: str | None = None,
+        geofence_radius_m: int = 500,
+        uow: TransportOpsUnitOfWork,
+    ) -> dict[str, Any]:
+        async with uow:
+            driver = await self._driver(uow, principal)
+            student = await uow.students.get(StudentId(student_id))
+            if student is None or str(student.organization_id) != str(driver.organization_id):
+                raise NotFoundError(f"Student {student_id} not found.")
+            route = await uow.routes.get(RouteId(route_id))
+            if route is None or str(route.organization_id) != str(driver.organization_id):
+                raise NotFoundError(f"Route {route_id} not found.")
+
+            name = (
+                stop_name.strip()
+                if stop_name and stop_name.strip()
+                else f"Guriga {student.full_name}"
+            )
+            seq = max([s.sequence_no for s in route.stops], default=0) + 1
+            stop_id = StopId(UlidGenerator().new_id())
+            stop = route.add_stop(
+                id=stop_id,
+                name=name,
+                latitude=latitude,
+                longitude=longitude,
+                sequence_no=seq,
+                geofence_radius_m=geofence_radius_m or 500,
+                clock=self._clock,
+                actor_id=principal.user_id,
+            )
+            uow.record_events(route.pull_domain_events())
+
+            # Find active assignment or create new
+            existing = await uow.student_assignments.active_assignment_for_student(student.id)
+            vehicle_id = None
+            if existing and existing.vehicle_id:
+                vehicle_id = existing.vehicle_id
+            else:
+                trips = await uow.trips.list_between(self._today(), self._today())
+                my_trips = [t for t in trips if t.driver_id == driver.id]
+                if my_trips and my_trips[0].vehicle_id:
+                    vehicle_id = my_trips[0].vehicle_id
+
+            if existing is not None:
+                existing.transfer(clock=self._clock, actor_id=principal.user_id)
+                uow.record_events(existing.pull_domain_events())
+
+            assignment = StudentAssignment.assign(
+                id=StudentAssignmentId(UlidGenerator().new_id()),
+                organization_id=student.organization_id,
+                student_id=student.id,
+                student_organization_id=student.organization_id,
+                route_id=route.id,
+                route_organization_id=route.organization_id,
+                pickup_stop_id=stop.id,
+                dropoff_stop_id=stop.id,
+                vehicle_id=vehicle_id,
+                clock=self._clock,
+                actor_id=principal.user_id,
+            )
+            uow.student_assignments.add(assignment)
+            uow.record_events(assignment.pull_domain_events())
+            await uow.commit()
+
+            return {
+                "stop_id": str(stop.id),
+                "stop_name": stop.name,
+                "route_id": str(route.id),
+                "student_id": str(student.id),
+                "latitude": stop.latitude,
+                "longitude": stop.longitude,
+                "geofence_radius_m": stop.geofence_radius_m or 500,
+                "assignment_id": str(assignment.id),
+                "status": assignment.status.value,
+            }
+
+    async def my_routes(
+        self, principal: Principal, *, uow: TransportOpsUnitOfWork
+    ) -> list[dict[str, Any]]:
+        async with uow:
+            driver = await self._driver(uow, principal)
+            routes = await uow.routes.list_all()
+            return [
+                {
+                    "id": str(r.id),
+                    "name": r.name,
+                    "stop_count": len(r.stops),
+                }
+                for r in sorted(routes, key=lambda x: x.name)
+            ]
+
+    async def my_students(
+        self, principal: Principal, *, uow: TransportOpsUnitOfWork
+    ) -> list[dict[str, Any]]:
+        async with uow:
+            driver = await self._driver(uow, principal)
+            students = await uow.students.list_all()
+            routes = {str(r.id): r for r in await uow.routes.list_all()}
+            result = []
+            for s in sorted(students, key=lambda x: x.full_name):
+                assignment = await uow.student_assignments.active_assignment_for_student(s.id)
+                route_name = None
+                stop_name = None
+                if assignment and assignment.route_id:
+                    route = routes.get(str(assignment.route_id))
+                    if route:
+                        route_name = route.name
+                        for st in route.stops:
+                            if st.id == assignment.pickup_stop_id:
+                                stop_name = st.name
+                                break
+                result.append({
+                    "id": str(s.id),
+                    "full_name": s.full_name,
+                    "current_route_name": route_name,
+                    "current_stop_name": stop_name,
+                })
+            return result
+
     # ---- helpers --------------------------------------------------------------------------
 
     @staticmethod
@@ -703,6 +946,7 @@ __all__ = [
     "MyTripDTO",
     "MyTripDetailDTO",
     "MyTripStudentDTO",
+    "MyAttendanceDTO",
     "MyUnavailabilityDTO",
     "SelfServiceApplicationService",
 ]
