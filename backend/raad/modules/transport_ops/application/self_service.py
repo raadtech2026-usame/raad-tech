@@ -741,6 +741,12 @@ class SelfServiceApplicationService:
                 actor_id=principal.user_id,
             )
             uow.record_events(route.pull_domain_events())
+            # Flush the new Stop row to the database NOW so the StudentAssignment
+            # FK (pickup_stop_id / dropoff_stop_id → stops.id) can resolve.
+            # flush_tracked_changes() is only called inside commit(); we need the
+            # stop to exist in the DB *before* we insert/update the assignment row.
+            uow.routes.flush_tracked_changes()
+            await uow._session.flush()
 
             # Find active assignment or create new
             existing = await uow.student_assignments.active_assignment_for_student(student.id)

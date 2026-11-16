@@ -55,9 +55,10 @@ this module already established; see that module's own docstring for the full re
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from raad.core.di.container import Container
+if TYPE_CHECKING:
+    from raad.core.di.container import Container
 from raad.core.events.base import DomainEvent
 from raad.core.events.processor import EventProcessor, EventProcessorRegistry
 from raad.core.errors.exceptions import NotFoundError
@@ -388,6 +389,49 @@ class VehicleApproachingStopNotifier(EventProcessor):
         )
 
 
+class VehicleEnteredStopGeofenceNotifier(EventProcessor):
+    """Fires when the bus physically enters the 500 m geofence around a student's stop — the
+    third of the six per-student daily notifications ('bus is at your stop').  Mirrors
+    `VehicleApproachingStopNotifier` exactly: same fan-out helper, same stop-scoped recipient
+    filter so only the families whose child uses *this* stop receive it, same CR-1 gate."""
+
+    event_type = "VehicleEnteredStopGeofence"
+
+    def __init__(self, fan_out: _NotificationFanOut) -> None:
+        self._fan_out = fan_out
+
+    async def process(self, event: DomainEvent) -> None:
+        trip_id = event.payload["trip_id"]
+        trip = await self._fan_out.resolve_trip(trip_id)
+        if trip is None:
+            logger.info(
+                "notification_skipped_trip_not_found",
+                extra={"event_type": event.event_type, "trip_id": trip_id},
+            )
+            return
+        stop_id = event.payload.get("stop_id")
+        if not stop_id:
+            return
+        await self._fan_out.notify_vehicle_watchers(
+            vehicle_id=trip.vehicle_id,
+            organization_id=event.org_id,
+            type="approaching_stop",
+            title="Bus is at your stop",
+            body="The school bus has arrived at your child's stop.",
+            data={
+                "trip_id": trip_id,
+                "stop_id": stop_id,
+                "vehicle_id": trip.vehicle_id,
+                "trip_type": trip.trip_type,
+                "kind": "bus_at_stop",
+            },
+            trip_id=trip_id,
+            stop_id=stop_id,
+            route_id=trip.route_id,
+            trip_type=trip.trip_type,
+        )
+
+
 class VehicleArrivedAtOrganizationNotifier(EventProcessor):
     event_type = "VehicleArrivedAtOrganization"
 
@@ -694,6 +738,7 @@ def register_notification_processors(
     registry.register(TripStartedNotifier(fan_out))
     registry.register(TripEndedNotifier(fan_out))
     registry.register(VehicleApproachingStopNotifier(fan_out))
+    registry.register(VehicleEnteredStopGeofenceNotifier(fan_out))
     registry.register(VehicleArrivedAtOrganizationNotifier(fan_out))
     registry.register(TripCancelledNotifier(container))
     registry.register(StaffCoverCreatedNotifier(container))
