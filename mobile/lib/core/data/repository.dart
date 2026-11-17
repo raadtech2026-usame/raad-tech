@@ -49,7 +49,7 @@ class RaadRepository {
       if (vehicleId != null && vehicleId.isNotEmpty) 'vehicle_id': vehicleId,
     };
     final json = await _client.post('/me/trips', body: body);
-    return Trip.fromJson(json as Map<String, dynamic>);
+    return Trip.fromJson(json);
   }
 
   // ---- driver

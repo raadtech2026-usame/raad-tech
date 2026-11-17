@@ -344,6 +344,7 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ("GET", "/api/v1/me/invoices", "ADR-0047 SS9 - the calling parent's own invoices and payments, self-scoped"),
     ("GET", "/api/v1/me/transport", "ADR-0060 - the calling parent's own children with bus, route and own stops, self-scoped"),
     ("GET", "/api/v1/me/trips", "ADR-0061 - mobile self-service, self-scoped"),
+    ("POST", "/api/v1/me/trips", "ADR-0061 - driver create and schedule trip"),
     ("GET", "/api/v1/me/trips/{trip_id}", "ADR-0061 - mobile self-service, self-scoped"),
     ("GET", "/api/v1/me/crew", "ADR-0061 - mobile self-service, self-scoped"),
     ("GET", "/api/v1/me/documents", "ADR-0061 - mobile self-service, self-scoped"),

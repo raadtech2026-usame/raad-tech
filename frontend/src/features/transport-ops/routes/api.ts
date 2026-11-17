@@ -93,13 +93,14 @@ function toRoute(wire: RouteWire): Route {
 }
 
 function toRouteSummary(wire: RouteSummaryWire): RouteSummary {
-  return {
+  const summary: RouteSummary = {
     id: wire.id,
     name: wire.name,
     status: wire.status as RouteStatus,
-    stopCount: wire.stop_count ?? 0,
-    tripCount: wire.trip_count ?? 0,
   };
+  if (wire.stop_count !== undefined) summary.stopCount = wire.stop_count;
+  if (wire.trip_count !== undefined) summary.tripCount = wire.trip_count;
+  return summary;
 }
 
 /** `GET /routes` (API Contracts §4.3 line 125) — paginated/filterable/sortable via
