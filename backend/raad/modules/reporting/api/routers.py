@@ -217,7 +217,9 @@ async def export_report(
     student_id: str | None = Query(default=None),
     payment_method: str | None = Query(default=None),
     status_filter: str | None = Query(
-        default=None, alias="status", pattern="^(unpaid|partial|paid|cancelled)$"
+        default=None,
+        alias="status",
+        pattern="^(unpaid|partial|paid|cancelled|present|absent|boarded)$",
     ),
     organization_id: str | None = Query(
         default=None,
@@ -283,7 +285,9 @@ async def preview_report(
     student_id: str | None = Query(default=None),
     payment_method: str | None = Query(default=None),
     status_filter: str | None = Query(
-        default=None, alias="status", pattern="^(unpaid|partial|paid|cancelled)$"
+        default=None,
+        alias="status",
+        pattern="^(unpaid|partial|paid|cancelled|present|absent|boarded)$",
     ),
     organization_id: str | None = Query(
         default=None,

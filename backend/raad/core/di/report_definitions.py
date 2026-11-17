@@ -46,6 +46,7 @@ from raad.modules.school_erp.application.services import (
 from raad.modules.school_erp.domain.value_objects import BillingPeriod
 from raad.modules.transport_ops.application.ports import TransportOpsUnitOfWork
 from raad.modules.transport_ops.application.queries import ListStudentAssignmentsQuery
+from raad.modules.transport_ops.domain.value_objects import TripId
 from raad.modules.transport_ops.application.services import (
     ParentApplicationService,
     StudentApplicationService,
@@ -462,11 +463,71 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             student_id=request.student_id,
             start=request.start,
             end=request.end,
-            status=request.status,
+            status=None,
             uow=transport_ops_uow,
         )
-        records = report.get("records", [])
-        summary = report.get("summary", {})
+        records = list(report.get("records", []))
+
+        # Reconcile absent roster students:
+        # In school bus operations, drivers tap students who board (present). Unmarked
+        # assigned students on that trip are absent.
+        trip_ids = {r["trip_id"] for r in records if r.get("trip_id")}
+        async with transport_ops_uow:
+            trips = []
+            for tid in trip_ids:
+                t = await transport_ops_uow.trips.get(TripId(tid))
+                if t:
+                    trips.append(t)
+            if not trips and (request.start or request.end or request.vehicle_id):
+                win_start, win_end = request.start or date.today(), request.end or date.today()
+                v_id = VehicleId(request.vehicle_id) if request.vehicle_id else None
+                trips = await transport_ops_uow.trips.list_between(win_start, win_end, vehicle_id=v_id)
+
+            seen_trip_students = {(r["trip_id"], r["student_id"]) for r in records if r.get("trip_id")}
+            student_ids_to_fetch = set()
+            unmarked_items = []
+            for t in trips:
+                t_str_id = str(t.id)
+                assignments = await transport_ops_uow.student_assignments.list_active_for_route_vehicle(
+                    t.route_id, t.vehicle_id
+                )
+                route = await transport_ops_uow.routes.get(t.route_id) if t.route_id else None
+                route_name = route.name if route else None
+                for a in assignments:
+                    s_id = str(a.student_id)
+                    if (t_str_id, s_id) not in seen_trip_students:
+                        seen_trip_students.add((t_str_id, s_id))
+                        student_ids_to_fetch.add(s_id)
+                        unmarked_items.append({
+                            "id": f"absent-{s_id}-{t_str_id}",
+                            "trip_id": t_str_id,
+                            "student_id": s_id,
+                            "vehicle_id": str(t.vehicle_id) if t.vehicle_id else None,
+                            "route_id": str(t.route_id) if t.route_id else None,
+                            "route_name": route_name,
+                            "attendance_date": t.scheduled_date.isoformat(),
+                            "status": "absent",
+                            "marked_at": None,
+                            "notes": "Unmarked (Absent)",
+                        })
+
+            if student_ids_to_fetch:
+                fetched_students = await transport_ops_uow.students.list_by_ids(list(student_ids_to_fetch))
+                s_map = {str(s.id): s.full_name for s in fetched_students}
+                for item in unmarked_items:
+                    item["student_name"] = s_map.get(item["student_id"], "Arday")
+                records.extend(unmarked_items)
+
+        if request.student_id and request.student_id != "all":
+            records = [r for r in records if r.get("student_id") == request.student_id]
+
+        total = len(records)
+        present = sum(1 for r in records if r.get("status") in ("present", "boarded"))
+        absent = sum(1 for r in records if r.get("status") == "absent")
+        rate = round((present / total * 100), 1) if total > 0 else 0.0
+
+        if request.status and request.status != "all":
+            records = [r for r in records if r.get("status") == request.status]
 
         vehicle_names = await _vehicle_names(
             container,
@@ -712,6 +773,7 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
         student_ids = [a.student_id for a in assignments]
         students = await student_service.list_students_by_ids(student_ids, uow=uow)
         student_names = {s.id: s.full_name for s in students}
+        student_notes = {s.id: (s.notes or "—") for s in students}
 
         links = await student_parent_service.list_links_for_students(student_ids, uow=uow)
         primary_parent_by_student: dict[str, str] = {}
@@ -721,32 +783,47 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
         parent_ids = sorted(set(primary_parent_by_student.values()))
         parents = await parent_service.list_parents_by_ids(parent_ids, uow=uow)
         parent_names = {p.id: p.full_name for p in parents}
+        parent_phones = {p.id: (str(p.phone) if p.phone else "—") for p in parents}
         vehicle_names = await _vehicle_names(
             container, request, {a.vehicle_id for a in assignments if a.vehicle_id}
         )
 
+        # Sort assignments by vehicle label then student name
+        assignments.sort(
+            key=lambda a: (
+                _vehicle_label(vehicle_names, a.vehicle_id),
+                student_names.get(a.student_id, ""),
+            )
+        )
+
         rows = [
             [
+                str(idx),
                 student_names.get(a.student_id, a.student_id),
                 parent_names.get(
-                    primary_parent_by_student.get(a.student_id, ""), "No linked parent"
+                    primary_parent_by_student.get(a.student_id, ""), "—"
+                ),
+                parent_phones.get(
+                    primary_parent_by_student.get(a.student_id, ""), "—"
                 ),
                 _vehicle_label(vehicle_names, a.vehicle_id),
+                student_notes.get(a.student_id, "—"),
                 a.status.replace("_", " ").title(),
             ]
-            for a in assignments
+            for idx, a in enumerate(assignments, start=1)
         ]
-        rows.sort(key=lambda r: r[0])
-        metadata = {"Students": str(len(rows))}
-        if total > len(assignments):
+        metadata = {"Total Active Students": str(len(rows))}
+        if request.vehicle_id:
+            metadata["Vehicle"] = _vehicle_label(vehicle_names, request.vehicle_id)
+        if total > len(assignments) and not request.vehicle_id:
             metadata["Note"] = (
                 f"Showing the first {len(assignments)} of {total} active assignments. "
                 "Narrow by vehicle for a complete list."
             )
         return ReportTable(
-            title="Student Transportation Report",
-            subtitle="Which student rides which bus, and with which parent",
-            headers=["Student", "Parent", "Vehicle", "Status"],
+            title="Bus Student Roster Report",
+            subtitle="Active students per bus, parent contact details, and transportation notes",
+            headers=["#", "Student", "Parent", "Parent Phone", "Vehicle", "Area / Notes", "Status"],
             rows=rows,
             metadata=metadata,
         )
@@ -2090,6 +2167,16 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
             build=student_attendance_report,
             roles=_ORG_ROLES,
             accepts=("start", "end", "vehicle_id", "status", "student_id"),
+            category="attendance",
+        ),
+        ReportDefinition(
+            key="org.student_transportation",
+            title="Bus Student Roster Report",
+            description="Active students per bus: student names, parent contact numbers, area notes, and vehicle info.",
+            scope="organization",
+            build=student_transportation_report,
+            roles=_ORG_ROLES,
+            accepts=("vehicle_id",),
             category="attendance",
         ),
         # -- Platform ----------------------------------------------------------------------------
