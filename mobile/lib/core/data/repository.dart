@@ -36,6 +36,22 @@ class RaadRepository {
     return (await _client.getList(path)).map(Trip.fromJson).toList();
   }
 
+  Future<Trip> createDriverTrip({
+    required String routeId,
+    String tripType = 'morning',
+    DateTime? scheduledDate,
+    String? vehicleId,
+  }) async {
+    final body = <String, dynamic>{
+      'route_id': routeId,
+      'trip_type': tripType,
+      if (scheduledDate != null) 'scheduled_date': isoDate(scheduledDate),
+      if (vehicleId != null && vehicleId.isNotEmpty) 'vehicle_id': vehicleId,
+    };
+    final json = await _client.post('/me/trips', body: body);
+    return Trip.fromJson(json as Map<String, dynamic>);
+  }
+
   // ---- driver
   Future<TripDetail> myTrip(String tripId) async {
     return TripDetail.fromJson(await _client.get('/me/trips/$tripId'));

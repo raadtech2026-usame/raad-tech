@@ -392,6 +392,8 @@ class RouteSummaryResponse(BaseModel):
     id: str
     name: str
     status: str
+    stop_count: int = 0
+    trip_count: int = 0
 
 
 class CreateRouteRequest(BaseModel):

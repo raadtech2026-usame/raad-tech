@@ -56,6 +56,7 @@ from raad.modules.transport_ops.domain.value_objects import (
     StudentId,
     TransportStaffId,
     TripId,
+    TripType,
     UserId,
     VehicleId,
 )
@@ -342,6 +343,88 @@ class SelfServiceApplicationService:
             crew=crew.get(str(trip.vehicle_id), []),
             passengers=passengers,
         )
+
+    async def create_my_trip(
+        self,
+        principal: Principal,
+        *,
+        route_id: str,
+        trip_type: str = "morning",
+        scheduled_date: date | None = None,
+        vehicle_id: str | None = None,
+        uow: TransportOpsUnitOfWork,
+    ) -> MyTripDTO:
+        async with uow:
+            driver = await self._driver(uow, principal)
+            route = await uow.routes.get(RouteId(route_id))
+            if route is None or str(route.organization_id) != str(driver.organization_id):
+                raise NotFoundError(f"Route {route_id} not found.")
+
+            target_date = scheduled_date or self._today()
+
+            # Resolve vehicle_id
+            resolved_vehicle_id: str | None = vehicle_id
+            assignments = await uow.student_assignments.list_all()
+            if not resolved_vehicle_id:
+                existing_trips = await uow.trips.list_between(
+                    target_date - timedelta(days=7), target_date + timedelta(days=7)
+                )
+                my_existing = [
+                    t for t in existing_trips if t.driver_id == driver.id and t.vehicle_id
+                ]
+                if my_existing:
+                    resolved_vehicle_id = str(my_existing[0].vehicle_id)
+
+            if not resolved_vehicle_id:
+                route_assignments = [
+                    a for a in assignments if a.route_id == route.id and a.vehicle_id
+                ]
+                if route_assignments:
+                    resolved_vehicle_id = str(route_assignments[0].vehicle_id)
+
+            if not resolved_vehicle_id:
+                org_assignments = [
+                    a
+                    for a in assignments
+                    if a.vehicle_id
+                    and str(a.organization_id) == str(driver.organization_id)
+                ]
+                if org_assignments:
+                    resolved_vehicle_id = str(org_assignments[0].vehicle_id)
+
+            if not resolved_vehicle_id:
+                raise ValidationError(
+                    "No vehicle assigned to this driver or route. Please contact organization admin."
+                )
+
+            trip_id = TripId(UlidGenerator().new_id())
+            ttype = (
+                TripType.MORNING
+                if str(trip_type).lower() == "morning"
+                else TripType.AFTERNOON
+            )
+            trip = Trip.schedule(
+                id=trip_id,
+                organization_id=driver.organization_id,
+                vehicle_id=VehicleId(resolved_vehicle_id),
+                driver_id=driver.id,
+                driver_organization_id=driver.organization_id,
+                route_id=route.id,
+                route_organization_id=route.organization_id,
+                trip_type=ttype,
+                scheduled_date=target_date,
+                clock=self._clock,
+                actor_id=principal.user_id,
+            )
+            uow.trips.add(trip)
+            uow.record_events(trip.pull_domain_events())
+            await uow.commit()
+
+            routes = {str(route.id): route.name}
+            vehicles = await self._vehicle_summaries(
+                [trip], str(driver.organization_id)
+            )
+            return self._trip_dto(trip, routes, vehicles)
 
     # ---- crew -----------------------------------------------------------------------------
 

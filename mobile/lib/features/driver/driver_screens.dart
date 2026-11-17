@@ -69,6 +69,15 @@ class _DriverShellState extends ConsumerState<DriverShell> {
   }
 }
 
+void _openCreateTripModal(BuildContext context) {
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (ctx) => const _CreateTripSheet(),
+  );
+}
+
 void _openAssignStudentStopModal(
   BuildContext context, [
   String? preselectedRouteId,
@@ -117,6 +126,11 @@ class DriverTodayScreen extends ConsumerWidget {
         title: Text(s.navToday),
         actions: [
           IconButton(
+            icon: const Icon(Icons.add_circle_outline_rounded),
+            tooltip: 'Abuur Safar',
+            onPressed: () => _openCreateTripModal(context),
+          ),
+          IconButton(
             icon: const Icon(Icons.fact_check_rounded),
             tooltip: s.attendanceTitle,
             onPressed: () {
@@ -160,10 +174,20 @@ class DriverTodayScreen extends ConsumerWidget {
               children: [
                 if (mine.isEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(top: 80),
-                    child: EmptyView(
-                      icon: Icons.event_available_rounded,
-                      message: s.noTripsToday,
+                    padding: const EdgeInsets.only(top: 60),
+                    child: Column(
+                      children: [
+                        EmptyView(
+                          icon: Icons.event_available_rounded,
+                          message: s.noTripsToday,
+                        ),
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          icon: const Icon(Icons.add_rounded),
+                          label: const Text('Abuur Safar Cusub'),
+                          onPressed: () => _openCreateTripModal(context),
+                        ),
+                      ],
                     ),
                   ),
                 for (final trip in mine)
@@ -356,6 +380,11 @@ class DriverTripsScreen extends ConsumerWidget {
                 .toList();
             return TabBarView(children: [list(upcoming), list(past)]);
           },
+        ),
+        floatingActionButton: FloatingActionButton.extended(
+          onPressed: () => _openCreateTripModal(context),
+          icon: const Icon(Icons.add_rounded),
+          label: const Text('Abuur Safar'),
         ),
       ),
     );
@@ -1509,6 +1538,155 @@ class _AssignStudentStopSheetState
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _CreateTripSheet extends ConsumerStatefulWidget {
+  const _CreateTripSheet();
+
+  @override
+  ConsumerState<_CreateTripSheet> createState() => _CreateTripSheetState();
+}
+
+class _CreateTripSheetState extends ConsumerState<_CreateTripSheet> {
+  String? _selectedRouteId;
+  String _tripType = 'morning';
+  bool _saving = false;
+
+  Future<void> _submit() async {
+    if (_selectedRouteId == null || _selectedRouteId!.isEmpty) {
+      showNotice(context, 'Fadlan dooro Route');
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      await ref.read(repositoryProvider).createDriverTrip(
+        routeId: _selectedRouteId!,
+        tripType: _tripType,
+        scheduledDate: DateTime.now(),
+      );
+      ref.invalidate(driverTripsProvider);
+      if (mounted) {
+        Navigator.of(context).pop();
+        showNotice(context, 'Safarka si guul leh ayaa loo abuuray');
+      }
+    } catch (e) {
+      if (mounted) {
+        showNotice(context, 'Khalad ayaa dhacay: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final routesAsync = ref.watch(driverRoutesProvider);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: EdgeInsets.fromLTRB(
+        20,
+        16,
+        20,
+        MediaQuery.of(context).viewInsets.bottom + 20,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Abuur Safar Cusub',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close_rounded),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Dooro Route',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                isExpanded: true,
+                hint: Text(
+                  routesAsync.isLoading
+                      ? 'Raadinaya routes...'
+                      : 'Dooro Route',
+                ),
+                value: _selectedRouteId,
+                items: [
+                  for (final r in (routesAsync.valueOrNull ?? <DriverRouteOption>[]))
+                    DropdownMenuItem(
+                      value: r.id,
+                      child: Text(
+                        '${r.name} (${r.stopCount} stops)',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (val) => setState(() => _selectedRouteId = val),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Nooca Safarka',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment<String>(
+                value: 'morning',
+                label: Text('Subax (Morning)'),
+                icon: Icon(Icons.wb_sunny_outlined),
+              ),
+              ButtonSegment<String>(
+                value: 'afternoon',
+                label: Text('Galab (Afternoon)'),
+                icon: Icon(Icons.wb_twilight_rounded),
+              ),
+            ],
+            selected: {_tripType},
+            onSelectionChanged: (set) {
+              if (set.isNotEmpty) {
+                setState(() => _tripType = set.first);
+              }
+            },
+          ),
+          const SizedBox(height: 24),
+          FilledButton.icon(
+            onPressed: _saving ? null : _submit,
+            icon: _saving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.add_task_rounded),
+            label: Text(_saving ? 'Fadlan sug...' : 'Abuur Safarka'),
+          ),
+        ],
       ),
     );
   }

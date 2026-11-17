@@ -44,6 +44,21 @@ class FakeRepository extends RaadRepository {
       _answer(trips);
 
   @override
+  Future<Trip> createDriverTrip({
+    required String routeId,
+    String tripType = 'morning',
+    DateTime? scheduledDate,
+    String? vehicleId,
+  }) async {
+    return trips.isNotEmpty ? trips.first : Trip.fromJson(const {
+      'id': 'trip-new-1',
+      'scheduled_date': '2026-11-16',
+      'trip_type': 'morning',
+      'status': 'scheduled',
+    });
+  }
+
+  @override
   Future<List<AppNotification>> notifications() => _answer(notificationList);
 
   @override

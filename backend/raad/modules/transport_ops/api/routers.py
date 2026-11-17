@@ -575,7 +575,13 @@ def _route_dto_to_response(route: RouteDTO) -> RouteResponse:
 
 
 def _route_summary_dto_to_response(route: RouteSummaryDTO) -> RouteSummaryResponse:
-    return RouteSummaryResponse(id=route.id, name=route.name, status=route.status)
+    return RouteSummaryResponse(
+        id=route.id,
+        name=route.name,
+        status=route.status,
+        stop_count=route.stop_count,
+        trip_count=route.trip_count,
+    )
 
 
 def _trip_dto_to_response(trip: TripDTO) -> TripResponse:

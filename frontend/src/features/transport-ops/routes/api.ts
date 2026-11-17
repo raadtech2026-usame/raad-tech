@@ -58,6 +58,8 @@ export interface RouteSummary {
   id: string;
   name: string;
   status: RouteStatus;
+  stopCount?: number;
+  tripCount?: number;
 }
 
 interface RouteWire {
@@ -74,6 +76,8 @@ interface RouteSummaryWire {
   id: string;
   name: string;
   status: string;
+  stop_count?: number;
+  trip_count?: number;
 }
 
 function toRoute(wire: RouteWire): Route {
@@ -89,7 +93,13 @@ function toRoute(wire: RouteWire): Route {
 }
 
 function toRouteSummary(wire: RouteSummaryWire): RouteSummary {
-  return { id: wire.id, name: wire.name, status: wire.status as RouteStatus };
+  return {
+    id: wire.id,
+    name: wire.name,
+    status: wire.status as RouteStatus,
+    stopCount: wire.stop_count ?? 0,
+    tripCount: wire.trip_count ?? 0,
+  };
 }
 
 /** `GET /routes` (API Contracts §4.3 line 125) — paginated/filterable/sortable via

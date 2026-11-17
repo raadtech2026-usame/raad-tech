@@ -227,7 +227,38 @@ class ReportIncidentRequest(BaseModel):
     trip_id: str | None = None
 
 
+class CreateMyTripRequest(BaseModel):
+    route_id: str
+    trip_type: Literal["morning", "afternoon"] = "morning"
+    scheduled_date: date | None = None
+    vehicle_id: str | None = None
+
+
 # ---- trips ------------------------------------------------------------------------------------
+
+
+@me_transport_router.post(
+    "/trips",
+    response_model=MyTripResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create and schedule a new trip by the calling driver",
+    description="Allows a driver to schedule a morning or afternoon trip on a route.",
+)
+async def create_my_trip(
+    body: CreateMyTripRequest,
+    principal: Principal = Depends(get_current_user),
+    service: SelfServiceApplicationService = Depends(get_self_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> MyTripResponse:
+    trip = await service.create_my_trip(
+        principal,
+        route_id=body.route_id,
+        trip_type=body.trip_type,
+        scheduled_date=body.scheduled_date,
+        vehicle_id=body.vehicle_id,
+        uow=uow,
+    )
+    return MyTripResponse.model_validate(asdict(trip))
 
 
 @me_transport_router.get(

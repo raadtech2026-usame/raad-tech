@@ -1246,8 +1246,21 @@ class RouteApplicationService:
                 filters=query.filters,
                 search=query.search,
             )
+            trip_counts: dict[str, int] = {}
+            if page.data and hasattr(uow, "trips") and hasattr(uow.trips, "list_all"):
+                try:
+                    all_trips = await uow.trips.list_all()
+                    for t in all_trips:
+                        if getattr(t, "route_id", None):
+                            rid = str(t.route_id)
+                            trip_counts[rid] = trip_counts.get(rid, 0) + 1
+                except Exception:
+                    pass
             return OffsetPage(
-                data=[route_to_summary_dto(route) for route in page.data],
+                data=[
+                    route_to_summary_dto(route, trip_count=trip_counts.get(str(route.id), 0))
+                    for route in page.data
+                ],
                 total=page.total,
                 page=page.page,
                 page_size=page.page_size,

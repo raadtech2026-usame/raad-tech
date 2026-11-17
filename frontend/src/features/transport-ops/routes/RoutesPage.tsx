@@ -249,6 +249,30 @@ export function RoutesPage() {
         ),
       },
       {
+        id: "stops",
+        header: "Stops",
+        cell: ({ row }) => {
+          const count = row.original.stopCount ?? 0;
+          return (
+            <span style={{ fontWeight: 500, color: "var(--color-text-secondary, #6b7280)" }}>
+              {count} {count === 1 ? "stop" : "stops"}
+            </span>
+          );
+        },
+      },
+      {
+        id: "trips",
+        header: "Trips",
+        cell: ({ row }) => {
+          const count = row.original.tripCount ?? 0;
+          return (
+            <span style={{ fontWeight: 500, color: "var(--color-text-secondary, #6b7280)" }}>
+              {count} {count === 1 ? "trip" : "trips"}
+            </span>
+          );
+        },
+      },
+      {
         id: "status",
         header: "Status",
         meta: { sortField: "status" } satisfies DataTableColumnMeta,

@@ -414,6 +414,8 @@ class RouteSummaryDTO:
     id: str
     name: str
     status: str
+    stop_count: int = 0
+    trip_count: int = 0
 
 
 def stop_to_dto(stop: Stop) -> StopDTO:
@@ -444,11 +446,17 @@ def route_to_dto(route: Route) -> RouteDTO:
     )
 
 
-def route_to_summary_dto(route: Route) -> RouteSummaryDTO:
+def route_to_summary_dto(route: Route, trip_count: int = 0) -> RouteSummaryDTO:
     """Shared mapper — the only place a `Route` aggregate is projected into its summary DTO
     (`ListRoutesQuery`'s read shape), mirroring `parent_to_summary_dto`'s exact shape.
     """
-    return RouteSummaryDTO(id=str(route.id), name=route.name, status=route.status.value)
+    return RouteSummaryDTO(
+        id=str(route.id),
+        name=route.name,
+        status=route.status.value,
+        stop_count=len(route.stops),
+        trip_count=trip_count,
+    )
 
 
 @dataclass(frozen=True)
