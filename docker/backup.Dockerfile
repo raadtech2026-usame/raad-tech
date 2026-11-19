@@ -16,7 +16,7 @@
 # ../backend) — the only Dockerfile in docker/ that needs this, because scripts/db/*.sh live at
 # the repo root, outside any single deployable's own directory.
 
-FROM postgres:16-alpine
+FROM postgres:18-alpine
 
 RUN apk add --no-cache rclone
 
