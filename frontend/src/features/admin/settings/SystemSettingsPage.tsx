@@ -100,6 +100,13 @@ export function SystemSettingsPage() {
   const [selectedMapProvider, setSelectedMapProvider] = useState<string | null>(null);
   const currentMapProvider = selectedMapProvider ?? rawMapProvider;
 
+  const rawGoogleApiKey =
+    (settingsMap.get("maps.provider")?.value?.api_key as string) ??
+    (settingsMap.get("maps.provider")?.value?.apiKey as string) ??
+    "";
+  const [googleApiKey, setGoogleApiKey] = useState<string | null>(null);
+  const currentGoogleApiKey = googleApiKey ?? rawGoogleApiKey;
+
   // Tracking Defaults State
   const rawTracking = (settingsMap.get("platform_tracking_defaults")?.value as Record<string, number>) ?? {
     default_approaching_distance_m: 300,
@@ -310,6 +317,18 @@ export function SystemSettingsPage() {
                   </Select>
                 </FormField>
 
+                <FormField
+                  label="Google Maps JavaScript API Key (AIzaSy...)"
+                  description="Client-safe Google Maps API Key. If set here, immediately serves to all map panels with zero build delay."
+                >
+                  <Input
+                    type="password"
+                    placeholder="AIzaSy..."
+                    value={currentGoogleApiKey}
+                    onChange={(e) => setGoogleApiKey(e.target.value)}
+                  />
+                </FormField>
+
                 <div className={styles.paramRow}>
                   <div className={styles.paramInfo}>
                     <span className={styles.paramLabel}>Current Platform Engine</span>
@@ -326,10 +345,14 @@ export function SystemSettingsPage() {
                   <div className={styles.paramInfo}>
                     <span className={styles.paramLabel}>Google Maps Status</span>
                     <span className={styles.paramDesc}>
-                      Loaded via VITE_GOOGLE_MAPS_API_KEY. Best street accuracy in Somalia/Mogadishu.
+                      {currentGoogleApiKey
+                        ? "Configured via Platform Settings (Live Dynamic Key)"
+                        : "Loaded via VITE_GOOGLE_MAPS_API_KEY build arg. Best street accuracy in Somalia."}
                     </span>
                   </div>
-                  <Badge variant="info">Ready</Badge>
+                  <Badge variant={currentGoogleApiKey ? "success" : "info"}>
+                    {currentGoogleApiKey ? "Key Bound" : "Ready"}
+                  </Badge>
                 </div>
 
                 <div className={styles.paramRow}>
@@ -346,10 +369,13 @@ export function SystemSettingsPage() {
                 <Button
                   loading={saveMutation.isPending}
                   onClick={() => {
-                    setCachedMapProvider(currentMapProvider as any);
+                    setCachedMapProvider(currentMapProvider as any, currentGoogleApiKey);
                     saveMutation.mutate({
                       key: "maps.provider",
-                      value: { provider: currentMapProvider },
+                      value: {
+                        provider: currentMapProvider,
+                        api_key: currentGoogleApiKey,
+                      },
                     });
                   }}
                 >

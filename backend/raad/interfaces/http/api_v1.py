@@ -246,9 +246,11 @@ async def get_active_map_provider(
     if dto is None or not dto.value:
         dto = await service.get_system_setting(GetSystemSettingQuery(key="active_map_provider"), uow=uow)
     provider = "mapbox"
+    api_key = ""
     if dto is not None and isinstance(dto.value, dict):
         provider = str(dto.value.get("provider", "mapbox"))
-    return {"provider": provider}
+        api_key = str(dto.value.get("api_key") or dto.value.get("apiKey") or "")
+    return {"provider": provider, "apiKey": api_key}
 
 
 api_router.include_router(config_router, prefix="/config", tags=["config"])

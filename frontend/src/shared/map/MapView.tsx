@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { env } from "../../config/env";
 import type { LatLng, MapProvider } from "./MapProvider";
-import { getActiveMapProvider, type MapProviderName } from "./mapSettings";
+import { getActiveMapConfig, type MapProviderName } from "./mapSettings";
 import styles from "./MapView.module.css";
 
 export interface MapViewProps {
@@ -32,15 +32,17 @@ export function MapView({ center, zoom, className, provider: overrideProvider, o
 
     async function initMap() {
       try {
-        const activeProvider = overrideProvider ?? (await getActiveMapProvider());
+        const activeConfig = await getActiveMapConfig();
+        const activeProvider = overrideProvider ?? activeConfig.provider;
         if (cancelled) return;
 
         const isGoogle = activeProvider === "google" || activeProvider === "google_maps";
 
         if (isGoogle) {
-          if (!env.googleMapsApiKey) {
+          const effectiveGoogleKey = env.googleMapsApiKey || activeConfig.apiKey || "";
+          if (!effectiveGoogleKey) {
             setMountError(
-              "Map unavailable: no Google Maps API key is configured (VITE_GOOGLE_MAPS_API_KEY).",
+              "Map unavailable: no Google Maps API key is configured (VITE_GOOGLE_MAPS_API_KEY or System Settings).",
             );
             return;
           }
@@ -54,7 +56,7 @@ export function MapView({ center, zoom, className, provider: overrideProvider, o
             container,
             center,
             zoom,
-            accessToken: env.googleMapsApiKey,
+            accessToken: effectiveGoogleKey,
           });
 
           if (!cancelled) {
