@@ -319,7 +319,7 @@ export function SystemSettingsPage() {
 
                 <FormField
                   label="Google Maps JavaScript API Key (AIzaSy...)"
-                  description="Client-safe Google Maps API Key. If set here, immediately serves to all map panels with zero build delay."
+                  hint="Client-safe Google Maps API Key. If set here, immediately serves to all map panels with zero build delay."
                 >
                   <Input
                     type="password"
