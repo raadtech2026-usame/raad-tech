@@ -94,7 +94,7 @@ export class GoogleMapsMapProvider implements MapProvider {
       throw new Error("Google Maps JavaScript API was loaded but window.google.maps is unavailable.");
     }
 
-    // Initialize Map with fleet-friendly clean styles (no POI noise, clean roadmap)
+    // Initialize Map with full rich landmarks (hospitals, schools, universities, markets)
     this.map = new google.maps.Map(options.container, {
       center: { lat: options.center.lat, lng: options.center.lng },
       zoom: options.zoom,
@@ -106,18 +106,6 @@ export class GoogleMapsMapProvider implements MapProvider {
       zoomControlOptions: {
         position: google.maps.ControlPosition.RIGHT_CENTER,
       },
-      styles: [
-        {
-          featureType: "poi",
-          elementType: "labels",
-          stylers: [{ visibility: "off" }],
-        },
-        {
-          featureType: "transit",
-          elementType: "labels.icon",
-          stylers: [{ visibility: "off" }],
-        },
-      ],
     });
 
     // Track user drag/pan gestures

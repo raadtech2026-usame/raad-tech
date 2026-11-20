@@ -47,7 +47,7 @@ export class MapboxMapProvider implements MapProvider {
     });
     try {
       map.setConfigProperty("basemap", "lightPreset", "day");
-      map.setConfigProperty("basemap", "showPointOfInterestLabels", false);
+      map.setConfigProperty("basemap", "showPointOfInterestLabels", true);
       map.setConfigProperty("basemap", "show3dObjects", false);
     } catch {
       // A test double or a future non-Standard style may not expose this config schema —

@@ -128,7 +128,7 @@ describe("MapboxMapProvider", () => {
     expect(mapInstance.setConfigProperty).toHaveBeenCalledWith(
       "basemap",
       "showPointOfInterestLabels",
-      false,
+      true,
     );
     expect(mapInstance.setConfigProperty).toHaveBeenCalledWith(
       "basemap",
