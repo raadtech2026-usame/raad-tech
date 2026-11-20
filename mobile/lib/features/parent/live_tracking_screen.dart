@@ -211,6 +211,8 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
               ),
             );
     } else if (Env.hasMap) {
+      final tileSource = ref.watch(activeMapTileSourceProvider).valueOrNull ??
+          DynamicMapTileSource.defaultSource;
       body = BusMap(
         busLatitude: position.lat!,
         busLongitude: position.lng!,
@@ -219,6 +221,7 @@ class _LiveTrackingScreenState extends ConsumerState<LiveTrackingScreen> {
         stopLongitude: stop?.longitude,
         stopName: stop?.name,
         isStale: isStale || _phase != _Phase.live,
+        tiles: tileSource,
       );
     } else {
       body = EmptyView(icon: Icons.map_outlined, message: s.mapUnavailable);
