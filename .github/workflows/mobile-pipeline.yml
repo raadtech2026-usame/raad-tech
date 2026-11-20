@@ -78,6 +78,7 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.FIREBASE_MESSAGING_SENDER_ID }}
           MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN || secrets.VITE_MAPBOX_ACCESS_TOKEN }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY || secrets.VITE_GOOGLE_MAPS_API_KEY }}
           API_BASE_URL: ${{ secrets.API_BASE_URL || 'https://api.raadsystems.tech' }}
           WS_BASE_URL: ${{ secrets.WS_BASE_URL || 'wss://api.raadsystems.tech/ws' }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -98,6 +99,7 @@ jobs:
           [ -n "$FIREBASE_PROJECT_ID" ] && EXTRA_DEFINES="$EXTRA_DEFINES --dart-define=FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
           [ -n "$FIREBASE_MESSAGING_SENDER_ID" ] && EXTRA_DEFINES="$EXTRA_DEFINES --dart-define=FIREBASE_MESSAGING_SENDER_ID=$FIREBASE_MESSAGING_SENDER_ID"
           [ -n "$MAPBOX_ACCESS_TOKEN" ] && EXTRA_DEFINES="$EXTRA_DEFINES --dart-define=MAPBOX_ACCESS_TOKEN=$MAPBOX_ACCESS_TOKEN --dart-define=VITE_MAPBOX_ACCESS_TOKEN=$MAPBOX_ACCESS_TOKEN"
+          [ -n "$GOOGLE_MAPS_API_KEY" ] && EXTRA_DEFINES="$EXTRA_DEFINES --dart-define=GOOGLE_MAPS_API_KEY=$GOOGLE_MAPS_API_KEY --dart-define=VITE_GOOGLE_MAPS_API_KEY=$GOOGLE_MAPS_API_KEY"
 
           echo "Building Release APK..."
           flutter build apk --release \
