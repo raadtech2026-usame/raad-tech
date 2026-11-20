@@ -339,6 +339,22 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
                   ),
                 ),
               ),
+              Positioned(
+                bottom: 8,
+                right: 8,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  color: Colors.white70,
+                  child: Text(
+                    (ref.watch(activeMapTileSourceProvider).valueOrNull ??
+                            DynamicMapTileSource.defaultSource)
+                        .attribution,
+                    style:
+                        const TextStyle(fontSize: 10, color: Colors.black87),
+                  ),
+                ),
+              ),
             ],
           );
         },

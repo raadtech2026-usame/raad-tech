@@ -105,6 +105,13 @@ class ProfileScreen extends ConsumerWidget {
             icon: const Icon(Icons.logout_rounded),
             label: Text(s.signOut),
           ),
+          const SizedBox(height: 16),
+          Center(
+            child: Text(
+              'RAAD v1.1.1 (Build 8)',
+              style: TextStyle(fontSize: 12, color: context.muted),
+            ),
+          ),
         ],
       ),
     );
