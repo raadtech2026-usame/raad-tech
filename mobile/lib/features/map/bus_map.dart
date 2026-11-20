@@ -77,10 +77,7 @@ class DynamicMapTileSource {
     if (Env.googleMapsApiKey.isNotEmpty) {
       return const GoogleMapsTileSource();
     }
-    if (Env.mapboxAccessToken.isNotEmpty) {
-      return const MapboxTileSource();
-    }
-    // High-reliability Google Maps direct tiles as primary default, with OSM fallback
+    // High-reliability Google Maps direct tiles as primary default
     return const GoogleMapsTileSource();
   }
 }
@@ -90,10 +87,11 @@ class DynamicMapTileSource {
 final activeMapTileSourceProvider = FutureProvider<MapTileSource>((ref) async {
   try {
     final client = ref.watch(apiClientProvider);
-    final res = await client.get('/config/map-provider', auth: false);
-    final provider = (res['provider'] as String?)?.toLowerCase();
+    final res =
+        await client.get('/config/map-provider', auth: false, cache: false);
+    final provider = (res['provider'] as String?)?.toLowerCase() ?? '';
     final apiKey = res['apiKey'] as String?;
-    if (provider == 'google') {
+    if (provider.contains('google')) {
       return GoogleMapsTileSource(apiKey: apiKey);
     } else if (provider == 'mapbox') {
       return MapboxTileSource(accessToken: apiKey);
