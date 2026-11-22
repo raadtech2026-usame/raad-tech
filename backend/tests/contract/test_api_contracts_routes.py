@@ -284,6 +284,11 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
     ),
     ("GET", "/api/v1/trips/{trip_id}", "uniform-CRUD addition, CLAUDE.md's own note"),
     ("GET", "/api/v1/notifications/{notification_id}", "uniform-CRUD addition"),
+    (
+        "POST",
+        "/api/v1/me/students/{student_id}/absence",
+        "Parent self-service absence reporting ('Yaa la soo marin') for today's active/scheduled trips",
+    ),
     # /drivers has no corresponding row in API Contracts §4.3 at all (only Trip-level
     # PATCH /trips/{id}/driver is documented) — built anyway on Database Design §6.1's
     # unambiguous table ownership, flagged in transport_ops.api.routers's own module

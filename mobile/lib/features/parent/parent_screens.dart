@@ -98,7 +98,15 @@ class _ParentShellState extends ConsumerState<ParentShell> {
   }
 }
 
-/// Home: Unified multi-child view, bus tracking, absence reporting, finance summary, and today's trips.
+ChildTransport? _selected(List<ChildTransport> children, String? selectedId) {
+  if (children.isEmpty) return null;
+  return children.firstWhere(
+    (c) => c.studentId == selectedId,
+    orElse: () => children.first,
+  );
+}
+
+/// Home: who, which bus, where it is now, which stop, what happened last.
 class ParentHomeScreen extends ConsumerWidget {
   final VoidCallback? onOpenFinance;
 
@@ -117,87 +125,33 @@ class ParentHomeScreen extends ConsumerWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(s.myChildren),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Cusbooneysii',
-            onPressed: refresh,
-          ),
-        ],
-      ),
+      appBar: AppBar(title: Text(s.myChildren)),
       body: AsyncBody<List<ChildTransport>>(
         value: transport,
         onRetry: refresh,
         builder: (children) {
           if (children.isEmpty) {
-            return RefreshIndicator(
-              onRefresh: () async => refresh(),
-              child: ListView(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(top: 80),
-                    child: EmptyView(
-                      icon: Icons.child_care_rounded,
-                      message: s.noChildren,
-                    ),
-                  ),
-                ],
-              ),
+            return EmptyView(
+              icon: Icons.child_care_rounded,
+              message: s.noChildren,
             );
           }
-
-          final onTripChildren =
-              children.where((c) => c.vehicle != null && c.isOnTrip).toList();
-
+          final child = _selected(children, ref.watch(selectedChildProvider))!;
           return RefreshIndicator(
             onRefresh: () async => refresh(),
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
               children: [
-                // Top Banner if any child is actively on a trip
-                if (onTripChildren.isNotEmpty) ...[
-                  _LiveBusAlertBanner(onTripChildren: onTripChildren),
-                  const SizedBox(height: 12),
-                ],
-
-                // Multi-Child Header
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Dhamaan Carruurta (${children.length})',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    Text(
-                      'Hal meel kaga wada socda',
-                      style: TextStyle(fontSize: 12, color: context.muted),
-                    ),
-                  ],
-                ),
+                if (children.length > 1)
+                  _ChildSelector(children: children, selected: child),
                 const SizedBox(height: 8),
-
-                // Render every child in a unified card
-                for (final child in children) ...[
-                  _UnifiedChildCard(child: child),
-                  const SizedBox(height: 12),
+                _BusCard(child: child),
+                if (child.hasAssignment) ...[
+                  SectionTitle(s.todaysTrips),
+                  _TodayTrips(child: child),
                 ],
-
                 const SizedBox(height: 8),
-
-                // Quick Finance Summary Card
                 _ParentFinanceQuickCard(onTap: onOpenFinance),
-                const SizedBox(height: 16),
-
-                // Today's trips across all children
-                SectionTitle(s.todaysTrips),
-                _UnifiedTodayTrips(children: children),
-                const SizedBox(height: 16),
-
                 SectionTitle(s.latestNotification),
                 const _LatestNotification(),
                 const _VideoEntry(),
@@ -210,81 +164,39 @@ class ParentHomeScreen extends ConsumerWidget {
   }
 }
 
-class _LiveBusAlertBanner extends StatelessWidget {
-  final List<ChildTransport> onTripChildren;
-
-  const _LiveBusAlertBanner({required this.onTripChildren});
+class _ChildSelector extends ConsumerWidget {
+  final List<ChildTransport> children;
+  final ChildTransport selected;
+  const _ChildSelector({required this.children, required this.selected});
 
   @override
-  Widget build(BuildContext context) {
-    final first = onTripChildren.first;
-    final busName = first.vehicle?.displayName ?? 'Baska';
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: RaadColors.green.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: RaadColors.green.withValues(alpha: 0.5)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: const BoxDecoration(
-              color: RaadColors.green,
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(
-              Icons.directions_bus_rounded,
-              color: Colors.white,
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '$busName wuu socdaa hadda!',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14.5,
-                    color: RaadColors.green,
-                  ),
-                ),
-                Text(
-                  onTripChildren.length == 1
-                      ? '${first.fullName} ayaa baska ku jira.'
-                      : '${onTripChildren.map((c) => c.fullName).join(", ")} ayaa baska ku jira.',
-                  style: TextStyle(fontSize: 12, color: context.muted),
-                ),
-              ],
-            ),
-          ),
-          FilledButton.tonal(
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            ),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => LiveTrackingScreen(child: first),
-              ),
-            ),
-            child: const Text('Toos u eeg', style: TextStyle(fontSize: 12.5)),
-          ),
-        ],
+  Widget build(BuildContext context, WidgetRef ref) {
+    return SizedBox(
+      height: 48,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: children.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final child = children[index];
+          return ChoiceChip(
+            label: Text(child.fullName),
+            avatar: child.isOnTrip
+                ? const Icon(Icons.circle, size: 10, color: RaadColors.green)
+                : null,
+            selected: child.studentId == selected.studentId,
+            onSelected: (_) => ref.read(selectedChildProvider.notifier).state =
+                child.studentId,
+          );
+        },
       ),
     );
   }
 }
 
-/// Unified Child Card: Full details for each child, tracking button, absence reporting
-class _UnifiedChildCard extends ConsumerWidget {
+class _BusCard extends ConsumerWidget {
   final ChildTransport child;
-
-  const _UnifiedChildCard({required this.child});
+  const _BusCard({required this.child});
 
   void _openAbsenceDialog(BuildContext context, WidgetRef ref) {
     final s = ref.read(stringsProvider);
@@ -328,7 +240,7 @@ class _UnifiedChildCard extends ConsumerWidget {
                       const SizedBox(width: 12),
                       Expanded(
                         child: Text(
-                          'Yaa la soo marin: ${child.fullName}',
+                          '${s.reportAbsence}: ${child.fullName}',
                           style: const TextStyle(
                             fontSize: 16.5,
                             fontWeight: FontWeight.bold,
@@ -389,7 +301,7 @@ class _UnifiedChildCard extends ConsumerWidget {
                                       Navigator.of(context).pop();
                                       showNotice(
                                         context,
-                                        'Maqnaanshaha waa la diiwaangeliyay. Darwalka waa la ogeysiiyay inuusan soo marin.',
+                                        s.absenceSuccess,
                                       );
                                       ref.invalidate(myTransportProvider);
                                       ref.invalidate(parentTripsProvider);
@@ -431,163 +343,91 @@ class _UnifiedChildCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = ref.watch(stringsProvider);
+    if (!child.hasAssignment) {
+      return SectionCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              child.fullName,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            Text(s.noAssignment),
+          ],
+        ),
+      );
+    }
     final vehicle = child.vehicle;
-    final initialLetter =
-        child.fullName.isNotEmpty ? child.fullName[0].toUpperCase() : 'A';
-
     return SectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Child Header Row
           Row(
             children: [
-              CircleAvatar(
-                radius: 20,
-                backgroundColor: child.isOnTrip
-                    ? RaadColors.green.withValues(alpha: 0.15)
-                    : Theme.of(context).colorScheme.primaryContainer,
-                child: Text(
-                  initialLetter,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 16,
-                    color: child.isOnTrip
-                        ? RaadColors.green
-                        : Theme.of(context).colorScheme.primary,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      child.fullName,
-                      style: const TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    Text(
-                      child.hasAssignment
-                          ? (child.routeName ?? 'Khad loo qoondeeyay')
-                          : s.noAssignment,
-                      style: TextStyle(fontSize: 12, color: context.muted),
-                    ),
-                  ],
+                child: Text(
+                  child.fullName,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
               StatusChip(
                 label: child.isOnTrip
                     ? s.tripStatus('in_progress')
-                    : (child.hasAssignment ? 'Diyaar' : 'Bas la\'aan'),
-                color: child.isOnTrip
-                    ? RaadColors.green
-                    : (child.hasAssignment ? RaadColors.primary : RaadColors.grey),
+                    : s.noTripNow,
+                color: child.isOnTrip ? RaadColors.green : RaadColors.grey,
               ),
             ],
           ),
-          const SizedBox(height: 12),
-
-          // Transport info if assigned
-          if (child.hasAssignment) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: Theme.of(context)
-                    .colorScheme
-                    .surfaceContainerHighest
-                    .withValues(alpha: 0.35),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.directions_bus_rounded,
-                          size: 18, color: RaadColors.primary),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          vehicle?.displayName ?? s.noBusYet,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (child.pickupStop != null || child.dropoffStop != null) ...[
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        const Icon(Icons.location_on_rounded,
-                            size: 18, color: RaadColors.grey),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            [
-                              if (child.pickupStop != null)
-                                'Qaadashada: ${child.pickupStop!.name}',
-                              if (child.dropoffStop != null)
-                                'Dejinta: ${child.dropoffStop!.name}',
-                            ].join(' · '),
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: context.muted,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ],
-              ),
+          const SizedBox(height: 8),
+          InfoRow(
+            icon: Icons.directions_bus_rounded,
+            label: s.bus,
+            value: vehicle?.displayName ?? s.noBusYet,
+          ),
+          if (child.routeName != null)
+            InfoRow(
+              icon: Icons.alt_route_rounded,
+              label: s.route,
+              value: child.routeName!,
             ),
-            const SizedBox(height: 12),
-          ],
-
-          // Actions row
-          Row(
-            children: [
-              if (vehicle != null && child.isOnTrip) ...[
-                Expanded(
-                  child: FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                    ),
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => LiveTrackingScreen(child: child),
-                      ),
-                    ),
-                    icon: const Icon(Icons.map_rounded, size: 18),
-                    label: Text(s.trackBus),
-                  ),
-                ),
-                const SizedBox(width: 8),
-              ],
-              Expanded(
-                child: OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    foregroundColor: RaadColors.red,
-                    side: BorderSide(
-                      color: RaadColors.red.withValues(alpha: 0.4),
-                    ),
-                  ),
-                  onPressed: () => _openAbsenceDialog(context, ref),
-                  icon: const Icon(Icons.do_not_disturb_on_rounded, size: 18),
-                  label: const Text(
-                    'Yaa la soo marin',
-                    style: TextStyle(fontSize: 12.5),
-                  ),
+          if (child.pickupStop != null)
+            InfoRow(
+              icon: Icons.location_on_rounded,
+              label: s.pickupStop,
+              value: child.pickupStop!.name,
+            ),
+          if (child.dropoffStop != null)
+            InfoRow(
+              icon: Icons.flag_rounded,
+              label: s.dropoffStop,
+              value: child.dropoffStop!.name,
+            ),
+          const SizedBox(height: 12),
+          if (vehicle != null && child.isOnTrip)
+            FilledButton.icon(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => LiveTrackingScreen(child: child),
                 ),
               ),
-            ],
+              icon: const Icon(Icons.map_rounded),
+              label: Text(s.trackBus),
+            )
+          else
+            Text(s.trackingOnlyOnTrip, style: TextStyle(color: context.muted)),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: RaadColors.red,
+              side: BorderSide(color: RaadColors.red.withValues(alpha: 0.4)),
+            ),
+            onPressed: () => _openAbsenceDialog(context, ref),
+            icon: const Icon(Icons.do_not_disturb_on_rounded, size: 18),
+            label: Text(s.reportAbsence),
           ),
         ],
       ),
@@ -651,44 +491,31 @@ class _ParentFinanceQuickCard extends ConsumerWidget {
   }
 }
 
-/// Unified Today's Trips for all children
-class _UnifiedTodayTrips extends ConsumerWidget {
-  final List<ChildTransport> children;
-
-  const _UnifiedTodayTrips({required this.children});
+class _TodayTrips extends ConsumerWidget {
+  final ChildTransport child;
+  const _TodayTrips({required this.child});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = ref.watch(stringsProvider);
     final trips = ref.watch(parentTripsProvider);
-    final studentIds = children.map((c) => c.studentId).toSet();
-
     return trips.when(
       loading: () =>
           const SectionCard(child: SizedBox(height: 40, child: LoadingView())),
       error: (error, _) => SectionCard(child: Text(errorMessage(error, s))),
       data: (all) {
         final today = dateOnly(DateTime.now());
-        final todayTrips = all
+        final mine = all
             .where(
               (t) =>
                   t.scheduledDate == today &&
-                  t.studentIds.any((id) => studentIds.contains(id)),
+                  t.studentIds.contains(child.studentId),
             )
             .toList();
-
-        if (todayTrips.isEmpty) {
-          return SectionCard(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(s.noTripsToday, style: TextStyle(color: context.muted)),
-            ),
-          );
-        }
-
+        if (mine.isEmpty) return SectionCard(child: Text(s.noTripsToday));
         return Column(
           children: [
-            for (final trip in todayTrips)
+            for (final trip in mine)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: TripTile(trip: trip),
@@ -839,7 +666,7 @@ class _VideoEntry extends ConsumerWidget {
   }
 }
 
-/// Trips of the children's buses, newest first.
+/// Trips of the children's bus, newest first.
 class ParentHistoryScreen extends ConsumerWidget {
   const ParentHistoryScreen({super.key});
 
@@ -848,9 +675,9 @@ class ParentHistoryScreen extends ConsumerWidget {
     final s = ref.watch(stringsProvider);
     final children =
         ref.watch(myTransportProvider).valueOrNull ?? const <ChildTransport>[];
+    final child = _selected(children, ref.watch(selectedChildProvider));
     final trips = ref.watch(parentTripsProvider);
     void refresh() => ref.invalidate(parentTripsProvider);
-
     return Scaffold(
       appBar: AppBar(title: Text(s.historyTitle)),
       body: AsyncBody<List<Trip>>(
@@ -858,23 +685,24 @@ class ParentHistoryScreen extends ConsumerWidget {
         onRetry: refresh,
         builder: (all) {
           final today = dateOnly(DateTime.now());
-          final studentIds = children.map((c) => c.studentId).toSet();
           final past = all
               .where(
                 (t) =>
                     !t.scheduledDate.isAfter(today) &&
-                    (studentIds.isEmpty ||
-                        t.studentIds.any((id) => studentIds.contains(id))),
+                    (child == null || t.studentIds.contains(child.studentId)),
               )
               .toList()
               .reversed
               .toList();
-
           return RefreshIndicator(
             onRefresh: () async => refresh(),
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                if (children.length > 1 && child != null) ...[
+                  _ChildSelector(children: children, selected: child),
+                  const SizedBox(height: 12),
+                ],
                 Text(s.historyNote, style: TextStyle(color: context.muted)),
                 const SizedBox(height: 12),
                 if (past.isEmpty)
