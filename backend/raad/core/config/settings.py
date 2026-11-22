@@ -182,6 +182,8 @@ class FeatureFlags(BaseModel):
 class FirebaseSettings(BaseModel):
     enabled: bool = False
     credentials_path: str | None = None
+    credentials_json: str | None = None
+    credentials_base64: str | None = None
     project_id: str | None = None
 
 

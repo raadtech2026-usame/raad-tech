@@ -7,6 +7,10 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 // Release signing. `android/key.properties` is never committed (see key.properties.example).
 // Without it the release build is signed with the debug key: installable for testing, not
 // publishable.

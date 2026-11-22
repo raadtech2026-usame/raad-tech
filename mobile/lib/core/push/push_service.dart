@@ -50,6 +50,13 @@ abstract class PushService {
 
   /// Called before sign-out: revoke this device's token.
   Future<void> unregister();
+
+  /// Display a high-priority heads-up local notification banner with alarm sound.
+  Future<void> showLocalAlert({
+    required String title,
+    required String body,
+    Map<String, dynamic>? data,
+  });
 }
 
 class NoPushService implements PushService {
@@ -60,6 +67,13 @@ class NoPushService implements PushService {
 
   @override
   Future<void> unregister() async {}
+
+  @override
+  Future<void> showLocalAlert({
+    required String title,
+    required String body,
+    Map<String, dynamic>? data,
+  }) async {}
 }
 
 class FirebasePushService implements PushService {
@@ -126,12 +140,16 @@ class FirebasePushService implements PushService {
         );
         await _localNotifications.initialize(initSettings);
 
-        // Create Android Notification Channel
+        // Create Android Notification Channel with max importance, vibration, and alarm audio stream
+        // so that critical transport alerts produce an audible alarm even if phone is on silent.
         const channel = AndroidNotificationChannel(
           _channelId,
           _channelName,
           description: _channelDesc,
-          importance: Importance.high,
+          importance: Importance.max,
+          playSound: true,
+          enableVibration: true,
+          audioAttributesUsage: AudioAttributesUsage.alarm,
         );
         await _localNotifications
             .resolvePlatformSpecificImplementation<
@@ -150,27 +168,13 @@ class FirebasePushService implements PushService {
         // Foreground message listener: present heads-up banner via local notifications
         FirebaseMessaging.onMessage.listen((RemoteMessage message) {
           final notification = message.notification;
-          if (notification != null) {
-            _localNotifications.show(
-              notification.hashCode,
-              notification.title,
-              notification.body,
-              NotificationDetails(
-                android: AndroidNotificationDetails(
-                  channel.id,
-                  channel.name,
-                  channelDescription: channel.description,
-                  icon: '@mipmap/ic_launcher',
-                  importance: Importance.high,
-                  priority: Priority.high,
-                ),
-                iOS: const DarwinNotificationDetails(
-                  presentAlert: true,
-                  presentBadge: true,
-                  presentSound: true,
-                ),
-              ),
-              payload: jsonEncode(message.data),
+          final title = notification?.title ?? message.data['title']?.toString();
+          final body = notification?.body ?? message.data['body']?.toString();
+          if (title != null && title.isNotEmpty) {
+            showLocalAlert(
+              title: title,
+              body: body ?? '',
+              data: message.data,
             );
           }
         });
@@ -213,6 +217,45 @@ class FirebasePushService implements PushService {
         'fcm_fallback_${DateTime.now().millisecondsSinceEpoch}_$randomSuffix';
     await _tokenStorage.saveCustom(_fallbackTokenKey, generated);
     return generated;
+  }
+
+  @override
+  Future<void> showLocalAlert({
+    required String title,
+    required String body,
+    Map<String, dynamic>? data,
+  }) async {
+    try {
+      await _ensureInitialized();
+      final androidDetails = AndroidNotificationDetails(
+        _channelId,
+        _channelName,
+        channelDescription: _channelDesc,
+        icon: '@mipmap/ic_launcher',
+        importance: Importance.max,
+        priority: Priority.max,
+        audioAttributesUsage: AudioAttributesUsage.alarm,
+        category: AndroidNotificationCategory.alarm,
+        fullScreenIntent: true,
+        playSound: true,
+        enableVibration: true,
+      );
+      const darwinDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        interruptionLevel: InterruptionLevel.timeSensitive,
+      );
+      await _localNotifications.show(
+        DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        title,
+        body,
+        NotificationDetails(android: androidDetails, iOS: darwinDetails),
+        payload: data != null ? jsonEncode(data) : null,
+      );
+    } catch (e, s) {
+      debugPrint('[PushService] Error presenting local alert: $e, stack: $s');
+    }
   }
 
   @override

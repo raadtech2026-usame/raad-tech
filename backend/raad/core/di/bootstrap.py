@@ -498,6 +498,8 @@ def build_container(settings: Settings) -> Container:
     if settings.firebase.enabled:
         push_sender: PushNotificationSenderPort = FirebaseFcmPushSender(
             credentials_path=settings.firebase.credentials_path,
+            credentials_json=settings.firebase.credentials_json,
+            credentials_base64=settings.firebase.credentials_base64,
             project_id=settings.firebase.project_id,
         )
     else:

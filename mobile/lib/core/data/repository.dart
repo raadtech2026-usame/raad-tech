@@ -1,9 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/auth_state.dart';
+import '../l10n/strings.dart';
 import '../network/api_client.dart';
 import '../network/api_exception.dart';
 import '../network/realtime_clients.dart';
+import '../push/push_service.dart';
 import '../util/format.dart';
 import 'models.dart';
 
@@ -300,9 +302,25 @@ final notificationsLiveProvider = Provider.autoDispose<void>((ref) {
   final token = ref.watch(apiClientProvider).accessToken;
   if (ref.watch(principalProvider) == null || token == null) return;
   final socket = NotificationsSocket()..connect(token);
-  final subscription = socket.arrivals.listen(
-    (_) => ref.invalidate(notificationsProvider),
-  );
+  final subscription = socket.arrivals.listen((_) async {
+    ref.invalidate(notificationsProvider);
+    try {
+      final list = await ref.read(repositoryProvider).notifications();
+      if (list.isNotEmpty) {
+        final latest = list.first;
+        if (!latest.isRead) {
+          final s = ref.read(stringsProvider);
+          final title = s.notificationTitle(latest.type, latest.kind, latest.title);
+          final body = s.notificationBody(latest.type, latest.kind) ?? latest.body;
+          ref.read(pushServiceProvider).showLocalAlert(
+            title: title,
+            body: body,
+            data: latest.data,
+          );
+        }
+      }
+    } catch (_) {}
+  });
   ref.onDispose(() {
     subscription.cancel();
     socket.dispose();

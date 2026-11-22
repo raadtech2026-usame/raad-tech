@@ -53,6 +53,8 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
         self,
         *,
         credentials_path: str | None = None,
+        credentials_json: str | None = None,
+        credentials_base64: str | None = None,
         project_id: str | None = None,
     ) -> None:
         self._initialized = False
@@ -65,7 +67,19 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
 
         try:
             if not firebase_admin._apps:
-                if credentials_path:
+                import json
+                cert_data = None
+                if credentials_base64:
+                    import base64
+                    raw = base64.b64decode(credentials_base64.strip()).decode("utf-8")
+                    cert_data = json.loads(raw)
+                elif credentials_json:
+                    cert_data = json.loads(credentials_json) if isinstance(credentials_json, str) else credentials_json
+
+                if cert_data:
+                    cred = credentials.Certificate(cert_data)
+                    firebase_admin.initialize_app(cred, {"projectId": project_id} if project_id else None)
+                elif credentials_path:
                     cred = credentials.Certificate(credentials_path)
                     firebase_admin.initialize_app(cred, {"projectId": project_id} if project_id else None)
                 else:
@@ -115,12 +129,21 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
                     notification=messaging.AndroidNotification(
                         sound="default",
                         channel_id="raad_transport_alerts",
+                        priority="max",
+                        default_sound=True,
+                        default_vibrate_timings=True,
                     ),
                 ),
                 apns=messaging.APNSConfig(
+                    headers={"apns-priority": "10"},
                     payload=messaging.APNSPayload(
-                        aps=messaging.Aps(sound="default", badge=1)
-                    )
+                        aps=messaging.Aps(
+                            sound="default",
+                            badge=1,
+                            content_available=True,
+                            interruption_level="time-sensitive",
+                        )
+                    ),
                 ),
             )
 
