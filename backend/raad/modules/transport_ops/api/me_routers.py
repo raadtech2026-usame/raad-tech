@@ -106,6 +106,12 @@ class RecordAttendanceRequest(BaseModel):
     notes: str | None = None
 
 
+class ReportStudentAbsenceRequest(BaseModel):
+    attendance_date: date | None = None
+    trip_id: str | None = None
+    notes: str | None = None
+
+
 class DriverAssignStudentStopRequest(BaseModel):
     student_id: str
     route_id: str
@@ -337,6 +343,29 @@ async def record_my_trip_attendance(
         uow=uow,
     )
     return MyAttendanceRecordResponse.model_validate(asdict(record))
+
+
+@me_transport_router.post(
+    "/students/{student_id}/absence",
+    response_model=list[MyAttendanceRecordResponse],
+    summary="Report student absence for today (or a specific trip) by parent",
+)
+async def report_student_absence(
+    student_id: str,
+    body: ReportStudentAbsenceRequest,
+    principal: Principal = Depends(get_current_user),
+    service: SelfServiceApplicationService = Depends(get_self_service),
+    uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> list[MyAttendanceRecordResponse]:
+    records = await service.report_student_absence(
+        principal,
+        student_id=student_id,
+        attendance_date=body.attendance_date,
+        trip_id=body.trip_id,
+        notes=body.notes,
+        uow=uow,
+    )
+    return [MyAttendanceRecordResponse.model_validate(asdict(r)) for r in records]
 
 
 @me_transport_router.post(

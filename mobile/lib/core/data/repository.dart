@@ -215,6 +215,28 @@ class RaadRepository {
   }
 
   Future<void> markRead(String id) => _client.post('/notifications/$id/read');
+
+  // ---- parent self-service absence & finance
+  Future<void> reportStudentAbsence(
+    String studentId, {
+    String? tripId,
+    DateTime? date,
+    String? notes,
+  }) {
+    return _client.post(
+      '/me/students/$studentId/absence',
+      body: {
+        if (tripId != null) 'trip_id': tripId,
+        if (date != null) 'attendance_date': isoDate(date),
+        if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+      },
+    );
+  }
+
+  Future<ParentFinanceSummary> myInvoices() async {
+    final json = await _client.get('/me/invoices');
+    return ParentFinanceSummary.fromJson(json);
+  }
 }
 
 final repositoryProvider = Provider<RaadRepository>((ref) {
@@ -228,6 +250,12 @@ final myTransportProvider = FutureProvider.autoDispose<List<ChildTransport>>((
 ) {
   ref.watch(principalProvider);
   return ref.watch(repositoryProvider).myTransport();
+});
+
+final parentInvoicesProvider =
+    FutureProvider.autoDispose<ParentFinanceSummary>((ref) {
+  ref.watch(principalProvider);
+  return ref.watch(repositoryProvider).myInvoices();
 });
 
 /// The child whose transport the Parent home shows. Null means "the first one".

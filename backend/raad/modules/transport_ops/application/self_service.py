@@ -716,10 +716,19 @@ class SelfServiceApplicationService:
         self, principal: Principal, trip_id: str, *, uow: TransportOpsUnitOfWork
     ) -> list[MyAttendanceDTO]:
         async with uow:
-            driver = await self._driver(uow, principal)
             trip = await uow.trips.get(TripId(trip_id))
-            if trip is None or trip.driver_id != driver.id:
+            if trip is None:
                 raise NotFoundError(f"Trip {trip_id} not found.")
+
+            if principal.role == Role.PARENT:
+                parent = await uow.parents.get_by_user_id(UserId(principal.user_id))
+                if parent is None:
+                    raise NotFoundError("No Parent profile is linked to this account.")
+            else:
+                driver = await self._driver(uow, principal)
+                if trip.driver_id != driver.id:
+                    raise NotFoundError(f"Trip {trip_id} not found.")
+
             records = await uow.attendances.list_for_trip(trip_id)
             return [
                 MyAttendanceDTO(
@@ -747,17 +756,34 @@ class SelfServiceApplicationService:
         uow: TransportOpsUnitOfWork,
     ) -> MyAttendanceDTO:
         async with uow:
-            driver = await self._driver(uow, principal)
             trip = await uow.trips.get(TripId(trip_id))
-            if trip is None or trip.driver_id != driver.id:
+            if trip is None:
                 raise NotFoundError(f"Trip {trip_id} not found.")
-            student = await uow.students.get(StudentId(student_id))
-            if student is None or str(student.organization_id) != str(driver.organization_id):
-                raise NotFoundError(f"Student {student_id} not found.")
+
+            if principal.role == Role.PARENT:
+                parent = await uow.parents.get_by_user_id(UserId(principal.user_id))
+                if parent is None:
+                    raise NotFoundError("No Parent profile is linked to this account.")
+                links = await uow.student_parents.list_by_parent(parent.id)
+                child_student_ids = {str(l.student_id) for l in links}
+                if student_id not in child_student_ids:
+                    raise NotFoundError(f"Student {student_id} is not linked to this parent.")
+                student = await uow.students.get(StudentId(student_id))
+                if student is None or str(student.organization_id) != str(parent.organization_id):
+                    raise NotFoundError(f"Student {student_id} not found.")
+                org_id = str(parent.organization_id)
+            else:
+                driver = await self._driver(uow, principal)
+                if trip.driver_id != driver.id:
+                    raise NotFoundError(f"Trip {trip_id} not found.")
+                student = await uow.students.get(StudentId(student_id))
+                if student is None or str(student.organization_id) != str(driver.organization_id):
+                    raise NotFoundError(f"Student {student_id} not found.")
+                org_id = str(driver.organization_id)
 
             record = await uow.attendances.record_attendance(
                 id=UlidGenerator().new_id(),
-                organization_id=str(driver.organization_id),
+                organization_id=org_id,
                 trip_id=str(trip.id),
                 student_id=str(student.id),
                 vehicle_id=str(trip.vehicle_id) if trip.vehicle_id else None,
@@ -780,6 +806,86 @@ class SelfServiceApplicationService:
                 marked_at=record.marked_at,
                 notes=record.notes,
             )
+
+    async def report_student_absence(
+        self,
+        principal: Principal,
+        student_id: str,
+        *,
+        attendance_date: date | None = None,
+        trip_id: str | None = None,
+        notes: str | None = None,
+        uow: TransportOpsUnitOfWork,
+    ) -> list[MyAttendanceDTO]:
+        """Allows a parent to mark their child absent ('Yaa la soo marin') for today's trip(s)."""
+        target_date = attendance_date or self._clock.now().date()
+        async with uow:
+            parent = await uow.parents.get_by_user_id(UserId(principal.user_id))
+            if parent is None:
+                raise NotFoundError("No Parent profile is linked to this account.")
+            links = await uow.student_parents.list_by_parent(parent.id)
+            child_student_ids = {str(l.student_id) for l in links}
+            if student_id not in child_student_ids:
+                raise NotFoundError(f"Student {student_id} is not linked to this parent.")
+
+            student = await uow.students.get(StudentId(student_id))
+            if student is None or str(student.organization_id) != str(parent.organization_id):
+                raise NotFoundError(f"Student {student_id} not found.")
+
+            assignment = await uow.student_assignments.active_assignment_for_student(
+                StudentId(student_id)
+            )
+
+            target_trips: list[Trip] = []
+            if trip_id:
+                trip = await uow.trips.get(TripId(trip_id))
+                if trip is not None:
+                    target_trips.append(trip)
+            else:
+                day_trips = await uow.trips.list_between(target_date, target_date)
+                for t in day_trips:
+                    if assignment is not None:
+                        if assignment.vehicle_id and str(t.vehicle_id) == str(assignment.vehicle_id):
+                            target_trips.append(t)
+                        elif assignment.route_id and str(t.route_id) == str(assignment.route_id):
+                            target_trips.append(t)
+                if not target_trips and day_trips:
+                    # Fallback to any day trip in organization if student has no route yet
+                    target_trips.extend(
+                        t for t in day_trips if str(t.organization_id) == str(parent.organization_id)
+                    )
+
+            absence_notes = notes or "Waalidka ayaa xaqiijiyay maqnaansho (Yaa la soo marin)"
+            results: list[MyAttendanceDTO] = []
+            for t in target_trips:
+                rec = await uow.attendances.record_attendance(
+                    id=UlidGenerator().new_id(),
+                    organization_id=str(parent.organization_id),
+                    trip_id=str(t.id),
+                    student_id=str(student.id),
+                    vehicle_id=str(t.vehicle_id) if t.vehicle_id else (str(assignment.vehicle_id) if assignment else None),
+                    route_id=str(t.route_id) if t.route_id else (str(assignment.route_id) if assignment else None),
+                    attendance_date=target_date,
+                    status="absent",
+                    marked_by_user_id=principal.user_id,
+                    marked_at=self._clock.now(),
+                    notes=absence_notes,
+                )
+                results.append(
+                    MyAttendanceDTO(
+                        id=rec.id,
+                        trip_id=rec.trip_id,
+                        student_id=rec.student_id,
+                        vehicle_id=rec.vehicle_id,
+                        route_id=rec.route_id,
+                        attendance_date=rec.attendance_date,
+                        status=rec.status,
+                        marked_at=rec.marked_at,
+                        notes=rec.notes,
+                    )
+                )
+            await uow.commit()
+            return results
 
     async def assign_student_stop(
         self,

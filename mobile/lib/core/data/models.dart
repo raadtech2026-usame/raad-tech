@@ -235,6 +235,7 @@ class AttendanceRecord {
   });
 
   bool get isPresent => status == 'present' || status == 'boarded';
+  bool get isAbsent => status == 'absent';
 
   factory AttendanceRecord.fromJson(Map<String, dynamic> json) {
     return AttendanceRecord(
@@ -496,6 +497,162 @@ class AppNotification {
       vehicleId: d['vehicle_id'] as String?,
       createdAt: _dateTime(json['created_at']) ?? DateTime.now(),
       isRead: json['status'] == 'read' || json['read_at'] != null,
+    );
+  }
+}
+
+class ParentFinanceSummary {
+  final String parentId;
+  final String currency;
+  final String totalDue;
+  final String totalPaid;
+  final String balanceDue;
+  final List<ParentInvoice> invoices;
+  final List<ParentPaymentReceipt> payments;
+
+  const ParentFinanceSummary({
+    required this.parentId,
+    required this.currency,
+    required this.totalDue,
+    required this.totalPaid,
+    required this.balanceDue,
+    required this.invoices,
+    required this.payments,
+  });
+
+  bool get hasOutstanding => (double.tryParse(balanceDue) ?? 0) > 0;
+
+  factory ParentFinanceSummary.fromJson(Map<String, dynamic> json) {
+    return ParentFinanceSummary(
+      parentId: json['parent_id'] as String? ?? '',
+      currency: json['currency'] as String? ?? 'USD',
+      totalDue: json['total_due'] as String? ?? '0.00',
+      totalPaid: json['total_paid'] as String? ?? '0.00',
+      balanceDue: json['balance_due'] as String? ?? '0.00',
+      invoices: (json['invoices'] as List? ?? const [])
+          .map((i) => ParentInvoice.fromJson(i as Map<String, dynamic>))
+          .toList(),
+      payments: (json['payments'] as List? ?? const [])
+          .map((p) => ParentPaymentReceipt.fromJson(p as Map<String, dynamic>))
+          .toList(),
+    );
+  }
+}
+
+class ParentInvoice {
+  final String id;
+  final String invoiceNumber;
+  final String period;
+  final String amount;
+  final String amountPaid;
+  final String balanceDue;
+  final String status;
+  final String currency;
+  final String invoiceDate;
+  final String dueDate;
+  final String? notes;
+  final List<ParentInvoiceLine> lines;
+
+  const ParentInvoice({
+    required this.id,
+    required this.invoiceNumber,
+    required this.period,
+    required this.amount,
+    required this.amountPaid,
+    required this.balanceDue,
+    required this.status,
+    required this.currency,
+    required this.invoiceDate,
+    required this.dueDate,
+    this.notes,
+    required this.lines,
+  });
+
+  bool get isPaid => status == 'paid' || (double.tryParse(balanceDue) ?? 0) <= 0;
+  bool get isOverdue => status == 'overdue';
+
+  factory ParentInvoice.fromJson(Map<String, dynamic> json) {
+    return ParentInvoice(
+      id: json['id'] as String? ?? '',
+      invoiceNumber: json['invoice_number'] as String? ?? '',
+      period: json['period'] as String? ?? '',
+      amount: json['amount'] as String? ?? '0.00',
+      amountPaid: json['amount_paid'] as String? ?? '0.00',
+      balanceDue: json['balance_due'] as String? ?? '0.00',
+      status: json['status'] as String? ?? 'unpaid',
+      currency: json['currency'] as String? ?? 'USD',
+      invoiceDate: json['invoice_date'] as String? ?? '',
+      dueDate: json['due_date'] as String? ?? '',
+      notes: json['notes'] as String?,
+      lines: (json['lines'] as List? ?? const [])
+          .map((l) => ParentInvoiceLine.fromJson(l as Map<String, dynamic>))
+          .toList(),
+    );
+  }
+}
+
+class ParentInvoiceLine {
+  final String studentId;
+  final String fullName;
+  final String amount;
+  final String amountPaid;
+  final String balanceDue;
+  final String lineId;
+
+  const ParentInvoiceLine({
+    required this.studentId,
+    required this.fullName,
+    required this.amount,
+    required this.amountPaid,
+    required this.balanceDue,
+    required this.lineId,
+  });
+
+  bool get isPaid => (double.tryParse(balanceDue) ?? 0) <= 0;
+
+  factory ParentInvoiceLine.fromJson(Map<String, dynamic> json) {
+    return ParentInvoiceLine(
+      studentId: json['student_id'] as String? ?? '',
+      fullName: json['full_name'] as String? ?? '',
+      amount: json['amount'] as String? ?? '0.00',
+      amountPaid: json['amount_paid'] as String? ?? '0.00',
+      balanceDue: json['balance_due'] as String? ?? '0.00',
+      lineId: json['line_id'] as String? ?? '',
+    );
+  }
+}
+
+class ParentPaymentReceipt {
+  final String id;
+  final String receiptNumber;
+  final String invoiceId;
+  final String amount;
+  final String currency;
+  final String paymentMethod;
+  final String paymentDate;
+  final String? notes;
+
+  const ParentPaymentReceipt({
+    required this.id,
+    required this.receiptNumber,
+    required this.invoiceId,
+    required this.amount,
+    required this.currency,
+    required this.paymentMethod,
+    required this.paymentDate,
+    this.notes,
+  });
+
+  factory ParentPaymentReceipt.fromJson(Map<String, dynamic> json) {
+    return ParentPaymentReceipt(
+      id: json['id'] as String? ?? '',
+      receiptNumber: json['receipt_number'] as String? ?? '',
+      invoiceId: json['invoice_id'] as String? ?? '',
+      amount: json['amount'] as String? ?? '0.00',
+      currency: json['currency'] as String? ?? 'USD',
+      paymentMethod: json['payment_method'] as String? ?? '',
+      paymentDate: json['payment_date'] as String? ?? '',
+      notes: json['notes'] as String?,
     );
   }
 }

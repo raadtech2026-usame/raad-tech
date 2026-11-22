@@ -62,12 +62,50 @@ class Strings {
 
   // ---- navigation
   String get navHome => _('Bogga hore', 'Home');
+  String get navFinance => _('Biilasha', 'Finance');
   String get navHistory => _('Taariikhda', 'History');
   String get navNotifications => _('Ogeysiisyada', 'Notifications');
   String get navProfile => _('Akoonka', 'Profile');
   String get navToday => _('Maanta', 'Today');
   String get navTrips => _('Safarrada', 'Trips');
   String get navMore => _('Wax kale', 'More');
+
+  // ---- parent absence & finance
+  String get reportAbsence =>
+      _('Yaa la soo marin maanta', 'Report absence today');
+  String get absenceTitle => _('Maqnaanshaha Ilmaha', 'Child Absence');
+  String get absencePrompt => _(
+    'Ma doonaysaa in baska uusan maanta soo marin ilmahaaga?',
+    'Do you want the bus to skip pickup for your child today?',
+  );
+  String get absenceReasonHint =>
+      _('Sababta maqnaanshaha (ikhtiyaari ah)', 'Reason for absence (optional)');
+  String get absenceSuccess => _(
+    'Maqnaanshaha si guul leh ayaa loo diiwaangeliyay. Darwalka waa la ogeysiiyay.',
+    'Absence recorded successfully. The driver has been notified.',
+  );
+  String get markedAbsentToday =>
+      _('Maqan maanta (Yaa la soo marin)', 'Absent today (Skip pickup)');
+  String get financeTitle => _('Biilasha & Lacagaha', 'Fees & Invoices');
+  String get totalDueLabel => _('Wadarta Guud', 'Total Due');
+  String get totalPaidLabel => _('La Bixiyay', 'Total Paid');
+  String get balanceDueLabel => _('Dhiman', 'Balance Due');
+  String get noInvoices => _('Weli biilal laguma yeelan', 'No invoices yet');
+  String get paymentReceipts =>
+      _('Rasiidhada Lacag-bixinta', 'Payment Receipts');
+  String get noPaymentsRecorded =>
+      _('Weli lacag lagama diiwaangelin', 'No payments recorded yet');
+  String get invoiceStatusPaidText => _('Waa la bixiyay', 'Paid');
+  String get invoiceStatusUnpaidText => _('Wali lama bixin', 'Unpaid');
+  String get invoiceStatusPartialText => _('Qayb baa la bixiyay', 'Partial');
+  String get invoiceStatusOverdueText => _('Wuu dhaaftay', 'Overdue');
+  String get monthlyFeePerChild => _('Lacagta Bisha', 'Monthly Fee');
+  String get driverAbsentNotice =>
+      _('Arday Maqan (Yaa la soo marin)', 'Absent Student (Skip pickup)');
+  String get driverAbsentSkipBanner => _(
+    'FIIRO GAAR AH: Waalidka ayaa diiwaangeliyay inaan ilmaha la soo marin maanta (MAQAN)!',
+    'NOTICE: Parent reported absence today. Skip this pickup!',
+  );
 
   // ---- trip status
   String tripStatus(String status) {

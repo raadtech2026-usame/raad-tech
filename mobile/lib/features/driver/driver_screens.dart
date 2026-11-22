@@ -706,81 +706,149 @@ class _PassengerAttendanceTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = Strings(Localizations.localeOf(context).languageCode == 'so');
     final isPresent = record?.isPresent == true;
+    final isAbsent = record?.isAbsent == true || record?.status == 'absent';
 
-    return ListTile(
-      dense: true,
-      leading: CircleAvatar(
-        radius: 17,
-        backgroundColor: isPresent
-            ? RaadColors.green.withValues(alpha: 0.15)
-            : context.muted.withValues(alpha: 0.12),
-        child: Icon(
-          Icons.person_rounded,
-          size: 19,
-          color: isPresent ? RaadColors.green : context.muted,
-        ),
-      ),
-      title: Text(
-        passenger.fullName,
-        style: TextStyle(
-          fontWeight: isPresent ? FontWeight.bold : FontWeight.w600,
-          fontSize: 14,
-        ),
-      ),
-      subtitle: Text(
-        (passenger.pickupStopName != null || passenger.dropoffStopName != null)
-            ? [
-                if (passenger.pickupStopName != null) passenger.pickupStopName!,
-                if (passenger.dropoffStopName != null) passenger.dropoffStopName!,
-              ].join(' → ')
-            : 'Weli ma laha joogsi cayiman',
-        style: TextStyle(fontSize: 12, color: context.muted),
-      ),
-      trailing: InkWell(
-        onTap: isPending ? null : onToggle,
-        borderRadius: BorderRadius.circular(20),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
+    return Container(
+      color: isAbsent ? RaadColors.red.withValues(alpha: 0.05) : null,
+      child: ListTile(
+        dense: true,
+        leading: CircleAvatar(
+          radius: 17,
+          backgroundColor: isPresent
+              ? RaadColors.green.withValues(alpha: 0.15)
+              : isAbsent
+                  ? RaadColors.red.withValues(alpha: 0.15)
+                  : context.muted.withValues(alpha: 0.12),
+          child: Icon(
+            isAbsent
+                ? Icons.do_not_disturb_on_rounded
+                : Icons.person_rounded,
+            size: 19,
             color: isPresent
-                ? RaadColors.green.withValues(alpha: 0.15)
-                : Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: isPresent
-                  ? RaadColors.green
-                  : Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5),
-              width: 1.2,
-            ),
+                ? RaadColors.green
+                : isAbsent
+                    ? RaadColors.red
+                    : context.muted,
           ),
-          child: isPending
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      isPresent
-                          ? Icons.check_circle_rounded
-                          : Icons.radio_button_unchecked_rounded,
-                      size: 18,
-                      color: isPresent ? RaadColors.green : context.muted,
+        ),
+        title: Text(
+          passenger.fullName,
+          style: TextStyle(
+            fontWeight: isPresent || isAbsent ? FontWeight.bold : FontWeight.w600,
+            fontSize: 14,
+            color: isAbsent ? RaadColors.red : null,
+          ),
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              (passenger.pickupStopName != null || passenger.dropoffStopName != null)
+                  ? [
+                      if (passenger.pickupStopName != null) passenger.pickupStopName!,
+                      if (passenger.dropoffStopName != null) passenger.dropoffStopName!,
+                    ].join(' → ')
+                  : 'Weli ma laha joogsi cayiman',
+              style: TextStyle(fontSize: 12, color: context.muted),
+            ),
+            if (isAbsent) ...[
+              const SizedBox(height: 3),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: RaadColors.red.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(4),
                     ),
-                    const SizedBox(width: 5),
-                    Text(
-                      isPresent ? s.markPresent : s.markAbsent,
+                    child: const Text(
+                      'MAQAN - YAA LA SOO MARIN (SKIP)',
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: 10,
                         fontWeight: FontWeight.bold,
-                        color: isPresent ? RaadColors.green : context.muted,
+                        color: RaadColors.red,
+                      ),
+                    ),
+                  ),
+                  if (record?.notes != null && record!.notes!.isNotEmpty) ...[
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        record!.notes!,
+                        style: const TextStyle(fontSize: 11, color: RaadColors.red),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
-                ),
+                ],
+              ),
+            ],
+          ],
+        ),
+        trailing: InkWell(
+          onTap: isPending ? null : onToggle,
+          borderRadius: BorderRadius.circular(20),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: isPresent
+                  ? RaadColors.green.withValues(alpha: 0.15)
+                  : isAbsent
+                      ? RaadColors.red.withValues(alpha: 0.12)
+                      : Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: isPresent
+                    ? RaadColors.green
+                    : isAbsent
+                        ? RaadColors.red.withValues(alpha: 0.5)
+                        : Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5),
+                width: 1.2,
+              ),
+            ),
+            child: isPending
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        isPresent
+                            ? Icons.check_circle_rounded
+                            : isAbsent
+                                ? Icons.cancel_rounded
+                                : Icons.radio_button_unchecked_rounded,
+                        size: 18,
+                        color: isPresent
+                            ? RaadColors.green
+                            : isAbsent
+                                ? RaadColors.red
+                                : context.muted,
+                      ),
+                      const SizedBox(width: 5),
+                      Text(
+                        isPresent
+                            ? s.markPresent
+                            : isAbsent
+                                ? 'Maqan (Skip)'
+                                : s.markAbsent,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: isPresent
+                              ? RaadColors.green
+                              : isAbsent
+                                  ? RaadColors.red
+                                  : context.muted,
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
         ),
       ),
     );
@@ -1042,6 +1110,33 @@ class _DriverTripAttendanceScreenState
                 ],
               ),
               const SizedBox(height: 12),
+
+              if (absentCount > 0)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: RaadColors.red.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: RaadColors.red.withValues(alpha: 0.4)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.do_not_disturb_on_rounded, color: RaadColors.red, size: 22),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          '$absentCount Arday ayaa la codsaday inaan la soo marin (Maqan)! Ha aadin xaafadahooda.',
+                          style: const TextStyle(
+                            color: RaadColors.red,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12.5,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
 
               // Passengers list
               if (passengers.isEmpty)

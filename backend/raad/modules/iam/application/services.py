@@ -894,14 +894,16 @@ class MeApplicationService:
             assignment_dto: MeTransportAssignmentDTO | None = None
             current_trip: MeTransportTripDTO | None = None
             if assignment is not None:
-                if assignment.route_id not in routes:
-                    routes[assignment.route_id] = await self._load_route(
-                        assignment.route_id, uow=uow
-                    )
-                route = routes[assignment.route_id]
+                route: RouteDTO | None = None
+                if assignment.route_id:
+                    if assignment.route_id not in routes:
+                        routes[assignment.route_id] = await self._load_route(
+                            assignment.route_id, uow=uow
+                        )
+                    route = routes.get(assignment.route_id)
                 vehicle_id = assignment.vehicle_id
                 vehicle: MeTransportVehicleDTO | None = None
-                if vehicle_id is not None:
+                if vehicle_id:
                     if vehicle_id not in vehicles:
                         vehicles[vehicle_id] = await self._load_vehicle(
                             vehicle_id, fleet_device_uow=fleet_device_uow
@@ -924,7 +926,9 @@ class MeApplicationService:
                             trip_routes[vehicle_id] = trip.route_id
                     vehicle = vehicles[vehicle_id]
                     # A bus can be running another route; that trip is not this child's.
-                    if trip_routes.get(vehicle_id) == assignment.route_id:
+                    if assignment.route_id and trip_routes.get(vehicle_id) == assignment.route_id:
+                        current_trip = trips[vehicle_id]
+                    elif not assignment.route_id:
                         current_trip = trips[vehicle_id]
                 assignment_dto = self._assignment_to_dto(assignment, route, vehicle)
             result.append(
@@ -939,8 +943,10 @@ class MeApplicationService:
         return result
 
     async def _load_route(
-        self, route_id: str, *, uow: TransportOpsUnitOfWork
+        self, route_id: str | None, *, uow: TransportOpsUnitOfWork
     ) -> RouteDTO | None:
+        if not route_id:
+            return None
         assert self._route_service is not None
         try:
             return await self._route_service.get_route_by_id(
@@ -950,8 +956,10 @@ class MeApplicationService:
             return None
 
     async def _load_vehicle(
-        self, vehicle_id: str, *, fleet_device_uow: FleetDeviceUnitOfWork
+        self, vehicle_id: str | None, *, fleet_device_uow: FleetDeviceUnitOfWork
     ) -> MeTransportVehicleDTO | None:
+        if not vehicle_id:
+            return None
         assert self._vehicle_service is not None
         try:
             vehicle = await self._vehicle_service.get_vehicle_by_id(
@@ -971,7 +979,9 @@ class MeApplicationService:
     ) -> MeTransportAssignmentDTO:
         stops = {stop.id: stop for stop in route.stops} if route is not None else {}
 
-        def own_stop(stop_id: str) -> MeTransportStopDTO | None:
+        def own_stop(stop_id: str | None) -> MeTransportStopDTO | None:
+            if not stop_id:
+                return None
             stop = stops.get(stop_id)
             if stop is None:
                 return None
