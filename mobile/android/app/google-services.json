@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "577190625341",
+    "project_id": "raad-systems",
+    "storage_bucket": "raad-systems.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:577190625341:android:0f401b5d83ef6106412a54",
+        "android_client_info": {
+          "package_name": "so.raad.raad_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA62CSOUwLLZk63TER1tSy3ridAFcye-MA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
