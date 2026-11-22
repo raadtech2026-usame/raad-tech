@@ -227,7 +227,7 @@ class FirebasePushService implements PushService {
   }) async {
     try {
       await _ensureInitialized();
-      final androidDetails = AndroidNotificationDetails(
+      const androidDetails = AndroidNotificationDetails(
         _channelId,
         _channelName,
         channelDescription: _channelDesc,

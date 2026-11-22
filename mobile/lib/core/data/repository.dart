@@ -315,7 +315,12 @@ final notificationsLiveProvider = Provider.autoDispose<void>((ref) {
           ref.read(pushServiceProvider).showLocalAlert(
             title: title,
             body: body,
-            data: latest.data,
+            data: {
+              if (latest.tripId != null) 'trip_id': latest.tripId!,
+              if (latest.vehicleId != null) 'vehicle_id': latest.vehicleId!,
+              'type': latest.type,
+              if (latest.kind != null) 'kind': latest.kind!,
+            },
           );
         }
       }
