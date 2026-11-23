@@ -96,6 +96,11 @@ x-backend-env: &backend-env
   # `docker/.env` to the relay's actual public URL (e.g. through nginx/Coolify's own TLS
   # termination) — this default is never assumed correct outside local dev.
   RAAD_DEVICE_PLANE__JT1078_SIGNALING_URL: ${JT1078_SIGNALING_URL:-ws://localhost:7911}
+  # Firebase Cloud Messaging for Push Notifications to parents, drivers, and admins
+  RAAD_FIREBASE__ENABLED: ${RAAD_FIREBASE__ENABLED:-true}
+  RAAD_FIREBASE__CREDENTIALS_JSON: ${RAAD_FIREBASE__CREDENTIALS_JSON:-}
+  RAAD_FIREBASE__CREDENTIALS_BASE64: ${RAAD_FIREBASE__CREDENTIALS_BASE64:-}
+  RAAD_FIREBASE__PROJECT_ID: ${RAAD_FIREBASE__PROJECT_ID:-}
 
 services:
   postgres:

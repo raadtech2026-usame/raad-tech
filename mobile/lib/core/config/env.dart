@@ -56,19 +56,23 @@ class Env {
     return const String.fromEnvironment('VITE_GOOGLE_MAPS_API_KEY');
   }
 
-  /// Optional Firebase configuration passed with `--dart-define` for environments
-  /// where native google-services.json / GoogleService-Info.plist is not bundled.
+  /// Firebase configuration with fallback defaults from native google-services.json
+  /// (raad-systems project), optionally overridden via `--dart-define`.
   static const String firebaseApiKey = String.fromEnvironment(
     'FIREBASE_API_KEY',
+    defaultValue: 'AIzaSyA62CSOUwLLZk63TER1tSy3ridAFcye-MA',
   );
   static const String firebaseAppId = String.fromEnvironment(
     'FIREBASE_APP_ID',
+    defaultValue: '1:577190625341:android:0f401b5d83ef6106412a54',
   );
   static const String firebaseMessagingSenderId = String.fromEnvironment(
     'FIREBASE_MESSAGING_SENDER_ID',
+    defaultValue: '577190625341',
   );
   static const String firebaseProjectId = String.fromEnvironment(
     'FIREBASE_PROJECT_ID',
+    defaultValue: 'raad-systems',
   );
 
   static bool get hasFirebaseConfig =>

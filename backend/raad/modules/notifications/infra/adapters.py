@@ -65,27 +65,75 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
             )
             return
 
+        import os
+        credentials_path = credentials_path or os.getenv("FIREBASE_CREDENTIALS_PATH") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        credentials_json = credentials_json or os.getenv("RAAD_FIREBASE__CREDENTIALS_JSON") or os.getenv("FIREBASE_CREDENTIALS_JSON")
+        credentials_base64 = credentials_base64 or os.getenv("RAAD_FIREBASE__CREDENTIALS_BASE64") or os.getenv("FIREBASE_CREDENTIALS_BASE64")
+        project_id = project_id or os.getenv("RAAD_FIREBASE__PROJECT_ID") or os.getenv("FIREBASE_PROJECT_ID")
+
         try:
             if not firebase_admin._apps:
+                import base64
                 import json
                 cert_data = None
-                if credentials_base64:
-                    import base64
+                if credentials_base64 and credentials_base64.strip():
                     raw = base64.b64decode(credentials_base64.strip()).decode("utf-8")
                     cert_data = json.loads(raw)
                 elif credentials_json:
-                    cert_data = json.loads(credentials_json) if isinstance(credentials_json, str) else credentials_json
+                    if isinstance(credentials_json, str):
+                        raw_str = credentials_json.strip()
+                        if "require(" in raw_str or "import " in raw_str or "admin.initializeApp" in raw_str:
+                            logger.error(
+                                "firebase_invalid_credentials_code_snippet",
+                                extra={
+                                    "hint": (
+                                        "Code snippet from Firebase console was passed instead of the Service Account "
+                                        "JSON private key. In Firebase Console, go to Project Settings -> Service Accounts, "
+                                        "and click 'Generate new private key' to download the JSON file."
+                                    )
+                                },
+                            )
+                            return
+                        try:
+                            cert_data = json.loads(raw_str)
+                        except json.JSONDecodeError:
+                            try:
+                                decoded = base64.b64decode(raw_str).decode("utf-8")
+                                cert_data = json.loads(decoded)
+                            except Exception:
+                                logger.error("firebase_credentials_json_parse_failed")
+                                return
+                    else:
+                        cert_data = credentials_json
 
                 if cert_data:
+                    if "client" in cert_data and "private_key" not in cert_data:
+                        logger.error(
+                            "firebase_invalid_credentials_client_file",
+                            extra={
+                                "hint": (
+                                    "google-services.json (mobile client file) was passed instead of Firebase Admin "
+                                    "Service Account private key. In Firebase Console, go to Project Settings -> "
+                                    "Service Accounts, and click 'Generate new private key' to download the server key."
+                                )
+                            },
+                        )
+                        return
                     cred = credentials.Certificate(cert_data)
                     firebase_admin.initialize_app(cred, {"projectId": project_id} if project_id else None)
                 elif credentials_path:
+                    if not os.path.exists(credentials_path):
+                        logger.error(
+                            "firebase_credentials_file_not_found",
+                            extra={"path": credentials_path},
+                        )
+                        return
                     cred = credentials.Certificate(credentials_path)
                     firebase_admin.initialize_app(cred, {"projectId": project_id} if project_id else None)
                 else:
                     firebase_admin.initialize_app(options={"projectId": project_id} if project_id else None)
             self._initialized = True
-            logger.info("firebase_fcm_sender_initialized")
+            logger.info("firebase_fcm_sender_initialized", extra={"project_id": project_id})
         except Exception as exc:
             logger.warning(
                 "firebase_initialization_failed",
@@ -111,6 +159,8 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
             return []
 
         clean_data = {str(k): str(v) for k, v in (data or {}).items() if v is not None}
+        clean_data.setdefault("title", title)
+        clean_data.setdefault("body", body)
         dead_tokens: list[str] = []
 
         kind = clean_data.get("kind") or clean_data.get("type", "")

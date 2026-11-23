@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io' show Platform;
 import 'dart:math' show Random;
+import 'dart:typed_data';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -111,6 +112,78 @@ class FirebasePushService implements PushService {
     if (_initialized) return;
 
     try {
+      // 1. Unconditionally initialize local notifications engine so foreground and local alerts work reliably
+      const androidSettings = AndroidInitializationSettings(
+        '@mipmap/ic_launcher',
+      );
+      const darwinSettings = DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
+      );
+      const initSettings = InitializationSettings(
+        android: androidSettings,
+        iOS: darwinSettings,
+      );
+      await _localNotifications.initialize(initSettings);
+
+      // Register all 3 Android Notification Channels with their specialized sound & priority
+      final androidPlugin = _localNotifications
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >();
+
+      if (androidPlugin != null) {
+        // Channel 1: Critical Safety & ADAS (Alarm stream, bypasses silent/DND where allowed)
+        await androidPlugin.createNotificationChannel(
+          const AndroidNotificationChannel(
+            _safetyChannelId,
+            _safetyChannelName,
+            description: _safetyChannelDesc,
+            importance: Importance.max,
+            playSound: true,
+            enableVibration: true,
+            audioAttributesUsage: AudioAttributesUsage.alarm,
+          ),
+        );
+
+        // Channel 2: Bus & Transport alerts (High importance, status/transport sound)
+        await androidPlugin.createNotificationChannel(
+          const AndroidNotificationChannel(
+            _transportChannelId,
+            _transportChannelName,
+            description: _transportChannelDesc,
+            importance: Importance.high,
+            playSound: true,
+            enableVibration: true,
+            audioAttributesUsage: AudioAttributesUsage.notification,
+          ),
+        );
+
+        // Channel 3: Messages, Absence & Staff Updates (Message sound)
+        await androidPlugin.createNotificationChannel(
+          const AndroidNotificationChannel(
+            _messagesChannelId,
+            _messagesChannelName,
+            description: _messagesChannelDesc,
+            importance: Importance.high,
+            playSound: true,
+            enableVibration: true,
+            audioAttributesUsage: AudioAttributesUsage.notification,
+          ),
+        );
+
+        // Request Android 13+ (API 33+) POST_NOTIFICATIONS runtime permission prompt
+        try {
+          await androidPlugin.requestNotificationsPermission();
+        } catch (permErr) {
+          debugPrint(
+            '[PushService] Android notification permission request notice: $permErr',
+          );
+        }
+      }
+
+      // 2. Initialize Firebase if available
       if (Firebase.apps.isEmpty) {
         if (Env.hasFirebaseConfig) {
           debugPrint(
@@ -138,68 +211,6 @@ class FirebasePushService implements PushService {
         FirebaseMessaging.onBackgroundMessage(
           firebaseMessagingBackgroundHandler,
         );
-
-        // Local notifications configuration for foreground heads-up banner on Android/iOS
-        const androidSettings = AndroidInitializationSettings(
-          '@mipmap/ic_launcher',
-        );
-        const darwinSettings = DarwinInitializationSettings(
-          requestAlertPermission: false,
-          requestBadgePermission: false,
-          requestSoundPermission: false,
-        );
-        const initSettings = InitializationSettings(
-          android: androidSettings,
-          iOS: darwinSettings,
-        );
-        await _localNotifications.initialize(initSettings);
-
-        // Register all 3 Android Notification Channels with their specialized sound & priority
-        final androidPlugin = _localNotifications
-            .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin
-            >();
-
-        if (androidPlugin != null) {
-          // Channel 1: Critical Safety & ADAS (Alarm stream, bypasses silent/DND where allowed)
-          await androidPlugin.createNotificationChannel(
-            const AndroidNotificationChannel(
-              _safetyChannelId,
-              _safetyChannelName,
-              description: _safetyChannelDesc,
-              importance: Importance.max,
-              playSound: true,
-              enableVibration: true,
-              audioAttributesUsage: AudioAttributesUsage.alarm,
-            ),
-          );
-
-          // Channel 2: Bus & Transport alerts (High importance, status/transport sound)
-          await androidPlugin.createNotificationChannel(
-            const AndroidNotificationChannel(
-              _transportChannelId,
-              _transportChannelName,
-              description: _transportChannelDesc,
-              importance: Importance.high,
-              playSound: true,
-              enableVibration: true,
-              audioAttributesUsage: AudioAttributesUsage.notification,
-            ),
-          );
-
-          // Channel 3: Messages, Absence & Staff Updates (Message sound)
-          await androidPlugin.createNotificationChannel(
-            const AndroidNotificationChannel(
-              _messagesChannelId,
-              _messagesChannelName,
-              description: _messagesChannelDesc,
-              importance: Importance.high,
-              playSound: true,
-              enableVibration: true,
-              audioAttributesUsage: AudioAttributesUsage.notification,
-            ),
-          );
-        }
 
         // Set foreground notification presentation options
         await FirebaseMessaging.instance
@@ -238,12 +249,12 @@ class FirebasePushService implements PushService {
             '[PushService] Opened app from FCM terminated state: ${initialMessage.data}',
           );
         }
-
-        _initialized = true;
-        debugPrint(
-          '[PushService] FirebasePushService initialized successfully.',
-        );
       }
+
+      _initialized = true;
+      debugPrint(
+        '[PushService] PushService initialized successfully (Firebase apps: ${Firebase.apps.length}).',
+      );
     } catch (e, s) {
       debugPrint('[PushService] Error during initialization: $e, stack: $s');
     }
@@ -313,6 +324,10 @@ class FirebasePushService implements PushService {
         fullScreenIntent: isSafety,
         playSound: true,
         enableVibration: true,
+        vibrationPattern: isSafety
+            ? Int64List.fromList([0, 1000, 500, 1000])
+            : Int64List.fromList([0, 500, 250, 500]),
+        ticker: title,
       );
       final darwinDetails = DarwinNotificationDetails(
         presentAlert: true,
@@ -324,12 +339,17 @@ class FirebasePushService implements PushService {
                 ? InterruptionLevel.active
                 : InterruptionLevel.timeSensitive),
       );
+      final notificationId =
+          (DateTime.now().millisecondsSinceEpoch & 0x7FFFFFFF) % 100000;
       await _localNotifications.show(
-        DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        notificationId,
         title,
         body,
         NotificationDetails(android: androidDetails, iOS: darwinDetails),
         payload: data != null ? jsonEncode(data) : null,
+      );
+      debugPrint(
+        '[PushService] Local alert displayed: id=$notificationId channel=$channelId title="$title"',
       );
     } catch (e, s) {
       debugPrint('[PushService] Error presenting local alert: $e, stack: $s');
@@ -360,6 +380,17 @@ class FirebasePushService implements PushService {
           debugPrint(
             '[PushService] Notification permission status: ${settings.authorizationStatus}',
           );
+
+          // Request Android 13+ POST_NOTIFICATIONS runtime permission prompt
+          final androidPlugin = _localNotifications
+              .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin
+              >();
+          if (androidPlugin != null) {
+            try {
+              await androidPlugin.requestNotificationsPermission();
+            } catch (_) {}
+          }
 
           if (settings.authorizationStatus == AuthorizationStatus.denied) {
             debugPrint(

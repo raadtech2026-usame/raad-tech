@@ -11,6 +11,7 @@ Streams at MVP) are now bound for real, conditional on their own settings being 
 
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 
 import httpx
@@ -495,12 +496,31 @@ def build_container(settings: Settings) -> Container:
         ),
     )
 
-    if settings.firebase.enabled:
+    firebase_credentials_present = bool(
+        settings.firebase.credentials_path
+        or settings.firebase.credentials_json
+        or settings.firebase.credentials_base64
+        or os.getenv("RAAD_FIREBASE__CREDENTIALS_BASE64")
+        or os.getenv("RAAD_FIREBASE__CREDENTIALS_JSON")
+        or os.getenv("FIREBASE_CREDENTIALS_BASE64")
+        or os.getenv("FIREBASE_CREDENTIALS_JSON")
+        or os.getenv("FIREBASE_CREDENTIALS_PATH")
+        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    )
+    if settings.firebase.enabled or firebase_credentials_present:
         push_sender: PushNotificationSenderPort = FirebaseFcmPushSender(
-            credentials_path=settings.firebase.credentials_path,
-            credentials_json=settings.firebase.credentials_json,
-            credentials_base64=settings.firebase.credentials_base64,
-            project_id=settings.firebase.project_id,
+            credentials_path=settings.firebase.credentials_path
+            or os.getenv("FIREBASE_CREDENTIALS_PATH")
+            or os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+            credentials_json=settings.firebase.credentials_json
+            or os.getenv("RAAD_FIREBASE__CREDENTIALS_JSON")
+            or os.getenv("FIREBASE_CREDENTIALS_JSON"),
+            credentials_base64=settings.firebase.credentials_base64
+            or os.getenv("RAAD_FIREBASE__CREDENTIALS_BASE64")
+            or os.getenv("FIREBASE_CREDENTIALS_BASE64"),
+            project_id=settings.firebase.project_id
+            or os.getenv("RAAD_FIREBASE__PROJECT_ID")
+            or os.getenv("FIREBASE_PROJECT_ID"),
         )
     else:
         push_sender = NoopPushNotificationSender()
