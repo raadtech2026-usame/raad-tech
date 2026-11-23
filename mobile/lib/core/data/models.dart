@@ -457,6 +457,10 @@ class AppNotification {
   final String? kind;
   final String? tripId;
   final String? vehicleId;
+  final String? plateNumber;
+  final String? vehicleLabel;
+  final String? alarmType;
+  final String? alertId;
   final DateTime createdAt;
   final bool isRead;
 
@@ -469,6 +473,10 @@ class AppNotification {
     this.kind,
     this.tripId,
     this.vehicleId,
+    this.plateNumber,
+    this.vehicleLabel,
+    this.alarmType,
+    this.alertId,
     this.isRead = false,
   });
 
@@ -479,10 +487,15 @@ class AppNotification {
     'arrived_org',
   };
   static const _transportKinds = {'trip_cancelled', 'cover_assigned'};
+  static const _safetyKinds = {'safety_alert'};
 
   /// About a bus or a trip, as opposed to a message from the school's office.
   bool get isTransport =>
       _transportTypes.contains(type) || _transportKinds.contains(kind);
+
+  /// Critical safety, SOS, or ADAS camera alert
+  bool get isSafety =>
+      _safetyKinds.contains(kind) || type == 'safety_alert';
 
   factory AppNotification.fromJson(Map<String, dynamic> json) {
     final data = json['data'];
@@ -495,6 +508,10 @@ class AppNotification {
       kind: d['kind'] as String?,
       tripId: json['trip_id'] as String?,
       vehicleId: d['vehicle_id'] as String?,
+      plateNumber: d['plate_number'] as String?,
+      vehicleLabel: d['vehicle_label'] as String?,
+      alarmType: d['alarm_type'] as String?,
+      alertId: d['alert_id'] as String?,
       createdAt: _dateTime(json['created_at']) ?? DateTime.now(),
       isRead: json['status'] == 'read' || json['read_at'] != null,
     );

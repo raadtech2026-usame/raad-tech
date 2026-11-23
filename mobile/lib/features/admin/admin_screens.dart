@@ -38,7 +38,22 @@ List<Widget> adminTopActions(
       tooltip: s.navNotifications,
       onPressed: () => Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => const NotificationsScreen(splitByKind: false),
+          builder: (_) => NotificationsScreen(
+            splitByKind: false,
+            onOpenTransport: (notification) {
+              if (notification.vehicleId != null) {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => AdminMultiCameraScreen(
+                      vehicleId: notification.vehicleId!,
+                      plateNo: notification.plateNumber ?? 'Bus',
+                      label: notification.vehicleLabel,
+                    ),
+                  ),
+                );
+              }
+            },
+          ),
         ),
       ),
     ),

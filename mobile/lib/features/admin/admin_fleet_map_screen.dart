@@ -265,6 +265,19 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
             );
           }
 
+          final alerts = (ref.watch(adminAlertsProvider).valueOrNull ??
+                  const <SafetyAlert>[])
+              .where(
+                (a) =>
+                    a.isCritical &&
+                    (a.status == 'open' || a.status == 'acknowledged'),
+              )
+              .toList();
+          final hasCriticalAlert = alerts.isNotEmpty;
+          final topAlert = hasCriticalAlert ? alerts.first : null;
+          final alertVehicle =
+              topAlert != null ? vehicleMap[topAlert.vehicleId] : null;
+
           return Stack(
             children: [
               FlutterMap(
@@ -294,49 +307,158 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
                 top: 12,
                 left: 16,
                 right: 16,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .surface
-                        .withValues(alpha: 0.95),
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Colors.black12,
-                        blurRadius: 8,
-                        offset: Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: BoxDecoration(
-                          color: onlineList.isEmpty
-                              ? Colors.grey
-                              : RaadColors.green,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          onlineList.isEmpty
-                              ? s.adminNoBusesOnRoad
-                              : '${onlineList.length} ${s.adminOnlineNow} · ${s.adminSelectBusToInspect}',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w600,
-                            fontSize: 13,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (hasCriticalAlert && topAlert != null) ...[
+                      InkWell(
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => AdminMultiCameraScreen(
+                                vehicleId: topAlert.vehicleId,
+                                plateNo: alertVehicle?.plateNo ?? 'Bus',
+                                label: alertVehicle?.label,
+                              ),
+                            ),
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: RaadColors.red,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: const [
+                              BoxShadow(
+                                color: Colors.black26,
+                                blurRadius: 8,
+                                offset: Offset(0, 3),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.warning_amber_rounded,
+                                color: Colors.white,
+                                size: 22,
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      s.notificationTitle(
+                                        'system',
+                                        'safety_alert',
+                                        'Digniin Badbaado',
+                                        alarmType: topAlert.alarmType,
+                                      ),
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    Text(
+                                      '${alertVehicle?.label ?? alertVehicle?.plateNo ?? (topAlert.vehicleId.length > 8 ? topAlert.vehicleId.substring(0, 8) : topAlert.vehicleId)} · Taabo si aad u daawato',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 11.5,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.videocam,
+                                      size: 14,
+                                      color: RaadColors.red,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      s.watchVideo,
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: RaadColors.red,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
                     ],
-                  ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .surface
+                            .withValues(alpha: 0.95),
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Colors.black12,
+                            blurRadius: 8,
+                            offset: Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 10,
+                            height: 10,
+                            decoration: BoxDecoration(
+                              color: onlineList.isEmpty
+                                  ? Colors.grey
+                                  : RaadColors.green,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              onlineList.isEmpty
+                                  ? s.adminNoBusesOnRoad
+                                  : '${onlineList.length} ${s.adminOnlineNow} · ${s.adminSelectBusToInspect}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
               Positioned(

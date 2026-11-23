@@ -200,7 +200,16 @@ class Strings {
   String get schoolTab => _('Dugsiga', 'School');
   String get noNotifications => _('Ogeysiis ma jiro', 'No notifications');
   String get markAllRead => _('Dhammaan akhri', 'Mark all read');
-  String notificationTitle(String type, String? kind, String fallback) {
+  String get safetyAdasBadge =>
+      _('DIGNIIN DEGDEG AH / ADAS', 'CRITICAL ADAS ALERT');
+  String get watchLiveCctv =>
+      _('Daawo Kaamirada Tooska ah', 'Watch Live CCTV');
+  String notificationTitle(
+    String type,
+    String? kind,
+    String fallback, {
+    String? alarmType,
+  }) {
     switch (kind ?? type) {
       case 'trip_started':
         return _('Safarkii baska wuu bilaabmay', 'The bus trip has started');
@@ -214,12 +223,59 @@ class Strings {
         return _('Safar waa la joojiyay', 'A trip was cancelled');
       case 'cover_assigned':
         return _('Waxaad beddeleysaa darawal kale', 'You are covering a bus');
+      case 'safety_alert':
+        switch (alarmType) {
+          case 'pedestrian_collision':
+            return _(
+              'Digniin ADAS: Halis Isku-dhac Qof Socda (PCW)',
+              'ADAS Alert: Pedestrian Collision Warning (PCW)',
+            );
+          case 'forward_collision':
+            return _(
+              'Digniin ADAS: Halis Isku-dhac Hore (FCW)',
+              'ADAS Alert: Forward Collision Warning (FCW)',
+            );
+          case 'lane_departure':
+            return _(
+              'Digniin ADAS: Ka bixid khadka (LDW)',
+              'ADAS Alert: Lane Departure Warning (LDW)',
+            );
+          case 'headway':
+            return _(
+              'Digniin ADAS: Masaafada gaadiidka oo aad u dhow (HMW)',
+              'ADAS Alert: Headway Warning (HMW)',
+            );
+          case 'sos':
+            return _(
+              'DEGDEG: Badhanka SOS ayaa la riixay!',
+              'EMERGENCY: SOS Button Pressed!',
+            );
+          case 'collision':
+            return _(
+              'DIGNIIN: Shil / Isku-dhac baska!',
+              'WARNING: Bus Collision Reported!',
+            );
+          case 'rollover':
+            return _(
+              'DIGNIIN: Baska ayaa rogmaday!',
+              'WARNING: Bus Rollover Reported!',
+            );
+          case 'fatigue':
+            return _(
+              'Digniin DSM: Daal ama lulmo darawal',
+              'DSM Alert: Driver Fatigue / Drowsiness',
+            );
+          default:
+            return fallback.isNotEmpty
+                ? fallback
+                : _('Digniin Badbaado oo Degdeg ah', 'Critical Safety Alert');
+        }
       default:
         return fallback;
     }
   }
 
-  String? notificationBody(String type, String? kind) {
+  String? notificationBody(String type, String? kind, {String? alarmType}) {
     switch (kind ?? type) {
       case 'trip_started':
         return _(
@@ -240,6 +296,11 @@ class Strings {
         return _(
           'Baskii wuxuu si nabad ah ku tagay dugsiga.',
           'The bus has arrived safely at school.',
+        );
+      case 'safety_alert':
+        return _(
+          'Digniin degdeg ah ayaa ka timid kaamirada iyo nidaamka badbaadada baska. Taabo si aad u daawato kaamirada tooska ah.',
+          'Critical safety alert detected by the bus camera/safety system. Tap to watch the live camera.',
         );
       default:
         return null;

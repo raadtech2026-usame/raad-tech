@@ -89,6 +89,9 @@ from raad.core.pagination import MAX_PAGE_SIZE, FilterCondition, OffsetPageReque
 from raad.modules.iam.application.ports import IamUnitOfWork
 from raad.modules.iam.application.queries import ListUsersQuery
 from raad.modules.iam.application.services import UserApplicationService
+from raad.modules.fleet_device.application.ports import FleetDeviceUnitOfWork
+from raad.modules.fleet_device.application.queries import GetVehicleByIdQuery
+from raad.modules.fleet_device.application.services import VehicleApplicationService
 from raad.modules.transport_ops.application.incident_services import IncidentApplicationService
 from raad.modules.transport_ops.application.operations_services import (
     DailyOperationsApplicationService,
@@ -630,6 +633,17 @@ _ALARM_TITLES = {
     "headway": "Headway warning on a bus",
 }
 
+_ALARM_SOMALI_LABELS = {
+    "sos": "DEGDEG: Badhanka SOS ayaa la riixay",
+    "collision": "DIGNIIN: Shil / Isku-dhac baska",
+    "rollover": "DIGNIIN: Baska ayaa rogmaday",
+    "forward_collision": "DIGNIIN ADAS: Halis Isku-dhac Hore (FCW)",
+    "pedestrian_collision": "DIGNIIN ADAS: Halis Isku-dhac Qof Socda (PCW)",
+    "lane_departure": "Digniin ADAS: Ka bixid khadka (LDW)",
+    "headway": "Digniin ADAS: Masaafada gaadiidka oo dhow (HMW)",
+    "fatigue": "Digniin DSM: Daal ama lulmo darawal",
+}
+
 
 async def _active_org_admin_ids(container: Container, organization_id: str) -> list[str]:
     """Every active Org Admin of an organization, paged within the allowed page size."""
@@ -655,21 +669,53 @@ async def _active_org_admin_ids(container: Container, organization_id: str) -> l
 
 
 class SafetyAlertRaisedNotifier(EventProcessor):
-    """ADR-0055 §4: a critical alarm (SOS, collision, rollover) alerts every active Org Admin at
+    """ADR-0055 §4: a critical alarm (SOS, collision, rollover, ADAS) alerts every active Org Admin at
     once. Late alarms (backfill or delayed) and other types are only shown on the Safety page.
     Not subscription-gated: a safety notification (`.claude/rules/backend.md` #6). A repeat on an
     open alert publishes no event, so it never notifies twice."""
 
     event_type = "SafetyAlertRaised"
 
-    def __init__(self, container: Container) -> None:
+    def __init__(self, container: Container, fan_out: _NotificationFanOut | None = None) -> None:
         self._container = container
+        self._fan_out = fan_out
 
     async def process(self, event: DomainEvent) -> None:
         payload = event.payload
         if not payload.get("is_critical") or payload.get("is_late") or not event.org_id:
             return
         alarm_type = payload.get("alarm_type", "")
+        vehicle_id = payload.get("vehicle_id")
+
+        vehicle_label = None
+        plate_number = None
+        if vehicle_id:
+            try:
+                vehicle_service = self._container.try_resolve(VehicleApplicationService)
+                fleet_uow = self._container.try_resolve(FleetDeviceUnitOfWork)
+                if vehicle_service and fleet_uow:
+                    vehicle = await vehicle_service.get_vehicle_by_id(
+                        GetVehicleByIdQuery(vehicle_id=vehicle_id), uow=fleet_uow
+                    )
+                    vehicle_label = vehicle.label
+                    plate_number = vehicle.plate_number
+            except Exception:
+                pass
+
+        somali_alarm = _ALARM_SOMALI_LABELS.get(alarm_type)
+        bus_desc = (
+            f"{vehicle_label} ({plate_number})"
+            if vehicle_label and plate_number
+            else (plate_number or vehicle_label or (f"Baska {vehicle_id[:8]}" if vehicle_id else "Baska"))
+        )
+
+        if somali_alarm and (vehicle_label or plate_number):
+            title = f"⚠️ {somali_alarm} - {bus_desc}"
+            body = f"Baska {bus_desc} ayaa laga soo sheegay {somali_alarm}. Taabo si aad u daawato kaamirada tooska ah."
+        else:
+            title = _ALARM_TITLES.get(alarm_type, "Safety alarm on a bus")
+            body = "Open the Safety page to see the bus, the time and the trip, and acknowledge it."
+
         notification_service = self._container.resolve(NotificationApplicationService)
         for user_id in await _active_org_admin_ids(self._container, event.org_id):
             await notification_service.create_notification(
@@ -677,19 +723,37 @@ class SafetyAlertRaisedNotifier(EventProcessor):
                     organization_id=event.org_id,
                     recipient_user_id=user_id,
                     type="system",
-                    title=_ALARM_TITLES.get(alarm_type, "Safety alarm on a bus"),
-                    body="Open the Safety page to see the bus, the time and the trip, and acknowledge it.",
+                    title=title,
+                    body=body,
                     data={
                         "kind": "safety_alert",
                         "alert_id": event.aggregate_id,
                         "alarm_type": alarm_type,
-                        "vehicle_id": payload.get("vehicle_id"),
+                        "vehicle_id": vehicle_id,
+                        "plate_number": plate_number,
+                        "vehicle_label": vehicle_label,
                     },
                     trip_id=payload.get("trip_id"),
                     actor=SYSTEM_PRINCIPAL,
                 ),
                 uow=self._container.resolve(NotificationsUnitOfWork),
             )
+            if self._fan_out:
+                await self._fan_out._dispatch_push(
+                    user_id=user_id,
+                    title=title,
+                    body=body,
+                    type="safety_alert",
+                    data={
+                        "kind": "safety_alert",
+                        "alert_id": event.aggregate_id,
+                        "alarm_type": alarm_type,
+                        "vehicle_id": vehicle_id or "",
+                        "plate_number": plate_number or "",
+                        "vehicle_label": vehicle_label or "",
+                    },
+                    trip_id=payload.get("trip_id"),
+                )
 
 
 class IncidentParentNoticeNotifier(EventProcessor):
@@ -743,5 +807,5 @@ def register_notification_processors(
     registry.register(TripCancelledNotifier(container))
     registry.register(StaffCoverCreatedNotifier(container))
     registry.register(StaffSelfReportedUnavailabilityNotifier(container))
-    registry.register(SafetyAlertRaisedNotifier(container))
+    registry.register(SafetyAlertRaisedNotifier(container, fan_out=fan_out))
     registry.register(IncidentParentNoticeNotifier(container))
