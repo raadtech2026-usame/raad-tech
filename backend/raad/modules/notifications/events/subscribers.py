@@ -249,6 +249,8 @@ class _NotificationFanOut:
                 extra={"user_id": user_id, "error": str(exc)},
             )
 
+    _dispatch_push = _send_push
+
     async def resolve_trip(self, trip_id: str) -> Any | None:
         """The trip, or `None` when it no longer exists (see `resolve_vehicle_id_for_trip`)."""
         trip_service = self._container.resolve(TripApplicationService)
