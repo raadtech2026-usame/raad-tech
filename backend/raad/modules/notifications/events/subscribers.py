@@ -762,9 +762,12 @@ class SafetyAlertRaisedNotifier(EventProcessor):
             else (plate_number or vehicle_label or (f"Baska {vehicle_id[:8]}" if vehicle_id else "Baska"))
         )
 
-        alarm_label = somali_alarm or _ALARM_TITLES.get(alarm_type, "Digniin Badbaado")
-        title = f"⚠️ {alarm_label} - {bus_desc}"
-        body = f"Baska {bus_desc} ayaa laga soo sheegay {alarm_label}. Taabo si aad u daawato kaamirada tooska ah."
+        if somali_alarm and (vehicle_label or plate_number):
+            title = f"⚠️ {somali_alarm} - {bus_desc}"
+            body = f"Baska {bus_desc} ayaa laga soo sheegay {somali_alarm}. Taabo si aad u daawato kaamirada tooska ah."
+        else:
+            title = _ALARM_TITLES.get(alarm_type, "Safety alarm on a bus")
+            body = "Open the Safety page to see the bus, the time and the trip, and acknowledge it."
 
         notification_service = self._container.resolve(NotificationApplicationService)
         for user_id in await _active_org_admin_ids(self._container, event.org_id):
