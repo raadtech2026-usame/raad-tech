@@ -10,6 +10,7 @@ import 'admin_fleet_map_screen.dart';
 import 'admin_routes_screen.dart';
 import 'admin_staff_screen.dart';
 import 'admin_trips_screen.dart';
+import 'admin_multi_camera_screen.dart';
 
 export 'admin_attendance_report_screen.dart';
 export 'admin_multi_camera_screen.dart';

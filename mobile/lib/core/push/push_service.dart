@@ -79,10 +79,24 @@ class NoPushService implements PushService {
 class FirebasePushService implements PushService {
   static const _registeredTokenIdKey = 'raad_fcm_device_token_id';
   static const _fallbackTokenKey = 'raad_fallback_device_token';
-  static const _channelId = 'raad_transport_alerts';
-  static const _channelName = 'Bus & Trip Alerts';
-  static const _channelDesc =
+
+  // Channel 1: Critical Safety & ADAS Alarms (Emergency siren/alarm stream)
+  static const _safetyChannelId = 'raad_safety_alerts';
+  static const _safetyChannelName = 'Critical Safety & ADAS Alerts';
+  static const _safetyChannelDesc =
+      'Emergency alarms for ADAS collision, SOS, rollover, and vehicle incidents.';
+
+  // Channel 2: Bus & Transport Movement (Chime stream)
+  static const _transportChannelId = 'raad_transport_alerts';
+  static const _transportChannelName = 'Bus & Trip Alerts';
+  static const _transportChannelDesc =
       'Notifications for bus proximity, stop approach, and safe arrival.';
+
+  // Channel 3: Messages, Absence & Staff Updates (Message tone)
+  static const _messagesChannelId = 'raad_messages_alerts';
+  static const _messagesChannelName = 'School Messages & Communications';
+  static const _messagesChannelDesc =
+      'Direct messages, student absence updates, cover assignments, and announcements.';
 
   final ApiClient _apiClient;
   final SecureTokenStorage _tokenStorage;
@@ -140,22 +154,52 @@ class FirebasePushService implements PushService {
         );
         await _localNotifications.initialize(initSettings);
 
-        // Create Android Notification Channel with max importance, vibration, and alarm audio stream
-        // so that critical transport alerts produce an audible alarm even if phone is on silent.
-        const channel = AndroidNotificationChannel(
-          _channelId,
-          _channelName,
-          description: _channelDesc,
-          importance: Importance.max,
-          playSound: true,
-          enableVibration: true,
-          audioAttributesUsage: AudioAttributesUsage.alarm,
-        );
-        await _localNotifications
+        // Register all 3 Android Notification Channels with their specialized sound & priority
+        final androidPlugin = _localNotifications
             .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin
-            >()
-            ?.createNotificationChannel(channel);
+            >();
+
+        if (androidPlugin != null) {
+          // Channel 1: Critical Safety & ADAS (Alarm stream, bypasses silent/DND where allowed)
+          await androidPlugin.createNotificationChannel(
+            const AndroidNotificationChannel(
+              _safetyChannelId,
+              _safetyChannelName,
+              description: _safetyChannelDesc,
+              importance: Importance.max,
+              playSound: true,
+              enableVibration: true,
+              audioAttributesUsage: AudioAttributesUsage.alarm,
+            ),
+          );
+
+          // Channel 2: Bus & Transport alerts (High importance, status/transport sound)
+          await androidPlugin.createNotificationChannel(
+            const AndroidNotificationChannel(
+              _transportChannelId,
+              _transportChannelName,
+              description: _transportChannelDesc,
+              importance: Importance.high,
+              playSound: true,
+              enableVibration: true,
+              audioAttributesUsage: AudioAttributesUsage.notification,
+            ),
+          );
+
+          // Channel 3: Messages, Absence & Staff Updates (Message sound)
+          await androidPlugin.createNotificationChannel(
+            const AndroidNotificationChannel(
+              _messagesChannelId,
+              _messagesChannelName,
+              description: _messagesChannelDesc,
+              importance: Importance.high,
+              playSound: true,
+              enableVibration: true,
+              audioAttributesUsage: AudioAttributesUsage.notification,
+            ),
+          );
+        }
 
         // Set foreground notification presentation options
         await FirebaseMessaging.instance
@@ -227,24 +271,58 @@ class FirebasePushService implements PushService {
   }) async {
     try {
       await _ensureInitialized();
-      const androidDetails = AndroidNotificationDetails(
-        _channelId,
-        _channelName,
-        channelDescription: _channelDesc,
+
+      final kind = (data?['kind'] ?? data?['type'] ?? '').toString();
+      final isSafety = kind == 'safety_alert' ||
+          kind == 'sos' ||
+          kind == 'collision' ||
+          kind == 'rollover' ||
+          kind == 'forward_collision' ||
+          kind == 'pedestrian_collision';
+      final isMessage = kind == 'incident_notice' ||
+          kind == 'staff_unavailable' ||
+          kind == 'cover_assigned' ||
+          kind == 'trip_cancelled' ||
+          kind == 'student_absence';
+
+      final String channelId = isSafety
+          ? _safetyChannelId
+          : (isMessage ? _messagesChannelId : _transportChannelId);
+      final String channelName = isSafety
+          ? _safetyChannelName
+          : (isMessage ? _messagesChannelName : _transportChannelName);
+      final String channelDesc = isSafety
+          ? _safetyChannelDesc
+          : (isMessage ? _messagesChannelDesc : _transportChannelDesc);
+
+      final androidDetails = AndroidNotificationDetails(
+        channelId,
+        channelName,
+        channelDescription: channelDesc,
         icon: '@mipmap/ic_launcher',
-        importance: Importance.max,
-        priority: Priority.max,
-        audioAttributesUsage: AudioAttributesUsage.alarm,
-        category: AndroidNotificationCategory.alarm,
-        fullScreenIntent: true,
+        importance: isSafety ? Importance.max : Importance.high,
+        priority: isSafety ? Priority.max : Priority.high,
+        audioAttributesUsage: isSafety
+            ? AudioAttributesUsage.alarm
+            : AudioAttributesUsage.notification,
+        category: isSafety
+            ? AndroidNotificationCategory.alarm
+            : (isMessage
+                ? AndroidNotificationCategory.message
+                : AndroidNotificationCategory.status),
+        fullScreenIntent: isSafety,
         playSound: true,
         enableVibration: true,
       );
-      const darwinDetails = DarwinNotificationDetails(
+      final darwinDetails = DarwinNotificationDetails(
         presentAlert: true,
         presentBadge: true,
         presentSound: true,
-        interruptionLevel: InterruptionLevel.timeSensitive,
+        interruptionLevel: isSafety
+            ? InterruptionLevel.critical
+            : (isMessage
+                ? InterruptionLevel.active
+                : InterruptionLevel.timeSensitive),
       );
       await _localNotifications.show(
         DateTime.now().millisecondsSinceEpoch ~/ 1000,

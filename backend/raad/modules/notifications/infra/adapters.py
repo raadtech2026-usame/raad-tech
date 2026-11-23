@@ -113,6 +113,35 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
         clean_data = {str(k): str(v) for k, v in (data or {}).items() if v is not None}
         dead_tokens: list[str] = []
 
+        kind = clean_data.get("kind") or clean_data.get("type", "")
+        is_safety = kind in (
+            "safety_alert",
+            "sos",
+            "collision",
+            "rollover",
+            "forward_collision",
+            "pedestrian_collision",
+        )
+        is_message = kind in (
+            "incident_notice",
+            "staff_unavailable",
+            "cover_assigned",
+            "trip_cancelled",
+            "student_absence",
+        )
+
+        channel_id = (
+            "raad_safety_alerts"
+            if is_safety
+            else ("raad_messages_alerts" if is_message else "raad_transport_alerts")
+        )
+        android_priority = "max" if is_safety else "high"
+        apns_interruption = (
+            "critical"
+            if is_safety
+            else ("active" if is_message else "time-sensitive")
+        )
+
         # FCM multicast accepts at most 500 tokens per batch
         chunk_size = 500
         for i in range(0, len(tokens), chunk_size):
@@ -128,8 +157,8 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
                     priority="high",
                     notification=messaging.AndroidNotification(
                         sound="default",
-                        channel_id="raad_transport_alerts",
-                        priority="max",
+                        channel_id=channel_id,
+                        priority=android_priority,
                         default_sound=True,
                         default_vibrate_timings=True,
                     ),
@@ -141,7 +170,7 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
                             sound="default",
                             badge=1,
                             content_available=True,
-                            interruption_level="time-sensitive",
+                            interruption_level=apns_interruption,
                         )
                     ),
                 ),

@@ -330,7 +330,7 @@ class TripStartedNotifier(EventProcessor):
             type="trip_started",
             title="Trip started",
             body="Your child's bus trip has started.",
-            data={"trip_id": event.aggregate_id, "vehicle_id": vehicle_id},
+            data={"trip_id": event.aggregate_id, "vehicle_id": vehicle_id, "kind": "trip_started"},
             trip_id=event.aggregate_id,
         )
 
@@ -349,7 +349,7 @@ class TripEndedNotifier(EventProcessor):
             type="trip_completed",
             title="Trip completed",
             body="Your child's bus trip has ended.",
-            data={"trip_id": event.aggregate_id, "vehicle_id": vehicle_id},
+            data={"trip_id": event.aggregate_id, "vehicle_id": vehicle_id, "kind": "trip_completed"},
             trip_id=event.aggregate_id,
         )
 
@@ -474,8 +474,9 @@ class TripCancelledNotifier(EventProcessor):
 
     event_type = "TripCancelled"
 
-    def __init__(self, container: Container) -> None:
+    def __init__(self, container: Container, fan_out: _NotificationFanOut | None = None) -> None:
         self._container = container
+        self._fan_out = fan_out
 
     async def process(self, event: DomainEvent) -> None:
         trip_id = event.aggregate_id
@@ -493,48 +494,72 @@ class TripCancelledNotifier(EventProcessor):
         reason = event.payload.get("reason") or trip.cancelled_reason or ""
         notification_service = self._container.resolve(NotificationApplicationService)
         for user_id in user_ids:
+            title = f"Your child's {period} bus on {day} is cancelled"
+            body = f"The {period} bus on {day} will not run. Reason: {reason}"
+            data = {
+                "kind": "trip_cancelled",
+                "trip_id": trip_id,
+                "scheduled_date": day,
+                "trip_type": trip.trip_type.value,
+            }
             await notification_service.create_notification(
                 CreateNotificationCommand(
                     organization_id=str(trip.organization_id),
                     recipient_user_id=user_id,
                     type="system",
-                    title=f"Your child's {period} bus on {day} is cancelled",
-                    body=f"The {period} bus on {day} will not run. Reason: {reason}",
-                    data={
-                        "kind": "trip_cancelled",
-                        "trip_id": trip_id,
-                        "scheduled_date": day,
-                        "trip_type": trip.trip_type.value,
-                    },
+                    title=title,
+                    body=body,
+                    data=data,
                     trip_id=trip_id,
                     actor=SYSTEM_PRINCIPAL,
                 ),
                 uow=self._container.resolve(NotificationsUnitOfWork),
             )
+            if self._fan_out:
+                await self._fan_out._dispatch_push(
+                    user_id=user_id,
+                    title=title,
+                    body=body,
+                    type="trip_cancelled",
+                    data=data,
+                    trip_id=trip_id,
+                )
         # ADR-0061: the driver's phone is where a cancellation matters first.
         _trip, driver_user_id = await self._container.resolve(
             SelfServiceApplicationService
         ).driver_user_id_for_trip(trip_id, uow=self._container.resolve(TransportOpsUnitOfWork))
         if driver_user_id is not None:
+            driver_title = f"Your {period} trip on {day} is cancelled"
+            driver_body = f"The {period} trip on {day} will not run. Reason: {reason}"
+            driver_data = {
+                "kind": "trip_cancelled",
+                "audience": "driver",
+                "trip_id": trip_id,
+                "scheduled_date": day,
+                "trip_type": trip.trip_type.value,
+            }
             await notification_service.create_notification(
                 CreateNotificationCommand(
                     organization_id=str(trip.organization_id),
                     recipient_user_id=driver_user_id,
                     type="system",
-                    title=f"Your {period} trip on {day} is cancelled",
-                    body=f"The {period} trip on {day} will not run. Reason: {reason}",
-                    data={
-                        "kind": "trip_cancelled",
-                        "audience": "driver",
-                        "trip_id": trip_id,
-                        "scheduled_date": day,
-                        "trip_type": trip.trip_type.value,
-                    },
+                    title=driver_title,
+                    body=driver_body,
+                    data=driver_data,
                     trip_id=trip_id,
                     actor=SYSTEM_PRINCIPAL,
                 ),
                 uow=self._container.resolve(NotificationsUnitOfWork),
             )
+            if self._fan_out:
+                await self._fan_out._dispatch_push(
+                    user_id=driver_user_id,
+                    title=driver_title,
+                    body=driver_body,
+                    type="trip_cancelled",
+                    data=driver_data,
+                    trip_id=trip_id,
+                )
 
 
 class StaffCoverCreatedNotifier(EventProcessor):
@@ -543,8 +568,9 @@ class StaffCoverCreatedNotifier(EventProcessor):
 
     event_type = "StaffCoverCreated"
 
-    def __init__(self, container: Container) -> None:
+    def __init__(self, container: Container, fan_out: _NotificationFanOut | None = None) -> None:
         self._container = container
+        self._fan_out = fan_out
 
     async def process(self, event: DomainEvent) -> None:
         payload = event.payload
@@ -558,25 +584,37 @@ class StaffCoverCreatedNotifier(EventProcessor):
             return
         starts_on, ends_on = payload.get("starts_on"), payload.get("ends_on")
         days = starts_on if starts_on == ends_on else f"{starts_on} to {ends_on}"
+        title = "You are covering a bus"
+        body = f"You have been assigned as a substitute on {days}. Open your trips to see them."
+        data = {
+            "kind": "cover_assigned",
+            "cover_id": event.aggregate_id,
+            "vehicle_id": payload.get("vehicle_id"),
+            "starts_on": starts_on,
+            "ends_on": ends_on,
+        }
         await self._container.resolve(NotificationApplicationService).create_notification(
             CreateNotificationCommand(
                 organization_id=event.org_id,
                 recipient_user_id=user_id,
                 type="system",
-                title="You are covering a bus",
-                body=f"You have been assigned as a substitute on {days}. Open your trips to see them.",
-                data={
-                    "kind": "cover_assigned",
-                    "cover_id": event.aggregate_id,
-                    "vehicle_id": payload.get("vehicle_id"),
-                    "starts_on": starts_on,
-                    "ends_on": ends_on,
-                },
+                title=title,
+                body=body,
+                data=data,
                 trip_id=None,
                 actor=SYSTEM_PRINCIPAL,
             ),
             uow=self._container.resolve(NotificationsUnitOfWork),
         )
+        if self._fan_out:
+            await self._fan_out._dispatch_push(
+                user_id=user_id,
+                title=title,
+                body=body,
+                type="cover_assigned",
+                data=data,
+                trip_id=None,
+            )
 
 
 class StaffSelfReportedUnavailabilityNotifier(EventProcessor):
@@ -585,8 +623,9 @@ class StaffSelfReportedUnavailabilityNotifier(EventProcessor):
 
     event_type = "StaffUnavailabilityRecorded"
 
-    def __init__(self, container: Container) -> None:
+    def __init__(self, container: Container, fan_out: _NotificationFanOut | None = None) -> None:
         self._container = container
+        self._fan_out = fan_out
 
     async def process(self, event: DomainEvent) -> None:
         payload = event.payload
@@ -600,6 +639,15 @@ class StaffSelfReportedUnavailabilityNotifier(EventProcessor):
             return
         starts_on, ends_on = payload.get("starts_on"), payload.get("ends_on")
         days = starts_on if starts_on == ends_on else f"{starts_on} to {ends_on}"
+        title = "A driver reported they are unavailable"
+        body = f"Unavailable on {days}. Open Daily Operations to arrange cover."
+        data = {
+            "kind": "staff_unavailable",
+            "unavailability_id": event.aggregate_id,
+            "staff_id": staff_id,
+            "starts_on": starts_on,
+            "ends_on": ends_on,
+        }
         notification_service = self._container.resolve(NotificationApplicationService)
         for user_id in await _active_org_admin_ids(self._container, event.org_id):
             await notification_service.create_notification(
@@ -607,20 +655,23 @@ class StaffSelfReportedUnavailabilityNotifier(EventProcessor):
                     organization_id=event.org_id,
                     recipient_user_id=user_id,
                     type="system",
-                    title="A driver reported they are unavailable",
-                    body=f"Unavailable on {days}. Open Daily Operations to arrange cover.",
-                    data={
-                        "kind": "staff_unavailable",
-                        "unavailability_id": event.aggregate_id,
-                        "staff_id": staff_id,
-                        "starts_on": starts_on,
-                        "ends_on": ends_on,
-                    },
+                    title=title,
+                    body=body,
+                    data=data,
                     trip_id=None,
                     actor=SYSTEM_PRINCIPAL,
                 ),
                 uow=self._container.resolve(NotificationsUnitOfWork),
             )
+            if self._fan_out:
+                await self._fan_out._dispatch_push(
+                    user_id=user_id,
+                    title=title,
+                    body=body,
+                    type="staff_unavailable",
+                    data=data,
+                    trip_id=None,
+                )
 
 
 _ALARM_TITLES = {
@@ -709,12 +760,9 @@ class SafetyAlertRaisedNotifier(EventProcessor):
             else (plate_number or vehicle_label or (f"Baska {vehicle_id[:8]}" if vehicle_id else "Baska"))
         )
 
-        if somali_alarm and (vehicle_label or plate_number):
-            title = f"⚠️ {somali_alarm} - {bus_desc}"
-            body = f"Baska {bus_desc} ayaa laga soo sheegay {somali_alarm}. Taabo si aad u daawato kaamirada tooska ah."
-        else:
-            title = _ALARM_TITLES.get(alarm_type, "Safety alarm on a bus")
-            body = "Open the Safety page to see the bus, the time and the trip, and acknowledge it."
+        alarm_label = somali_alarm or _ALARM_TITLES.get(alarm_type, "Digniin Badbaado")
+        title = f"⚠️ {alarm_label} - {bus_desc}"
+        body = f"Baska {bus_desc} ayaa laga soo sheegay {alarm_label}. Taabo si aad u daawato kaamirada tooska ah."
 
         notification_service = self._container.resolve(NotificationApplicationService)
         for user_id in await _active_org_admin_ids(self._container, event.org_id):
@@ -763,8 +811,9 @@ class IncidentParentNoticeNotifier(EventProcessor):
 
     event_type = "IncidentParentNoticeSent"
 
-    def __init__(self, container: Container) -> None:
+    def __init__(self, container: Container, fan_out: _NotificationFanOut | None = None) -> None:
         self._container = container
+        self._fan_out = fan_out
 
     async def process(self, event: DomainEvent) -> None:
         if not event.aggregate_id:
@@ -776,20 +825,32 @@ class IncidentParentNoticeNotifier(EventProcessor):
         if notice is None:
             return
         notification_service = self._container.resolve(NotificationApplicationService)
+        title = "A message from your child's school about transport"
+        body = notice.message
+        data = {"kind": "incident_notice", "incident_id": notice.incident_id}
         for user_id in notice.parent_user_ids:
             await notification_service.create_notification(
                 CreateNotificationCommand(
                     organization_id=notice.organization_id,
                     recipient_user_id=user_id,
                     type="system",
-                    title="A message from your child's school about transport",
-                    body=notice.message,
-                    data={"kind": "incident_notice", "incident_id": notice.incident_id},
+                    title=title,
+                    body=body,
+                    data=data,
                     trip_id=None,
                     actor=SYSTEM_PRINCIPAL,
                 ),
                 uow=self._container.resolve(NotificationsUnitOfWork),
             )
+            if self._fan_out:
+                await self._fan_out._dispatch_push(
+                    user_id=user_id,
+                    title=title,
+                    body=body,
+                    type="incident_notice",
+                    data=data,
+                    trip_id=None,
+                )
 
 
 def register_notification_processors(
@@ -804,8 +865,8 @@ def register_notification_processors(
     registry.register(VehicleApproachingStopNotifier(fan_out))
     registry.register(VehicleEnteredStopGeofenceNotifier(fan_out))
     registry.register(VehicleArrivedAtOrganizationNotifier(fan_out))
-    registry.register(TripCancelledNotifier(container))
-    registry.register(StaffCoverCreatedNotifier(container))
-    registry.register(StaffSelfReportedUnavailabilityNotifier(container))
+    registry.register(TripCancelledNotifier(container, fan_out=fan_out))
+    registry.register(StaffCoverCreatedNotifier(container, fan_out=fan_out))
+    registry.register(StaffSelfReportedUnavailabilityNotifier(container, fan_out=fan_out))
     registry.register(SafetyAlertRaisedNotifier(container, fan_out=fan_out))
-    registry.register(IncidentParentNoticeNotifier(container))
+    registry.register(IncidentParentNoticeNotifier(container, fan_out=fan_out))
