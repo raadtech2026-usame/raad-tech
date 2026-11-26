@@ -152,7 +152,7 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
             return []
 
         if not self._initialized or not _FIREBASE_AVAILABLE or messaging is None:
-            logger.debug(
+            logger.warning(
                 "fcm_push_skipped_not_initialized",
                 extra={"token_count": len(tokens), "title": title},
             )
@@ -244,6 +244,13 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
                     for idx, resp in enumerate(response.responses):
                         if not resp.success and resp.exception:
                             err_str = str(resp.exception).lower()
+                            logger.warning(
+                                "fcm_multicast_token_failure",
+                                extra={
+                                    "token_prefix": chunk[idx][:16],
+                                    "error": str(resp.exception),
+                                },
+                            )
                             if (
                                 "unregistered" in err_str
                                 or "not-registered" in err_str

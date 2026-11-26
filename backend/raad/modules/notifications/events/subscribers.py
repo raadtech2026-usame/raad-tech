@@ -148,9 +148,19 @@ class _NotificationFanOut:
             and _rides_to_stop(a, stop_id=stop_id, route_id=route_id, trip_type=trip_type)
         }
         if not active_student_ids:
+            logger.info(
+                "notify_vehicle_watchers_no_active_students",
+                extra={"vehicle_id": vehicle_id, "type": type, "stop_id": stop_id},
+            )
             return
 
         cr1_granted = await self._is_cr1_granted(organization_id=organization_id)
+        if not cr1_granted:
+            logger.info(
+                "notify_vehicle_watchers_withheld_cr1",
+                extra={"organization_id": organization_id, "vehicle_id": vehicle_id, "type": type},
+            )
+            return
 
         student_parent_service = self._container.resolve(StudentParentApplicationService)
         parent_service = self._container.resolve(ParentApplicationService)
@@ -168,8 +178,6 @@ class _NotificationFanOut:
                     uow=self._container.resolve(TransportOpsUnitOfWork),
                 )
                 if parent.user_id in notified_user_ids:
-                    continue
-                if not cr1_granted:
                     continue
                 notified_user_ids.add(parent.user_id)
                 await notification_service.create_notification(
@@ -217,6 +225,10 @@ class _NotificationFanOut:
                     UserId(user_id)
                 )
                 if not tokens:
+                    logger.info(
+                        "fcm_push_skipped_no_active_tokens",
+                        extra={"user_id": user_id, "type": type},
+                    )
                     return
                 token_strings = [str(t.fcm_token) for t in tokens]
 
