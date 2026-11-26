@@ -745,6 +745,21 @@ class Strings {
   String get adminNoOpenAlerts => _('Ma jiraan digniino furan', 'No active alerts');
   String get adminBulkPayBus => _('Dhamaan baskan u qabo lacagta', 'Mark All Bus Invoices Paid');
   String get adminViewStops => _('Eeg Hakadyada', 'View Stops');
+
+  // ---- Account security (ADR-0019)
+  String get accountSecurity => _('Amniga Akoonka', 'Account Security');
+  String get sessionsTitle => _('Devices-ka Jira', 'Active Devices');
+  String get noSessions => _('Ma jiraan sessions firfircoon', 'No active sessions found');
+  String get revokeSessionTitle => _('Xir Device-kan?', 'Sign out this device?');
+  String get revokeSessionBody => _(
+    'Device-kani mar dambe ma geli karo app-ka ilaa uu mar kale galado.',
+    'This device will be signed out and must log in again to access the app.',
+  );
+  String get revokeSessionConfirm => _('Haa, Xir', 'Yes, Sign out');
+  String get changePasswordVoluntaryIntro => _(
+    'Dooro password cusub si aad akoonkaaga ugu ammaansho.',
+    'Choose a new password to keep your account secure.',
+  );
 }
 
 /// 'so' or 'en'.

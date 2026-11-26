@@ -6,6 +6,7 @@ import 'package:raad_mobile/core/data/models.dart';
 import 'package:raad_mobile/core/l10n/strings.dart';
 import 'package:raad_mobile/features/auth/change_password_screen.dart';
 import 'package:raad_mobile/features/auth/login_screen.dart';
+import 'package:raad_mobile/features/auth/sessions_screen.dart';
 import 'package:raad_mobile/features/common/notifications_screen.dart';
 import 'package:raad_mobile/features/driver/driver_screens.dart';
 import 'package:raad_mobile/features/driver/driver_self_service.dart';
@@ -74,6 +75,32 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Save'));
       await tester.pump();
       expect(find.text('The two passwords do not match.'), findsOneWidget);
+    });
+
+    testWidgets('voluntary mode shows a back button, not sign-out', (tester) async {
+      await tester.pumpWidget(
+        testApp(
+          const ChangePasswordScreen(voluntary: true),
+          repository: FakeRepository(),
+        ),
+      );
+      // The back-arrow is auto-added by Navigator/AppBar; sign-out must NOT appear.
+      expect(find.text('Sign out'), findsNothing);
+      // The voluntary intro text is shown.
+      expect(
+        find.textContaining('keep your account secure'),
+        findsOneWidget,
+      );
+    });
+  });
+
+  group('Sessions screen', () {
+    testWidgets('shows empty state when no sessions', (tester) async {
+      await tester.pumpWidget(
+        testApp(const SessionsScreen(), repository: FakeRepository()),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('No active sessions'), findsOneWidget);
     });
   });
 

@@ -5,14 +5,25 @@ import '../../core/auth/auth_state.dart';
 import '../../core/l10n/strings.dart';
 import '../../shared/widgets.dart';
 
-/// Shown instead of the app while the account still holds the one-time password the school
-/// handed over. The server keeps the flag; this screen is how it gets cleared.
+/// Shown when [voluntary] is false (default): the app blocks until the forced temp-password is
+/// replaced. When [voluntary] is true (launched from Profile): a back-arrow is shown so the
+/// user can dismiss the screen without being signed out.
 class ChangePasswordScreen extends ConsumerStatefulWidget {
-  const ChangePasswordScreen({super.key});
+  final bool voluntary;
+  const ChangePasswordScreen({super.key, this.voluntary = false});
 
   @override
   ConsumerState<ChangePasswordScreen> createState() =>
       _ChangePasswordScreenState();
+}
+
+/// Convenience: open the voluntary change-password sheet from anywhere.
+Future<void> openChangePasswordScreen(BuildContext context) {
+  return Navigator.of(context).push<void>(
+    MaterialPageRoute(
+      builder: (_) => const ChangePasswordScreen(voluntary: true),
+    ),
+  );
 }
 
 class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
@@ -59,18 +70,28 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(s.changePasswordTitle),
+        // In voluntary mode a back arrow is shown automatically; in forced mode
+        // the only exit is sign-out (the app has nowhere else to go until the
+        // temp password is replaced).
+        automaticallyImplyLeading: widget.voluntary,
         actions: [
-          TextButton(
-            onPressed: () => ref.read(authControllerProvider.notifier).logout(),
-            child: Text(s.signOut),
-          ),
+          if (!widget.voluntary)
+            TextButton(
+              onPressed: () => ref.read(authControllerProvider.notifier).logout(),
+              child: Text(s.signOut),
+            ),
         ],
       ),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
-            Text(s.changePasswordIntro, style: const TextStyle(fontSize: 15.5)),
+            Text(
+              widget.voluntary
+                  ? s.changePasswordVoluntaryIntro
+                  : s.changePasswordIntro,
+              style: const TextStyle(fontSize: 15.5),
+            ),
             const SizedBox(height: 24),
             TextField(
               controller: _first,

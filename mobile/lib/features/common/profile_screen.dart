@@ -5,6 +5,8 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/auth/auth_state.dart';
 import '../../core/l10n/strings.dart';
 import '../../core/theme/theme_mode.dart';
+import '../../features/auth/change_password_screen.dart';
+import '../../features/auth/sessions_screen.dart';
 import '../../shared/widgets.dart';
 
 /// The signed-in person's own account, the language choice and sign-out. [extra] lets a role
@@ -62,6 +64,29 @@ class ProfileScreen extends ConsumerWidget {
             ),
           ),
           ...extra,
+          SectionTitle(s.accountSecurity),
+          SectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.lock_outline_rounded),
+                  title: Text(s.changePasswordTitle),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => openChangePasswordScreen(context),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.devices_rounded),
+                  title: Text(s.sessionsTitle),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => openSessionsScreen(context),
+                ),
+              ],
+            ),
+          ),
           SectionTitle(s.language),
           SectionCard(
             child: SegmentedButton<String>(

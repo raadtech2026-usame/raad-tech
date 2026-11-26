@@ -25,6 +25,33 @@ class UserProfile {
   }
 }
 
+/// One active refresh-token / session returned by `GET /auth/sessions` (ADR-0019).
+class ActiveSession {
+  final String id;
+  final String? deviceLabel;
+  final String? ipAddress;
+  final DateTime issuedAt;
+  final DateTime expiresAt;
+
+  const ActiveSession({
+    required this.id,
+    this.deviceLabel,
+    this.ipAddress,
+    required this.issuedAt,
+    required this.expiresAt,
+  });
+
+  factory ActiveSession.fromJson(Map<String, dynamic> json) {
+    return ActiveSession(
+      id: json['id'] as String,
+      deviceLabel: json['device_label'] as String?,
+      ipAddress: json['ip_address'] as String?,
+      issuedAt: DateTime.parse(json['issued_at'] as String),
+      expiresAt: DateTime.parse(json['expires_at'] as String),
+    );
+  }
+}
+
 class AuthRepository {
   final ApiClient _client;
 
@@ -66,5 +93,16 @@ class AuthRepository {
 
   Future<UserProfile> profile() async {
     return UserProfile.fromJson(await _client.get('/auth/me'));
+  }
+
+  /// Lists the caller's own active sessions (ADR-0019). Newest-first.
+  Future<List<ActiveSession>> listSessions() async {
+    final raw = await _client.getList('/auth/sessions', cache: false);
+    return raw.map(ActiveSession.fromJson).toList();
+  }
+
+  /// Revokes one of the caller's own sessions by id (ADR-0019).
+  Future<void> revokeSession(String sessionId) async {
+    await _client.delete('/auth/sessions/$sessionId');
   }
 }
