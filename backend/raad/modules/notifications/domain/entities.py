@@ -273,3 +273,27 @@ class DeviceToken(_AggregateRoot):
                 actor_id=actor_id,
             )
         )
+
+    def reactivate(
+        self,
+        *,
+        user_id: UserId,
+        platform: Platform,
+        clock: Clock,
+        actor_id: str | None = None,
+    ) -> None:
+        """Re-activates a token that was previously registered or revoked, optionally re-assigning
+        to the currently authenticated user on the device."""
+        self.user_id = user_id
+        self.platform = platform
+        self.revoked_at = None
+        now = clock.now()
+        self._record(
+            notification_events.device_token_registered(
+                device_token_id=str(self.id),
+                user_id=str(user_id),
+                platform=platform.value,
+                occurred_at=now,
+                actor_id=actor_id,
+            )
+        )

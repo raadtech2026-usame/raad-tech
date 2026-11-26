@@ -620,6 +620,76 @@ class DeviceTokenApplicationTests(unittest.IsolatedAsyncioTestCase):
                 uow=uow,
             )
 
+    async def test_register_same_fcm_token_by_same_user_is_idempotent(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        t1 = await service.register_device_token(
+            RegisterDeviceTokenCommand(
+                fcm_token="fcm-token-same", platform="android", actor=make_actor()
+            ),
+            uow=uow,
+        )
+        t2 = await service.register_device_token(
+            RegisterDeviceTokenCommand(
+                fcm_token="fcm-token-same", platform="android", actor=make_actor()
+            ),
+            uow=uow,
+        )
+        self.assertEqual(t1.id, t2.id)
+        self.assertIsNone(t2.revoked_at)
+        self.assertEqual(len(uow.device_tokens.by_id), 1)
+
+    async def test_register_revoked_fcm_token_reactivates(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        token = await service.register_device_token(
+            RegisterDeviceTokenCommand(
+                fcm_token="fcm-token-reactivate", platform="android", actor=make_actor()
+            ),
+            uow=uow,
+        )
+        await service.revoke_device_token(
+            RevokeDeviceTokenCommand(
+                device_token_id=token.id, actor=make_actor(RECIPIENT_USER_ID)
+            ),
+            uow=uow,
+        )
+        # Re-registering after revoke should re-activate the token
+        t2 = await service.register_device_token(
+            RegisterDeviceTokenCommand(
+                fcm_token="fcm-token-reactivate", platform="android", actor=make_actor()
+            ),
+            uow=uow,
+        )
+        self.assertEqual(token.id, t2.id)
+        self.assertIsNone(t2.revoked_at)
+
+    async def test_register_revoked_token_by_different_user_reassigns_and_reactivates(self) -> None:
+        service = make_service()
+        uow = make_uow()
+        token = await service.register_device_token(
+            RegisterDeviceTokenCommand(
+                fcm_token="fcm-token-switch", platform="android", actor=make_actor()
+            ),
+            uow=uow,
+        )
+        await service.revoke_device_token(
+            RevokeDeviceTokenCommand(
+                device_token_id=token.id, actor=make_actor(RECIPIENT_USER_ID)
+            ),
+            uow=uow,
+        )
+        # New user logging into the same phone reclaims and activates the token
+        t2 = await service.register_device_token(
+            RegisterDeviceTokenCommand(
+                fcm_token="fcm-token-switch", platform="ios", actor=make_actor(OTHER_USER_ID)
+            ),
+            uow=uow,
+        )
+        self.assertEqual(token.id, t2.id)
+        self.assertEqual(t2.user_id, OTHER_USER_ID)
+        self.assertIsNone(t2.revoked_at)
+
     async def test_revoke_device_token_by_owner_succeeds(self) -> None:
         service = make_service()
         uow = make_uow()

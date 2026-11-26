@@ -18,7 +18,7 @@ already-established deferral of that same policy's actual wiring).
 
 from __future__ import annotations
 
-from raad.core.errors.exceptions import NotFoundError
+from raad.core.errors.exceptions import ConflictError, NotFoundError
 from raad.core.ids.generator import IdGenerator
 from raad.core.pagination import CursorPage
 from raad.core.time.clock import Clock
@@ -134,7 +134,20 @@ class NotificationApplicationService:
         self, command: RegisterDeviceTokenCommand, *, uow: NotificationsUnitOfWork
     ) -> DeviceTokenDTO:
         async with uow:
-            await ensure_fcm_token_available(uow, command.fcm_token)
+            existing = await uow.device_tokens.get_by_token(command.fcm_token)
+            if existing is not None:
+                if existing.is_active and str(existing.user_id) != command.actor.user_id:
+                    raise ConflictError("This FCM token is already registered.")
+                existing.reactivate(
+                    user_id=UserId(command.actor.user_id),
+                    platform=Platform(command.platform),
+                    clock=self._clock,
+                    actor_id=command.actor.user_id,
+                )
+                uow.record_events(existing.pull_domain_events())
+                await uow.commit()
+                return device_token_to_dto(existing)
+
             device_token = DeviceToken.register(
                 id=DeviceTokenId(self._id_generator.new_id()),
                 user_id=UserId(command.actor.user_id),

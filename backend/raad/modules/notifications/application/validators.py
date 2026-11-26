@@ -38,8 +38,9 @@ async def ensure_device_token_exists(
 
 
 async def ensure_fcm_token_available(
-    uow: NotificationsUnitOfWork, fcm_token: str
+    uow: NotificationsUnitOfWork, fcm_token: str, *, current_user_id: str | None = None
 ) -> None:
     existing = await uow.device_tokens.get_by_token(fcm_token)
-    if existing is not None:
-        raise ConflictError("This FCM token is already registered.")
+    if existing is not None and existing.is_active:
+        if current_user_id is None or str(existing.user_id) != current_user_id:
+            raise ConflictError("This FCM token is already registered.")
