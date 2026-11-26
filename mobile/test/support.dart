@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:raad_mobile/core/auth/auth_repository.dart';
-import 'package:raad_mobile/core/auth/auth_state.dart';import 'package:raad_mobile/core/auth/me_identity.dart';
+import 'package:raad_mobile/core/auth/auth_state.dart';
+import 'package:raad_mobile/core/auth/me_identity.dart';
 import 'package:raad_mobile/core/auth/principal.dart';
 import 'package:raad_mobile/core/data/models.dart';
 import 'package:raad_mobile/core/data/repository.dart';

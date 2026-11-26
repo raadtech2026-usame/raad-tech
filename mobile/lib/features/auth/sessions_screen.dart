@@ -44,6 +44,7 @@ class SessionsScreen extends ConsumerWidget {
               final session = list[index];
               return _SessionTile(
                 session: session,
+                revokeLabel: s.revokeSessionAction,
                 onRevoke: () async {
                   final confirmed = await _confirmRevoke(context, s);
                   if (!confirmed) return;
@@ -91,8 +92,13 @@ class SessionsScreen extends ConsumerWidget {
 
 class _SessionTile extends StatelessWidget {
   final ActiveSession session;
+  final String revokeLabel;
   final VoidCallback onRevoke;
-  const _SessionTile({required this.session, required this.onRevoke});
+  const _SessionTile({
+    required this.session,
+    required this.revokeLabel,
+    required this.onRevoke,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -132,7 +138,7 @@ class _SessionTile extends StatelessWidget {
           TextButton(
             onPressed: onRevoke,
             style: TextButton.styleFrom(foregroundColor: RaadColors.red),
-            child: const Text('Xir'),
+            child: Text(revokeLabel),
           ),
         ],
       ),

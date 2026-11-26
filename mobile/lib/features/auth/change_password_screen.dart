@@ -57,6 +57,10 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
       await ref
           .read(authControllerProvider.notifier)
           .changePassword(_first.text);
+      if (mounted && widget.voluntary) {
+        showNotice(context, s.passwordChanged);
+        Navigator.of(context).pop();
+      }
     } catch (error) {
       if (mounted) setState(() => _errorMessage = errorMessage(error, s));
     } finally {

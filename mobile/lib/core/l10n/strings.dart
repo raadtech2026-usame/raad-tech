@@ -756,6 +756,11 @@ class Strings {
     'This device will be signed out and must log in again to access the app.',
   );
   String get revokeSessionConfirm => _('Haa, Xir', 'Yes, Sign out');
+  String get revokeSessionAction => _('Xir', 'Sign out');
+  String get passwordChanged => _(
+    'Furaha sirta ah waa la beddelay.',
+    'Password updated.',
+  );
   String get changePasswordVoluntaryIntro => _(
     'Dooro password cusub si aad akoonkaaga ugu ammaansho.',
     'Choose a new password to keep your account secure.',

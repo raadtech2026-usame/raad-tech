@@ -357,6 +357,8 @@ void main() {
       );
 
       await tester.scrollUntilVisible(find.text('Dark'), 200);
+      await tester.ensureVisible(find.text('Dark'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Dark'));
       await tester.pumpAndSettle();
       final context = tester.element(find.byType(ProfileScreen));
