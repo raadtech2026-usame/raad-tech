@@ -380,7 +380,7 @@ class _HeadingTrianglePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_HeadingTrianglePainter oldDelegate) =>
+  bool shouldRepaint(covariant _HeadingTrianglePainter oldDelegate) =>
       oldDelegate.color != color;
 }
 
