@@ -220,7 +220,7 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
                             sound="default",
                             badge=1,
                             content_available=True,
-                            interruption_level=apns_interruption,
+                            custom_data={"interruption-level": apns_interruption},
                         )
                     ),
                 ),

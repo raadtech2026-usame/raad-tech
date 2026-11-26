@@ -772,5 +772,42 @@ class FcmPushDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(mock_token.revoked)
         self.assertTrue(uow.committed)
 
+
+class FirebaseFcmPushSenderPayloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_send_to_tokens_builds_valid_multicast_for_all_channels(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from raad.modules.notifications.infra import adapters
+
+        if not adapters._FIREBASE_AVAILABLE:
+            self.skipTest("firebase-admin not installed")
+
+        sender = adapters.FirebaseFcmPushSender.__new__(adapters.FirebaseFcmPushSender)
+        sender._initialized = True
+
+        captured_messages = []
+
+        def fake_send_each(multicast):
+            captured_messages.append(multicast)
+            ok_resp = MagicMock(success=True, exception=None)
+            return MagicMock(success_count=1, failure_count=0, responses=[ok_resp])
+
+        with patch.object(adapters.messaging, "send_each_for_multicast", side_effect=fake_send_each):
+            for kind, expected_channel in [
+                ("trip_started", "raad_transport_alerts"),
+                ("safety_alert", "raad_safety_alerts"),
+                ("incident_notice", "raad_messages_alerts"),
+            ]:
+                dead = await sender.send_to_tokens(
+                    tokens=["fcm-real-token-1"],
+                    title="Test Title",
+                    body="Test Body",
+                    data={"kind": kind},
+                )
+                self.assertEqual(dead, [])
+                msg = captured_messages[-1]
+                self.assertEqual(msg.android.notification.channel_id, expected_channel)
+                self.assertIn("interruption-level", msg.apns.payload.aps.custom_data)
+
+
 if __name__ == "__main__":
     unittest.main()
