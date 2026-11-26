@@ -188,6 +188,20 @@ class SafetyAlertTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(alert.alarm_type, "lane_departure")
         self.assertFalse(alert.is_critical)
 
+    async def test_stale_open_alert_after_cooldown_is_auto_resolved_and_raises_fresh_alert(self) -> None:
+        # Simulate an alert raised 45 minutes ago that was never closed by an admin.
+        old_alarm = _alarm("forward_collision", delay=timedelta(minutes=45))
+        first = await self.service.record_device_alarm(old_alarm, uow=self.uow)
+        self.assertIsNotNone(first)
+        # New live alarm arrives now (>30 min cooldown elapsed): old one auto-resolves, fresh one raises.
+        fresh = await self.service.record_device_alarm(_alarm("forward_collision", delay=timedelta(0)), uow=self.uow)
+        self.assertIsNotNone(fresh)
+        self.assertNotEqual(first.id, fresh.id)
+        old_entity = await self.uow.safety_alerts.get(first.id)
+        self.assertEqual(old_entity.status.value, "resolved")
+        raised_events = [e for e in self.uow.events if e.event_type == "SafetyAlertRaised"]
+        self.assertEqual(len(raised_events), 2)
+
 
 # ---- incidents ------------------------------------------------------------------------------
 

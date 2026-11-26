@@ -36,6 +36,7 @@ from raad.core.pagination import FilterCondition, OffsetPage, OffsetPageRequest,
 from raad.core.tenancy.principal import Principal, Role
 from raad.core.time.clock import Clock
 from raad.modules.school_erp.application.commands import (
+    BulkRecordBusPaymentsCommand,
     CancelParentInvoiceCommand,
     CreateOrUpdateParentBillingProfileCommand,
     GenerateParentInvoicesCommand,
@@ -1463,6 +1464,46 @@ class PerStudentPricingTests(_Base):
             school_erp_uow=self.school_erp_uow, transport_ops_uow=self.transport_ops_uow,
         )
         self.assertEqual(other, [])
+
+
+class BulkRecordBusPaymentsTests(_Base):
+    async def test_bulk_pay_bus_marks_only_target_bus_unpaid_invoices_as_paid(self) -> None:
+        await self._open_profile(PARENT_A, per_child={STUDENT_A1: "40.00", STUDENT_A2: "40.00"})
+        await self._open_profile(PARENT_B, per_child={STUDENT_B1: "35.00"})
+        await self._generate("2026-09")
+
+        paid_count, total_amount, currency, payments = await self.service.bulk_record_bus_payments(
+            BulkRecordBusPaymentsCommand(
+                vehicle_id=BUS_1,
+                method="mobile_money",
+                received_on=date(2026, 9, 12),
+                period="2026-09",
+                reference="EVC-BUS1",
+                notes="Bus 1 bulk collection",
+                idempotency_key="bulk-key-1234",
+                actor=self.actor,
+            ),
+            school_erp_uow=self.school_erp_uow,
+            transport_ops_uow=self.transport_ops_uow,
+        )
+
+        self.assertEqual(paid_count, 1)
+        self.assertEqual(currency, "USD")
+        self.assertEqual(total_amount, Decimal("80.00"))
+        self.assertEqual(len(payments), 1)
+
+        bus1_after = await self.service.list_parent_invoices(
+            page=1, page_size=25, period="2026-09", status=None, parent_id=None, vehicle_id=BUS_1,
+            school_erp_uow=self.school_erp_uow, transport_ops_uow=self.transport_ops_uow,
+        )
+        self.assertEqual(bus1_after.data[0].status, "paid")
+        self.assertEqual(bus1_after.data[0].balance_due, "0.00")
+
+        bus2_after = await self.service.list_parent_invoices(
+            page=1, page_size=25, period="2026-09", status=None, parent_id=None, vehicle_id=BUS_2,
+            school_erp_uow=self.school_erp_uow, transport_ops_uow=self.transport_ops_uow,
+        )
+        self.assertEqual(bus2_after.data[0].status, "unpaid")
 
 
 if __name__ == "__main__":

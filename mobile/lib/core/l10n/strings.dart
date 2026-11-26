@@ -735,6 +735,16 @@ class Strings {
   String get noPassengersYet => _('Ma jiraan arday ku qoran safarkan', 'No students assigned to this trip');
   String get todayAttendanceNote => _('Halkan toos uga qaad xaadirinta safarka', 'Take attendance directly for this trip');
   String get markAllPresentConfirm => _('Dhammaan ardayda safarkan ma u calaamadinaysaa in ay joogaan?', 'Mark all students in this trip as present?');
+
+  // ---- Alerts Dismiss / Resolve & Bulk Bus Finance & Route Stops
+  String get adminResolveAlert => _('Waa la xaliyay (Xir)', 'Resolve Alert');
+  String get adminFalseAlarm => _('Digniin been ah', 'False Alarm');
+  String get adminAcknowledgeAlert => _('Waa la arkay', 'Acknowledge');
+  String get adminHideForNow => _('Qari hadda', 'Hide for now');
+  String get adminSafetyAlertsTitle => _('Digniinaha Badbaadada', 'Safety Alerts');
+  String get adminNoOpenAlerts => _('Ma jiraan digniino furan', 'No active alerts');
+  String get adminBulkPayBus => _('Dhamaan baskan u qabo lacagta', 'Mark All Bus Invoices Paid');
+  String get adminViewStops => _('Eeg Hakadyada', 'View Stops');
 }
 
 /// 'so' or 'en'.

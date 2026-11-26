@@ -8,6 +8,7 @@ import 'package:raad_mobile/features/admin/admin_screens.dart';
 import 'package:raad_mobile/features/auth/change_password_screen.dart';
 import 'package:raad_mobile/features/common/profile_screen.dart';
 import 'package:raad_mobile/features/driver/driver_screens.dart';
+import 'package:raad_mobile/features/map/bus_map.dart';
 import 'package:raad_mobile/features/parent/parent_screens.dart';
 import 'package:raad_mobile/shared/widgets.dart';
 
@@ -213,6 +214,30 @@ void main() {
       expect(fleet.totalOnline, 140);
       expect(fleet.vehicles.single.displayName, 'AB-1');
     });
+
+    test('parses AdminRoute stop_count directly and AdminStop coordinates', () {
+      final route = AdminRoute.fromJson({
+        'id': 'r1',
+        'name': 'Hodan Route',
+        'code': 'HD-01',
+        'stop_count': 6,
+        'status': 'active',
+      });
+      expect(route.stopCount, 6);
+      expect(route.name, 'Hodan Route');
+
+      final stop = AdminStop.fromJson({
+        'id': 's1',
+        'name': 'KM4',
+        'latitude': 2.0345,
+        'longitude': 45.3123,
+        'sequence_no': 2,
+        'geofence_radius_m': 120,
+      });
+      expect(stop.name, 'KM4');
+      expect(stop.sequenceNo, 2);
+      expect(stop.geofenceRadiusM, 120);
+    });
   });
 
   group('Admin 5-Pillar Shell', () {
@@ -335,6 +360,63 @@ void main() {
       await tester.pumpAndSettle();
       final context = tester.element(find.byType(ProfileScreen));
       expect(Theme.of(context).brightness, Brightness.dark);
+    });
+  });
+
+  group('Fleet UI enhancements', () {
+    testWidgets('RaadBusMarker renders live, stale and offline with heading', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Row(
+              children: [
+                RaadBusMarker(
+                  fixStatus: BusMarkerFixStatus.live,
+                  headingDeg: 45,
+                ),
+                RaadBusMarker(
+                  fixStatus: BusMarkerFixStatus.stale,
+                  headingDeg: 180,
+                ),
+                RaadBusMarker(
+                  fixStatus: BusMarkerFixStatus.offline,
+                  size: 32,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(RaadBusMarker), findsNWidgets(3));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('AdminFleetMapScreen allows opening alert resolution sheet', (
+      tester,
+    ) async {
+      final adminRepo = _busyDay();
+      await tester.pumpWidget(
+        testApp(
+          const AdminFleetMapScreen(),
+          repository: FakeRepository(),
+          admin: adminRepo,
+          role: 'org_admin',
+          somali: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byIcon(Icons.close_rounded).first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Xalli Digniinta'), findsOneWidget);
+      await tester.tap(find.text('Xalli Digniinta'));
+      await tester.pumpAndSettle();
+
+      expect(adminRepo.resolvedAlertIds, ['a1']);
     });
   });
 }

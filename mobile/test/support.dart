@@ -320,6 +320,59 @@ class FakeAdminRepository extends AdminRepository {
     String? status,
   }) =>
       _answer(attendanceReportData);
+
+  List<AdminStop> routeStopsList = [];
+  final resolvedAlertIds = <String>[];
+  final falseAlarmAlertIds = <String>[];
+  final acknowledgedAlertIds = <String>[];
+  final bulkBusPaymentRequests = <Map<String, dynamic>>[];
+
+  @override
+  Future<List<AdminStop>> routeStops(String routeId) =>
+      _answer(routeStopsList);
+
+  @override
+  Future<void> acknowledgeSafetyAlert(String alertId) async {
+    if (failWith != null) throw failWith!;
+    acknowledgedAlertIds.add(alertId);
+  }
+
+  @override
+  Future<void> resolveSafetyAlert(String alertId, {String? notes}) async {
+    if (failWith != null) throw failWith!;
+    resolvedAlertIds.add(alertId);
+  }
+
+  @override
+  Future<void> markSafetyAlertFalseAlarm(String alertId, {String? notes}) async {
+    if (failWith != null) throw failWith!;
+    falseAlarmAlertIds.add(alertId);
+  }
+
+  @override
+  Future<Map<String, dynamic>> bulkRecordBusPayments({
+    required String vehicleId,
+    required String method,
+    String? period,
+    String? reference,
+    String? notes,
+  }) async {
+    if (failWith != null) throw failWith!;
+    bulkBusPaymentRequests.add({
+      'vehicle_id': vehicleId,
+      'method': method,
+      'period': period,
+      'reference': reference,
+      'notes': notes,
+    });
+    return {
+      'vehicle_id': vehicleId,
+      'period': period ?? '2026-11',
+      'paid_count': 2,
+      'total_amount': '80.00',
+      'currency': 'USD',
+    };
+  }
 }
 
 class _FixedThemeMode extends ThemeModeController {

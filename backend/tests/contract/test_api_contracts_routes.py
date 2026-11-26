@@ -708,6 +708,11 @@ ALLOWED_UNDOCUMENTED_EXTRAS: list[tuple[str, str, str]] = [
         "/api/v1/config/map-provider",
         "Config router -- returns platform-wide active map provider ('mapbox' or 'google_maps')",
     ),
+    (
+        "POST",
+        "/api/v1/school-finance/parent-invoices/bulk-payments",
+        "School ERP Finance -- bulk mark all unpaid/partial parent invoices on a bus as paid",
+    ),
 ]
 
 

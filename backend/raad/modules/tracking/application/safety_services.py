@@ -7,7 +7,7 @@ that alert instead of creating another, so a flapping bit is one alert and one n
 
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import timedelta, timezone
 
 from raad.core.errors.exceptions import NotFoundError, ValidationError
 from raad.core.ids.generator import IdGenerator
@@ -35,6 +35,9 @@ logger = get_logger("raad.tracking.safety_alerts")
 
 #: JT/T 808 `0x8203` alarm-type mask for the emergency (SOS) bit (ADR-0057).
 _SOS_CONFIRMATION_MASK = 1 << 0
+#: An open/acknowledged alert older than this (or from an earlier trip) is auto-resolved
+#: when a new live alarm of the same type arrives so the new alert triggers a fresh notification.
+_STALE_OPEN_ALERT_WINDOW = timedelta(minutes=30)
 
 
 def safety_alert_to_dto(alert: SafetyAlert) -> SafetyAlertDTO:
@@ -88,10 +91,27 @@ class SafetyAlertApplicationService:
         active = await self._active_trips.active_trip_for_vehicle(command.vehicle_id)
         async with uow:
             existing = await uow.safety_alerts.find_open(VehicleId(command.vehicle_id), command.alarm_type)
+            active_trip_id = active.trip_id if active else None
+            stale_existing = False
             if existing is not None:
+                is_new_trip = (
+                    active_trip_id is not None
+                    and existing.trip_id is not None
+                    and existing.trip_id != active_trip_id
+                )
+                elapsed = command.event_time - existing.last_raised_at
+                stale_existing = is_new_trip or elapsed >= _STALE_OPEN_ALERT_WINDOW
+
+            if existing is not None and not stale_existing:
                 existing.repeat(raised_at=command.event_time, clock=self._clock)
                 alert = existing
             else:
+                if existing is not None and stale_existing:
+                    existing.resolve(clock=self._clock)
+                    uow.record_events(existing.pull_domain_events())
+                    if hasattr(uow.safety_alerts, "flush_tracked_changes") and hasattr(uow, "session"):
+                        uow.safety_alerts.flush_tracked_changes()
+                        await uow.session.flush()
                 alert = SafetyAlert.raise_alarm(
                     id=SafetyAlertId(self._id_generator.new_id()),
                     organization_id=OrganizationId(command.organization_id),
@@ -104,7 +124,7 @@ class SafetyAlertApplicationService:
                     latitude=command.latitude,
                     longitude=command.longitude,
                     speed_kph=command.speed_kph,
-                    trip_id=active.trip_id if active else None,
+                    trip_id=active_trip_id,
                     driver_id=active.driver_id if active else None,
                     clock=self._clock,
                 )

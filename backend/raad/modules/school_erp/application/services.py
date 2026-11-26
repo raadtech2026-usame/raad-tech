@@ -46,6 +46,7 @@ from raad.core.time.clock import Clock
 from raad.modules.school_erp.application.commands import (
     ArchiveFeePlanCommand,
     ArchiveFinancialCategoryCommand,
+    BulkRecordBusPaymentsCommand,
     CancelParentInvoiceCommand,
     CancelStudentInvoiceCommand,
     CreateFeePlanCommand,
@@ -1893,6 +1894,59 @@ class ParentFinanceApplicationService:
         return parent_payment_to_dto(
             payment, period=str(invoice.period) if invoice else "", student_names=names
         )
+
+    async def bulk_record_bus_payments(
+        self,
+        command: BulkRecordBusPaymentsCommand,
+        *,
+        school_erp_uow: SchoolErpUnitOfWork,
+        transport_ops_uow: TransportOpsUnitOfWork,
+    ) -> tuple[int, Decimal, str, list[ParentPaymentDTO]]:
+        """Marks every unpaid/partially-paid Parent Invoice whose family rides `command.vehicle_id`
+        as paid for its remaining balance due."""
+        page = await self.list_parent_invoices(
+            page=1,
+            page_size=1000,
+            period=command.period,
+            status=None,
+            parent_id=None,
+            vehicle_id=command.vehicle_id,
+            school_erp_uow=school_erp_uow,
+            transport_ops_uow=transport_ops_uow,
+        )
+        payable = [
+            inv
+            for inv in page.data
+            if inv.status in ("unpaid", "partial") and Decimal(inv.balance_due) > _ZERO
+        ]
+        payments: list[ParentPaymentDTO] = []
+        total_amount = _ZERO
+        currency = "USD"
+        for inv in payable:
+            currency = inv.currency
+            dto = await self.record_parent_payment(
+                RecordParentPaymentCommand(
+                    invoice_id=inv.id,
+                    amount=inv.balance_due,
+                    currency=inv.currency,
+                    method=command.method,
+                    received_on=command.received_on,
+                    reference=command.reference,
+                    notes=command.notes,
+                    allocations=None,
+                    idempotency_key=(
+                        f"{command.idempotency_key}:{inv.id}"[:64]
+                        if command.idempotency_key
+                        else None
+                    ),
+                    actor=command.actor,
+                ),
+                school_erp_uow=school_erp_uow,
+                transport_ops_uow=transport_ops_uow,
+            )
+            payments.append(dto)
+            total_amount += Decimal(dto.amount)
+        return len(payments), total_amount, currency, payments
 
     @staticmethod
     def _resolve_allocations(

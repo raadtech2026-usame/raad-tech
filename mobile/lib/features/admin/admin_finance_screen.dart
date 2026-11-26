@@ -80,6 +80,21 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
     ).then((_) => _refresh());
   }
 
+  void _showBulkBusPaymentSheet(
+    AdminVehicle vehicle,
+    List<AdminParentInvoice> payableInvoices,
+  ) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _BulkBusPaymentSheet(
+        vehicle: vehicle,
+        payableInvoices: payableInvoices,
+      ),
+    ).then((_) => _refresh());
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
@@ -257,6 +272,21 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
                 final paidInBus = invoices.where((i) => i.isPaid).length;
                 final partialInBus = invoices.where((i) => i.isPartiallyPaid).length;
                 final unpaidInBus = invoices.where((i) => i.isUnpaid).length;
+                AdminVehicle? selectedVehicle;
+                if (_selectedVehicleId != null && _selectedVehicleId != 'all') {
+                  for (final v
+                      in (vehiclesAsync.valueOrNull ?? const <AdminVehicle>[])) {
+                    if (v.id == _selectedVehicleId) {
+                      selectedVehicle = v;
+                      break;
+                    }
+                  }
+                }
+                final payableInBus = invoices
+                    .where((inv) =>
+                        !inv.isPaid &&
+                        (double.tryParse(inv.balanceDue) ?? 0) > 0)
+                    .toList();
 
                 final filtered = invoices.where((inv) {
                   if (_statusFilter == 'all') return true;
@@ -313,6 +343,26 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
                         ],
                       ),
                     ),
+
+                    if (selectedVehicle != null && payableInBus.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: FilledButton.icon(
+                          icon: const Icon(Icons.done_all_rounded, size: 18),
+                          label: Text(
+                            '${s.adminBulkPayBus} (${payableInBus.length})',
+                          ),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: RaadColors.green,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          onPressed: () => _showBulkBusPaymentSheet(
+                            selectedVehicle!,
+                            payableInBus,
+                          ),
+                        ),
+                      ),
 
                     // Filter Chips with dynamic counts
                     SingleChildScrollView(
@@ -935,6 +985,213 @@ class _RecordParentPaymentSheetState
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : Text(s.save),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BulkBusPaymentSheet extends ConsumerStatefulWidget {
+  final AdminVehicle vehicle;
+  final List<AdminParentInvoice> payableInvoices;
+
+  const _BulkBusPaymentSheet({
+    required this.vehicle,
+    required this.payableInvoices,
+  });
+
+  @override
+  ConsumerState<_BulkBusPaymentSheet> createState() =>
+      _BulkBusPaymentSheetState();
+}
+
+class _BulkBusPaymentSheetState extends ConsumerState<_BulkBusPaymentSheet> {
+  final _referenceController = TextEditingController();
+  final _notesController = TextEditingController();
+  String _paymentMethod = 'EVC Plus';
+  bool _submitting = false;
+
+  static const _methods = [
+    'EVC Plus',
+    'Zaad',
+    'Sahal',
+    'Kaash (Cash)',
+    'Bank',
+  ];
+
+  @override
+  void dispose() {
+    _referenceController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final s = ref.read(stringsProvider);
+    setState(() => _submitting = true);
+    try {
+      final result = await ref
+          .read(adminRepositoryProvider)
+          .bulkRecordBusPayments(
+            vehicleId: widget.vehicle.id,
+            method: _paymentMethod,
+            reference: _referenceController.text.trim().isEmpty
+                ? null
+                : _referenceController.text.trim(),
+            notes: _notesController.text.trim().isEmpty
+                ? null
+                : _notesController.text.trim(),
+          );
+      if (!mounted) return;
+      final paidCount = result['paid_count'] ?? widget.payableInvoices.length;
+      final totalAmount = result['total_amount'] ?? '0.00';
+      showNotice(
+        context,
+        '${s.adminBulkPayBus}: $paidCount biil (\$$totalAmount)',
+      );
+      Navigator.pop(context);
+    } catch (e) {
+      if (mounted) {
+        showNotice(context, errorMessage(e, s), isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
+    double totalDue = 0;
+    for (final inv in widget.payableInvoices) {
+      totalDue += double.tryParse(inv.balanceDue) ?? 0;
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: EdgeInsets.fromLTRB(
+        20,
+        20,
+        20,
+        MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.done_all_rounded, color: RaadColors.green),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        s.adminBulkPayBus,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        widget.vehicle.displayName,
+                        style: TextStyle(fontSize: 12.5, color: context.muted),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: RaadColors.green.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    '${widget.payableInvoices.length} biil aan la bixin',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    '\$${totalDue.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      color: RaadColors.green,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            DropdownButtonFormField<String>(
+              decoration: InputDecoration(
+                labelText: s.adminPaymentMethod,
+                prefixIcon: const Icon(Icons.account_balance_wallet_rounded),
+                border: const OutlineInputBorder(),
+              ),
+              initialValue: _paymentMethod,
+              items: [
+                for (final m in _methods)
+                  DropdownMenuItem(value: m, child: Text(m)),
+              ],
+              onChanged: (val) {
+                if (val != null) setState(() => _paymentMethod = val);
+              },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _referenceController,
+              decoration: InputDecoration(
+                labelText: s.adminReferenceCode,
+                prefixIcon: const Icon(Icons.tag_rounded),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _notesController,
+              maxLines: 2,
+              decoration: InputDecoration(
+                labelText: s.adminNotes,
+                prefixIcon: const Icon(Icons.note_alt_outlined),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 18),
+            FilledButton.icon(
+              onPressed: _submitting ? null : _submit,
+              style: FilledButton.styleFrom(
+                backgroundColor: RaadColors.green,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              icon: _submitting
+                  ? const SizedBox(
+                      height: 18,
+                      width: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.check_rounded),
+              label: Text(s.save),
             ),
           ],
         ),

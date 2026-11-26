@@ -580,6 +580,26 @@ class RecordParentPaymentRequest(_MoneyValidatingModel):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=64)
 
 
+class BulkRecordBusPaymentsRequest(BaseModel):
+    """Pays all open/partial parent invoices for families currently riding a specific bus."""
+
+    vehicle_id: str
+    method: str = Field(pattern="^(cash|bank_transfer|mobile_money|cheque|card|other)$")
+    received_on: date
+    period: str | None = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    reference: str | None = Field(default=None, max_length=120)
+    notes: str | None = Field(default=None, max_length=500)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=36)
+
+
+class BulkRecordBusPaymentsResponse(BaseModel):
+    vehicle_id: str
+    paid_count: int
+    total_amount: str
+    currency: str
+    payments: list["ParentPaymentResponse"]
+
+
 class VoidParentPaymentRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=255)
 

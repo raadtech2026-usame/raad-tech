@@ -46,6 +46,8 @@ from raad.modules.school_erp.api.deps import (
     get_school_erp_uow,
 )
 from raad.modules.school_erp.api.schemas import (
+    BulkRecordBusPaymentsRequest,
+    BulkRecordBusPaymentsResponse,
     CancelParentInvoiceRequest,
     ExpenseResponse as _ExpenseResponse,
     IncomeResponse as _IncomeResponse,
@@ -103,6 +105,7 @@ from raad.modules.school_erp.api.schemas import (
 from raad.modules.school_erp.application.commands import (
     ArchiveFeePlanCommand,
     ArchiveFinancialCategoryCommand,
+    BulkRecordBusPaymentsCommand,
     CancelParentInvoiceCommand,
     CancelStudentInvoiceCommand,
     CreateFeePlanCommand,
@@ -1366,6 +1369,44 @@ def parent_payment_response(dto: ParentPaymentDTO) -> ParentPaymentResponse:
                 for allocation in dto.allocations
             ],
         }
+    )
+
+
+@school_finance_router.post(
+    "/parent-invoices/bulk-payments",
+    response_model=BulkRecordBusPaymentsResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Bulk record payments for all unpaid/partial parent invoices on a bus",
+)
+async def bulk_record_bus_payments(
+    body: BulkRecordBusPaymentsRequest,
+    principal: Principal = Depends(
+        require_permission(Permission("school_erp.parent_payments.manage"))
+    ),
+    service: ParentFinanceApplicationService = Depends(get_parent_finance_service),
+    school_erp_uow: SchoolErpUnitOfWork = Depends(get_school_erp_uow),
+    transport_ops_uow: TransportOpsUnitOfWork = Depends(get_transport_ops_uow),
+) -> BulkRecordBusPaymentsResponse:
+    paid_count, total_amount, currency, payments = await service.bulk_record_bus_payments(
+        BulkRecordBusPaymentsCommand(
+            vehicle_id=body.vehicle_id,
+            method=body.method,
+            received_on=body.received_on,
+            period=body.period,
+            reference=body.reference,
+            notes=body.notes,
+            idempotency_key=body.idempotency_key,
+            actor=principal,
+        ),
+        school_erp_uow=school_erp_uow,
+        transport_ops_uow=transport_ops_uow,
+    )
+    return BulkRecordBusPaymentsResponse(
+        vehicle_id=body.vehicle_id,
+        paid_count=paid_count,
+        total_amount=f"{total_amount:.2f}",
+        currency=currency,
+        payments=[parent_payment_response(dto) for dto in payments],
     )
 
 

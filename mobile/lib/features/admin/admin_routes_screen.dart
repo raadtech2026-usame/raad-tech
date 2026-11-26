@@ -39,6 +39,15 @@ class _AdminRoutesScreenState extends ConsumerState<AdminRoutesScreen> {
     ).then((_) => _refresh());
   }
 
+  void _showRouteStopsSheet(AdminRoute route) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _RouteStopsSheet(route: route),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
@@ -99,8 +108,11 @@ class _AdminRoutesScreenState extends ConsumerState<AdminRoutesScreen> {
                 return Card(
                   margin: const EdgeInsets.only(bottom: 10),
                   elevation: 0.5,
+                  clipBehavior: Clip.antiAlias,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  child: Padding(
+                  child: InkWell(
+                    onTap: () => _showRouteStopsSheet(route),
+                    child: Padding(
                     padding: const EdgeInsets.all(14),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -157,6 +169,16 @@ class _AdminRoutesScreenState extends ConsumerState<AdminRoutesScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.end,
                           children: [
+                            TextButton.icon(
+                              icon: const Icon(Icons.pin_drop_outlined, size: 16),
+                              label: Text(s.adminViewStops, style: const TextStyle(fontSize: 12)),
+                              style: TextButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                minimumSize: Size.zero,
+                              ),
+                              onPressed: () => _showRouteStopsSheet(route),
+                            ),
+                            const SizedBox(width: 8),
                             OutlinedButton.icon(
                               icon: const Icon(Icons.add_location_alt_outlined, size: 16),
                               label: Text(s.adminAddStopTitle, style: const TextStyle(fontSize: 12)),
@@ -170,6 +192,7 @@ class _AdminRoutesScreenState extends ConsumerState<AdminRoutesScreen> {
                         ),
                       ],
                     ),
+                  ),
                   ),
                 );
               },
@@ -307,6 +330,157 @@ class _CreateRouteSheetState extends ConsumerState<_CreateRouteSheet> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : Text(s.save),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RouteStopsSheet extends ConsumerStatefulWidget {
+  final AdminRoute route;
+
+  const _RouteStopsSheet({required this.route});
+
+  @override
+  ConsumerState<_RouteStopsSheet> createState() => _RouteStopsSheetState();
+}
+
+class _RouteStopsSheetState extends ConsumerState<_RouteStopsSheet> {
+  late Future<List<AdminStop>> _stopsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _stopsFuture =
+        ref.read(adminRepositoryProvider).routeStops(widget.route.id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.75,
+      ),
+      decoration: BoxDecoration(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.alt_route_rounded, color: RaadColors.brandPrimary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.route.name,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        '${widget.route.stopCount} Hakad',
+                        style: TextStyle(fontSize: 12.5, color: context.muted),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const Divider(),
+            Flexible(
+              child: FutureBuilder<List<AdminStop>>(
+                future: _stopsFuture,
+                builder: (ctx, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 32),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  if (snapshot.hasError) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(errorMessage(snapshot.error!, s)),
+                          const SizedBox(height: 8),
+                          OutlinedButton(
+                            onPressed: () {
+                              setState(() {
+                                _stopsFuture = ref
+                                    .read(adminRepositoryProvider)
+                                    .routeStops(widget.route.id);
+                              });
+                            },
+                            child: Text(s.retry),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+                  final stops = snapshot.data ?? const <AdminStop>[];
+                  if (stops.isEmpty) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 32),
+                      child: Text(
+                        s.emptyState,
+                        style: TextStyle(color: context.muted),
+                      ),
+                    );
+                  }
+                  final ordered = List<AdminStop>.from(stops)
+                    ..sort((a, b) => a.sequenceNo.compareTo(b.sequenceNo));
+                  return ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: ordered.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (_, idx) {
+                      final stop = ordered[idx];
+                      return ListTile(
+                        leading: CircleAvatar(
+                          radius: 15,
+                          backgroundColor:
+                              RaadColors.brandPrimary.withValues(alpha: 0.12),
+                          child: Text(
+                            '${stop.sequenceNo}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: RaadColors.brandPrimary,
+                            ),
+                          ),
+                        ),
+                        title: Text(
+                          stop.name,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        subtitle: Text(
+                          '${stop.latitude.toStringAsFixed(5)}, ${stop.longitude.toStringAsFixed(5)}'
+                          '${stop.geofenceRadiusM != null ? ' · ${stop.geofenceRadiusM}m' : ''}',
+                          style: TextStyle(fontSize: 12, color: context.muted),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
             ),
           ],
         ),
@@ -535,6 +709,157 @@ class _AddStopSheetState extends ConsumerState<_AddStopSheet> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : Text(s.save),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RouteStopsSheet extends ConsumerStatefulWidget {
+  final AdminRoute route;
+
+  const _RouteStopsSheet({required this.route});
+
+  @override
+  ConsumerState<_RouteStopsSheet> createState() => _RouteStopsSheetState();
+}
+
+class _RouteStopsSheetState extends ConsumerState<_RouteStopsSheet> {
+  late Future<List<AdminStop>> _stopsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _stopsFuture =
+        ref.read(adminRepositoryProvider).routeStops(widget.route.id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.75,
+      ),
+      decoration: BoxDecoration(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.alt_route_rounded, color: RaadColors.brandPrimary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.route.name,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        '${widget.route.stopCount} Hakad',
+                        style: TextStyle(fontSize: 12.5, color: context.muted),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const Divider(),
+            Flexible(
+              child: FutureBuilder<List<AdminStop>>(
+                future: _stopsFuture,
+                builder: (ctx, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 32),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  if (snapshot.hasError) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(errorMessage(snapshot.error!, s)),
+                          const SizedBox(height: 8),
+                          OutlinedButton(
+                            onPressed: () {
+                              setState(() {
+                                _stopsFuture = ref
+                                    .read(adminRepositoryProvider)
+                                    .routeStops(widget.route.id);
+                              });
+                            },
+                            child: Text(s.retry),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+                  final stops = snapshot.data ?? const <AdminStop>[];
+                  if (stops.isEmpty) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 32),
+                      child: Text(
+                        s.emptyState,
+                        style: TextStyle(color: context.muted),
+                      ),
+                    );
+                  }
+                  final ordered = List<AdminStop>.from(stops)
+                    ..sort((a, b) => a.sequenceNo.compareTo(b.sequenceNo));
+                  return ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: ordered.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (_, idx) {
+                      final stop = ordered[idx];
+                      return ListTile(
+                        leading: CircleAvatar(
+                          radius: 15,
+                          backgroundColor:
+                              RaadColors.brandPrimary.withValues(alpha: 0.12),
+                          child: Text(
+                            '${stop.sequenceNo}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: RaadColors.brandPrimary,
+                            ),
+                          ),
+                        ),
+                        title: Text(
+                          stop.name,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        subtitle: Text(
+                          '${stop.latitude.toStringAsFixed(5)}, ${stop.longitude.toStringAsFixed(5)}'
+                          '${stop.geofenceRadiusM != null ? ' · ${stop.geofenceRadiusM}m' : ''}',
+                          style: TextStyle(fontSize: 12, color: context.muted),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
             ),
           ],
         ),

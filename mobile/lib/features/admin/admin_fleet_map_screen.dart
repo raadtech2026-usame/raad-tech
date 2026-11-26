@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../core/auth/auth_state.dart';
 import '../../core/l10n/strings.dart';
+import '../../core/network/realtime_clients.dart';
 import '../../shared/widgets.dart';
 import '../map/bus_map.dart';
 import 'admin_data.dart';
@@ -27,14 +31,330 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
   // Default coordinate for Mogadishu/Somalia center when no vehicles report yet
   static const _defaultCenter = LatLng(2.0469, 45.3182);
 
-  // Cache of last known positions for vehicles (so offline buses remain visible)
+  // Cache of last known positions for vehicles (so offline buses and live WS updates stay visible)
   final Map<String, OnlineVehiclePosition> _lastKnownPositions = {};
   final Set<String> _requestedLatestPositions = {};
 
+  // Live /ws/tracking sockets per online vehicle (mirrors Web Dashboard FleetMapPanel)
+  final Map<String, TrackingSocket> _sockets = {};
+  final Map<String, StreamSubscription<TrackingPosition>> _socketSubs = {};
+  Timer? _fleetRefreshTimer;
+
+  // Session-dismissed banner alerts
+  final Set<String> _dismissedAlertIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    // Periodically refresh online fleet membership & snapshots every 15s in background.
+    _fleetRefreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted) {
+        ref.invalidate(adminFleetOnlineProvider);
+        ref.invalidate(adminAlertsProvider);
+      }
+    });
+  }
+
   @override
   void dispose() {
+    _fleetRefreshTimer?.cancel();
+    for (final sub in _socketSubs.values) {
+      sub.cancel();
+    }
+    _socketSubs.clear();
+    for (final socket in _sockets.values) {
+      socket.dispose();
+    }
+    _sockets.clear();
     _mapController.dispose();
     super.dispose();
+  }
+
+  void _syncLiveSockets(List<OnlineVehicle> onlineList) {
+    final token = ref.read(apiClientProvider).accessToken;
+    if (token == null || token.isEmpty) return;
+
+    final wantedIds = onlineList.take(40).map((v) => v.vehicleId).toSet();
+
+    // Dispose sockets for vehicles no longer online
+    final removed = _sockets.keys.where((id) => !wantedIds.contains(id)).toList();
+    for (final id in removed) {
+      _socketSubs.remove(id)?.cancel();
+      _sockets.remove(id)?.dispose();
+    }
+
+    // Open TrackingSocket for any new online vehicle
+    for (final id in wantedIds) {
+      if (_sockets.containsKey(id)) continue;
+      final socket = TrackingSocket();
+      _sockets[id] = socket;
+      _socketSubs[id] = socket.positions.listen((pos) {
+        if (!mounted || !pos.hasFix) return;
+        setState(() {
+          _lastKnownPositions[id] = OnlineVehiclePosition(
+            latitude: pos.lat!,
+            longitude: pos.lng!,
+            headingDeg: pos.headingDeg?.toDouble(),
+            speedKph: pos.speedKph?.toDouble(),
+            eventTime: pos.eventTime ?? DateTime.now().toUtc(),
+          );
+        });
+      });
+      socket.connect(accessToken: token, vehicleId: id);
+    }
+  }
+
+  Future<void> _performAlertAction({
+    required SafetyAlert alert,
+    required String action, // 'resolve' | 'false_alarm' | 'acknowledge'
+    required Strings s,
+  }) async {
+    try {
+      final repo = ref.read(adminRepositoryProvider);
+      if (action == 'resolve') {
+        await repo.resolveSafetyAlert(alert.id);
+      } else if (action == 'false_alarm') {
+        await repo.markSafetyAlertFalseAlarm(alert.id);
+      } else {
+        await repo.acknowledgeSafetyAlert(alert.id);
+      }
+      if (!mounted) return;
+      setState(() => _dismissedAlertIds.add(alert.id));
+      ref.invalidate(adminAlertsProvider);
+      showNotice(
+        context,
+        action == 'resolve'
+            ? s.adminResolveAlert
+            : (action == 'false_alarm'
+                ? s.adminFalseAlarm
+                : s.adminAcknowledgeAlert),
+      );
+    } catch (e) {
+      if (mounted) showNotice(context, errorMessage(e, s), isError: true);
+    }
+  }
+
+  void _showAlertActionSheet(
+    SafetyAlert alert,
+    AdminVehicle? vehicle,
+    Strings s,
+  ) {
+    final busLabel =
+        vehicle?.displayName ??
+        (alert.vehicleId.length > 8
+            ? alert.vehicleId.substring(0, 8)
+            : alert.vehicleId);
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: BoxDecoration(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Icon(
+                    Icons.warning_amber_rounded,
+                    color: RaadColors.red,
+                    size: 24,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          s.notificationTitle(
+                            'system',
+                            'safety_alert',
+                            'Digniin Badbaado',
+                            alarmType: alert.alarmType,
+                          ),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 16,
+                          ),
+                        ),
+                        Text(
+                          '$busLabel · ${alert.status.toUpperCase()}',
+                          style: TextStyle(fontSize: 12.5, color: context.muted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+              const Divider(height: 20),
+              FilledButton.icon(
+                icon: const Icon(Icons.videocam_rounded),
+                label: Text(s.adminWatchLiveCamera),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => AdminMultiCameraScreen(
+                        vehicleId: alert.vehicleId,
+                        plateNo: vehicle?.plateNo ?? 'Bus',
+                        label: vehicle?.label,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.check_circle_outline_rounded, color: RaadColors.green),
+                label: Text(s.adminResolveAlert),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _performAlertAction(alert: alert, action: 'resolve', s: s);
+                },
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.notifications_off_outlined, color: RaadColors.amber),
+                label: Text(s.adminFalseAlarm),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _performAlertAction(alert: alert, action: 'false_alarm', s: s);
+                },
+              ),
+              if (alert.status == 'open') ...[
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.visibility_outlined),
+                  label: Text(s.adminAcknowledgeAlert),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _performAlertAction(alert: alert, action: 'acknowledge', s: s);
+                  },
+                ),
+              ],
+              const SizedBox(height: 6),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  setState(() => _dismissedAlertIds.add(alert.id));
+                },
+                child: Text(s.adminHideForNow),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showAllAlertsSheet(
+    List<SafetyAlert> allAlerts,
+    Map<String, AdminVehicle> vehicleMap,
+    Strings s,
+  ) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.72,
+        ),
+        decoration: BoxDecoration(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.shield_outlined, color: RaadColors.red),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${s.adminSafetyAlertsTitle} (${allAlerts.length})',
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+              const Divider(),
+              if (allAlerts.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 32),
+                  child: Text(
+                    s.adminNoOpenAlerts,
+                    style: TextStyle(color: context.muted),
+                  ),
+                )
+              else
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: allAlerts.length,
+                    itemBuilder: (_, idx) {
+                      final alert = allAlerts[idx];
+                      final v = vehicleMap[alert.vehicleId];
+                      final busName = v?.displayName ?? alert.vehicleId;
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: Icon(
+                            Icons.warning_amber_rounded,
+                            color: alert.isCritical ? RaadColors.red : RaadColors.amber,
+                          ),
+                          title: Text(
+                            s.notificationTitle(
+                              'system',
+                              'safety_alert',
+                              alert.alarmType,
+                              alarmType: alert.alarmType,
+                            ),
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                          ),
+                          subtitle: Text('$busName · ${alert.status} · x${alert.occurrences}'),
+                          trailing: TextButton(
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              _performAlertAction(alert: alert, action: 'resolve', s: s);
+                            },
+                            child: Text(s.adminResolveAlert),
+                          ),
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            _showAlertActionSheet(alert, v, s);
+                          },
+                        ),
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _inspectVehicle({
@@ -76,19 +396,62 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
     final fleetAsync = ref.watch(adminFleetOnlineProvider);
     final vehiclesAsync = ref.watch(adminVehiclesListProvider);
     final boardAsync = ref.watch(adminBoardProvider);
+    final allVehiclesForAppBar = vehiclesAsync.valueOrNull ?? <AdminVehicle>[];
+    final appBarVehicleMap = {for (final v in allVehiclesForAppBar) v.id: v};
+    final activeAlerts = (ref.watch(adminAlertsProvider).valueOrNull ??
+            const <SafetyAlert>[])
+        .where((a) => a.status == 'open' || a.status == 'acknowledged')
+        .toList();
 
     return Scaffold(
       appBar: AppBar(
         title: Text(s.adminFleetMapTitle),
-        actions: adminTopActions(
-          context,
-          ref,
-          onRefresh: () {
-            ref.invalidate(adminFleetOnlineProvider);
-            ref.invalidate(adminVehiclesListProvider);
-            ref.invalidate(adminBoardProvider);
-          },
-        ),
+        actions: [
+          IconButton(
+            tooltip: s.adminSafetyAlertsTitle,
+            onPressed: () =>
+                _showAllAlertsSheet(activeAlerts, appBarVehicleMap, s),
+            icon: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                const Icon(Icons.shield_outlined),
+                if (activeAlerts.isNotEmpty)
+                  Positioned(
+                    right: -4,
+                    top: -4,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: RaadColors.red,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '${activeAlerts.length}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          ...adminTopActions(
+            context,
+            ref,
+            onRefresh: () {
+              ref.invalidate(adminFleetOnlineProvider);
+              ref.invalidate(adminVehiclesListProvider);
+              ref.invalidate(adminBoardProvider);
+              ref.invalidate(adminAlertsProvider);
+            },
+          ),
+        ],
       ),
       body: fleetAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
@@ -135,14 +498,25 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
             }
           }
 
-          // Cache positions from online vehicles
+          // Cache positions from online vehicles, preferring newer live WebSocket telemetry
           final onlineIds = <String>{};
           for (final v in onlineList) {
             onlineIds.add(v.vehicleId);
-            if (v.position != null) {
-              _lastKnownPositions[v.vehicleId] = v.position!;
+            final incoming = v.position;
+            if (incoming != null) {
+              final existing = _lastKnownPositions[v.vehicleId];
+              final existingTime = existing?.eventTime;
+              final incomingTime = incoming.eventTime;
+              if (existing == null ||
+                  existingTime == null ||
+                  (incomingTime != null && !incomingTime.isBefore(existingTime))) {
+                _lastKnownPositions[v.vehicleId] = incoming;
+              }
             }
           }
+
+          // Keep live /ws/tracking subscriptions in sync for all online vehicles
+          _syncLiveSockets(onlineList);
 
           // Trigger fetch for offline vehicles that have no cached position yet
           for (final v in allVehicles) {
@@ -168,46 +542,47 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
           // Collect markers: online vehicles first, then offline vehicles with known coordinates
           final markers = <Marker>[];
 
-          // 1. Online bus markers
+          // 1. Online bus markers (matched with web dashboard icon + live WS updates)
+          final nowUtc = DateTime.now().toUtc();
           for (int i = 0; i < onlineList.length; i++) {
             final v = onlineList[i];
-            final pos = v.position ?? _lastKnownPositions[v.vehicleId];
+            final pos = _lastKnownPositions[v.vehicleId] ?? v.position;
             final point = pos != null
                 ? LatLng(pos.latitude, pos.longitude)
                 : LatLng(
                     _defaultCenter.latitude + (i * 0.008) - 0.004,
                     _defaultCenter.longitude + (i * 0.008) - 0.004,
                   );
+            final isStaleFix = pos == null ||
+                pos.eventTime == null ||
+                nowUtc.difference(pos.eventTime!.toUtc()).inMinutes >= 2;
+
+            final effectiveVehicle = OnlineVehicle(
+              vehicleId: v.vehicleId,
+              plateNo: v.plateNo,
+              label: v.label,
+              deviceId: v.deviceId,
+              isOnline: v.isOnline,
+              position: pos,
+            );
 
             markers.add(
               Marker(
                 point: point,
-                width: 52,
-                height: 52,
+                width: 56,
+                height: 56,
                 child: GestureDetector(
                   onTap: () => _inspectVehicle(
-                    vehicle: v,
+                    vehicle: effectiveVehicle,
                     details: vehicleMap[v.vehicleId],
                     driverName: vehicleDriverMap[v.vehicleId],
                   ),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: RaadColors.brandPrimary,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2.5),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 6,
-                          offset: Offset(0, 3),
-                        ),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.directions_bus_rounded,
-                      color: Colors.white,
-                      size: 26,
-                    ),
+                  child: RaadBusMarker(
+                    fixStatus: isStaleFix
+                        ? BusMarkerFixStatus.stale
+                        : BusMarkerFixStatus.live,
+                    headingDeg: pos?.headingDeg,
+                    size: 38,
                   ),
                 ),
               ),
@@ -233,32 +608,18 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
             markers.add(
               Marker(
                 point: point,
-                width: 48,
-                height: 48,
+                width: 50,
+                height: 50,
                 child: GestureDetector(
                   onTap: () => _inspectVehicle(
                     vehicle: offlineVehicle,
                     details: v,
                     driverName: vehicleDriverMap[v.id],
                   ),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF64748B), // Slate grey for offline
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 4,
-                          offset: Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.directions_bus_rounded,
-                      color: Colors.white70,
-                      size: 22,
-                    ),
+                  child: RaadBusMarker(
+                    fixStatus: BusMarkerFixStatus.offline,
+                    headingDeg: pos.headingDeg,
+                    size: 32,
                   ),
                 ),
               ),
@@ -270,7 +631,8 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
               .where(
                 (a) =>
                     a.isCritical &&
-                    (a.status == 'open' || a.status == 'acknowledged'),
+                    a.status == 'open' &&
+                    !_dismissedAlertIds.contains(a.id),
               )
               .toList();
           final hasCriticalAlert = alerts.isNotEmpty;
@@ -405,6 +767,25 @@ class _AdminFleetMapScreenState extends ConsumerState<AdminFleetMapScreen> {
                                       ),
                                     ),
                                   ],
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              IconButton(
+                                tooltip: s.adminResolveAlert,
+                                icon: const Icon(
+                                  Icons.close_rounded,
+                                  color: Colors.white,
+                                  size: 20,
+                                ),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                  minWidth: 30,
+                                  minHeight: 30,
+                                ),
+                                onPressed: () => _showAlertActionSheet(
+                                  topAlert,
+                                  alertVehicle,
+                                  s,
                                 ),
                               ),
                             ],

@@ -182,6 +182,33 @@ class AdminDevice {
   );
 }
 
+class AdminStop {
+  final String id;
+  final String name;
+  final double latitude;
+  final double longitude;
+  final int sequenceNo;
+  final int? geofenceRadiusM;
+
+  const AdminStop({
+    required this.id,
+    required this.name,
+    required this.latitude,
+    required this.longitude,
+    required this.sequenceNo,
+    this.geofenceRadiusM,
+  });
+
+  factory AdminStop.fromJson(Map<String, dynamic> json) => AdminStop(
+    id: json['id'] as String? ?? '',
+    name: json['name'] as String? ?? '',
+    latitude: (json['latitude'] as num?)?.toDouble() ?? 0.0,
+    longitude: (json['longitude'] as num?)?.toDouble() ?? 0.0,
+    sequenceNo: (json['sequence_no'] as num?)?.toInt() ?? 1,
+    geofenceRadiusM: (json['geofence_radius_m'] as num?)?.toInt(),
+  );
+}
+
 class AdminRoute {
   final String id;
   final String name;
@@ -201,7 +228,8 @@ class AdminRoute {
     id: json['id'] as String,
     name: json['name'] as String? ?? '',
     code: json['code'] as String?,
-    stopCount: (json['stops'] as List<dynamic>? ?? const []).length,
+    stopCount: (json['stop_count'] as num?)?.toInt() ??
+        (json['stops'] as List<dynamic>? ?? const []).length,
     status: json['status'] as String? ?? 'active',
   );
 }
@@ -983,6 +1011,11 @@ class AdminRepository {
     return _list(json['data']).map(AdminRoute.fromJson).toList();
   }
 
+  Future<List<AdminStop>> routeStops(String routeId) async {
+    final list = await _client.getList('/routes/$routeId/stops');
+    return list.map(AdminStop.fromJson).toList();
+  }
+
   Future<void> createRoute({
     required String name,
     String? code,
@@ -1058,6 +1091,18 @@ class AdminRepository {
     return (await _client.getList(
       '/safety-alerts?status=open&status=acknowledged',
     )).map(SafetyAlert.fromJson).toList();
+  }
+
+  Future<void> acknowledgeSafetyAlert(String alertId) async {
+    await _client.post('/safety-alerts/$alertId/acknowledge', body: {});
+  }
+
+  Future<void> resolveSafetyAlert(String alertId) async {
+    await _client.post('/safety-alerts/$alertId/resolve', body: {});
+  }
+
+  Future<void> markSafetyAlertFalseAlarm(String alertId) async {
+    await _client.post('/safety-alerts/$alertId/false-alarm', body: {});
   }
 
   // --- ERP Finance ----------------------------------------------------------
@@ -1143,6 +1188,23 @@ class AdminRepository {
     return parentInvoices(period: period);
   }
 
+  String _mapPaymentMethod(String method) => switch (method.toLowerCase()) {
+    'evc plus' || 'zaad' || 'sahal' || 'mobile money' => 'mobile_money',
+    'kaash (cash)' || 'cash' || 'kaash' => 'cash',
+    'bank' || 'bank_transfer' => 'bank_transfer',
+    'card' => 'card',
+    'cheque' => 'cheque',
+    _ => 'mobile_money',
+  };
+
+  String? _buildPaymentNotes(String method, String? notes) {
+    final base = notes?.trim();
+    if (method == 'EVC Plus' || method == 'Zaad' || method == 'Sahal') {
+      return (base != null && base.isNotEmpty) ? '$method - $base' : method;
+    }
+    return (base != null && base.isNotEmpty) ? base : null;
+  }
+
   Future<void> recordParentPayment({
     required String invoiceId,
     required double amount,
@@ -1150,31 +1212,41 @@ class AdminRepository {
     String? reference,
     String? notes,
   }) async {
-    final backendMethod = switch (method.toLowerCase()) {
-      'evc plus' || 'zaad' || 'sahal' || 'mobile money' => 'mobile_money',
-      'kaash (cash)' || 'cash' || 'kaash' => 'cash',
-      'bank' || 'bank_transfer' => 'bank_transfer',
-      'card' => 'card',
-      'cheque' => 'cheque',
-      _ => 'mobile_money',
-    };
-
-    final effectiveNotes = (method == 'EVC Plus' || method == 'Zaad' || method == 'Sahal')
-        ? (notes != null && notes.isNotEmpty ? '$method - $notes' : method)
-        : notes;
-
+    final effectiveNotes = _buildPaymentNotes(method, notes);
     final body = {
       'amount': amount.toStringAsFixed(2),
       'currency': 'USD',
-      'method': backendMethod,
+      'method': _mapPaymentMethod(method),
       'received_on': isoDate(DateTime.now()),
       if (reference != null && reference.trim().isNotEmpty)
         'reference': reference.trim(),
-      if (effectiveNotes != null && effectiveNotes.trim().isNotEmpty)
-        'notes': effectiveNotes.trim(),
+      if (effectiveNotes != null) 'notes': effectiveNotes,
     };
     await _client.post(
       '/school-finance/parent-invoices/$invoiceId/payments',
+      body: body,
+    );
+  }
+
+  Future<Map<String, dynamic>> bulkRecordBusPayments({
+    required String vehicleId,
+    required String method,
+    String? period,
+    String? reference,
+    String? notes,
+  }) async {
+    final effectiveNotes = _buildPaymentNotes(method, notes);
+    final body = {
+      'vehicle_id': vehicleId,
+      'method': _mapPaymentMethod(method),
+      'received_on': isoDate(DateTime.now()),
+      if (period != null && period.trim().isNotEmpty) 'period': period.trim(),
+      if (reference != null && reference.trim().isNotEmpty)
+        'reference': reference.trim(),
+      if (effectiveNotes != null) 'notes': effectiveNotes,
+    };
+    return await _client.post(
+      '/school-finance/parent-invoices/bulk-payments',
       body: body,
     );
   }
@@ -1380,9 +1452,56 @@ final adminParentInvoicesByBusProvider =
       ref.watch(adminRepositoryProvider).parentInvoices(vehicleId: vehicleId),
 );
 
-final adminTripsItemsProvider = FutureProvider.autoDispose<List<AdminTripItem>>(
-  (ref) => ref.watch(adminRepositoryProvider).listTrips(),
-);
+final adminTripsItemsProvider = FutureProvider.autoDispose<List<AdminTripItem>>((
+  ref,
+) async {
+  final repo = ref.watch(adminRepositoryProvider);
+  final trips = await repo.listTrips();
+
+  // Enrich TripSummaryResponse IDs with vehicle plate/label, driver name, and route name.
+  List<AdminVehicle> vehicles = const [];
+  List<AdminDriver> drivers = const [];
+  List<AdminRoute> routes = const [];
+  try {
+    vehicles = await ref.watch(adminVehiclesListProvider.future);
+  } catch (_) {}
+  try {
+    drivers = await ref.watch(adminDriversProvider.future);
+  } catch (_) {}
+  try {
+    routes = await ref.watch(adminRoutesProvider.future);
+  } catch (_) {}
+
+  final vehicleById = {for (final v in vehicles) v.id: v};
+  final driverById = {for (final d in drivers) d.id: d};
+  final routeById = {for (final r in routes) r.id: r};
+
+  return trips.map((t) {
+    final vehicle = t.vehicleId != null ? vehicleById[t.vehicleId!] : null;
+    final driver = t.driverId != null ? driverById[t.driverId!] : null;
+    final route = t.routeId != null ? routeById[t.routeId!] : null;
+    return AdminTripItem(
+      id: t.id,
+      scheduledDate: t.scheduledDate,
+      tripType: t.tripType,
+      routeId: t.routeId,
+      routeName: (t.routeName != null && t.routeName!.isNotEmpty)
+          ? t.routeName
+          : route?.name,
+      vehicleId: t.vehicleId,
+      vehiclePlate: (t.vehiclePlate != null && t.vehiclePlate!.isNotEmpty)
+          ? t.vehiclePlate
+          : vehicle?.displayName,
+      driverId: t.driverId,
+      driverName: (t.driverName != null && t.driverName!.isNotEmpty)
+          ? t.driverName
+          : driver?.fullName,
+      status: t.status,
+      plannedDeparture: t.plannedDeparture,
+      cancelledReason: t.cancelledReason,
+    );
+  }).toList();
+});
 
 final adminStaffMembersProvider = FutureProvider.autoDispose<List<AdminStaff>>(
   (ref) => ref.watch(adminRepositoryProvider).staffList(),

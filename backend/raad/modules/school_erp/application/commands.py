@@ -280,6 +280,20 @@ class RecordParentPaymentCommand:
 
 
 @dataclass(frozen=True)
+class BulkRecordBusPaymentsCommand:
+    """Marks every unpaid/partially-paid Parent Invoice for families on a bus as fully paid."""
+
+    vehicle_id: str
+    method: str
+    received_on: date
+    period: str | None
+    reference: str | None
+    notes: str | None
+    idempotency_key: str | None
+    actor: Principal
+
+
+@dataclass(frozen=True)
 class VoidParentPaymentCommand:
     payment_id: str
     reason: str | None
