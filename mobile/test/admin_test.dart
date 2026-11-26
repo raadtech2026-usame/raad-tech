@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:raad_mobile/app/app.dart';
 import 'package:raad_mobile/core/auth/principal.dart';
 import 'package:raad_mobile/features/admin/admin_data.dart';
+import 'package:raad_mobile/features/admin/admin_fleet_map_screen.dart';
 import 'package:raad_mobile/features/admin/admin_screens.dart';
 import 'package:raad_mobile/features/auth/change_password_screen.dart';
 import 'package:raad_mobile/features/common/profile_screen.dart';
