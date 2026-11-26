@@ -412,8 +412,8 @@ void main() {
       await tester.tap(find.byIcon(Icons.close_rounded).first);
       await tester.pumpAndSettle();
 
-      expect(find.text('Xalli Digniinta'), findsOneWidget);
-      await tester.tap(find.text('Xalli Digniinta'));
+      expect(find.text('Waa la xaliyay (Xir)'), findsOneWidget);
+      await tester.tap(find.text('Waa la xaliyay (Xir)'));
       await tester.pumpAndSettle();
 
       expect(adminRepo.resolvedAlertIds, ['a1']);

@@ -344,7 +344,8 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
                       ),
                     ),
 
-                    if (selectedVehicle != null && payableInBus.isNotEmpty)
+                    if (selectedVehicle case final chosenVehicle?
+                        when payableInBus.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 10),
                         child: FilledButton.icon(
@@ -358,7 +359,7 @@ class _AdminFinanceScreenState extends ConsumerState<AdminFinanceScreen> {
                             padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
                           onPressed: () => _showBulkBusPaymentSheet(
-                            selectedVehicle!,
+                            chosenVehicle,
                             payableInBus,
                           ),
                         ),
