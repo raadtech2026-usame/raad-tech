@@ -75,11 +75,16 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
             if not firebase_admin._apps:
                 import base64
                 import json
+                import re
                 cert_data = None
+                credential_source = None
                 if credentials_base64 and credentials_base64.strip():
-                    raw = base64.b64decode(credentials_base64.strip()).decode("utf-8")
+                    cleaned_b64 = re.sub(r"\s+", "", credentials_base64)
+                    cleaned_b64 += "=" * (-len(cleaned_b64) % 4)
+                    raw = base64.b64decode(cleaned_b64).decode("utf-8")
                     cert_data = json.loads(raw)
-                elif credentials_json:
+                    credential_source = "base64"
+                elif credentials_json and (not isinstance(credentials_json, str) or credentials_json.strip()):
                     if isinstance(credentials_json, str):
                         raw_str = credentials_json.strip()
                         if "require(" in raw_str or "import " in raw_str or "admin.initializeApp" in raw_str:
@@ -96,15 +101,20 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
                             return
                         try:
                             cert_data = json.loads(raw_str)
+                            credential_source = "json"
                         except json.JSONDecodeError:
                             try:
-                                decoded = base64.b64decode(raw_str).decode("utf-8")
+                                cleaned_b64 = re.sub(r"\s+", "", raw_str)
+                                cleaned_b64 += "=" * (-len(cleaned_b64) % 4)
+                                decoded = base64.b64decode(cleaned_b64).decode("utf-8")
                                 cert_data = json.loads(decoded)
+                                credential_source = "json_base64"
                             except Exception:
                                 logger.error("firebase_credentials_json_parse_failed")
                                 return
                     else:
                         cert_data = credentials_json
+                        credential_source = "dict"
 
                 if cert_data:
                     if "client" in cert_data and "private_key" not in cert_data:
@@ -121,7 +131,7 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
                         return
                     cred = credentials.Certificate(cert_data)
                     firebase_admin.initialize_app(cred, {"projectId": project_id} if project_id else None)
-                elif credentials_path:
+                elif credentials_path and credentials_path.strip():
                     if not os.path.exists(credentials_path):
                         logger.error(
                             "firebase_credentials_file_not_found",
@@ -130,10 +140,25 @@ class FirebaseFcmPushSender(PushNotificationSenderPort):
                         return
                     cred = credentials.Certificate(credentials_path)
                     firebase_admin.initialize_app(cred, {"projectId": project_id} if project_id else None)
+                    credential_source = "path"
                 else:
-                    firebase_admin.initialize_app(options={"projectId": project_id} if project_id else None)
+                    logger.error(
+                        "firebase_credentials_missing_in_container",
+                        extra={
+                            "b64_len": len((credentials_base64 or "").strip()),
+                            "json_len": len(credentials_json.strip()) if isinstance(credentials_json, str) else 0,
+                            "has_path": bool(credentials_path and credentials_path.strip()),
+                            "project_id": project_id,
+                        },
+                    )
+                    return
+            else:
+                credential_source = "existing_app"
             self._initialized = True
-            logger.info("firebase_fcm_sender_initialized", extra={"project_id": project_id})
+            logger.info(
+                "firebase_fcm_sender_initialized",
+                extra={"project_id": project_id, "credential_source": credential_source},
+            )
         except Exception as exc:
             logger.warning(
                 "firebase_initialization_failed",
