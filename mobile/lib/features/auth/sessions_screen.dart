@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/auth/auth_state.dart';
 import '../../core/l10n/strings.dart';
-import '../../core/network/api_exception.dart';
 import '../../shared/widgets.dart';
 
 /// Provider that fetches the caller's own active sessions from `GET /auth/sessions`.
@@ -27,9 +26,7 @@ class SessionsScreen extends ConsumerWidget {
       body: sessions.when(
         loading: () => const LoadingView(),
         error: (error, _) => ErrorView(
-          message: error is ApiException && error.isNetwork
-              ? s.noConnection
-              : s.somethingWrong,
+          error: error,
           onRetry: () => ref.invalidate(sessionsProvider),
         ),
         data: (list) {
@@ -55,8 +52,8 @@ class SessionsScreen extends ConsumerWidget {
                         .read(authRepositoryProvider)
                         .revokeSession(session.id);
                     ref.invalidate(sessionsProvider);
-                  } catch (_) {
-                    if (context.mounted) showError(context, _, s);
+                  } catch (e) {
+                    if (context.mounted) showError(context, e, s);
                   }
                 },
               );
