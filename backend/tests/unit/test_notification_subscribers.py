@@ -808,6 +808,54 @@ class FirebaseFcmPushSenderPayloadTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(msg.android.notification.channel_id, expected_channel)
                 self.assertIn("interruption-level", msg.apns.payload.aps.custom_data)
 
+    async def test_send_push_works_when_uow_attaches_device_tokens_in_aenter(self) -> None:
+        container, _ = make_container(
+            assignments=[
+                _AssignmentDTO(
+                    student_id="s1",
+                    status="active",
+                    vehicle_id="veh-1",
+                )
+            ],
+            links_by_student={"s1": [_ParentLinkDTO(parent_id="p1")]},
+            parents_by_id={"p1": _ParentDTO(user_id="user-1")},
+            trip_vehicle_id="veh-1",
+        )
+        push_sender = RecordingPushSender()
+        container.bind_singleton(PushNotificationSenderPort, push_sender)
+
+        class MockToken:
+            fcm_token = "fcm-real-aenter-token"
+
+        class LazyDeviceTokensUow:
+            # Mirrors SqlAlchemyNotificationsUnitOfWork: `device_tokens` is attached ONLY inside __aenter__!
+            async def __aenter__(self):
+                class Repo:
+                    async def list_active_for_user(self, user_id):
+                        return [MockToken()]
+
+                self.device_tokens = Repo()
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def commit(self):
+                pass
+
+        container.bind_singleton(NotificationsUnitOfWork, LazyDeviceTokensUow())
+
+        await _NotificationFanOut(container)._send_push(
+            user_id="user-1",
+            title="Trip started",
+            body="Bus started",
+            type="trip_started",
+            data={"kind": "trip_started"},
+            trip_id="trip-1",
+        )
+        self.assertEqual(len(push_sender.sent), 1)
+        self.assertEqual(push_sender.sent[0]["tokens"], ["fcm-real-aenter-token"])
+
 
 if __name__ == "__main__":
     unittest.main()

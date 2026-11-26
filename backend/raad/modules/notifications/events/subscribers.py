@@ -214,13 +214,27 @@ class _NotificationFanOut:
     ) -> None:
         push_sender = self._container.try_resolve(PushNotificationSenderPort)
         if push_sender is None:
+            logger.info(
+                "fcm_push_skipped_no_sender",
+                extra={"user_id": user_id, "type": type},
+            )
             return
         notifications_uow = self._container.try_resolve(NotificationsUnitOfWork)
-        if notifications_uow is None or not hasattr(notifications_uow, "device_tokens"):
+        if notifications_uow is None:
+            logger.info(
+                "fcm_push_skipped_no_uow",
+                extra={"user_id": user_id, "type": type},
+            )
             return
 
         try:
             async with notifications_uow:
+                if not hasattr(notifications_uow, "device_tokens"):
+                    logger.info(
+                        "fcm_push_skipped_uow_missing_device_tokens_repo",
+                        extra={"user_id": user_id, "type": type},
+                    )
+                    return
                 tokens = await notifications_uow.device_tokens.list_active_for_user(
                     UserId(user_id)
                 )
