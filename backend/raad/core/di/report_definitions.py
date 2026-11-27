@@ -549,11 +549,6 @@ def register_report_definitions(catalog: ReportCatalog, container: Container) ->
                 r.get("notes") or "—",
             ])
 
-        total = summary.get("total", len(rows))
-        present = summary.get("present", 0)
-        absent = summary.get("absent", 0)
-        rate = summary.get("rate", 0.0)
-
         metadata = {
             "Total Records": str(total),
             "Present": str(present),
