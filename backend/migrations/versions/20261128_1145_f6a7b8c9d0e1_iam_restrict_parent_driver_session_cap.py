@@ -10,6 +10,7 @@ from sharing one parent/driver login). Matches `core/di/session_cap_adapter.py`'
 fallback defaults (`"parent": 1, "driver": 1`).
 """
 
+import json
 from typing import Sequence, Union
 
 from alembic import op
@@ -25,18 +26,29 @@ _SESSION_CAP_KEY = "session_cap"
 
 def _update_parent_driver_cap(cap: int) -> None:
     conn = op.get_bind()
+    system_settings = sa.table(
+        "system_settings",
+        sa.column("key", sa.VARCHAR()),
+        sa.column("value_json", sa.JSON()),
+        sa.column("scope", sa.VARCHAR()),
+    )
     row = conn.execute(
-        sa.text("SELECT value_json FROM system_settings WHERE key = :key"),
-        {"key": _SESSION_CAP_KEY},
-    ).fetchone()
-    if row is not None and isinstance(row[0], dict):
-        updated = {**row[0], "parent": cap, "driver": cap}
-        conn.execute(
-            sa.text(
-                "UPDATE system_settings SET value_json = :value_json WHERE key = :key"
-            ).bindparams(sa.bindparam("value_json", type_=sa.JSON())),
-            {"value_json": updated, "key": _SESSION_CAP_KEY},
+        sa.select(system_settings.c.value_json).where(
+            system_settings.c.key == _SESSION_CAP_KEY
         )
+    ).fetchone()
+    if row is None:
+        return
+    raw = row[0]
+    current = json.loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(current, dict):
+        return
+    updated = {**current, "parent": cap, "driver": cap}
+    conn.execute(
+        system_settings.update()
+        .where(system_settings.c.key == _SESSION_CAP_KEY)
+        .values(value_json=updated)
+    )
 
 
 def upgrade() -> None:
