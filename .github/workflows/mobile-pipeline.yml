@@ -32,6 +32,7 @@ on:
     paths:
       - "mobile/**"
       - ".github/workflows/mobile-pipeline.yml"
+  workflow_dispatch:
 
 permissions:
   contents: write
