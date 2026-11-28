@@ -90,12 +90,17 @@ jobs:
             echo "Configured google-services.json from secret."
           fi
           if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$KEY_PROPERTIES" ]; then
-            printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > android/raad-release.jks
-            printf '%s\n' "$KEY_PROPERTIES" | tr -d '\r' > android/key.properties
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > android/raad-release.jks
+            printf '%s\n' "$KEY_PROPERTIES" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > android/key.properties
+            echo "Keystore bytes: $(wc -c < android/raad-release.jks)"
+            echo "key.properties keys: $(grep -o '^[^=]*' android/key.properties | tr '\n' ' ')"
             STORE_PASS="$(grep -E '^storePassword=' android/key.properties | cut -d'=' -f2-)"
-            if [ -n "$STORE_PASS" ]; then
-              keytool -list -keystore android/raad-release.jks -storepass "$STORE_PASS" >/dev/null
+            KEY_ALIAS="$(grep -E '^keyAlias=' android/key.properties | cut -d'=' -f2-)"
+            if [ -z "$STORE_PASS" ]; then
+              echo "::error::storePassword missing in KEY_PROPERTIES secret"
+              exit 1
             fi
+            keytool -list -keystore android/raad-release.jks -storepass "$STORE_PASS" ${KEY_ALIAS:+-alias "$KEY_ALIAS"} >/dev/null
             echo "Configured and verified release keystore and key.properties from secrets."
           else
             echo "::warning::ANDROID_KEYSTORE_BASE64 or KEY_PROPERTIES secret missing; building with debug signing key (not Play Store publishable)."
