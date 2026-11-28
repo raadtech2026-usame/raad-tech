@@ -27,6 +27,7 @@ Future<void> openChangePasswordScreen(BuildContext context) {
 }
 
 class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
+  final _current = TextEditingController();
   final _first = TextEditingController();
   final _second = TextEditingController();
   bool _isSubmitting = false;
@@ -34,6 +35,7 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
 
   @override
   void dispose() {
+    _current.dispose();
     _first.dispose();
     _second.dispose();
     super.dispose();
@@ -41,6 +43,10 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
 
   Future<void> _submit() async {
     final s = ref.read(stringsProvider);
+    if (widget.voluntary && _current.text.isEmpty) {
+      setState(() => _errorMessage = s.currentPasswordRequired);
+      return;
+    }
     if (_first.text.length < 8) {
       setState(() => _errorMessage = s.passwordTooShort);
       return;
@@ -54,9 +60,10 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
       _errorMessage = null;
     });
     try {
-      await ref
-          .read(authControllerProvider.notifier)
-          .changePassword(_first.text);
+      await ref.read(authControllerProvider.notifier).changePassword(
+            _first.text,
+            currentPassword: widget.voluntary ? _current.text : null,
+          );
       if (mounted && widget.voluntary) {
         showNotice(context, s.passwordChanged);
         Navigator.of(context).pop();
@@ -97,6 +104,15 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
               style: const TextStyle(fontSize: 15.5),
             ),
             const SizedBox(height: 24),
+            if (widget.voluntary) ...[
+              TextField(
+                controller: _current,
+                obscureText: true,
+                enabled: !_isSubmitting,
+                decoration: InputDecoration(labelText: s.currentPassword),
+              ),
+              const SizedBox(height: 16),
+            ],
             TextField(
               controller: _first,
               obscureText: true,

@@ -315,6 +315,22 @@ class UserApplicationService:
     ) -> UserDTO:
         async with uow:
             user = await self._get_user_or_raise(uow, command.user_id)
+            has_existing_password = bool(user.password_hash)
+            if has_existing_password and not user.is_password_change_required:
+                if not command.current_plain_password:
+                    raise ValidationError(
+                        "Current password is required.",
+                        details={"field": "current_password"},
+                    )
+                if not self._password_hasher.verify(
+                    command.current_plain_password, user.password_hash
+                ):
+                    raise AuthenticationError("Current password is incorrect.")
+            elif has_existing_password and command.current_plain_password is not None:
+                if not self._password_hasher.verify(
+                    command.current_plain_password, user.password_hash
+                ):
+                    raise AuthenticationError("Current password is incorrect.")
             self._password_policy.validate(command.new_plain_password)
             new_hash = self._password_hasher.hash(command.new_plain_password)
             user.change_password_hash(

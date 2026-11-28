@@ -996,8 +996,8 @@ class SessionCapAdapterLiveSettingTests(unittest.IsolatedAsyncioTestCase):
         try:
             port = container.resolve(SessionCapPort)
 
-            self.assertEqual(await port.get_max_sessions(role=Role.PARENT), 3)
-            self.assertEqual(await port.get_max_sessions(role=Role.DRIVER), 3)
+            self.assertEqual(await port.get_max_sessions(role=Role.PARENT), 1)
+            self.assertEqual(await port.get_max_sessions(role=Role.DRIVER), 1)
             self.assertEqual(await port.get_max_sessions(role=Role.ORG_ADMIN), 10)
             self.assertEqual(await port.get_max_sessions(role=Role.FOUNDER), 20)
         finally:

@@ -84,10 +84,16 @@ class AuthRepository {
     await _client.post('/auth/logout', body: {'refresh_token': refreshToken});
   }
 
-  Future<void> changePassword(String newPassword) async {
+  Future<void> changePassword(
+    String newPassword, {
+    String? currentPassword,
+  }) async {
     await _client.post(
       '/auth/change-password',
-      body: {'new_password': newPassword},
+      body: {
+        'new_password': newPassword,
+        if (currentPassword != null) 'current_password': currentPassword,
+      },
     );
   }
 

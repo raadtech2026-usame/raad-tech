@@ -355,6 +355,7 @@ async def change_password(
     command = ChangePasswordCommand(
         user_id=principal.user_id,
         new_plain_password=body.new_password,
+        current_plain_password=body.current_password,
         actor=principal,
     )
     user = await user_service.change_password(command, uow=uow)

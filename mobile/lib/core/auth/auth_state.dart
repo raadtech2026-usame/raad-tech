@@ -144,10 +144,16 @@ class AuthController extends StateNotifier<AuthState> {
     }
   }
 
-  /// Replaces the temporary password. The server clears its flag; the session in hand is
-  /// updated to match so the app moves on without a second login.
-  Future<void> changePassword(String newPassword) async {
-    await _authRepository.changePassword(newPassword);
+  /// Replaces the password. Forced changes clear `isPasswordChangeRequired`; voluntary
+  /// changes verify [currentPassword] on the server.
+  Future<void> changePassword(
+    String newPassword, {
+    String? currentPassword,
+  }) async {
+    await _authRepository.changePassword(
+      newPassword,
+      currentPassword: currentPassword,
+    );
     final current = state;
     if (current is AuthAuthenticated) {
       final old = current.session;

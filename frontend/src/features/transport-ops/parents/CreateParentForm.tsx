@@ -149,6 +149,7 @@ function buildSchema(requiresOrganizationPicker: boolean) {
     );
 }
 
+type FormInput = z.input<ReturnType<typeof buildSchema>>;
 type FormValues = z.infer<ReturnType<typeof buildSchema>>;
 type ChildFormValues = FormValues["children"][number];
 
@@ -264,7 +265,7 @@ export function CreateParentForm({ open, onClose, onOpenExisting }: CreateParent
     watch,
     control,
     formState: { errors, isSubmitting },
-  } = useForm<FormValues>({
+  } = useForm<FormInput, unknown, FormValues>({
     resolver: zodResolver(schema),
     defaultValues: defaultValues(),
   });

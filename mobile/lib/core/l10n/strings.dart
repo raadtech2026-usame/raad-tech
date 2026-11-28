@@ -761,6 +761,11 @@ class Strings {
     'Furaha sirta ah waa la beddelay.',
     'Password updated.',
   );
+  String get currentPassword => _('Furaha sirta ah ee hadda', 'Current password');
+  String get currentPasswordRequired => _(
+    'Fadlan geli furahaaga sirta ah ee hadda.',
+    'Enter your current password.',
+  );
   String get changePasswordVoluntaryIntro => _(
     'Dooro password cusub si aad akoonkaaga ugu ammaansho.',
     'Choose a new password to keep your account secure.',

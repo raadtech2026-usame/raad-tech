@@ -96,13 +96,14 @@ class CreateUserRequest(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    """`POST /auth/change-password` (new — ADR-0017). Self-service only: the caller changes
-    their own password, identified by the bearer token (`Depends(get_current_user)`), never an
-    arbitrary `user_id` in the body. No prior-password verification field exists on
-    `ChangePasswordCommand`/`UserApplicationService.change_password` today — this route reuses
-    that same, already-existing application-layer capability unchanged."""
+    """`POST /auth/change-password` (ADR-0017 + voluntary password-change hardening). Self-service
+    only: the caller changes their own password, identified by the bearer token
+    (`Depends(get_current_user)`), never an arbitrary `user_id` in the body. `current_password`
+    is required when changing an established password (`is_password_change_required=False`) and
+    optional during the forced temporary-password change on first login."""
 
     new_password: str
+    current_password: str | None = None
 
 
 class PasswordResetResponse(BaseModel):

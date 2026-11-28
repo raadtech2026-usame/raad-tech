@@ -32,8 +32,8 @@ SESSION_CAP_SETTING_KEY = "session_cap"
 #: one-account-shared-with-many-parents scenario ADR-0019 names), looser for RAAD-staff/
 #: org_admin roles that legitimately use multiple devices.
 _DEFAULT_MAX_SESSIONS: dict[str, int] = {
-    "parent": 3,
-    "driver": 3,
+    "parent": 1,
+    "driver": 1,
     "org_admin": 10,
     "founder": 20,
     "regional_manager": 20,

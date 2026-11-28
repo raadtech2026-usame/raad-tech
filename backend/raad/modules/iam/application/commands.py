@@ -58,6 +58,7 @@ class ChangePasswordCommand:
     user_id: str
     new_plain_password: str
     actor: Principal
+    current_plain_password: str | None = None
 
 
 @dataclass(frozen=True)

@@ -591,6 +591,54 @@ class UserStatusTransitionApplicationTests(unittest.IsolatedAsyncioTestCase):
         hasher = Pbkdf2PasswordHasher(iterations=1_000)
         self.assertTrue(hasher.verify("StrongPass1", stored.password_hash))
 
+    async def test_voluntary_change_password_requires_correct_current_password(self) -> None:
+        from raad.core.errors.exceptions import ValidationError
+
+        service, uow = make_user_service()
+        user_id = await self._invited_user_id(service, uow)
+        # First change clears the forced temp-password flag (is_password_change_required=False).
+        await service.change_password(
+            ChangePasswordCommand(
+                user_id=user_id, new_plain_password="InitialPass1", actor=make_actor()
+            ),
+            uow=uow,
+        )
+        self.assertFalse(uow.users.by_id[user_id].is_password_change_required)
+
+        # Missing current password must be rejected.
+        with self.assertRaises(ValidationError):
+            await service.change_password(
+                ChangePasswordCommand(
+                    user_id=user_id, new_plain_password="UpdatedPass1", actor=make_actor()
+                ),
+                uow=uow,
+            )
+
+        # Wrong current password must be rejected.
+        with self.assertRaises(AuthenticationError):
+            await service.change_password(
+                ChangePasswordCommand(
+                    user_id=user_id,
+                    new_plain_password="UpdatedPass1",
+                    current_plain_password="WrongPassword1",
+                    actor=make_actor(),
+                ),
+                uow=uow,
+            )
+
+        # Correct current password succeeds and stores the new hash.
+        await service.change_password(
+            ChangePasswordCommand(
+                user_id=user_id,
+                new_plain_password="UpdatedPass1",
+                current_plain_password="InitialPass1",
+                actor=make_actor(),
+            ),
+            uow=uow,
+        )
+        hasher = Pbkdf2PasswordHasher(iterations=1_000)
+        self.assertTrue(hasher.verify("UpdatedPass1", uow.users.by_id[user_id].password_hash))
+
     async def test_enable_then_disable_mfa_round_trip(self) -> None:
         service, uow = make_user_service()
         user_id = await self._invited_user_id(service, uow)

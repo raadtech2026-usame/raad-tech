@@ -35,6 +35,11 @@ Thumbs.db
 # Logs
 *.log
 
+# Android release signing secrets (never commit keystores or passwords)
+*.jks
+*.keystore
+mobile/android/key.properties
+
 # Data imports
 *.xlsx
 

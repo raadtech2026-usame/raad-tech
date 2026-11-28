@@ -77,7 +77,7 @@ void main() {
       expect(find.text('The two passwords do not match.'), findsOneWidget);
     });
 
-    testWidgets('voluntary mode shows a back button, not sign-out', (tester) async {
+    testWidgets('voluntary mode shows current password field and validates it', (tester) async {
       await tester.pumpWidget(
         testApp(
           const ChangePasswordScreen(voluntary: true),
@@ -86,11 +86,29 @@ void main() {
       );
       // The back-arrow is auto-added by Navigator/AppBar; sign-out must NOT appear.
       expect(find.text('Sign out'), findsNothing);
+      // Current password field is shown in voluntary mode.
+      expect(
+        find.widgetWithText(TextField, 'Current password'),
+        findsOneWidget,
+      );
       // The voluntary intro text is shown.
       expect(
         find.textContaining('keep your account secure'),
         findsOneWidget,
       );
+
+      // Submitting without current password shows validation error.
+      await tester.enterText(
+        find.widgetWithText(TextField, 'New password'),
+        'long-enough-1',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Repeat the new password'),
+        'long-enough-1',
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pump();
+      expect(find.text('Enter your current password.'), findsOneWidget);
     });
   });
 

@@ -88,10 +88,16 @@ jobs:
             echo "$GOOGLE_SERVICES_JSON" | base64 -d > android/app/google-services.json 2>/dev/null || echo "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
             echo "Configured google-services.json from secret."
           fi
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/raad-release.jks
-            echo "$KEY_PROPERTIES" > android/key.properties
-            echo "Configured release keystore and key.properties from secret."
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$KEY_PROPERTIES" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > android/raad-release.jks
+            printf '%s\n' "$KEY_PROPERTIES" | tr -d '\r' > android/key.properties
+            STORE_PASS="$(grep -E '^storePassword=' android/key.properties | cut -d'=' -f2-)"
+            if [ -n "$STORE_PASS" ]; then
+              keytool -list -keystore android/raad-release.jks -storepass "$STORE_PASS" >/dev/null
+            fi
+            echo "Configured and verified release keystore and key.properties from secrets."
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 or KEY_PROPERTIES secret missing; building with debug signing key (not Play Store publishable)."
           fi
           EXTRA_DEFINES=""
           [ -n "$FIREBASE_API_KEY" ] && EXTRA_DEFINES="$EXTRA_DEFINES --dart-define=FIREBASE_API_KEY=$FIREBASE_API_KEY"

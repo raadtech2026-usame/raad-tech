@@ -50,6 +50,7 @@ const schema = z.object({
   ),
 });
 
+type FormInput = z.input<typeof schema>;
 type FormValues = z.infer<typeof schema>;
 
 function currentPeriod(): string {
@@ -91,7 +92,7 @@ export function BillingProfileForm({ open, onClose, parentId, parentName, existi
     control,
     watch,
     formState: { errors },
-  } = useForm<FormValues>({
+  } = useForm<FormInput, unknown, FormValues>({
     resolver: zodResolver(schema),
     defaultValues: { currency: "USD", billingStartPeriod: currentPeriod(), dueDay: 10, fees: [] },
   });
